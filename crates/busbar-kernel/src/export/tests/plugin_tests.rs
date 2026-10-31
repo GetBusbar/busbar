@@ -357,3 +357,66 @@ fn a_reference_at_a_reference_capable_url_reaches_the_sink_resolved() {
         &Value::Object(undeclared.clone())
     );
 }
+
+#[test]
+fn export_reference_diagnostics_keep_secret_and_plain_fields_distinct() {
+    use crate::test_support::warn_capture::WarnCapture;
+    use tracing_subscriber::layer::SubscriberExt as _;
+
+    let url_var = format!("BUSBAR_T_EXPORT_CLASS_URL_{}", std::process::id());
+    let token_var = format!("BUSBAR_T_EXPORT_CLASS_TOKEN_{}", std::process::id());
+    let url = "https://classification.example/collector";
+    let token = "Bearer export-classification-fixture";
+    std::env::set_var(&url_var, url);
+    std::env::set_var(&token_var, token);
+    let written = settings_of(serde_json::json!({
+        "url": { "env": url_var },
+        "auth_header": { "name": "Authorization", "value": { "env": token_var } },
+    }));
+    let cap = WarnCapture::capturing_debug();
+    let subscriber = tracing_subscriber::registry().with(cap.clone());
+    let handed = tracing::subscriber::with_default(subscriber, || {
+        sink_settings(&DeclaringAxis, "declaring-sink", &written)
+    });
+    std::env::remove_var(&url_var);
+    std::env::remove_var(&token_var);
+    let handed = handed.expect("the two references resolve");
+    assert_eq!(handed.as_value()["url"], url);
+    assert_eq!(handed.as_value()["auth_header"]["value"], token);
+    assert_eq!(written["url"], serde_json::json!({ "env": url_var }));
+    assert_eq!(
+        written["auth_header"]["value"],
+        serde_json::json!({ "env": token_var })
+    );
+    let literal = settings_of(serde_json::json!({
+        "url": "https://literal.example/collector",
+        "auth_header": { "name": "Authorization", "value": "Bearer literal-fixture" },
+    }));
+    assert_eq!(
+        sink_settings(&DeclaringAxis, "declaring-sink", &literal)
+            .expect("existing literal settings still pass through")
+            .as_value(),
+        &Value::Object(literal.clone())
+    );
+    let events = cap.messages();
+    assert!(
+        events
+            .iter()
+            .all(|line| !line.contains(url) && !line.contains(token)),
+        "reference diagnostics must never include resolved values"
+    );
+    assert!(
+        events
+            .iter()
+            .any(|line| line.contains("setting=url ")
+                && line.contains("reference-capable (not secret)")),
+        "the URL reference must retain its plain-setting classification"
+    );
+    assert!(
+        events
+            .iter()
+            .any(|line| line.contains("setting=auth_header.value ")
+                && line.contains("SECRET REFERENCE")),
+        "the declared credential must be identified as a secret reference"
+    );
+}
