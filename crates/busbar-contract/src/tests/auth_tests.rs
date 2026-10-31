@@ -134,3 +134,32 @@ fn an_auth_field_never_prints_its_value_marked_or_not() {
         assert!(shown.contains("authorization"), "{shown}");
     }
 }
+
+/// RED (open160 A2): a login's credentials (the authorization code, the PKCE verifier, a hop's form
+/// and header values, a token response's body) were plain `String`s, left in freed memory when the
+/// login dropped them. Each is held in a buffer that wipes on drop.
+#[test]
+fn red_every_login_credential_is_held_in_a_wiping_buffer() {
+    fn wipes<T: zeroize::ZeroizeOnDrop>(_: &T) {}
+    let hop = LoginHop {
+        method: "POST".into(),
+        url: "https://idp.example/token".into(),
+        form: vec![("client_id".into(), String::from("form-value").into())],
+        secret_form_field: None,
+        headers: vec![("authorization".into(), String::from("Bearer t").into())],
+    };
+    wipes(&hop.form[0].1);
+    wipes(&hop.headers[0].1);
+    let login = CompleteLogin {
+        code: Some(String::from("the-code").into()),
+        code_verifier: Some(String::from("the-verifier").into()),
+        token_response: Some(LoginHttpResponse {
+            status: 200,
+            body: String::from("{}").into(),
+        }),
+        ..CompleteLogin::default()
+    };
+    wipes(login.code.as_ref().expect("a code"));
+    wipes(login.code_verifier.as_ref().expect("a verifier"));
+    wipes(&login.token_response.as_ref().expect("a response").body);
+}
