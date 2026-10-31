@@ -263,7 +263,7 @@ fn plane_slot_holds_the_one_built_object_of_each_configured_plane() {
     );
 
     let app = build_once(cfg, None).expect("app builds with the door + agents: configured");
-    let routes = busbar_kernel::base_data_route_method_view(&app);
+    let routes = busbar_kernel_testkit::routes::base_data_route_method_view(&app);
 
     for decl in configured {
         let key = decl.key;
@@ -654,7 +654,7 @@ async fn an_audience_bound_token_is_confined_to_its_door_plane() {
     // plane resource, so the enumeration cannot describe a different surface than the one under
     // test. Read through the curated `(path, method, auth)` test-support seam so this cross-crate
     // integration test names PUBLIC types only, never core's sealed `CoreRoute`/`CoreRouteTable`.
-    let core_routes = busbar_kernel::base_data_route_method_view(&app);
+    let core_routes = busbar_kernel_testkit::routes::base_data_route_method_view(&app);
     // FLOOR ON THE DISCOVERED SET, in the one dimension that matters here: the walk below is only a
     // plane-boundary test if the router actually mounted the plane. Without this, deleting the door
     // mount would leave every assertion below trivially satisfied and the test would still pass.

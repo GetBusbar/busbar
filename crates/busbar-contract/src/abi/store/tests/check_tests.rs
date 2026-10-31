@@ -663,3 +663,114 @@ fn a_retention_and_its_code_map_both_ways() {
     }
     assert_eq!(Retention::default(), Retention::Age);
 }
+
+// ── the kind's answer check (`check_answer`): frames, then the op's validator ───────────────
+
+/// `check_answer` for a store slot over an `in` and an `out` of the stated sizes.
+fn answer<I, O>(
+    slot: u32,
+    outcome: Outcome,
+    input: &I,
+    in_size: usize,
+    out: &O,
+    out_size: usize,
+) -> Result<(), Fault> {
+    // SAFETY: both frames are live locals of at least the sizes stated, each leading with its
+    // head; no lent buffer is named.
+    unsafe {
+        check_answer(
+            slot,
+            outcome,
+            (&raw const *input).cast(),
+            in_size,
+            (&raw const *out).cast(),
+            out_size,
+            &(),
+        )
+    }
+}
+
+/// `record_get` reads its `in` first, then its `out`, and is judged against the capacity its `in`
+/// lent; `get_usage` is a leased blob; `cancel` its disposition; a bare-head op passes.
+#[test]
+fn check_answer_reads_the_frames_in_order_then_judges_the_op() {
+    use crate::abi::store::{slot, RecordGetIn};
+    use std::mem::size_of;
+    // SAFETY: an all-zero `RecordGetIn` is a valid value (plain data: integers, NULL pointers).
+    let mut input: RecordGetIn = unsafe { std::mem::zeroed() };
+    input.value.cap = 512;
+    let (is, os) = (size_of::<RecordGetIn>(), size_of::<HostBytesOut>());
+    let fits = bytes_out(FOUND, 512, 0);
+    assert_eq!(answer(slot::RECORD_GET, R, &input, is, &fits, os), Ok(()));
+    let over = bytes_out(FOUND, 513, 0);
+    assert_eq!(
+        answer(slot::RECORD_GET, R, &input, is, &over, os),
+        Err(BYTES_WRITTEN_OVER_CAP)
+    );
+    assert_eq!(
+        answer(slot::RECORD_GET, R, &input, is - 1, &fits, os - 1),
+        Err(fault(Rule::Foreign, "in"))
+    );
+    assert_eq!(
+        answer(slot::RECORD_GET, R, &input, is, &fits, os - 1),
+        Err(fault(Rule::Foreign, "out"))
+    );
+
+    let leased = LeasedBlobOut {
+        head: head(),
+        found: 7,
+        _reserved: 0,
+        record: blob(null(), 0, 0),
+    };
+    let (hs, ls) = (
+        size_of::<crate::abi::mechanism::call::InHead>(),
+        size_of::<LeasedBlobOut>(),
+    );
+    assert_eq!(
+        answer(slot::GET_USAGE, R, &input, hs, &leased, ls),
+        Err(LEASED_BLOB_FOUND)
+    );
+    // An op reading its `out` alone never size-checks the `in`.
+    assert_eq!(
+        answer(slot::GET_KEY, R, &input, 0, &leased, ls - 1),
+        Err(fault(Rule::Foreign, "out"))
+    );
+
+    let cancel = CancelOut {
+        head: head(),
+        disposition: CANCEL_APPLIED + 1,
+        _reserved: 0,
+    };
+    assert_eq!(
+        answer(life::CANCEL, R, &input, hs, &cancel, size_of::<CancelOut>()),
+        Err(CANCEL_DISPOSITION)
+    );
+    assert_eq!(answer(slot::PUT_KEY, R, &input, 0, &fits, 0), Ok(()));
+}
+
+/// A leased list is read only on READY, its count capped before any slice exists, and its fault
+/// named for its op.
+#[test]
+fn check_answer_reads_a_leased_list_only_on_ready() {
+    use crate::abi::store::slot;
+    use std::mem::size_of;
+    // SAFETY: as above.
+    let input: crate::abi::mechanism::call::InHead = unsafe { std::mem::zeroed() };
+    let hs = size_of::<crate::abi::mechanism::call::InHead>();
+    let list = LeasedListOut {
+        head: head(),
+        items: null(),
+        items_len: LIST_ITEMS_HARD_MAX as usize + 1,
+    };
+    let ls = size_of::<LeasedListOut>();
+    assert_eq!(
+        answer(slot::LIST_AUDIT, R, &input, hs, &list, ls),
+        Err(fault(Rule::OverCap, "list_audit.items"))
+    );
+    assert_eq!(
+        answer(slot::LIST_KEYS_SINCE, R, &input, hs, &list, ls),
+        Err(fault(Rule::OverCap, "list_keys_since.items"))
+    );
+    // FAILED holds no lease: nothing is read, and the validator states nothing for it.
+    assert_eq!(answer(slot::LIST_AUDIT, F, &input, hs, &list, ls), Ok(()));
+}

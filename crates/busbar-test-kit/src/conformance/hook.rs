@@ -6,11 +6,23 @@
 //! ```json
 //! { "settings": <the settings the gate opens over>,
 //!   "hook": {
-//!     "bad_settings": ["<settings it must refuse: validate, open and refresh FAIL>", ...],
+//!     "bad_settings": ["<settings it must refuse: validate and open FAIL each; refresh the first>", ...],
 //!     "order_cap": <the order slots the host's FIRST `decide` buffer holds>,
 //!     "requests": [<request>, ...],
-//!     "refresh": { "settings": <what it refreshes to>, "request": <request> } } }
+//!     "refresh": { "settings": <what it refreshes to>, "request": <request> },
+//!     "configure": { "settings": <settings pushed>, "acks": true | false },   (optional)
+//!     "notify": "ready",                                                     (optional)
+//!     "status": <the JSON `status` answers>,                                 (optional)
+//!     "describe": <the JSON `describe` answers> } }                          (optional)
 //! ```
+//!
+//! THE MANAGEMENT OPS, walked on every hook once it is open: `configure` pushes the settings it
+//! opened over at version 2 (READY acknowledges exactly that version; a refusal names why;
+//! REFUSED is a hook that takes no pushed settings); `notify` taps one request-stage view; `status`
+//! and `describe` answer READY with a JSON blob under a lease (released, one crossing each) or are
+//! REFUSED. None may FAULT. The optional keys pin more: `configure` pushes its settings at version 3
+//! and the hook must acknowledge them (`acks: true`) or refuse them naming why (`acks: false`);
+//! `notify` READY; `status` and `describe` the JSON each answers.
 //!
 //! A `<request>` is one `decide` or `transform` over the host's view, and what it must answer:
 //!
@@ -61,23 +73,25 @@
 //! not name.
 
 use busbar_contract::abi::hook::{
-    slot, CandidateDynamic, CandidateStatic, DecideIn, DecideOut, TransformOut,
-    CANDIDATE_HAS_BUDGET_REMAINING, CANDIDATE_HAS_COST_PER_MTOK, CANDIDATE_HAS_LATENCY_MS,
-    CANDIDATE_HAS_RATE_HEADROOM, VERB_ABSTAIN, VERB_HAS_REJECT_STATUS, VERB_PREFER, VERB_REJECT,
-    VERB_RESTRICT, VERB_REWRITE,
+    slot, CandidateDynamic, CandidateStatic, ConfigureIn, ConfigureOut, DecideIn, DecideOut,
+    DescribeOut, NotifyIn, StatusOut, TransformOut, CANDIDATE_HAS_BUDGET_REMAINING,
+    CANDIDATE_HAS_COST_PER_MTOK, CANDIDATE_HAS_LATENCY_MS, CANDIDATE_HAS_RATE_HEADROOM,
+    VERB_ABSTAIN, VERB_HAS_REJECT_STATUS, VERB_PREFER, VERB_REJECT, VERB_RESTRICT, VERB_REWRITE,
 };
 use std::sync::Arc;
 use std::time::Duration;
 
-use busbar_contract::abi::mechanism::call::{AbiStr, DeadlineClass, Outcome};
+use busbar_contract::abi::mechanism::call::{
+    AbiStr, Blob, DeadlineClass, InHead, OutHead, Outcome,
+};
 use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::abi::sdk::door::abi_str;
 use serde_json::Value;
 
 use super::{
     abi_bytes as str_of, answered, asis, bind_far, called, closed, crossings, dispatcher, facts,
-    input, input_text, listed, load, open, opened, output, refreshed, refused_settings, submit_on,
-    Fold, Leg, Script, Subject,
+    input, input_text, json, listed, load, open, opened, output, refreshed, refused_settings,
+    release, submit_on, Fold, Leg, Script, Subject,
 };
 use crate::dispatch::kinds::hook::Hook;
 use crate::dispatch::{now_ns, Called, Dispatcher, Frame, Lent, Plugin};
@@ -534,11 +548,18 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     r.line("decide unopened", 0, || {
         ask(&p, &d, &requests[0], order_cap)
     });
-    r.line("open bad", 1, || called(&open(&p, &bad[0])));
+    for (i, b) in bad.iter().enumerate() {
+        r.line(&format!("open bad #{i}"), 1, || called(&open(&p, b)));
+    }
     opened(&mut r, (s, &p, &d), &settings, &asis);
     for q in &requests {
         r.line(&q.label, q.pinned(), || ask(&p, &d, q, order_cap));
     }
+    let mut expect: Vec<(String, String)> = requests
+        .iter()
+        .map(|q| (q.label.clone(), q.line()))
+        .collect();
+    managed(&mut r, (k, &p, &d), &settings, &mut expect);
     // The short answer re-submitted on its ticket over the same short buffers: one crossing
     // each, then FAULT.
     if let Some(short) = &short {
@@ -557,10 +578,6 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     });
     let fold = r.fold();
 
-    let mut expect: Vec<(String, String)> = requests
-        .iter()
-        .map(|q| (q.label.clone(), q.line()))
-        .collect();
     expect.push((after_label, after.line()));
     contract(&fold, &expect, orders).unwrap_or_else(|e| panic!("{leg:?}: the hook contract: {e}"));
     // THE RED ARM: a door that ranks the other way answers otherwise, and is refused.
@@ -572,6 +589,123 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
         );
     }
     fold
+}
+
+/// The settings version the script's `configure` pushes (`open` is 1), and the scripted one's.
+const PUSHED: u64 = 2;
+const SCRIPTED: u64 = 3;
+
+/// `configure` with `settings` at `version`: the host's line and the version it acknowledged.
+fn configure(p: &Plugin<Hook>, settings: &[u8], version: u64) -> String {
+    let mut f: Frame<ConfigureIn, ConfigureOut> = Frame::new(input(), output());
+    f.input.version = version;
+    f.input.settings = json(settings);
+    f.input.name = abi_str(POOL);
+    let c = p.call(slot::CONFIGURE, &mut f);
+    format!("{} | acked={}", called(&c).trim_end(), f.out.acked_version)
+}
+
+/// One request-stage `notify`, submitted on a ticket of its own (a tap that asks the far end
+/// pends and is resumed on its wake): the host's line.
+fn notify(p: &Plugin<Hook>, d: &Dispatcher) -> String {
+    let Some(t) = ticket(d) else {
+        return NO_TICKET.to_string();
+    };
+    let mut i: NotifyIn = input();
+    i.stage.request_id = 1;
+    i.stage.pool = abi_str(POOL);
+    i.stage.ingress_dialect = abi_str(POOL);
+    i.stage.message_count = 1;
+    let when = (
+        DeadlineClass::Call,
+        now_ns().saturating_add(u64::try_from(BUDGET.as_nanos()).unwrap_or(u64::MAX)),
+    );
+    let f: Frame<NotifyIn, OutHead> = Frame::new(i, output());
+    let done = submit_on(p, d, t, slot::NOTIFY, f, when, Arc::new(()) as Lent, BUDGET);
+    d.recycle(t);
+    called(&answered(&done)).trim_end().to_string()
+}
+
+/// The JSON blob a READY answer leased, as one token: `json=<compact JSON>`, `json=invalid` when
+/// the bytes are not JSON, `json=none` for any other outcome.
+fn blob_json(c: &Called, b: Blob) -> String {
+    if c.outcome != Outcome::Ready {
+        return "json=none".to_string();
+    }
+    let bytes: &[u8] = if b.ptr.is_null() || b.len == 0 {
+        &[]
+    } else {
+        // SAFETY: the plugin's blob, judged by the kind's check, live under the answer's lease,
+        // which has not been released.
+        unsafe { std::slice::from_raw_parts(b.ptr, b.len) }
+    };
+    match serde_json::from_slice::<Value>(bytes) {
+        Ok(v) => format!("json={v}"),
+        Err(_) => "json=invalid".to_string(),
+    }
+}
+
+/// `status` (or `describe`, `op`): the host's line and the lease it holds.
+fn leased(p: &Plugin<Hook>, op: u32) -> (String, u64) {
+    let (c, token) = if op == slot::STATUS {
+        let mut f: Frame<InHead, StatusOut> = Frame::new(input(), output());
+        let c = p.call(op, &mut f);
+        let token = blob_json(&c, f.out.status);
+        (c, token)
+    } else {
+        let mut f: Frame<InHead, DescribeOut> = Frame::new(input(), output());
+        let c = p.call(op, &mut f);
+        let token = blob_json(&c, f.out.describe);
+        (c, token)
+    };
+    (format!("{} | {token}", called(&c).trim_end()), c.lease)
+}
+
+/// THE MANAGEMENT OPS on the open instance (H9): `configure` (and the inputs' scripted one),
+/// `notify`, `status` and `describe`, each lease released. What the inputs pin is pushed onto
+/// `expect`.
+fn managed(
+    r: &mut Script<'_>,
+    (k, p, d): (&Value, &Plugin<Hook>, &Dispatcher),
+    settings: &[u8],
+    expect: &mut Vec<(String, String)>,
+) {
+    r.line("configure", 1, || configure(p, settings, PUSHED));
+    if let Some(c) = k.get("configure").filter(|c| !c.is_null()) {
+        let pushed = input_text(&c["settings"], "a hook");
+        let acks = c["acks"]
+            .as_bool()
+            .expect("conformance.json: hook.configure.acks must be true or false");
+        let label = if acks {
+            expect.push((
+                "configure scripted".to_string(),
+                format!("Ready lease=false | acked={SCRIPTED}"),
+            ));
+            "configure scripted"
+        } else {
+            "configure refused"
+        };
+        r.line(label, 1, || configure(p, &pushed, SCRIPTED));
+    }
+    r.line("notify", 1, || notify(p, d));
+    match k.get("notify").and_then(Value::as_str) {
+        None => {}
+        Some("ready") => expect.push(("notify".to_string(), "Ready lease=false".to_string())),
+        Some(o) => panic!("conformance.json: hook.notify is `ready`, not `{o}`"),
+    }
+    let mut leases = Vec::new();
+    for (label, op) in [("status", slot::STATUS), ("describe", slot::DESCRIBE)] {
+        let lease = r.step(label, 1, || leased(p, op));
+        if let Some(want) = k.get(label).filter(|w| !w.is_null()) {
+            expect.push((label.to_string(), format!("Ready lease=true | json={want}")));
+        }
+        if lease != 0 {
+            leases.push((format!("release {label}"), lease));
+        }
+    }
+    for (label, lease) in leases {
+        r.line(&label, 1, || called(&release(p, lease)));
+    }
 }
 
 /// The request whose short answer the script re-calls, and the order proof it rests on. A hook that
@@ -633,6 +767,60 @@ fn reversed(fold: &Fold) -> Fold {
         .collect()
 }
 
+/// THE MANAGEMENT OPS' CONTRACT (H9): none FAULTs; `configure` READY acknowledges the version it
+/// was pushed, and FAILED names why; a scripted `configure` the hook must refuse is FAILED naming
+/// why; `status` and `describe` READY carry JSON.
+fn management(fold: &Fold) -> Result<(), String> {
+    let at = |label: &str| {
+        fold.iter()
+            .find(|s| s.label == label)
+            .map(|s| s.answer.as_str())
+            .ok_or_else(|| format!("the script ran no step '{label}'"))
+    };
+    let fail = |label: &str, line: &str, why: &str| Err(format!("{label}: {why}: {line}"));
+    for label in ["configure", "notify", "status", "describe"] {
+        let line = at(label)?;
+        if line.starts_with("Fault") {
+            return fail(label, line, "a management op FAULTed");
+        }
+    }
+    let names_why = |line: &str| {
+        line.split(" | ")
+            .next()
+            .is_some_and(|head| head.len() > "Failed lease=false".len())
+    };
+    let configure = at("configure")?;
+    if configure.starts_with("Ready") && !configure.ends_with(&format!(" | acked={PUSHED}")) {
+        return fail(
+            "configure",
+            configure,
+            "READY must acknowledge the pushed version",
+        );
+    }
+    if configure.starts_with("Failed") && !names_why(configure) {
+        return fail("configure", configure, "a refused configure names why");
+    }
+    if let Ok(refused) = at("configure refused") {
+        if !refused.starts_with("Failed") || !names_why(refused) {
+            return fail(
+                "configure refused",
+                refused,
+                "the inputs' configure must be refused, naming why",
+            );
+        }
+    }
+    for label in ["status", "describe"] {
+        let line = at(label)?;
+        if line.starts_with("Ready") && line.ends_with("json=invalid") {
+            return fail(label, line, "a READY blob is not JSON");
+        }
+        if line.starts_with("Ready") && line.ends_with("json=none") {
+            return fail(label, line, "a READY answer carries its blob");
+        }
+    }
+    Ok(())
+}
+
 /// THE KIND'S CONTRACT over the fold, so two equal folds of failures prove nothing: the lifecycle
 /// answers READY where it must and FAILED with its reason where it must; every request answers
 /// exactly its expected line (verb, order, status, message, the re-call taken or not); a re-call
@@ -673,16 +861,33 @@ pub(super) fn contract(
         let line = at(label)?;
         need(line == want, label, &format!("{line} (want: {want})"))?;
     }
-    let refused = at("validate bad #0")?;
-    need(
-        refused.starts_with("Failed lease=false ") && refused.len() > "Failed lease=false ".len(),
-        "a refused validate names why",
-        refused,
-    )?;
-    for label in ["open bad", "refresh bad"] {
-        let line = at(label)?;
-        need(line.starts_with("Failed "), label, line)?;
+    // EVERY bad setting: each validate FAILED naming why, each open FAILED (H1).
+    fn bad<'f>(fold: &'f Fold, prefix: &'static str) -> impl Iterator<Item = &'f super::Step> {
+        fold.iter().filter(move |s| s.label.starts_with(prefix))
     }
+    let bad = |prefix: &'static str| bad(fold, prefix);
+    need(
+        bad("validate bad #").next().is_some(),
+        "the inputs name no bad settings",
+        "",
+    )?;
+    for s in bad("validate bad #") {
+        need(
+            s.answer.starts_with("Failed lease=false ")
+                && s.answer.len() > "Failed lease=false ".len(),
+            &format!("{}: a refused validate names why", s.label),
+            &s.answer,
+        )?;
+    }
+    need(
+        bad("open bad #").count() == bad("validate bad #").count(),
+        "an open over every bad setting",
+        "",
+    )?;
+    for s in bad("open bad #").chain(bad("refresh bad")) {
+        need(s.answer.starts_with("Failed "), &s.label, &s.answer)?;
+    }
+    management(fold)?;
     if orders {
         let again = at("re-call short again")?;
         need(

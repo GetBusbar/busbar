@@ -433,7 +433,14 @@ fn const_kind(t: &syn::Type) -> ConstKind {
 
 /// The glue macros whose expansion is Rust-side only: they build a contract table or an SDK marker
 /// and define no C layout.
-const GLUE_MACROS: &[&str] = &["kind_slots", "slot_structs", "contract", "byte_dim"];
+const GLUE_MACROS: &[&str] = &[
+    "kind_slots",
+    "slot_structs",
+    "contract",
+    "byte_dim",
+    "abi_op",
+    "abi_answers",
+];
 
 /// The rows of a `store_slots!` invocation: `(slot number, CONST, field)`.
 fn store_rows(ts: TokenStream) -> Result<Vec<(u128, String, String)>, String> {
@@ -684,6 +691,17 @@ fn collect_items(items: &[syn::Item], file: usize, scope: &mut Vec<String>, col:
                 let defines = m.ident.as_ref().map(ToString::to_string);
                 if defines.as_deref() == Some("store_slots") {
                     // The one macro whose expansion is a C layout; its invocation is expanded below.
+                    continue;
+                }
+                if defines.is_none() && name == "abi_struct" {
+                    // `abi_struct!` states its structs as written: read them in place.
+                    match syn::parse2::<syn::File>(m.mac.tokens.clone()) {
+                        Ok(inner) => collect_items(&inner.items, file, scope, col),
+                        Err(e) => col.errs.push(format!(
+                            "{}: abi_struct! does not parse: {e}",
+                            at(col, &name)
+                        )),
+                    }
                     continue;
                 }
                 if defines.is_some() || GLUE_MACROS.contains(&name.as_str()) {

@@ -92,9 +92,6 @@ pub mod kinds;
 // The media carriers (#83a SD-2b), re-expressed over `bounded::SlabBytes`.
 #[allow(missing_docs, missing_debug_implementations)]
 pub mod media;
-// THE MIGRATION SEAMS: the legacy-row shapes and the three traits the store adapter implements and
-// the ledger's migration consumes (the same division `slice` makes).
-pub mod migration;
 // The one URL and host reader (the destination-guard audit): pure, outside `abi/`.
 pub mod net;
 #[allow(missing_docs)]
@@ -131,9 +128,6 @@ pub mod secret_fields;
 pub mod section;
 pub mod services;
 pub mod signal;
-// THE LOG'S SHIPPING SEAM: the trait the store adapter implements and the log ships through.
-pub mod ship;
-pub mod slice;
 // THE STORE'S CALLS: the typed store v3 surface the loader implements and the kernel calls.
 pub mod spans;
 pub mod store_calls;
@@ -147,7 +141,6 @@ pub mod testkit;
 pub mod transport;
 pub mod unit;
 pub mod upstream;
-pub mod verb_store;
 pub mod vocab;
 pub mod wire;
 
@@ -227,6 +220,10 @@ pub const DEFAULT_MAX_ADMIN_SCOPE: &str = "read-only";
 /// counter a plugin's gates use: one allocator, so the contract's own alloc gates
 /// (`abi::sdk::tests`) and the plugins' read the same impl. `#[cfg(test)]` only: a `#[global_allocator]`
 /// in a library would be inherited by every binary that links it.
+// This crate's own tests mount test-kit source written against `busbar_contract::` paths.
+#[cfg(test)]
+extern crate self as busbar_contract;
+
 #[cfg(test)]
 #[global_allocator]
 static ALLOC: alloc_counter::Counting = alloc_counter::Counting::new();

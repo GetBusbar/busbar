@@ -129,7 +129,7 @@ pub(crate) fn register_audit_stream_as(kind_id: u32, app: &Arc<crate::state::App
 /// [`admin_suffix`] chooses this shape only when none of those three fields carries a `|`, and
 /// [`audit_suffix_safe`] otherwise. Call sites: [`admin_suffix`],
 /// [`migrate_legacy_table_to_plane_records`] (which must reproduce bytes an already-sealed `hash`
-/// was computed over verbatim) and the decode of a pre-cleave row.
+/// was computed over verbatim).
 pub(crate) fn audit_suffix(
     ts: u64,
     action: &str,
@@ -267,80 +267,40 @@ fn parse_audit_suffix(content: &[u8]) -> (u64, String, String, String, String, u
     )
 }
 
-/// THE DECODE BRIDGE (reframe): turn one stored `audit` body back into a chain record.
-///
-/// Handles BOTH the NEW neutral `{seq, prev_hash, hash, content}` body the seam persists AND an OLD
-/// `serde(AuditRecord)` row a store held before the cleave — so a deployed store spanning the upgrade
-/// both VERIFIES and READS BACK. The neutral body is tried first (the shape every post-cleave append
-/// writes); a legacy row lacks the required `content` field and falls through to the typed decode,
-/// whose fields rebuild the identical suffix. `scope` is the constant `admin` log, supplied by the
-/// caller and never read from the body.
+/// THE DECODE BRIDGE (reframe): turn one stored `audit` body, the neutral `{seq, prev_hash, hash,
+/// content}` body the seam persists (and the 1.5.5 table's migration writes), back into a chain
+/// record. `scope` is the constant `admin` log, supplied by the caller and never read from the body.
 fn reframe_audit(scope: &str, body: &[u8]) -> RecordStoreResult<StreamRecord> {
-    if let Ok(nb) = decode::<NeutralBody>(body) {
-        return Ok(StreamRecord::from_parts(
-            scope.to_string(),
-            nb.seq,
-            nb.prev_hash,
-            nb.hash,
-            nb.content,
-            AUDIT_FRAMING,
-            AUDIT_DIGESTS_SCOPE,
-        ));
-    }
-    let row: busbar_contract::records::AuditRecord = decode(body)?;
-    let content = audit_suffix(
-        row.ts,
-        &row.action,
-        &row.resource,
-        &row.outcome,
-        &row.principal,
-    );
+    let nb: NeutralBody = decode(body)?;
     Ok(StreamRecord::from_parts(
         scope.to_string(),
-        row.seq,
-        row.prev_hash,
-        row.hash,
-        content,
+        nb.seq,
+        nb.prev_hash,
+        nb.hash,
+        nb.content,
         AUDIT_FRAMING,
         AUDIT_DIGESTS_SCOPE,
     ))
 }
 
-/// READ-BACK DECODE BRIDGE to a TYPED record: reconstruct an [`AuditEntry`] from the NEW neutral body
-/// OR an OLD `serde(AuditRecord)` body. Digest-faithful — the rebuilt fields feed the SAME bytes the
-/// stored `hash` was sealed over, so a chain read back through it `verify_chain`-passes byte-identically.
-/// `recorded_here` comes back FALSE: this is the store-seeding path, never a live append. `scope` is the
-/// constant `admin` log, never read from the body.
+/// READ-BACK DECODE BRIDGE to a TYPED record: reconstruct an [`AuditEntry`] from the neutral body.
+/// Digest-faithful — the rebuilt fields feed the SAME bytes the stored `hash` was sealed over, so a
+/// chain read back through it `verify_chain`-passes byte-identically. `recorded_here` comes back
+/// FALSE: this is the store-seeding path, never a live append. `scope` is the constant `admin` log,
+/// never read from the body.
 pub(crate) fn audit_entry_from_body(_scope: &str, body: &[u8]) -> RecordStoreResult<AuditEntry> {
-    if let Ok(nb) = decode::<NeutralBody>(body) {
-        let (ts, action, resource, outcome, principal, scheme) = parse_audit_suffix(&nb.content);
-        return Ok(AuditEntry {
-            seq: nb.seq,
-            ts,
-            action,
-            resource,
-            outcome,
-            principal,
-            prev_hash: nb.prev_hash,
-            hash: nb.hash,
-            scheme,
-            recorded_here: false,
-        });
-    }
-    // The OLD pre-cleave `serde(AuditRecord)` row shape: it predates the safe suffix entirely, so it
-    // is unconditionally scheme 1 (pipe-joined) — never anything the marker byte could have said,
-    // since this branch never sees a content suffix at all.
-    let row: busbar_contract::records::AuditRecord = decode(body)?;
+    let nb: NeutralBody = decode(body)?;
+    let (ts, action, resource, outcome, principal, scheme) = parse_audit_suffix(&nb.content);
     Ok(AuditEntry {
-        seq: row.seq,
-        ts: row.ts,
-        action: row.action,
-        resource: row.resource,
-        outcome: row.outcome,
-        principal: row.principal,
-        prev_hash: row.prev_hash,
-        hash: row.hash,
-        scheme: crate::audit_ring::AUDIT_SCHEME_PIPE,
+        seq: nb.seq,
+        ts,
+        action,
+        resource,
+        outcome,
+        principal,
+        prev_hash: nb.prev_hash,
+        hash: nb.hash,
+        scheme,
         recorded_here: false,
     })
 }
@@ -1038,28 +998,58 @@ struct HeldRefusal {
     resource: String,
 }
 
-/// THE HOLD: `Some` until the chain opens (each refusal kept in raise order, bounded), `None` after
-/// (each refusal sealed at once). One lock orders a refusal raised while the hold is being sealed
-/// after everything held.
+/// THE HOLD: refusals kept (in raise order, bounded) until the chain opens, sealed at once after.
+/// Sealing crosses the audit store, which is plugin code, so it never runs under the hold's lock
+/// (THE DESIGN §11.13 M1): the open takes the held rows out and seals them with the lock released,
+/// and a refusal raised meanwhile is held behind them and sealed by the open's next round, so the
+/// chain still carries every refusal in raise order.
 struct RefusalHold {
-    held: Mutex<Option<(Vec<HeldRefusal>, u64)>>,
+    held: Mutex<Hold>,
+}
+
+/// What [`RefusalHold`] keeps under its lock.
+struct Hold {
+    /// Not yet sealed, in raise order.
+    rows: Vec<HeldRefusal>,
+    /// Raised past [`MAX_HELD_REFUSALS`] and not yet reported.
+    over: u64,
+    phase: Phase,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Phase {
+    /// The chain is not open: every refusal is held.
+    Closed,
+    /// An open is sealing the held rows: every refusal is held behind them.
+    Sealing,
+    /// The chain is open: every refusal is sealed at once.
+    Open,
 }
 
 impl RefusalHold {
     const fn new() -> Self {
         Self {
-            held: Mutex::new(Some((Vec::new(), 0))),
+            held: Mutex::new(Hold {
+                rows: Vec::new(),
+                over: 0,
+                phase: Phase::Closed,
+            }),
         }
     }
 
-    /// Hold `row` while the chain is not open; once it is, hand it to `seal`.
+    fn lock(&self) -> std::sync::MutexGuard<'_, Hold> {
+        self.held.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Hold `row` while the chain is not open (or its held rows are still being sealed); once it
+    /// is, hand it to `seal`.
     fn raise(&self, row: HeldRefusal, seal: impl FnOnce(&HeldRefusal)) {
-        let mut held = self.held.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some((rows, over)) = held.as_mut() {
-            if rows.len() < MAX_HELD_REFUSALS {
-                rows.push(row);
+        let mut held = self.lock();
+        if held.phase != Phase::Open {
+            if held.rows.len() < MAX_HELD_REFUSALS {
+                held.rows.push(row);
             } else {
-                *over += 1;
+                held.over += 1;
             }
             return;
         }
@@ -1068,16 +1058,41 @@ impl RefusalHold {
     }
 
     /// Open the chain: hand every held row to `seal`, in raise order, then the count the hold could
-    /// not keep (when any) to `over`. A second open seals nothing.
-    fn open(&self, mut seal: impl FnMut(&HeldRefusal), over: impl FnOnce(u64)) {
-        let mut held = self.held.lock().unwrap_or_else(|e| e.into_inner());
-        let Some((rows, dropped)) = held.take() else {
+    /// not keep (when any) to `over`, each with the lock released; rows raised meanwhile follow, in
+    /// the same order. A second open seals nothing.
+    fn open(&self, mut seal: impl FnMut(&HeldRefusal), mut over: impl FnMut(u64)) {
+        let mut held = self.lock();
+        if held.phase != Phase::Closed {
             return;
-        };
-        rows.iter().for_each(&mut seal);
-        if dropped > 0 {
-            over(dropped);
         }
+        held.phase = Phase::Sealing;
+        // An unwinding seal opens the chain rather than holding every later refusal for good.
+        let opened = OpenOnDrop(self);
+        loop {
+            let rows = std::mem::take(&mut held.rows);
+            let dropped = std::mem::take(&mut held.over);
+            if rows.is_empty() && dropped == 0 {
+                held.phase = Phase::Open;
+                break;
+            }
+            drop(held);
+            rows.iter().for_each(&mut seal);
+            if dropped > 0 {
+                over(dropped);
+            }
+            held = self.lock();
+        }
+        drop(held);
+        std::mem::forget(opened);
+    }
+}
+
+/// Opens a [`RefusalHold`] whose open unwound mid-seal.
+struct OpenOnDrop<'a>(&'a RefusalHold);
+
+impl Drop for OpenOnDrop<'_> {
+    fn drop(&mut self) {
+        self.0.lock().phase = Phase::Open;
     }
 }
 

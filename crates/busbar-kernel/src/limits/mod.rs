@@ -47,7 +47,7 @@ fn get() -> Option<LimitsResolved> {
 // translate_body_max_bytes()` on this page reading `installed().request_body_max_bytes` with a
 // 32 MiB uninstalled fallback -- and `busbar_kernel::proxy::max_translate_body_bytes()` is the
 // same number, mirrored out of the same slot by `mirror_derived_caps` on EVERY mutation (install,
-// reload, `InstallGuard` rollback, the raw `set_installed` poke) with the same fallback constant,
+// reload, `InstallGuard` rollback, the raw `swap_installed` poke) with the same fallback constant,
 // `TRANSLATE_BODY_MAX_BYTES_DEFAULT`. The codec crates already read it there. Two names for one
 // process-global is one name too many while this crate is being emptied, and this is not a money
 // figure or an admission figure -- it is a transport body cap, so its home is the neutral values

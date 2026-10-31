@@ -2,7 +2,8 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE HOOK KIND'S SDK: a hook plugin over the hook kind's door (`abi::hook`), written against
-//! typed views ([`Hook`]). [`hook_door!`](crate::hook_door) emits the door; every slot is the SDK's own.
+//! typed views ([`Hook`]). [`export_plugin!`](crate::export_plugin)'s `hook` arm emits the door;
+//! every slot is the SDK's own.
 //!
 //! * [`Decoded`] — a `decide`/`transform` `in` read as a view borrowed from the host's `in` for
 //!   the call (text and the prompt body zero-copy), and
@@ -29,8 +30,10 @@
 //! call is Ready or Pending(wake)).
 
 use std::borrow::Cow;
+use std::collections::HashMap;
 use std::marker::PhantomData;
-use std::sync::{Arc, PoisonError, RwLock};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, PoisonError, RwLock};
 use std::task::Poll;
 
 use crate::abi::hook::validate::{check_notify_in, check_prompt_view};
@@ -48,6 +51,7 @@ use crate::abi::hook::{
 };
 use crate::abi::mechanism::call::{AbiStr, InHead, OutHead, Outcome, BLOB_ABSENT, BLOB_JSON};
 use crate::abi::mechanism::door::{KindTailHead, Statement};
+use crate::abi::mechanism::ticket::Ticket;
 use crate::abi::sdk::exchange::Op;
 use crate::abi::sdk::life::{settings_object, Held, Life, Refreshed, Refusal};
 use crate::abi::sdk::{Instance, Lent, LentList, Out, SafeSlot};
@@ -750,14 +754,18 @@ pub trait Hook: Send + Sync {
         let _ = (tap, op);
         Poll::Ready(())
     }
-    /// `configure`: `true` acknowledges the version. Default: acknowledge.
+    /// `configure`: `Ok` acknowledges the version; `Err` refuses it, saying why in the hook's own
+    /// bare words (the host names the hook). Default: acknowledge.
+    ///
+    /// # Errors
+    /// Why the hook will not take the pushed settings.
     fn configure(
         &self,
         settings: &serde_json::Map<String, serde_json::Value>,
         version: u64,
-    ) -> bool {
+    ) -> Result<(), String> {
         let _ = (settings, version);
-        true
+        Ok(())
     }
     /// `status`: the 1.5.5 status envelope (`{"status": {...}}`, or `{}` = unsupported).
     fn status(&self) -> serde_json::Value {
@@ -769,14 +777,50 @@ pub trait Hook: Send + Sync {
     }
 }
 
+/// What a hook opens over ([`HookOpen::open_with`]): its settings, the secrets the host resolved
+/// for it and the generation it opens (or refreshes) to.
+#[derive(Clone, Copy)]
+pub struct Opening<'a> {
+    /// The operator's section exactly as the host lent it (empty when none, as 1.5.5 handed it).
+    // settings-leak-lint: allow — borrowed lifecycle input to the hook, never an admin response
+    pub settings: &'a str,
+    /// The secrets the host resolved for the instance, in the order its settings name them.
+    pub secrets: &'a [&'a [u8]],
+    /// The generation: the one `open` opens, or the one `refresh` moves to (`0` for `validate`,
+    /// which opens nothing it keeps).
+    pub generation: u64,
+}
+
+impl std::fmt::Debug for Opening<'_> {
+    /// Never the secrets' bytes: only how many.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Opening")
+            .field("settings", &self.settings)
+            .field("secrets", &self.secrets.len())
+            .field("generation", &self.generation)
+            .finish()
+    }
+}
+
 /// How a plugin opens: its settings, the operator's section exactly as the host lent it (empty when
-/// none, as 1.5.5 handed it), to a [`Hook`].
+/// none, as 1.5.5 handed it), to a [`Hook`]. A hook that reads its secrets or its generation opens
+/// through [`HookOpen::open_with`]; one that reads its settings alone implements `open`.
 pub trait HookOpen: 'static {
-    /// Open an instance.
+    /// Open an instance over its settings.
     ///
     /// # Errors
     /// Why the settings cannot open one (the operator reads it).
     fn open(settings: &str) -> Result<Box<dyn Hook>, String>;
+
+    /// Open an instance over its settings, its secrets and its generation. The SDK opens every
+    /// instance (and re-opens it on `refresh`) through this. Default: [`HookOpen::open`] over the
+    /// settings.
+    ///
+    /// # Errors
+    /// As [`HookOpen::open`].
+    fn open_with(opening: &Opening<'_>) -> Result<Box<dyn Hook>, String> {
+        Self::open(opening.settings)
+    }
 }
 
 /// The hook kind's Statement tail, for a plugin's `const`. A plugin's hook words are Statement
@@ -805,7 +849,59 @@ pub const fn statement_with_tail(base: Statement, tail: &'static Tail) -> Statem
 /// One open hook instance: the hook its settings opened, swapped whole on `refresh`.
 pub struct HookLife<P> {
     hook: RwLock<Arc<dyn Hook>>,
+    short: Shorted,
     open: PhantomData<fn() -> P>,
+}
+
+/// A verdict a `decide` / `transform` lowered and answered SHORT (its host buffers too small).
+#[derive(Debug)]
+enum Lowered {
+    Decide(Verdict),
+    Transform(RewriteVerdict),
+}
+
+/// THE VERDICTS AWAITING THEIR ONE SHORT-BUFFER RE-CALL (hook ABI defect 5). A `decide` or
+/// `transform` whose verdict does not fit the host's buffers answers the one short FAILED, and the
+/// host re-calls the op once, on the same ticket, with grown buffers: that re-call answers the
+/// verdict the first run lowered, so the hook runs (and asks its far end) once per op.
+///
+/// Kept by the ticket's slot, each entry naming its whole ticket: an entry is taken by the next
+/// entry on its slot, whatever it is, and answered only to the same ticket's same op, so a later
+/// ticket on the slot (a recycled one) never reads another op's verdict, and the table never
+/// holds more than one entry per host slot.
+#[derive(Debug, Default)]
+struct Shorted {
+    /// How many entries `held` holds: no lock is taken while it is zero.
+    count: AtomicUsize,
+    held: Mutex<HashMap<u32, (Ticket, Lowered)>>,
+}
+
+impl Shorted {
+    /// The verdict `ticket`'s short answer lowered, if this entry is its re-call (the same ticket,
+    /// the same op); any entry kept on the ticket's slot is let go either way.
+    fn take(&self, ticket: Ticket, decide: bool) -> Option<Lowered> {
+        if ticket == Ticket::NONE || self.count.load(Ordering::Acquire) == 0 {
+            return None;
+        }
+        let mut held = self.held.lock().unwrap_or_else(PoisonError::into_inner);
+        let (kept, lowered) = held.remove(&ticket.slot)?;
+        self.count.store(held.len(), Ordering::Release);
+        let same_op = matches!(
+            (&lowered, decide),
+            (Lowered::Decide(_), true) | (Lowered::Transform(_), false)
+        );
+        (kept == ticket && same_op).then_some(lowered)
+    }
+
+    /// Keep `lowered` for `ticket`'s re-call. A ticket-less call is never re-called.
+    fn keep(&self, ticket: Ticket, lowered: Lowered) {
+        if ticket == Ticket::NONE {
+            return;
+        }
+        let mut held = self.held.lock().unwrap_or_else(PoisonError::into_inner);
+        held.insert(ticket.slot, (ticket, lowered));
+        self.count.store(held.len(), Ordering::Release);
+    }
 }
 
 impl<P> std::fmt::Debug for HookLife<P> {
@@ -831,12 +927,21 @@ fn settings_text(bytes: &[u8]) -> Cow<'_, str> {
     String::from_utf8_lossy(bytes)
 }
 
-/// [`HookOpen::open`] over `settings`, verbatim (an empty blob stays empty, so the plugin answers
-/// it in its own 1.5.5 words); its refusal is the plugin's own words.
-fn opened<P: HookOpen>(settings: &[u8]) -> Result<Arc<dyn Hook>, Refusal> {
-    P::open(&String::from_utf8_lossy(settings))
-        .map(Arc::<dyn Hook>::from)
-        .map_err(Refusal::failed)
+/// [`HookOpen::open_with`] over `settings`, verbatim (an empty blob stays empty, so the plugin
+/// answers it in its own 1.5.5 words), `secrets` and `generation`; its refusal is the plugin's own
+/// words.
+fn opened<P: HookOpen>(
+    settings: &[u8],
+    secrets: &[&[u8]],
+    generation: u64,
+) -> Result<Arc<dyn Hook>, Refusal> {
+    P::open_with(&Opening {
+        settings: &String::from_utf8_lossy(settings),
+        secrets,
+        generation,
+    })
+    .map(Arc::<dyn Hook>::from)
+    .map_err(Refusal::failed)
 }
 
 impl<P: HookOpen> Life for HookLife<P> {
@@ -847,19 +952,25 @@ impl<P: HookOpen> Life for HookLife<P> {
     /// dropped. `--validate` refuses what boot's `open` would refuse.
     fn validate(settings: &[u8]) -> Result<(), Refusal> {
         settings_object(settings)?;
-        opened::<P>(settings).map(drop)
+        opened::<P>(settings, &[], 0).map(drop)
     }
 
-    fn open(settings: &[u8], _: &[&[u8]], _: u64) -> Result<Self, Refusal> {
+    fn open(settings: &[u8], secrets: &[&[u8]], generation: u64) -> Result<Self, Refusal> {
         Ok(Self {
-            hook: RwLock::new(opened::<P>(settings)?),
+            hook: RwLock::new(opened::<P>(settings, secrets, generation)?),
+            short: Shorted::default(),
             open: PhantomData,
         })
     }
 
     /// Re-open the hook over the new settings; the old one serves until the swap.
-    fn refresh(&self, settings: &[u8], _: &[&[u8]], _: u64) -> Result<Refreshed, Refusal> {
-        let hook = opened::<P>(settings)?;
+    fn refresh(
+        &self,
+        settings: &[u8],
+        secrets: &[&[u8]],
+        generation: u64,
+    ) -> Result<Refreshed, Refusal> {
+        let hook = opened::<P>(settings, secrets, generation)?;
         *self.hook.write().unwrap_or_else(PoisonError::into_inner) = hook;
         Ok(Refreshed::default())
     }
@@ -898,17 +1009,30 @@ fn decide_in_breaks_a_rule(input: &DecideIn) -> bool {
 }
 
 hook_op!(
-    /// `decide`: PENDING while the hook waits on its exchange, re-entered on the wake.
+    /// `decide`: PENDING while the hook waits on its exchange, re-entered on the wake. A short answer's
+    /// re-call answers the verdict the first run lowered ([`Shorted`]).
     Decide, DecideIn, DecideOut, |held, i, input, out| {
         if decide_in_breaks_a_rule(&input) {
             return Outcome::Fault;
         }
-        let op = Op::new(&i, held.host());
-        let Poll::Ready(v) = held.life().hook().decide(&Decoded::of(input), &op) else {
-            return Outcome::Pending;
+        let life = held.life();
+        let v = match life.short.take(i.ticket(), true) {
+            Some(Lowered::Decide(v)) => v,
+            _ => {
+                let op = Op::new(&i, held.host());
+                let Poll::Ready(v) = life.hook().decide(&Decoded::of(input), &op) else {
+                    return Outcome::Pending;
+                };
+                v
+            }
         };
         match (write_verdict(&v, input, out.raw()), v) {
             (Outcome::Failed, Verdict::Failed(m)) => out.fail(Refusal::failed(m)),
+            // Short: the host re-calls once with grown buffers; the re-call answers this verdict.
+            (Outcome::Failed, v) => {
+                life.short.keep(i.ticket(), Lowered::Decide(v));
+                Outcome::Failed
+            }
             (outcome, _) => outcome,
         }
     }
@@ -920,12 +1044,24 @@ hook_op!(
         if decide_in_breaks_a_rule(&input) {
             return Outcome::Fault;
         }
-        let op = Op::new(&i, held.host());
-        let Poll::Ready(v) = held.life().hook().transform(&Decoded::of(input), &op) else {
-            return Outcome::Pending;
+        let life = held.life();
+        let v = match life.short.take(i.ticket(), false) {
+            Some(Lowered::Transform(v)) => v,
+            _ => {
+                let op = Op::new(&i, held.host());
+                let Poll::Ready(v) = life.hook().transform(&Decoded::of(input), &op) else {
+                    return Outcome::Pending;
+                };
+                v
+            }
         };
         match (write_rewrite(&v, input, out.raw()), v) {
             (Outcome::Failed, RewriteVerdict::Failed(m)) => out.fail(Refusal::failed(m)),
+            // Short: as `decide`'s.
+            (Outcome::Failed, v) => {
+                life.short.keep(i.ticket(), Lowered::Transform(v));
+                Outcome::Failed
+            }
             (outcome, _) => outcome,
         }
     }
@@ -946,20 +1082,18 @@ hook_op!(
 );
 
 hook_op!(
-    /// `configure`: a nack is FAILED (READY must ack the pushed version).
+    /// `configure`: a refusal is FAILED with the hook's reason (READY must ack the pushed version).
     Configure, ConfigureIn, ConfigureOut, |held, _i, input, out| {
         let text = settings_text(input.field(|i| &i.settings).bytes());
         let Ok(serde_json::Value::Object(settings)) = serde_json::from_str::<serde_json::Value>(&text) else {
             return out.fail(Refusal::failed("settings: must be a JSON object"));
         };
-        if held.life().hook().configure(&settings, input.version) {
-            out.set(|o| &o.acked_version, input.version);
-            Outcome::Ready
-        } else {
-            out.fail(Refusal::failed(format!(
-                "hook did not acknowledge settings_version {}",
-                input.version
-            )))
+        match held.life().hook().configure(&settings, input.version) {
+            Ok(()) => {
+                out.set(|o| &o.acked_version, input.version);
+                Outcome::Ready
+            }
+            Err(why) => out.fail(Refusal::failed(why)),
         }
     }
 );
@@ -967,7 +1101,11 @@ hook_op!(
 hook_op!(
     /// `status`: the 1.5.5 envelope, held under a lease.
     Status, InHead, StatusOut, |held, _i, _input, out| {
-        let bytes = serde_json::to_vec(&held.life().hook().status()).unwrap_or_default();
+        // A blob that will not serialise is a FAILED answer saying so, never an empty READY.
+        let bytes = match serde_json::to_vec(&held.life().hook().status()) {
+            Ok(bytes) => bytes,
+            Err(e) => return out.fail(Refusal::failed(format!("status: {e}"))),
+        };
         let o = out.raw();
         o.status = held.leases().blob(&mut o.head, bytes, BLOB_JSON);
         Outcome::Ready
@@ -977,7 +1115,11 @@ hook_op!(
 hook_op!(
     /// `describe`: the 1.5.5 envelope, held under a lease.
     Describe, InHead, DescribeOut, |held, _i, _input, out| {
-        let bytes = serde_json::to_vec(&held.life().hook().describe()).unwrap_or_default();
+        // A blob that will not serialise is a FAILED answer saying so, never an empty READY.
+        let bytes = match serde_json::to_vec(&held.life().hook().describe()) {
+            Ok(bytes) => bytes,
+            Err(e) => return out.fail(Refusal::failed(format!("describe: {e}"))),
+        };
         let o = out.raw();
         o.describe = held.leases().blob(&mut o.head, bytes, BLOB_JSON);
         Outcome::Ready
@@ -992,32 +1134,29 @@ hook_op!(
     }
 );
 
-/// THE HOOK DOOR: a hook plugin's `pub extern "C" fn door()`, every slot the SDK's own (on the
-/// safe layer) over the plugin's [`HookOpen`]. Invoked once in the plugin's logic crate.
+/// The hook door under its old name, kept one release so plugins re-pin at leisure:
+/// [`export_plugin!`](crate::export_plugin)'s `hook` arm.
 ///
-/// ```ignore
+/// ```
+/// use busbar_contract::abi::sdk::hook::{Hook, HookOpen};
+/// struct Quiet;
+/// impl Hook for Quiet {}
+/// struct Open;
+/// impl HookOpen for Open {
+///     fn open(_: &str) -> Result<Box<dyn Hook>, String> {
+///         Ok(Box::new(Quiet))
+///     }
+/// }
 /// busbar_contract::hook_door! {
-///     open: MyOpen,
+///     open: Open,
 ///     statement: busbar_contract::abi::sdk::door::statement("my-hook", "1.0.0", 64),
 /// }
+/// # fn main() { let _ = door(); }
 /// ```
 #[macro_export]
 macro_rules! hook_door {
     (open: $open:ty, statement: $statement:expr $(,)?) => {
-        $crate::plugin_door! {
-            ops: $crate::abi::hook::Ops,
-            statement: $statement,
-            lifecycle: life($crate::abi::sdk::hook::HookLife<$open>),
-            kind_ops: {
-                decide: $crate::abi::sdk::Safe<$crate::abi::sdk::hook::Decide<$open>>,
-                transform: $crate::abi::sdk::Safe<$crate::abi::sdk::hook::Transform<$open>>,
-                notify: $crate::abi::sdk::Safe<$crate::abi::sdk::hook::Notify<$open>>,
-                configure: $crate::abi::sdk::Safe<$crate::abi::sdk::hook::Configure<$open>>,
-                status: $crate::abi::sdk::Safe<$crate::abi::sdk::hook::Status<$open>>,
-                describe: $crate::abi::sdk::Safe<$crate::abi::sdk::hook::Describe<$open>>,
-                serve: $crate::abi::sdk::Safe<$crate::abi::sdk::hook::Serve<$open>>,
-            },
-        }
+        $crate::export_plugin! { hook: $open, statement: $statement }
     };
 }
 

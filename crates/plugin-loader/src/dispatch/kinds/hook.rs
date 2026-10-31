@@ -25,9 +25,22 @@ fn owned(s: busbar_contract::abi::mechanism::call::AbiStr) -> Option<String> {
     crate::dispatch::plugin::str_bytes(s).map(|b| String::from_utf8_lossy(b).into_owned())
 }
 
+/// The hook tail's last frozen size: it has not grown since 1.6.0 froze it, so it is this host's
+/// (THE KIND TAIL GROWTH RULE, `abi::mechanism::door::tail_read_len`): a tail appended to later
+/// still loads a plugin built against this one, its appended fields read absent.
+const HOOK_TAIL_FROZEN: usize = std::mem::size_of::<Tail>();
+
 /// The refusal of a hook Statement that states no kind tail.
 pub const NO_TAIL: &str =
     "a hook Statement states no hook tail: a hook states its class and grants (abi::sdk::hook::tail)";
+
+/// The refusal of a hook tail stating `routes` (H7).
+pub const ROUTES_REFUSED: &str = "the hook tail states routes: the host serves no hook route (it \
+     never calls `serve`); a hook states none";
+
+/// The refusal of a hook tail stating `requested_signals` (H7).
+pub const SIGNALS_REFUSED: &str = "the hook tail states requested_signals: the signals a hook is \
+     lent are the operator's `hooks:` configuration, never its tail; a hook states none";
 
 /// WHAT A HOOK STATES ABOUT ITSELF, read once at bind: its name, its tail's class and grants and
 /// the hook words its `MARK_WORD_HOOK` marks claim. Read back through
@@ -35,22 +48,14 @@ pub const NO_TAIL: &str =
 ///
 /// A hook Statement with NO kind tail is refused ([`NO_TAIL`], ARCHITECT Q-SO8): every 1.6.0 hook
 /// states its class and grants (`abi::sdk::hook::tail`); none is assumed for it.
-fn facts(st: &Statement) -> Result<HookFacts, String> {
+pub(crate) fn facts(st: &Statement) -> Result<HookFacts, String> {
     let name = owned(st.name).ok_or("a hook's name is over-long")?;
-    let p = st.kind_tail;
-    if p.is_null() {
+    if st.kind_tail.is_null() {
         return Err(NO_TAIL.to_string());
     }
-    // SAFETY: a non-NULL kind tail is `'static` plugin data leading with a `KindTailHead`; the
-    // whole tail is read only once its size covers this host's `Tail`.
-    let size = unsafe { (*p).size };
-    if (size as usize) < std::mem::size_of::<Tail>() {
-        return Err(format!(
-            "the hook tail is {size} bytes, smaller than this host's"
-        ));
-    }
-    // SAFETY: as above.
-    let t = unsafe { p.cast::<Tail>().read_unaligned() };
+    // SAFETY: `Tail` is a `#[repr(C)]` kind tail of integers and pointers (all-zero valid: NULL
+    // lists of length 0); a non-NULL kind tail is `'static` plugin data of its stated size.
+    let t: Tail = unsafe { crate::dispatch::plugin::kind_tail(st, "a hook", HOOK_TAIL_FROZEN) }?;
     if t.kind_class != CLASS_GATE && t.kind_class != CLASS_TAP {
         return Err(format!("the hook tail states class {}", t.kind_class));
     }
@@ -65,6 +70,14 @@ fn facts(st: &Statement) -> Result<HookFacts, String> {
             "the hook tail states user access {}",
             t.user_access
         ));
+    }
+    // A SURFACE NOTHING READS IS REFUSED (H7): the host never calls `serve` and never reads the
+    // tail's signal list, so a hook stating either would load a promise nothing keeps.
+    if t.routes_len != 0 {
+        return Err(ROUTES_REFUSED.to_string());
+    }
+    if t.requested_signals_len != 0 {
+        return Err(SIGNALS_REFUSED.to_string());
     }
     let mut facts = HookFacts {
         name,

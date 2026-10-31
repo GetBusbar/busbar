@@ -30,8 +30,8 @@
 use busbar_contract::abi::auth::{AuthPoints, AuthTail};
 use busbar_contract::abi::mechanism::door::{MarkWord, Statement};
 use busbar_contract::abi::sdk::auth_door::{
-    carrier, verify_tail, with_operator, with_tail, Answer, Strip, Verdict, VerifiedIdentity,
-    VerifyPlugin, VerifyView,
+    carrier, strip_field, verify_tail, with_operator, with_tail, Answer, Strip, Verdict,
+    VerifiedIdentity, VerifyPlugin, VerifyView,
 };
 use busbar_contract::abi::sdk::door::statement;
 use busbar_contract::{constant_time_eq, sha256_hex};
@@ -49,6 +49,13 @@ pub const ADMIN_TOKEN_HEADER: &str = "x-admin-token";
 
 /// The line the Bearer arrives on (lower-case), as `Bearer <token>`.
 pub const AUTHORIZATION_HEADER: &str = "authorization";
+
+/// The lines every verify names for the transport to strip: both are this module's credential
+/// lines.
+const STRIPS: &[Strip] = &[
+    strip_field(AUTHORIZATION_HEADER),
+    strip_field(ADMIN_TOKEN_HEADER),
+];
 
 /// A field value as header text, as 1.5.5 read it (`HeaderValue::to_str`): visible ASCII, space or
 /// tab; any other byte makes the value no text at all.
@@ -189,10 +196,7 @@ impl VerifyPlugin for AdminTokens {
             request.line(ADMIN_TOKEN_HEADER).and_then(header_token),
         );
         Answer {
-            strips: vec![
-                Strip::field(AUTHORIZATION_HEADER),
-                Strip::field(ADMIN_TOKEN_HEADER),
-            ],
+            fixed_strips: STRIPS,
             ..verdict.into()
         }
     }

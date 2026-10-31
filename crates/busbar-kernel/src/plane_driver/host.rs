@@ -71,11 +71,10 @@ pub trait EngineHost: Send + Sync {
     )];
 
     /// A hook was handed a unit's content (and the caller's identity, when `identity`): leave the
-    /// one access amendment the kernel's own gate and rewrite seams leave, on the node journal.
-    /// `principal` is whose content it was; `op` the ingress label — data, never branched on.
-    fn hook_read(&self, name: &str, principal: Option<&str>, op: &str, identity: bool) {
-        crate::audit::amend::hook_read(name, principal, op, identity);
-    }
+    /// one access amendment the kernel's own gate and rewrite seams leave, on the node's amendment
+    /// journal. `principal` is whose content it was; `op` the ingress label — data, never branched
+    /// on.
+    fn hook_read(&self, name: &str, principal: Option<&str>, op: &str, identity: bool);
 
     /// The DECISION GATES the plane `plane_key` attached to its entry `container` this generation
     /// (the plane's per-entry `hooks:`), as resolved; empty = none. A gate-first plane's units are
@@ -192,6 +191,10 @@ pub trait EngineHost: Send + Sync {
 }
 
 impl EngineHost for EngineHostImpl {
+    fn hook_read(&self, name: &str, principal: Option<&str>, op: &str, identity: bool) {
+        crate::audit::amend::hook_read(&self.app.amendments, name, principal, op, identity);
+    }
+
     fn caller_in_hook_groups(&self, caller_group: Option<&str>, hook_groups: &[String]) -> bool {
         crate::config::caller_in_hook_groups(caller_group, hook_groups, &self.app.groups_registry)
     }

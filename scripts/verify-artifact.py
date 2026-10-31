@@ -100,8 +100,8 @@ def _read_elf(data: bytes):
     arch = _ELF_MACHINE.get(machine, "unknown(e_machine=0x%x)" % machine)
     (phoff,) = struct.unpack_from("<Q", data, 32)
     phentsize, phnum = struct.unpack_from("<HH", data, 54)
-    # PT_INTERP (3) names the dynamic loader. Its ABSENCE is what "statically linked" means on ELF,
-    # and its presence in a musl FROM-scratch image binary is the failure the removed docker.yml hard-fails on.
+    # PT_INTERP (3) names the dynamic loader. Its ABSENCE is what "statically linked" means on ELF.
+    # Every shipped binary is dynamic (W17): a static binary cannot dlopen a dropped-in plugin.
     interp = any(
         struct.unpack_from("<I", data, phoff + i * phentsize)[0] == 3 for i in range(phnum)
     )
@@ -162,6 +162,129 @@ def read_binary_identity(path: str):
         0xFEEDFACF, 0xCAFEBABE, 0xBEBAFECA
     ):
         return ("macho",) + _read_macho(data)
+    raise RowFailure("unrecognised object format (first 4 bytes: %r)" % data[:4])
+
+
+# ── RUNTIME DEPENDENCIES (W17) ──────────────────────────────────────────────────────────────────
+# What the binary asks the OS loader for, read from its own headers. Three small parsers rather than
+# `ldd` / `otool -L` / `dumpbin`, for the reason `read_binary_identity` gives: one implementation,
+# any verifier host, and the artifact's own claim about itself rather than a tool's reading of it.
+
+
+def _cstr(data: bytes, off: int) -> str:
+    end = data.index(b"\0", off)
+    return data[off:end].decode("utf-8", "replace")
+
+
+def _elf_deps(data: bytes):
+    """(DT_NEEDED names, GLIBC_x.y versions required) of a 64-bit little-endian ELF.
+
+    Read through the SECTION headers (.dynamic, SHT_GNU_verneed and the string tables they link
+    to), which every linker writes and `strip` keeps. An image with none is refused rather than
+    read as "needs nothing": absence of evidence is not a pass."""
+    (shoff,) = struct.unpack_from("<Q", data, 40)
+    shentsize, shnum = struct.unpack_from("<HH", data, 58)
+    if not shoff or not shnum:
+        raise RowFailure("the ELF has no section headers, so its runtime dependencies cannot be read")
+    secs = [struct.unpack_from("<IIQQQQIIQQ", data, shoff + i * shentsize) for i in range(shnum)]
+    needed, versions = [], set()
+    for (_n, typ, _f, _a, off, size, link, info, _al, entsize) in secs:
+        stroff = secs[link][4]
+        if typ == 6:  # SHT_DYNAMIC
+            for k in range(size // (entsize or 16)):
+                tag, val = struct.unpack_from("<qQ", data, off + k * (entsize or 16))
+                if tag == 0:
+                    break
+                if tag == 1:  # DT_NEEDED
+                    needed.append(_cstr(data, stroff + val))
+        elif typ == 0x6FFFFFFE:  # SHT_GNU_verneed
+            vn = off
+            for _ in range(info):
+                _ver, cnt, _file, aux, nxt = struct.unpack_from("<HHIII", data, vn)
+                va = vn + aux
+                for _ in range(cnt):
+                    _h, _fl, _o, name, vnext = struct.unpack_from("<IHHII", data, va)
+                    versions.add(_cstr(data, stroff + name))
+                    if not vnext:
+                        break
+                    va += vnext
+                if not nxt:
+                    break
+                vn += nxt
+    glibc = sorted(
+        {v for v in versions if re.fullmatch(r"GLIBC_\d+(\.\d+)*", v)},
+        key=lambda v: tuple(int(x) for x in v[6:].split(".")),
+    )
+    return needed, glibc
+
+
+def _macho_deps(data: bytes) -> list:
+    """Every dylib a thin 64-bit Mach-O loads (LC_LOAD_DYLIB and its weak/reexport/lazy/upward kin)."""
+    (ncmds,) = struct.unpack_from("<I", data, 16)
+    kinds = {0x0C, 0x80000018, 0x8000001F, 0x20, 0x80000023}
+    off, out = 32, []
+    for _ in range(ncmds):
+        cmd, cmdsize = struct.unpack_from("<II", data, off)
+        if cmdsize == 0:
+            break
+        if cmd in kinds:
+            (name_off,) = struct.unpack_from("<I", data, off + 8)
+            out.append(_cstr(data, off + name_off))
+        off += cmdsize
+    return out
+
+
+def _pe_deps(data: bytes) -> list:
+    """Every DLL a PE image imports, eagerly (data directory 1) or delay-loaded (directory 13)."""
+    (e_lfanew,) = struct.unpack_from("<I", data, 0x3C)
+    nsec, = struct.unpack_from("<H", data, e_lfanew + 6)
+    optsize, = struct.unpack_from("<H", data, e_lfanew + 20)
+    opt = e_lfanew + 24
+    (opt_magic,) = struct.unpack_from("<H", data, opt)
+    dd = opt + (112 if opt_magic == 0x20B else 96)
+    sections = [struct.unpack_from("<IIII", data, opt + optsize + i * 40 + 8)[:4] for i in range(nsec)]
+
+    def at(rva: int) -> int:
+        for vsize, vaddr, rawsize, rawptr in sections:
+            if vaddr <= rva < vaddr + max(vsize, rawsize):
+                return rawptr + (rva - vaddr)
+        raise RowFailure("PE import RVA 0x%x lies in no section" % rva)
+
+    out = []
+    imp_rva, _ = struct.unpack_from("<II", data, dd + 8)
+    if imp_rva:
+        d = at(imp_rva)
+        while True:
+            oft, _ts, _fc, name, ft = struct.unpack_from("<IIIII", data, d)
+            if not (oft or name or ft):
+                break
+            out.append(_cstr(data, at(name)))
+            d += 20
+    delay_rva, _ = struct.unpack_from("<II", data, dd + 13 * 8)
+    if delay_rva:
+        d = at(delay_rva)
+        while True:
+            fields = struct.unpack_from("<8I", data, d)
+            if not any(fields):
+                break
+            out.append(_cstr(data, at(fields[1])))
+            d += 32
+    return out
+
+
+def read_runtime_deps(path: str):
+    """(format, [libraries the loader must supply], [GLIBC_ versions required; ELF only])."""
+    with open(path, "rb") as fh:
+        data = fh.read()
+    if data[:4] == b"\x7fELF":
+        _read_elf(data)  # the same 64-bit little-endian precondition binary_format holds
+        needed, glibc = _elf_deps(data)
+        return "elf", needed, glibc
+    if data[:2] == b"MZ":
+        return "pe", _pe_deps(data), []
+    if len(data) >= 4 and struct.unpack_from("<I", data, 0)[0] in (0xFEEDFACF, 0xCAFEBABE, 0xBEBAFECA):
+        _read_macho(data)  # refuses fat binaries, as binary_format does
+        return "macho", _macho_deps(data), []
     raise RowFailure("unrecognised object format (first 4 bytes: %r)" % data[:4])
 
 
@@ -560,6 +683,148 @@ def row_pgo_applied(ctx) -> str:
 
 
 
+def _version_tuple(v: str) -> tuple:
+    return tuple(int(x) for x in v.split("."))
+
+
+def row_runtime_deps(ctx) -> str:
+    """W17: the binary needs nothing at run time beyond the OS's own C runtime and loader."""
+    row = ctx.contract_rows["runtime_deps"]
+    fmt, deps, glibc = read_runtime_deps(ctx.exe)
+    if fmt == "elf":
+        allowed = set(row["elf_allowed"])
+        extra = sorted(d for d in deps if d not in allowed)
+        if extra:
+            raise RowFailure(
+                "the binary needs %s at run time, beyond the OS C runtime (%s). Every dependency "
+                "other than libc and its loader is linked in, so a user installs nothing; a new "
+                "DT_NEEDED is a library some hosts lack, and the binary will not start there."
+                % (extra, ", ".join(sorted(allowed)))
+            )
+        if "libc.so.6" not in deps:
+            raise RowFailure(
+                "the binary does not link glibc (DT_NEEDED: %s). Every linux-gnu target is a glibc "
+                "dynamic binary so it can dlopen a dropped-in plugin; a static binary cannot." % deps
+            )
+        floor = ctx.spec.get("glibc_max")
+        if not floor:
+            raise RowFailure(
+                "target %s is an ELF target with no `glibc_max` in release-targets.json, so its glibc "
+                "floor is unbounded: whatever the build host had, users need. Declare the baseline."
+                % ctx.target
+            )
+        newest = glibc[-1] if glibc else "GLIBC_0"
+        if _version_tuple(newest[6:]) > _version_tuple(floor):
+            over = [v for v in glibc if _version_tuple(v[6:]) > _version_tuple(floor)]
+            raise RowFailure(
+                "the binary requires %s, above the declared glibc_max %s: it will not start on the "
+                "baseline distros that floor promises. It was linked against a newer glibc than the "
+                "pinned build image (release-targets.json `linux_build_image`). Build it through "
+                "scripts/release/in-baseline.sh." % (", ".join(over), floor)
+            )
+        return "needs %s; newest symbol %s <= glibc_max %s" % (", ".join(deps), newest, floor)
+    if fmt == "macho":
+        allowed = set(row["macho_allowed"])
+        extra = sorted(d for d in deps if d not in allowed)
+        if extra or not deps:
+            raise RowFailure(
+                "the binary loads %s; the contract allows only %s (libSystem, the one library Apple "
+                "supports linking dynamically). Anything else is a dylib or framework a user's Mac "
+                "may not carry, or a Homebrew path that exists only on the build host."
+                % (deps or "<nothing>", sorted(allowed))
+            )
+        return "loads only %s" % ", ".join(deps)
+    denied = tuple(row["pe_denied_prefixes"])
+    crt = sorted(d for d in deps if d.lower().startswith(denied))
+    if crt:
+        raise RowFailure(
+            "the binary imports the C runtime from %s, so it needs the Visual C++ Redistributable "
+            "(or a UCRT install) on the user's machine. The MSVC target builds with "
+            "-Ctarget-feature=+crt-static (scripts/release-build.sh, .cargo/config.toml); its absence "
+            "here means the flag did not reach the link." % crt
+        )
+    return "imports %d system DLL(s), no C runtime DLL" % len(deps)
+
+
+def _dropin_manifest(tarball: str) -> dict:
+    """The manifest.json inside a plugin tarball (the alias names the plugin in config)."""
+    with tarfile.open(tarball, "r:*") as tf:
+        for m in tf.getmembers():
+            if m.isfile() and m.name.rsplit("/", 1)[-1] == "manifest.json":
+                return json.loads(tf.extractfile(m).read())
+    raise RowFailure("%s carries no manifest.json; it is not a plugin tarball" % tarball)
+
+
+def _dropin_config(plugins_dir: str, alias: str, listen: str) -> str:
+    # The quickstart's minimal config plus the four things a dropped-in store needs (docs/plugins.md):
+    # plugins on, an ABSOLUTE dir, a trust posture that admits the unsigned probe (trust has its own
+    # rows; this one is about the loader), and `store.module` naming it, so boot has to load it.
+    return (
+        "listen: \"%s\"\n"
+        "providers:\n  anthropic:\n    api_key: { env: ANTHROPIC_KEY }\n"
+        "models:\n  claude-sonnet:\n    provider: anthropic\n"
+        "plugins:\n  enabled: true\n  dir: \"%s\"\n"
+        "  trust:\n    allow_unsigned: true\n    allow_third_party: true\n"
+        "store:\n  module: %s\n" % (listen, plugins_dir, alias)
+    )
+
+
+def row_dropin_loads(ctx) -> str:
+    """W17: the shipped binary dlopens a dropped-in plugin and boots on it."""
+    if not ctx.dropin_plugin:
+        raise RowFailure(
+            "no drop-in probe plugin was passed to the verifier (--dropin-plugin; build it with "
+            "scripts/release/dropin-probe.sh for this target). A row that cannot run is RED: this is "
+            "the only row that proves the binary can load a dropped-in plugin at all."
+        )
+    alias = _dropin_manifest(ctx.dropin_plugin).get("alias") or ""
+    if not alias:
+        raise RowFailure("the probe plugin's manifest names no alias to configure it by")
+    work = os.path.join(ctx.work, "dropin")
+    pdir = os.path.join(work, "plugins")
+    os.makedirs(pdir, exist_ok=True)
+    shutil.copy2(ctx.dropin_plugin, os.path.join(pdir, os.path.basename(ctx.dropin_plugin)))
+    with open(os.path.join(work, "config.yaml"), "w") as fh:
+        fh.write(_dropin_config(os.path.abspath(pdir), alias, "127.0.0.1:18089"))
+    shutil.copy2(os.path.join(ctx.repo_root, "providers.yaml"), os.path.join(work, "providers.yaml"))
+    env = dict(
+        os.environ,
+        BUSBAR_CONFIG=os.path.join(work, "config.yaml"),
+        BUSBAR_PROVIDERS=os.path.join(work, "providers.yaml"),
+        ANTHROPIC_KEY="sk-ant-verify-artifact-dummy",
+    )
+    log = open(os.path.join(work, "busbar.log"), "w+")
+    proc = subprocess.Popen([ctx.exe], cwd=work, env=env, stdout=log, stderr=subprocess.STDOUT)
+    try:
+        for _ in range(45):
+            if proc.poll() is not None:
+                break
+            try:
+                if http_body("http://127.0.0.1:18089/healthz") == "ok":
+                    return "booted with store.module: %s loaded from the dropped-in %s" % (
+                        alias, os.path.basename(ctx.dropin_plugin))
+            except (urllib.error.URLError, OSError):
+                pass
+            time.sleep(2)
+    finally:
+        proc.terminate()
+        try:
+            proc.wait(timeout=20)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+        log.flush()
+        log.seek(0)
+        tail = log.read()[-4000:]
+        log.close()
+    raise RowFailure(
+        "the binary did not boot on a dropped-in plugin: with `store.module: %s` naming the probe in "
+        "plugins.dir it never answered `ok` on /healthz. A configured store that cannot load refuses "
+        "the boot, so this binary cannot load dropped-in plugins on this platform (a static musl "
+        "build reports `Dynamic loading not supported` / `dlopen failed`).\n--- busbar log ---\n%s"
+        % (alias, tail)
+    )
+
+
 # =================================================================================================
 # THE IMAGE ROWS
 #
@@ -670,7 +935,7 @@ def _binary_out_of_image(ctx, ref: str, dest_name: str) -> str:
 
 
 def row_image_release_pubkey(ctx) -> str:
-    """The image carries its OWN musl build, so the tarballs' key proves nothing about it.
+    """The image's key is read from the bytes inside it, never inferred from the tarball.
 
     THIS ROW USED TO ASSERT NOTHING, AND ITS TARBALL TWIN IS WHY THAT IS KNOWN.
 
@@ -704,8 +969,8 @@ def row_image_release_pubkey(ctx) -> str:
             "refuses every correctly-signed first-party plugin. "
             "`option_env!(\"BUSBAR_RELEASE_PUBKEY\")` is read at COMPILE time and fails silently to "
             "None: the image build must carry the variable. This is the aarch64 defect (#52), in "
-            "the other artifact class. FIX: pass BUSBAR_RELEASE_PUBKEY into the musl build that "
-            "docker.yml packages, exactly as scripts/release-build.sh requires for the tarballs."
+            "the other artifact class. FIX: the image must package the linux-gnu release binary "
+            "(its packaged_into row), which scripts/release-build.sh refuses to build keyless."
         )
     # Subordinate, and deliberately not the verdict: it is a runtime cross-check, and with an empty
     # plugin directory it has nothing to say either way.
@@ -751,7 +1016,7 @@ def row_image_matches_packaged_binary(ctx) -> str:
     expected = getattr(ctx, "packaged_from", "")
     if not expected:
         raise AssertionError(
-            "the musl artifact this image is packaged from was not passed to the verifier "
+            "the linux-gnu artifact this image is packaged from was not passed to the verifier "
             "(--packaged-from), so it could not be proven that the image contains it rather than a "
             "separately-built binary. A row that cannot run is RED, never skipped."
         )
@@ -768,6 +1033,55 @@ def row_image_matches_packaged_binary(ctx) -> str:
     return "packages the built artifact exactly (%s)" % got[:12]
 
 
+def row_image_dropin_loads(ctx) -> str:
+    """`dropin_loads`, inside the image: the container can load a dropped-in plugin."""
+    ref = _image_ref(ctx)
+    if not ctx.dropin_plugin:
+        raise AssertionError(
+            "no drop-in probe plugin was passed to the verifier (--dropin-plugin). A row that cannot "
+            "run is RED: until W17 the image was a static musl binary FROM scratch, which can load "
+            "no dropped-in plugin, and nothing noticed because nothing ever tried."
+        )
+    alias = _dropin_manifest(ctx.dropin_plugin).get("alias") or ""
+    work = os.path.join(ctx.work, "image-dropin")
+    os.makedirs(os.path.join(work, "plugins"), exist_ok=True)
+    shutil.copy2(ctx.dropin_plugin, os.path.join(work, "plugins", os.path.basename(ctx.dropin_plugin)))
+    with open(os.path.join(work, "config.yaml"), "w") as fh:
+        fh.write(_dropin_config("/etc/busbar/plugins", alias, "0.0.0.0:8080"))
+    # World-readable: the image runs as uid 65532, not as the verifier's user.
+    for root, dirs, files in os.walk(work):
+        for d in dirs:
+            os.chmod(os.path.join(root, d), 0o755)
+        for f in files:
+            os.chmod(os.path.join(root, f), 0o644)
+    # `docker run` blocks for a server, so run detached and read the log until it listens or exits.
+    name = "busbar-verify-dropin-%d" % os.getpid()
+    started = run(["docker", "run", "-d", "--name", name, "--platform", ctx.spec["platform"],
+                   "-e", "BUSBAR_ADMIN_TOKEN=verify-artifact-probe", "-e", "ANTHROPIC_KEY=verify-artifact-probe",
+                   "-v", "%s:/etc/busbar/config.yaml:ro" % os.path.join(work, "config.yaml"),
+                   "-v", "%s:/etc/busbar/plugins:ro" % os.path.join(work, "plugins"), ref])
+    if started.returncode != 0:
+        raise AssertionError("could not start the image: %s" % (started.stderr or "").strip()[:300])
+    try:
+        blob = ""
+        for _ in range(45):
+            logs = run(["docker", "logs", name])
+            blob = (logs.stdout or "") + (logs.stderr or "")
+            if "listening" in blob.lower():
+                return "the image booted with store.module: %s loaded from a dropped-in plugin" % alias
+            state = run(["docker", "inspect", "--format", "{{.State.Running}}", name])
+            if (state.stdout or "").strip() == "false":
+                break
+            time.sleep(2)
+    finally:
+        run(["docker", "rm", "-f", name])
+    raise AssertionError(
+        "the image did not boot on a dropped-in plugin (store.module: %s in /etc/busbar/plugins): it "
+        "never reported listening. The container cannot load dropped-in plugins.\n  %s"
+        % (alias, blob.strip()[-1500:])
+    )
+
+
 CHECKS = {
     "archive_shape": row_archive_shape,
     "binary_format": row_binary_format,
@@ -778,11 +1092,14 @@ CHECKS = {
     "attestation": row_attestation,
     "build_evidence": row_build_evidence,
     "pgo_applied": row_pgo_applied,
+    "runtime_deps": row_runtime_deps,
+    "dropin_loads": row_dropin_loads,
     "image_boots_documented_quickstart": row_image_boots_documented_quickstart,
     "image_runs_as_nonroot": row_image_runs_as_nonroot,
     "image_release_pubkey": row_image_release_pubkey,
     "image_version_anchored": row_image_version_anchored,
     "image_matches_packaged_binary": row_image_matches_packaged_binary,
+    "image_dropin_loads": row_image_dropin_loads,
 }
 
 
@@ -852,29 +1169,27 @@ def row_coverage(rows: list, targets: dict) -> dict:
     leg over — restated after that file grew a second such leg. `targets` now emits TWO matrices
     from this same file: `matrix` (the published set, verified by the `verify-artifact` job against
     the released archive) and `images` (the `kind: image` set, verified by the `verify-image` job
-    against the digest `stage-image` pushed, with the musl artifact the image packages passed in as
+    against the digest `stage-image` pushed, with the linux-gnu artifact the image packages passed in as
     `--packaged-from`). Deriving this report from the same predicates the workflow derives its
     matrices from is what keeps it from drifting into claiming coverage the pipeline does not
     provide — in EITHER direction: claiming a gap that has been closed trains readers to ignore the
     gap report, which costs exactly as much as missing a real one.
 
-    The two musl binaries remain `unverified_targets`: nothing runs the contract's binary rows
-    (archive_shape, release_pubkey, quickstart_boots, …) against a musl tarball. What the image leg
-    added is narrower and worth stating precisely — `image_matches_packaged_binary` proves the
-    binary inside the image IS the musl artifact, byte for byte, which makes the image rows' verdict
-    a verdict about those bytes too, but it is not the binary contract run against them.
+    Since W17 there is no unpublished binary: the image packages the PUBLISHED linux-gnu binary
+    (the musl rows that used to feed it are gone, because a static musl binary cannot dlopen), so
+    the full binary contract runs against the very bytes inside the image, and
+    `image_matches_packaged_binary` proves they are the same bytes. `unverified_targets` stays as
+    the guard for any future `published: false` row.
     """
     specs = targets.get("targets") or []
     verified_specs = [t for t in specs
                       if t.get("published") is True or t.get("kind") == "image"]
     out = {
         "verified_targets": [t["target"] for t in verified_specs],
-        # The TARGET-level half of the same gap. The two musl binaries are `published: false` and
-        # `packaged_into` an image: they are built by the release, they are the bytes that end up
-        # inside the container a user runs, and no leg of the verify matrix ever opens one. They do
-        # not show up in the row list below, because their rows (archive_shape, release_pubkey, …)
-        # are covered on the six published targets — which is exactly the confusion worth naming:
-        # a row being covered SOMEWHERE is not that row being covered on THESE bytes.
+        # The TARGET-level half of the same gap: a `published: false` binary is built and opened by
+        # no leg of the verify matrix. Its rows may be covered on the published targets, which is
+        # exactly the confusion worth naming: a row being covered SOMEWHERE is not that row being
+        # covered on THESE bytes. (Until W17 these were the musl binaries inside the image.)
         # The complement of the verified set, computed FROM it rather than restated as its own
         # predicate: two predicates for one partition drift, and this one did — the image targets
         # went on being listed here as "opened by no contract run" the moment a job started running
@@ -897,12 +1212,10 @@ def print_coverage_gaps(cov: dict, contract_path: str) -> None:
     if cov["unverified_targets"]:
         print("\nUNVERIFIED TARGETS — declared in the targets file, opened by no contract run: %s"
               % ", ".join(cov["unverified_targets"]))
-        print("  These are the musl binaries that go INSIDE the published container image. No leg runs")
-        print("  the BINARY rows (archive_shape, release_pubkey, quickstart_boots, …) against one, so")
-        print("  every such property proven below is proven about the tarballs. The image itself IS")
-        print("  verified — release-stage.yml's `verify-image` runs the image rows against the staged")
-        print("  digest — and `image_matches_packaged_binary` proves the image carries exactly these")
-        print("  bytes, which is a narrower claim than running the binary contract over them.")
+        print("  No leg runs the BINARY rows (archive_shape, release_pubkey, runtime_deps, dropin_loads,")
+        print("  …) against these bytes, so every such property proven below is proven about other")
+        print("  artifacts. Publish them, or package the published binary instead (W17 did that for")
+        print("  the image), so the contract runs over the bytes that ship.")
     if not cov["gaps"]:
         print("coverage: every declared contract row is executed by at least one verified target.")
         return
@@ -918,8 +1231,8 @@ def print_coverage_gaps(cov: dict, contract_path: str) -> None:
         "and nothing else in the pipeline can tell they never ran. A row that never executes is not\n"
         "a property that holds; it is a property nobody has looked at. Fix, in one of two ways:\n"
         "  (a) give the pipeline a leg that runs them — for the image rows that means invoking this\n"
-        "      verifier with --target image-linux-amd64/arm64 --image <digest> --packaged-from <musl\n"
-        "      artifact> from the job that stages the image, where the image and its musl input both\n"
+        "      verifier with --target image-linux-amd64/arm64 --image <digest> --packaged-from <gnu\n"
+        "      artifact> from the job that stages the image, where the image and its gnu input both\n"
         "      exist; or\n"
         "  (b) delete the rows, so the contract stops advertising coverage that does not exist.\n"
         "Doing neither is the only outcome this report refuses to let pass quietly." % contract_path
@@ -1278,8 +1591,12 @@ def main(argv=None) -> int:
     ap.add_argument("--pubkey", default=os.environ.get("BUSBAR_RELEASE_PUBKEY", ""))
     ap.add_argument("--plugin", default="", help="the signed first-party plugin tarball for this target")
     ap.add_argument("--packaged-from", default="",
-                    help="for an image target, the musl binary the single build path produced for "
-                         "this platform. The image must contain exactly these bytes.")
+                    help="for an image target, the linux-gnu binary the single build path produced "
+                         "for this platform (its packaged_into row). The image must contain exactly "
+                         "these bytes.")
+    ap.add_argument("--dropin-plugin", default="",
+                    help="the unsigned stub plugin tarball scripts/release/dropin-probe.sh built for "
+                         "this target; dropin_loads and image_dropin_loads boot on it.")
     ap.add_argument("--image", default="",
                     help="DIGEST-PINNED image reference for an image target. A tag is a moving "
                          "pointer, so verifying one proves something about whatever that name meant "
@@ -1373,6 +1690,8 @@ def main(argv=None) -> int:
     ctx.plugin = os.path.abspath(a.plugin) if a.plugin else ""
     ctx.image = a.image
     ctx.packaged_from = a.packaged_from
+    ctx.dropin_plugin = os.path.abspath(a.dropin_plugin) if a.dropin_plugin else ""
+    ctx.contract_rows = {r["id"]: r for r in rows}
     ctx.evidence = os.path.abspath(a.evidence) if a.evidence else ""
     ctx.repo_root, ctx.work = os.path.abspath(a.repo_root), work
 

@@ -251,13 +251,29 @@ fn scoped_chain_boot_verifies_from_frozen_bytes() {
 /// Admin audit chain (PipeSeparated, NO scope in the digest): the frozen opaque records restore
 /// through the REAL boot path — the NEUTRAL journal seam the admin audit stream is registered on, with
 /// `digests_scope = false` — and verify byte-identically (zero chain breaks) with the tail hash intact.
-/// This is the `digests_scope = false` framing shape: the scope must NOT enter the digest, and the
-/// frozen bytes are the legacy `serde(AuditRecord)` rows, reframed by the stream's own decode bridge.
+/// This is the `digests_scope = false` framing shape: the scope must NOT enter the digest. The frozen
+/// rows are the 1.5.5 audit table's, carried in the neutral body the boot migration writes for them.
 #[test]
 fn admin_audit_chain_boot_verifies_from_frozen_bytes() {
+    let neutral = |frozen: &[u8]| {
+        let r: AuditRecord = decode(frozen).unwrap();
+        crate::store::plane_view::encode(&crate::audit::journal::NeutralBody {
+            seq: r.seq,
+            prev_hash: r.prev_hash,
+            hash: r.hash,
+            content: crate::audit::auditlog::audit_suffix(
+                r.ts,
+                &r.action,
+                &r.resource,
+                &r.outcome,
+                &r.principal,
+            ),
+        })
+        .unwrap()
+    };
     let mut store = FrozenStore::new();
-    store.put(KIND_AUDIT, Some("admin"), AD_1);
-    store.put(KIND_AUDIT, Some("admin"), AD_2);
+    store.put(KIND_AUDIT, Some("admin"), &neutral(AD_1));
+    store.put(KIND_AUDIT, Some("admin"), &neutral(AD_2));
 
     // The chain position cache is host-side now: register a fresh isolated stream and host-drive the
     // restore. The FROZEN BYTES/HASHES above are unchanged — only the scaffolding that replays them

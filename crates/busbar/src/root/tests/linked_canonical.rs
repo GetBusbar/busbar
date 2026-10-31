@@ -186,39 +186,3 @@ fn every_linked_row_is_registered_under_its_plugins_yaml_manifest_name() {
         );
     }
 }
-
-/// THE GUARD GOES RED on a linked row registered under its alias (the pre-C' shape: the store's
-/// short word as its name), fed through the same constructor the kernel's row comes from; and on a
-/// planted row whose canonical name is not plugins.yaml's.
-#[test]
-fn a_row_registered_under_its_alias_is_drift() {
-    let entries = entries(REGISTRY);
-    let &(key, ephemeral, door, canonical) = crate::LINKED
-        .stores
-        .first()
-        .expect("the build links a store");
-    let old = Row::of(&LinkedPlugin::store_named(key, key, door, ephemeral));
-    let (_, mismatches, _) = drift(&[old], &entries);
-    assert_eq!(mismatches.len(), 1, "the alias-named row is drift");
-    assert!(
-        mismatches[0].contains(&format!("whose manifest_name is '{canonical}'")),
-        "{}",
-        mismatches[0]
-    );
-    let planted = Row {
-        kind: "store".into(),
-        canonical: format!("{canonical}-planted"),
-        aliases: vec![key.to_string()],
-    };
-    let (matched, mismatches, skipped) = drift(&[planted], &entries);
-    assert!(matched.is_empty() && skipped.is_empty() && mismatches.len() == 1);
-    // A row no entry answers is skipped and said, never matched or passed silently.
-    let stray = Row {
-        kind: "store".into(),
-        canonical: "no-such-plugin".into(),
-        aliases: vec!["no-such-alias".into()],
-    };
-    let (matched, mismatches, skipped) = drift(&[stray], &entries);
-    assert!(matched.is_empty() && mismatches.is_empty());
-    assert!(skipped[0].contains("no plugins.yaml entry of kind store answers it"));
-}

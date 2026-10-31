@@ -38,7 +38,7 @@ fn generation(
     prior: Option<&busbar_kernel::state::App>,
 ) -> (busbar_kernel::state::App, Arc<AsPlane>) {
     let _on = rt.enter();
-    let app = busbar_kernel::test_support::build_once(cfg(), prior).expect("the generation builds");
+    let app = busbar_kernel_testkit::app::build_once(cfg(), prior).expect("the generation builds");
     let plane = oauth_as_plane(&app).expect("`oauth_as:` is configured");
     (app, plane)
 }

@@ -128,6 +128,7 @@ mod alloc_gate_instrument {
 // These modules are the original busbar-kernel's own — the loop, the pump, the in-flight/session
 // tables, the registry, the closed grammars, the ticks and the per-unit scratch pad —
 // plus the settlement table the loop re-exports (`teller::settle_written` and its evidence).
+pub mod canary;
 pub mod door;
 pub mod grammar;
 pub mod guest;
@@ -142,9 +143,9 @@ mod settlement;
 pub mod teller;
 pub mod tick;
 
-// The node's slice/lease types live in busbar-contract (the ONE ABI crate, #38); re-exported so
-// `crate::slice` / `busbar_kernel::slice` paths are unchanged.
-pub use busbar_contract::slice;
+// The node's slice/lease types live in busbar-kernel-seams (the loader names them too); re-exported
+// so `crate::slice` / `busbar_kernel::slice` paths are unchanged.
+pub use busbar_kernel_seams::slice;
 
 /// Milliseconds on the kernel's monotonic clock (re-exported from busbar-contract, #38).
 pub use busbar_contract::Millis;
@@ -371,31 +372,6 @@ pub(crate) use router::build_router_with_limits;
 #[cfg(any(test, feature = "test-support"))]
 pub use router::build_router_with_limits;
 
-#[cfg(any(test, feature = "test-support"))]
-use busbar_contract::abi::mechanism::route::RouteAuth;
-
-/// TEST-SUPPORT ROUTER-SURFACE VIEW: the `(path, declared admission bar)` pairs the base data router
-/// mounts for `app`, built through the very same `router::base_data_router` production calls (off the
-/// App's neutral slots). Exposed as a curated `pub` seam — over PUBLIC types (`String`,
-/// [`RouteAuth`]) — ONLY under the test-support surface, so an extracted
-/// plane's own ingress tests can assert the mounted surface (which paths appear, at which bar) WITHOUT
-/// core widening the `pub(crate)` router fn or the `CoreRouteTable`/`CoreRoute` types to `pub`.
-#[cfg(any(test, feature = "test-support"))]
-pub fn base_data_route_table_view(app: &state::App) -> Vec<(String, RouteAuth)> {
-    router::base_data_router(
-        &app.plugin_routes,
-        &app.plane_slots,
-        app.oauth_as.as_ref(),
-        Vec::new(),
-        Vec::new(),
-    )
-    .1
-    .routes()
-    .iter()
-    .map(|r| (r.path.clone(), r.auth))
-    .collect()
-}
-
 /// THE KERNEL'S OWN DATA ROUTES for `app`, as lines (path, method, bar): the routes the data router
 /// mounts before any door plane's, read off the same `router::base_data_router` production calls.
 /// The composition root writes them on the data listener's guest list beside the door planes'
@@ -419,26 +395,6 @@ pub fn base_data_core_lines(
     .routes()
     .iter()
     .map(|r| (r.path.clone(), r.method, r.auth))
-    .collect()
-}
-
-/// TEST-SUPPORT ROUTER-SURFACE VIEW, with the declared METHOD. The sibling of
-/// [`base_data_route_table_view`] for the plane-boundary ratchet, which walks each mounted route with
-/// a real request and so needs the method too. Over PUBLIC types only (`String`, `String`,
-/// [`RouteAuth`]) — the `pub(crate)` `CoreRoute`/`CoreRouteTable` stay sealed.
-#[cfg(any(test, feature = "test-support"))]
-pub fn base_data_route_method_view(app: &state::App) -> Vec<(String, String, RouteAuth)> {
-    router::base_data_router(
-        &app.plugin_routes,
-        &app.plane_slots,
-        app.oauth_as.as_ref(),
-        Vec::new(),
-        Vec::new(),
-    )
-    .1
-    .routes()
-    .iter()
-    .map(|r| (r.path.clone(), r.method.as_str().to_string(), r.auth))
     .collect()
 }
 

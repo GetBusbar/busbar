@@ -550,6 +550,19 @@ pub enum LoadError {
         /// The need's unserved scheme.
         scheme: String,
     },
+    /// A need that names no config path (no `target_from`, no `trust_from`), declared on the
+    /// host's connection table at bind, was refused by it (kind-secret K17: fail closed at the
+    /// load, naming the plugin and the need, never bound with a need it can never open).
+    NeedRefused {
+        /// The plugin the Statement names.
+        plugin: String,
+        /// The need's index in the Statement.
+        need: u32,
+        /// The need's transport.
+        transport: String,
+        /// Why the table refused it ([`crate::observe::conn_reason`]).
+        reason: &'static str,
+    },
     /// A door whose Statement declares a need was bound to SERVE with no connection table
     /// ([`ConnTable::NoNeeds`](super::ConnTable::NoNeeds)): it could never dial or listen, so it is
     /// refused at bind (Q-P4-3), never at its first open.
@@ -663,6 +676,16 @@ impl fmt::Display for LoadError {
                 f,
                 "plugin `{plugin}` declares an {} need over `{scheme}`, and no loaded transport serves `{scheme}`",
                 if *inbound { "inbound" } else { "outbound" }
+            ),
+            Self::NeedRefused {
+                plugin,
+                need,
+                transport,
+                reason,
+            } => write!(
+                f,
+                "plugin `{plugin}` declares need {need} over `{transport}`, and the host's \
+                 connection table refused it ({reason}); the plugin is not loaded"
             ),
             Self::NoConnectionTable { plugin, needs } => write!(
                 f,
@@ -964,8 +987,16 @@ pub(crate) fn read_door(
 /// [`validate`] on the pointer a door function answered.
 pub(crate) fn validate_door<K: Kind>(p: *const Door) -> Result<Validated, LoadError> {
     let (door, kind) = read_door(p, Some(K::CODE))?;
-    let slots = table::<K>(door.ops)?;
-    let statement = statement(&door)?;
+    // Read first, judged after the table: an op the kind makes optional by what the Statement
+    // states may be NULL only when the Statement reads.
+    let stated = statement(&door);
+    let by_statement = |i| {
+        stated
+            .as_ref()
+            .is_ok_and(|st| K::optional_by_statement(i, st))
+    };
+    let slots = table::<K>(door.ops, by_statement)?;
+    let statement = stated?;
     Ok(Validated {
         kind,
         statement,
@@ -995,8 +1026,12 @@ extern "C" fn absent(
 }
 
 /// The table: `slots` and `size` equal to the host's table of `K`, every slot non-NULL but the
-/// kind's optional ones, which are the host's [`absent`] op when left NULL.
-fn table<K: Kind>(ops: *const OpsHead) -> Result<Box<[Op]>, LoadError> {
+/// kind's optional ones (and those `by_statement` makes optional, [`Kind::optional_by_statement`]),
+/// which are the host's [`absent`] op when left NULL.
+fn table<K: Kind>(
+    ops: *const OpsHead,
+    by_statement: impl Fn(u32) -> bool,
+) -> Result<Box<[Op]>, LoadError> {
     if ops.is_null() {
         return Err(LoadError::NullOps);
     }
@@ -1030,7 +1065,7 @@ fn table<K: Kind>(ops: *const OpsHead) -> Result<Box<[Op]>, LoadError> {
             match unsafe { first.add(i as usize).read_unaligned() } {
                 Some(op) => Ok(op),
                 // An OPTIONAL kind op left NULL is absent: the host's own pass answers it.
-                None if K::optional_slot(i) => Ok(absent as Op),
+                None if K::optional_slot(i) || by_statement(i) => Ok(absent as Op),
                 None => Err(LoadError::NullSlot(i)),
             }
         })
