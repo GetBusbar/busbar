@@ -685,6 +685,81 @@ fn a_kept_answer_is_dropped_at_its_release_and_only_then() {
     assert_eq!(leases.release(lease), Outcome::Refused);
 }
 
+#[test]
+fn releasing_a_chain_drops_its_storage_after_unlocking_and_removing_the_whole_chain() {
+    use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize};
+    use std::sync::{Arc, Weak};
+    struct Observed {
+        leases: Weak<Leases>,
+        released: Arc<AtomicU64>,
+        unrelated: Arc<AtomicU64>,
+        dropped: Arc<AtomicUsize>,
+        unlocked_and_complete: Arc<AtomicUsize>,
+    }
+    impl Drop for Observed {
+        fn drop(&mut self) {
+            if let Some(leases) = self.leases.upgrade() {
+                if let Ok(held) = leases.held.try_lock() {
+                    let released = self.released.load(Ordering::SeqCst);
+                    let unrelated = self.unrelated.load(Ordering::SeqCst);
+                    if held.keys().all(|(id, _)| *id != released)
+                        && held.keys().any(|(id, _)| *id == unrelated)
+                    {
+                        self.unlocked_and_complete.fetch_add(1, Ordering::SeqCst);
+                    }
+                }
+            }
+            self.dropped.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+    struct Other(Arc<AtomicBool>);
+    impl Drop for Other {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
+    let leases = Arc::new(Leases::default());
+    let released = Arc::new(AtomicU64::new(0));
+    let unrelated = Arc::new(AtomicU64::new(0));
+    let dropped = Arc::new(AtomicUsize::new(0));
+    let unlocked_and_complete = Arc::new(AtomicUsize::new(0));
+    let other_dropped = Arc::new(AtomicBool::new(false));
+    let mut other_head = out_head::<OutHead>();
+    let other_id = leases.keep(&mut other_head, Other(other_dropped.clone()));
+    unrelated.store(other_id, Ordering::SeqCst);
+    let mut head = out_head::<OutHead>();
+    for _ in 0..2 {
+        let id = leases.keep(
+            &mut head,
+            Observed {
+                leases: Arc::downgrade(&leases),
+                released: released.clone(),
+                unrelated: unrelated.clone(),
+                dropped: dropped.clone(),
+                unlocked_and_complete: unlocked_and_complete.clone(),
+            },
+        );
+        released.store(id, Ordering::SeqCst);
+    }
+    assert_eq!(dropped.load(Ordering::SeqCst), 0);
+    assert_eq!(leases.release(head.lease), Outcome::Ready);
+    assert_eq!(
+        dropped.load(Ordering::SeqCst),
+        2,
+        "synchronous exactly-once destruction"
+    );
+    assert_eq!(
+        unlocked_and_complete.load(Ordering::SeqCst),
+        2,
+        "destructors may reenter the lease table and see their entire chain removed"
+    );
+    assert!(!other_dropped.load(Ordering::SeqCst));
+    assert_eq!(leases.release(head.lease), Outcome::Refused);
+    assert_eq!(leases.release(u64::MAX), Outcome::Refused);
+    assert_eq!(leases.release(other_id), Outcome::Ready);
+    assert!(other_dropped.load(Ordering::SeqCst));
+}
+
 /// A kind that states no `validate` of its own: the SDK's object check, in the SDK's words.
 struct Defaulted;
 impl Life for Defaulted {
