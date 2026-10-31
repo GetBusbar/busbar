@@ -273,9 +273,8 @@ fn register_protocols() {
 }
 
 /// REGISTER THE PLANES — the composition root's one write into the plane axis
-/// (`busbar_kernel::plane_driver::registry::install_planes`), over the plane tables of [`LINKED`] (each
-/// entry's contract declaration joined kernel-side to its behaviour, `PlaneDecl::assemble`) and the
-/// plane doors, linked and dropped into the configured `plugins.dir`, discovered first
+/// (`busbar_kernel::plane_driver::registry::install_planes`), over the plane doors,
+/// linked and dropped into the configured `plugins.dir`, discovered first
 /// (`root::boot::discover_planes`) and folded by one fold.
 /// `merged_boot_plane_decls` normalises the installed set to canonical layering order, so each row
 /// lands in its own slot regardless of the table's order. Then the two unconditional seams, then
@@ -298,7 +297,7 @@ fn register_planes() {
     // read off their Statements before the configuration is first parsed (arch-audit u29 F1).
     busbar_kernel::preflight::install_declared_styles(root::door_steps::declared_styles);
     root::boot::discover_planes(&LINKED, dropped);
-    root::linked::register_planes(&LINKED);
+    root::linked::register_planes();
     root::linked::register_exports(dropped);
     // The settings each plugin's schema declares public, before any configuration is read: every
     // other plugin setting is sensitive (`busbar_kernel::config::settings_public`).
