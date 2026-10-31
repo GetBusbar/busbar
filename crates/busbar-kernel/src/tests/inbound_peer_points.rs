@@ -5,6 +5,7 @@ use super::*;
 
 struct PeerAndRequest {
     point: u32,
+    pass_request: bool,
     calls: Mutex<Vec<(AuthPoint, u64)>>,
 }
 
@@ -28,6 +29,8 @@ impl AuthCalls for PeerAndRequest {
             .push((request.point, request.unit));
         let answer = if request.point == AuthPoint::Peer {
             identity("peer", "connection")
+        } else if self.pass_request {
+            Verified::Pass
         } else if request.path == MESSAGES {
             identity("request", "per-request")
         } else {
@@ -45,6 +48,7 @@ fn peer_identity_does_not_skip_a_request_point(point: u32) {
     let k = kit(&[("a", placeholder)]);
     let calls = Arc::new(PeerAndRequest {
         point,
+        pass_request: false,
         calls: Mutex::new(Vec::new()),
     });
     let prior = k.inbound.table(OWNER, GEN).unwrap();
@@ -142,5 +146,74 @@ fn a_peer_only_identity_survives_an_earlier_head_positions_pass() {
         peer.calls(),
         1,
         "a Peer-only provider is not called again at Head"
+    );
+}
+
+#[test]
+fn a_mixed_peers_provisional_identity_does_not_skip_a_later_peer_provider() {
+    let placeholder = Script::new(
+        AuthPoints(POINT_PEER | POINT_HEAD),
+        Verified::Pass,
+        Vec::new(),
+    );
+    let fallback = Script::new(
+        AuthPoints::PEER,
+        identity("fallback", "peer-credential"),
+        Vec::new(),
+    );
+    let k = kit(&[("a", placeholder), ("b", Arc::clone(&fallback))]);
+    let calls = Arc::new(PeerAndRequest {
+        point: POINT_HEAD,
+        pass_request: true,
+        calls: Mutex::new(Vec::new()),
+    });
+    let prior = k.inbound.table(OWNER, GEN).unwrap();
+    let mut auths = prior.listener.auths.clone();
+    auths.insert("a".into(), calls.clone());
+    k.inbound
+        .install(
+            OWNER,
+            GEN,
+            Listener {
+                guests: prior.listener.guests.clone(),
+                auths,
+                body_limit: prior.listener.body_limit,
+                app: Arc::clone(&prior.listener.app),
+                door_refusals: prior.listener.door_refusals.clone(),
+                ids: prior.listener.ids.clone(),
+                signed_ingress: Arc::clone(&prior.listener.signed_ingress),
+            },
+        )
+        .unwrap();
+    drop(prior);
+    let peer = k
+        .call(MESSAGES, UnitRef::NONE, POINT_PEER, Head::default())
+        .unwrap();
+    let request = k
+        .call(
+            MESSAGES,
+            UnitRef::NONE,
+            POINT_HEAD,
+            post(MESSAGES, &[], None),
+        )
+        .unwrap();
+    let admitted = k.inbound.admitted(request.unit.id);
+    let handed = k.hand_in(MESSAGES, MESSAGES, request.unit, post(MESSAGES, &[], None));
+    k.inbound.exit(request.unit.id);
+    k.inbound.framing_ended(1);
+    assert_eq!(peer.flow, FLOW_CONTINUE);
+    assert_eq!(request.flow, FLOW_CONTINUE);
+    assert_eq!(handed.0, FLOW_CONTINUE);
+    assert_eq!(
+        admitted
+            .expect("the later Peer provider remains available")
+            .identity
+            .subject,
+        "fallback"
+    );
+    assert_eq!(fallback.calls(), 1);
+    assert_eq!(
+        *calls.calls.lock().unwrap(),
+        vec![(AuthPoint::Peer, 0), (AuthPoint::Head, request.unit.id)]
     );
 }
