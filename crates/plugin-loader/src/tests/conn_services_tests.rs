@@ -93,10 +93,11 @@ impl DeclaredConns for Recording {
             target.map(str::to_owned),
             trust.map(str::to_owned),
         ));
-        // A trust anchor that does not parse is refused, as the host's connector refuses one.
+        // As the real table: an unresolved target or trust is refused, and so is a trust that is
+        // no trust anchor (here: anything not spelled `PEM…`).
         if (!spec.target_from.is_empty() && target.is_none())
             || (!spec.trust_from.is_empty() && trust.is_none())
-            || trust.is_some_and(|t| t.starts_with(NOT_A_PEM))
+            || trust.is_some_and(|t| !t.starts_with("PEM"))
         {
             return Err(ConnError::Refused);
         }
@@ -3008,13 +3009,55 @@ fn a_need_refused_at_open_is_audited_once() {
     );
 }
 
-/// RED: a need refused for anything else is recorded in the table's own word.
+/// RED: a need refused for anything else is recorded in the table's own word: a trust anchor the
+/// settings DO write that is no anchor (a junk PEM).
 #[test]
 fn a_need_refused_by_the_table_is_audited_in_its_word() {
     let label = "bind-audit-trust-refused";
     let table = Arc::new(Recording::default());
     let p = bound_labelled(Box::leak(Box::new(TRUSTING)), &table, label);
+    assert_eq!(open_with(&p, br#"{"ca":"junk"}"#), Outcome::Failed);
+    assert_eq!(
+        refused_for(label),
+        vec![format!(
+            "{:?}",
+            crate::observe::BindRefusal::Need {
+                need: 0,
+                reason: "refused"
+            }
+        )]
+    );
+}
+
+/// RED (secret-vault without `ca_cert_pem`): a need whose `trust_from` names a settings path the
+/// operator did not write is refused by the table (fail-closed, no connection on it) but is NO
+/// audited refusal, on `open` or on any `refresh`: a correct config that names no CA is not a
+/// refused need in the operator's audit log. A junk anchor written later is audited. RED before:
+/// every `open` and `refresh` of the healthy config recorded a `BindRefusal::Need`.
+#[test]
+fn an_unwritten_settings_trust_is_refused_but_not_audited() {
+    let label = "bind-audit-trust-unwritten";
+    let table = Arc::new(Recording::default());
+    let p = bound_labelled(Box::leak(Box::new(TRUSTING)), &table, label);
     assert_eq!(open_with(&p, br#"{"other":"PEM-C"}"#), Outcome::Ready);
+    assert_eq!(refresh_with(&p, br#"{"other":"PEM-D"}"#), Outcome::Ready);
+    assert!(
+        refused_for(label).is_empty(),
+        "an unwritten optional anchor is no audited refusal: {:?}",
+        refused_for(label)
+    );
+    // Still declared without a trust, for the table to refuse (fail-closed).
+    let trusts: Vec<Option<String>> = table
+        .declared
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(owner, need, ..)| (*owner, *need) == (p.instance(), NeedId(0)))
+        .map(|(.., trust)| trust.clone())
+        .collect();
+    assert_eq!(trusts, vec![None, None]);
+    // A junk anchor is a refusal, audited.
+    assert_eq!(refresh_with(&p, br#"{"ca":"junk"}"#), Outcome::Failed);
     assert_eq!(
         refused_for(label),
         vec![format!(
