@@ -1561,11 +1561,26 @@ fn auth_host(route: &Waking) -> Option<Arc<dyn AuthHandleHost>> {
     route.route.upgrade()?.auth_handle()
 }
 
-/// An auth ref, verified for `owner` at the published generation: `None` when it passes.
-fn refused_ref(owner: u64, r: &svc::AuthRef) -> Option<Answered> {
-    super::auth_handle::verify_auth_ref(owner, super::auth_handle::generation(), r)
+/// An auth ref, verified for `owner` at the selected policy generation: `None` when it passes.
+fn refused_ref(owner: u64, generation: u64, r: &svc::AuthRef) -> Option<Answered> {
+    super::auth_handle::verify_auth_ref(owner, generation, r)
         .err()
         .map(|e| Answered::bare(Outcome::Refused, e.text()))
+}
+
+/// Select the policy of an existing unit without granting authority. Its MAC and request
+/// binding still have to pass before a service runs; a new unit uses the published generation.
+fn request_generation(
+    owner: u64,
+    host: Option<&Arc<dyn AuthHandleHost>>,
+    unit: &svc::UnitRef,
+) -> u64 {
+    if !unit.is_none() {
+        if let Some(secret) = host.and_then(|h| h.unit_secret(owner, unit.id)) {
+            return secret.generation;
+        }
+    }
+    super::auth_handle::generation()
 }
 
 /// A presented unit (#74): none passes. With no kernel side installed any other is refused
@@ -1742,8 +1757,9 @@ extern "C" fn auth_call(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut
         op::AUTH_CALL,
         |i, owner, store, route, head| {
             let host = auth_host(&route);
-            if let Some(r) =
-                refused_ref(owner, &i.auth).or_else(|| refused_unit(owner, host.as_ref(), &i.unit))
+            let generation = request_generation(owner, host.as_ref(), &i.unit);
+            if let Some(r) = refused_ref(owner, generation, &i.auth)
+                .or_else(|| refused_unit(owner, host.as_ref(), &i.unit))
             {
                 return r;
             }
@@ -1773,7 +1789,7 @@ extern "C" fn auth_call(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut
             };
             let ask = AuthCallAsk {
                 owner,
-                generation: super::auth_handle::generation(),
+                generation,
                 auth: i.auth.id,
                 unit: i.unit,
                 point: i.point,
@@ -1826,8 +1842,9 @@ extern "C" fn unit_hand_in(ctx: HostCtx, input: *const c_void, out: *mut Service
         op::UNIT_HAND_IN,
         |i, owner, _, route, head| {
             let host = auth_host(&route);
-            if let Some(r) =
-                refused_ref(owner, &i.auth).or_else(|| refused_unit(owner, host.as_ref(), &i.unit))
+            let generation = request_generation(owner, host.as_ref(), &i.unit);
+            if let Some(r) = refused_ref(owner, generation, &i.auth)
+                .or_else(|| refused_unit(owner, host.as_ref(), &i.unit))
             {
                 return r;
             }
@@ -1860,7 +1877,7 @@ extern "C" fn unit_hand_in(ctx: HostCtx, input: *const c_void, out: *mut Service
             };
             let ask = HandInAsk {
                 owner,
-                generation: super::auth_handle::generation(),
+                generation,
                 auth: i.auth.id,
                 unit: i.unit,
                 line: i.line,
@@ -1916,6 +1933,7 @@ pub(crate) fn refusals_held() -> usize {
 extern "C" fn unit_refuse(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
     exact::<svc::UnitRefuseIn>(ctx, input, out, op::UNIT_REFUSE, |i, owner, _, route, h| {
         let host = auth_host(&route);
+        let generation = request_generation(owner, host.as_ref(), &i.unit);
         if let Some(r) = refused_unit(owner, host.as_ref(), &i.unit) {
             return r;
         }
@@ -1930,7 +1948,7 @@ extern "C" fn unit_refuse(ctx: HostCtx, input: *const c_void, out: *mut ServiceO
         };
         let bytes = match host.refuse(RefuseAsk {
             owner,
-            generation: super::auth_handle::generation(),
+            generation,
             unit: i.unit,
             cause: i.cause,
             line: i.line,
