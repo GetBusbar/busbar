@@ -1,39 +1,27 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE SHARED HOST-SERVICES TEST DOUBLE (busbar #476 follow-up): one [`HostServices`] double the
-//! fleet's tests write against, kept in step with the trait HERE, so a service the host adds is one
-//! edit in this file rather than one in every plugin repo's hand-written double.
+//! THE HOST-SERVICES TEST DOUBLE: one [`HostServices`] double the fleet's tests write against, so
+//! a service the host adds is one edit here rather than one in every plugin repo's double.
 //!
-//! A test implements [`ServicesDouble`] for its own type, overriding only the services it serves;
-//! every other service answers as a host that does not serve it: REFUSED with
-//! [`UNSERVED`](super::UNSERVED), at once (its [`Later`] dropped, never called), and the clock reads
-//! zero. The blanket impl makes every [`ServicesDouble`] a [`HostServices`], so it goes wherever the
-//! host's services go (`Arc::new(MyDouble)` into the loader's dispatcher). [`Unserved`] is the
-//! double that overrides nothing.
+//! A test implements [`ServicesDouble`] for its own type, overriding only the services it serves,
+//! and hands the host `Arc::new(Double(mine))`: every other service answers as a host that does not
+//! serve it, REFUSED with [`UNSERVED`] at once (its [`Later`] dropped, never called), and the clock
+//! reads zero. [`Double`] derefs to the wrapped value, so a test still reads its own counters
+//! through the `Arc`. [`Unserved`] is the double that overrides nothing.
 //!
 //! ```ignore
-//! use busbar_contract::services::{double::ServicesDouble, Reading};
+//! use busbar_contract::services::Reading;
+//! use busbar_test_kit::services_double::{Double, ServicesDouble};
 //! struct Clock;
 //! impl ServicesDouble for Clock {
 //!     fn now(&self) -> Reading { Reading { wall_ns: 7, mono_ns: 7 } }
 //! }
+//! let host: std::sync::Arc<dyn busbar_contract::services::HostServices> =
+//!     std::sync::Arc::new(Double(Clock));
 //! ```
-//!
-//! Name the trait by its path in the `impl` (as above) rather than importing it beside
-//! [`HostServices`]: with both in scope a direct `double.now()` call names two traits' methods.
-//!
-//! NOT IN A RELEASE BUILD. This module is compiled only for this crate's own tests or under the
-//! dev-only `services-double` feature, which a plugin enables on its `[dev-dependencies]` edge alone
-//! (`tests/test_seal_is_dev_only.rs` refuses any other edge; `tests/feature_invariance.rs` holds the
-//! feature to this one item). It holds no state of its own.
-//!
-//! ADDING A SERVICE: add it to [`ServicesDouble`] with a body that answers as an unserved host
-//! does, forward it in the blanket impl below, and add its row to the coverage test
-//! (`tests/services_double_tests.rs`), which reads the trait's own source and fails on a service
-//! it does not call.
 
-use super::{
+use busbar_contract::services::{
     Caller, DiskDest, HookAsk, HostServices, Later, NestAsk, Ran, Reading, RecordsList, Snapshot,
     Stored, TrustKeyRef, UNSERVED,
 };
@@ -287,21 +275,33 @@ pub struct Unserved;
 
 impl ServicesDouble for Unserved {}
 
-impl<T: ServicesDouble> HostServices for T {
+/// A [`ServicesDouble`] as the host's services: `Arc::new(Double(mine))` goes wherever the
+/// host's services go.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Double<T>(pub T);
+
+impl<T> std::ops::Deref for Double<T> {
+    type Target = T;
+    fn deref(&self) -> &T {
+        &self.0
+    }
+}
+
+impl<T: ServicesDouble> HostServices for Double<T> {
     fn now(&self) -> Reading {
-        ServicesDouble::now(self)
+        ServicesDouble::now(&self.0)
     }
 
     fn dest_judge(&self, dest: &str, class: u32, flags: u32, later: Option<Later>) -> Ran {
-        ServicesDouble::dest_judge(self, dest, class, flags, later)
+        ServicesDouble::dest_judge(&self.0, dest, class, flags, later)
     }
 
     fn records_get(&self, caller: &Caller, kind: &str, key: &[u8], later: Later) -> Ran {
-        ServicesDouble::records_get(self, caller, kind, key, later)
+        ServicesDouble::records_get(&self.0, caller, kind, key, later)
     }
 
     fn records_list(&self, caller: &Caller, list: RecordsList, later: Later) -> Ran {
-        ServicesDouble::records_list(self, caller, list, later)
+        ServicesDouble::records_list(&self.0, caller, list, later)
     }
 
     fn records_claim(
@@ -312,19 +312,19 @@ impl<T: ServicesDouble> HostServices for T {
         ttl_ms: u64,
         later: Later,
     ) -> Ran {
-        ServicesDouble::records_claim(self, caller, kind, key, ttl_ms, later)
+        ServicesDouble::records_claim(&self.0, caller, kind, key, ttl_ms, later)
     }
 
     fn sign(&self, caller: &Caller, data: &[u8]) -> Stored {
-        ServicesDouble::sign(self, caller, data)
+        ServicesDouble::sign(&self.0, caller, data)
     }
 
     fn trust_sight(&self, caller: &Caller, counterparty: &str, hash: &str, later: Later) -> Ran {
-        ServicesDouble::trust_sight(self, caller, counterparty, hash, later)
+        ServicesDouble::trust_sight(&self.0, caller, counterparty, hash, later)
     }
 
     fn trust_unreached(&self, caller: &Caller, counterparty: &str) -> Stored {
-        ServicesDouble::trust_unreached(self, caller, counterparty)
+        ServicesDouble::trust_unreached(&self.0, caller, counterparty)
     }
 
     fn trust_sight_item(
@@ -334,7 +334,7 @@ impl<T: ServicesDouble> HostServices for T {
         item: &str,
         digest: &str,
     ) -> Stored {
-        ServicesDouble::trust_sight_item(self, caller, counterparty, item, digest)
+        ServicesDouble::trust_sight_item(&self.0, caller, counterparty, item, digest)
     }
 
     fn trust_decide(
@@ -344,11 +344,11 @@ impl<T: ServicesDouble> HostServices for T {
         expected: Option<&str>,
         approve: bool,
     ) -> Stored {
-        ServicesDouble::trust_decide(self, caller, key, expected, approve)
+        ServicesDouble::trust_decide(&self.0, caller, key, expected, approve)
     }
 
     fn trust_state(&self, caller: &Caller, counterparty: &str) -> Stored {
-        ServicesDouble::trust_state(self, caller, counterparty)
+        ServicesDouble::trust_state(&self.0, caller, counterparty)
     }
 
     fn trust_serves(
@@ -358,11 +358,11 @@ impl<T: ServicesDouble> HostServices for T {
         item: Option<&str>,
         digest: Option<&str>,
     ) -> Stored {
-        ServicesDouble::trust_serves(self, caller, counterparty, item, digest)
+        ServicesDouble::trust_serves(&self.0, caller, counterparty, item, digest)
     }
 
     fn session_emit(&self, caller: &Caller, session: u64, bytes: &[u8]) -> Stored {
-        ServicesDouble::session_emit(self, caller, session, bytes)
+        ServicesDouble::session_emit(&self.0, caller, session, bytes)
     }
 
     fn ticket_mint(
@@ -372,15 +372,15 @@ impl<T: ServicesDouble> HostServices for T {
         ttl_secs: u64,
         record: &[u8],
     ) -> Stored {
-        ServicesDouble::ticket_mint(self, caller, unit, ttl_secs, record)
+        ServicesDouble::ticket_mint(&self.0, caller, unit, ttl_secs, record)
     }
 
     fn ticket_take(&self, caller: &Caller, unit: Option<u64>) -> Stored {
-        ServicesDouble::ticket_take(self, caller, unit)
+        ServicesDouble::ticket_take(&self.0, caller, unit)
     }
 
     fn trust_due(&self, caller: &Caller) -> Stored {
-        ServicesDouble::trust_due(self, caller)
+        ServicesDouble::trust_due(&self.0, caller)
     }
 
     fn trust_verify(
@@ -390,23 +390,23 @@ impl<T: ServicesDouble> HostServices for T {
         payload: &[u8],
         signatures: &[u8],
     ) -> Stored {
-        ServicesDouble::trust_verify(self, caller, counterparty, payload, signatures)
+        ServicesDouble::trust_verify(&self.0, caller, counterparty, payload, signatures)
     }
 
     fn entitlement_check(&self, caller: &Caller, unit: Option<u64>, target: &str) -> Stored {
-        ServicesDouble::entitlement_check(self, caller, unit, target)
+        ServicesDouble::entitlement_check(&self.0, caller, unit, target)
     }
 
     fn random_fill(&self, len: u64) -> Stored {
-        ServicesDouble::random_fill(self, len)
+        ServicesDouble::random_fill(&self.0, len)
     }
 
     fn records_secret(&self, kind: &str, id: &str, later: Later) -> Ran {
-        ServicesDouble::records_secret(self, kind, id, later)
+        ServicesDouble::records_secret(&self.0, kind, id, later)
     }
 
     fn unit_nest(&self, caller: &Caller, unit: Option<u64>, ask: NestAsk, later: Later) -> Ran {
-        ServicesDouble::unit_nest(self, caller, unit, ask, later)
+        ServicesDouble::unit_nest(&self.0, caller, unit, ask, later)
     }
 
     fn work_open(
@@ -417,11 +417,11 @@ impl<T: ServicesDouble> HostServices for T {
         record: &[u8],
         later: Later,
     ) -> Ran {
-        ServicesDouble::work_open(self, caller, unit, kind, record, later)
+        ServicesDouble::work_open(&self.0, caller, unit, kind, record, later)
     }
 
     fn work_find(&self, caller: &Caller, unit: Option<u64>, reference: &[u8], later: Later) -> Ran {
-        ServicesDouble::work_find(self, caller, unit, reference, later)
+        ServicesDouble::work_find(&self.0, caller, unit, reference, later)
     }
 
     fn work_settle(
@@ -432,23 +432,23 @@ impl<T: ServicesDouble> HostServices for T {
         record: &[u8],
         later: Later,
     ) -> Ran {
-        ServicesDouble::work_settle(self, caller, unit, handle, record, later)
+        ServicesDouble::work_settle(&self.0, caller, unit, handle, record, later)
     }
 
     fn work_resume(&self, caller: &Caller, unit: Option<u64>, handle: u64, later: Later) -> Ran {
-        ServicesDouble::work_resume(self, caller, unit, handle, later)
+        ServicesDouble::work_resume(&self.0, caller, unit, handle, later)
     }
 
     fn disk_append(&self, dest: &DiskDest, bytes: Vec<u8>, later: Later) -> Ran {
-        ServicesDouble::disk_append(self, dest, bytes, later)
+        ServicesDouble::disk_append(&self.0, dest, bytes, later)
     }
 
     fn verify_lookup(&self, caller: &Caller, key: &[u8], later: Later) -> Ran {
-        ServicesDouble::verify_lookup(self, caller, key, later)
+        ServicesDouble::verify_lookup(&self.0, caller, key, later)
     }
 
     fn verify_store(&self, caller: &Caller, key: &[u8], entry: &[u8], ttl_ms: u64) -> Stored {
-        ServicesDouble::verify_store(self, caller, key, entry, ttl_ms)
+        ServicesDouble::verify_store(&self.0, caller, key, entry, ttl_ms)
     }
 
     fn content_scan(
@@ -458,18 +458,18 @@ impl<T: ServicesDouble> HostServices for T {
         content: &[u8],
         later: Later,
     ) -> Ran {
-        ServicesDouble::content_scan(self, caller, unit, content, later)
+        ServicesDouble::content_scan(&self.0, caller, unit, content, later)
     }
 
     fn hook_call(&self, caller: &Caller, unit: Option<u64>, ask: HookAsk, later: Later) -> Ran {
-        ServicesDouble::hook_call(self, caller, unit, ask, later)
+        ServicesDouble::hook_call(&self.0, caller, unit, ask, later)
     }
 
     fn snapshot_read(&self, caller: &Caller, scope: u32) -> Snapshot {
-        ServicesDouble::snapshot_read(self, caller, scope)
+        ServicesDouble::snapshot_read(&self.0, caller, scope)
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, loader_self_tests))]
 #[path = "tests/services_double_tests.rs"]
 mod tests;

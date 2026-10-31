@@ -93,8 +93,11 @@ impl DeclaredConns for Recording {
             target.map(str::to_owned),
             trust.map(str::to_owned),
         ));
+        // As the real table: an unresolved target or trust is refused, and so is a trust that is
+        // no trust anchor (here: anything not spelled `PEM…`).
         if (!spec.target_from.is_empty() && target.is_none())
             || (!spec.trust_from.is_empty() && trust.is_none())
+            || trust.is_some_and(|t| !t.starts_with("PEM"))
         {
             return Err(ConnError::Refused);
         }
@@ -1740,6 +1743,57 @@ fn facts_expose_the_peer_certificate_hash() {
     assert_eq!(read(2), (1, Some("ab".repeat(32))), "secured");
 }
 
+/// RED (THE DESIGN §11.12, "on resume the plugin re-issues the SAME handle and receives the stored
+/// result"): `FACTS` wrote the caller's `StreamFacts`, so a replayed handle writes the same facts
+/// again into the `facts` the replay lends, never a kept READY over memory nothing touched. A store
+/// op answering short re-runs on its ticket with its kept answers. The facts are the ones the first
+/// run was answered, not the stream's now (it was upgraded, or closed, later in that run), and their
+/// strings stay readable for the replay after the stream closed.
+#[test]
+fn a_replayed_facts_writes_the_same_facts_again() {
+    use busbar_contract::abi::host::conn::connector::{FactsIn, StreamFacts, StreamIn};
+    let table = Arc::new(Scripted::default());
+    let p = bound_over(&table);
+    let stream = opened_stream(&p, 0).value;
+    let ask = |seq: u32| {
+        // SAFETY: an all-zero `StreamFacts` is a valid value the slot overwrites.
+        let mut f: StreamFacts = unsafe { std::mem::zeroed() };
+        let i = FactsIn {
+            head: head_of::<FactsIn>(service::FACTS, seq),
+            stream,
+            facts: &mut f,
+        };
+        let out = call(&p, CONN_SLOTS.facts, &i);
+        let text = |s: AbiStr| {
+            (!s.ptr.is_null()).then(|| {
+                // SAFETY: the host holds the facts' strings for the caller.
+                String::from_utf8(unsafe { std::slice::from_raw_parts(s.ptr, s.len) }.to_vec())
+                    .unwrap()
+            })
+        };
+        (ready(&out), f.secure, text(f.peer_cert_hash))
+    };
+    *table.facts.lock().unwrap() = Some(ConnFacts {
+        peer_cert: Some(busbar_contract::transport::wire::CertFacts {
+            subject: String::new(),
+            issuer: String::new(),
+            fingerprint: "ab".repeat(32),
+        }),
+        ..ConnFacts::default()
+    });
+    let secured = (true, 1, Some("ab".repeat(32)));
+    assert_eq!(ask(1), secured, "the first run's facts");
+    // The stream's facts move on after the first run asked.
+    *table.facts.lock().unwrap() = Some(ConnFacts::default());
+    assert_eq!(ask(1), secured, "the replayed facts");
+    let c = StreamIn {
+        head: head_of::<StreamIn>(service::CLOSE, 2),
+        stream,
+    };
+    assert!(ready(&call(&p, CONN_SLOTS.close, &c)));
+    assert_eq!(ask(1), secured, "the replayed facts, the stream closed");
+}
+
 /// Q-L16-4: `UpgradeIn::flags`' verify-off reaches the table; an `in` from before the flags
 /// (`UPGRADE_IN_V1_SIZE`) reads them as 0, never past what the head states.
 #[test]
@@ -2275,6 +2329,70 @@ fn a_replayed_read_reply_writes_its_piece_and_bytes_again() {
     let mut fresh = [0_u8; 64];
     let (_, gone) = read_reply(&p, 1, stream, &mut fresh);
     assert_ne!(gone, h, "a forgotten ticket's read is not replayed");
+}
+
+/// One raw `READ` of `stream` into `buf` under handle `seq`.
+fn raw_read(p: &Plugin<TestKind>, seq: u32, stream: u64, buf: &mut [u8]) -> ServiceOut {
+    let i = IoIn {
+        head: head_of::<IoIn>(service::READ, seq),
+        stream,
+        buf: buf.as_mut_ptr(),
+        len: buf.len(),
+    };
+    call(p, CONN_SLOTS.read, &i)
+}
+
+/// RED (THE DESIGN §11.12, "on resume the plugin re-issues the SAME handle and receives the stored
+/// result"): a raw `READ` wrote the caller's memory, so a replayed handle writes the same bytes
+/// again into the buffer the replay lends, never a kept count over memory nothing touched. A store
+/// op answering short re-runs on its ticket with its kept answers: a reply read in more than one
+/// raw `READ` was otherwise parsed from the reused buffer's stale last chunk
+/// (busbar-store-valkey's `list_plane_records`, "invalid RESP reply: unknown reply type"). A replay
+/// buffer below the kept piece is the short-buffer rule's: FAILED, the full size needed, nothing
+/// written, and the kept answer still redeemable. The far end is read once.
+#[test]
+fn a_replayed_raw_read_writes_its_bytes_again() {
+    let table = Arc::new(Scripted::default());
+    table.script.lock().unwrap().extend([
+        (piece(PieceKind::Body, None, None, 6), b"*2\r\n$3".to_vec()),
+        (piece(PieceKind::Body, None, None, 5), b"\r\nabc".to_vec()),
+    ]);
+    let p = bound_over(&table);
+    let stream = opened_stream(&p, 0).value;
+    let mut buf = [0_u8; 16];
+    let first = raw_read(&p, 1, stream, &mut buf);
+    assert!(ready(&first) && first.len == 6);
+    let second = raw_read(&p, 2, stream, &mut buf);
+    assert!(ready(&second) && second.len == 5);
+    // The re-run reuses the buffer, its last chunk still in it.
+    let r1 = raw_read(&p, 1, stream, &mut buf);
+    assert!(ready(&r1) && r1.len == 6);
+    assert_eq!(&buf[..6], b"*2\r\n$3", "the replayed first read's bytes");
+    let r2 = raw_read(&p, 2, stream, &mut buf);
+    assert!(ready(&r2) && r2.len == 5);
+    assert_eq!(&buf[..5], b"\r\nabc", "the replayed second read's bytes");
+    assert!(
+        table.script.lock().unwrap().is_empty(),
+        "every read reached the far end once"
+    );
+    let mut small = [0xEE_u8; 4];
+    let short = raw_read(&p, 1, stream, &mut small);
+    assert_eq!(
+        (short.outcome, short.needed_bytes, short.len),
+        (RawOutcome::of(Outcome::Failed), 6, 0),
+        "a replay buffer below the kept piece is a short answer"
+    );
+    assert_eq!(small, [0xEE; 4], "a short answer writes nothing");
+    let mut again = [0_u8; 6];
+    let r1 = raw_read(&p, 1, stream, &mut again);
+    assert!(
+        ready(&r1) && r1.len == 6,
+        "the kept answer is still redeemable"
+    );
+    assert_eq!(&again, b"*2\r\n$3");
+    drop(super::forget(p.instance(), T));
+    let gone = raw_read(&p, 1, stream, &mut buf);
+    assert!(!ready(&gone), "a forgotten ticket's read is not replayed");
 }
 
 /// RED (audit row 159, connector HIGH 5: "a replaced instance's member programs keep running"):
@@ -3023,13 +3141,55 @@ fn a_need_refused_at_open_is_audited_once() {
     );
 }
 
-/// RED: a need refused for anything else is recorded in the table's own word.
+/// RED: a need refused for anything else is recorded in the table's own word: a trust anchor the
+/// settings DO write that is no anchor (a junk PEM).
 #[test]
 fn a_need_refused_by_the_table_is_audited_in_its_word() {
     let label = "bind-audit-trust-refused";
     let table = Arc::new(Recording::default());
     let p = bound_labelled(Box::leak(Box::new(TRUSTING)), &table, label);
+    assert_eq!(open_with(&p, br#"{"ca":"junk"}"#), Outcome::Ready);
+    assert_eq!(
+        refused_for(label),
+        vec![format!(
+            "{:?}",
+            crate::observe::BindRefusal::Need {
+                need: 0,
+                reason: "refused"
+            }
+        )]
+    );
+}
+
+/// RED (secret-vault without `ca_cert_pem`): a need whose `trust_from` names a settings path the
+/// operator did not write is refused by the table (fail-closed, no connection on it) but is NO
+/// audited refusal, on `open` or on any `refresh`: a correct config that names no CA is not a
+/// refused need in the operator's audit log. A junk anchor written later is audited. RED before:
+/// every `open` and `refresh` of the healthy config recorded a `BindRefusal::Need`.
+#[test]
+fn an_unwritten_settings_trust_is_refused_but_not_audited() {
+    let label = "bind-audit-trust-unwritten";
+    let table = Arc::new(Recording::default());
+    let p = bound_labelled(Box::leak(Box::new(TRUSTING)), &table, label);
     assert_eq!(open_with(&p, br#"{"other":"PEM-C"}"#), Outcome::Ready);
+    assert_eq!(refresh_with(&p, br#"{"other":"PEM-D"}"#), Outcome::Ready);
+    assert!(
+        refused_for(label).is_empty(),
+        "an unwritten optional anchor is no audited refusal: {:?}",
+        refused_for(label)
+    );
+    // Still declared without a trust, for the table to refuse (fail-closed).
+    let trusts: Vec<Option<String>> = table
+        .declared
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(owner, need, ..)| (*owner, *need) == (p.instance(), NeedId(0)))
+        .map(|(.., trust)| trust.clone())
+        .collect();
+    assert_eq!(trusts, vec![None, None]);
+    // A junk anchor is a refusal, audited.
+    assert_eq!(refresh_with(&p, br#"{"ca":"junk"}"#), Outcome::Ready);
     assert_eq!(
         refused_for(label),
         vec![format!(

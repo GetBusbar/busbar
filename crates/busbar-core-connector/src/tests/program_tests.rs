@@ -1016,3 +1016,68 @@ fn a_hung_carrier_read_on_one_lease_never_blocks_the_members_other_callers() {
         c.close(OWNER, a).unwrap();
     });
 }
+
+/// RED (T5, stdio TS1): A RETIRED MEMBER'S KEY IS SIGNALLED RETIRED. A member a re-declaration
+/// changed is retired; once its program is shut, its carrier is handed a [`DEST_RETIRED`] dial
+/// carrying the retired member's supervision key (and only its), so a supervising carrier forgets
+/// the key instead of holding it for the process's life. A member the re-declaration kept is not.
+///
+/// [`DEST_RETIRED`]: busbar_contract::abi::transport::DEST_RETIRED
+#[test]
+fn a_retired_members_supervision_key_is_signalled_retired_once() {
+    worker().block_on(async {
+        let door = Arc::new(TestDoor::identity("bytes"));
+        let view = Transports::new(vec![Entry {
+            door: Arc::clone(&door) as Arc<dyn crate::framer::FramerDoor>,
+            alpn: Vec::new(),
+        }])
+        .unwrap();
+        let c = Connector::serving(
+            view,
+            Arc::new(crate::LiteralsOnly(crate::guard::Guard::default())),
+            None,
+            Arc::new(|_, _| {}),
+        );
+        declare(
+            &c,
+            &[("kept", sh(ECHO_PID, &[])), ("changed", sh(ECHO_PID, &[]))],
+        )
+        .unwrap();
+        for name in ["kept", "changed"] {
+            let id = open(&c, name, b"").unwrap();
+            generation(&c, id).await;
+            c.close(OWNER, id).unwrap();
+        }
+        let keys = door.dialled_keys.lock().unwrap().clone();
+        assert!(door.retired_keys.lock().unwrap().is_empty());
+        declare(
+            &c,
+            &[
+                ("kept", sh(ECHO_PID, &[])),
+                ("changed", sh(ECHO_PID, &[("NEW", "1")])),
+            ],
+        )
+        .unwrap();
+        assert_eq!(
+            *door.retired_keys.lock().unwrap(),
+            [keys[1]],
+            "the changed member's old key, once: dialled {keys:?}"
+        );
+        declare(
+            &c,
+            &[
+                ("kept", sh(ECHO_PID, &[])),
+                ("changed", sh(ECHO_PID, &[("NEW", "1")])),
+            ],
+        )
+        .unwrap();
+        assert_eq!(
+            door.retired_keys.lock().unwrap().len(),
+            1,
+            "a kept member is not retired"
+        );
+    });
+}
+
+#[path = "program_retirement_tests.rs"]
+mod retirement_order;

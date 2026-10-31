@@ -1538,7 +1538,7 @@ fn presented(answer: Option<&busbar_contract::auth_calls::Fields>) -> Option<Str
 fn linked_mint_plugin(table: &std::sync::Arc<TokenEndpoint>) -> super::OutboundAuths {
     let dispatcher = std::sync::Arc::new(crate::root::loader::dispatch::Dispatcher::with_services(
         crate::root::loader::dispatch::DispatchConfig::default(),
-        crate::root::serve::LateServices::new(),
+        crate::root::serve::LateServices::new().served(),
     ));
     assert!(
         dispatcher.host_services().is_some(),
@@ -2551,21 +2551,23 @@ pub(crate) mod tool_door {
             let dispatcher = Arc::new(Dispatcher::with_services(
                 DispatchConfig::default(),
                 Arc::new(Clocked {
-                    inner: Arc::clone(&late) as Arc<dyn busbar_contract::services::HostServices>,
+                    inner: late.served(),
                     wall: Arc::clone(&wall),
                 }),
             ));
             // The transport doors bind on this dispatcher and reach its host services (the clock
             // the program carrier supervises a member's program by), as main.rs hands the process's
-            // one dispatcher to `root::doors` before any door binds.
-            crate::root::doors::install_dispatcher(Arc::clone(&dispatcher));
+            // one dispatcher to `root::doors` before any door binds. The rig is a composition of its
+            // own, so they are opened on it directly (`root::connector::entries_on`), never through the process's
+            // transport dispatcher, which another cell in this process may have taken first.
             crate::root::connector::install_io(&dispatcher);
             // The host lends the dispatcher its seal (Part 2 #54), as the root does at boot.
             let _ = dispatcher.lend_seal(busbar_kernel::seal::lend());
             // Its connection reads through a ticket (the door's `exchange`) wake on the dispatcher.
             let connector = busbar_core_connector::process::build_with_secrets(
                 || {
-                    crate::root::connector::entries(
+                    crate::root::connector::entries_on(
+                        &dispatcher,
                         crate::LINKED_TRANSPORT_DOORS,
                         &busbar_contract::transport::TransportSettings::default(),
                     )
@@ -3031,6 +3033,22 @@ pub(crate) mod tool_door {
             bytes: &[u8],
         ) -> busbar_contract::services::Stored {
             self.inner.session_emit(caller, session, bytes)
+        }
+        fn ticket_mint(
+            &self,
+            caller: &busbar_contract::services::Caller,
+            unit: Option<u64>,
+            ttl_secs: u64,
+            record: &[u8],
+        ) -> busbar_contract::services::Stored {
+            self.inner.ticket_mint(caller, unit, ttl_secs, record)
+        }
+        fn ticket_take(
+            &self,
+            caller: &busbar_contract::services::Caller,
+            unit: Option<u64>,
+        ) -> busbar_contract::services::Stored {
+            self.inner.ticket_take(caller, unit)
         }
         fn random_fill(&self, len: u64) -> busbar_contract::services::Stored {
             self.inner.random_fill(len)
@@ -4716,7 +4734,7 @@ pub(crate) mod door_boundary {
             "messages": [{"role": "user", "content": "hi"}],
             "max_tokens": 16
         });
-        let mut routes = busbar_kernel::base_data_route_method_view(&rig.app);
+        let mut routes = busbar_kernel_testkit::routes::base_data_route_method_view(&rig.app);
         routes.extend(rig.door_table.iter().cloned());
         let mut walked: Vec<String> = Vec::new();
         for (pattern, verb, auth) in &routes {
@@ -4838,7 +4856,7 @@ pub(crate) mod door_boundary {
         );
 
         // Every route the data router answers: the kernel's core table and the door's.
-        let mut routes = busbar_kernel::base_data_route_method_view(&rig.app);
+        let mut routes = busbar_kernel_testkit::routes::base_data_route_method_view(&rig.app);
         routes.extend(rig.door_table.iter().cloned());
         let admissible: Vec<String> = rig
             .door_table
@@ -7090,6 +7108,23 @@ pub(crate) mod program_member {
             "1",
             "the child's own request was answered once: {second}"
         );
+    }
+
+    /// RED: a rig is a composition of its own, so its program registration is served over the
+    /// transports it opened on its own dispatcher, whatever another composition in the same process
+    /// did first. Here the process's transport dispatcher was taken before the rig was built (as a
+    /// sibling cell that opens the linked doors on it does, `registration_pin`): the rig's program
+    /// carrier must still spawn its child on the rig's dispatcher, not on the one the process held.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_program_registration_is_served_on_its_own_rig_whatever_the_process_opened_first() {
+        let _one = PUBLISHING.lock().await;
+        let _first = crate::root::doors::dispatcher();
+        let rig = rig_tools("door-program-member-own", 0, section(), &|app| app);
+        let (status, body) = send(&rig.router, Some(&rig.token), CALL).await;
+        assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
+        let text = text(&body);
+        assert!(text.starts_with("from the server "), "{text}");
+        assert_eq!(fact(&text, "calls"), "1", "{text}");
     }
 }
 

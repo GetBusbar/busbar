@@ -29,6 +29,7 @@ serde = { workspace = true }
 serde_yaml = { workspace = true }
 
 [dev-dependencies]
+busbar-kernel-testkit = { path = "../busbar-kernel-testkit" }
 busbar-kernel = { path = "../busbar-kernel", default-features = false, features = ["test-support"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "time", "sync", "io-util", "test-util"] }
 axum = { workspace = true, features = ["http1"] }

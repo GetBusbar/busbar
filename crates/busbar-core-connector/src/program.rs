@@ -119,10 +119,14 @@ struct State {
     /// The last piece handed to the leases did not end its frame.
     mid_frame: bool,
     retired: bool,
+    /// Its carrier was told its supervision key is retired ([`Member::end_retired`]).
+    key_retired: bool,
     next_lease: u64,
     leases: HashMap<u64, Inbox>,
     /// A lease is spawning the next generation, with no lock held: another open waits for it.
     spawning: bool,
+    /// Spawn attempts and connections whose close has not returned yet.
+    programs_outstanding: usize,
     /// The callers that found the program's connection out with another lease, woken once it is
     /// back.
     missed: Vec<Waker>,
@@ -134,7 +138,7 @@ struct State {
 /// THE MEMBER'S LOCK, held. NO PLUGIN CODE RUNS UNDER IT (`BUSBAR-1.6.0.md` §11.13 M1): a
 /// connection taken out of the member to be closed is closed (its carrier's ends crossed) as this
 /// lets the lock go, never under it.
-struct Locked<'m>(Option<MutexGuard<'m, State>>);
+struct Locked<'m>(Option<MutexGuard<'m, State>>, &'m Member);
 
 impl std::ops::Deref for Locked<'_> {
     type Target = State;
@@ -159,6 +163,9 @@ impl Drop for Locked<'_> {
             .unwrap_or_default();
         for conn in doomed {
             conn.close();
+            // Account for each completed close even if a later carrier close unwinds.
+            self.1.lock().programs_outstanding -= 1;
+            self.1.end_retired();
         }
     }
 }
@@ -191,8 +198,13 @@ struct Spawning<'m> {
 impl Drop for Spawning<'_> {
     fn drop(&mut self) {
         if self.armed {
-            self.member.lock().spawning = false;
+            {
+                let mut st = self.member.lock();
+                st.spawning = false;
+                st.programs_outstanding -= 1;
+            }
             self.member.spawned.notify_all();
+            self.member.end_retired();
         }
     }
 }
@@ -299,9 +311,11 @@ impl Member {
                 generation: 0,
                 mid_frame: false,
                 retired: false,
+                key_retired: false,
                 next_lease: 1,
                 leases: HashMap::new(),
                 spawning: false,
+                programs_outstanding: 0,
                 missed: Vec::new(),
                 doomed: Vec::new(),
             }),
@@ -323,11 +337,14 @@ impl Member {
     }
 
     fn lock(&self) -> Locked<'_> {
-        Locked(Some(
-            self.state
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner),
-        ))
+        Locked(
+            Some(
+                self.state
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner),
+            ),
+            self,
+        )
     }
 
     /// THE HAND-OFF (`BUSBAR-1.6.0.md` §11.13 M1). Take `generation`'s connection out of the
@@ -349,12 +366,12 @@ impl Member {
             st.miss(missed);
             return (st, None);
         };
-        drop(st);
         let mut out = Out {
             member: self,
             generation,
             conn: Some(conn),
         };
+        drop(st);
         let r = drive(out.conn.as_mut().expect("the connection is out"));
         let conn = out.conn.take().expect("the connection is out");
         let mut st = self.lock();
@@ -455,11 +472,12 @@ impl Member {
             };
             // The carrier's `dial` crosses with no lock held; another open meanwhile waits for it.
             st.spawning = true;
-            drop(st);
+            st.programs_outstanding += 1;
             let mut spawning = Spawning {
                 member: self,
                 armed: true,
             };
+            drop(st);
             let spawned = Connection::spawn(
                 &self.via,
                 &self.program,
@@ -486,7 +504,12 @@ impl Member {
                     });
                     st.mid_frame = false;
                 }
-                Err(f) => return Err(map(&f)),
+                Err(f) => {
+                    st.programs_outstanding -= 1;
+                    drop(st);
+                    self.end_retired();
+                    return Err(map(&f));
+                }
             }
         }
         let generation = st.generation;
@@ -723,8 +746,10 @@ impl Member {
         {
             self.fan.wake_all();
         }
-        if st.retired && st.leases.is_empty() {
-            st.kill();
+        let ending = st.retired && st.leases.is_empty();
+        drop(st);
+        if ending {
+            self.end_retired();
         }
     }
 
@@ -733,8 +758,34 @@ impl Member {
     pub(crate) fn retire(&self) {
         let mut st = self.lock();
         st.retired = true;
-        if st.leases.is_empty() {
+        let ending = st.leases.is_empty();
+        drop(st);
+        if ending {
+            self.end_retired();
+        }
+    }
+
+    /// A RETIRED MEMBER WITH NO LEASE ENDS, once: its program is shut, then its carrier is told
+    /// its supervision key is retired (`abi::transport::DEST_RETIRED`), so a supervising carrier
+    /// forgets it. Both cross the carrier with no host lock held.
+    fn end_retired(&self) {
+        {
+            let mut st = self.lock();
+            if !st.retired || !st.leases.is_empty() {
+                return;
+            }
             st.kill();
+        }
+        let signal = {
+            let mut st = self.lock();
+            st.retired
+                && st.leases.is_empty()
+                && !st.spawning
+                && st.programs_outstanding == 0
+                && !std::mem::replace(&mut st.key_retired, true)
+        };
+        if signal {
+            crate::carrier::Carried::retire_key(&self.via.door, &self.via.io, self.supervision_key);
         }
     }
 }

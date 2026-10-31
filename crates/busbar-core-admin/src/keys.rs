@@ -42,15 +42,16 @@ use busbar_kernel::diagnostics::{
     diag_debug, diag_error, ADMIN_CREATEKEY_MALFORMED_BODY, ADMIN_STORE_OPERATION_FAILED,
     ADMIN_STORE_TASK_JOIN_FAILED, ADMIN_UPDATEKEY_MALFORMED_BODY, CREATEKEY_UNKNOWN_POOL,
 };
+use busbar_kernel::governance::claims::ClaimSet;
 use busbar_kernel::governance::{NewKeySpec, VirtualKey};
 
-/// Process-wide gate serializing the existence-sensitive critical sections of the key store.
+/// Per-key-id gate serializing the existence-sensitive critical sections of the key store.
 ///
 /// `delete_key` is the only operation that flips a key from existing to absent, but its check-then-act
 /// (`usage_for` lookup → `delete_key`) and `update_key`'s check-then-act (the store's `get_key` →
 /// `put_key` UPSERT) BOTH read existence and then write, with no rows-affected signal from the store
 /// to make either atomic. Two hazards follow, and BOTH are closed by serializing every such section
-/// behind this one async mutex:
+/// on the key id it touches:
 /// - Two concurrent DELETEs of one id would otherwise both observe `Some` and both return 200 (the
 ///   second SQL delete no-ops) — a misleading audit trail of two revocations of one row.
 /// - A PATCH interleaved with a DELETE would otherwise RESURRECT the revoked key: the PATCH reads
@@ -63,22 +64,24 @@ use busbar_kernel::governance::{NewKeySpec, VirtualKey};
 /// (`governance/state.rs`) EXISTS and is what the PATCH runs, but it still finishes with a `put_key`
 /// UPSERT, so it is not that fix and the race it would close is still open. This gate is the
 /// admin-side guard that
-/// closes the resurrection race from the admin surface. Both ops are admin-only and rare, so a
-/// single global lock has no meaningful cost.
+/// closes the resurrection race from the admin surface.
 ///
-/// CANCELLATION SAFETY: this is a `std::sync::Mutex`, NOT a `tokio::sync::Mutex`, and the guard
+/// PER KEY ID, AND NO LOCK ACROSS THE STORE (§11.13 M1): every hazard above is two operations on
+/// ONE key id, so the gate is a claim on that id ([`ClaimSet`]), not a process-wide lock. The
+/// set's mutex is held only to claim and release an id; the store calls run with no lock held, so
+/// a store call that does not come back holds up only the operations on its own key.
+///
+/// CANCELLATION SAFETY: the claim is a blocking wait, NOT an async one, and it
 /// is acquired INSIDE each operation's `spawn_blocking` closure — bound to the SYNCHRONOUS store
 /// mutation, not to the async handler future. An earlier design held an async guard across the
 /// cancellable outer `.await`; if the client dropped the request, the guard was dropped while the
 /// already-scheduled (and thus uncancellable) `spawn_blocking` closure kept running its lookup→write,
 /// re-opening the very resurrection / double-revoke races this gate closes. Acquiring the lock inside
 /// the blocking closure means the gate is held for the entire lookup→write regardless of any
-/// outer-future drop: `spawn_blocking`, once scheduled, runs to completion. A `std::sync::Mutex` is
-/// used precisely because the lock is taken on a blocking thread with no async runtime in scope.
-/// A poisoned lock (a panic in another holder while the gate was held) is recovered with
-/// `into_inner()` — the guarded data is `()`, so there is no inconsistent state to fear, and refusing
-/// to serialize would be worse than proceeding.
-static EXISTENCE_GATE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+/// outer-future drop: `spawn_blocking`, once scheduled, runs to completion. A blocking claim is
+/// used precisely because it is taken on a blocking thread with no async runtime in scope. A
+/// holder that panics releases its claim as it unwinds.
+static EXISTENCE_GATE: ClaimSet<String> = ClaimSet::new();
 
 /// `POST /keys` body (1.5.0 signed-token keys): PURE AUTH + a signed expiring token. A minted
 /// key is a busbar-signed `{sub, exp, kid}` token, returned ONCE. No rpm/tpm/budget on a key - all
@@ -613,7 +616,7 @@ const UNBOUND_BUCKET_LABEL: &str = "(no group)";
 
 /// THE `limits.max_keys_per_principal` CHOKE POINT — the one place any path that can add a key to a
 /// principal's bucket asks "is this bucket already full?". Called by the MINT (`POST /keys`) and by
-/// the REBIND (`PATCH /keys/{id}`), both from inside their `EXISTENCE_GATE`d blocking section, so
+/// the REBIND (`PATCH /keys/{id}`), both from inside their `config_transaction`'s deferred step, so
 /// the count and the write that follows it are one atomic critical region. A store failure
 /// propagates and the caller FAILS CLOSED — never admit past a ceiling we could not verify.
 ///
@@ -900,15 +903,13 @@ pub(crate) async fn create_key(
     // the pre-lock extractor `app`. A settings apply landing between the request's snapshot and
     // this enforcement can no longer make the mint enforce a stale ceiling: there is no older
     // snapshot in scope to read.
-    // * The cap COUNT and the mint run together in ONE `spawn_blocking` closure under
-    // `EXISTENCE_GATE`, so N concurrent callers at the boundary are serialized — each sees the
-    // writes of those before it and only the first `cap - current` mints succeed. `>= cap` is a
+    // * The cap COUNT and the mint run together in ONE deferred step of this transaction, so N
+    // concurrent callers at the boundary are serialized — each sees the writes of those before it
+    // and only the first `cap - current` mints succeed. (No `EXISTENCE_GATE` claim: the minted id
+    // is fresh, so no other operation can name it yet.) `>= cap` is a
     // `409` (a retry can't fix it without deleting a key), and a store failure counting keys
     // FAILS CLOSED — never mint past a ceiling we could not verify.
     //
-    // LOCK ORDER: `config_transaction` holds the async config lock across the whole section and
-    // takes `EXISTENCE_GATE` (a std Mutex) only INSIDE the blocking closure, never across an await —
-    // one global acquisition order, no cycle.
     if req.group.is_none() && req.parent.is_some() {
         // `parent` without `group` has nothing to root — a loud 400 beats silently ignoring it.
         return key_err(
@@ -1028,7 +1029,7 @@ pub(crate) async fn create_key(
                 txn_actor.clone(),
             )
         });
-        // The blocking half: cap count + mint, one `spawn_blocking`, one `EXISTENCE_GATE` hold.
+        // The blocking half: cap count + mint, one deferred step of the transaction.
         let mint = move || {
             // RUNS AFTER the commit-and-swap (it is `commit_then`'s follow-on step) and BEFORE the
             // fallible mint below, so the record exists whatever the mint does.
@@ -1041,7 +1042,6 @@ pub(crate) async fn create_key(
                 );
                 installed.record_version(&actor, &format!("group.provision group:{group} (auto, parent {parent})"));
             }
-            let _existence_guard = EXISTENCE_GATE.lock().unwrap_or_else(|e| e.into_inner());
             let minted = (|| -> busbar_kernel::governance::RecordStoreResult<MintOutcome> {
                 if let Some((group, n)) = check_key_cap(&gov, cap, cap_group.as_deref(), None)? {
                     return Ok(MintOutcome::AtCap { group, n, cap });
@@ -1327,7 +1327,7 @@ pub(crate) async fn update_key(
         // The anti-sprawl ceiling, read from the FRESH post-lock snapshot exactly as the mint does.
         let cap = current.max_keys_per_principal;
         Ok(txn.store_write(move || {
-            let _existence_guard = EXISTENCE_GATE.lock().unwrap_or_else(|e| e.into_inner());
+            let _existence_guard = EXISTENCE_GATE.claim(id.clone());
             let outcome = (|| -> busbar_kernel::governance::RecordStoreResult<UpdateOutcome> {
                 // ONE read of the pre-image, inside the gate: it answers If-Match staleness,
                 // existence, AND the cap guard below, so the three cannot disagree about which
@@ -1695,7 +1695,7 @@ pub(crate) async fn rotate_key(
     }
     let res = tokio::task::spawn_blocking(
         move || -> Result<RotateOutcome, busbar_kernel::governance::RecordStoreError> {
-            let _existence_guard = EXISTENCE_GATE.lock().unwrap_or_else(|e| e.into_inner());
+            let _existence_guard = EXISTENCE_GATE.claim(gid.clone());
             // A tombstoned row is not rotatable (`GovState::rotate_key`), so it answers unknown
             // before any ceiling is asked about it.
             let Some(key) = gov
@@ -1821,7 +1821,7 @@ pub(crate) async fn revoke_key(
             // update_key/rotate_key/delete_key. Without it, a concurrent `delete_key` can dispose of the
             // key in the window between this check-then-act, producing a phantom `key.revoke APPLIED`
             // audit record for a key another operation already fully disposed of (audit non-repudiation).
-            let _existence_guard = EXISTENCE_GATE.lock().unwrap_or_else(|e| e.into_inner());
+            let _existence_guard = EXISTENCE_GATE.claim(id_for_task.clone());
             // O(1) row lookup instead of a full-table `all_keys()` scan filtered by id.
             let exists = gov.store().get_key(&id_for_task)?.is_some();
             if !exists {
@@ -2083,10 +2083,10 @@ pub(crate) async fn delete_key(
     // two concurrent DELETEs of the same id both observe `Some` and both return 200 (the second SQL
     // delete no-ops) — a misleading audit trail implying two revocations of one row. The store-layer
     // `changes()` signal does not exist, so the race is closed here instead: serialize
-    // every delete's lookup→delete critical section behind the process-wide `EXISTENCE_GATE`. The same
+    // every delete's lookup→delete critical section on its key id in `EXISTENCE_GATE`. The same
     // gate also serializes `update_key`'s lookup→put, so a PATCH cannot resurrect a key this DELETE
     // removes (see `EXISTENCE_GATE`). The loser of a delete race observes `Ok(None)` and correctly
-    // returns 404. Deletes are admin-only and rare, so a single global lock has no meaningful cost.
+    // returns 404. Operations on other keys are not held up (§11.13 M1).
     //
     // CANCELLATION SAFETY: the gate is locked INSIDE the `spawn_blocking` closure, so the whole
     // lookup→delete runs under the lock on the blocking thread. `spawn_blocking` is uncancellable once
@@ -2101,7 +2101,7 @@ pub(crate) async fn delete_key(
     let gov = gov.clone();
     let id_for_task = id.clone();
     let res = tokio::task::spawn_blocking(move || {
-        let _existence_guard = EXISTENCE_GATE.lock().unwrap_or_else(|e| e.into_inner());
+        let _existence_guard = EXISTENCE_GATE.claim(id_for_task.clone());
         // The key RECORD (not just existence) is read under the gate: the If-Match compare must be
         // atomic with the delete, exactly like PATCH's compare-and-put. O(1) row lookup instead of
         // a full-table `all_keys()` scan filtered by id.

@@ -292,7 +292,9 @@ async fn callback(
     };
     let principal = match login_step(app, &cookie.method, LoginStep::Complete(request)).await {
         LoginOutcome::Identify(p) => p,
-        LoginOutcome::Outage => return clear_and(provider_unavailable(&cookie.method)),
+        LoginOutcome::Outage { retry_after_secs } => {
+            return clear_and(provider_unavailable(&cookie.method, retry_after_secs))
+        }
         // The IdP's answer failed the login's security check: 1.5.5's verification page, the one
         // the state mismatch renders.
         LoginOutcome::SecurityCheckFailed => return clear_and(security_check_failed()),
@@ -441,7 +443,9 @@ async fn credential_submit(
     let outcome = login_step(app, &cookie.method, LoginStep::Complete(request)).await;
     let principal = match outcome {
         LoginOutcome::Identify(p) => p,
-        LoginOutcome::Outage => return clear_and(provider_unavailable(&cookie.method)),
+        LoginOutcome::Outage { retry_after_secs } => {
+            return clear_and(provider_unavailable(&cookie.method, retry_after_secs))
+        }
         LoginOutcome::Reject => {
             return clear_and(error_page(
                 StatusCode::UNAUTHORIZED,
@@ -657,24 +661,40 @@ const LOGOUT_ICON: &str = r##"<svg viewBox="0 0 16 16" fill="none" aria-hidden="
 
 /// The page for an identity provider that could not answer: a login plugin that answered
 /// `LOGIN_OUTAGE` ([`LoginOutcome::Outage`]), for an IdP that was unreachable or answered 5xx or
-/// 429. 503, so the client may retry (owner ruling 2026-10-27; 1.5.5 answered 502), and the
-/// refusal is logged with its cause and the login method.
-fn provider_unavailable(method: &str) -> Response {
+/// 429. 503, so the client may retry (owner ruling 2026-10-27; 1.5.5 answered 502), carrying the
+/// IdP's own `Retry-After` when the plugin stated one (owner-signed 2026-10-30, OWNER-QUEUE.md item
+/// "IdP errors"), and the refusal is logged with its cause and the login method.
+fn provider_unavailable(method: &str, retry_after_secs: Option<u64>) -> Response {
     tracing::warn!(
         method = %method,
         cause = "identity provider unavailable",
         "sign-in refused (503, retryable): the login plugin answered that the identity provider \
          could not answer"
     );
-    provider_unreachable()
+    provider_unreachable(retry_after_secs)
 }
 
-/// How long [`provider_unavailable`]'s `Retry-After` asks the client to wait, in seconds.
+/// How long [`provider_unavailable`]'s `Retry-After` asks the client to wait, in seconds, when the
+/// login plugin stated no delay of the IdP's.
 pub const PROVIDER_RETRY_AFTER_SECS: u64 = 5;
 
-/// The page [`provider_unavailable`] renders: 503 with `Retry-After`. It never counts as a failed
-/// login: nothing was declined.
-fn provider_unreachable() -> Response {
+/// The longest `Retry-After` [`provider_unavailable`] sends, in seconds, whatever the IdP asked.
+pub const PROVIDER_RETRY_AFTER_MAX_SECS: u64 = 3600;
+
+/// The `Retry-After` an outage answers with: the IdP's delay as the plugin stated it, clamped to
+/// [1, [`PROVIDER_RETRY_AFTER_MAX_SECS`]] (never trusted past the clamp); none stated is
+/// [`PROVIDER_RETRY_AFTER_SECS`].
+#[must_use]
+pub fn provider_retry_after(stated: Option<u64>) -> u64 {
+    stated.map_or(PROVIDER_RETRY_AFTER_SECS, |s| {
+        s.clamp(1, PROVIDER_RETRY_AFTER_MAX_SECS)
+    })
+}
+
+/// The page [`provider_unavailable`] renders: 503 with `Retry-After`
+/// ([`provider_retry_after`] of the IdP's stated delay). It never counts as a failed login:
+/// nothing was declined.
+fn provider_unreachable(retry_after_secs: Option<u64>) -> Response {
     let mut page = error_page(
         StatusCode::SERVICE_UNAVAILABLE,
         "Couldn't reach your provider",
@@ -683,7 +703,7 @@ fn provider_unreachable() -> Response {
     );
     page.headers_mut().insert(
         header::RETRY_AFTER,
-        header::HeaderValue::from(PROVIDER_RETRY_AFTER_SECS),
+        header::HeaderValue::from(provider_retry_after(retry_after_secs)),
     );
     page
 }
