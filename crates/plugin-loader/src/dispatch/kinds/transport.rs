@@ -95,6 +95,9 @@ pub struct TransportFacts {
     /// The auth points it offers, its Statement's `extensions` record
     /// (`abi::transport::EXT_OFFERED_POINTS`): `{Head, HeadBody}` when it states none.
     pub offered: busbar_contract::abi::transport::AuthPoints,
+    /// It renders sealed values: its Statement's `extensions` states the record
+    /// (`abi::transport::EXT_SEALED_VALUES`, TSEAL).
+    pub seals: bool,
 }
 
 /// WHAT A COMPILED-IN TRANSPORT DOOR STATES, read off its Statement without binding it (no
@@ -190,6 +193,8 @@ fn tail_facts(st: &Statement) -> Result<TransportFacts, String> {
             .ok_or("the Statement's extensions are longer than any blob may be")?
     };
     let offered = check_offered_points(extensions).map_err(broke)?;
+    let seals =
+        busbar_contract::abi::transport::check::check_sealed_values(extensions).map_err(broke)?;
     let claims: Vec<&'static str> = names
         .iter()
         .map(|c| owned(*c, "claim"))
@@ -236,6 +241,7 @@ fn tail_facts(st: &Statement) -> Result<TransportFacts, String> {
         accepts: tail.facts & busbar_contract::abi::transport::FACT_ACCEPTS != 0,
         status_rows: status.iter().map(|r| (r.claim, r.lo, r.hi)).collect(),
         offered,
+        seals,
         role: tail.role,
         claims,
         upgrades,

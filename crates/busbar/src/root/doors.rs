@@ -133,6 +133,8 @@ pub struct Dispatched {
     facts: DoorFacts,
     /// Its tail states `FACT_ACCEPTS`.
     accepts: bool,
+    /// Its Statement states it renders sealed values (TSEAL, `abi::transport::EXT_SEALED_VALUES`).
+    seals: bool,
     on: Arc<Dispatcher>,
 }
 
@@ -334,6 +336,7 @@ impl Dispatched {
             live,
             facts,
             accepts,
+            seals: stated.seals,
             on,
         })
     }
@@ -410,6 +413,10 @@ impl FramerDoor for Dispatched {
 
     fn instance(&self) -> Option<u64> {
         Some(self.live.plugin.instance().0)
+    }
+
+    fn seals_values(&self) -> bool {
+        self.seals
     }
 
     fn side(&self) -> Option<Box<dyn Side>> {

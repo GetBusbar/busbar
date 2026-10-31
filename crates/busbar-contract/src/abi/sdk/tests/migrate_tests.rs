@@ -51,7 +51,9 @@ fn call(settings: &[u8], from: &'static [u8], buf: &mut [u8]) -> (Outcome, Vec<u
     input.err_buf = buf.as_mut_ptr();
     input.err_cap = buf.len();
     let mut out = OutHead::default();
-    let outcome = Migrator::<Stub>::call(std::ptr::null_mut(), &input, &mut out);
+    // SAFETY: no instance (`migrate` reads none), and `input`'s buffers are this test's own, live
+    // for the call.
+    let outcome = unsafe { Migrator::<Stub>::call(std::ptr::null_mut(), &input, &mut out) };
     let named = if out.error.ptr.is_null() {
         Vec::new()
     } else {

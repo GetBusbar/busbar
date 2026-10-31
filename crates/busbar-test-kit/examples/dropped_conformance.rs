@@ -26,6 +26,11 @@
 //!   * RED ARM, KEPT: the same sources built with `-DBUSBAR_PLUGIN_KIND_ABI=<host ± 1>` are refused
 //!     at pack time and at load (`KindAbi`, naming the rebuild); a manifest stating another kind ABI,
 //!     or another kind, is refused before `dlopen`.
+//!   * RED ARM, LAYOUT: the same sources built with `-DBUSBAR_PLUGIN_LAYOUT=<another fingerprint>`
+//!     (the source states `.layout = BUSBAR_PLUGIN_LAYOUT`, defaulting to its kind's
+//!     `BB_<KIND>_LAYOUT_FINGERPRINT`) are refused at pack time and at load (`KindLayout`). A
+//!     source with no `BUSBAR_PLUGIN_LAYOUT` hook cannot be rebuilt at another layout: the arm
+//!     SKIPS, printing why.
 //!
 //! An example, not a test: busbar's own suite has no plugin to point it at. plugin-ci.yml runs it
 //! (`cargo run --example dropped_conformance`) over the plugin it built, and requires both proofs
@@ -35,7 +40,12 @@
 fn main() {
     a_plugin_built_from_the_c_header_alone_passes_its_kinds_script();
     a_plugin_built_against_another_kind_abi_is_refused();
-    println!("dropped conformance: 2 proofs passed");
+    let proofs = if a_plugin_built_against_another_kind_layout_is_refused() {
+        3
+    } else {
+        2
+    };
+    println!("dropped conformance: {proofs} proofs passed");
 }
 
 use std::mem::MaybeUninit;
@@ -299,6 +309,11 @@ fn resolve(p: &Plugin<Secret>, settings: &[u8]) -> Resolved {
 ///   `unknown`         resolve settings naming a secret it does not hold (FAILED, NOT_FOUND)
 ///   `malformed`       resolve settings that are not a reference (FAILED, INVALID)
 ///   `bad_references`  optional: more resolve settings that are not a reference (FAILED, INVALID)
+///   `empty`           optional: resolve settings naming a secret whose value is EMPTY (FAILED,
+///                     INVALID, no material)
+///
+/// and, at the top level, `credentials`: the canary's plant list, REQUIRED for a secret plugin
+/// (an empty list would pass the canary vacuously).
 fn secret_script(lib: &Path, stated: &[u8], inputs: &serde_json::Value) {
     let s = &inputs["secret"];
     assert!(
@@ -329,6 +344,20 @@ fn secret_script(lib: &Path, stated: &[u8], inputs: &serde_json::Value) {
             .map(|v| v.as_str().expect("`bad_references` entries are strings"))
             .collect(),
     };
+    // Optional: absent (or null), no empty secret is resolved.
+    let empty: Option<&str> = match &s["empty"] {
+        serde_json::Value::Null => None,
+        v => Some(
+            v.as_str()
+                .expect("conformance.json: `empty` must be a string"),
+        ),
+    };
+    let planted = credentials(inputs);
+    assert!(
+        !planted.is_empty(),
+        "conformance.json names no `credentials`: a secret plugin's canary needs the values its \
+         settings carry (`\"credentials\": [\"<value>\", ...]`), or it proves nothing"
+    );
 
     let (p, _d) = load::<Secret>(lib, stated).expect("the dropped-in secret plugin loads");
     assert_eq!(p.kind(), KindCode::Secret);
@@ -457,6 +486,26 @@ fn secret_script(lib: &Path, stated: &[u8], inputs: &serde_json::Value) {
         );
     }
 
+    if let Some(e) = empty {
+        let r = resolve(&p, e.as_bytes());
+        heard("resolve, empty", &r.c);
+        assert_eq!(
+            r.c.outcome,
+            Outcome::Failed,
+            "an EMPTY secret is no secret: {}",
+            line("resolve, empty", &r.c)
+        );
+        assert_eq!(
+            r.kind,
+            secret::ERROR_KIND_INVALID,
+            "an EMPTY secret's value is INVALID"
+        );
+        assert!(
+            r.got.is_empty() && r.c.lease == 0,
+            "a FAILED resolve carries nothing"
+        );
+    }
+
     // No lease was granted: a release of one is refused.
     let r = release(&p, 1);
     assert_eq!(r.outcome, Outcome::Refused, "{}", line("release", &r));
@@ -510,7 +559,7 @@ fn secret_script(lib: &Path, stated: &[u8], inputs: &serde_json::Value) {
     );
     assert!(r.got.is_empty());
 
-    for planted in credentials(inputs) {
+    for planted in planted {
         for (step, text) in &said {
             assert!(
                 !text.windows(planted.len()).any(|w| w == planted.as_slice()),
@@ -621,4 +670,58 @@ fn a_plugin_built_against_another_kind_abi_is_refused() {
         load::<Export>(&lib, &as_export).is_err(),
         "a secret door is not an export door"
     );
+}
+
+/// THE RED ARM, LAYOUT: the same sources built stating another layout fingerprint of their kind
+/// (`-DBUSBAR_PLUGIN_LAYOUT=<host's, one bit flipped>`) are refused at pack time and at load
+/// (`KindLayout`, naming the plugin, the stated layout and the host's). `false` (printed) when no
+/// source names `BUSBAR_PLUGIN_LAYOUT`: such a source states its kind's fingerprint by hand and
+/// cannot be rebuilt at another, so there is nothing to refuse.
+fn a_plugin_built_against_another_kind_layout_is_refused() -> bool {
+    let hooked = sources().iter().any(|src| {
+        std::fs::read_to_string(src)
+            .expect("the plugin's source")
+            .contains("BUSBAR_PLUGIN_LAYOUT")
+    });
+    if !hooked {
+        println!(
+            "dropped conformance: SKIP the wrong-layout arm: no source names BUSBAR_PLUGIN_LAYOUT \
+             (state `.layout = BUSBAR_PLUGIN_LAYOUT`, `#define`d to the kind's \
+             BB_<KIND>_LAYOUT_FINGERPRINT when unset, so the arm can rebuild at another layout)"
+        );
+        return false;
+    }
+    let lib = lib();
+    let stated = stated(&lib);
+    let facts = ManifestFacts::read(&stated).expect("a Statement rendering");
+    let host = facts.kind.layout_fingerprint();
+    let other = host ^ 1;
+    let red = rebuild(
+        "red_layout",
+        &[format!("BUSBAR_PLUGIN_LAYOUT=0x{other:016x}ull")],
+    );
+    let refused_as_built = |e: &LoadError| {
+        matches!(
+            e,
+            LoadError::KindLayout { kind, stated, host: h, .. }
+                if *kind == facts.kind && *stated == other && *h == host
+        )
+    };
+    let packed = rendering_of_library(&red).err();
+    assert!(
+        packed.as_ref().is_some_and(refused_as_built),
+        "the pack tool refuses the layout {other:#018x} build (does the source state \
+         `.layout = BUSBAR_PLUGIN_LAYOUT`?): {packed:?}"
+    );
+    match facts.kind {
+        KindCode::Secret => {
+            let Err(refused) = load::<Secret>(&red, &stated) else {
+                panic!("the loader refuses a door built against another layout");
+            };
+            assert!(refused_as_built(&refused), "{refused}");
+            assert!(refused.to_string().contains("rebuild"), "{refused}");
+        }
+        other => panic!("no dropped-in conformance script for kind {other:?} yet"),
+    }
+    true
 }

@@ -43,8 +43,9 @@ fn a_double_serves_only_the_transport_its_facts_name() {
 }
 
 /// RED: a scheme the deployment serves beside the framed one, named unreached, passes the boot's
-/// scheme match, and a need over it is refused at declare, so no open reaches anything; a scheme
-/// not named stays unserved.
+/// scheme match, and a need over it is DECLARED as the connector declares a need over a loaded
+/// transport (the loader refuses the load on a refused config-free need, kind-secret K17), while
+/// every open on it is refused, so no open reaches anything; a scheme not named stays unserved.
 #[test]
 fn an_unreached_scheme_is_served_at_boot_and_reaches_nothing() {
     use busbar_contract::abi::mechanism::rendering::{ReadBlob, ReadNeed};
@@ -74,11 +75,18 @@ fn an_unreached_scheme_is_served_at_boot_and_reaches_nothing() {
         timeout_ms: 0,
     };
     let (owner, id) = (InstanceId(7), NeedId(0));
+    assert_eq!(framed.declare(owner, id, &need, None, None), Ok(()));
+    assert_eq!(framed.declared(owner, id), Some(Ok(())));
     assert_eq!(
-        framed.declare(owner, id, &need, None, None),
-        Err(ConnError::Refused)
+        busbar_contract::conn::Conns::open(
+            &framed,
+            owner,
+            id,
+            &busbar_contract::conn::OpenDesc::default()
+        ),
+        Err(ConnError::Refused),
+        "an open on an unreached scheme reaches nothing"
     );
-    assert_eq!(framed.declared(owner, id), Some(Err(ConnError::Refused)));
 }
 
 /// AN UNREACHED SCHEME IS A NAMED, REASONED, COVERED CLAIM, or the suite fails (row 114: no silent
@@ -195,7 +203,7 @@ fn an_open_on_an_unreached_scheme_is_counted() {
         timeout_ms: 0,
     };
     let (owner, id) = (InstanceId(7), NeedId(0));
-    assert!(framed.declare(owner, id, &need, None, None).is_err());
+    assert!(framed.declare(owner, id, &need, None, None).is_ok());
     assert!(framed.unreached_opens().is_empty());
     let desc = OpenDesc::default();
     assert_eq!(framed.open(owner, id, &desc), Err(ConnError::Refused));

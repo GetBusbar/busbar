@@ -21,6 +21,19 @@
 //!   settings [`Blob`](super::mechanism::call::Blob) before calling `resolve`, so they name no new
 //!   wire shape here.
 //!
+//! THE HOST'S RULES FOR A SECRET INSTANCE (`busbar-plugin-loader`, `secret_calls`), so a
+//! plugin's Statement says what the host will do:
+//! - IN FLIGHT: the host binds every secret instance with a `max_inflight` cap of 16: the
+//!   Statement's `max_inflight` is clamped to `1..=16`, so a source stating more is served at 16
+//!   (secrets resolve at boot and at a refresh; sixteen pending resolves is the most one instance
+//!   is ever given). State at most 16.
+//! - LINKED SOURCES: a secret source LINKED into the build (a compiled-in row, e.g. `env`, `file`)
+//!   is opened ONCE, with NO settings (no module-level `secrets.<module>` configuration reaches
+//!   it), and takes no manifest alias: its config word is the one its Statement states as a
+//!   `REWRITE_ALIAS` rewrite. A source that needs instance settings (an address, a credential)
+//!   is dropped in, not linked; every source states its config word as `REWRITE_ALIAS`, so the
+//!   linked and the dropped-in door answer to the same word.
+//!
 //! ASSUMPTION (M3-SHAPES, noted for the SLOT-LOG; not an owner question — nothing in B.2 or the
 //! spec states a secret Statement tail): secret declares no `kind_tail` fields yet. A plugin's
 //! `Statement.kind_tail` stays NULL for this kind until a later slot states one; that is
@@ -218,12 +231,12 @@ super::sdk::door::slot_structs!(
     /// use busbar_contract::abi::secret::{ResolveIn, ResolveOut};
     /// use busbar_contract::abi::mechanism::call::{InHead, OutHead, Outcome};
     /// use busbar_contract::abi::mechanism::lifecycle::*;
-    /// use busbar_contract::abi::sdk::door::Slot;
+    /// use busbar_contract::abi::sdk::door::RawSlot;
     /// # use std::ffi::c_void;
     /// # macro_rules! ready { ($n:ident, $i:ty, $o:ty) => {
     /// #     struct $n;
-    /// #     impl Slot for $n { type In = $i; type Out = $o;
-    /// #         fn call(_: *mut c_void, _: &$i, _: &mut $o) -> Outcome { Outcome::Ready } }
+    /// #     impl RawSlot for $n { type In = $i; type Out = $o;
+    /// #         unsafe fn call(_: *mut c_void, _: &$i, _: &mut $o) -> Outcome { Outcome::Ready } }
     /// # } }
     /// # ready!(V, ValidateIn, OutHead); ready!(Op_, OpenIn, OpenOut); ready!(Rf, RefreshIn, OutHead);
     /// # ready!(Rt, GenIn, OutHead); ready!(Tk, TickIn, TickOut); ready!(Dr, DriveIn, OutHead);
