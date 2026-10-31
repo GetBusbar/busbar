@@ -113,7 +113,7 @@ mod wedged {
         },
                 lifecycle: {
                     validate: S<l::Validate<d::Served<M>>>,
-                    open: S<d::Open<M>>,
+                    open: S<l::Open<d::Served<M>>>,
                     refresh: S<l::Refresh<d::Served<M>>>,
                     retire: S<l::Retire<d::Served<M>>>,
                     tick: S<l::Tick<d::Served<M>>>,

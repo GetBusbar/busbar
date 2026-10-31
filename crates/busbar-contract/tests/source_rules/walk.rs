@@ -132,7 +132,7 @@ pub fn production(roots: &[&str]) -> Vec<Source> {
                 continue;
             }
             let text = std::fs::read_to_string(&f).unwrap_or_else(|e| panic!("{rel}: {e}"));
-            let file = syn::parse_file(&text).unwrap_or_else(|e| panic!("{rel}: {e}"));
+            let file = parse_source(&text).unwrap_or_else(|e| panic!("{rel}: {e}"));
             parsed.push(Source { rel, text, file });
         }
         assert!(parsed.len() > before, "{root} holds no production source");
@@ -145,10 +145,50 @@ pub fn production(roots: &[&str]) -> Vec<Source> {
     parsed
 }
 
+/// A source file parsed, each `abi_struct!` invocation's structs read in place (the macro states
+/// them as written), so every rule here sees them.
+fn parse_source(text: &str) -> syn::Result<syn::File> {
+    let mut file = syn::parse_file(text)?;
+    splice_abi_structs(&mut file.items)?;
+    Ok(file)
+}
+
+/// Replaces each `abi_struct! { .. }` among `items` (inline modules included) by the items it
+/// states.
+fn splice_abi_structs(items: &mut Vec<syn::Item>) -> syn::Result<()> {
+    let mut out = Vec::with_capacity(items.len());
+    for mut item in items.drain(..) {
+        match &mut item {
+            syn::Item::Macro(m)
+                if m.ident.is_none()
+                    && m.mac
+                        .path
+                        .segments
+                        .last()
+                        .is_some_and(|s| s.ident == "abi_struct") =>
+            {
+                let mut inner = syn::parse2::<syn::File>(m.mac.tokens.clone())?;
+                splice_abi_structs(&mut inner.items)?;
+                out.extend(inner.items);
+                continue;
+            }
+            syn::Item::Mod(m) => {
+                if let Some((_, inner)) = &mut m.content {
+                    splice_abi_structs(inner)?;
+                }
+            }
+            _ => {}
+        }
+        out.push(item);
+    }
+    *items = out;
+    Ok(())
+}
+
 /// One named file, parsed. It must exist.
 pub fn one(rel: &str) -> Source {
     let text = std::fs::read_to_string(repo().join(rel)).unwrap_or_else(|e| panic!("{rel}: {e}"));
-    let file = syn::parse_file(&text).unwrap_or_else(|e| panic!("{rel}: {e}"));
+    let file = parse_source(&text).unwrap_or_else(|e| panic!("{rel}: {e}"));
     Source {
         rel: rel.to_string(),
         text,

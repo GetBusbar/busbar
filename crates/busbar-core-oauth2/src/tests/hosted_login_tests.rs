@@ -1678,7 +1678,9 @@ async fn a_door_callback_renders_each_answer_on_its_page() {
         assert_eq!(resp.status().as_u16(), status, "{outcome:?}");
         assert_branded_error_page(&body_of(resp), heading);
     }
-    let app = door_app(DoorLogin::new(LoginOutcome::Outage));
+    let app = door_app(DoorLogin::new(LoginOutcome::Outage {
+        retry_after_secs: None,
+    }));
     let unreachable = callback(
         &app,
         &cred_handle(&app),
@@ -1687,7 +1689,7 @@ async fn a_door_callback_renders_each_answer_on_its_page() {
         Some("st".into()),
     )
     .await;
-    let page = provider_unreachable();
+    let page = provider_unreachable(None);
     // RED (owner ruling 2026-10-27): an identity provider that could not answer is 503, retryable,
     // never 1.5.5's 502.
     assert_eq!(unreachable.status().as_u16(), 503);
@@ -1701,6 +1703,69 @@ async fn a_door_callback_renders_each_answer_on_its_page() {
     );
     assert_eq!(unreachable.status(), page.status());
     assert_eq!(body_of(unreachable), body_of(page));
+}
+
+/// An identity provider that could not answer and said when to come back (owner-signed 2026-10-30,
+/// OWNER-QUEUE.md item "IdP errors"): the plugin's LOGIN_OUTAGE carries the IdP's `Retry-After`
+/// and the 503 sends it, on the redirect callback and on the credential POST alike, clamped to
+/// [1, 3600] seconds; a plugin that stated none gets the host's own 5. The page is the same page.
+#[tokio::test]
+async fn an_outage_sends_the_idps_retry_after_clamped() {
+    for (stated, sent) in [
+        (Some(120), 120),
+        (Some(999_999), 3600),
+        (Some(u64::MAX), 3600),
+        (Some(3600), 3600),
+        (Some(1), 1),
+        (Some(0), 1),
+        (None, 5),
+    ] {
+        let outcome = LoginOutcome::Outage {
+            retry_after_secs: stated,
+        };
+        let retry_after = |resp: &Response| {
+            resp.headers()
+                .get("retry-after")
+                .map(|v| v.to_str().unwrap().to_string())
+        };
+        let app = door_app(DoorLogin::new(outcome.clone()));
+        let redirect = callback(
+            &app,
+            &cred_handle(&app),
+            Some(door_cookie().encode()),
+            "the-code".into(),
+            Some("st".into()),
+        )
+        .await;
+        assert_eq!(redirect.status().as_u16(), 503, "{stated:?}");
+        assert_eq!(retry_after(&redirect), Some(sent.to_string()), "{stated:?}");
+        assert_branded_error_page(&body_of(redirect), "Couldn't reach your provider");
+
+        let door = std::sync::Arc::new(DoorLogin {
+            kind: LoginKind::Credential,
+            ..DoorLogin::answering(move |_| outcome.clone())
+        });
+        let app = busbar_kernel::test_support::TestApp::new()
+            .public_url("https://busbar.example.com")
+            .login_method_door("idp", door, LoginKind::Credential, true)
+            .build();
+        let cookie = LoginCookie {
+            method: "idp".into(),
+            code_verifier: String::new(),
+            state: "csrf-1".into(),
+            nonce: String::new(),
+            refresh: false,
+        };
+        let form = vec![
+            ("__state".to_string(), "csrf-1".to_string()),
+            ("username".to_string(), "alice".to_string()),
+            ("password".to_string(), "pw".to_string()),
+        ];
+        let posted = credential_submit(&app, &cred_handle(&app), cookie.encode(), form).await;
+        assert_eq!(posted.status().as_u16(), 503, "{stated:?}");
+        assert_eq!(retry_after(&posted), Some(sent.to_string()), "{stated:?}");
+        assert_branded_error_page(&body_of(posted), "Couldn't reach your provider");
+    }
 }
 
 /// A login plugin that FAULTS (its SDK shim caught a panic and answered FAULT) on begin, on the

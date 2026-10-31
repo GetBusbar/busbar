@@ -16,7 +16,8 @@
 //! * [`written`] / [`written_text`]: what a plugin wrote into a buffer the test lent it, bounded by
 //!   the length its `out` states and the capacity the test lent.
 //! * [`fake`]: a fake host whose services a test writes as safe Rust, the `in` read and the
-//!   `ServiceOut` written for it.
+//!   `ServiceOut` written for it; [`far`], a scripted far end for an op's exchange, every service
+//!   pending once, so an op that asks the far end is driven through PENDING to its answer.
 //! * [`reply`]: a door op called and its reply copied into owned values before it returns, so a
 //!   test never holds a pointer into the plugin's leased or published memory.
 //!
@@ -47,6 +48,7 @@ mod sealed {
 
 pub mod chip;
 pub mod fake;
+pub mod far;
 mod pairs;
 pub mod reply;
 pub mod test_in;

@@ -231,7 +231,7 @@ pub(crate) fn handle_cli_flags() -> Option<i32> {
             // `security.blocked_metadata_hosts`. The hardcoded set always prints (no config needed);
             // the operator extension is appended best-effort if BUSBAR_CONFIG is readable + parseable,
             // so the flag is useful even before a deployment is wired up. One entry per line, exit 0.
-            let mut entries = config_validate::metadata_denylist_entries();
+            let mut entries = config_validate::metadata_enforced_entries();
             let config_path = resolve_config_path(config_path_flag().as_deref());
             if let Ok(raw) = std::fs::read_to_string(&config_path) {
                 match config::interpolate_env(&raw) {
