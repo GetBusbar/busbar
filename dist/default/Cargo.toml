@@ -666,7 +666,7 @@ tower = { workspace = true, features = ["util"] }
 # — the shipped binary links the sink's door and has its dropped-in library in `plugins/`, both
 # posting to a local collector. `tests/boot_lines_neutrality.rs` reads the boot's lines through the
 # subscriber.
-busbar-export-otlp-plugin = { workspace = true }
+busbar-export-otlp-plugin = { workspace = true, features = ["dropped-in"] }
 tracing-subscriber = { workspace = true }
 # What that test and `tests/export_otlp_delivers_spans.rs` (the shipped binary posting to a local
 # collector) receive is decoded with the OpenTelemetry project's own generated types, and re-encoded

@@ -98,7 +98,8 @@ pub fn registry_rows(
     i: RegistryIn<'_>,
     note: &mut dyn FnMut(BuildNote<'_>),
 ) -> Result<Arc<dyn PluginRows>, String> {
-    let linked = i.linked.iter().map(linked_row).collect();
+    let mut linked: Vec<_> = i.linked.iter().map(linked_row).collect();
+    linked.extend(linked_exports(crate::LINKED.export_doors)?);
     let registry = registry(linked, i.plugins, i.data_dir, &mut |n| match n {
         Note::FloorUnreadable(detail) => note(BuildNote::FloorUnreadable(detail)),
         Note::Off => note(BuildNote::Off),
@@ -143,13 +144,17 @@ pub fn linked_row(row: &LinkedRow) -> LinkedPlugin {
 /// rows double), and what the one-version rule compares an upload against.
 #[must_use]
 pub fn linked_registry() -> PluginRegistry {
-    let linked = busbar_kernel::preflight::linked_rows()
+    let mut linked: Vec<_> = busbar_kernel::preflight::linked_rows()
         .iter()
         .map(linked_row)
         .collect();
+    linked.extend(
+        linked_exports(crate::LINKED.export_doors)
+            .expect("the build's linked export declarations must be valid"),
+    );
     PluginRegistry::empty()
         .link(linked)
-        .unwrap_or_else(|_| PluginRegistry::empty())
+        .expect("the build's linked plugin declarations must not conflict")
 }
 
 /// `row`, answering also to the former names the root migration table declares for its alias
