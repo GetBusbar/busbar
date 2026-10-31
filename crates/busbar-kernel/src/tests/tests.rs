@@ -1746,6 +1746,78 @@ fn secret_ref_builtin_modules_pass_with_empty_registry() {
     );
 }
 
+/// A secret axis whose `vault` plugin's `check` refuses a reference with no `path`: what
+/// `--validate` meets for a reference the plugin would refuse at resolve.
+struct CheckingAxis;
+
+impl busbar_contract::secret::SecretAxis for CheckingAxis {
+    fn sugars(&self) -> busbar_contract::secret_ref::Sugars {
+        Default::default()
+    }
+    fn answers(&self, module: &str) -> bool {
+        module == "vault"
+    }
+    fn linked(&self, _: &str) -> bool {
+        false
+    }
+    fn shared(
+        &self,
+        module: &str,
+    ) -> Result<std::sync::Arc<dyn busbar_contract::secret::SecretCalls>, String> {
+        Err(format!("{module} is not linked"))
+    }
+    fn open(
+        &self,
+        module: &str,
+        _: &serde_json::Value,
+        _: &dyn Fn(
+            &crate::config::SecretRef,
+        ) -> Result<busbar_contract::secret::SecretBytes, String>,
+    ) -> Result<std::sync::Arc<dyn busbar_contract::secret::SecretCalls>, String> {
+        Err(format!("{module} is never opened to be checked"))
+    }
+    fn check(&self, _: &str, settings: &serde_json::Value) -> Result<(), Vec<String>> {
+        match settings.get("path") {
+            Some(_) => Ok(()),
+            None => Err(vec![
+                "settings.path: missing".to_string(),
+                "settings: names no secret".to_string(),
+            ]),
+        }
+    }
+}
+
+/// RED (S2): a reference its plugin's `check` refuses fails the pre-flight `--validate` runs, each
+/// of the plugin's reasons after the reference's config path; one it accepts passes. Before, the
+/// `check` slot was never called, so `--validate` passed a reference that failed at resolve.
+#[test]
+fn a_reference_its_plugins_check_refuses_fails_the_preflight() {
+    use crate::config_validate::secret_refs::registry_refusal_with;
+    crate::test_support::register_neutral_test_plane();
+    let (dir, reg) = secret_registry("secretref-checked");
+    let mut settings = serde_json::Map::new();
+    let refused = cfg_with_provider_api_key(crate::config::SecretRef {
+        module: "vault".to_string(),
+        settings: settings.clone(),
+    });
+    assert_eq!(
+        registry_refusal_with(reg.as_ref(), &refused, Some(&CheckingAxis)),
+        Err("providers.acme.api_key: settings.path: missing\n\
+             providers.acme.api_key: settings: names no secret"
+            .to_string())
+    );
+    settings.insert("path".to_string(), serde_json::json!("kv/acme"));
+    let accepted = cfg_with_provider_api_key(crate::config::SecretRef {
+        module: "vault".to_string(),
+        settings,
+    });
+    assert_eq!(
+        registry_refusal_with(reg.as_ref(), &accepted, Some(&CheckingAxis)),
+        Ok(())
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// A secret ref naming a plugin of the WRONG kind (a store plugin,
 /// not `kind: secret`) fails the pre-flight — the same wrong-kind guard the `secrets:` block gets.
 #[test]

@@ -6,6 +6,7 @@
 tcp -
 http -
 sse -
+https -
 ws -
 wss -
 grpc -

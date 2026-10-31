@@ -106,12 +106,37 @@ pub(crate) fn secret_module(registry: &dyn PluginRows, module: &str) -> Result<S
 /// pass reads), must name a loaded `kind: secret` plugin. The built-in `env`/`file` modules and
 /// `none` always pass. Returns the FIRST offending entry's error.
 pub(crate) fn registry_refusal(registry: &dyn PluginRows, cfg: &RootCfg) -> Result<(), String> {
+    registry_refusal_with(registry, cfg, crate::config::secret::axis())
+}
+
+/// [`registry_refusal`] over the secret axis `axis`: every reference a plugin on it answers is also
+/// JUDGED by that plugin's `check` ([`SecretAxis::check`](busbar_contract::secret::SecretAxis::check)),
+/// so `--validate` refuses a reference its plugin would refuse at resolve, each reason after the
+/// reference's config path.
+pub(crate) fn registry_refusal_with(
+    registry: &dyn PluginRows,
+    cfg: &RootCfg,
+    axis: Option<&dyn busbar_contract::secret::SecretAxis>,
+) -> Result<(), String> {
     for module in cfg.secrets.keys() {
         secret_module(registry, module)?;
     }
     for (what, r) in secret_refs(cfg) {
         // `none` names no module at all; WHERE it is permitted is the semantic pass's call.
-        if crate::config::secret::is_linked_secret(&r.module) || r.is_none() {
+        if r.is_none() {
+            continue;
+        }
+        if let Some(axis) = axis.filter(|a| a.answers(&r.module)) {
+            let settings = serde_json::Value::Object(r.settings.clone());
+            if let Err(reasons) = axis.check(&r.module, &settings) {
+                return Err(reasons
+                    .iter()
+                    .map(|line| format!("{what}: {line}"))
+                    .collect::<Vec<_>>()
+                    .join("\n"));
+            }
+        }
+        if axis.is_some_and(|a| a.linked(&r.module)) {
             continue;
         }
         match registry.resolve(&r.module) {

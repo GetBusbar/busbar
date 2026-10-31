@@ -1321,6 +1321,32 @@ fn a_head_only_exchange_is_judged_on_the_head_and_never_reads_the_body() {
     );
 }
 
+/// [`Op::exchange_bounded`] run to completion under `reply`, its reply capped at `limit` bytes.
+fn op_run(reply: Vec<Scripted>, limit: usize) -> Result<ExchangeResponse, super::OpFailure> {
+    op_bounded(reply, limit).0
+}
+
+/// RED (SV-F): an op's exchange takes the reply limit, so a source can cap a reply (a vault read
+/// at 1 MiB) without buffering up to `REPLY_MAX`: past it the reply is refused as one past
+/// `REPLY_MAX` is; at it, it passes whole.
+#[test]
+fn an_ops_exchange_takes_its_reply_limit() {
+    let _g = SERIAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    assert_eq!(
+        op_run(body_reply(60, 41), 100).expect_err("the reply passes the limit"),
+        super::OpFailure::Conn(ConnFailure::Failed(REPLY_OVER_BOUND.to_string()))
+    );
+    assert_eq!(
+        op_run(body_reply(60, 40), 100)
+            .expect("at the limit")
+            .body
+            .len(),
+        100
+    );
+}
+
 /// A RAW EXCHANGE PARKED BY ITS CALLER CLOSES ITS STREAM WHEN DROPPED (status row 159): an export
 /// door drives the free [`exchange`] itself and keeps the [`Exchange`] across PENDING entries; given
 /// up while it pends (its op cancelled or superseded, its instance closed) it CLOSEs the stream it
