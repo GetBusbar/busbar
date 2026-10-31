@@ -869,9 +869,15 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
                 return Some(moved);
             }
             let session = self.session.as_mut()?;
+            let framing = self.framing.as_mut()?;
+            if framing.begin_parked()
+                || framing.holds(session.stream)
+                || self.full.contains(&session.stream)
+            {
+                return Some(moved);
+            }
             if let Some((bytes, text)) = session.writing.take() {
                 let stream = session.stream;
-                let framing = self.framing.as_mut()?;
                 let r = framing.emit(stream, &bytes, true, text);
                 if !self.took(r) {
                     return None;

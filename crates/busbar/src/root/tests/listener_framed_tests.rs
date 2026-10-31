@@ -481,7 +481,7 @@ async fn a_session_waits_for_its_parked_message_before_emitting_the_next() {
     let ended_before_release = served.is_finished();
     let before_release = door.emitted();
     door.release();
-    stop.send(true).unwrap();
+    let _ = stop.send(true);
     tokio::time::timeout(Duration::from_secs(10), served)
         .await
         .expect("the session drains after its parked message resumes")
