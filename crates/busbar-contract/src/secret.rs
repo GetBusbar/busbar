@@ -155,6 +155,28 @@ pub trait SecretResolve: Send + Sync {
     ) -> Result<crate::redacted::Secret<String>, String> {
         self.resolve_string(secret)
     }
+
+    /// [`Self::resolve`] (or, with `scope`, [`Self::resolve_at_config`]) whose refusal KEEPS the
+    /// source's `abi::secret::ERROR_KIND_*` code: a caller that answers a missing secret
+    /// differently from an unreachable source reads it here. A resolver that names no code answers
+    /// its text as `ERROR_KIND_INTERNAL`.
+    ///
+    /// # Errors
+    /// The refusal, its code and its text (the same text the other forms answer).
+    fn resolve_refusing(
+        &self,
+        secret: &SecretRef,
+        scope: Option<&crate::config_time::ConfigScope>,
+    ) -> Result<crate::redacted::Secret<Vec<u8>>, SecretRefused> {
+        match scope {
+            Some(scope) => self.resolve_at_config(secret, scope),
+            None => self.resolve(secret),
+        }
+        .map_err(|text| SecretRefused {
+            error_kind: crate::abi::secret::ERROR_KIND_INTERNAL,
+            text,
+        })
+    }
 }
 
 /// How a secret plugin refused a `resolve`: the `abi::secret::ERROR_KIND_*` code its answer carried

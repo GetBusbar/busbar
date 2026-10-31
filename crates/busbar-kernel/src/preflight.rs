@@ -1236,7 +1236,7 @@ pub(crate) fn build_secret_resolver(
             move |module: &str,
                   settings: &str,
                   scope: Option<&busbar_contract::config_time::ConfigScope>|
-                  -> Result<config::secret::Held, String> {
+                  -> Result<config::secret::Held, config::secret::SecretRefused> {
                 if let Some(axis) = config::secret::axis().filter(|a| a.answers(module)) {
                     // Keyed by the plugin's CANONICAL name, so an alias and its canonical spelling
                     // open the plugin once.
@@ -1257,7 +1257,10 @@ pub(crate) fn build_secret_resolver(
                 }
                 // No door answers it: no such secret plugin, or a 1.5.5 JSON-contract one, which this
                 // host does not load (THE DESIGN §11.8). Refused in the registry's own words.
-                Err(registry.secret_refusal(module))
+                Err(config::secret::SecretRefused {
+                    error_kind: busbar_contract::abi::secret::ERROR_KIND_INVALID,
+                    text: registry.secret_refusal(module),
+                })
             },
         ),
     ))
@@ -1301,13 +1304,19 @@ impl OpenedSecrets {
         settings: &str,
         scope: Option<&busbar_contract::config_time::ConfigScope>,
         open: impl FnOnce() -> Result<Arc<dyn busbar_contract::secret::SecretCalls>, String>,
-    ) -> Result<config::secret::Held, String> {
-        let calls = self.calls(key, open)?;
+    ) -> Result<config::secret::Held, config::secret::SecretRefused> {
+        // A plugin that will not load or open names no code of its own: INTERNAL.
+        let calls = self
+            .calls(key, open)
+            .map_err(|text| config::secret::SecretRefused {
+                error_kind: busbar_contract::abi::secret::ERROR_KIND_INTERNAL,
+                text,
+            })?;
+        // The plugin's own refusal, its `error_kind` kept.
         match scope {
             Some(scope) => calls.resolve_at_config(settings.as_bytes(), scope),
             None => calls.resolve(settings.as_bytes()),
         }
-        .map_err(|r| r.text)
     }
 }
 
