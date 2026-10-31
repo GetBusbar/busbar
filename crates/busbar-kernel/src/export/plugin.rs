@@ -89,7 +89,9 @@ pub(crate) fn sink_settings(
     module: &str,
     settings: &serde_json::Map<String, Value>,
 ) -> Result<ResolvedSettings, String> {
-    let declared = [axis.secret_refs(module), axis.reference_fields(module)].concat();
+    let secret = axis.secret_refs(module);
+    let reference = axis.reference_fields(module);
+    let declared = [secret.as_slice(), reference.as_slice()].concat();
     let tree = ResolvedSettings::from_map(settings.clone());
     if declared.is_empty()
         || busbar_contract::secret_fields::undeclared_reference(tree.as_value(), &declared)
@@ -97,10 +99,10 @@ pub(crate) fn sink_settings(
     {
         return Ok(tree);
     }
-    crate::config::secret::resolve_settings(
+    crate::config::secret::resolve_export_settings(
         settings,
-        &[],
-        &declared,
+        &secret,
+        &reference,
         module,
         &crate::config::secret::SecretResolver::builtins_only(),
         &busbar_contract::config_time::ConfigScope::config_time(),
