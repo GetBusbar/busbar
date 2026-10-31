@@ -2084,19 +2084,23 @@ impl DeclaredConns for Connector {
         // the request's own headers — FAIL-CLOSED; any earlier pin is dropped), and refused when no
         // loaded transport serves its scheme (the loader fails the boot on it, naming the plugin
         // and the scheme). Its connections are secured with the operator CA its `trust_from` names
-        // added on top of the public roots: a `trust_from` that resolved to nothing, or to a PEM
-        // that does not parse into a trust anchor, refuses the need here, at declaration. An
+        // added on top of the public roots: a `trust_from` that resolved to a PEM that does not
+        // parse into a trust anchor refuses the need here, at declaration (one that resolved to
+        // nothing is optional, below). An
         // inbound need is recorded (the listener binds it), and refused on an unserved scheme
         // alike.
         let outbound = spec.direction == DIRECTION_OUTBOUND;
         // A member-target need (`settings.*.<key>`) is pinned by no one target: each member's route
         // is sealed at its own, and dials it like any need the plugin names per open.
         let per_member = |path: &str| busbar_contract::section::member_target(path).is_some();
-        // A trust anchor in an OWNED section (`owned.<section>.<key>`) is optional by definition
-        // (the section is the operator's to write or not): absent, the need's connections trust the
-        // public roots alone, as one naming no anchor does; present, it is parsed below and refused
-        // when it is no trust anchor, exactly as a `settings.` one is.
-        let optional_trust = busbar_contract::section::owned_path(&spec.trust_from).is_some();
+        // A trust anchor is OPTIONAL, whether it names an OWNED section (`owned.<section>.<key>`,
+        // the operator's to write or not) or the plugin's own settings (`settings.<key>`, e.g. an
+        // optional private CA): absent, the need's connections trust the public roots alone, as one
+        // naming no anchor does (a missing anchor only fails to add a CA, so a private-CA host
+        // still fails verification: trust is never weakened); present, it is parsed below and
+        // refused when it is no trust anchor. A member-target path stays per member.
+        let optional_trust = busbar_contract::section::owned_path(&spec.trust_from).is_some()
+            || spec.trust_from.starts_with("settings.");
         let unresolved =
             (!spec.target_from.is_empty() && !per_member(&spec.target_from) && target.is_none())
                 || (!spec.trust_from.is_empty()

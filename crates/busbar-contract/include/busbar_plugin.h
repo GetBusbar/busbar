@@ -229,6 +229,7 @@ extern "C" {
 #define BB_AUTH_MODE_OWN UINT32_C(1) /* [`FieldsIn::mode`]: the plugin's own bound credential. */
 #define BB_AUTH_MODE_PASSTHROUGH UINT32_C(2) /* [`FieldsIn::mode`]: pass the caller's verified credential ([`FieldsIn::caller_credential`]). */
 #define BB_AUTH_EXT_SCOPE "scope" /* `fields`' EXTENSIONS KEY ([`crate::abi::mechanism::extensions`], carried in */
+#define BB_AUTH_EXT_RETRY_AFTER "retry_after" /* `complete_login`'s REPLY EXTENSIONS KEY: on a [`LOGIN_OUTAGE`], the IdP's `Retry-After`. */
 #define BB_AUTH_SCOPE_REQUEST_FIELD "busbar-auth-scope" /* THE REQUEST FIELD BY WHICH A PLUGIN STATES ITS PER-CALL SCOPE to the host: a field of this name */
 #define BB_AUTH_NO_MEMBER_AUTH_FIELD "busbar-no-member-auth" /* THE REQUEST FIELD BY WHICH A PLUGIN WAIVES ITS MEMBER'S BINDING FOR ONE REQUEST: a field of this */
 #define BB_AUTH_FIELD_SENSITIVE UINT32_C(1) /* [`FieldSpan::flags`]: when SET, an h2 encoder sends the field never-indexed. 1.5.5 sent its */
@@ -316,7 +317,7 @@ extern "C" {
 #define BB_HOOK_HARD_MAX_SIGNALS UINT64_C(1024) /* The most signal entries one view may carry (a FAULT ceiling: the catalog holds ten signals). */
 
 /* export */
-#define BB_EXPORT_ABI_VERSION UINT32_C(3) /* The export kind's ABI version: v1.5.5 shipped `2` (`EXPORT_ABI_VERSION`), so 1.6.0 ships `3`. */
+#define BB_EXPORT_ABI_VERSION UINT32_C(3) /* The export kind's ABI version, `3`: `2` was the JSON export contract's, refused at scan. */
 #define BB_EXPORT_LAYOUT_FINGERPRINT UINT64_C(0x95a37b669466aab6) /* The export kind's layout fingerprint ([`crate::abi::mechanism::layout`]): the fold of */
 #define BB_EXPORT_SLOT_DELIVER UINT32_C(9) /* `deliver`. */
 #define BB_EXPORT_SLOT_SCRAPE UINT32_C(10) /* `scrape`. */
@@ -560,6 +561,7 @@ extern "C" {
 #define BB_TRANSPORT_SETTING_TEXT UINT32_C(3) /* [`SettingDecl::kind`]: text. */
 #define BB_TRANSPORT_DEST_AUTHORITY UINT32_C(0) /* [`Destination::kind`]: an authority. */
 #define BB_TRANSPORT_DEST_PROGRAM UINT32_C(1) /* [`Destination::kind`]: a program the carrier runs. */
+#define BB_TRANSPORT_DEST_RETIRED UINT32_C(2) /* [`Destination::kind`]: NOTHING TO OPEN, the KEY-RETIRED SIGNAL (T5). The member whose */
 #define BB_TRANSPORT_PIECE_END_OF_FRAME UINT16_C(1) /* [`FramePiece::flags`]: the piece completes its frame. */
 #define BB_TRANSPORT_PIECE_HAS_CODE UINT16_C(2) /* [`FramePiece::flags`]: `code` is present. */
 #define BB_TRANSPORT_PIECE_HAS_RETRY_AFTER UINT16_C(4) /* [`FramePiece::flags`]: `retry_after_secs` is present. */

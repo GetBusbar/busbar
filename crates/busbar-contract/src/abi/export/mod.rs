@@ -31,20 +31,20 @@
 //!   module.
 //!
 //! B.5, transcribed:
-//! - **Tail:** `streams[]`, pinned to the 1.5.5 `ExportStream::ALL` order (metrics, logs, traces,
+//! - **Tail:** `streams[]`, pinned to the frozen [`ExportStream::ALL`] order (metrics, logs, traces,
 //!   costs, decisions, events, identity, prompts, completions — `decisions` is a FROZEN wire word,
 //!   unchanged by this move).
 //! - `deliver{stream u8, batch jsonl}` — built at batch time with the `fields:` projection applied
 //!   KERNEL-side (never in this kind's shapes: the batch a plugin receives is already projected).
 //! - `scrape(families)` over the host snapshot service.
-//! - `status` (1.5.5 blob), `check`, `serve`.
+//! - `status` (the sink's own JSON status blob), `check`, `serve`.
 //! - **Listener.** `/metrics` is served on the data listener through the export route exception,
 //!   confined to `/metrics` or `/exports/<name>/*`, the reserved paths and the 64-header cap.
 //!   `/metrics/hooks` is rendered by the same sink over the same `scrape`, the host setting
 //!   [`SCRAPE_FLAG_HOOK_FAMILIES`] on the head (P2 D4); no new op.
-//! - **Behaviour.** Webhook and otlp use driver tickets (the shared mechanism's
-//!   [`Ticket`](super::mechanism::ticket::Ticket) `drive`/`DriveIn` lifecycle slot, not a new
-//!   export op). The `Host` and `Started` 1.5.5 response variants are retired: `deliver` answers
+//! - **Behaviour.** A sink that delivers over the network uses driver tickets (the shared
+//!   mechanism's [`Ticket`](super::mechanism::ticket::Ticket) `drive`/`DriveIn` lifecycle slot, not
+//!   a new export op). The JSON contract's `Host` and `Started` response variants are retired: `deliver` answers
 //!   only READY/PENDING/FAILED/REFUSED/FAULT, with no host-op round trip and no separate `start`.
 //!
 //! ASSUMPTIONS (M3-SHAPES, noted for the SLOT-LOG; none are money- or customer-visible, so none is
@@ -57,7 +57,7 @@
 //! - `serve` is OFF-PATH (O) per B.4's hook precedent for a plugin's own HTTP surface, `may_pend`,
 //!   [`DeadlineClass::Call`](super::mechanism::call::DeadlineClass::Call).
 //! - No Statement tail beyond `streams[]` is stated for export; `check`'s phases (`limits` /
-//!   `instances`, 1.5.5 `CheckPhase`) are carried as a `u32` `in` field rather than a new type.
+//!   `instances`, [`CheckPhase`]) are carried as a `u32` `in` field rather than a new type.
 
 use super::mechanism::call::{AbiStr, Blob, InHead, Op, OutHead};
 use serde::{Deserialize, Serialize};
@@ -66,7 +66,7 @@ pub mod validate;
 use super::mechanism::door::KindTailHead;
 use super::mechanism::lifecycle::{OpsHead, LIFECYCLE_SLOTS};
 
-/// The export kind's ABI version: v1.5.5 shipped `2` (`EXPORT_ABI_VERSION`), so 1.6.0 ships `3`.
+/// The export kind's ABI version, `3`: `2` was the JSON export contract's, refused at scan.
 pub const ABI_VERSION: u32 = 3;
 
 /// The export kind's layout fingerprint ([`crate::abi::mechanism::layout`]): the fold of
@@ -146,7 +146,7 @@ pub struct Ops {
     /// [`ScrapeIn`], out [`ScrapeOut`].
     pub scrape: Option<Op>,
     /// What the sink has to report when the host renders its status exposition. OFF-PATH, not
-    /// `may_pend`. In [`InHead`], out [`StatusOut`] (the 1.5.5 status blob, unchanged).
+    /// `may_pend`. In [`InHead`], out [`StatusOut`] (the sink's status blob).
     pub status: Option<Op>,
     /// The sink's own configuration/operational checks. OFF-PATH, not `may_pend`. In
     /// [`CheckIn`], out [`CheckOut`].
@@ -680,9 +680,9 @@ pub const SCRAPE_KIND_UNTYPED: u8 = 4;
 
 /// [`super::mechanism::call::InHead::flags`] on `scrape`: the families are the HOOK families.
 ///
-/// Set by the host for `/metrics/hooks`, 1.5.5's hook exposition (the hook-reported metrics the
+/// Set by the host for `/metrics/hooks`, the hook exposition (the hook-reported metrics the
 /// host validated, bounded and folded, a `hook` label on every sample), not for the recorder's
-/// snapshot. A sink renders them in the 1.5.5 hook layout: the families in the order handed (by
+/// snapshot. A sink renders them in the hook layout: the families in the order handed (by
 /// name), each family's samples in the order handed, `# HELP` when present then `# TYPE`, and no
 /// blank line between families. The dispatcher owns only the mechanism's own bit (`FLAG_RESUME`);
 /// a kind's bit rides through the call untouched.
@@ -690,7 +690,7 @@ pub const SCRAPE_FLAG_HOOK_FAMILIES: u32 = 2;
 
 /// One label on a [`ScrapeSample`]: a key AND its value, ARCHITECT review ruling (fresh-Opus
 /// M3-SHAPES review, parity item) — a value-only array cannot carry a histogram's `le` or a
-/// summary's `quantile` label, which is exactly what makes the 1.5.5 exposition losslessly
+/// summary's `quantile` label, which is exactly what makes the host's exposition losslessly
 /// reproducible.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -753,7 +753,7 @@ pub struct ScrapeIn {
     /// The head.
     pub head: InHead,
     /// The host recorder's WHOLE snapshot (the SEH fix-forward ruling, 2026-09-27) — every
-    /// family, not filtered to this instance's Statement — in the 1.5.5 recorder's render order,
+    /// family, not filtered to this instance's Statement — in the recorder's render order,
     /// kind-then-name.
     pub families: *const ScrapeFamily,
     /// How many.
@@ -784,7 +784,7 @@ pub struct ScrapeOut {
 pub struct StatusOut {
     /// The head.
     pub head: OutHead,
-    /// The 1.5.5 status JSON, unchanged, as a [`super::mechanism::call::BLOB_JSON`] blob, under
+    /// The sink's status JSON, as a [`super::mechanism::call::BLOB_JSON`] blob, under
     /// `head.lease` (off-path JSON-as-payload is allowed here per the mechanism's one JSON rule).
     pub status: Blob,
 }
@@ -793,7 +793,7 @@ pub struct StatusOut {
 /// share) — the OLD `CheckPhase::Limits`.
 pub const CHECK_PHASE_LIMITS: u32 = 0;
 /// [`CheckIn::phase`]: after the limits, each instance's own settings — the OLD
-/// `CheckPhase::Instances` (the 1.5.5 default).
+/// `CheckPhase::Instances` (the default).
 pub const CHECK_PHASE_INSTANCES: u32 = 1;
 
 /// One instance `check` may read across, at [`CHECK_PHASE_INSTANCES`] (ARCHITECT review ruling,
@@ -833,8 +833,8 @@ pub struct CheckOut {
     /// The head.
     pub head: OutHead,
     /// The sink's check findings, as a [`super::mechanism::call::BLOB_JSON`] blob, under
-    /// `head.lease` (so they keep their place among the configuration's other errors, the 1.5.5
-    /// `CheckPhase` ordering).
+    /// `head.lease` (so they keep their place among the configuration's other errors, the
+    /// [`CheckPhase`] ordering).
     pub findings: Blob,
 }
 
@@ -915,8 +915,8 @@ pub struct Tail {
     pub streams: *const u8,
     /// How many.
     pub streams_len: usize,
-    /// The HTTP routes this instance serves via `serve` (ARCHITECT review ruling: 1.5.5 asked
-    /// each instance at load, e.g. the `Routes` op; here it is a Statement fact).
+    /// The HTTP routes this instance serves via `serve` (ARCHITECT review ruling: a Statement
+    /// fact, not an op the host asks each instance at load).
     pub routes: *const Route,
     /// How many.
     pub routes_len: usize,

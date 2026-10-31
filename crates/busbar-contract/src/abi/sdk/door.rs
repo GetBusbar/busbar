@@ -1059,8 +1059,11 @@ impl MacroDoor {
 /// * `kind_ops` — one [`Slot`] per kind op, by the table's field name; its index is read off the
 ///   field's offset (the SLOT LAYOUT rule), and its `in`/`out` must be the ones the kind states for
 ///   that index ([`KindSlot`]; a mismatch does not compile). A kind op left unnamed is NULL
-///   (absent), so a door written before an optional kind op was appended to its table still
-///   builds; the loader admits a NULL only where the kind states the op optional.
+///   (absent); the loader admits a NULL only where the kind states the op optional. APPENDING AN
+///   OP TO A KIND'S TABLE IS A KIND ABI BUMP: the host loads exactly its own `ABI_VERSION`, slot
+///   count and table size, so a door built before the append is refused at load and must be
+///   rebuilt. Rebuilt unchanged, its source still compiles: the new op is left NULL, which loads
+///   only when the kind states that op optional.
 /// * `lifecycle: life(L)` — instead of the nine: the SDK's generic lifecycle slots over the kind's
 ///   [`Life`](crate::abi::sdk::life::Life) `L` (`abi::sdk::life`), every one a
 ///   [`Safe`](crate::abi::sdk::safe::Safe) slot over `Held<L>`.
@@ -1224,8 +1227,8 @@ macro_rules! plugin_door {
             }
             const __STATEMENT: &$crate::abi::mechanism::door::Statement =
                 &__sdk::stamp::<__Ops>($statement);
-            // A kind op the door names no slot for is NULL (absent), so a door written before an
-            // optional kind op was appended to its table still builds and states it.
+            // A kind op the door names no slot for is NULL (absent): a door's source written
+            // before an op was appended still builds (the append itself is a kind ABI bump).
             #[allow(clippy::needless_update)]
             const __OPS: &__Ops = &__Ops {
                 head: __sdk::ops_head::<__Ops>(

@@ -497,9 +497,10 @@ pub struct InstalledLimits {
     /// (and by the swap that puts the generation live); never published by a build that is refused.
     limits: config::LimitsResolved,
     rates: ResolvedRates,
-    /// The rates this build STAGED with the holder (made durable before the caller persists):
-    /// withdrawn if this handle is dropped unkept, published by [`InstalledLimits::keep`].
-    staged: StagedRates,
+    /// The card this configuration resolved, raised at [`InstalledLimits::keep`]: when it differs
+    /// from the card in force, the holder appends a dated history entry for it (MONEY-DESIGN
+    /// section 3a; the configuration is the source of the card, as in 1.5.5).
+    configured_card: config::card::CardFields,
     /// The destinations this configuration states, raised to the destination judge at the commit
     /// for the same reason the rates are: its metadata lists are re-read at every commit, and a
     /// rejected apply must not leave them in force.
@@ -507,20 +508,6 @@ pub struct InstalledLimits {
     /// The root's rules this build was judged by, which hear the commit
     /// ([`RootRules::destinations_applied`]).
     rules: std::sync::Arc<dyn RootRules>,
-}
-
-/// The rates one build staged ([`crate::rate_apply::rates_staged`]). Dropped while still armed —
-/// the config change never committed — the holder is told to withdraw them.
-struct StagedRates {
-    armed: bool,
-}
-
-impl Drop for StagedRates {
-    fn drop(&mut self) {
-        if self.armed {
-            crate::rate_apply::rates_withdrawn();
-        }
-    }
 }
 
 impl ResolvedRates {
@@ -553,13 +540,13 @@ impl InstalledLimits {
         let InstalledLimits {
             limits,
             rates,
-            mut staged,
+            configured_card,
             destinations,
             rules,
         } = self;
         busbar_kernel::config::limits::publish(&limits);
         rules.destinations_applied(&destinations);
-        staged.armed = false;
+        crate::rate_apply::card_applied(&configured_card);
         crate::rate_apply::rates_applied(&rates.raw());
     }
 }
@@ -639,6 +626,8 @@ pub fn build_app_from_config(
     prior: Option<&state::App>,
     rules: &std::sync::Arc<dyn RootRules>,
 ) -> Result<(state::App, Option<GovCredentialRotation>, InstalledLimits), String> {
+    // The card this configuration resolves, raised at the commit (`InstalledLimits::keep`).
+    let configured_card = config::card::CardFields::of_root(&cfg);
     // The planes this configuration writes that the process did not open at boot: restart-to-apply,
     // so each builds no slot below and is reported by the caller, never half-served.
     let planes_awaiting_restart = rules.planes_awaiting_restart(&cfg);
@@ -1950,19 +1939,6 @@ pub fn build_app_from_config(
             retain(&app);
         }
     }
-    // THE CARD GOES ON THE JOURNAL BEFORE THE CONFIG CHANGE IS SAVED (MONEY-AUDIT D-6, ARCHITECT
-    // ruling 2026-10-02): the LAST fallible step of the build, so every caller's persist runs only
-    // after the holder made the rates durable. A journal that refuses them refuses the whole change:
-    // nothing is persisted, nothing is swapped, the old configuration and the old card both stay.
-    // From here the handle is armed: dropped unkept (a persist or swap that failed), the holder
-    // withdraws the staged card.
-    crate::rate_apply::rates_staged(&resolved_rates.raw()).map_err(|why| {
-        format!(
-            "the rate card could not be made durable, so the configuration change was refused \
-             and nothing was changed: {why}"
-        )
-    })?;
-    let staged = StagedRates { armed: true };
     // The build reached its end without a single fallible step refusing — but the build is not the
     // whole apply. The guard travels OUT, uncommitted, so the limits survive only if the caller's
     // own persist-and-swap lands (see `InstalledLimits`). Every earlier `return Err` / `?` drops it
@@ -1973,7 +1949,7 @@ pub fn build_app_from_config(
         InstalledLimits {
             limits: limits_resolved,
             rates: resolved_rates,
-            staged,
+            configured_card,
             destinations,
             rules: std::sync::Arc::clone(rules),
         },

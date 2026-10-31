@@ -893,3 +893,36 @@ pub fn walk_stored_chains(lane: &JournalLane, own: u64, keys: &AuditKeySet) -> S
         walk
     })
 }
+
+/// EVERY OTHER NODE'S CHAIN THE STORE KEEPS, decoded: `(node, its records in chain order)` for each
+/// node the registry names but `own`. A chain that will not read or verify is left out, named in a
+/// warning. Read by the rate-card migration (MONEY-DESIGN section 3a), which copies every chain's card
+/// records into the fleet-shared history.
+///
+/// # Errors
+///
+/// The store would not list its node registry.
+pub fn stored_chains(
+    calls: &dyn StoreCalls,
+    own: u64,
+) -> Result<Vec<(u64, Vec<busbar_kernel_wal::JournalRecord>)>, String> {
+    let mut nodes: Vec<u64> = registered(calls)?.into_iter().map(|(_, id)| id).collect();
+    nodes.sort_unstable();
+    nodes.dedup();
+    let mut out = Vec::new();
+    for node in nodes.into_iter().filter(|n| *n != own) {
+        let decoded = read_chain(calls, node).and_then(|records| {
+            busbar_kernel_wal::decode_run(&records)
+                .and_then(|d| busbar_kernel_wal::verify_journal(&d).map(|()| d))
+                .map_err(|broken| format!("the journal does not verify: {broken}"))
+        });
+        match decoded {
+            Ok(records) => out.push((node, records)),
+            Err(why) => tracing::warn!(
+                node,
+                "a stored journal was left out of the rate-card migration: {why}"
+            ),
+        }
+    }
+    Ok(out)
+}
