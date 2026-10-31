@@ -11,6 +11,8 @@
 //! compare it feeds ([`crate::redacted::sha256_hex`]), once the owner ruled the
 //! `sha2 -> cpufeatures -> libc` edge tree-wide (2026-09-22).
 
+use zeroize::Zeroizing;
+
 use crate::redacted::Secret;
 
 /// The authenticated PRINCIPAL — who the caller IS, established at the auth stage and keyed to by
@@ -188,12 +190,13 @@ pub struct LoginForm {
 /// [`LoginModule::complete_login`] input — an OAuth authorization-code shape OR the generic submitted
 /// credential map, plus the response of a prior core-executed [`LoginHop`] fed back for verification.
 ///
-/// Its `Debug` withholds the code, the PKCE verifier and every token response: each is a credential.
+/// Its `Debug` withholds the code, the PKCE verifier and every token response: each is a credential,
+/// held in a buffer that wipes on drop.
 #[derive(Clone, PartialEq, Default)]
 pub struct CompleteLogin {
-    pub code: Option<String>,
+    pub code: Option<Zeroizing<String>>,
     pub redirect_uri: Option<String>,
-    pub code_verifier: Option<String>,
+    pub code_verifier: Option<Zeroizing<String>>,
     /// Credential-flow: the submitted form values, keyed by the [`LoginField::name`] the plugin
     /// declared in its [`LoginForm`]. Every value is [`Secret`] (Debug/Display never print it). This
     /// SUBSUMES the old ad-hoc `username`/`password` pair — one generic credential transport, so a
@@ -205,27 +208,29 @@ pub struct CompleteLogin {
 /// An HTTP hop the module DESCRIBES and the CORE EXECUTES. `secret_form_field` names the form key the
 /// core fills with the `client_secret` VALUE — the module writes only the KEY, never the secret.
 ///
-/// Its `Debug` names the form and header KEYS only: a value may be a credential (a bearer token).
+/// Its `Debug` names the form and header KEYS only: a value may be a credential (a bearer token),
+/// so every value is held in a buffer that wipes on drop.
 #[derive(Clone, PartialEq)]
 pub struct LoginHop {
     pub method: String,
     pub url: String,
-    pub form: Vec<(String, String)>,
+    pub form: Vec<(String, Zeroizing<String>)>,
     pub secret_form_field: Option<String>,
     /// Extra request headers the module wants on this hop (e.g. `Authorization: Bearer <token>` for a
     /// userinfo GET). The CORE SANITIZES them before sending (rejects CR/LF/NUL and the hop-control
     /// headers `Host`/`Content-Length`/`Transfer-Encoding`) and only sends the hop to an
     /// operator-allowlisted host over https.
-    pub headers: Vec<(String, String)>,
+    pub headers: Vec<(String, Zeroizing<String>)>,
 }
 
 /// The result of a core-executed [`LoginHop`], fed back to the module.
 ///
-/// Its `Debug` withholds the body: a token response carries the tokens.
+/// Its `Debug` withholds the body: a token response carries the tokens, held in a buffer that wipes
+/// on drop.
 #[derive(Clone, PartialEq)]
 pub struct LoginHttpResponse {
     pub status: u16,
-    pub body: String,
+    pub body: Zeroizing<String>,
 }
 
 /// What a withheld value prints as, the [`Secret`] redaction.
@@ -237,7 +242,7 @@ fn withheld<T>(v: &Option<T>) -> Option<&'static str> {
 }
 
 /// The keys of `pairs`, never their values.
-fn keys(pairs: &[(String, String)]) -> Vec<&str> {
+fn keys(pairs: &[(String, Zeroizing<String>)]) -> Vec<&str> {
     pairs.iter().map(|(k, _)| k.as_str()).collect()
 }
 

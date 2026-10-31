@@ -87,18 +87,21 @@ fn login_debug_never_prints_a_credential() {
     let hop = LoginHop {
         method: "POST".into(),
         url: "https://idp.example/token?code=url-code".into(),
-        form: vec![("client_id".into(), "form-value".into())],
+        form: vec![("client_id".into(), String::from("form-value").into())],
         secret_form_field: Some("client_secret".into()),
-        headers: vec![("authorization".into(), "Bearer header-token".into())],
+        headers: vec![(
+            "authorization".into(),
+            String::from("Bearer header-token").into(),
+        )],
     };
     let login = CompleteLogin {
-        code: Some("the-code".into()),
+        code: Some(String::from("the-code").into()),
         redirect_uri: Some("https://busbar.example/cb".into()),
-        code_verifier: Some("the-verifier".into()),
+        code_verifier: Some(String::from("the-verifier").into()),
         submitted: vec![("password".into(), Secret::new("the-password".to_string()))],
         token_response: Some(LoginHttpResponse {
             status: 200,
-            body: r#"{"access_token":"the-token"}"#.into(),
+            body: String::from(r#"{"access_token":"the-token"}"#).into(),
         }),
     };
     let shown = format!("{login:?} {:?}", LoginOutcome::Exchange(hop));
