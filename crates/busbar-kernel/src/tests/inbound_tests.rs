@@ -16,6 +16,9 @@ use busbar_contract::auth_calls::{VerifyAnswer, Verifying};
 use super::*;
 use crate::guest::{Claimant, Route};
 
+#[path = "inbound_peer_points.rs"]
+mod inbound_peer_points;
+
 /// One auth's double: answers every `verify` with `answer`, counting the calls and keeping the
 /// field-line names it was lent.
 struct Script {
