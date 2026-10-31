@@ -808,6 +808,9 @@ pub fn mount_node(
             // Q71(2): `plane_facts` / `plane_record_write` read the planes this node serves off the
             // live snapshot (Law 7) and write through the configured store's plane-facing seam.
             units.admin.planes = live_planes(Arc::clone(app));
+            // Item 404: `adjust` seals on, and `verify` checks, the node's own amendment journal —
+            // the one instance every generation of this node carries.
+            units.admin.node_amendments = Some(Arc::clone(&app.load().amendments));
             units.admin.records = Some(live_records(Arc::clone(app)));
             // An `Idempotency-Key` is claimed in the same configured store.
             units.admin.replay_store = Some(live_replay_store(Arc::clone(app)));

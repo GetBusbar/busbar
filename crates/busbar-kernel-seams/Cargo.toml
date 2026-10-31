@@ -1,0 +1,15 @@
+[package]
+name = "busbar-kernel-seams"
+version = "1.6.0"
+publish = false            # internal workspace crate; never goes to crates.io
+edition = "2021"
+rust-version = "1.97"
+description = "The kernel's seams with its member crates and the plugin loader: the node's lease and epoch types, the migration seams and the kernel-verb store face. Not plugin-visible."
+license = "Apache-2.0"
+
+[lib]
+name = "busbar_kernel_seams"
+path = "src/lib.rs"
+
+[dependencies]
+busbar-contract = { path = "../busbar-contract" }

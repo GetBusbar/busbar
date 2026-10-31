@@ -754,7 +754,7 @@ pub enum RejectKind {
     /// supersede pass): not loaded, the newer build is.
     Superseded,
     /// A first-party manifest signed by a RETIRED release key ([`RETIRED_RELEASE_KEYS`]) the
-    /// operator does not name under `plugins.trust.publishers`, and `allow_unsigned` is off.
+    /// operator does not name under `plugins.trust.publishers`, whatever `allow_unsigned` says.
     RetiredKey,
 }
 
@@ -1408,26 +1408,25 @@ fn evaluate_against(
             why,
             trusted_as: None,
         }) => {
-            let reason = format!(
-                "first-party manifest signed by the RETIRED busbar release key {key} ({why})"
-            );
-            if policy.allow_unsigned {
-                // allow_unsigned admits code no current key vouches for: this is such code.
-                Ok(Verdict::Allowed {
-                    reason,
-                    allow: AllowReason::Unsigned,
-                })
+            // A retired key is a REVOCATION, not a missing signature (owner-signed 2026-10-30,
+            // SEC-ALLOWUNS): allow_unsigned, which admits code that carries no signature, does
+            // not admit code a revoked key signed. Only naming the key explicitly does.
+            let unsigned_note = if policy.allow_unsigned {
+                " plugins.trust.allow_unsigned does not admit a retired key: a retired key is a \
+                 revocation, not a missing signature."
             } else {
-                Err(Rejected::new(
-                    RejectKind::RetiredKey,
-                    format!(
-                        "{reason}; refusing to load it. Install the plugin's release signed by a \
-                         current busbar key. To keep running this exact plugin, trust the retired \
-                         key explicitly: add it under plugins.trust.publishers (any name but \
-                         '{FIRST_PARTY_PUBLISHER}', public_key: {key})."
-                    ),
-                ))
-            }
+                ""
+            };
+            Err(Rejected::new(
+                RejectKind::RetiredKey,
+                format!(
+                    "first-party manifest signed by the RETIRED busbar release key {key} ({why}); \
+                     refusing to load it.{unsigned_note} Install the plugin's release signed by a \
+                     current busbar key. To keep running this exact plugin, trust the retired \
+                     key explicitly: add it under plugins.trust.publishers (any name but \
+                     '{FIRST_PARTY_PUBLISHER}', public_key: {key})."
+                ),
+            ))
         }
     }
 }

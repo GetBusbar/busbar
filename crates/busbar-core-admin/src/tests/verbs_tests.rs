@@ -9,7 +9,7 @@ use crate::rate::CONFIG_CLASS_RULES;
 use crate::verb::{KernelVerb, VerbScope};
 use crate::verbs::Verbs;
 use busbar_contract::caps::{AdminVerb, Grant};
-use busbar_contract::verb_store::{Store, StoreError};
+use busbar_kernel_seams::verb_store::{Store, StoreError};
 use std::sync::Mutex;
 
 /// A fresh node-lifetime limiter, as the composition root builds once per node.

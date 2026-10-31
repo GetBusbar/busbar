@@ -112,7 +112,13 @@ pub(crate) struct GateSubject<'a> {
     /// The request's session, opaque octets the plane named, shown to every hook on its request
     /// view ([`RoutingRequest::session`]); `None` = the request names none.
     pub(crate) session: Option<&'a [u8]>,
+    /// Where a gate handed the content leaves its access amendment: `(hook, principal, op,
+    /// identity)` onto the node's amendment journal, through the firing site's own seat on it.
+    pub(crate) reads: &'a HookReads<'a>,
 }
+
+/// The access-amendment seat a gate records through: `(hook, principal, op, identity)`.
+pub(crate) type HookReads<'a> = dyn Fn(&str, Option<&str>, &str, bool) + Send + Sync + 'a;
 
 /// The gate's tenant of the session substrate: a per-`(session, hook)` set of the content-piece
 /// digests already screened clean, so a long session re-screens only NEW content instead of the whole
@@ -332,7 +338,7 @@ pub(crate) async fn decide_over(
         }
         let req = project(subject, content, *send_prompt, *send_user);
         if *send_prompt {
-            crate::audit::amend::hook_read(
+            (subject.reads)(
                 policy.name(),
                 subject.key.map(|k| k.id.as_str()),
                 subject.ingress_protocol,
@@ -507,7 +513,7 @@ impl Fallback<'_, '_> {
             }
             let req = project(subject, self.content, send_prompt, send_user);
             if send_prompt {
-                crate::audit::amend::hook_read(
+                (subject.reads)(
                     fb.policy.name(),
                     subject.key.map(|k| k.id.as_str()),
                     subject.ingress_protocol,
@@ -669,6 +675,8 @@ pub(crate) struct DoorSubject<'a> {
     pub(crate) session: Option<&'a [u8]>,
     /// The incremental scan's substrate, under the operator's opt-in.
     pub(crate) scan: Option<ScanSubstrate<'a>>,
+    /// Where a gate handed the content leaves its access amendment ([`GateSubject::reads`]).
+    pub(crate) reads: &'a HookReads<'a>,
     /// The plane's own projected fields the body cannot answer.
     pub(crate) plane: DoorShape<'a>,
 }
@@ -793,6 +801,7 @@ pub(crate) async fn decide_door(
         key: door.key,
         incremental,
         session,
+        reads: door.reads,
     };
     decide_over(gates, &subject, readable, ran).await
 }

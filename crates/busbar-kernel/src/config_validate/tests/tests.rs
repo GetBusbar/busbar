@@ -936,21 +936,36 @@ fn test_validate_accepts_a_private_or_loopback_literal_base_url() {
     }
 }
 
-/// E1 PARITY: the metadata denylist DISPLAYS 1.5.5's eleven entries (`--print-metadata-blocklist`
-/// and the boot line's count), and the guard ENFORCES twelve: the EC2 task-metadata endpoint
-/// `fd00:ec2::23` is refused beside the eleven, though it is not listed.
+/// The boot line's COUNT keeps 1.5.5's eleven displayed entries (E1 parity), and
+/// `--print-metadata-blocklist` prints EVERY entry the guard enforces (security.md: the flag is the
+/// ground truth; owner ruling for 1.6.0: the doc binds): the eleven plus the EC2 task-metadata
+/// endpoint `fd00:ec2::23` and IPv6 link-local `fe80::/10`, each of which the guard refuses.
 #[test]
-fn test_the_metadata_denylist_displays_eleven_and_enforces_twelve() {
-    let shown = crate::config_validate::metadata_denylist_entries();
-    assert_eq!(shown.len(), 11, "1.5.5's displayed list: {shown:?}");
-    assert!(!shown.iter().any(|e| e == "fd00:ec2::23"), "{shown:?}");
+fn test_the_boot_count_shows_eleven_and_the_printed_list_every_enforced_entry() {
+    let counted = crate::config_validate::metadata_denylist_entries();
+    assert_eq!(counted.len(), 11, "1.5.5's displayed count: {counted:?}");
+    let printed = crate::config_validate::metadata_enforced_entries();
+    assert_eq!(printed.len(), 13, "every enforced entry: {printed:?}");
+    for entry in &counted {
+        assert!(printed.contains(entry), "{entry} is printed: {printed:?}");
+    }
+    for entry in ["fd00:ec2::23", "fe80::/10"] {
+        assert!(
+            printed.iter().any(|e| e == entry),
+            "{entry} is printed: {printed:?}"
+        );
+    }
     let task: std::net::IpAddr = "fd00:ec2::23".parse().expect("an address");
     assert!(
         busbar_contract::net::ip_is_cloud_metadata(&task),
-        "the twelfth entry is enforced"
+        "the EC2 task-metadata endpoint is enforced"
     );
     let imds: std::net::IpAddr = "fd00:ec2::254".parse().expect("an address");
     assert!(busbar_contract::net::ip_is_cloud_metadata(&imds));
+    assert!(
+        busbar_contract::net::host_is_link_local_v6("fe80::1"),
+        "IPv6 link-local is refused as metadata is"
+    );
 }
 
 #[test]

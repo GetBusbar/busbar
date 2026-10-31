@@ -71,6 +71,49 @@ fn scalars_pointers_arrays_and_constants_map_to_c() {
     }
 }
 
+/// A struct stated through `abi_struct!` renders exactly as the same struct written plainly, docs
+/// and order included; `abi_op!`/`abi_answers!` invocations are glue and render nothing.
+#[test]
+fn an_abi_struct_declaration_renders_as_the_plain_struct() {
+    let plain = r#"
+        pub const BEFORE: u32 = 1;
+        /// The pair.
+        #[repr(C)]
+        pub struct Pair {
+            /// The count.
+            pub a: u32,
+            pub p: *const u8,
+        }
+        pub const AFTER: u32 = 2;
+        #[repr(C)]
+        pub struct Holder { pub pair: Pair }
+        "#;
+    let declared = r#"
+        pub const BEFORE: u32 = 1;
+        abi_struct! {
+            /// The pair.
+            #[repr(C)]
+            pub struct Pair {
+                /// The count.
+                pub a: u32,
+                pub p: *const u8,
+            }
+        }
+        pub const AFTER: u32 = 2;
+        abi_struct! {
+            #[repr(C)]
+            pub struct Holder { pub pair: Pair }
+        }
+        abi_op! {
+            pub fn check_pair(out: &Pair) as "pair", PAIR_RULES for out: Pair { code(a, 0, 1); }
+        }
+        abi_answers! { cx: (); }
+        "#;
+    let want = render(&[("store", plain)], "").expect("the plain source renders");
+    let got = render(&[("store", declared)], "").expect("the declared source renders");
+    assert_eq!(got, want);
+}
+
 #[test]
 fn enums_newtypes_and_function_pointers_map_and_order_by_dependency() {
     let h = render(

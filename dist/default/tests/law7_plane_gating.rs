@@ -137,7 +137,7 @@ fn only_a_configured_plane_builds_its_slot() {
         );
         cfg.plane_sections = sections.iter().copied().collect();
         let b0 = BUILT.load(Ordering::SeqCst);
-        let app = busbar_kernel::test_support::build_once(cfg, None).expect("build");
+        let app = busbar_kernel_testkit::app::build_once(cfg, None).expect("build");
         (
             BUILT.load(Ordering::SeqCst) - b0,
             app.plane_slots.contains_key(PROBE.key),

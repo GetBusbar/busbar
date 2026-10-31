@@ -304,6 +304,37 @@ pub struct EstablishIn {
 /// The separator between the addresses of [`EstablishIn::within`].
 pub const WITHIN_SEPARATOR: &str = ",";
 
+/// THE REQUEST FIELD BY WHICH A PLUGIN PINS A REQUEST'S DIAL (SEC-8F1), the request-path twin of
+/// [`EstablishIn::within`] for a request the HOST dials: a field of this name in a request bound
+/// for the far end (a plane's attempt answer, [`crate::abi::plane::EMIT_TO_FAR_END`]) is the
+/// host's, never the far end's, exactly as [`crate::abi::auth::SCOPE_REQUEST_FIELD`] is. Its value
+/// is the address set the dial must land on, IP literals joined by [`WITHIN_SEPARATOR`] (the
+/// addresses `dest.judge` wrote under `DEST_RESOLVE`). The host takes it out of the request before
+/// anything is encoded and holds the address its own judgement pins at dial time against it, before
+/// any byte is written: outside it, nothing is sent. An entry that is not an IP literal sends
+/// nothing either. Stated twice, the last stands. It can only narrow where a request lands, never
+/// widen it; no wire ever carries it.
+pub const WITHIN_REQUEST_FIELD: &str = "busbar-dial-within";
+
+/// Whether the request field `name` is [`WITHIN_REQUEST_FIELD`] (a field name compares
+/// case-insensitively).
+#[must_use]
+pub fn is_within_field(name: &[u8]) -> bool {
+    name.eq_ignore_ascii_case(WITHIN_REQUEST_FIELD.as_bytes())
+}
+
+/// The address set a [`WITHIN_REQUEST_FIELD`] value states: `None` when an entry is not an IP
+/// literal (the request is then sent nowhere); an empty value states none.
+#[must_use]
+pub fn within_of(value: &[u8]) -> Option<Vec<std::net::IpAddr>> {
+    let text = std::str::from_utf8(value).ok()?;
+    text.split(WITHIN_SEPARATOR)
+        .map(str::trim)
+        .filter(|a| !a.is_empty())
+        .map(|a| a.parse().ok())
+        .collect()
+}
+
 /// `ServiceOut::value` of a connector service answering FAILED or REFUSED: no cause named.
 pub const CAUSE_NONE: u64 = 0;
 /// `ServiceOut::value` on a failure: the socket's open failed; `error` is the socket's error.

@@ -145,6 +145,96 @@ fn keyed_state_belongs_to_its_instance() {
     state::<Generations<PlaneSnapshot, String>>();
 }
 
+/// Units' state is held by unit: every unit put in is found, counted once, and a unit's op answers
+/// over its own entry wherever its shard is; the whole map is every unit, and what a sweep changes
+/// stays changed.
+#[test]
+fn keyed_units_are_found_counted_and_swept_across_shards() {
+    let units: Keyed<u64, u32> = Keyed::sharded();
+    for unit in 1..=200 {
+        assert_eq!(units.insert(unit, 0), None);
+    }
+    assert_eq!(
+        units.insert(7, 1),
+        Some(0),
+        "a unit put in again replaces its entry"
+    );
+    assert_eq!(units.len(), 200);
+    assert!(units.contains_key(&200) && !units.contains_key(&201));
+    assert_eq!(units.with(&7, |u| u.copied()), Some(1));
+    assert!(units.with(&201, |u| u.is_none()));
+    // A sweep over the whole map: it sees every unit, in key order, and what it drops is gone.
+    let seen = units.with_all(|m| {
+        let keys: Vec<u64> = m.keys().copied().collect();
+        m.retain(|k, _| k % 2 == 0);
+        keys
+    });
+    assert_eq!(seen, (1..=200).collect::<Vec<_>>());
+    assert_eq!(units.len(), 100);
+    assert_eq!(units.get(&3), None);
+    assert_eq!(units.get(&4), Some(0));
+    // The over units go to make room, one shard at a time.
+    units.retain(|k, _| *k > 100);
+    assert_eq!(units.len(), 50);
+    assert_eq!(units.remove(&102), Some(0));
+    assert_eq!(units.remove(&102), None);
+    assert_eq!(units.len(), 49);
+}
+
+/// A unit's entry is held while its piece runs; another unit's op, in another shard, is answered
+/// meanwhile.
+#[test]
+fn keyed_one_unit_held_never_holds_another() {
+    let units: Keyed<u64, u32> = Keyed::sharded();
+    let other = (2..)
+        .find(|k| keyed_shard(k) != keyed_shard(&1_u64))
+        .expect("a unit in another shard");
+    units.insert(1, 0);
+    units.insert(other, 0);
+    units.with(&1, |u| {
+        *u.expect("unit 1") += 1;
+        std::thread::scope(|s| {
+            s.spawn(|| units.with(&other, |u| *u.expect("the other unit") += 1));
+        });
+    });
+    assert_eq!((units.get(&1), units.get(&other)), (Some(1), Some(1)));
+}
+
+/// An arrival keeps its unit only while fewer than the bound are live: a live unit is never
+/// dropped to make room, a unit already held is found again, and arrivals at once never pass the
+/// bound together.
+#[test]
+fn keyed_arrivals_keep_their_unit_within_the_bound() {
+    const MAX_UNITS: usize = 8;
+    let units: Keyed<u64, u32> = Keyed::sharded();
+    std::thread::scope(|s| {
+        for t in 0..4_u64 {
+            let units = &units;
+            s.spawn(move || {
+                for unit in 0..16 {
+                    units.with_or_insert_within(t * 100 + unit, MAX_UNITS, u32::default, |u| {
+                        *u += 1;
+                    });
+                }
+            });
+        }
+    });
+    assert_eq!(units.len(), MAX_UNITS);
+    assert_eq!(units.with_all(|m| m.len()), MAX_UNITS);
+    let held = units.with_all(|m| *m.keys().next().expect("a unit"));
+    assert_eq!(
+        units.with_or_insert_within(held, MAX_UNITS, u32::default, |u| *u),
+        Some(1),
+        "a unit already held is found, full or not"
+    );
+    assert_eq!(
+        units.with_or_insert_within(9_999, MAX_UNITS, u32::default, |u| *u),
+        None,
+        "full: the arrival is refused, nothing dropped"
+    );
+    assert_eq!(units.len(), MAX_UNITS);
+}
+
 /// Two instances' generations are two holds: what one publishes, retires or answers as current is
 /// never the other's, even under the same generation number.
 #[test]

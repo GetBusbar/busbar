@@ -61,7 +61,7 @@ use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::conn::InstanceId;
 
 use super::plugin::{is_lifecycle, Crossed, Instance, Plugin};
-use super::services::{HostServices, Served, ServiceStore};
+use super::services::{HostServices, Served, ServiceStore, ServicesSlot};
 use super::ticket::{decode, encode, WakeRoute, MAX_INDEX, MAX_WORKERS};
 use super::{in_head, now_ns, out_head, watchdog, DriveFrame, Frame, InFrame, Kind, OutFrame};
 
@@ -222,9 +222,9 @@ pub(crate) struct Env {
     pub(crate) stats: Arc<Stats>,
     /// The host services' stored results.
     pub(crate) services: Arc<ServiceStore>,
-    /// What the host services are served from; `None` = the host bound none, and every service
-    /// answers REFUSED.
-    pub(crate) provider: Option<Arc<dyn HostServices>>,
+    /// What the host services are served from, installed late ([`ServicesSlot`]); serving none,
+    /// every service answers REFUSED.
+    pub(crate) provider: Arc<ServicesSlot>,
     /// THE PROCESS'S RUNTIME, the reactor a plugin's connection is registered on: a crossing on a
     /// worker runs inside it, so a dial the connector makes on the worker (a plugin's `exchange`)
     /// lands on a reactor that is always driven (THE DESIGN, the connections section). INSTALLED,
@@ -589,9 +589,15 @@ std::thread_local! {
     /// worker's state lock is held, and either may hold an instance's last reference, whose drop
     /// closes its connections (a transport's code) and unloads its library. Each keeps its instance
     /// here instead, and the loop lets the list go once the lock is released.
-    static LET_GO: std::cell::RefCell<Option<Vec<Arc<Instance>>>> =
+    /// The dials a recycled or restarted ticket left in flight ([`super::conn_services::Closes`])
+    /// are kept here the same way: their close may cross into a transport door.
+    static LET_GO: std::cell::RefCell<Option<Vec<Late>>> =
         const { std::cell::RefCell::new(None) };
 }
+
+/// What a worker loop lets go once its lock is released ([`LET_GO`]): an instance, or the dials
+/// a ticket left in flight. Only ever dropped.
+type Late = Box<dyn std::any::Any>;
 
 /// Keep `instance` past a drop made under the worker's lock: on a worker loop's own thread the loop
 /// takes it by [`let_go`] and drops it with the lock released; on any other thread nothing is kept.
@@ -599,14 +605,29 @@ fn hold_past_lock(instance: &Arc<Instance>) {
     // `try_with`: a drop made while the thread itself is ending keeps nothing.
     let _ = LET_GO.try_with(|l| {
         if let Some(held) = l.borrow_mut().as_mut() {
-            held.push(Arc::clone(instance));
+            held.push(Box::new(Arc::clone(instance)));
         }
     });
 }
 
-/// The instances held past the worker's lock so far, to be dropped by the caller once it has let
-/// the lock go.
-fn let_go() -> Vec<Arc<Instance>> {
+/// Forget what instance `id` kept on the connector under `ticket` while the worker's lock is held:
+/// how many answers it kept. The dials it left in flight are closed once the loop lets the lock go
+/// ([`let_go`]); off a worker loop's thread they close at once.
+fn forget_conns(id: InstanceId, ticket: Ticket) -> usize {
+    let (kept, closes) = super::conn_services::forget(id, ticket);
+    let mut closes = Some(closes);
+    let _ = LET_GO.try_with(|l| {
+        if let Some(held) = l.borrow_mut().as_mut() {
+            held.extend(closes.take().map(|c| Box::new(c) as Late));
+        }
+    });
+    drop(closes);
+    kept
+}
+
+/// What was held past the worker's lock so far, to be dropped by the caller once it has let the
+/// lock go.
+fn let_go() -> Vec<Late> {
     LET_GO.with(|l| {
         l.borrow_mut()
             .as_mut()
@@ -887,10 +908,10 @@ impl WakeRoute for Pool {
         }
     }
 
-    fn services(&self) -> Option<Served> {
+    fn services(&self) -> Option<Served<'_>> {
         Some(Served {
-            store: Arc::clone(&self.env.services),
-            provider: Arc::clone(self.env.provider.as_ref()?),
+            store: &self.env.services,
+            provider: self.env.provider.get()?.as_ref(),
         })
     }
 
@@ -1139,7 +1160,7 @@ impl Worker {
         let ticket = self.ticket(idx, e.generation);
         env.services.held.untrack(ticket);
         for id in e.conns.drain(..) {
-            super::conn_services::forget(id, ticket);
+            forget_conns(id, ticket);
         }
         let next = next_count(e.count);
         if let Some(count) = next {
@@ -1327,7 +1348,7 @@ impl Worker {
                         // Nothing is held: the tick starts the driver ticket's next cycle, and the
                         // last cycle's kept answers (and their epoch) go.
                         let kept = env.services.forget(ticket)
-                            + super::conn_services::forget(meta.instance.instance, ticket);
+                            + forget_conns(meta.instance.instance, ticket);
                         env.services.held.forget(ticket);
                         env.stats
                             .driver_kept_high
@@ -1348,7 +1369,7 @@ impl Worker {
                     // The forget ends the last op's epoch too: a service of its still running
                     // completes into nothing, never into this op's same-numbered handle.
                     env.services.forget(ticket);
-                    super::conn_services::forget(meta.instance.instance, ticket);
+                    forget_conns(meta.instance.instance, ticket);
                 }
                 let inst = meta.instance.clone();
                 let expired = meta.class != DeadlineClass::WriteBehind
@@ -1942,27 +1963,36 @@ impl Dispatcher {
     ///
     /// # Panics
     ///
-    /// As [`Dispatcher::new`]; [`Dispatcher::try_with_services`] answers the refusal instead.
+    /// As [`Dispatcher::new`].
     pub fn with_services(config: DispatchConfig, provider: Arc<dyn HostServices>) -> Self {
-        Self::try_with_services(config, provider).unwrap_or_else(|e| panic!("{e}"))
+        Self::with_slot(config, ServicesSlot::of(provider))
     }
 
-    /// [`Dispatcher::try_new`], serving `provider`.
+    /// Workers and a watchdog, per `config`, serving whatever the host installs into `slot`.
+    ///
+    /// # Panics
+    ///
+    /// As [`Dispatcher::new`]; [`Dispatcher::try_with_slot`] answers the refusal instead.
+    pub fn with_slot(config: DispatchConfig, slot: Arc<ServicesSlot>) -> Self {
+        Self::try_with_slot(config, slot).unwrap_or_else(|e| panic!("{e}"))
+    }
+
+    /// [`Dispatcher::try_new`], serving `slot`.
     ///
     /// # Errors
     ///
     /// [`LoadError::Entropy`](super::LoadError::Entropy) when the OS random source cannot answer.
-    pub fn try_with_services(
+    pub fn try_with_slot(
         config: DispatchConfig,
-        provider: Arc<dyn HostServices>,
+        slot: Arc<ServicesSlot>,
     ) -> Result<Self, super::LoadError> {
         let key = super::handle::ticket_key()?;
-        Ok(Self::build(config, Some(provider), key))
+        Ok(Self::build(config, Some(slot), key))
     }
 
     fn build(
         config: DispatchConfig,
-        provider: Option<Arc<dyn HostServices>>,
+        provider: Option<Arc<ServicesSlot>>,
         ticket_key: super::handle::TicketKey,
     ) -> Self {
         let built = Self::build_unlent(config, provider, ticket_key);
@@ -1982,7 +2012,7 @@ impl Dispatcher {
 
     fn build_unlent(
         config: DispatchConfig,
-        provider: Option<Arc<dyn HostServices>>,
+        provider: Option<Arc<ServicesSlot>>,
         ticket_key: super::handle::TicketKey,
     ) -> Self {
         // The last worker index names the inline tickets (`inline::INLINE_WORKER`), never a worker.
@@ -1994,7 +2024,7 @@ impl Dispatcher {
             stats: Arc::default(),
             inline: Arc::new(super::inline::InlineTickets::new(ticket_key, &services)),
             services,
-            provider,
+            provider: provider.unwrap_or_default(),
             runtime: std::sync::OnceLock::new(),
             io: std::sync::OnceLock::new(),
             observing: Arc::default(),
@@ -2057,10 +2087,10 @@ impl Dispatcher {
         &self.pool.env.services
     }
 
-    /// The host services this dispatcher serves; `None` when it was built with none, and then
-    /// every service answers REFUSED.
+    /// The host services this dispatcher serves now; `None` when it serves none, and then every
+    /// service answers REFUSED.
     pub fn host_services(&self) -> Option<&Arc<dyn HostServices>> {
-        self.pool.env.provider.as_ref()
+        self.pool.env.provider.get()
     }
 
     fn worker(&self, worker: u32) -> Option<Arc<Worker>> {

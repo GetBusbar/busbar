@@ -10,7 +10,7 @@
 
 use std::collections::HashMap;
 
-use crate::caps::{OriginKind, ReasonCode};
+use busbar_contract::caps::{OriginKind, ReasonCode};
 
 /// A capped axis: an amount of money, a count of requests, a live gauge, or any declared meter
 /// class by key.
@@ -22,7 +22,7 @@ use crate::caps::{OriginKind, ReasonCode};
 /// the class a cap is taken on and a refusal names the bucket back to the caller. What stays here
 /// is the kernel's reading OF a bucket — how to build one, and whether it draws for a given pool —
 /// which is loop policy rather than part of what a bucket is.
-pub use crate::{BucketRef as BucketId, BucketScope, CapDimension};
+pub use busbar_contract::{BucketRef as BucketId, BucketScope, CapDimension};
 
 /// A bucket that applies to everything.
 #[must_use]

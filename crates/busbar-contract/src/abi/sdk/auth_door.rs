@@ -35,6 +35,7 @@
 //! A `verify` that waits on its own I/O (a key-set fetch, a directory read over a need) writes its
 //! own slots over [`crate::plugin_door!`].
 
+use std::borrow::Cow;
 use std::cell::Cell;
 use std::marker::PhantomData;
 use std::ptr;
@@ -185,6 +186,9 @@ pub struct Answer {
     pub strips: Vec<Strip>,
     /// Continue or stop.
     pub decision: Decision,
+    /// The lines to strip that a plugin names as a `const` list ([`strip_field`]), handed after
+    /// [`Answer::strips`]: a verify whose lines are fixed names them here and allocates nothing.
+    pub fixed_strips: &'static [Strip],
 }
 
 impl From<Verdict> for Answer {
@@ -199,7 +203,18 @@ impl From<Verdict> for Answer {
             verdict,
             strips: Vec::new(),
             decision,
+            fixed_strips: &[],
         }
+    }
+}
+
+/// The field line `name` to strip, as a `const` ([`Strip::field`] for a name known only at run
+/// time), for [`Answer::fixed_strips`]: `const STRIPS: &[Strip] = &[strip_field("authorization")];`.
+#[must_use]
+pub const fn strip_field(name: &'static str) -> Strip {
+    Strip {
+        name: Cow::Borrowed(name),
+        place: StripPlace::Field,
     }
 }
 
@@ -436,7 +451,11 @@ pub(crate) fn verify_answer<T: VerifyPlugin>(
     };
     write(
         id,
-        Some((answer.strips.as_slice(), input.strip(), decision)),
+        Some((
+            [answer.strips.as_slice(), answer.fixed_strips],
+            input.strip(),
+            decision,
+        )),
         input.field(|i| &i.out_buf),
         out,
         verdict,
@@ -457,11 +476,14 @@ pub fn write_identity(
     write(Some(id), None, buf, out, verdict)
 }
 
+/// A verify's strips as it writes them: [`Answer::strips`], then [`Answer::fixed_strips`].
+type Strips<'a> = [&'a [Strip]; 2];
+
 /// Write the identity `id` (if any) and, for `verify`, the strip names into the host's strip array
 /// and the decision, under `verdict`; or the SHORT FAILED when any of them does not fit.
 fn write(
     id: Option<&VerifiedIdentity>,
-    strip: Option<(&[Strip], HostBuf<'_, StripName>, u32)>,
+    strip: Option<(Strips<'_>, HostBuf<'_, StripName>, u32)>,
     buf: Lent<'_, IdentityBuf>,
     mut out: Out<'_, IdentifyOut>,
     verdict: u32,
@@ -470,8 +492,9 @@ fn write(
     let mut groups: HostBuf<'_, Span> = buf.groups();
     let (strips, mut strip_buf, decision) = match strip {
         Some((strips, host, decision)) => (strips, Some(host), decision),
-        None => (&[][..], None, 0),
+        None => ([&[][..]; 2], None, 0),
     };
+    let strip_count = strips[0].len() + strips[1].len();
     // The FULL sizes first: a short answer writes nothing into the host's buffers.
     let texts = id.map_or([None; 8], |id| {
         [
@@ -490,10 +513,14 @@ fn write(
     let id_groups: &[String] = id.map_or(&[][..], |id| id.groups.as_slice());
     let need_bytes = texts.iter().flatten().map(|t| t.len()).sum::<usize>()
         + id_groups.iter().map(String::len).sum::<usize>()
-        + strips.iter().map(|s| s.name.len()).sum::<usize>();
+        + strips
+            .into_iter()
+            .flatten()
+            .map(|s| s.name.len())
+            .sum::<usize>();
     let need_groups = id_groups.len();
     let strip_cap = strip_buf.as_ref().map_or(0, |h| h.cap());
-    if need_bytes > bytes.cap() || need_groups > groups.cap() || strips.len() > strip_cap {
+    if need_bytes > bytes.cap() || need_groups > groups.cap() || strip_count > strip_cap {
         out.set(|o| &o.needed_bytes, need_bytes as u64);
         out.set(
             |o| &o.needed_groups,
@@ -501,7 +528,7 @@ fn write(
         );
         out.set(
             |o| &o.needed_strip,
-            u32::try_from(strips.len()).unwrap_or(u32::MAX),
+            u32::try_from(strip_count).unwrap_or(u32::MAX),
         );
         return Outcome::Failed;
     }
@@ -521,7 +548,7 @@ fn write(
         }
     };
     if let Some(host) = strip_buf.as_mut() {
-        for s in strips {
+        for s in strips.into_iter().flatten() {
             let name = span(Some(&*s.name));
             host.push(StripName {
                 name,

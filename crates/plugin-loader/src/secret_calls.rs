@@ -163,6 +163,26 @@ fn refused(error_kind: u32, text: String) -> SecretRefused {
     SecretRefused { error_kind, text }
 }
 
+/// THE VALUE CHANGED SIZE BETWEEN THE HOST'S TWO READS: the one re-call, lent a buffer the size
+/// the first answer named, was answered short again (the dispatcher's FAULT for a second short
+/// answer): the value grew between the reads (a file rotated, a Kubernetes `..data` swap). A
+/// transient refusal, UNAVAILABLE, naming the module, so the caller resolves again.
+fn changed_size(name: &str) -> SecretRefused {
+    refused(
+        ERROR_KIND_UNAVAILABLE,
+        format!(
+            "secret module '{name}' could not resolve: the secret's value changed size between \
+             the host's two reads; resolve it again"
+        ),
+    )
+}
+
+/// The re-call answered short again: FAULT (the second short answer), its `out` naming more than
+/// the `lent` bytes of the re-call's buffer.
+fn short_again(outcome: Outcome, out: &ResolveOut, lent: usize) -> bool {
+    outcome == Outcome::Fault && out.needed > lent as u64
+}
+
 /// The text of a refused answer: the plugin's own, else `fallback`.
 fn answer_text(error: Option<&[u8]>, fallback: String) -> String {
     error
@@ -271,6 +291,7 @@ impl Opened {
             resolve_out(),
         );
         let mut c = self.plugin.call(slot::RESOLVE, &mut f);
+        let mut recalled = None;
         if let Some(token) = c.recall.take() {
             // THE ONE RE-CALL (M-SB): a holder the size the answer named; the first held nothing.
             held = SecretValue::zeroed(regrown(&f.out));
@@ -279,6 +300,10 @@ impl Opened {
             f.input.secret_cap = cap;
             f.out = resolve_out();
             c = self.plugin.recall(token, slot::RESOLVE, &mut f);
+            recalled = Some(cap);
+        }
+        if recalled.is_some_and(|lent| short_again(c.outcome, &f.out, lent)) {
+            return Err(changed_size(name));
         }
         match c.outcome {
             Outcome::Ready => {
@@ -365,6 +390,14 @@ impl SecretCalls for LoadedSecret {
                 format!("secret module '{name}' did not answer its resolve"),
             ));
         };
+        if !first
+            && done
+                .frame
+                .as_ref()
+                .is_some_and(|f| short_again(done.outcome, &f.out, cap))
+        {
+            return Err(changed_size(name));
+        }
         match (done.outcome, done.frame.as_ref()) {
             // `check_resolve` held the answer to the host's buffer: `len` bytes at its start.
             (Outcome::Ready, Some(f)) => Ok(lending.take(f.out.secret.len)),
