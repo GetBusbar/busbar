@@ -625,6 +625,7 @@ fn held_credentials(k: &serde_json::Value, section: &str) -> Vec<HeldCredential>
 struct CredentialHost {
     held: Vec<HeldCredential>,
     reads: AtomicU64,
+    clock: Option<Arc<outbound::Clock>>,
 }
 
 impl CredentialHost {
@@ -632,6 +633,15 @@ impl CredentialHost {
         Arc::new(Self {
             held,
             reads: AtomicU64::new(0),
+            clock: None,
+        })
+    }
+
+    fn clocked(clock: Arc<outbound::Clock>) -> Arc<Self> {
+        Arc::new(Self {
+            held: Vec::new(),
+            reads: AtomicU64::new(0),
+            clock: Some(clock),
         })
     }
 
@@ -647,6 +657,9 @@ fn unserved() -> Ran {
 
 impl HostServices for CredentialHost {
     fn now(&self) -> Reading {
+        if let Some(clock) = &self.clock {
+            return clock.reading();
+        }
         let wall = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| d.as_nanos() as u64);
@@ -749,6 +762,9 @@ impl HostServices for CredentialHost {
         Snapshot::Refused(UNSERVED)
     }
     fn records_secret(&self, kind: &str, id: &str, _: Later) -> Ran {
+        if self.clock.is_some() {
+            return unserved();
+        }
         self.reads.fetch_add(1, Ordering::SeqCst);
         let (secret, live) = self
             .held
