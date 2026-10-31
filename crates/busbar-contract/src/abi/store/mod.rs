@@ -477,7 +477,7 @@ store_slots! {
     13 LIST_AUDIT list_audit InHead, LeasedListOut, Off, Call, HostCap,
         "`list_audit`. In [`InHead`], out [`LeasedListOut`] (`AuditRecord`s, oldest first).";
     14 ADD_DENYLIST add_denylist IdReasonIn, OutHead, Off, Call, Fixed,
-        "`add_denylist`. In [`IdReasonIn`] (sub, reason), out [`OutHead`]. An idempotent set insert.";
+        "`add_denylist`. In [`IdReasonIn`] (the denied principal's id, reason), out [`OutHead`]. An idempotent set insert.";
     15 LIST_DENYLIST list_denylist InHead, LeasedStrListOut, Off, Call, HostCap,
         "`list_denylist`. In [`InHead`], out [`LeasedStrListOut`].";
     16 LIST_AUDIT_TAIL list_audit_tail U64In, LeasedListOut, Off, Call, HostCap,

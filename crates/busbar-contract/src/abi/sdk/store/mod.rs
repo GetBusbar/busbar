@@ -323,12 +323,11 @@ pub trait StoreSlots: Sized + Send + Sync + 'static {
     /// The store's refusal, as the 1.5.5 op set states it.
     fn list_audit(&self, cx: &mut Op<'_>) -> Step<RecordStoreResult<Vec<AuditRecord>>>;
 
-    /// `add_denylist` (slot 14).
+    /// `add_denylist` (slot 14): deny the principal `id`, saying why.
     ///
     /// # Errors
     /// The store's refusal, as the 1.5.5 op set states it.
-    fn add_denylist(&self, cx: &mut Op<'_>, sub: &str, reason: &str)
-        -> Step<RecordStoreResult<()>>;
+    fn add_denylist(&self, cx: &mut Op<'_>, id: &str, reason: &str) -> Step<RecordStoreResult<()>>;
 
     /// `list_denylist` (slot 15).
     ///
