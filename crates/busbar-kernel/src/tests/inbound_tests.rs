@@ -2319,8 +2319,31 @@ async fn a_signed_pass_reaches_ticket_once_but_a_signed_refusal_never_does() {
 
 #[tokio::test]
 async fn signed_receipt_replay_is_claimed_only_at_final_admission_and_ticket_stays_unspent() {
+    use busbar_contract::store_calls::StoreDoor;
+
     crate::snapshot::init();
-    let gov = signing_gov();
+    let opened = crate::test_support::store_axis_stand_in()
+        .open(
+            StoreDoor::Linked(crate::test_support::store_double::door),
+            crate::test_support::store_double::NAME,
+            b"{}",
+        )
+        .expect("the replay store opens through its real door");
+    let gov = Arc::new(
+        crate::governance::GovState::new_with_signer(
+            opened.records,
+            Some("admintok".to_string()),
+            Some(crate::governance::signing::TokenSigner::from_secret_bytes(
+                &[7; 32],
+                crate::governance::signing::DEFAULT_KID,
+            )),
+        )
+        .expect("a signing governance"),
+    );
+    assert!(gov.attach_store_calls(opened.calls.expect("the door supplies atomic replay calls")));
+    gov.set_at_rest_keys(Some(crate::governance::at_rest::AtRestKeys::new(
+        &[9; 32], None,
+    )));
     let now = crate::store::now();
     let (id, public_id) = minted_with_credential(&gov);
     let (ticket, _) = gov
