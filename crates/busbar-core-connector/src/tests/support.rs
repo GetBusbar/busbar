@@ -1136,3 +1136,21 @@ pub fn pieces_on_lanes(sink: &FramerSink, o: &mut FramerOut, lane_bytes: &[u8]) 
     o.yielded.frame_len = lane_bytes.len() as u64;
     o.yielded.pieces_len = lane_bytes.len() as u32;
 }
+
+pub fn writable_on_lane(sink: &FramerSink, out: &mut FramerOut, stream: u64) {
+    // SAFETY: the host's buffers offer room for one zero-length signal piece.
+    unsafe {
+        sink.pieces.write(FramePiece {
+            stream,
+            offset: 0,
+            len: 0,
+            code: 0,
+            status_class: 0,
+            flags: PIECE_WRITABLE,
+            fault: 0,
+            retry_after_secs: 0,
+            declared_len: 0,
+        });
+    }
+    out.yielded.pieces_len = 1;
+}

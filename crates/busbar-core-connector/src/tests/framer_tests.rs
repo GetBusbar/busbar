@@ -534,6 +534,7 @@ fn one_stream_pending_auth_parks_only_that_stream_and_resumes_with_one_auth_call
 /// the auth answers.
 struct MuxDoor {
     facts: DoorFacts,
+    yield_writable: bool,
     host: Arc<AuthHost>,
     next: std::sync::atomic::AtomicU32,
     held: std::sync::Mutex<HashMap<Ticket, Vec<u8>>>,
@@ -544,6 +545,7 @@ struct MuxDoor {
 impl MuxDoor {
     fn new() -> Self {
         Self {
+            yield_writable: false,
             facts: DoorFacts {
                 name: "mux".into(),
                 claims: vec!["mux"],
@@ -607,7 +609,12 @@ impl FramerDoor for MuxDoor {
                 return pending;
             }
             let held = self.held.lock().unwrap().remove(&t).unwrap_or_default();
-            crate::support::pieces_on_lanes(&i.sink, o, &held);
+            if self.yield_writable {
+                assert_eq!(held, b"1");
+                crate::support::writable_on_lane(&i.sink, o, 1);
+            } else {
+                crate::support::pieces_on_lanes(&i.sink, o, &held);
+            }
             return ready;
         }
         self.host.new_op(t);
@@ -1015,4 +1022,79 @@ fn a_pending_adoption_resumes_on_its_ticket_without_replaying_leftover_bytes() {
     assert!(adopts[1..]
         .iter()
         .all(|(_, t, resume)| *t == ticket && *resume));
+}
+
+#[test]
+fn a_resumed_emit_preserves_its_stream_full_answer() {
+    let door = Arc::new(PendingDoor::new(
+        TestDoor::new(
+            "bytes",
+            &["bytes"],
+            &[],
+            Knobs {
+                full_at: Some(1),
+                ..Knobs::default()
+            },
+        ),
+        1,
+    ));
+    let (mut framing, _) = Framing::begin_ticketed(
+        door.clone(),
+        SIDE_ACCEPT,
+        "",
+        &Established::plain_for_test(),
+        &[],
+    )
+    .unwrap();
+    assert_eq!(
+        framing.emit(1, b"held", true, false).unwrap(),
+        Yielded::default()
+    );
+    assert!(framing.holds(1));
+    assert!(framing.poll_parked(&mut noop_cx()).is_pending());
+    door.host.complete(1);
+    let yielded = match framing.poll_parked(&mut noop_cx()) {
+        std::task::Poll::Ready(Ok(y)) => y,
+        other => panic!("the parked emit must complete: {other:?}"),
+    };
+    assert_eq!(yielded.wire, b"held", "the original bytes are emitted once");
+    assert!(
+        yielded.full,
+        "the resumed stream must remain blocked at its high-water mark"
+    );
+    assert!(!framing.parked());
+    assert_eq!(door.host.calls(), 1);
+}
+
+#[test]
+fn a_resumed_ingest_preserves_its_stream_writable_signal() {
+    let mut door = MuxDoor::new();
+    door.yield_writable = true;
+    let door = Arc::new(door);
+    let (mut framing, _) = Framing::begin_ticketed(
+        door.clone(),
+        SIDE_ACCEPT,
+        "",
+        &Established::plain_for_test(),
+        &[],
+    )
+    .unwrap();
+    assert_eq!(framing.ingest(b"1", false).unwrap(), Yielded::default());
+    assert!(framing.poll_parked(&mut noop_cx()).is_pending());
+    door.host.complete(1);
+    let yielded = match framing.poll_parked(&mut noop_cx()) {
+        std::task::Poll::Ready(Ok(y)) => y,
+        other => panic!("the parked ingest must complete: {other:?}"),
+    };
+    assert_eq!(
+        yielded.writable,
+        [1],
+        "a resumed readiness signal must reach the caller"
+    );
+    assert!(
+        yielded.pieces.is_empty(),
+        "readiness must never become a payload frame"
+    );
+    assert!(!framing.parked());
+    assert_eq!(door.host.calls(), 1);
 }
