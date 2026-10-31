@@ -563,25 +563,46 @@ impl Subject {
     /// # Panics
     /// When an environment other than the one already applied is named.
     pub fn apply_env(&self) {
-        static APPLIED: std::sync::OnceLock<serde_json::Map<String, serde_json::Value>> =
-            std::sync::OnceLock::new();
         let Some(env) = self.inputs.get("env").and_then(|e| e.as_object()) else {
             return;
         };
-        let applied = APPLIED.get_or_init(|| {
-            for (k, v) in env {
-                match v {
-                    serde_json::Value::Null => std::env::remove_var(k),
-                    serde_json::Value::String(s) => std::env::set_var(k, s),
-                    other => std::env::set_var(k, other.to_string()),
-                }
-            }
-            env.clone()
-        });
         assert_eq!(
-            applied, env,
+            applied_env(env),
+            env,
             "conformance.json's `env` is the process's: one environment per test binary"
         );
+    }
+}
+
+/// The environment applied to the process, once: `env` the first time it is asked.
+fn applied_env(
+    env: &serde_json::Map<String, serde_json::Value>,
+) -> &'static serde_json::Map<String, serde_json::Value> {
+    static APPLIED: std::sync::OnceLock<serde_json::Map<String, serde_json::Value>> =
+        std::sync::OnceLock::new();
+    APPLIED.get_or_init(|| {
+        for (k, v) in env {
+            match v {
+                serde_json::Value::Null => std::env::remove_var(k),
+                serde_json::Value::String(s) => std::env::set_var(k, s),
+                other => std::env::set_var(k, other.to_string()),
+            }
+        }
+        env.clone()
+    })
+}
+
+/// THE ENVIRONMENT BEFORE ANY THREAD: what [`conformance_suite!`] runs as the test binary loads,
+/// before `main` and so before the test harness starts a thread, so no test (the suite's or the
+/// crate's own) reads the environment while it changes. The `env` of `inputs` (a
+/// `conformance.json` text) is applied as [`Subject::apply_env`] applies it; text that is not
+/// that JSON is left for [`Subject::new`] to refuse, in words. Never panics.
+#[doc(hidden)]
+pub fn apply_env_before_threads(inputs: &str) {
+    if let Ok(serde_json::Value::Object(o)) = serde_json::from_str::<serde_json::Value>(inputs) {
+        if let Some(env) = o.get("env").and_then(|e| e.as_object()) {
+            let _ = applied_env(env);
+        }
     }
 }
 
@@ -2456,6 +2477,7 @@ macro_rules! conformance_suite {
         $(, namespace: ($create:path, $drop:path))?
         $(,)?
     ) => {
+        $crate::conformance_suite!(@env $inputs);
         fn __busbar_conformance_subject() -> $crate::conformance::Subject {
             $crate::conformance_suite!(
                 @subject door: $door,
@@ -2480,6 +2502,7 @@ macro_rules! conformance_suite {
         $(, namespace: ($create:path, $drop:path))?
         $(,)?
     ) => {
+        $crate::conformance_suite!(@env $inputs);
         fn __busbar_conformance_subject() -> $crate::conformance::Subject {
             $crate::conformance_suite!(
                 @subject loaded: $loaded,
@@ -2492,6 +2515,24 @@ macro_rules! conformance_suite {
             )
         }
         $crate::conformance_suite!(@tests);
+    };
+    // INTERNAL: the inputs' `env`, applied as the test binary loads, before the harness starts a
+    // thread (`apply_env_before_threads`): a platform with no load-time hook applies it at the
+    // first subject, as before.
+    (@env $inputs:expr) => {
+        #[used]
+        #[cfg_attr(
+            any(target_os = "linux", target_os = "android", target_os = "freebsd"),
+            unsafe(link_section = ".init_array")
+        )]
+        #[cfg_attr(target_vendor = "apple", unsafe(link_section = "__DATA,__mod_init_func"))]
+        #[cfg_attr(windows, unsafe(link_section = ".CRT$XCU"))]
+        static __BUSBAR_CONFORMANCE_ENV: extern "C" fn() = {
+            extern "C" fn apply() {
+                $crate::conformance::apply_env_before_threads($inputs);
+            }
+            apply
+        };
     };
     // INTERNAL: the subject a suite runs over, its door named by either form, with the plugin
     // crate's manifest dir (the suite passes its own `CARGO_MANIFEST_DIR`; a loader test passes a

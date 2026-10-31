@@ -9,8 +9,19 @@
 //!     "bad_settings": ["<settings `validate` must refuse (FAILED, naming why)>", ...],
 //!     "known":     { "resolve": <resolve settings>, "material": "<what it resolves to>" },
 //!     "unknown":   <resolve settings naming a secret it does not hold: FAILED, NOT_FOUND>,
-//!     "malformed": <resolve settings that are not a reference: FAILED, INVALID> } }
+//!     "malformed": <resolve settings that are not a reference: FAILED, INVALID>
+//!                  | [<one such>, ...],
+//!     "empty":     <OPTIONAL: resolve settings naming a secret whose value is empty: FAILED,
+//!                  INVALID, never READY with no material>,
+//!     "check":     <OPTIONAL, for a plugin that serves `check`: { "accepted": [<reference
+//!                  settings `check` passes: READY>, ...], "refused": [<ones it refuses: FAILED,
+//!                  naming why>, ...] }> } }
 //! ```
+//!
+//! `malformed` may be one input (the original key) or a list; every entry is judged INVALID, and
+//! the suite adds `{"name": 5}` (a reference whose settings are the wrong shape) to the list. A
+//! refresh over `bad_settings[0]` is refused and leaves the instance serving its last settings: a
+//! resolve after it still answers the known material.
 //!
 //! Every step is one ticket-less crossing of the secret table, but those the HOST answers without
 //! one (`Instance::refuse`): a resolve before `open`, a second `open`, a resolve after `close`
@@ -22,13 +33,14 @@
 
 use std::sync::{Arc, Mutex};
 
-use busbar_contract::abi::mechanism::call::{Outcome, BLOB_SECRET};
-use busbar_contract::abi::secret::{self, ResolveIn, ResolveOut, FIRST_SECRET_CAP};
+use busbar_contract::abi::mechanism::call::{OutHead, Outcome, BLOB_SECRET};
+use busbar_contract::abi::secret::{self, CheckIn, ResolveIn, ResolveOut, FIRST_SECRET_CAP};
 use busbar_contract::redacted::Secret as Held;
 
 use super::{
     answer, asis, called, closed, crossings, dispatcher, facts, input, input_text, json, listed,
-    load, open, opened, output, refreshed, refused_settings, release, Fold, Leg, Script, Subject,
+    load, open, opened, output, refresh, refused_settings, release, tick, Fold, Leg, Script,
+    Subject, Want,
 };
 use crate::dispatch::kinds::secret::Secret;
 use crate::dispatch::{Dispatcher, Frame, Plugin};
@@ -125,6 +137,40 @@ fn resolve(p: &Plugin<Secret>, d: &Dispatcher, settings: &[u8], material: &[u8])
     }
 }
 
+/// One `check` of a reference's `settings`, as the host's secret rows make it: ticket-less, with NO
+/// instance, lent a reason buffer. Its line: the call and the reason it wrote.
+fn check(p: &Plugin<Secret>, settings: &[u8]) -> String {
+    let mut reason = vec![0_u8; 4096];
+    let mut f: Frame<CheckIn, OutHead> = Frame::new(input(), output());
+    f.input.settings = json(settings);
+    f.input.err_buf = reason.as_mut_ptr();
+    f.input.err_cap = reason.len();
+    called(&p.call(secret::slot::CHECK, &mut f))
+}
+
+/// The `malformed` inputs: one value (the original key) or a list, and the suite's own reference
+/// of the wrong shape (`{"name": 5}`), each judged INVALID.
+fn malformed_inputs(k: &serde_json::Value) -> Vec<Vec<u8>> {
+    let text = |v: &serde_json::Value| input_text(v, "a secret");
+    let mut all: Vec<Vec<u8>> = match &k["malformed"] {
+        serde_json::Value::Array(list) => list.iter().map(text).collect(),
+        one => vec![text(one)],
+    };
+    let wrong_shape = br#"{"name":5}"#.to_vec();
+    if !all.contains(&wrong_shape) {
+        all.push(wrong_shape);
+    }
+    all
+}
+
+/// The label of the `i`th `malformed` resolve: the first keeps the original label.
+fn malformed_label(i: usize) -> String {
+    match i {
+        0 => "resolve malformed".to_string(),
+        i => format!("resolve malformed #{i}"),
+    }
+}
+
 /// How long the suite waits for one resolve: the host's call deadline.
 const RESOLVE_DEADLINE: std::time::Duration = std::time::Duration::from_secs(30);
 
@@ -140,13 +186,42 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     let known = text(&k["known"]["resolve"]);
     let material = text(&k["known"]["material"]);
     let unknown = text(&k["unknown"]);
-    let malformed = text(&k["malformed"]);
+    let malformed = malformed_inputs(k);
+    let empty = (!k["empty"].is_null()).then(|| text(&k["empty"]));
+    let checks = (!k["check"].is_null()).then(|| {
+        (
+            listed(&k["check"], "secret.check", "accepted")
+                .iter()
+                .map(text)
+                .collect::<Vec<_>>(),
+            listed(&k["check"], "secret.check", "refused")
+                .iter()
+                .map(text)
+                .collect::<Vec<_>>(),
+        )
+    });
 
     let d = dispatcher();
     let p = load::<Secret>(s, leg, s.bind(&d, "secret")).expect("the secret door loads");
     let mut r = Script::new(crossings(&p));
     r.line("facts", 0, || facts(&p));
     refused_settings(&mut r, &p, &bad, &asis);
+    // `check` judges a reference with no instance: it crosses before any `open`.
+    if let Some((accepted, refused)) = &checks {
+        for (i, c) in accepted.iter().enumerate() {
+            r.judged(&format!("check accepted #{i}"), 1, Want::Starts("Ready "), || {
+                check(&p, c)
+            });
+        }
+        for (i, c) in refused.iter().enumerate() {
+            r.judged(
+                &format!("check refused #{i}"),
+                1,
+                Want::Starts("Failed lease=false "),
+                || check(&p, c),
+            );
+        }
+    }
     // The host refuses an op on an unopened instance before the crossing (`Instance::refuse`).
     r.line("resolve unopened", 0, || resolve(&p, &d, &known, &material));
     opened(&mut r, (s, &p, &d), &settings, &asis);
@@ -165,12 +240,29 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     r.line("resolve unknown", 1, || {
         resolve(&p, &d, &unknown, &material)
     });
-    r.line("resolve malformed", 1, || {
-        resolve(&p, &d, &malformed, &material)
-    });
+    for (i, m) in malformed.iter().enumerate() {
+        r.line(&malformed_label(i), 1, || resolve(&p, &d, m, &material));
+    }
+    if let Some(empty) = &empty {
+        r.line("resolve empty", 1, || resolve(&p, &d, empty, &material));
+    }
     // No lease was granted: a release of one is the plugin's refusal.
     r.line("release", 1, || called(&release(&p, 1)));
-    refreshed(&mut r, &p, Some(&bad[0]), &settings, &asis);
+    r.line("tick", 1, || {
+        let (c, next) = tick(&p, 1);
+        format!("{} next={next}", called(&c))
+    });
+    // A refresh over settings `validate` refuses is refused, naming why, and the instance keeps
+    // serving its last settings.
+    r.judged("refresh bad", 1, Want::Starts("Failed lease=false "), || {
+        called(&refresh(&p, &bad[0]))
+    });
+    r.line("resolve after refused refresh", 1, || {
+        resolve(&p, &d, &known, &material)
+    });
+    r.judged("refresh", 1, Want::Starts("Ready "), || {
+        called(&refresh(&p, &settings))
+    });
     r.line("resolve after refresh", 1, || {
         resolve(&p, &d, &known, &material)
     });
@@ -186,10 +278,10 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
 /// THE KIND'S CONTRACT over the fold, so two equal folds of failures prove nothing: a known name
 /// is READY with its material, flagged secret and written into the host's buffer under no lease; a
 /// buffer too small is the short-buffer answer naming the value's length; an unknown one is
-/// NOT_FOUND, a malformed one INVALID, neither leased; no lease is held to release; a refused `validate` names why; an instance opens once; a closed
-/// instance serves nothing. (A `refresh` over the bad settings is recorded, not judged: a plugin
-/// whose settings carry nothing it reads may accept them.) `validate`, `open`, `refresh` and
-/// `close` answering READY are the shared steps' ([`super::opened`], [`super::refreshed`]).
+/// NOT_FOUND, every malformed one and an empty value INVALID, none leased; no lease is held to
+/// release; a refused `validate` names why; an instance opens once; a refused `refresh` leaves it
+/// serving the known material; a closed instance serves nothing. `validate`, `open`, `refresh`
+/// (both), `check` and `close` are judged where they run ([`super::opened`], [`Script::judged`]).
 fn contract(fold: &Fold) {
     let at = |label: &str| answer(fold, label);
     let known = format!(
@@ -199,6 +291,7 @@ fn contract(fold: &Fold) {
     for label in [
         "resolve known",
         "resolve known again",
+        "resolve after refused refresh",
         "resolve after refresh",
     ] {
         assert!(
@@ -217,10 +310,16 @@ fn contract(fold: &Fold) {
         "a value over the host's buffer is the short-buffer answer: {}",
         at("resolve short")
     );
-    for (label, kind) in [
-        ("resolve unknown", secret::ERROR_KIND_NOT_FOUND),
-        ("resolve malformed", secret::ERROR_KIND_INVALID),
-    ] {
+    let malformed = (0..)
+        .map(malformed_label)
+        .take_while(|l| fold.iter().any(|s| &s.label == l));
+    let mut failing: Vec<(String, u32)> = vec![("resolve unknown".into(), secret::ERROR_KIND_NOT_FOUND)];
+    failing.extend(malformed.map(|l| (l, secret::ERROR_KIND_INVALID)));
+    if fold.iter().any(|s| s.label == "resolve empty") {
+        failing.push(("resolve empty".into(), secret::ERROR_KIND_INVALID));
+    }
+    for (label, kind) in &failing {
+        let label = label.as_str();
         let tail = format!("kind={kind} material=none secret_flag=false in_host_buffer=false");
         assert!(
             at(label).starts_with("Failed lease=false ") && at(label).ends_with(&tail),
