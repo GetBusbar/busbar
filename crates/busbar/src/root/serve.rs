@@ -2206,7 +2206,7 @@ fn open(
     );
     let (called, snapshot) = plugin.open(&mut frame);
     if called.outcome != AbiOutcome::Ready {
-        return Err(format!("it did not open: {:?}", called.outcome));
+        return Err(called.open_failure(plugin.name()));
     }
     snapshot.ok_or_else(|| "its snapshot did not pass the host's checks".to_string())
 }
