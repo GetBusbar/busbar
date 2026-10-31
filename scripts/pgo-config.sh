@@ -5,6 +5,7 @@ write_run_configs() {
   cat > "$WORK/config.yaml" <<YAML
 listen: "127.0.0.1:$run_port"
 admin_listen: "127.0.0.1:$((run_port + 1))"
+store: {module: memory}
 # 1.5.3 grammar. Two keys moved and the old spellings are now fail-closed boot refusals, which is
 # how this script broke the 1.5.3 Docker build: PGO is mandatory, the instrumented binary refused
 # its own training config, and the release could not produce an image. The trainer must be written
