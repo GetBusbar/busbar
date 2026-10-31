@@ -356,11 +356,11 @@ impl ReachedStore {
 }
 
 #[cfg(feature = "root-admin")]
-impl busbar_contract::verb_store::Store for ReachedStore {
+impl busbar_kernel_seams::verb_store::Store for ReachedStore {
     fn chain_break(
         &self,
         _admin: &busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
-    ) -> Result<(), busbar_contract::verb_store::StoreError> {
+    ) -> Result<(), busbar_kernel_seams::verb_store::StoreError> {
         self.note("chain_break".to_string());
         Ok(())
     }
@@ -369,7 +369,7 @@ impl busbar_contract::verb_store::Store for ReachedStore {
         &self,
         _admin: &busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
         backup_ref: &str,
-    ) -> Result<(), busbar_contract::verb_store::StoreError> {
+    ) -> Result<(), busbar_kernel_seams::verb_store::StoreError> {
         self.note(format!("store_restore {backup_ref}"));
         Ok(())
     }

@@ -6,7 +6,7 @@
 //! The ledger states what an opening figure MEANS; the store side reads it off the previous
 //! release's rows, because that is where the loaded plugin and its row shapes already are. These
 //! are the shapes the two halves trade and the three traits the store side implements and the
-//! ledger consumes, so they are the contract's: the store side names the contract alone.
+//! ledger consumes, so they are this seams crate's: neither side names the other.
 //!
 //! **It never writes to what it read.** A deployment may be booting against a read-only replica or
 //! a grant-restricted database — the previous release's supported shape — so the source seams have a
