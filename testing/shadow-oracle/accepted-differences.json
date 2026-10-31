@@ -5482,15 +5482,11 @@
         "ruling": "Direct yes, warning or boot failure? then agreed: migration adds guidance; existing validation/boot failure remains. Exact52cells and hint in SIGN-migrate-signing-key.md."
       },
       "changelog": "Config migration explains how to configure a required missing signing key.",
-      "rationale": "Owner approved C directly. Only the exact signing-key TODO is removed for comparison, followed by the exact otherwise-empty migration banner where this TODO alone introduced it. Existing warnings/TODOs, configuration bytes, status and every other effect remain compared. Golden unchanged. The exact otherwise-empty stderr TODO (1) block introduced by this hint is removed too; a block containing another TODO, changed hint, other warnings, status or configuration remains compared. Classified breaking because migration output is an operator-visible contract, with the matching changelog line.",
+      "rationale": "Owner approved C directly. Only the exact signing-key TODO is removed for comparison. Existing warnings/TODOs, configuration bytes, status and every other effect remain compared. Golden unchanged. The exact otherwise-empty stderr TODO (1) block introduced by this hint is removed too; a block containing another TODO, changed hint, other warnings, status or configuration remains compared. Classified breaking because migration output is an operator-visible contract, with the matching changelog line.",
       "transform": {
         "candidate": [
           [
             "# TODO\\(migrate\\): auth\\.signing_key: required now that the chain uses `keys` \\(busbar no longer auto-generates one\\); run `busbar --generate-signing-key` and set auth\\.signing_key to a secret reference for it \\(\\{file: /path\\} or \\{env: VAR\\}, shared across a fleet\\)\\n",
-            ""
-          ],
-          [
-            "\\A# busbar <VERSION> config, migrated by `busbar --migrate-config`\\.\\n# The items below need a decision; `busbar --validate` must pass\\.\\n\\n",
             ""
           ],
           [

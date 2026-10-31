@@ -27,6 +27,12 @@ use serde_yaml::{Mapping, Value};
 #[path = "migrate_1_6.rs"]
 mod upgrade_1_6;
 
+const MISSING_SIGNING_KEY: &str =
+    "auth.signing_key: required now that the chain uses `keys` (busbar no longer \
+     auto-generates one); run `busbar --generate-signing-key` and set \
+     auth.signing_key to a secret reference for it ({file: /path} or {env: VAR}, \
+     shared across a fleet)";
+
 /// The 1.5.x store-module text this migration and its refusals print, read off the ROOT LEGACY
 /// TABLE the composition root hands in ([`crate::config::migration_table`]; moved from
 /// `data/legacy_store_modules.toml`): frozen text naming store backends no crate in the kernel
@@ -455,18 +461,24 @@ pub fn migrate_config_with(
     // config path.
     let mut yaml = String::new();
     if !warnings.is_empty() || !todos.is_empty() {
-        yaml.push_str(&format!(
-            "# busbar {} config, migrated by `busbar --migrate-config`.\n",
-            crate::config::CONFIG_TARGET_VERSION
-        ));
-        yaml.push_str("# The items below need a decision; `busbar --validate` must pass.\n");
+        let signing_key_only = warnings.is_empty()
+            && matches!(todos.as_slice(), [todo] if todo == MISSING_SIGNING_KEY);
+        if !signing_key_only {
+            yaml.push_str(&format!(
+                "# busbar {} config, migrated by `busbar --migrate-config`.\n",
+                crate::config::CONFIG_TARGET_VERSION
+            ));
+            yaml.push_str("# The items below need a decision; `busbar --validate` must pass.\n");
+        }
         for w in &warnings {
             yaml.push_str(&format!("# WARNING(migrate): {w}\n"));
         }
         for t in &todos {
             yaml.push_str(&format!("# TODO(migrate): {t}\n"));
         }
-        yaml.push('\n');
+        if !signing_key_only {
+            yaml.push('\n');
+        }
     }
     yaml.push_str(&body);
     Ok(MigrateOutput {
@@ -1276,13 +1288,7 @@ fn migrate_auth(
         })
     );
     if chain_uses_keys && !auth.contains_key(Value::from("signing_key")) {
-        todos.push(
-            "auth.signing_key: required now that the chain uses `keys` (busbar no longer \
-             auto-generates one); run `busbar --generate-signing-key` and set \
-             auth.signing_key to a secret reference for it ({file: /path} or {env: VAR}, \
-             shared across a fleet)"
-                .into(),
-        );
+        todos.push(MISSING_SIGNING_KEY.into());
     }
 
     // `auth.modules` (per-module trust-boundary caps) is REMOVED in 1.5.0. `max_admin_scope` has a
