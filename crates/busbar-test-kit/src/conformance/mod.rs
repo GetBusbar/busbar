@@ -2470,6 +2470,7 @@ macro_rules! conformance_suite {
         $(, host: $host:path)?
         $(, tls: $tls:expr)?
         $(, namespace: ($create:path, $drop:path))?
+        $(, newer_schema: $stamp:path)?
         $(,)?
     ) => {
         fn __busbar_conformance_subject() -> $crate::conformance::Subject {
@@ -2481,6 +2482,7 @@ macro_rules! conformance_suite {
                 $(, host: $host)?
                 $(, tls: $tls)?
                 $(, namespace: ($create, $drop))?
+                $(, newer_schema: $stamp)?
             )
         }
         $crate::conformance_suite!(@tests);
@@ -2494,6 +2496,7 @@ macro_rules! conformance_suite {
         $(, host: $host:path)?
         $(, tls: $tls:expr)?
         $(, namespace: ($create:path, $drop:path))?
+        $(, newer_schema: $stamp:path)?
         $(,)?
     ) => {
         fn __busbar_conformance_subject() -> $crate::conformance::Subject {
@@ -2505,6 +2508,7 @@ macro_rules! conformance_suite {
                 $(, host: $host)?
                 $(, tls: $tls)?
                 $(, namespace: ($create, $drop))?
+                $(, newer_schema: $stamp)?
             )
         }
         $crate::conformance_suite!(@tests);
@@ -2520,6 +2524,7 @@ macro_rules! conformance_suite {
         $(, host: $host:path)?
         $(, tls: $tls:expr)?
         $(, namespace: ($create:path, $drop:path))?
+        $(, newer_schema: $stamp:path)?
     ) => {
         $crate::conformance_suite!(
             @declared $crate::conformance::Subject::new(
@@ -2531,6 +2536,7 @@ macro_rules! conformance_suite {
             $(, host: $host)?
             $(, tls: $tls)?
             $(, namespace: ($create, $drop))?
+            $(, newer_schema: $stamp)?
         )
     };
     (
@@ -2541,6 +2547,7 @@ macro_rules! conformance_suite {
         $(, host: $host:path)?
         $(, tls: $tls:expr)?
         $(, namespace: ($create:path, $drop:path))?
+        $(, newer_schema: $stamp:path)?
     ) => {
         $crate::conformance_suite!(
             @declared $crate::conformance::Subject::of_loaded($loaded, $cdylib, $inputs),
@@ -2548,6 +2555,7 @@ macro_rules! conformance_suite {
             $(, host: $host)?
             $(, tls: $tls)?
             $(, namespace: ($create, $drop))?
+            $(, newer_schema: $stamp)?
         )
     };
     // INTERNAL: the one step both forms share: the host, anchors and namespace hooks named, then
@@ -2558,12 +2566,14 @@ macro_rules! conformance_suite {
         $(, host: $host:path)?
         $(, tls: $tls:expr)?
         $(, namespace: ($create:path, $drop:path))?
+        $(, newer_schema: $stamp:path)?
     ) => {{
         #[allow(unused_mut)]
         let mut s: $crate::conformance::Subject = $subject;
         $(s = s.with_host($host);)?
         $(s = s.with_anchors($tls);)?
         $(s = s.with_namespace($create, $drop);)?
+        $(s = s.with_newer_schema($stamp);)?
         s.declared_in($dir)
     }};
     (@tests) => {
@@ -2683,6 +2693,13 @@ macro_rules! conformance_suite {
         #[test]
         fn red_a_networked_door_with_no_connection_table_is_refused() {
             $crate::conformance::red_no_table(&__busbar_conformance_subject());
+        }
+
+        /// A durable store refuses a schema newer than its build (a door of another kind, or an
+        /// ephemeral store, keeps no schema).
+        #[test]
+        fn a_store_refuses_a_schema_newer_than_its_build() {
+            $crate::conformance::store_newer_schema(&__busbar_conformance_subject());
         }
 
         /// The declares file's `needs` is the Statement's (the one truth).

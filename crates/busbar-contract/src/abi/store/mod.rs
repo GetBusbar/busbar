@@ -32,6 +32,17 @@
 //! );
 //! ```
 //!
+//! # Forward compatibility
+//!
+//! FORWARD COMPATIBILITY, a kind rule (open160 ST14): a DURABLE store records the version of the
+//! schema it writes, and an `open` (or its connect step) that finds a schema NEWER than its build
+//! refuses, in its own words naming both versions. It never writes into, repairs or downgrades a
+//! newer schema: a newer busbar's store may be rolled back to an older binary, and an older build
+//! that wrote into a schema it does not know would corrupt it. An OLDER schema the store migrates
+//! up, by its own migrations. An ephemeral store (`MARK_EPHEMERAL`) keeps no schema. The
+//! published conformance suite proves it (`busbar_test_kit::conformance::store_newer_schema`,
+//! `conformance_suite! { …, newer_schema: <stamp> }`).
+//!
 //! # Paths, results and memory
 //!
 //! Every slot states its contract in [`OPS`]: request-path or off-path, `may_pend`, its

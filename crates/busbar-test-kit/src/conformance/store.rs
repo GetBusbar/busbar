@@ -831,6 +831,54 @@ mod runs_tests;
 
 /// THE STORE KIND'S FORWARD-COMPATIBILITY CASE (`abi::store`, FORWARD COMPATIBILITY): a durable
 /// store opened over a schema newer than its build refuses to open.
+///
+/// A door of another kind has no schema: nothing to prove. An EPHEMERAL store (its Statement's
+/// mark) keeps no schema and states no stamp. A durable store must state its stamp
+/// (`conformance_suite! { …, newer_schema: stamp }`): the case opens it in a fold's namespace (a
+/// first open records this build's schema), stamps the schema newer, and requires the next open to
+/// refuse with a text of its own.
+///
+/// # Panics
+/// On a durable store that states no stamp, does not open over its own schema, or opens over a
+/// newer one (the test's verdict).
 pub fn store_newer_schema(s: &Subject) {
-    let _ = s;
+    if s.kind() != busbar_contract::abi::mechanism::KindCode::Store {
+        return;
+    }
+    s.apply_env();
+    let d = dispatcher();
+    let open = |settings: &[u8]| {
+        let p = load::<Store>(s, Leg::Linked, s.bind(&d, ROOT)).expect("the store door loads");
+        let minted = LegMint::take(0);
+        LoadedStore::open(p, Arc::clone(&d), settings, minted.mint()).map(drop)
+    };
+    let p = load::<Store>(s, Leg::Linked, s.bind(&d, ROOT)).expect("the store door loads");
+    let ephemeral = p.context::<StoreFacts>().is_some_and(|f| f.ephemeral);
+    drop(p);
+    if ephemeral {
+        assert!(
+            s.newer_schema.is_none(),
+            "an ephemeral store keeps no schema, so it states no `newer_schema` stamp"
+        );
+        return;
+    }
+    let stamp = s.newer_schema.unwrap_or_else(|| {
+        panic!(
+            "a durable store states how its schema is stamped newer than its build \
+             (`conformance_suite! {{ …, newer_schema: <fn(&str, &[u8])> }}`): the store kind's \
+             forward-compatibility rule (`abi::store`, FORWARD COMPATIBILITY)"
+        )
+    });
+    let settings = s.fold_settings("newer-schema");
+    if let Err(e) = open(&settings) {
+        panic!("the store does not open over its own schema: {e}");
+    }
+    stamp(settings.namespace(), &settings);
+    match open(&settings) {
+        Ok(()) => panic!(
+            "the store opened over a schema newer than its build: a durable store refuses one \
+             (`abi::store`, FORWARD COMPATIBILITY)"
+        ),
+        Err(e) => assert!(!e.is_empty(), "the refusal states why"),
+    }
 }
