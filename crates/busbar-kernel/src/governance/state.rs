@@ -117,7 +117,7 @@ impl GovState {
             by_id,
             by_credential,
         }));
-        let refresh_lock = Arc::new(std::sync::Mutex::new(()));
+        let refresh_order = Arc::new(CacheOrder::default());
         // The set was just read from the store, so the staleness clock starts NOW. `RevocationSync`
         // owns its own handle to the store: its refresh runs on the blocking pool and so cannot
         // borrow from `GovState`. Each re-sync also reloads the key caches from the store, so a key
@@ -128,8 +128,8 @@ impl GovState {
             denylist,
             busbar_kernel::store::now(),
             {
-                let (store, caches, lock) = (store.clone(), caches.clone(), refresh_lock.clone());
-                Box::new(move || reload_caches(store.as_ref(), &caches, &lock))
+                let (store, caches, order) = (store.clone(), caches.clone(), refresh_order.clone());
+                Box::new(move || reload_caches(store.as_ref(), &caches, &order))
             },
         );
         // THE PER-BOOT CALLER-REFERENCE KEY (row 159 H2 residual, ARCHITECT ruling): the key a
@@ -161,8 +161,9 @@ impl GovState {
             signing: RwLock::new(signer.map(|s| Arc::new(SigningMaterial::new(s)))),
             at_rest: RwLock::new(None),
             denylist,
-            refresh_lock,
-            self_mint_lock: std::sync::Mutex::new(()),
+            refresh_order,
+            revoke_claims: claims::ClaimSet::new(),
+            self_mint_claims: claims::ClaimSet::new(),
             self_mint_holds: std::sync::atomic::AtomicBool::new(
                 SELF_MINT_HOLDS_ADMIN_AND_PROVIDER_STATE,
             ),
@@ -311,16 +312,12 @@ impl GovState {
         // killed the SigV4 credential (or was never live to begin with) before the cheaper,
         // faster-to-propagate denylist write is attempted.
         //
-        // Held across BOTH the store writes above and the targeted cache patch below, same as
-        // `refresh()` holds it across its own load+swap (see `refresh_lock`'s doc comment — this
-        // is the same lost-update guard, extended to cover `revoke`'s targeted patch too). Without
-        // this, a concurrent `refresh()` (triggered by any unrelated key mutation) can `load()` a
-        // store snapshot that races these writes, then swap it in AFTER this targeted patch,
-        // silently reverting the just-revoked key's cache entry back to enabled. Held for the
-        // whole function, not just the final block: the store writes must also be inside the
-        // mutual-exclusion window, or a `refresh()` could still slip its `load()` in between them
-        // and this patch.
-        let _refresh_guard = self.refresh_lock.lock().unwrap_or_else(|e| e.into_inner());
+        // One revoke of this subject at a time (see `revoke_claims`); no lock is held across the
+        // store writes below (§11.13 M1). The targeted cache patch at the end goes through
+        // `refresh_order`, which is the lost-update guard: a concurrent `refresh()` whose `load()`
+        // began before the patch is applied never swaps its snapshot in after it (it reloads), so
+        // it cannot revert the just-revoked key's cache entry to enabled.
+        let _claim = self.revoke_claims.claim(sub.to_string());
         let mut revoked_creds = Vec::new();
         for cred in self.store.list_credentials(sub)? {
             if cred.revoked_at.is_none() {
@@ -345,7 +342,7 @@ impl GovState {
         // table scan). Everything the caches need to reflect is already known from the writes
         // above: the (possibly) updated key row, and exactly which `(kind, public_id)` pairs were
         // just revoked.
-        {
+        self.refresh_order.patch(|| {
             let mut c = self.caches_write();
             self.denylist.insert(sub);
             if let Some(key) = new_key {
@@ -354,7 +351,7 @@ impl GovState {
             for (kind, public_id) in &revoked_creds {
                 c.by_credential.remove(&(kind.clone(), public_id.clone()));
             }
-        }
+        });
         Ok(())
     }
 
@@ -2630,29 +2627,39 @@ impl GovState {
     /// `delete_key`/`rotate_key` below, and this crate's own tests. Nothing outside busbar-core
     /// names it, so the cache-reload door is not part of the engine's public surface.
     pub fn refresh(&self) -> RecordStoreResult<()> {
-        reload_caches(self.store.as_ref(), &self.caches, &self.refresh_lock)
+        reload_caches(self.store.as_ref(), &self.caches, &self.refresh_order)
     }
 }
 
 /// RELOAD BOTH KEY CACHES from `store` and swap them in: after this node's own mutation, and on every
 /// fleet re-sync ([`super::revocation::RevocationSync`]).
 ///
-/// Serialized on `lock` for the whole load→swap so a slow reload can't clobber a newer one's cache
-/// with strictly-older store state (lost-update guard): a later reload's load cannot begin until an
-/// earlier one has swapped. Both indices live under the one `caches` lock, so a concurrent reader sees
-/// either the entire old pair or the entire new pair.
+/// Ordered by `order` so a slow reload can't clobber a newer one's cache with strictly-older store
+/// state, nor revert a targeted patch applied while it loaded (lost-update guard), with no lock held
+/// across the store load (§11.13 M1): a load older than the last swap is dropped (that swap began
+/// later, so it carries this caller's mutation), and a load older than the last patch is redone. Both
+/// indices live under the one `caches` lock, so a concurrent reader sees either the entire old pair
+/// or the entire new pair.
 fn reload_caches(
     store: &dyn RecordStore,
     caches: &RwLock<GovCaches>,
-    lock: &std::sync::Mutex<()>,
+    order: &CacheOrder,
 ) -> RecordStoreResult<()> {
-    let _refresh_guard = lock.lock().unwrap_or_else(|e| e.into_inner());
-    let fresh = GovState::load(store)?;
-    let fresh_cred = GovState::load_by_credential(store, &fresh, busbar_kernel::store::now())?;
-    let mut c = caches.write().unwrap_or_else(|p| p.into_inner());
-    c.by_id = fresh;
-    c.by_credential = fresh_cred;
-    Ok(())
+    loop {
+        let ticket = order.ticket();
+        let fresh = GovState::load(store)?;
+        let fresh_cred = GovState::load_by_credential(store, &fresh, busbar_kernel::store::now())?;
+        match order.turn(ticket) {
+            CacheTurn::Swap(_turn) => {
+                let mut c = caches.write().unwrap_or_else(|p| p.into_inner());
+                c.by_id = fresh;
+                c.by_credential = fresh_cred;
+                return Ok(());
+            }
+            CacheTurn::Stale => return Ok(()),
+            CacheTurn::Reload => continue,
+        }
+    }
 }
 
 /// Whether an ALL-TIME (`window_start == 0`) budget cell still backs an ENFORCED cap — the exact

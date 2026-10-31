@@ -830,22 +830,25 @@ pub struct GovState {
     /// read OFF the reactor and BOUNDS it. The request path only ever reads the set; see that
     /// module's docs for why, and for what the offload costs.
     denylist: Arc<revocation::RevocationSync>,
-    /// Serializes `refresh` so a slow reader-load cannot clobber a newer swap (lost-update guard).
-    /// `refresh` loads the full key set from the store OUTSIDE the `caches` write lock (to keep that
-    /// critical section short), then swaps. Without serialization, two concurrent refreshes could
-    /// interleave load-A, load-B, swap-B, swap-A where load-A predates B's committed mutation — so
-    /// the final cache is missing B's key until the next mutation. Holding this mutex across the
-    /// ENTIRE load→swap means a later refresh's load begins only after the earlier refresh's swap
-    /// has committed, so it can never contain strictly-older store state. Guarded data is `()`;
-    /// a poisoned lock is recovered with `into_inner()` (serializing is strictly better than not).
-    refresh_lock: Arc<std::sync::Mutex<()>>,
-    /// Serializes the SELF-SERVE mint upsert (`issue_self`/`refresh_self`): each does a
+    /// Orders cache writes so a slow reader-load cannot clobber a newer one (lost-update guard)
+    /// WITHOUT holding a lock across the store load (§11.13 M1). `refresh` loads the full key set
+    /// from the store with no lock held, then swaps. Two concurrent refreshes could interleave
+    /// load-A, load-B, swap-B, swap-A where load-A predates B's committed mutation, and a refresh
+    /// whose load raced `revoke`'s writes could swap after `revoke`'s targeted patch and revert it.
+    /// [`CacheOrder`] tickets every load and every patch: a load older than the last swap is
+    /// dropped, and a load older than the last patch is redone. See [`CacheOrder`].
+    refresh_order: Arc<CacheOrder>,
+    /// Serializes `revoke` per subject: two revokes of one key would otherwise each write a fresh
+    /// generation and patch the cache in the opposite order to their store writes.
+    revoke_claims: claims::ClaimSet<String>,
+    /// Serializes the SELF-SERVE mint upsert (`issue_self`/`refresh_self`) PER SUBJECT: each does a
     /// current-binding CHECK then a write, and without this an issue racing a refresh could strand a
     /// second enabled binding for the same `user:<sub>` (breaking the one-key-per-sub invariant that
-    /// justifies excluding self-keys from the anti-sprawl cap). Guarded data is `()`; a poisoned lock
-    /// is recovered with `into_inner()`. (The deterministic id already makes two concurrent *issues*
-    /// idempotent by id; this closes the issue/refresh interleaving and non-idempotent stores.)
-    self_mint_lock: std::sync::Mutex<()>,
+    /// justifies excluding self-keys from the anti-sprawl cap). A claim, not a lock: no lock is held
+    /// across the store writes, so a mint parked in the store holds up only its own subject's
+    /// logins (§11.13 M1). (The deterministic id already makes two concurrent *issues* idempotent
+    /// by id; this closes the issue/refresh interleaving and non-idempotent stores.)
+    self_mint_claims: claims::ClaimSet<String>,
     /// Whether the self-serve mint holds an admin's state and the minting provider
     /// ([`SELF_MINT_HOLDS_ADMIN_AND_PROVIDER_STATE`]); set from that const at construction.
     self_mint_holds: std::sync::atomic::AtomicBool,
@@ -864,6 +867,82 @@ pub struct GovState {
     /// material nor a deployment keyset, so a verified principal is never lent the empty reference.
     /// Zeroised on drop and never logged (`GovState` has no `Debug`).
     boot_caller_ref: zeroize::Zeroizing<[u8; 32]>,
+}
+
+/// The order of the key caches' writes (see `GovState::refresh_order`). Every reload takes a
+/// TICKET before it reads the store and every targeted patch takes one when it applies, from one
+/// counter, so a higher ticket means a later start. A reload swaps only if no reload with a later
+/// ticket already swapped (that one began after this caller's mutation, so it carries it) and no
+/// patch with a later ticket was applied (this load may predate the patch's writes, so it reloads).
+/// The mutex is held only to take a ticket and to swap or patch, never across a store call.
+#[derive(Default)]
+pub(crate) struct CacheOrder {
+    seq: std::sync::Mutex<CacheSeq>,
+}
+
+#[derive(Default)]
+struct CacheSeq {
+    /// The last ticket handed out.
+    next: u64,
+    /// The ticket of the reload whose snapshot is in the caches.
+    swapped: u64,
+    /// The ticket of the last targeted patch applied.
+    patched: u64,
+}
+
+/// What a reload holding a ticket must do with the snapshot it loaded.
+pub(crate) enum CacheTurn<'a> {
+    /// Swap it in; the caches stay ordered while the guard is held.
+    Swap(CacheTurnGuard<'a>),
+    /// A later reload already swapped: the caches carry everything this load would.
+    Stale,
+    /// A patch landed after this load began: load again.
+    Reload,
+}
+
+/// Held while a reload swaps its snapshot in; records the swap when dropped.
+pub(crate) struct CacheTurnGuard<'a> {
+    seq: std::sync::MutexGuard<'a, CacheSeq>,
+    ticket: u64,
+}
+
+impl Drop for CacheTurnGuard<'_> {
+    fn drop(&mut self) {
+        self.seq.swapped = self.ticket;
+    }
+}
+
+impl CacheOrder {
+    fn lock(&self) -> std::sync::MutexGuard<'_, CacheSeq> {
+        self.seq.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// A ticket for a reload about to read the store.
+    pub(crate) fn ticket(&self) -> u64 {
+        let mut seq = self.lock();
+        seq.next += 1;
+        seq.next
+    }
+
+    /// What a reload with `ticket` does with its snapshot.
+    pub(crate) fn turn(&self, ticket: u64) -> CacheTurn<'_> {
+        let seq = self.lock();
+        if ticket < seq.swapped {
+            CacheTurn::Stale
+        } else if ticket < seq.patched {
+            CacheTurn::Reload
+        } else {
+            CacheTurn::Swap(CacheTurnGuard { seq, ticket })
+        }
+    }
+
+    /// Apply a targeted patch, after its store writes, in order with every reload.
+    pub(crate) fn patch<R>(&self, apply: impl FnOnce() -> R) -> R {
+        let mut seq = self.lock();
+        seq.next += 1;
+        seq.patched = seq.next;
+        apply()
+    }
 }
 
 /// The busbar signing key as ONE unit: the mint-side signer and the verify-side keyset derived
@@ -900,6 +979,8 @@ pub struct RotatedCredential {
 // public spelling is the substrate's own, and nothing outside busbar-core reaches this path.
 
 pub mod revocation;
+// Per-key serialization that holds no lock across a store call (§11.13 M1).
+pub mod claims;
 // A recoverable credential at rest: sealed before the store sees it (CHIP-DESIGN v4.1 change 1).
 pub mod at_rest;
 // The RESOLVED runtime mint policy (`auth.policy:`) — de-aliased out of `admin` (1.6.0, stage 2a):
@@ -985,15 +1066,15 @@ impl std::fmt::Display for SelfMintError {
 }
 
 /// THE single async door onto the self-serve mint path (`GovState::issue_self` /
-/// `GovState::refresh_self`). Both mint fns take `self_mint_lock` — a plain
-/// `std::sync::Mutex`, NOT a `tokio::sync::Mutex` — and, still holding it, perform SYNCHRONOUS
+/// `GovState::refresh_self`). Both mint fns claim the subject in `self_mint_claims` — a blocking
+/// wait, NOT an async one — and, still holding the claim, perform SYNCHRONOUS
 /// store I/O (`write_self_binding` -> `store.put_key`, and on refresh `store.delete_key`). A
 /// durable `Store` plugin implements those with real network/disk I/O. Calling either fn directly
 /// from an `async fn` therefore runs a blocking critical section INLINE on whatever Tokio worker
 /// is executing the handler: under concurrent logins against a slow store, that worker stalls
 /// every other task queued on it, including unrelated data-plane requests. `spawn_blocking` moves
-/// the ENTIRE lock+I/O critical section onto the blocking pool instead, so the mutex is only ever
-/// held on a blocking thread — mirrors `admin/mod.rs`'s `rotate_key`/`config_transaction` pattern
+/// the ENTIRE claim+I/O critical section onto the blocking pool instead, so the claim is only ever
+/// waited for on a blocking thread — mirrors `admin/mod.rs`'s `rotate_key`/`config_transaction` pattern
 /// exactly (the `Arc<GovState>` cloned into the closure, the sync call made there, a `JoinError`
 /// on `.await` mapped to a `StoreError` rather than panicking or unwrapping).
 ///

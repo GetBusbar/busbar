@@ -2110,7 +2110,7 @@ async fn test_admin_v1_idempotency_reservation_frees_on_failure() {
 /// block a runtime worker instead, which is itself the invariant this test exists to defend.
 ///
 /// The `recv_timeout` on `release` is a DEADLOCK BACKSTOP, not synchronisation. The mint holds the
-/// process-wide `EXISTENCE_GATE` across this park, so a test that panicked between `entered` and
+/// process-wide config transaction across this park, so a test that panicked between `entered` and
 /// `release` would otherwise wedge every other key-mutating test in the binary forever. The backstop
 /// turns that into a bounded, legible failure instead of a hung suite. Nothing in a passing run ever
 /// waits on it.
@@ -7092,21 +7092,15 @@ async fn test_rotate_interleaved_with_delete_never_resurrects_key() {
 }
 
 #[test]
-fn test_existence_gate_is_std_sync_mutex_lockable_without_runtime() {
-    // The gate MUST be a
-    // `std::sync::Mutex<()>`, not a `tokio::sync::Mutex<()>`. The fix binds the gate's lifetime to
-    // the SYNCHRONOUS store mutation by locking it INSIDE the `spawn_blocking` closure (which has no
-    // async runtime in scope); a `tokio::sync::Mutex` cannot be locked there — its `.lock()` returns
-    // a future. This test locks the gate from a PLAIN (non-async) thread with no Tokio runtime
-    // present: that only compiles/runs for a `std::sync::Mutex`. Against the old `tokio::sync::Mutex`
-    // this call would not typecheck as a blocking lock (and `into_inner` on poison is std-only), so
-    // the gate-type regression is pinned. We assert the guarded unit value round-trips.
-    let guard = super::EXISTENCE_GATE
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
-    // The guarded data is the unit type; dereferencing proves we hold a std MutexGuard<()>.
-    let () = *guard;
-    drop(guard);
+fn test_existence_gate_is_claimable_without_runtime() {
+    // The gate is claimed INSIDE each operation's `spawn_blocking` closure (which has no async
+    // runtime in scope), binding its lifetime to the SYNCHRONOUS store mutation rather than to a
+    // cancellable handler future. So it must be claimable, and released, from a PLAIN thread with no
+    // Tokio runtime present: a second claim of the same id after the first drops does not wait.
+    let first = super::EXISTENCE_GATE.claim("vk_gate_probe".to_string());
+    drop(first);
+    let again = super::EXISTENCE_GATE.claim("vk_gate_probe".to_string());
+    drop(again);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
