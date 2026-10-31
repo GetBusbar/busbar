@@ -27,8 +27,6 @@ pub mod dedupe;
 pub mod wire;
 // A record's fields as a backend stores them: scope columns, storable integers, counters.
 pub mod column;
-// A forked chain, in one wording for every store.
-pub mod fork;
 
 use crate::abi::sdk::conn::Host;
 use crate::abi::store::OpId;
@@ -40,6 +38,9 @@ use crate::records::{
 
 mod op;
 pub use op::{Checkout, Op, Services, Step};
+// A store that never pends, served whole over its `RecordStore`.
+mod sync_store;
+pub use sync_store::SyncStore;
 
 /// What `record_scan` answers: `(key, record)` in key order.
 pub type Scanned = Vec<(Vec<u8>, RecordBytes)>;
