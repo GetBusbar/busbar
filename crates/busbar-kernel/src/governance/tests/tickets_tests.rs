@@ -103,6 +103,26 @@ fn a_foreign_or_expired_or_misprefixed_ticket_is_refused() {
 }
 
 #[test]
+fn replacing_a_tickets_consumer_prefix_cannot_redelegate_or_spend_it() {
+    let g = gov();
+    let (id, _) = key(&g, NOW + 86_400);
+    let (ticket, _) = g
+        .mint_ticket(&id, PREFIX, 600, None, b"original-consumer-record", NOW)
+        .expect("mint for its declared consumer");
+    let body = ticket.strip_prefix(PREFIX).expect("the declared prefix");
+    let relabeled = format!("other_{body}");
+    assert!(
+        g.admit_ticket("other_", &relabeled, NOW + 1).is_none(),
+        "changing an unsigned prefix cannot delegate the credential to another consumer"
+    );
+    let (admitted, record) = g
+        .admit_ticket(PREFIX, &ticket, NOW + 1)
+        .expect("a foreign-consumer attempt cannot spend the original credential");
+    assert_eq!(admitted.id, id);
+    assert_eq!(record, b"original-consumer-record");
+}
+
+#[test]
 fn a_ticket_is_never_a_key_and_a_key_is_never_a_ticket() {
     let now = crate::store::now();
     let g = gov();
