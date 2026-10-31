@@ -599,7 +599,7 @@ fn serve_kept(
         match held.entries.entry(issue) {
             std::collections::hash_map::Entry::Occupied(mut o) if o.get().0 == bound => {
                 // SAFETY: the caller's contract.
-                return unsafe { redeem(&mut o.get_mut().1, into) };
+                return unsafe { redeem(&mut o.get_mut().1, put) };
             }
             std::collections::hash_map::Entry::Occupied(_) => None,
             std::collections::hash_map::Entry::Vacant(v) => {
@@ -634,7 +634,7 @@ fn serve_kept(
         }
     }
     // SAFETY: the caller's contract.
-    unsafe { redeem(e, into) }
+    unsafe { redeem(e, put) }
 }
 
 /// A handle's stored result, written into the caller's buffers: PENDING while it runs; a short
@@ -642,7 +642,10 @@ fn serve_kept(
 ///
 /// # Safety
 /// As [`deliver`].
-unsafe fn redeem(e: &mut Entry, into: Option<&ServiceBufs>) -> Answered {
+unsafe fn redeem(
+    e: &mut Entry,
+    put: impl FnOnce(&Stored) -> Result<Answered, Answered>,
+) -> Answered {
     match e {
         Entry::Running => Answered::bare(Outcome::Pending, ""),
         Entry::Done { stored, shorts } => {
