@@ -2330,10 +2330,10 @@ async fn signed_receipt_replay_is_claimed_only_at_final_admission_and_ticket_sta
         AuthPoints::HEAD_BODY,
         Verified::Identity(VerifiedIdentity {
             subject: public_id,
-            replay: Some(busbar_contract::auth_calls::Replay {
+            replay: Some(Box::new(busbar_contract::auth_calls::Replay {
                 key: "signed-ticket-message".into(),
                 ttl_secs: 60,
-            }),
+            })),
             ..VerifiedIdentity::default()
         }),
         vec![Strip::field(SIGNED_LINE), Strip::field("authorization")],

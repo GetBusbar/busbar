@@ -14,6 +14,10 @@ use tokio::net::TcpListener;
 use super::*;
 use crate::support::{worker, Knobs, TestDoor};
 
+#[path = "compose_sensitive_tests.rs"]
+#[allow(unsafe_code)]
+mod sensitive_tests;
+
 /// An echo far end on the worker's own runtime: every connection, every byte back.
 async fn echo() -> String {
     let l = TcpListener::bind("127.0.0.1:0").await.unwrap();

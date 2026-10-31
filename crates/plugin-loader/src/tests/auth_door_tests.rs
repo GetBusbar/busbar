@@ -1026,7 +1026,7 @@ mod ticketed {
     use std::task::Poll;
     use std::time::Duration;
 
-    use busbar_contract::abi::auth::{AuthPoints, AuthTail};
+    use busbar_contract::abi::auth::{AuthPoint, AuthPoints, AuthTail};
     use busbar_contract::abi::host::service::{ItemSpan, SECRET_LIVE, SECRET_NOT_LIVE};
     use busbar_contract::abi::mechanism::call::{AbiStr, Span};
     use busbar_contract::abi::sdk::auth_door::{
