@@ -8,7 +8,8 @@ use std::sync::atomic::{AtomicU8, Ordering};
 use super::*;
 use crate::abi::host::service::{
     ABSENT, CLAIM_TAKEN, DEST_ALLOWED, DEST_INTERNAL, DEST_METADATA, HOOK_GATE, HOOK_REWRITE,
-    MAX_RANDOM_FILL, NOT_ENTITLED, SERVICES, TRUST_NEW, TRUST_SAME,
+    MAX_RANDOM_FILL, NOT_ENTITLED, SCHEME_PLAIN, SCHEME_SECURE, SCHEME_UNDECLARED, SERVICES,
+    TRUST_NEW, TRUST_SAME,
 };
 use crate::abi::mechanism::call::Span;
 use crate::abi::mechanism::ticket::Ticket;
@@ -83,6 +84,11 @@ fn table(slot: Option<ServiceFn>) -> HostSlots {
         trust_decide: None,
         trust_state: None,
         session_emit: None,
+        auth_call: None,
+        unit_hand_in: None,
+        unit_refuse: None,
+        ticket_mint: None,
+        ticket_take: None,
     }
 }
 
@@ -1510,6 +1516,430 @@ fn sign_failures_are_errors() {
     );
 }
 
+// ── the host auth handle ──────────────────────────────────────────────────────────────────────
+
+crate::own_seal!(Own);
+
+use crate::abi::auth::{FIELD_QUERY, FIELD_SENSITIVE, POINT_HEAD};
+use crate::abi::host::service::{FLOW_CONTINUE, FLOW_STOP, LINE_NONE, REFUSE_NO_ROUTE};
+
+/// How many `auth.call`s the scripted hosts answered.
+static AUTH_CALLS: AtomicU8 = AtomicU8::new(0);
+
+const MINTED: UnitRef = UnitRef { id: 5, mac: 6 };
+const LINE_REF: AuthRef = AuthRef { id: 2, mac: 3 };
+
+/// One name an auth answers: the name, its value (outbound) or none (inbound), and its flags.
+type AnsweredName<'a> = (&'a [u8], Option<&'a [u8]>, u32);
+
+/// A scripted `auth.call` host: answers `spans` (name, value, flags) over one byte run, under the
+/// short-buffer rule, and the minted unit with `flow`.
+///
+/// # Safety
+/// `input` is a live `AuthCallIn` and `out` a live `out`.
+unsafe fn answer_auth(
+    input: *const c_void,
+    out: *mut ServiceOut,
+    flow: u32,
+    spans: &[AnsweredName<'_>],
+) -> RawOutcome {
+    AUTH_CALLS.fetch_add(1, Ordering::SeqCst);
+    // SAFETY: the caller's contract.
+    unsafe {
+        let i = input.cast::<AuthCallIn>().read_unaligned();
+        let mut bytes = Vec::new();
+        let mut laid = Vec::new();
+        for (n, v, flags) in spans {
+            let name = Span {
+                offset: bytes.len() as u32,
+                len: n.len() as u32,
+            };
+            bytes.extend_from_slice(n);
+            let value = match v {
+                Some(v) => {
+                    let s = Span {
+                        offset: bytes.len() as u32,
+                        len: v.len() as u32,
+                    };
+                    bytes.extend_from_slice(v);
+                    s
+                }
+                None => Span {
+                    offset: SPAN_ABSENT,
+                    len: 0,
+                },
+            };
+            laid.push(FieldSpan {
+                name,
+                value,
+                flags: *flags,
+                _reserved: 0,
+            });
+        }
+        if bytes.len() > i.cap || laid.len() > i.spans_cap {
+            (*out).needed_bytes = bytes.len() as u64;
+            (*out).needed_items = laid.len() as u64;
+            (*out).outcome = RawOutcome::of(Outcome::Failed);
+            return RawOutcome::of(Outcome::Failed);
+        }
+        std::ptr::copy_nonoverlapping(bytes.as_ptr(), i.buf, bytes.len());
+        std::ptr::copy_nonoverlapping(laid.as_ptr(), i.spans, laid.len());
+        i.answer.write_unaligned(AuthAnswer {
+            size: size_of::<AuthAnswer>() as u32,
+            flow,
+            unit: MINTED,
+        });
+        (*out).len = bytes.len() as u64;
+        (*out).items = laid.len() as u64;
+        (*out).outcome = RawOutcome::of(Outcome::Ready);
+    }
+    RawOutcome::of(Outcome::Ready)
+}
+
+/// An inbound line's call: continue, and strip one field line and one query key.
+extern "C" fn strips(_ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
+    // SAFETY: the wrapper hands a live `AuthCallIn` and `out`.
+    unsafe {
+        answer_auth(
+            input,
+            out,
+            FLOW_CONTINUE,
+            &[
+                (b"x-credential", None, FIELD_SENSITIVE),
+                (b"key", None, FIELD_QUERY),
+            ],
+        )
+    }
+}
+
+/// An outbound binding's call: one field whose value outgrows the wrapper's first buffer.
+extern "C" fn signs_long(_ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
+    static LONG: [u8; 3000] = [b's'; 3000];
+    // SAFETY: as `strips`.
+    unsafe { answer_auth(input, out, FLOW_CONTINUE, &[(b"x-sig", Some(&LONG), 0)]) }
+}
+
+/// A host whose every answer is short.
+extern "C" fn always_short(
+    _ctx: HostCtx,
+    _input: *const c_void,
+    out: *mut ServiceOut,
+) -> RawOutcome {
+    AUTH_CALLS.fetch_add(1, Ordering::SeqCst);
+    // SAFETY: a live `out`.
+    unsafe {
+        (*out).needed_bytes = 4096;
+        (*out).outcome = RawOutcome::of(Outcome::Failed);
+    }
+    RawOutcome::of(Outcome::Failed)
+}
+
+/// A name-only span flagged as neither a field line nor a query key.
+extern "C" fn names_nowhere(
+    _ctx: HostCtx,
+    input: *const c_void,
+    out: *mut ServiceOut,
+) -> RawOutcome {
+    // SAFETY: as `strips`.
+    unsafe { answer_auth(input, out, FLOW_STOP, &[(b"x-credential", None, 0)]) }
+}
+
+fn auth_table(slot: Option<ServiceFn>) -> HostSlots {
+    HostSlots {
+        auth_call: slot,
+        ..table(None)
+    }
+}
+
+fn request() -> HeadViewArgs<'static> {
+    HeadViewArgs {
+        method: "POST",
+        target: "/v1",
+        authority: "a.example",
+        query: Some("key=k"),
+        fields: &[("x-credential", b"c")],
+        scheme: SCHEME_SECURE,
+    }
+}
+
+/// The scheme code the last `sees_scheme` call's view carried.
+static SEEN_SCHEME: std::sync::Mutex<Option<u8>> = std::sync::Mutex::new(None);
+
+/// An `auth.call` host that records the scheme code its request view carries, then continues.
+extern "C" fn sees_scheme(_ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
+    // SAFETY: the wrapper hands a live `AuthCallIn` and `out`.
+    unsafe {
+        let i = input.cast::<AuthCallIn>().read_unaligned();
+        *SEEN_SCHEME.lock().unwrap() = Some(i.request.scheme);
+        answer_auth(input, out, FLOW_CONTINUE, &[])
+    }
+}
+
+/// RED (the upstream's scheme): the code the host declared for the stream reaches the auth in the
+/// view, as is; a request view that declares none hands `SCHEME_UNDECLARED`, never plain.
+#[test]
+fn auth_call_hands_the_auth_the_scheme_the_request_carries() {
+    let t = auth_table(Some(sees_scheme));
+    let call = |request: &HeadViewArgs<'_>| {
+        match services(&t).auth_call::<Own>(
+            ticketed(0),
+            LINE_REF,
+            UnitRef::NONE,
+            POINT_HEAD,
+            1,
+            1,
+            request,
+            None,
+        ) {
+            Poll::Ready(r) => assert_eq!(r.expect("answered").flow, FLOW_CONTINUE),
+            Poll::Pending => panic!("did not pend"),
+        }
+        SEEN_SCHEME.lock().unwrap().take()
+    };
+    assert_eq!(call(&request()), Some(SCHEME_SECURE));
+    let plain = HeadViewArgs {
+        scheme: SCHEME_PLAIN,
+        ..request()
+    };
+    assert_eq!(call(&plain), Some(SCHEME_PLAIN));
+    let undeclared = HeadViewArgs {
+        scheme: SCHEME_UNDECLARED,
+        ..request()
+    };
+    assert_eq!(
+        call(&undeclared),
+        Some(SCHEME_UNDECLARED),
+        "the default declares nothing"
+    );
+    assert_eq!(HeadViewArgs::default().scheme, SCHEME_UNDECLARED);
+}
+
+#[test]
+fn auth_call_answers_the_names_to_strip_for_an_inbound_line() {
+    let t = auth_table(Some(strips));
+    let called: AuthCalled<Own> = match services(&t).auth_call(
+        ticketed(0),
+        LINE_REF,
+        UnitRef::NONE,
+        POINT_HEAD,
+        1,
+        1,
+        &request(),
+        None,
+    ) {
+        Poll::Ready(r) => r.expect("answered"),
+        Poll::Pending => panic!("did not pend"),
+    };
+    assert_eq!(called.flow, FLOW_CONTINUE);
+    assert_eq!(called.unit, MINTED);
+    assert_eq!(
+        called.names,
+        vec![
+            ("x-credential".to_string(), Place::Field),
+            ("key".to_string(), Place::Query)
+        ]
+    );
+    assert!(called.fields.is_empty());
+}
+
+#[test]
+fn auth_call_owns_the_one_short_recall_and_holds_outbound_values_as_the_callers_secret() {
+    let t = auth_table(Some(signs_long));
+    let before = AUTH_CALLS.load(Ordering::SeqCst);
+    let Poll::Ready(Ok(called)) = services(&t).auth_call::<Own>(
+        ticketed(0),
+        LINE_REF,
+        MINTED,
+        POINT_HEAD,
+        1,
+        1,
+        &request(),
+        None,
+    ) else {
+        panic!("answered on the re-call");
+    };
+    assert!(
+        AUTH_CALLS.load(Ordering::SeqCst) >= before + 2,
+        "short, then re-called"
+    );
+    assert!(called.names.is_empty());
+    assert_eq!(called.fields.len(), 1);
+    assert_eq!(called.fields[0].name, "x-sig");
+    assert_eq!(called.fields[0].value.expose_own(&Own::here()).len(), 3000);
+    assert_eq!(format!("{:?}", called.fields[0].value), "[REDACTED]");
+
+    let t = auth_table(Some(always_short));
+    assert!(matches!(
+        services(&t).auth_call::<Own>(
+            ticketed(0),
+            LINE_REF,
+            MINTED,
+            POINT_HEAD,
+            1,
+            1,
+            &request(),
+            None
+        ),
+        Poll::Ready(Err(ServiceError::Broken))
+    ));
+}
+
+#[test]
+fn auth_call_pends_on_a_ticket_and_refuses_what_breaks_the_rules() {
+    let t = auth_table(Some(pends));
+    assert!(services(&t)
+        .auth_call::<Own>(
+            ticketed(0),
+            LINE_REF,
+            UnitRef::NONE,
+            POINT_HEAD,
+            1,
+            1,
+            &request(),
+            None
+        )
+        .is_pending());
+    // A pending answer to a ticketless call breaks the rule.
+    assert!(matches!(
+        services(&t).auth_call::<Own>(
+            handle(),
+            LINE_REF,
+            UnitRef::NONE,
+            POINT_HEAD,
+            1,
+            1,
+            &request(),
+            None
+        ),
+        Poll::Ready(Err(ServiceError::Broken))
+    ));
+    let t = auth_table(Some(names_nowhere));
+    assert!(matches!(
+        services(&t).auth_call::<Own>(
+            ticketed(0),
+            LINE_REF,
+            UnitRef::NONE,
+            POINT_HEAD,
+            1,
+            1,
+            &request(),
+            None
+        ),
+        Poll::Ready(Err(ServiceError::Broken))
+    ));
+    assert!(matches!(
+        services(&auth_table(None)).auth_call::<Own>(
+            ticketed(0),
+            LINE_REF,
+            UnitRef::NONE,
+            POINT_HEAD,
+            1,
+            1,
+            &request(),
+            None
+        ),
+        Poll::Ready(Err(ServiceError::Unserved))
+    ));
+}
+
+/// A hand-in that answers STOP with the unit it minted.
+extern "C" fn stops(_ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
+    // SAFETY: the wrapper hands a live `UnitHandInIn` and `out`.
+    unsafe {
+        let i = input.cast::<UnitHandInIn>().read_unaligned();
+        i.answer.write_unaligned(AuthAnswer {
+            size: size_of::<AuthAnswer>() as u32,
+            flow: FLOW_STOP,
+            unit: MINTED,
+        });
+        (*out).outcome = RawOutcome::of(Outcome::Ready);
+    }
+    RawOutcome::of(Outcome::Ready)
+}
+
+#[test]
+fn unit_hand_in_answers_the_flow_and_the_unit() {
+    let t = HostSlots {
+        unit_hand_in: Some(stops),
+        ..table(None)
+    };
+    assert_eq!(
+        services(&t).unit_hand_in(handle(), LINE_REF, UnitRef::NONE, 4, 1, 1, &request()),
+        Ok((FLOW_STOP, MINTED))
+    );
+    let failing = HostSlots {
+        unit_hand_in: Some(fails),
+        ..table(None)
+    };
+    assert_eq!(
+        services(&failing).unit_hand_in(handle(), LINE_REF, UnitRef::NONE, 4, 1, 1, &request()),
+        Err(ServiceError::Declined(Outcome::Failed))
+    );
+}
+
+/// A refusal held in the host's own memory, as the kernel holds it until the next call.
+extern "C" fn refuses(_ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
+    let fields: &'static [Field] = Box::leak(Box::new([Field {
+        name: raw(b"x-reason"),
+        value: raw(b"no route"),
+    }]));
+    // SAFETY: the wrapper hands a live `UnitRefuseIn` and `out`.
+    unsafe {
+        let i = input.cast::<UnitRefuseIn>().read_unaligned();
+        i.answer.write_unaligned(RefusalAnswer {
+            size: size_of::<RefusalAnswer>() as u32,
+            status: 404,
+            _reserved: 0,
+            fields: fields.as_ptr(),
+            fields_len: fields.len(),
+            body: blob(b"refused", BLOB_OCTETS),
+        });
+        (*out).outcome = RawOutcome::of(Outcome::Ready);
+    }
+    RawOutcome::of(Outcome::Ready)
+}
+
+#[test]
+fn unit_refuse_copies_the_kernels_answer_out() {
+    let t = HostSlots {
+        unit_refuse: Some(refuses),
+        ..table(None)
+    };
+    assert_eq!(
+        services(&t).unit_refuse(
+            handle(),
+            UnitRef::NONE,
+            REFUSE_NO_ROUTE,
+            LINE_NONE,
+            1,
+            1,
+            &request()
+        ),
+        Ok(RefusalCopy {
+            status: 404,
+            fields: vec![("x-reason".to_string(), b"no route".to_vec())],
+            body: b"refused".to_vec(),
+        })
+    );
+    let broken = HostSlots {
+        unit_refuse: Some(breaks),
+        ..table(None)
+    };
+    assert_eq!(
+        services(&broken).unit_refuse(
+            handle(),
+            UnitRef::NONE,
+            REFUSE_NO_ROUTE,
+            LINE_NONE,
+            1,
+            1,
+            &request()
+        ),
+        Err(ServiceError::Broken),
+        "a READY with no answer written"
+    );
+}
+
 /// The secret [`holds_secrets`] keeps for its one live credential.
 const LIVE_SECRET: &[u8] = b"s3cr3t";
 
@@ -1707,5 +2137,118 @@ fn a_verify_op_issues_its_handles_in_order_and_never_crosses_ticketless() {
             .records_secret("signing-key", "AKID")
             .map(|r| r.map(|s| s.live())),
         Poll::Ready(Err(ServiceError::Unserved))
+    );
+}
+
+// ── TICKET.MINT: THE TICKET IS SEALED FROM THE PLANE (R7) ───────────────────────────────────────
+
+/// The ticket the minting host writes: longer than the SDK's first buffer, so the first crossing is
+/// the short answer.
+fn minted_ticket() -> Vec<u8> {
+    let mut t = b"bt_".to_vec();
+    t.resize(600, b'k');
+    t
+}
+
+/// When [`minted_ticket`] expires.
+const MINTED_EXPIRES: u64 = 1_767_225_600;
+
+/// How many `ticket.mint` crossings [`mints`] answered.
+static MINTS: AtomicU8 = AtomicU8::new(0);
+
+/// A host that mints [`minted_ticket`]: into the caller's buffer READY with its expiry, or FAILED
+/// naming its length when the buffer is short.
+extern "C" fn mints(_ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
+    MINTS.fetch_add(1, Ordering::SeqCst);
+    // SAFETY: the wrapper hands a `TicketMintIn` naming its live buffer.
+    let i = unsafe { input.cast::<TicketMintIn>().read_unaligned() };
+    let ticket = minted_ticket();
+    if i.into.cap < ticket.len() {
+        // SAFETY: a live `out`.
+        unsafe { (*out).needed_bytes = ticket.len() as u64 };
+        return answer(out, Outcome::Failed, 0, 0, 0);
+    }
+    // SAFETY: `into.buf` holds `into.cap` writable bytes, at least the ticket's length.
+    unsafe { std::ptr::copy_nonoverlapping(ticket.as_ptr(), i.into.buf, ticket.len()) };
+    answer(out, Outcome::Ready, MINTED_EXPIRES, ticket.len() as u64, 0)
+}
+
+/// What a sealed answer puts on the wire, through the SDK's test-only driver.
+fn sealed_wire(w: &mut crate::abi::sdk::cred::SealedWrite) -> Vec<u8> {
+    let mut wire = Vec::new();
+    let done = crate::abi::sdk::test_support::chip::drive_sealed::<()>(w, |b: &[u8]| {
+        wire.extend_from_slice(b);
+        Poll::Ready(Ok(b.len()))
+    });
+    assert!(done.is_ready(), "the sealed answer is taken whole");
+    wire
+}
+
+/// RED-BEFORE-GREEN (R7: a plane never holds credential bytes; the chip precedent of the `ek_`
+/// answer): `ticket.mint` hands the plane its bearer ticket SEALED. Nothing the plane can print
+/// shows it, and the plane's only way to answer it on is the SDK's sealed JSON, which carries it
+/// byte for byte to the host's buffer. A ticket longer than the first buffer is the short answer,
+/// re-called once inside the call. RED before: the plane got the ticket as a `&str` view into a
+/// buffer of its own.
+#[test]
+fn a_minted_ticket_reaches_the_plane_sealed() {
+    let t = HostSlots {
+        ticket_mint: Some(mints),
+        ..table(None)
+    };
+    let before = MINTS.load(Ordering::SeqCst);
+    let minted = services(&t)
+        .ticket_mint(handle(), 600, br#"{"locked":true}"#)
+        .expect("minted");
+    assert_eq!(
+        MINTS.load(Ordering::SeqCst) - before,
+        2,
+        "the short answer, then its one re-call"
+    );
+    assert_eq!(minted.expires_at_unix, MINTED_EXPIRES);
+    assert_eq!(minted.ticket.len(), minted_ticket().len());
+    assert!(minted.ticket.starts_with(b"bt_"));
+    let shown = format!("{minted:?}");
+    assert!(!shown.contains("bt_k"), "Debug shows the ticket: {shown}");
+    assert!(shown.contains("<600 bytes>"), "{shown}");
+
+    // Named sorted, as `serde_json::json!` writes them (SealedJson writes members in the order named).
+    let mut answer = crate::abi::sdk::cred::SealedJson::new()
+        .public("expires_at_unix", minted.expires_at_unix)
+        .sealed("value", &minted.ticket)
+        .encoded()
+        .expect("the ticket is text");
+    let ticket = String::from_utf8(minted_ticket()).expect("text");
+    assert_eq!(
+        sealed_wire(&mut answer),
+        serde_json::to_vec(&serde_json::json!({
+            "value": ticket,
+            "expires_at_unix": MINTED_EXPIRES,
+        }))
+        .expect("json"),
+        "the host's buffer receives the ticket byte for byte"
+    );
+}
+
+/// A host that answers a ticket that is not UTF-8: broken, never handed on.
+extern "C" fn mints_bytes(_ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
+    // SAFETY: the wrapper hands a `TicketMintIn` naming its live buffer.
+    let i = unsafe { input.cast::<TicketMintIn>().read_unaligned() };
+    // SAFETY: the SDK's first buffer holds far more than two bytes.
+    unsafe { std::ptr::copy_nonoverlapping([0xff_u8, 0xfe].as_ptr(), i.into.buf, 2) };
+    answer(out, Outcome::Ready, MINTED_EXPIRES, 2, 0)
+}
+
+#[test]
+fn a_minted_ticket_that_is_not_text_is_broken() {
+    let t = HostSlots {
+        ticket_mint: Some(mints_bytes),
+        ..table(None)
+    };
+    assert_eq!(
+        services(&t)
+            .ticket_mint(handle(), 600, b"{}")
+            .map(|m| m.expires_at_unix),
+        Err(ServiceError::Broken)
     );
 }

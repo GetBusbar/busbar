@@ -376,10 +376,18 @@ pub trait ExportAxis: Send + Sync {
     }
 
     /// The settings paths `module`'s Statement declares secret (its `secret_refs`, `.`-separated,
-    /// `*` = any key or index; [`crate::secret_fields`]). The export host lends nothing: the kernel
-    /// resolves a reference written at one of these paths IN PLACE before the settings reach the
-    /// sink's probe, check or open, so the sink reads the value as 1.5.5's did. None by default.
+    /// `*` = any key or index; [`crate::secret_fields`]). The export host lends nothing: a reference
+    /// written at one of these paths is resolved IN PLACE before the settings reach the sink's
+    /// probe, check or open. None by default.
     fn secret_refs(&self, module: &str) -> Vec<String> {
+        let _ = module;
+        Vec::new()
+    }
+
+    /// The REFERENCE-CAPABLE, NOT-SECRET settings paths `module`'s Statement states (its
+    /// extensions' `reference_fields`, lead ruling item 7a): a reference there is resolved in
+    /// place to its string, a literal passes as written. None by default.
+    fn reference_fields(&self, module: &str) -> Vec<String> {
         let _ = module;
         Vec::new()
     }

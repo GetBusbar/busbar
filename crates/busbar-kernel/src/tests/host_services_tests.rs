@@ -187,6 +187,8 @@ fn rig() -> Rig {
             )],
             scope_kinds: vec!["group".into(), "item".into()],
             record_chains: Vec::new(),
+            record_retentions: Vec::new(),
+            ticket_prefix: None,
         },
     )
     .unwrap();
@@ -711,19 +713,17 @@ fn a_durable_demotion_is_replayed_at_admit() {
     );
 }
 
+/// `trust.due` answers no counterparty, however far the clock moves past the declared cadence: no
+/// background timer re-fetches an upstream nobody called (tool-and-agent-trust.md:61-62).
 #[test]
-fn trust_due_answers_the_ticks_marks_one_span_each() {
+fn trust_due_answers_no_counterparty_as_the_clock_moves() {
     let r = rig();
     let me = caller("inst");
     assert!(r.s.trust_due(&me).spans.is_empty());
-    r.s.mark_due();
+    r.clock.fetch_add(1_000_000, Ordering::SeqCst);
     let s = r.s.trust_due(&me);
-    assert_eq!(s.bytes, b"cp");
-    assert_eq!((s.spans[0].key.offset, s.spans[0].key.len), (0, 2));
-    assert_eq!(
-        s.spans[0].value.offset,
-        busbar_contract::abi::mechanism::check::SPAN_ABSENT
-    );
+    assert_eq!(s.outcome, Outcome::Ready);
+    assert!(s.spans.is_empty() && s.bytes.is_empty());
 }
 
 #[test]
@@ -741,6 +741,8 @@ fn two_instances_of_one_plugin_have_distinct_registries() {
             trust: Vec::new(),
             scope_kinds: Vec::new(),
             record_chains: Vec::new(),
+            record_retentions: Vec::new(),
+            ticket_prefix: None,
         },
     )
     .unwrap();
@@ -768,6 +770,36 @@ fn two_instances_of_one_plugin_have_distinct_registries() {
         .enqueue("inst", "approval", b"k", b"mine".to_vec());
     let s = run(|l| r.s.records_get(&caller("third"), "approval", b"k", l));
     assert_eq!(s.value, svc::ABSENT);
+}
+
+/// AN ITEM'S DRIFT DEMOTION IS DURABLE: an item approved and then sighted at another digest is
+/// refused, and after a restart over the same store it is still refused, sighted back at its
+/// approved digest, until the operator approves it again. RED before: nothing was kept and the
+/// revert served.
+#[test]
+fn an_items_drift_demotion_outlives_a_restart() {
+    use crate::trust::book::Ruling;
+    let r = rig();
+    let me = caller("inst");
+    run(|l| r.s.trust_sight(&me, "cp", "fp", l));
+    r.s.trust_rule("inst/cp", Ruling::Approve).unwrap();
+    r.s.trust_sight_item(&me, "cp", "t", "d1");
+    r.s.trust_rule("inst/cp/t", Ruling::Approve).unwrap();
+    let serves = |s: &KernelServices| s.trust_serves(&me, "cp", Some("t"), None).value;
+    assert_eq!(serves(&r.s), svc::DISTRUST_NONE);
+    r.s.trust_sight_item(&me, "cp", "t", "d2");
+    assert_eq!(serves(&r.s), svc::DISTRUST_CHANGED);
+    let fresh = restarted(&r);
+    fresh.admit("inst", trusting(Some("fp"))).unwrap();
+    run(|l| fresh.trust_sight(&me, "cp", "fp", l));
+    fresh.trust_sight_item(&me, "cp", "t", "d1");
+    assert_ne!(
+        serves(&fresh),
+        svc::DISTRUST_NONE,
+        "reverted after a restart, it stays refused"
+    );
+    fresh.trust_rule("inst/cp/t", Ruling::Approve).unwrap();
+    assert_eq!(serves(&fresh), svc::DISTRUST_NONE, "re-approved");
 }
 
 /// The rig's kernel after a restart: the same durable demotion record, nothing else.
@@ -1912,6 +1944,52 @@ fn a_declared_chain_the_host_cannot_keep_refuses_the_admit() {
     }
 }
 
+/// **A RECORD KIND THE KERNEL KEEPS ITS OWN RECORDS UNDER IS NEVER AN INSTANCE'S.** The kernel keeps
+/// a minted ticket's record under the kind `ticket` ([`crate::governance::TICKET_RECORD_KIND`]); a
+/// plane that declares that kind would have the admin `plane_record_write` verb upsert rows beside
+/// the kernel's tickets and its own retention rule govern every purge of them. Such an instance is
+/// refused at its admit, with the refusal naming the instance and the kind, and nothing is
+/// registered for it.
+///
+/// RED while the admit took any declared kind: the instance was admitted and its rule for the
+/// kernel's `ticket` kind was in force.
+#[test]
+fn an_instance_declaring_the_kernels_ticket_kind_is_refused_at_admit() {
+    let r = rig();
+    let refused =
+        r.s.admit(
+            "squatter",
+            InstanceFacts {
+                record_kinds: vec![KIND, RecordSchemaId::new("ticket")],
+                record_retentions: vec![busbar_contract::abi::plane::RecordRetention {
+                    kind: 1,
+                    rule: busbar_contract::abi::store::plane::RETENTION_TERMINAL_ONLY,
+                }],
+                ..InstanceFacts::default()
+            },
+        )
+        .expect_err("an instance declaring the kernel's `ticket` kind must not be admitted");
+    assert_eq!(
+        refused,
+        AdmitRefused::KindReserved {
+            instance: "squatter".to_string(),
+            kind: "ticket".to_string(),
+        }
+    );
+    let words = refused.to_string();
+    assert!(
+        words.contains("`squatter`") && words.contains("`ticket`") && words.contains("kernel"),
+        "the refusal names the instance, the kind and why: {words}"
+    );
+    let s = r.s.sign(&caller("squatter"), b"x");
+    assert_eq!((s.outcome, s.error), (Outcome::Refused, NOT_ADMITTED));
+    assert_eq!(
+        r.s.record_retention("squatter", "ticket"),
+        Retention::Age,
+        "no rule of the refused instance is in force over the kernel's tickets"
+    );
+}
+
 /// A plane store whose read of the operator's kept trust rulings parks, once armed, until the test releases it: the
 /// store-plugin crossing an admit makes (audit K4 #6).
 struct ParkingStore {
@@ -1961,10 +2039,11 @@ impl crate::store::plane_view::PlaneStore for ParkingStore {
     ) -> busbar_contract::records::RecordStoreResult<Vec<String>> {
         Ok(Vec::new())
     }
-    fn purge_plane_records_before(
+    fn purge_plane_records(
         &self,
         _: &str,
         _: u64,
+        _: Retention,
     ) -> busbar_contract::records::RecordStoreResult<u64> {
         Ok(0)
     }
@@ -2052,6 +2131,77 @@ fn an_admit_parked_in_the_store_never_stalls_another_instances_host_service() {
     );
 }
 
+/// RED/GREEN, THE DECLARED RETENTION RULE: a purge of a record kind the instance declared
+/// terminal-only keeps its active rows past the cutoff and drops its terminal ones; a kind it
+/// declared no rule for is purged by age, every older row gone. The kinds' names carry nothing: the
+/// rule is the declaration's.
+#[test]
+fn a_purge_runs_under_the_rule_the_instance_declared_for_the_kind() {
+    use busbar_contract::abi::plane::RecordRetention;
+    use busbar_contract::ids::RecordSchemaId;
+    use busbar_contract::records::{PlaneDisposition, PlaneRecord, RecordStore, Retention};
+    let s = KernelServices::new();
+    s.admit(
+        "inst",
+        InstanceFacts {
+            record_kinds: vec![RecordSchemaId::new("kept"), RecordSchemaId::new("aged")],
+            record_retentions: vec![RecordRetention {
+                kind: 0,
+                rule: Retention::TerminalOnly.code(),
+            }],
+            ..InstanceFacts::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(s.record_retention("inst", "kept"), Retention::TerminalOnly);
+    assert_eq!(s.record_retention("inst", "aged"), Retention::Age);
+    assert_eq!(s.record_retention("other", "kept"), Retention::Age);
+
+    let store = MemoryStore::new();
+    let rows = [
+        ("old-active", 10, PlaneDisposition::Active),
+        ("old-terminal", 10, PlaneDisposition::Terminal),
+        ("new-terminal", 200, PlaneDisposition::Terminal),
+    ];
+    for kind in ["kept", "aged"] {
+        for (id, ts, disposition) in rows {
+            let row = PlaneRecord {
+                kind: kind.into(),
+                id: id.into(),
+                parent: None,
+                seq: 0,
+                ts,
+                disposition,
+                body: b"{}".to_vec(),
+            };
+            store.upsert_plane_record(row.view()).unwrap();
+        }
+    }
+    let held = |kind: &str, id: &str| store.get_plane_record(kind, id).unwrap().is_some();
+
+    assert_eq!(
+        s.purge_records_before(&store, "inst", "kept", 100).unwrap(),
+        1
+    );
+    assert!(
+        held("kept", "old-active"),
+        "an active row outlives the cutoff"
+    );
+    assert!(!held("kept", "old-terminal"), "an older terminal row goes");
+    assert!(held("kept", "new-terminal"), "a row after the cutoff stays");
+
+    assert_eq!(
+        s.purge_records_before(&store, "inst", "aged", 100).unwrap(),
+        2
+    );
+    assert!(
+        !held("aged", "old-active"),
+        "by age, an older active row goes"
+    );
+    assert!(!held("aged", "old-terminal"));
+    assert!(held("aged", "new-terminal"));
+}
+
 /// A REPLAYED APPROVAL IS REFUSED THROUGH `records.claim` (§11.12: the ONE path for approval
 /// redemption). The approval's nonce is claimed when it is redeemed; presenting the same approval
 /// again inside its window finds the claim taken, so the second redemption is refused.
@@ -2130,10 +2280,11 @@ impl crate::store::plane_view::PlaneStore for Probe {
     ) -> busbar_contract::records::RecordStoreResult<Vec<String>> {
         Ok(Vec::new())
     }
-    fn purge_plane_records_before(
+    fn purge_plane_records(
         &self,
         _kind: &str,
         _before: u64,
+        _retention: Retention,
     ) -> busbar_contract::records::RecordStoreResult<u64> {
         Ok(0)
     }
@@ -2227,6 +2378,153 @@ fn a_trust_decision_the_store_refused_never_takes_effect() {
     );
 }
 
+/// What one mint was handed: the key id, the prefix, the lifetime and the record.
+type Minted = (String, String, u64, Vec<u8>);
+
+/// A press that mints `<prefix><key>:<ttl>` and expires at `now + ttl`, keeping what it was handed.
+#[derive(Default)]
+struct Press(Mutex<Vec<Minted>>);
+
+impl TicketPress for Press {
+    fn mint(
+        &self,
+        key_id: &str,
+        prefix: &str,
+        ttl_secs: u64,
+        record: &[u8],
+        now: u64,
+    ) -> Result<(String, u64), &'static str> {
+        self.0.lock().unwrap().push((
+            key_id.to_string(),
+            prefix.to_string(),
+            ttl_secs,
+            record.to_vec(),
+        ));
+        Ok((format!("{prefix}{key_id}:{ttl_secs}"), now + ttl_secs))
+    }
+}
+
+/// THE TICKET SERVICES (row 132): a mint is for the unit's principal, under the instance's declared
+/// prefix, through the attached press; a take hands back what admitted the unit, once.
+#[test]
+fn a_ticket_is_minted_for_the_units_principal_under_the_declared_prefix() {
+    let r = rig();
+    r.s.admit(
+        "minter",
+        InstanceFacts {
+            ticket_prefix: Some("tk_".into()),
+            ..InstanceFacts::default()
+        },
+    )
+    .unwrap();
+    let principal = Arc::new(VirtualKey {
+        id: "vk_caller".into(),
+        ..VirtualKey::default()
+    });
+    r.s.units().admitted(
+        7,
+        UnitRecord {
+            principal: Some(Arc::clone(&principal)),
+            depth: 0,
+        },
+    );
+    // RED: no press attached.
+    let no_press = r.s.ticket_mint(&caller("minter"), Some(7), 600, b"{}");
+    assert_eq!(
+        (no_press.outcome, no_press.error),
+        (Outcome::Refused, TICKET_NO_PRESS)
+    );
+    let press = Arc::new(Press::default());
+    assert!(r
+        .s
+        .attach_tickets(Arc::clone(&press) as Arc<dyn TicketPress>));
+    let minted =
+        r.s.ticket_mint(&caller("minter"), Some(7), 600, b"{\"m\":1}");
+    assert_eq!(minted.outcome, Outcome::Ready);
+    assert_eq!(minted.bytes, b"tk_vk_caller:600");
+    assert_eq!(
+        minted.value,
+        1_000 + 600,
+        "the wall clock's seconds plus the lifetime"
+    );
+    assert_eq!(
+        press.0.lock().unwrap().as_slice(),
+        &[(
+            "vk_caller".to_string(),
+            "tk_".to_string(),
+            600,
+            b"{\"m\":1}".to_vec()
+        )]
+    );
+    // RED: no unit, a unit with no principal, an instance that declares no prefix.
+    let none = r.s.ticket_mint(&caller("minter"), None, 600, b"{}");
+    assert_eq!(none.error, TICKET_NO_PRINCIPAL);
+    r.s.units().admitted(
+        8,
+        UnitRecord {
+            principal: None,
+            depth: 0,
+        },
+    );
+    let anonymous = r.s.ticket_mint(&caller("minter"), Some(8), 600, b"{}");
+    assert_eq!(anonymous.error, TICKET_NO_PRINCIPAL);
+    let unprefixed = r.s.ticket_mint(&caller("inst"), Some(7), 600, b"{}");
+    assert_eq!(unprefixed.error, TICKET_NO_PREFIX);
+    assert_eq!(
+        press.0.lock().unwrap().len(),
+        1,
+        "a refused mint never reaches the press"
+    );
+    assert_eq!(r.s.ticket_prefix_of("minter").as_deref(), Some("tk_"));
+    assert_eq!(r.s.ticket_prefix_of("inst"), None);
+}
+
+#[test]
+fn a_take_hands_back_what_admitted_the_unit_once() {
+    let r = rig();
+    let admit = |unit: u64| {
+        r.s.units().admitted(
+            unit,
+            UnitRecord {
+                principal: None,
+                depth: 0,
+            },
+        );
+    };
+    admit(7);
+    assert!(r.s.units().ticketed(7, Some(b"record".to_vec())));
+    admit(8);
+    assert!(r.s.units().ticketed(8, None));
+    let taken = r.s.ticket_take(&caller("inst"), Some(7));
+    assert_eq!(
+        (taken.outcome, taken.value, taken.bytes.as_slice()),
+        (Outcome::Ready, svc::TICKET_TAKEN, &b"record"[..])
+    );
+    let keyed = r.s.ticket_take(&caller("inst"), Some(8));
+    assert_eq!(
+        (keyed.outcome, keyed.value, keyed.bytes.len()),
+        (Outcome::Ready, svc::TICKET_NONE, 0)
+    );
+    // RED: a second take, a unit not in flight, and no unit.
+    for unit in [Some(7), Some(8), Some(9), None] {
+        let again = r.s.ticket_take(&caller("inst"), unit);
+        assert_eq!(
+            (again.outcome, again.error),
+            (Outcome::Refused, TICKET_NOT_HELD),
+            "unit {unit:?}"
+        );
+    }
+    // RED: a unit not in flight holds no ticket; its end drops what it held.
+    assert!(!r.s.units().ticketed(9, Some(b"x".to_vec())));
+    admit(10);
+    assert!(r.s.units().ticketed(10, Some(b"x".to_vec())));
+    r.s.units().ended(10);
+    assert_eq!(
+        r.s.ticket_take(&caller("inst"), Some(10)).error,
+        TICKET_NOT_HELD
+    );
+}
+
 /// **AN OPERATOR'S TRUST DECISION MADE THROUGH ANOTHER NODE TAKES EFFECT HERE WITHIN ONE WINDOW.** Two
 /// nodes over one store, both admitting the same instance: the operator approves a counterparty
 /// through node `a`, and node `b`'s re-sync tick applies the kept approval.
@@ -2295,10 +2593,11 @@ impl crate::store::plane_view::PlaneStore for DownStore {
     ) -> busbar_contract::records::RecordStoreResult<Vec<String>> {
         Err(down())
     }
-    fn purge_plane_records_before(
+    fn purge_plane_records(
         &self,
         _kind: &str,
         _before: u64,
+        _retention: Retention,
     ) -> busbar_contract::records::RecordStoreResult<u64> {
         Err(down())
     }

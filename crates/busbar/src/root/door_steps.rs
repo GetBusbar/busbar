@@ -64,8 +64,8 @@ pub struct DoorPools {
     /// The pools whose members the plane admits each on its own grant (`member_granted`): the
     /// pool's name is no grant of its own.
     member_granted: std::collections::BTreeSet<String>,
-    /// Each entry's reserved `timeout:`, in milliseconds, where it writes one
-    /// (`busbar_contract::section::ENTRY_TIMEOUT_KEY`): its member's attempt bound.
+    /// Each entry's reserved `timeout:`, in milliseconds (`busbar_contract::section::ENTRY_TIMEOUT_KEY`),
+    /// a tool-server registration that writes none at the core's default: its member's attempt bound.
     timeouts: BTreeMap<String, u64>,
     /// Each pool's members' tiers, in member order (`0` where a member states none).
     tiers: BTreeMap<String, Vec<u32>>,
@@ -79,12 +79,13 @@ pub struct DoorPools {
 pub type Routed = (String, Vec<String>);
 
 impl DoorPools {
-    /// The pools `section` states. REFUSED where a member written `{name, tier}` carries a tier
+    /// The pools `section` states, `declared` the section key its plane's Statement declares (whose
+    /// registrations the core's default `timeout:` bounds). REFUSED where a member written `{name, tier}` carries a tier
     /// that is no unsigned integer that fits `u32` (a member that writes no tier states none, tier
     /// `0`): the tier is core-owned
     /// ([`crate::root::serve::pools_into`] writes each member's declared index), so a bad one is a
     /// core bug, and defaulting it to `0` would route that member at the top tier in silence.
-    pub fn of(section: &serde_yaml::Value) -> Result<Self, String> {
+    pub fn of(section: &serde_yaml::Value, declared: &str) -> Result<Self, String> {
         let Some(map) = section.as_mapping() else {
             return Ok(Self::default());
         };
@@ -172,15 +173,24 @@ impl DoorPools {
             .unwrap_or_default();
         // THE ENTRY'S ATTEMPT BOUND (ARCHITECT timeout ruling; R2-G "per-member ... timeout"): its
         // reserved `timeout:`, read the one way the kernel judged it at load, for every plane alike.
+        // A TOOL-SERVER REGISTRATION that writes none is held to the core's default (the section its
+        // plane declares, `default_entry_timeout_ms`); any other entry that writes none, a model or
+        // another plane's registration, keeps the walk's budget (1.5.5's bound).
+        let registration_default = busbar_contract::section::default_entry_timeout_ms(declared);
         let timeouts = entries
             .iter()
             .filter_map(|entry| {
                 let written = models
                     .unwrap_or(map)
-                    .get(entry.as_str())?
-                    .get(busbar_contract::section::ENTRY_TIMEOUT_KEY)?
-                    .as_str()?;
-                let ms = busbar_contract::section::entry_timeout_ms(written).ok()?;
+                    .get(entry.as_str())
+                    .and_then(|e| e.get(busbar_contract::section::ENTRY_TIMEOUT_KEY))
+                    .and_then(serde_yaml::Value::as_str)
+                    .and_then(|t| busbar_contract::section::entry_timeout_ms(t).ok());
+                let ms = match (written, models) {
+                    (Some(ms), _) => ms,
+                    (None, None) => registration_default?,
+                    (None, Some(_)) => return None,
+                };
                 Some((entry.clone(), ms))
             })
             .collect();
@@ -201,8 +211,10 @@ impl DoorPools {
         self.breakers.get(pool)
     }
 
-    /// The attempt bound of `entry`'s member, milliseconds: its reserved `timeout:`; `None` = the
-    /// walk's own budget bounds it.
+    /// The attempt bound of `entry`'s member, milliseconds: its reserved `timeout:`, else, for a
+    /// tool-server registration, the core's default (`DEFAULT_ENTRY_TIMEOUT_MS`); `None` = any other
+    /// entry that writes none (a model, another plane's registration), which the walk's own budget
+    /// bounds.
     #[must_use]
     pub fn timeout_ms(&self, entry: &str) -> Option<u64> {
         self.timeouts.get(entry).copied()
@@ -639,6 +651,9 @@ pub struct DoorSteps<'s> {
     depth: u32,
     /// The caller's verified credential, lent on the unit's record at authenticate.
     credential: Option<busbar_contract::redacted::Secret<Vec<u8>>>,
+    /// The record of the ticket that admitted the caller, held on the unit's record at
+    /// authenticate for `ticket.take`; `None` when a key admitted it.
+    ticket: Option<Vec<u8>>,
     /// A nested unit's parent's hold cell: its door accrues against the parent's admission.
     parent: Option<&'s busbar_contract::caps::HoldCell>,
     unit: Mutex<DoorUnit>,
@@ -671,6 +686,9 @@ pub struct DoorCaller {
     /// The caller's verified credential, lent on the unit's record while it runs: a passthrough
     /// member's auth call made inside the unit (the plane's own fetches included) is lent it.
     pub credential: Option<busbar_contract::redacted::Secret<Vec<u8>>>,
+    /// The record of the ticket the auth gate spent admitting the caller (row 132); `None` when a
+    /// key admitted it.
+    pub ticket: Option<Vec<u8>>,
 }
 
 impl<'s> DoorSteps<'s> {
@@ -699,6 +717,7 @@ impl<'s> DoorSteps<'s> {
             records: caller.records,
             depth: caller.depth,
             credential: caller.credential,
+            ticket: caller.ticket,
             parent: None,
             unit: Mutex::new(DoorUnit::default()),
         }
@@ -980,6 +999,8 @@ impl DriverSteps for DoorSteps<'_> {
                     if let Some(credential) = &self.credential {
                         records.lend(ctx.key.get(), credential.clone());
                     }
+                    // What admitted the unit, for `ticket.take`: a ticket's record, or a key.
+                    records.ticketed(ctx.key.get(), self.ticket.clone());
                     self.lock().recorded = Some(ctx.key.get());
                 }
                 Ok(Authenticated::Principal(self.principal.clone()))
@@ -1172,7 +1193,7 @@ impl DriverSteps for DoorSteps<'_> {
         // parent's hold. A parent that already exited, or any refusal of the accrual, leaves the
         // child its own zero hold: it posts on its own.
         if let Some(cell) = self.parent {
-            if let Ok(accrual) = cell.accrue_child(principal, 0, admit) {
+            if let Ok(accrual) = cell.accrue_child(principal, admit) {
                 return Ok(busbar_contract::caps::Admission::Accrual(accrual));
             }
         }
@@ -1319,7 +1340,7 @@ impl DriverSteps for DoorSteps<'_> {
     fn usage_tap_fault(&self, _ctx: &UnitCtx, dialect: u32, reason: &'static str) {
         // The unit's dialect is the ingress protocol its tap read the body as (row 155).
         if let Some(protocol) = self.facts.translations.0.get(dialect as usize) {
-            busbar_kernel::handlers::usage_tap_fault(protocol, reason);
+            busbar_kernel::snapshot::usage_tap_fault(protocol, reason);
         }
     }
 
@@ -1529,7 +1550,7 @@ pub fn compose_egress(
     }
     // Every cell of this plane's members under its pool's ladder: the pool's own `breaker:` block
     // where its `pools:` entry states one, lowered by the kernel's one lowering exactly as the
-    // top-level pools are (`BreakerPolicy::from_pools`), else the default ladder (BUSBAR-1.6.0.md
+    // top-level pools are (`busbar_kernel::store::pool_breaker_cfg`), else the default ladder (BUSBAR-1.6.0.md
     // THE DESIGN §1: "Any plugin gets all functionality"); with the plane's declared breaker fact
     // where it states one (ARCHITECT Q4). A pool with no block — every pool of a default config —
     // reads exactly the ladder it always did.
@@ -1562,9 +1583,8 @@ pub fn compose_egress(
     Ok(busbar_kernel::plane_driver::Egress {
         caller,
         conns,
-        breaker: Arc::new(crate::root::adapters::BreakerAdapter::new(
-            Arc::new(unit),
-            policy,
+        breaker: busbar_kernel::plane_driver::fixed_breaker(Arc::new(
+            crate::root::adapters::BreakerAdapter::new(unit, policy),
         )),
         capacity: Arc::new(crate::root::egress_ports::MemberPermits::new(Vec::new())),
         clock,
@@ -1576,7 +1596,6 @@ pub fn compose_egress(
                 &facts.metric_lanes,
             )),
         ),
-        floor: busbar_kernel_egress::WeightedFloor::new(),
         pools: built,
         routes: sealed,
         stream_ceiling_secs,
@@ -1896,7 +1915,11 @@ pub fn kernel_sections(
         let mut m = p.table.clone();
         opt(&mut m, "path", p.path.as_ref().map(|v| json!(v)));
         opt(&mut m, "path_base", p.path_base.as_ref().map(|v| json!(v)));
-        opt(&mut m, "auth", p.auth.map(style_word).map(|v| json!(v)));
+        opt(
+            &mut m,
+            "auth",
+            p.auth.as_ref().map(style_word).map(|v| json!(v)),
+        );
         providers.insert(name.clone(), Value::Object(m));
     }
     let mut models = Map::new();
@@ -2063,15 +2086,41 @@ impl StyleParams {
     }
 }
 
-/// The `auth:` spelling of a provider's style override, as config writes it.
-fn style_word(auth: busbar_kernel::config::ProviderAuth) -> &'static str {
-    use busbar_kernel::config::ProviderAuth as Style;
-    match auth {
-        Style::Bearer => "bearer",
-        Style::ApiKey => "api-key",
-        Style::JwtBearer => "jwt-bearer",
-        Style::OAuthClientCredentials => "oauth-client-credentials",
-    }
+/// The `auth:` spelling of a provider's style override, as config writes it: the opaque word a
+/// loaded auth plugin declares (arch-audit u29 F1).
+fn style_word(auth: &busbar_kernel::config::ProviderAuth) -> &str {
+    auth.as_str()
+}
+
+/// THE OUTBOUND STYLES this process's auth plugins declare, as a provider's `auth:` may name them
+/// (BUSBAR-1.6.0.md #50; arch-audit u29 F1): every linked auth row's styles, read off its door's
+/// `'static` Statement, then every auth row dropped into the configured `plugins.dir`
+/// (`root::boot::dropped_registry`), read off its signed Statement rendering, in the host's one
+/// listing order (`busbar_contract::auth_calls::listed_styles`), each with its declared flags.
+/// Nothing is bound or opened (Law 7); a row whose Statement a bind refuses declares none here (its
+/// load refuses it where it is used). The kernel reads it before the configuration is parsed
+/// (`busbar_kernel::preflight::install_declared_styles`).
+#[must_use]
+pub fn declared_styles() -> Vec<busbar_contract::auth_calls::DeclaredStyle> {
+    use crate::root::loader::dispatch::kinds::auth::{rendered_facts, stated_facts};
+    let linked = crate::LINKED
+        .auths
+        .iter()
+        .filter_map(|(_, _, door)| stated_facts(*door).ok())
+        .flat_map(|facts| facts.styles);
+    let dropped = crate::root::boot::dropped_registry()
+        .map_or(&[][..], |r| r.loadable())
+        .iter()
+        .filter(|r| r.manifest.kind == "auth")
+        .filter_map(|r| r.manifest.stated_rendering().ok().flatten())
+        .filter_map(|stated| rendered_facts(&stated).ok())
+        .flat_map(|facts| facts.styles);
+    busbar_contract::auth_calls::listed_styles(linked.chain(dropped).map(|s| {
+        busbar_contract::auth_calls::DeclaredStyle {
+            name: s.name,
+            flags: s.flags,
+        }
+    }))
 }
 
 /// TRANSITIONAL (row 155 B1b; drains at B1c, where the plane states the default auth style its
@@ -2129,7 +2178,7 @@ pub fn provider_routes(
                         .map(|(k, v)| (k.clone(), v.clone()))
                         .collect(),
                     credential: p.api_key.clone(),
-                    style: p.auth.map(|a| style_word(a).to_string()),
+                    style: p.auth.as_ref().map(|a| style_word(a).to_string()),
                     params: StyleParams {
                         token_url: p.token_url.clone(),
                         token_uri: None,
@@ -2179,6 +2228,9 @@ pub struct OutboundAuths {
     linked: Vec<busbar_kernel::preflight::LinkedAuth>,
     dropped: Option<&'static crate::root::loader::PluginRegistry>,
     conns: crate::root::loader::dispatch::ConnTable,
+    /// The catalogue the root folded, lent: a declared diagnostic's code is looked up in it when the
+    /// main log writes the line ([`MainLogSink`]).
+    catalogue: busbar_kernel::diagnostics::Catalogue,
     /// Each linked row's outbound facts, READ off its door's `'static` Statement at the first
     /// serving: no row is bound to read them (Law 7; ARCHITECT ruling 2026-10-20: reading a row's
     /// static declaration, its kind tail included, is reading, not loading).
@@ -2232,19 +2284,22 @@ impl OutboundAuths {
     /// The auth rows `linked` (the build's) and `dropped` (the plugins directory's), loaded on
     /// `dispatcher`, their needs declared on `conns`: `ConnTable::Host`, the process's connector;
     /// or, stated by the caller, `ConnTable::NoNeeds`: no need is granted, a row that declares one
-    /// will not load and is passed over, and a style that mints mints nothing.
+    /// will not load and is passed over, and a style that mints mints nothing. A declared
+    /// diagnostic's code is looked up in `catalogue`, the one the root folded.
     #[must_use]
     pub fn new(
         dispatcher: Arc<crate::root::loader::dispatch::Dispatcher>,
         linked: &[busbar_kernel::preflight::LinkedAuth],
         dropped: Option<&'static crate::root::loader::PluginRegistry>,
         conns: crate::root::loader::dispatch::ConnTable,
+        catalogue: busbar_kernel::diagnostics::Catalogue,
     ) -> Self {
         Self {
             dispatcher,
             linked: linked.to_vec(),
             dropped,
             conns,
+            catalogue,
             linked_facts: std::sync::OnceLock::new(),
             dropped_facts: std::sync::OnceLock::new(),
             opened: crate::root::loader::open_once::OpenOnce::new(),
@@ -2274,7 +2329,7 @@ impl OutboundAuths {
                 |_| Arc::new(NoSink) as Arc<dyn EnvelopeSink>,
                 |s| Arc::new(s) as Arc<dyn EnvelopeSink>,
             );
-        let sink: Arc<dyn EnvelopeSink> = Arc::new(MainLogSink(sink));
+        let sink: Arc<dyn EnvelopeSink> = Arc::new(MainLogSink(sink, self.catalogue));
         crate::root::loader::dispatch::Bind {
             instance: Arc::from(name),
             max_inflight_cap: 64,
@@ -2334,6 +2389,16 @@ impl OutboundAuths {
                 .ok()
             }
         }
+    }
+
+    /// THE FLAGS `style` IS DECLARED WITH by the row that serves it: the first row stating it, the
+    /// one [`Self::serving`] binds (`abi::auth::STYLE_*`). `None` when no row states it.
+    #[must_use]
+    pub fn style_flags(&self, style: &str) -> Option<u32> {
+        self.stating(style)
+            .next()
+            .and_then(|row| row.styles.iter().find(|s| s.name == style))
+            .map(|s| s.flags)
     }
 
     /// The rows stating the outbound `style`, in the order a serving tries them: the linked rows
@@ -2736,6 +2801,18 @@ impl busbar_contract::conn::DeclaredConns for PresentingConns {
         self.inner.hold_authority(owner);
     }
 
+    /// The head the open's target completes, as [`PresentingConns::open`] dials it (any userinfo
+    /// taken out).
+    fn request_head(
+        &self,
+        owner: busbar_contract::conn::InstanceId,
+        need: busbar_contract::conn::NeedId,
+        target: &str,
+    ) -> busbar_contract::conn::HeadDefaults {
+        let target = busbar_kernel_egress::trust::net::strip_userinfo(target);
+        self.inner.request_head(owner, need, &target)
+    }
+
     fn bind_auth(
         &self,
         owner: busbar_contract::conn::InstanceId,
@@ -2832,7 +2909,11 @@ impl OutboundAuths {
 /// the plugin's own severity.
 ///
 /// [`DIAG_LOG`]: busbar_contract::abi::mechanism::call::DIAG_LOG
-pub(crate) struct MainLogSink(pub(crate) Arc<dyn crate::root::loader::dispatch::EnvelopeSink>);
+pub(crate) struct MainLogSink(
+    pub(crate) Arc<dyn crate::root::loader::dispatch::EnvelopeSink>,
+    /// The catalogue the root folded, lent: the one a declared id's code is looked up in.
+    pub(crate) busbar_kernel::diagnostics::Catalogue,
+);
 
 impl MainLogSink {
     /// `text` split into its message and the named values 1.5.5's line carried.
@@ -2853,7 +2934,7 @@ impl MainLogSink {
     }
 
     /// Write one declared diagnostic to the main log.
-    fn write(d: &crate::root::loader::dispatch::Diagnostic<'_>) {
+    fn write(&self, d: &crate::root::loader::dispatch::Diagnostic<'_>) {
         use busbar_contract::diagnostic::Severity;
         use tracing::Level;
         let text = String::from_utf8_lossy(d.text);
@@ -2862,7 +2943,7 @@ impl MainLogSink {
             .ok()
             .and_then(|n| n.strip_prefix("BUSBAR-"))
             .and_then(|n| n.parse::<u16>().ok())
-            .and_then(busbar_kernel::diagnostics::by_code);
+            .and_then(|n| self.1.by_code(n));
         let level = match (code.map(|c| c.severity), d.severity) {
             (Some(Severity::BenignRecurring), _) => Level::DEBUG,
             (Some(Severity::Fatal), _) | (_, 2..) => Level::ERROR,
@@ -2893,7 +2974,7 @@ impl crate::root::loader::dispatch::EnvelopeSink for MainLogSink {
     fn diag(&self, d: crate::root::loader::dispatch::Diagnostic<'_>) {
         use busbar_contract::abi::mechanism::call::{DIAG_LOG, DIAG_LOG_DROPPED};
         if d.id != DIAG_LOG && d.id != DIAG_LOG_DROPPED {
-            Self::write(&d);
+            self.write(&d);
         }
         self.0.diag(d);
     }
@@ -2919,6 +3000,7 @@ pub fn process_auths() -> Arc<OutboundAuths> {
                 Arc::clone(crate::root::connector::the())
                     as Arc<dyn busbar_contract::conn::DeclaredConns>,
             ),
+            crate::root::linked::catalogue(),
         ))
     }))
 }
@@ -3047,7 +3129,11 @@ fn token_exchange_binding(
             )
         })?;
     let handle = auth
-        .open_outbound(TOKEN_EXCHANGE_STYLE, &credential, &settings)
+        .open_outbound(
+            TOKEN_EXCHANGE_STYLE,
+            credential.expose(&busbar_kernel::seal::lend()),
+            &settings,
+        )
         .map_err(|e| format!("member '{entry}' {e}"))?;
     Ok(Some(busbar_kernel::plane_driver::AuthBinding {
         auth,
@@ -3067,9 +3153,9 @@ fn token_exchange_binding(
 /// <secret>`, `{header: <name>}` presents the secret verbatim in that header (the `api-key` style
 /// over that header). The kernel presents it on every request to the member through the auth
 /// kind's per-request call, which reads the binding's current handle and nothing else; the
-/// credential is re-resolved OFF the request path, by the host's refresher once per lease
+/// credential is re-resolved OFF the request path, by the host's refresher at half its lease
 /// (`lease_ttl_ms`, [`refresher`]; ARCHITECT ruling on #787, THE DESIGN §11: no blocking, plugin
-/// memory valid to its next refresh generation). `None` when the registration states no such
+/// memory valid to its next refresh generation), and is never presented past its lease. `None` when the registration states no such
 /// block.
 ///
 /// # Errors
@@ -3148,13 +3234,17 @@ fn upstream_credential(
             }
         },
     };
-    // THE LEASE: how long one resolution of the credential may be presented, and so how often
-    // the refresher re-resolves it (the grammar's `lease_ttl_ms`, greater than zero).
+    // THE LEASE: how long one resolution of the credential may be presented on busbar's own
+    // monotonic clock, after which a hop is refused until a refresh renews it (the grammar's
+    // `lease_ttl_ms`, greater than zero; the refresher renews it ahead of that, [`renew_every`]).
+    // The resolution's instant is taken BEFORE it is made, so the lease never outlives its TTL.
+    let minted = std::time::Instant::now();
     let lease = block
         .get(CREDENTIAL_LEASE_TTL_KEY)
         .and_then(serde_yaml::Value::as_u64)
         .filter(|ms| *ms > 0)
         .map(std::time::Duration::from_millis)
+        .filter(|lease| minted.checked_add(*lease).is_some())
         .ok_or_else(|| {
             format!(
                 "member '{member_name}': its \
@@ -3163,18 +3253,17 @@ fn upstream_credential(
             )
         })?;
     let settings = placement_settings(header.as_deref());
-    let credential = busbar_contract::redacted::Secret::new(
-        reach
-            .secrets
-            .resolve_string_at_config(&secret, scope)
-            .map_err(|e| {
-                format!(
-                    "member '{member_name}': busbar's own upstream credential for it cannot \
-                     resolve: {e}"
-                )
-            })?
-            .into_bytes(),
-    );
+    // The text holder's bytes, moved (never copied) into the byte holder.
+    let credential = reach
+        .secrets
+        .resolve_string_at_config(&secret, scope)
+        .map_err(|e| {
+            format!(
+                "member '{member_name}': busbar's own upstream credential for it cannot \
+                 resolve: {e}"
+            )
+        })?
+        .into_bytes();
     let (auth, decl) = reach.auths.serving(style, &settings)?.ok_or_else(|| {
         format!(
             "member '{member_name}': no linked or dropped-in auth plugin serves the style \
@@ -3198,8 +3287,10 @@ fn upstream_credential(
         held: arc_swap::ArcSwapOption::from_pointee(Held {
             digest: busbar_contract::abi::sdk::digest::sha256(credential.expose(&seal)),
             handle,
+            expires_at: minted + lease,
         }),
         refreshing: Mutex::new(()),
+        lapsed: std::sync::atomic::AtomicBool::new(false),
     });
     drop(credential);
     Ok(Some((
@@ -3227,11 +3318,20 @@ fn placement_settings(header: Option<&str>) -> serde_json::Value {
     )
 }
 
-/// What a [`PerHop`] presents now: the handle its auth instance opened, and the SHA-256 of the
-/// value it was opened with (the value itself is never kept).
+/// What a [`PerHop`] presents now: the handle its auth instance opened, the SHA-256 of the
+/// value it was opened with (the value itself is never kept), and when its lease runs out on
+/// busbar's own monotonic clock (the resolution's instant plus `lease_ttl_ms`).
 struct Held {
     digest: [u8; 32],
     handle: u64,
+    expires_at: std::time::Instant,
+}
+
+/// HOW OFTEN THE [`refresher`] RENEWS A LEASE: at half of it (never under a millisecond), so a
+/// healthy refresher renews every lease well before it runs out, and a hop is refused only when
+/// the refresh stalled, erred or was skipped for half a lease or more.
+fn renew_every(lease: std::time::Duration) -> std::time::Duration {
+    (lease / 2).max(std::time::Duration::from_millis(1))
 }
 
 /// A REGISTRATION'S OWN CREDENTIAL, REFRESHED OFF THE REQUEST PATH (`upstream_credential:`): the
@@ -3243,19 +3343,24 @@ struct Held {
 /// request path). [`PerHop::refresh`] re-resolves the value, re-opens the binding only when its
 /// digest changed (handles grow by rotations, never by hops), and swaps the cell whole, so a hop
 /// sees the old handle or the new one; a value that no longer resolves or binds EMPTIES the cell,
-/// so every hop after it is refused, never served a stale credential.
+/// so every hop after it is refused, never served a stale credential. A held credential is
+/// presented only until its lease runs out ([`Held::expires_at`]): past it, with no refresh that
+/// renewed it, every hop is refused (`credential_unavailable`), never presented.
 struct PerHop {
     secret: busbar_contract::secret_ref::SecretRef,
     secrets: Arc<dyn busbar_contract::secret::SecretResolve>,
     auth: Arc<dyn busbar_contract::auth_calls::OutboundAuth>,
     style: &'static str,
     header: Option<String>,
-    /// The lease: how often the [`refresher`] re-resolves the credential.
+    /// The lease: how long one resolution may be presented (the [`refresher`] renews it at
+    /// [`renew_every`] of it).
     lease: std::time::Duration,
     held: arc_swap::ArcSwapOption<Held>,
     /// Taken by [`PerHop::refresh`] alone, so two refreshes never open the same rotation twice;
     /// no hop ever waits on it.
     refreshing: Mutex<()>,
+    /// Set by the first hop refused past the lease (its one log line), cleared by a renewal.
+    lapsed: std::sync::atomic::AtomicBool,
 }
 
 impl PerHop {
@@ -3269,20 +3374,29 @@ impl PerHop {
             .refreshing
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // The lease runs from BEFORE the resolution, so it never outlives its TTL.
+        let expires_at = std::time::Instant::now() + self.lease;
         let Ok(value) = self.secrets.resolve_string_at_config(&self.secret, scope) else {
             self.held.store(None);
             return;
         };
-        let value = busbar_contract::redacted::Secret::new(value.into_bytes());
+        let value = value.into_bytes();
         // Revealed under the kernel's seal (Part 2 #54): for its digest, and to open a rotation.
         let seal = busbar_kernel::seal::lend();
         let digest = busbar_contract::abi::sdk::digest::sha256(value.expose(&seal));
-        if self
-            .held
-            .load()
-            .as_ref()
-            .is_some_and(|held| busbar_contract::redacted::constant_time_eq(&held.digest, &digest))
-        {
+        let unchanged = self.held.load().as_ref().and_then(|held| {
+            busbar_contract::redacted::constant_time_eq(&held.digest, &digest)
+                .then_some(held.handle)
+        });
+        if let Some(handle) = unchanged {
+            // The same value keeps its handle; the lease is renewed from this resolution.
+            self.held.store(Some(Arc::new(Held {
+                digest,
+                handle,
+                expires_at,
+            })));
+            self.lapsed
+                .store(false, std::sync::atomic::Ordering::Relaxed);
             return;
         }
         let opened = self.auth.open_outbound(
@@ -3291,8 +3405,15 @@ impl PerHop {
             &placement_settings(self.header.as_deref()),
         );
         drop(value);
-        self.held
-            .store(opened.ok().map(|handle| Arc::new(Held { digest, handle })));
+        self.held.store(opened.ok().map(|handle| {
+            Arc::new(Held {
+                digest,
+                handle,
+                expires_at,
+            })
+        }));
+        self.lapsed
+            .store(false, std::sync::atomic::Ordering::Relaxed);
     }
 }
 
@@ -3312,14 +3433,39 @@ impl std::fmt::Debug for PerHop {
     }
 }
 
+impl PerHop {
+    /// The handle a hop made at `now` (busbar's own monotonic clock) presents: none when the last
+    /// refresh found the credential unavailable, or when its lease ran out with no refresh that
+    /// renewed it (the refresher stalled, erred or skipped it). The first hop refused past the
+    /// lease logs it once (naming the style and header, never the credential); every such hop is
+    /// refused as `credential_unavailable`, the refusal an unavailable credential already takes.
+    fn handle_at(&self, now: std::time::Instant) -> Option<u64> {
+        let held = self.held.load();
+        let held = held.as_ref()?;
+        if now < held.expires_at {
+            return Some(held.handle);
+        }
+        if !self.lapsed.swap(true, std::sync::atomic::Ordering::Relaxed) {
+            tracing::warn!(
+                style = self.style,
+                header = self.header.as_deref(),
+                lease_ms = u64::try_from(self.lease.as_millis()).unwrap_or(u64::MAX),
+                "an upstream credential's lease ran out before a refresh renewed it: each hop on \
+                 it is refused (credential_unavailable) until one does"
+            );
+        }
+        None
+    }
+}
+
 impl busbar_contract::auth_calls::PerRequestHandle for PerHop {
     fn handle_now(&self) -> Option<u64> {
-        self.held.load().as_ref().map(|held| held.handle)
+        self.handle_at(std::time::Instant::now())
     }
 }
 
 /// THE HOST'S CREDENTIAL REFRESHER: one thread of its own (never a runtime worker, never a
-/// dispatcher worker's crossing) that re-resolves each live [`PerHop`] once per its lease. It keeps
+/// dispatcher worker's crossing) that re-resolves each live [`PerHop`] at half its lease. It keeps
 /// each binding WEAKLY, so a binding its generation dropped (a config apply builds the next
 /// generation's bindings, and the last request on the old one lets it go) is forgotten at its next
 /// due time, never refreshed again.
@@ -3361,7 +3507,7 @@ mod refresher {
         &BOOK
     }
 
-    /// Keep `per`, first due one lease from now (its build has just resolved it).
+    /// Keep `per`, first due half a lease from now (its build has just resolved it).
     pub(super) fn keep(per: &Arc<PerHop>) {
         let book = kept_book();
         book.kept
@@ -3369,7 +3515,7 @@ mod refresher {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .push(Kept {
                 per: Arc::downgrade(per),
-                due: Instant::now() + per.lease,
+                due: Instant::now() + super::renew_every(per.lease),
             });
         book.woken.notify_one();
     }
@@ -3387,7 +3533,7 @@ mod refresher {
             let mut due = Vec::new();
             for k in kept.iter_mut().filter(|k| k.due <= now) {
                 if let Some(per) = k.per.upgrade() {
-                    k.due = now + per.lease;
+                    k.due = now + super::renew_every(per.lease);
                     due.push(per);
                 }
             }
@@ -3774,25 +3920,42 @@ pub fn member_routes(
     }
     for r in resolved {
         let credential = if r.provider.credential.is_none() {
-            Vec::new()
+            busbar_kernel::config::secret::Held::default()
         } else {
             reach
                 .secrets
                 .resolve_at_config(&r.provider.credential, scope)
                 .map_err(|e| format!("provider '{}' credential: {e}", r.name))?
         };
-        // A service-account credential naming its key file is read here, at configuration time,
-        // through the secret kind's file source: the serving plugin is handed the JSON and opens no
-        // file (Q128 audit ruling (a)).
-        let credential = if r.style == SERVICE_ACCOUNT_STYLE {
-            busbar_kernel::config_validate::service_account_json(credential, |file| {
-                reach.secrets.resolve_at_config(file, scope)
-            })
-            .map_err(|e| format!("provider '{}' (jwt-bearer auth): {e}", r.name))?
+        // A style that takes its token endpoint from its credential, as its serving row declares
+        // it (`STYLE_ENDPOINT_FROM_CREDENTIAL`), is handed the document the credential carries: a
+        // credential naming its key file is read here, at configuration time, through the secret
+        // kind's file source, so the serving plugin opens no file (Q128 audit ruling (a)). Any other
+        // style's credential is handed on unread, whatever its name (arch-audit u29 F1).
+        let from_credential = reach.auths.style_flags(&r.style).is_some_and(|flags| {
+            flags & busbar_contract::abi::auth::STYLE_ENDPOINT_FROM_CREDENTIAL != 0
+        });
+        let seal = busbar_kernel::seal::lend();
+        let credential = if from_credential {
+            // OWED (row 7): `service_account_json` takes and answers plain bytes.
+            busbar_contract::redacted::Secret::new(
+                busbar_kernel::config_validate::service_account_json(
+                    credential.expose(&seal).clone(),
+                    |file| {
+                        reach
+                            .secrets
+                            .resolve_at_config(file, scope)
+                            .map(|held| held.expose(&seal).clone())
+                    },
+                )
+                .map_err(|e| format!("provider '{}' ({} auth): {e}", r.name, r.style))?,
+            )
         } else {
             credential
         };
-        let settings = sealed_params(&r.name, &r.style, r.provider, &credential)?.to_json();
+        let credential = credential.expose(&seal);
+        let settings =
+            sealed_params(&r.name, &r.style, from_credential, r.provider, credential)?.to_json();
         let (auth, decl) = reach.auths.serving(&r.style, &settings)?.ok_or_else(|| {
             format!(
                 "member '{}': no linked or dropped-in auth plugin serves the style '{}'",
@@ -3802,7 +3965,7 @@ pub fn member_routes(
         let settings = sealed_settings(r.params, &r.provider.base_url, &settings)
             .map_err(|e| format!("member '{}': {e}", r.entry))?;
         let handle = auth
-            .open_outbound(&r.style, &credential, &settings)
+            .open_outbound(&r.style, credential, &settings)
             .map_err(|e| format!("provider '{}' {e}", r.name))?;
         // EVERY need its style names is bound (ARCHITECT Q-L5B-NEEDS): the first is its own, the
         // rest ride beside it, each opened when a far request names it.
@@ -3947,15 +4110,13 @@ fn host_label<'h>(host: &'h str, after: &[&str]) -> Option<&'h str> {
     })
 }
 
-/// The `auth:` style whose credential names its own token endpoint: a service account's
-/// `token_uri` (RFC 7523; `jwt-bearer`, 1.5.5's `egress_auth/jwt_bearer.rs`).
-const SERVICE_ACCOUNT_STYLE: &str = "jwt-bearer";
-
 /// THE PARAMETERS PROVIDER `name`'s STYLE IS OPENED WITH AT THE SEAL: those it states, and, for
-/// a service-account credential, its `token_uri` — the target of the serving plugin's mint need —
-/// judged under the provider's metadata posture with 1.5.5's check and words (v1.5.5 `main.rs`:
-/// `provider '<p>' (jwt-bearer auth): <why>`). A credential that is no service account to read
-/// fills nothing: the serving plugin refuses it in its own words at `open_outbound`.
+/// a style that takes its token endpoint from its credential (`from_credential`: its serving row
+/// declares `STYLE_ENDPOINT_FROM_CREDENTIAL`), the `token_uri` the credential names — the target of
+/// the serving plugin's mint need — judged under the provider's metadata posture with 1.5.5's check
+/// and words (v1.5.5 `main.rs`: `provider '<p>' (jwt-bearer auth): <why>`, the style's own word).
+/// A credential that is no service account to read fills nothing: the serving plugin refuses it in
+/// its own words at `open_outbound`.
 ///
 /// # Errors
 ///
@@ -3963,11 +4124,12 @@ const SERVICE_ACCOUNT_STYLE: &str = "jwt-bearer";
 fn sealed_params(
     name: &str,
     style: &str,
+    from_credential: bool,
     provider: &ProviderRoute,
     credential: &[u8],
 ) -> Result<StyleParams, String> {
     let mut params = provider.params.clone();
-    if style != SERVICE_ACCOUNT_STYLE || credential.is_empty() {
+    if !from_credential || credential.is_empty() {
         return Ok(params);
     }
     let Ok(text) = std::str::from_utf8(credential) else {
@@ -3977,7 +4139,7 @@ fn sealed_params(
         return Ok(params);
     };
     busbar_kernel::config_validate::vet_token_uri(&token_uri, &provider.metadata)
-        .map_err(|e| format!("provider '{name}' (jwt-bearer auth): {e}"))?;
+        .map_err(|e| format!("provider '{name}' ({style} auth): {e}"))?;
     params.token_uri = Some(token_uri);
     Ok(params)
 }

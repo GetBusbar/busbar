@@ -3,16 +3,16 @@
 
 //! THE CONNECTOR'S TLS TEST KIT: the TLS far ends and the recording TLS fixture server, for the
 //! tests that need a real handshake.
-//! TLS stays in the connector (THE DESIGN; 1.6.0-TODO P2), so no other crate names a TLS library —
+//! TLS stays in the connector (THE DESIGN), so no other crate names a TLS library —
 //! not even in a test — and every row that needs a real handshake lives in this crate's own suite
 //! (a plane's transport battery rides the kernel's TLS test double instead).
 //!
 //! Test machinery only: compiled under `cfg(test)` for this crate's own suite, and under the
-//! `test-support` feature for a PLUGIN REPO'S conformance test (its host connector's TLS far ends,
-//! ARCHITECT Q-P4-9: the adapter lives in the plugin repo, a dev-dependency), so the far end's TLS is
-//! still this crate's and the plugin names no TLS library. Nothing in a shipped build reaches it.
-//! The gate below restates, on the file itself, the gate `lib.rs` puts on `pub mod test_support;`,
-//! so a per-file reader (`cargo xtask loc`) counts this file as the test machinery it is.
+//! `test-support` feature for a PLUGIN REPO'S conformance test (the adapter lives in the plugin
+//! repo, a dev-dependency), so the far end's TLS is still this crate's and the plugin names no TLS
+//! library. Nothing in a shipped build reaches it. The gate below restates, on the file itself, the
+//! gate `lib.rs` puts on `pub mod test_support;`, so a per-file reader (`cargo xtask loc`) counts
+//! this file as the test machinery it is.
 #![cfg(any(test, feature = "test-support"))]
 
 use std::io::{self, Read, Write};
@@ -69,8 +69,6 @@ pub fn certs_from_pem(pem: &str) -> Vec<Vec<u8>> {
         .map(|c| c.expect("certificate PEM").to_vec())
         .collect()
 }
-
-// ── the far end ──────────────────────────────────────────────────────────────────────────────────
 
 /// A test far end's TLS: its certificate and key, the client CA it demands a certificate chaining
 /// to (mutual TLS) when it names one, and the protocols it agrees by ALPN.
@@ -234,7 +232,81 @@ impl Write for StdServerSession {
     }
 }
 
-// ── the recording TLS fixture server ─────────────────────────────────────────────────────────────
+/// THE CONNECTOR'S CLIENT TLS over a blocking std stream: the config the connector builds for
+/// `trust` (`tls::client::build_client_config`), for a test table that dials its own sockets (the
+/// test kit's stream table) and secures them as the connector would.
+#[derive(Clone)]
+pub struct ClientTls(Arc<rustls::ClientConfig>);
+
+impl ClientTls {
+    /// The connector's client TLS for `trust`.
+    ///
+    /// # Errors
+    /// The trust does not build a client config.
+    pub fn new(trust: &busbar_contract::transport::trust::EgressTrust) -> Result<Self, String> {
+        crate::tls::client::build_client_config(trust)
+            .map(|c| Self(Arc::new(c)))
+            .map_err(|e| e.to_string())
+    }
+
+    /// Run the client handshake for `server` on the blocking `tcp` to completion, verified against
+    /// the trust this was built with.
+    ///
+    /// # Errors
+    /// `server` is not a usable name, or the handshake failed.
+    pub fn connect_std(&self, server: &str, mut tcp: TcpStream) -> io::Result<StdClientSession> {
+        let name = rustls::pki_types::ServerName::try_from(server.to_owned())
+            .map_err(|e| io::Error::other(format!("server name {server:?}: {e}")))?;
+        let mut conn =
+            rustls::ClientConnection::new(Arc::clone(&self.0), name).map_err(io::Error::other)?;
+        while conn.is_handshaking() {
+            conn.complete_io(&mut tcp)?;
+        }
+        Ok(StdClientSession { conn, tcp })
+    }
+}
+
+impl std::fmt::Debug for ClientTls {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ClientTls").finish_non_exhaustive()
+    }
+}
+
+/// One secured client connection on a blocking std stream.
+pub struct StdClientSession {
+    conn: rustls::ClientConnection,
+    tcp: TcpStream,
+}
+
+impl StdClientSession {
+    /// The socket under the session.
+    #[must_use]
+    pub fn tcp(&self) -> &TcpStream {
+        &self.tcp
+    }
+
+    /// Send `close_notify`, flush it, and shut the socket down.
+    pub fn close(&mut self) {
+        self.conn.send_close_notify();
+        let _ = self.conn.complete_io(&mut self.tcp);
+        let _ = self.tcp.shutdown(std::net::Shutdown::Both);
+    }
+}
+
+impl Read for StdClientSession {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        rustls::Stream::new(&mut self.conn, &mut self.tcp).read(buf)
+    }
+}
+
+impl Write for StdClientSession {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        rustls::Stream::new(&mut self.conn, &mut self.tcp).write(buf)
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        rustls::Stream::new(&mut self.conn, &mut self.tcp).flush()
+    }
+}
 
 /// What one connection to a TLS fixture told the server about itself. Every field is an observation
 /// a differential test compares across the two stacks.

@@ -256,8 +256,9 @@ fn a_delivery_before_start_never_overrides_the_sinks_stated_admission() {
     );
 }
 
-/// An axis whose one module declares `url` and `auth_header.value` secret (its Statement's
-/// `secret_refs`), answering nothing else: what [`sink_settings`] asks of a real axis.
+/// An axis whose one module declares `auth_header.value` secret (its Statement's `secret_refs`)
+/// and `url` reference-capable (its Statement's reference-capable list), answering nothing else:
+/// what [`sink_settings`] asks of a real axis.
 struct DeclaringAxis;
 
 impl ExportAxis for DeclaringAxis {
@@ -278,7 +279,13 @@ impl ExportAxis for DeclaringAxis {
     }
     fn secret_refs(&self, module: &str) -> Vec<String> {
         match module {
-            "declaring-sink" => vec!["url".into(), "auth_header.value".into()],
+            "declaring-sink" => vec!["auth_header.value".into()],
+            _ => Vec::new(),
+        }
+    }
+    fn reference_fields(&self, module: &str) -> Vec<String> {
+        match module {
+            "declaring-sink" => vec!["url".into()],
             _ => Vec::new(),
         }
     }
@@ -291,16 +298,16 @@ fn settings_of(v: Value) -> serde_json::Map<String, Value> {
     }
 }
 
-/// G14 AFTER #1699, THE EXPORT HOST: a 1.5.5 config's `{env: …}` at a field the sink's Statement
-/// declares secret reaches the sink RESOLVED to its string (references resolve in place; the
-/// export host lends nothing), at the declared nested path too; every other value is handed as
-/// written. RED before: the sink was handed the `{env: …}` map and its serde refused it ("invalid
-/// type: map, expected a string").
+/// THE EXPORT HOST, REFERENCE-CAPABLE `url` (lead ruling item 7a; 1.5.5's own otlp and
+/// request-log-webhook docs write `url: {env: VAR}`): a reference at the sink's reference-capable
+/// `url` and at its secret `auth_header.value` reaches the sink RESOLVED to its string (the export
+/// host lends nothing; references resolve in place); a literal url is handed as written; the
+/// configuration keeps the reference. RED before: the sink was handed the `{env: …}` map.
 #[test]
-fn a_declared_reference_reaches_the_sink_resolved_and_the_rest_as_written() {
+fn a_reference_at_a_reference_capable_url_reaches_the_sink_resolved() {
     let (url, token) = (
-        format!("BUSBAR_T_EXPORT_URL_{}", std::process::id()),
-        format!("BUSBAR_T_EXPORT_TOKEN_{}", std::process::id()),
+        format!("BUSBAR_T_REFCAP_EXPORT_URL_{}", std::process::id()),
+        format!("BUSBAR_T_REFCAP_EXPORT_TOKEN_{}", std::process::id()),
     );
     std::env::set_var(&url, "https://siem.example/in");
     std::env::set_var(&token, "Bearer t0k");
@@ -318,19 +325,23 @@ fn a_declared_reference_reaches_the_sink_resolved_and_the_rest_as_written() {
             "batch": 10,
         })
     );
-    // The configuration keeps the reference: only the handed value carries the secret.
     assert_eq!(written["url"], serde_json::json!({ "env": url }));
 
-    // Fail-closed: an unset variable at a declared field is the error, naming the field and never
-    // a value; the sink is handed nothing.
+    let literal = settings_of(serde_json::json!({ "url": "https://collector.example/v1/traces" }));
+    assert_eq!(
+        sink_settings(&DeclaringAxis, "declaring-sink", &literal).expect("as written"),
+        Value::Object(literal.clone())
+    );
+
+    // Fail-closed: an unset variable at the url is the error, naming the field.
     std::env::remove_var(&url);
     let err = sink_settings(&DeclaringAxis, "declaring-sink", &written).unwrap_err();
     assert!(err.contains("url"), "{err}");
     assert!(!err.contains("Bearer t0k"), "{err}");
     std::env::remove_var(&token);
 
-    // A module declaring nothing is handed its settings exactly as written: the undeclared
-    // reference is the undeclared-reference refusal's to word, not this resolution's.
+    // A module declaring nothing is handed its settings as written: the undeclared reference is
+    // the undeclared-reference refusal's to word (`config_validate`), not this resolution's.
     let undeclared = settings_of(serde_json::json!({ "url": { "env": "NEVER_READ" } }));
     assert_eq!(
         sink_settings(&DeclaringAxis, "silent-sink", &undeclared).expect("as written"),

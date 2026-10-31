@@ -166,22 +166,74 @@ fn make_member(model: &str) -> config::PoolMember {
     }
 }
 
+/// RED (arch-audit u29 F1; BUSBAR-1.6.0.md #50: "the auth style resolves ... as opaque
+/// strings"): a provider's `auth:` is an OPAQUE word some loaded auth plugin declares, never a
+/// closed kernel set. Every declared word parses, a dropped-in one (`x-double-mint`, a style no
+/// release named) as well as 1.5.5's four; a word no plugin declares is refused at deserialize time
+/// in serde's own unknown-variant words over the declared list, ranked first, so 1.5.5's refusal of
+/// an unknown word is the prefix of this one. The words here are the test double's declarations
+/// (`test_support::outbound_auth::double_outbound_styles`).
 #[test]
-fn test_provider_auth_style_is_a_closed_enum() {
-    // The per-provider auth-style override is a `ProviderAuth` enum, so an unrecognized spelling
-    // is rejected at DESERIALIZE time (no hand-check in validate()). The two accepted wire strings
-    // ('bearer' / 'api-key') are unchanged from the pre-enum `Option<String>` field.
-    assert_eq!(
-        serde_yaml::from_str::<config::ProviderAuth>("bearer").unwrap(),
-        config::ProviderAuth::Bearer
-    );
-    assert_eq!(
-        serde_yaml::from_str::<config::ProviderAuth>("api-key").unwrap(),
-        config::ProviderAuth::ApiKey
-    );
+fn test_provider_auth_style_is_a_declared_word() {
+    for word in [
+        "bearer",
+        "api-key",
+        "jwt-bearer",
+        "oauth-client-credentials",
+        "x-double-mint",
+    ] {
+        let style = serde_yaml::from_str::<config::ProviderAuth>(word)
+            .unwrap_or_else(|e| panic!("declared style '{word}' must parse: {e}"));
+        assert_eq!(style.as_str(), word);
+    }
+    let refused = serde_yaml::from_str::<config::ProviderAuth>("oauth2")
+        .expect_err("'oauth2' is declared by no plugin and must fail to deserialize")
+        .to_string();
     assert!(
-        serde_yaml::from_str::<config::ProviderAuth>("oauth2").is_err(),
-        "'oauth2' is not a recognized provider auth style and must fail to deserialize"
+        refused.starts_with(
+            "unknown variant `oauth2`, expected one of `bearer`, `api-key`, `jwt-bearer`, \
+             `oauth-client-credentials`, `x-double-mint`"
+        ),
+        "an undeclared style is refused in serde's words over the declared list: {refused}"
+    );
+}
+
+/// RED (arch-audit u29 F1): a style's token endpoint is judged by the bit its plugin DECLARES
+/// (`STYLE_ENDPOINT_TOKEN_URL`), never by its name: a style no release named that states the bit
+/// gets 1.5.5's `token_url` and `scope` findings, in 1.5.5's sentences over its own word, and a
+/// style that does not state it (`bearer`) is left unjudged, as 1.5.5 left it.
+#[test]
+fn a_token_url_is_judged_for_any_style_declaring_it() {
+    crate::test_support::register_neutral_test_plane();
+    let build = |word: &str| -> Vec<String> {
+        let mut providers = HashMap::new();
+        let mut mint = make_provider(proto_b(), "https://api.example.com", "API_KEY");
+        mint.auth = Some(config::ProviderAuth::named(word));
+        providers.insert("mint".to_string(), mint);
+        let mut models = HashMap::new();
+        models.insert("m".to_string(), make_model("mint", 10));
+        let mut pools = HashMap::new();
+        pools.insert("p".to_string(), make_pool(vec![make_member("m")]));
+        validate(&make_root_cfg(providers, models, pools))
+            .err()
+            .unwrap_or_default()
+    };
+    let errs = build("x-double-mint");
+    for want in [
+        "provider 'mint' uses auth: x-double-mint but has no `token_url` (the OAuth token endpoint the client credentials are POSTed to)",
+        "provider 'mint' uses auth: x-double-mint but has no `scope`",
+    ] {
+        assert!(
+            errs.iter().any(|e| e == want),
+            "a style declaring STYLE_ENDPOINT_TOKEN_URL is judged by the bit: want {want:?} in {errs:?}"
+        );
+    }
+    let errs = build("bearer");
+    assert!(
+        !errs
+            .iter()
+            .any(|e| e.contains("token_url") || e.contains("scope")),
+        "a style stating no endpoint is not judged for one: {errs:?}"
     );
 }
 
@@ -234,7 +286,7 @@ fn test_validate_rejects_bad_protocol() {
 #[test]
 fn test_error_map_invalid_class_message_lists_full_valid_set() {
     // The invalid-StatusClass diagnostic must enumerate EVERY class that
-    // breaker::status_class_from_str accepts; `context_length` was historically
+    // StatusClass::parse accepts; `context_length` was historically
     // omitted from the message even though it is a valid mapping target, so an
     // operator who saw the error could not learn it was an allowed value.
     let mut providers = HashMap::new();
@@ -254,7 +306,7 @@ fn test_error_map_invalid_class_message_lists_full_valid_set() {
         .unwrap_or_else(|| panic!("expected invalid-StatusClass error; got: {errs:?}"));
     assert!(
             msg.contains("context_length"),
-            "valid-values list must include 'context_length' (it is accepted by status_class_from_str); got: {msg}"
+            "valid-values list must include 'context_length' (it is accepted by StatusClass::parse); got: {msg}"
         );
 
     // Guard against drift in the other direction: every class the breaker accepts
@@ -271,7 +323,7 @@ fn test_error_map_invalid_class_message_lists_full_valid_set() {
         "context_length",
     ] {
         assert!(
-            crate::config::status_class_from_str(class).is_some(),
+            busbar_contract::upstream::StatusClass::parse(class).is_some(),
             "test invariant: '{class}' should be a real StatusClass"
         );
         assert!(
@@ -467,7 +519,7 @@ fn test_validate_token_url_ssrf_and_scheme() {
         );
         entra.token_url = Some(token_url.to_string());
         entra.scope = Some("api://x/.default".into());
-        entra.auth = Some(config::ProviderAuth::OAuthClientCredentials);
+        entra.auth = Some(config::ProviderAuth::named("oauth-client-credentials"));
         providers.insert("entra".to_string(), entra);
         let mut models = HashMap::new();
         models.insert("m".to_string(), make_model("entra", 10));
@@ -1633,6 +1685,41 @@ fn test_validate_rejects_unknown_failover_exclusion() {
     );
 }
 
+/// W9 — A ROLE BINDING'S PLANE GRANT NAMES A DECLARED KIND, OR IT IS REFUSED. `allowed_{kind}s`
+/// beside `allowed_pools` is a role-binding key, and a kind no installed plane declares is refused
+/// at validation naming the binding and the field, never left to sit inert while the operator
+/// believes it granted. A key that is not a grant field at all stays refused at parse.
+#[test]
+fn a_role_binding_grant_of_an_undeclared_kind_is_refused_at_validation() {
+    let binding: config::RoleBindingCfg = serde_yaml::from_str("allowed_widgets: [x]\n")
+        .expect("`allowed_{kind}s` is a role-binding key");
+    let (providers, models, pools) = valid_maps();
+    let mut cfg = make_root_cfg(providers, models, pools);
+    let mut auth = config::AuthCfg::default_none();
+    auth.chain = vec![config::AuthChainEntry::bare("keys")];
+    auth.role_bindings.insert(
+        "keys".to_string(),
+        std::collections::BTreeMap::from([("ops".to_string(), binding)]),
+    );
+    cfg.auth = Some(auth);
+    let errs = validate(&cfg).expect_err("an undeclared kind must fail validation");
+    assert!(
+        errs.iter()
+            .any(|e| e.contains("role_bindings.keys.ops") && e.contains("allowed_widgets")),
+        "expected the undeclared-kind error naming the binding and field; got: {errs:?}"
+    );
+    for not_a_grant in [
+        "grop: x\n",
+        "allowed_widgets: x\n",
+        "allowed_widgets: [1]\n",
+    ] {
+        assert!(
+            serde_yaml::from_str::<config::RoleBindingCfg>(not_a_grant).is_err(),
+            "`{not_a_grant}` is not a role-binding grant"
+        );
+    }
+}
+
 #[test]
 fn test_validate_rejects_bad_chain_and_role_binding_scopes() {
     // Both scope-token rules, on the 1.5.0 surface: a typo'd chain-entry `max_admin_scope` and a
@@ -1654,6 +1741,7 @@ fn test_validate_rejects_bad_chain_and_role_binding_scopes() {
                 group: None,
                 admin_scope: Some("readonly".to_string()), // typo (it's read-only)
                 verbs: None,
+                plane_grants: Default::default(),
             },
         )]),
     );
@@ -1758,6 +1846,7 @@ fn validate_admin_scope_mint_now_errors() {
                 group: None,
                 admin_scope: Some("mint".to_string()),
                 verbs: None,
+                plane_grants: Default::default(),
             },
         )]),
     );
@@ -2639,14 +2728,12 @@ fn no_host_entries_baseline() -> RootCfg {
     cfg
 }
 
-/// RED (1.5.5 parity): a metadata host-list entry that names no host BOOTS, as it did on 1.5.5, in
-/// each of the three lists. It is dropped from matching, and config load names the key and the
-/// entry in exactly one warning line (BUSBAR-3024), worded as the refusal it replaces.
+/// OWNER 2026-10-27: a metadata host-list entry that names no usable host FAILS STARTUP, in each of
+/// the three lists, with one error naming the key, the entry and the reason. RED: 1.5.5 booted and
+/// silently matched nothing; the 1.6.0 draft booted with one BUSBAR-3024 warning. Neither tells the
+/// operator, before traffic, that a security rule they wrote protects nothing.
 #[test]
-fn test_a_metadata_entry_naming_no_host_boots_with_one_warning_line() {
-    use crate::test_support::warn_capture::WarnCapture;
-    use tracing_subscriber::layer::SubscriberExt as _;
-
+fn test_a_metadata_entry_naming_no_host_refuses_startup_naming_the_entry() {
     let entries: Vec<String> = NO_HOST_ENTRIES.iter().map(|e| e.to_string()).collect();
     let mut cfg = no_host_entries_baseline();
     cfg.blocked_metadata_hosts = entries.clone();
@@ -2656,66 +2743,50 @@ fn test_a_metadata_entry_naming_no_host_boots_with_one_warning_line() {
         .expect("valid_maps names `myprovider`")
         .allow_metadata_hosts = entries.clone();
 
-    let cap = WarnCapture::default();
-    let subscriber = tracing_subscriber::registry().with(cap.clone());
-    let result = tracing::subscriber::with_default(subscriber, || validate(&cfg));
-    assert!(
-        result.is_ok(),
-        "a metadata entry naming no host booted on 1.5.5 and must boot now; got: {result:?}"
-    );
-    let msgs = cap.messages();
+    let errs = validate(&cfg).expect_err("an entry naming no usable host refuses startup");
     for key in [
         "security.blocked_metadata_hosts",
         "security.allow_metadata_hosts",
         "provider 'myprovider' allow_metadata_hosts",
     ] {
         for entry in NO_HOST_ENTRIES {
-            let head = format!("{key} entry '{entry}' maps to no host: ");
-            let lines: Vec<&String> = msgs.iter().filter(|m| m.starts_with(&head)).collect();
-            assert_eq!(
-                lines.len(),
-                1,
-                "one warning line for `{entry}` in {key}: {msgs:?}"
-            );
+            let head = format!("{key} entry '{entry}' names no usable host: ");
+            let lines: Vec<&String> = errs.iter().filter(|e| e.starts_with(&head)).collect();
+            assert_eq!(lines.len(), 1, "one error for `{entry}` in {key}: {errs:?}");
             assert!(
-                lines[0].contains("so it matches nothing and is dropped. ")
-                    && lines[0].contains("diag=BUSBAR-3024"),
-                "the warning names the entry as dropped and carries BUSBAR-3024: {}",
+                lines[0].contains("so it could never match a destination. "),
+                "the error says why the entry is refused: {}",
                 lines[0]
             );
         }
     }
     assert_eq!(
-        msgs.iter()
-            .filter(|m| m.contains("maps to no host"))
+        errs.iter()
+            .filter(|e| e.contains("names no usable host"))
             .count(),
         3 * NO_HOST_ENTRIES.len(),
-        "exactly one line per dropped entry per key: {msgs:?}"
+        "exactly one error per entry per key: {errs:?}"
     );
 
-    // The exact lines, one per reason, as the operator reads them.
+    // The exact errors, one per reason, as the operator reads them.
     for said in [
-        "security.blocked_metadata_hosts entry 'db.1' maps to no host: its last label reads as a \
-         number but it is no IPv4 address a URL client reads, so it matches nothing and is \
-         dropped. Write an address as a dotted quad, or a name whose last label is not a number, \
-         or remove it",
-        "security.allow_metadata_hosts entry '%6c%6fcalhost' maps to no host: it holds a '%' \
-         escape outside an IPv6 zone id, which a URL client decodes before it dials, so it \
-         matches nothing and is dropped. Write the host decoded (the name or address it spells), \
-         or remove it",
-        "provider 'myprovider' allow_metadata_hosts entry 'b\u{fc}cher\u{ff1c}.example' maps to \
-         no host: UTS #46 refuses it, so it is no name a URL client would dial, so it matches \
-         nothing and is dropped. Write the host in ASCII (an internationalized name as its \
+        "security.blocked_metadata_hosts entry 'db.1' names no usable host: its last label reads \
+         as a number but it is no IPv4 address a URL client reads, so it could never match a \
+         destination. Write an address as a dotted quad, or a name whose last label is not a \
+         number, or remove it",
+        "security.allow_metadata_hosts entry '%6c%6fcalhost' names no usable host: it holds a '%' \
+         escape outside an IPv6 zone id, which a URL client decodes before it dials, so it could \
+         never match a destination. Write the host decoded (the name or address it spells), or \
+         remove it",
+        "provider 'myprovider' allow_metadata_hosts entry 'b\u{fc}cher\u{ff1c}.example' names no \
+         usable host: UTS #46 refuses it, so it is no name a URL client would dial, so it could \
+         never match a destination. Write the host in ASCII (an internationalized name as its \
          punycode 'xn--' form), or remove it",
     ] {
-        assert!(
-            msgs.iter()
-                .any(|m| m == &format!("{said} diag=BUSBAR-3024")),
-            "{said}: {msgs:?}"
-        );
+        assert!(errs.iter().any(|e| e == said), "{said}: {errs:?}");
     }
 
-    // Mappable and judgeable entries boot with no warning at all.
+    // Mappable and judgeable entries boot.
     let mut cfg = no_host_entries_baseline();
     cfg.blocked_metadata_hosts = vec![
         "\u{ff11}\u{ff10}.\u{ff19}\u{ff19}.\u{ff19}\u{ff19}.\u{ff19}\u{ff19}".to_string(),
@@ -2730,16 +2801,8 @@ fn test_a_metadata_entry_naming_no_host_boots_with_one_warning_line() {
         "\u{ff4d}\u{ff45}\u{ff54}\u{ff41}.example".to_string(),
         "metadata.example.com".to_string(),
     ];
-    let cap = WarnCapture::default();
-    let subscriber = tracing_subscriber::registry().with(cap.clone());
-    let result = tracing::subscriber::with_default(subscriber, || validate(&cfg));
+    let result = validate(&cfg);
     assert!(result.is_ok(), "mappable entries boot; got: {result:?}");
-    assert_eq!(
-        cap.count("maps to no host"),
-        0,
-        "a mappable entry is never warned about: {:?}",
-        cap.messages()
-    );
 }
 
 /// The dropped entries leave the hardened guard whole: with every list full of entries that name
@@ -2775,19 +2838,16 @@ fn test_a_dropped_metadata_entry_lifts_no_real_target() {
         "the metadata check still refuses the IMDS base_url: {errs:?}"
     );
     assert!(
-        !errs.iter().any(|e| e.contains("maps to no host")),
-        "an entry naming no host is a warning, never an error: {errs:?}"
+        errs.iter().any(|e| e.contains("names no usable host")),
+        "an entry naming no usable host is refused too: {errs:?}"
     );
 }
 
 /// TWIN (1.5.5 parity): a `/` entry is the one class 1.5.5 refused at boot (v1.5.5
 /// crates/busbar/src/config_validate/mod.rs:1998-2005, called at :68-77 and :320-324), so it is
-/// still refused with 1.5.5's exact text and gets no warning line of its own.
+/// still refused with 1.5.5's exact text and no other error of its own.
 #[test]
 fn test_a_cidr_metadata_entry_is_refused_with_the_1_5_5_text() {
-    use crate::test_support::warn_capture::WarnCapture;
-    use tracing_subscriber::layer::SubscriberExt as _;
-
     let mut cfg = no_host_entries_baseline();
     cfg.blocked_metadata_hosts = vec!["169.254.0.0/16".to_string()];
     cfg.allow_metadata_hosts = vec!["10.0.0.0/8".to_string()];
@@ -2795,10 +2855,7 @@ fn test_a_cidr_metadata_entry_is_refused_with_the_1_5_5_text() {
         .get_mut("myprovider")
         .expect("valid_maps names `myprovider`")
         .allow_metadata_hosts = vec!["169.254.169.254/32".to_string()];
-    let cap = WarnCapture::default();
-    let subscriber = tracing_subscriber::registry().with(cap.clone());
-    let errs = tracing::subscriber::with_default(subscriber, || validate(&cfg))
-        .expect_err("a CIDR entry is refused at boot, as on 1.5.5");
+    let errs = validate(&cfg).expect_err("a CIDR entry is refused at boot, as on 1.5.5");
     for (key, entry) in [
         ("security.blocked_metadata_hosts", "169.254.0.0/16"),
         ("security.allow_metadata_hosts", "10.0.0.0/8"),
@@ -2812,11 +2869,9 @@ fn test_a_cidr_metadata_entry_is_refused_with_the_1_5_5_text() {
         );
         assert!(errs.iter().any(|e| e == &said), "{said}: {errs:?}");
     }
-    assert_eq!(
-        cap.count("maps to no host"),
-        0,
-        "a CIDR entry gets only its 1.5.5 refusal: {:?}",
-        cap.messages()
+    assert!(
+        !errs.iter().any(|e| e.contains("names no usable host")),
+        "a CIDR entry gets only its 1.5.5 refusal: {errs:?}"
     );
 }
 
@@ -5391,6 +5446,7 @@ fn test_validate_role_binding_group_must_exist() {
         group: Some("squad".to_string()),
         admin_scope: None,
         verbs: None,
+        plane_grants: Default::default(),
     };
     let (providers, models, pools) = valid_maps();
     let mut cfg = make_root_cfg(providers, models, pools);
@@ -6665,12 +6721,12 @@ static CLASS_PLANE: crate::plane_driver::registry::PlaneDecl =
             served_op_classes: &[],
             caller_credential_refusal: None,
         },
-        wire_format_names: || &[],
+        wire_format_names: |_| &[],
         // The test binary's codecs, declared as this plane's provider dialects (ruling 2026-10-16 D).
-        provider_dialects: crate::ingress::protocols::known_protocols,
+        provider_dialects: |_| crate::ingress::protocols::known_protocols(),
         claims: |_| Vec::new(),
         admission: |_| None,
-        build: |_| None,
+        build: |_, _| None,
         routes: None,
         admin_routes: None,
         openapi: None,
@@ -6691,6 +6747,7 @@ static CLASS_PLANE: crate::plane_driver::registry::PlaneDecl =
         retain_verify_gates: None,
         default_section: None,
         resolve_provider: None,
+        door: None,
     };
 
 /// One declared billable class in `family`.
@@ -7075,4 +7132,153 @@ fn an_unreadable_service_account_key_file_refuses_in_1_5_5s_words_without_the_pa
         "could not read service-account key file named by this lane's credential: No such file or directory (os error 2)"
     );
     assert!(!refused.contains("secret-name"), "{refused}");
+}
+
+/// THE 1.5.5 UPGRADE'S PRIVATE PROVIDER (owner ruling 2026-10-27): a provider at a private or
+/// loopback host still VALIDATES (E1 parity, above), and `--validate` now NAMES it, in one warning
+/// line per URL (BUSBAR-3025), while `advanced.block_private_addresses` holds and
+/// `advanced.allow_destinations` does not admit it: the guard refuses every request to it, so it
+/// must never be discovered only at request time. An allowlist entry that admits the host (exact,
+/// IP or CIDR) or the guard turned off says nothing; a public host says nothing. RED: nothing named
+/// it before.
+#[test]
+fn test_a_provider_the_destination_guard_will_refuse_is_named_at_validate() {
+    use crate::test_support::warn_capture::WarnCapture;
+    use tracing_subscriber::layer::SubscriberExt as _;
+    crate::test_support::register_neutral_test_plane();
+    let warned = |base_url: &str, block: bool, allow: &[&str]| -> Vec<String> {
+        let mut providers = HashMap::new();
+        providers.insert(
+            "local".to_string(),
+            make_provider(proto_a(), base_url, "API_KEY"),
+        );
+        let mut cfg = make_root_cfg(providers, HashMap::new(), HashMap::new());
+        cfg.guard.block_private_addresses = block;
+        cfg.guard.allow = allow.iter().map(|s| s.to_string()).collect();
+        let cap = WarnCapture::default();
+        let subscriber = tracing_subscriber::registry().with(cap.clone());
+        let result = tracing::subscriber::with_default(subscriber, || validate(&cfg));
+        assert!(result.is_ok(), "it still validates: {base_url}: {result:?}");
+        cap.messages()
+            .into_iter()
+            .filter(|m| m.contains("names the private or loopback host"))
+            .collect()
+    };
+    for (url, host) in [
+        ("http://127.0.0.1:11434", "127.0.0.1"),
+        ("http://10.1.2.3/", "10.1.2.3"),
+        ("http://localhost:8080/v1", "localhost"),
+        ("http://[::1]:8080", "::1"),
+    ] {
+        let lines = warned(url, true, &[]);
+        assert_eq!(lines.len(), 1, "one line for {url}: {lines:?}");
+        assert!(
+            lines[0].starts_with(&format!(
+                "provider 'local' base_url names the private or loopback host '{host}': "
+            )) && lines[0].contains(&format!("Add '{host}' to advanced.allow_destinations"))
+                && lines[0].contains("diag=BUSBAR-3025"),
+            "{}",
+            lines[0]
+        );
+    }
+    for allow in [&["10.1.2.3"][..], &["10.0.0.0/8"][..], &["10.1.2.3/32"][..]] {
+        assert!(
+            warned("http://10.1.2.3/", true, allow).is_empty(),
+            "{allow:?}"
+        );
+    }
+    assert!(warned("http://10.1.2.3/", true, &["10.2.0.0/16"]).len() == 1);
+    assert!(
+        warned("http://10.1.2.3/", false, &[]).is_empty(),
+        "the guard is off"
+    );
+    assert!(
+        warned("https://api.example.com", true, &[]).is_empty(),
+        "a public host"
+    );
+}
+
+/// Validate one provider's `base_url` as the boot path does.
+fn base_url_verdict(base: &str) -> Result<(), Vec<String>> {
+    let mut providers = HashMap::new();
+    providers.insert("p".to_string(), make_provider(proto_b(), base, "API_KEY"));
+    validate(&make_root_cfg(providers, HashMap::new(), HashMap::new()))
+}
+
+/// security.md: plain `http://` is permitted only for a private literal, `localhost` or
+/// `*.localhost`. A single-label name such as a container-network hostname (`ollama`, a compose
+/// service) is not any of those: it is a name resolution decides, so it is refused with the https
+/// diagnostic, never taken for local.
+#[test]
+fn test_http_container_name_base_url_is_rejected() {
+    crate::test_support::register_neutral_test_plane();
+    for base in [
+        "http://ollama:11434",
+        "http://ollama",
+        "http://vllm-server:8000/v1",
+        "http://host.docker.internal:11434",
+        "http://localhost.example.com:11434", // `localhost` as a label, not the TLD
+        "http://notlocalhost:11434",
+    ] {
+        let errs = base_url_verdict(base).expect_err(&format!(
+            "'{base}' names no private literal and must be refused"
+        ));
+        assert!(
+            errs.iter()
+                .any(|e| e.contains("must use https for a public host")),
+            "'{base}': expected the https-for-public-host diagnostic; got: {errs:?}"
+        );
+    }
+    // The same name over https is fine (the rule is the scheme).
+    assert!(base_url_verdict("https://ollama:11434").is_ok());
+}
+
+/// security.md: `localhost` and every `*.localhost` name is local, so it may use plain `http://`.
+#[test]
+fn test_http_localhost_subdomain_base_url_is_accepted() {
+    crate::test_support::register_neutral_test_plane();
+    for base in [
+        "http://localhost:11434",
+        "http://ollama.localhost:11434",
+        "http://api.ollama.localhost/v1",
+        "http://LOCALHOST:11434",
+        "http://Ollama.LocalHost:11434",
+    ] {
+        assert!(
+            base_url_verdict(base).is_ok(),
+            "'{base}' is a localhost name and may use http; got: {:?}",
+            base_url_verdict(base)
+        );
+    }
+}
+
+/// FINDING (undocumented): a `base_url` that is an unresolved env placeholder skips the scheme check.
+/// A Lenient (`--validate` / admin dry-run) load splices an unset `${VAR}` in as the bare name `VAR`,
+/// and `validate_with_unset` then treats a scheme-less value naming an unset variable as a
+/// placeholder. So under `--validate` the value is exempt from the https rule, where the boot path
+/// (`validate`, no unset list) refuses the same bare value, and a value with a `://` scheme is
+/// checked either way, even when it names the unset variable.
+#[test]
+fn an_env_placeholder_base_url_skips_the_scheme_check_under_validate_only() {
+    crate::test_support::register_neutral_test_plane();
+    let unset = vec!["OLLAMA_BASE".to_string()];
+    let with_unset = |base: &str| {
+        let mut providers = HashMap::new();
+        providers.insert("p".to_string(), make_provider(proto_b(), base, "API_KEY"));
+        validate_with_unset(
+            &make_root_cfg(providers, HashMap::new(), HashMap::new()),
+            &unset,
+        )
+    };
+    // A bare placeholder (what an unset ${OLLAMA_BASE} leaves) is exempt under --validate...
+    assert!(
+        with_unset("OLLAMA_BASE").is_ok(),
+        "an unset-var placeholder skips the scheme check: {:?}",
+        with_unset("OLLAMA_BASE")
+    );
+    // ...is refused on the boot path, which has no unset list...
+    assert!(base_url_verdict("OLLAMA_BASE").is_err());
+    // ...and a real http:// URL to a public host is refused even when it names the unset variable.
+    assert!(with_unset("http://OLLAMA_BASE.example.com").is_err());
+    assert!(with_unset("http://api.example.com").is_err());
 }

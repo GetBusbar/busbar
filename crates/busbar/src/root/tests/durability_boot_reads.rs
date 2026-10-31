@@ -4,13 +4,12 @@
 //! A STORE THAT STOPS READING THE JOURNAL BACK is never taken for an empty chain (audit R1#3, row
 //! 159). A node with no data directory keeps its chain in the configured store; the boot reads it
 //! once to rebuild the book, and the boot steps after that read it again. When that second read
-//! fails, the amendment rebuild, the keyset binding and the checkpoint numbering must not go on as
+//! fails, the amendment rebuild and the keyset binding must not go on as
 //! if the chain held nothing, and an audit window must not be answered as empty.
 //!
 //! A CHAIN THAT READS BACK BUT DOES NOT VERIFY is never taken for an empty one either (audit root
 //! r4 B-2, A-5): the boot refuses, naming the break, as it refuses a chain it cannot read.
 
-#[cfg(feature = "root-admin")]
 use super::audit::tests::inputs;
 use super::*;
 use crate::root::store_double::RecordSlots;
@@ -34,14 +33,7 @@ fn over_store(slots: &RecordSlots) -> Durability {
 /// [`over_store`], answering the build itself: a boot the chain refuses is an `Err` here.
 fn rebuilt_over(slots: &RecordSlots) -> Result<Durability, OpenError> {
     let lane = JournalLane::start(slots.calls(), "test-store").expect("the lane starts");
-    build_on_store(
-        &DurabilityConfig { data_dir: None },
-        NODE,
-        lane,
-        Box::new(busbar_kernel_ledger::legacy::RecordingRows::new()),
-        Box::new(|| None),
-        None,
-    )
+    build_on_store(&DurabilityConfig { data_dir: None }, NODE, lane, None)
 }
 
 /// Wait until the store took everything the book's lane holds.
@@ -113,34 +105,6 @@ fn a_keyset_binding_the_store_will_not_read_refuses_the_boot() {
     );
 }
 
-/// THE CHECKPOINT NUMBERING CONTINUES from the chain the boot rebuilt the book from, whatever the
-/// store answers when it is read again. Taking a failed read for an empty chain numbered from one
-/// again, re-using sequence numbers the chain already carries.
-#[test]
-fn checkpoint_numbering_survives_a_store_that_stops_reading() {
-    let slots = RecordSlots::new();
-    let token = token();
-    {
-        let mut first = over_store(&slots);
-        first.arm_checkpoints(NOW);
-        for seq in [1, 2] {
-            let sealed = first
-                .seal_checkpoint(&token, StepName::Meter, NOW)
-                .expect("sealed");
-            assert_eq!(sealed.checkpoint_seq, seq);
-        }
-        drained(&first);
-    }
-    let mut restarted = over_store(&slots);
-    slots.fail_reads(true);
-    restarted.arm_checkpoints(NOW);
-    assert_eq!(
-        restarted.cadence().expect("armed").next_checkpoint_seq(),
-        3,
-        "the next checkpoint follows the highest the chain carries"
-    );
-}
-
 /// AN AUDIT WINDOW THE STORE WILL NOT READ BACK IS NEVER ANSWERED AS EMPTY: the view answers
 /// nothing, which the range read renders as the store failure it is (`GovernanceError::Store`),
 /// never as a window with no records in it.
@@ -178,16 +142,19 @@ fn an_audit_window_the_store_will_not_read_is_never_answered_empty() {
     );
 }
 
-/// A chain the store kept, two checkpoints long, written by a first boot and drained to the store.
-fn two_checkpoints(slots: &RecordSlots) {
+/// A chain the store kept, two audit records long, written by a first boot and drained to the
+/// store.
+fn two_records(slots: &RecordSlots) {
     let token = token();
     let mut first = over_store(slots);
-    first.arm_checkpoints(NOW);
-    for seq in [1, 2] {
-        let sealed = first
-            .seal_checkpoint(&token, StepName::Meter, NOW)
+    for unit in [1, 2] {
+        first
+            .seal_unit(
+                inputs(unit),
+                busbar_kernel::test_support::tokens::pass(),
+                &token,
+            )
             .expect("sealed");
-        assert_eq!(sealed.checkpoint_seq, seq);
     }
     drained(&first);
 }
@@ -196,10 +163,10 @@ fn two_checkpoints(slots: &RecordSlots) {
 /// DESIGN §7, l.1056-1059: a damaged money record is never taken silently, it is reported and
 /// nothing is settled on a guess; #79, l.3941: signed corrections stay dated). A record of the
 /// chain is edited in the store behind the node. Taken for an empty chain, the boot went on
-/// sealing onto it over an empty rebuild: the book and the dated history were rebuilt from
-/// nothing (the card journal disarmed for the life of the process), checkpoint and audit numbering
-/// restarted at one on a chain that already carries them, the incarnation was one already used,
-/// and the amendment journal stayed unbound — all reported only as a restart finding.
+/// sealing onto it over an empty rebuild: the dated history was rebuilt from nothing (the card
+/// journal disarmed for the life of the process), audit numbering restarted at one on a chain that
+/// already carries them, the incarnation was one already used, and the amendment journal stayed
+/// unbound — all reported only as a restart finding.
 ///
 /// The same chain unedited rebuilds first, so the refusal is the edit's and never the fixture's.
 ///
@@ -207,14 +174,9 @@ fn two_checkpoints(slots: &RecordSlots) {
 #[test]
 fn a_stored_chain_that_does_not_verify_refuses_the_boot() {
     let slots = RecordSlots::new();
-    two_checkpoints(&slots);
-    let mut intact = over_store(&slots);
-    intact.arm_checkpoints(NOW);
-    assert_eq!(
-        intact.cadence().expect("armed").next_checkpoint_seq(),
-        3,
-        "the unedited chain rebuilds and numbers on from it"
-    );
+    two_records(&slots);
+    let intact = over_store(&slots);
+    assert_eq!(intact.audit_records.len(), 2, "the unedited chain rebuilds");
     drop(intact);
 
     slots.corrupt(JOURNAL_SCHEMA, &part_key(NODE, 1, 0));
@@ -239,7 +201,7 @@ fn a_stored_chain_that_does_not_verify_refuses_the_boot() {
 #[test]
 fn an_amendment_rebuild_over_a_chain_that_does_not_verify_refuses_the_boot() {
     let slots = RecordSlots::new();
-    two_checkpoints(&slots);
+    two_records(&slots);
     let mut restarted = over_store(&slots);
     slots.corrupt(JOURNAL_SCHEMA, &part_key(NODE, 1, 0));
     let answered = format!("{:?}", restarted.restore_amendments());

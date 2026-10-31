@@ -91,4 +91,11 @@ impl ExportAxis for RootExports {
             .map(|registry| registry.secret_slots(module))
             .unwrap_or_default()
     }
+
+    fn reference_fields(&self, module: &str) -> Vec<String> {
+        use busbar_contract::plugin_rows::PluginRows;
+        crate::root::linked::dropped()
+            .map(|registry| registry.reference_slots(module))
+            .unwrap_or_default()
+    }
 }

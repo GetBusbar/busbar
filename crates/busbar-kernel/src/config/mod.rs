@@ -55,8 +55,6 @@ pub use groups::GroupCfg;
 pub use groups::LimitCfg;
 pub use secret::SecretRef;
 
-// Re-export status_class_from_str for config validation
-pub use crate::breaker::status_class_from_str;
 use crate::config::plane_sections::{DeclaredSections, EndpointSection};
 use crate::diagnostics::{
     diag_warn, CONFIG_ANTIDOWNGRADE_FLOOR_INVALID, CONFIG_FIRSTPARTY_FLOOR_INVALID,
@@ -945,9 +943,8 @@ fn check_failover_pool(
             def.members.len()
         ));
     }
-    // The plane breaker store's lane table is FIXED (process-lifetime, sized
-    // `store::MAX_POOL_MEMBERS`; see `store/breaker_admission.rs` for why it cannot track config), so a pool
-    // must fit it — refused here, where the operator can act, rather than indexed past at dispatch.
+    // A plane consumer's pool is capped at `store::MAX_POOL_MEMBERS` members, refused here where the
+    // operator can act.
     if def.members.len() > crate::store::MAX_POOL_MEMBERS {
         errors.push(format!(
             "{section}.{pool}: {} members exceeds the supported maximum of {} per failover pool \
@@ -1192,9 +1189,8 @@ pub struct DeployCfg {
     /// A CARRIER, not a parsed field: the key is lifted off the document by
     /// [`crate::config::prepass`] before this struct parses, so it is never in this struct's
     /// accepted key set and never named in its unknown-key refusal. See that module for why. The
-    /// field is named for what it carries, not for its wire key: the pre-pass ties the key to this
-    /// carrier's TYPE (`LiftableSection for EndpointSection`), and the config-schema fingerprint
-    /// records it under that key.
+    /// field is named for what it carries, not for its wire key: the pre-pass ties the key to its
+    /// owner's endpoint door (`EndpointSection::OWNER`).
     #[serde(skip)]
     pub endpoint: EndpointSection,
     /// `oauth_as:` — busbar AS an OAuth 2.1 authorization server, for the deployment that has no
@@ -1227,6 +1223,8 @@ pub struct DeployCfg {
     /// `admin_tls.client_ca`: that says "here is the CA", this says "an exposed plane must have one".
     #[serde(default = "default_admin_require_mtls")]
     pub admin_require_mtls: bool,
+    /// Read by [`prepass::auth_section`], which lifts the 1.6.0 `policy:` off it first.
+    #[serde(default, deserialize_with = "prepass::auth_section")]
     pub auth: Option<AuthDeployCfg>,
     /// The top-level `identity-providers:` NAMED-DEFINITION map (1.5.3): provider NAME →
     /// [`IdentityProviderCfg`]. An IdP is DEFINED here once and REFERENCED by bare name from
@@ -2212,11 +2210,11 @@ pub fn resolve(
         .iter()
         .filter(|(_, v)| !v.is_null())
         .filter_map(|(&section, value)| {
-            let parse = crate::plane_driver::registry::plane_decls()
+            let decl = crate::plane_driver::registry::plane_decls()
                 .iter()
-                .find(|d| d.config_section == section)
-                .and_then(|d| d.parse_section)?;
-            parse(value)
+                .find(|d| d.config_section == section)?;
+            let parse = decl.parse_section?;
+            parse(decl, value)
                 .map_err(|e| errors.push(format!("`{section}:` is not valid: {e}")))
                 .ok()
                 .map(|cfg| (section, cfg))

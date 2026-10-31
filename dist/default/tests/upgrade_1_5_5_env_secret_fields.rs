@@ -3,23 +3,28 @@
 
 //! **A 1.5.5 CONFIG THAT READS AN EXPORT'S URL OR AUTH HEADER FROM THE ENVIRONMENT STILL BOOTS.**
 //!
-//! 1.5.5 resolved `{env: …}` (and `{file: …}`) wherever a setting holds a secret, and its docs
-//! configure the exporters that way: the OTLP sink's `url`, the request-log webhook's `url` and its
-//! `auth_header: { name, value }`. 1.6.0 resolves a secret reference only at a field the plugin
-//! declares as secret, and refuses one anywhere else ("did not declare it as a secret"). A plugin
-//! pinned before it declared those fields turns a working 1.5.5 deployment into one that will not
-//! start: a non-breaking upgrade is broken.
+//! 1.5.5 resolved `{env: …}` (and `{file: …}`) in the exporters' settings, and its docs configure
+//! them that way: the OTLP sink's `url`, the request-log webhook's `url` and its
+//! `auth_header: { name, value }`. 1.6.0 resolves a reference only at a field the plugin declares,
+//! and refuses one anywhere else ("did not declare it as a secret"). A `url` is not a secret: the
+//! sinks declare it REFERENCE-CAPABLE (the Statement's extensions' `reference_fields`; a literal url
+//! passes as written, a reference resolves in place). The webhook's `auth_header.value` IS the
+//! credential: it is declared SECRET (`secret_refs`). A sink pinned before it declared those fields
+//! turns a working 1.5.5 deployment into one that will not start.
 //!
-//! The real binary is given a 1.5.5-shaped config whose `otlp` instance takes its `url` from the
-//! environment and whose `request-log-webhook` instance takes both its `url` and its auth header's
-//! `value` from the environment. `--validate` must accept it with no undeclared-secret refusal, the
-//! binary must boot and serve, and the OTLP collector at the address the environment named must
-//! receive the request path's spans: the reference was resolved and the sink is served. (The webhook
-//! refuses loopback targets by policy, as 1.5.5 did, so its delivery is not observed here; its
-//! instance booting without a refusal is the part this guards.)
+//! Two proofs. The linked sinks' own Statements declare exactly that: `url` reference-capable and
+//! not secret on both, `auth_header.value` secret on the webhook. And the real binary, given a
+//! 1.5.5-shaped config whose `otlp` instance takes its `url` from the environment and whose
+//! `request-log-webhook` instance takes both its `url` and its auth header's `value` from the
+//! environment, accepts it under `--validate` with no undeclared refusal, boots and serves, and the
+//! OTLP collector at the address the environment named receives the request path's spans: the
+//! reference was resolved and the sink is served. (The webhook refuses loopback targets by policy,
+//! as 1.5.5 did, so its delivery is not observed here; its instance booting without a refusal is
+//! the part this guards.)
 //!
-//! RED (dev 68fb1d46d7): the export pins predate the plugins' secret-field declarations, so
-//! `--validate` and the boot refuse each `{env: …}` as undeclared.
+//! RED at the export pins dev c892641d61 carries (otlp 3e1726f336 declares `url` SECRET, webhook
+//! b5240b33d1 declares nothing): the Statements are not the ones above, and `--validate` refuses the
+//! webhook's `auth_header.value` reference as undeclared.
 
 #![cfg(unix)]
 // The config serves `providers:`/`models:`, so the build must link the plane door that declares
@@ -41,7 +46,7 @@ include!(concat!(env!("OUT_DIR"), "/linked_transports.rs"));
 /// The key of the wire the data door rides.
 const WIRE: &str = "tcp";
 
-/// The refusal G14 answers for a reference at a field the plugin did not declare.
+/// The refusal answered for a reference at a field the plugin did not declare.
 const UNDECLARED: &str = "did not declare it as a secret";
 
 /// The environment the config's references name, as a 1.5.5 operator would set it.
@@ -61,7 +66,8 @@ fn fixture_dir() -> PathBuf {
     d
 }
 
-/// The 1.5.5 shape: each secret-carrying export field is an `{env: …}` reference.
+/// The 1.5.5 shape: each exporter's `url`, and the webhook's auth header value, an `{env: …}`
+/// reference.
 fn write_configs(dir: &Path, data_port: u16, admin_port: u16) {
     std::fs::write(
         dir.join("providers.yaml"),
@@ -164,6 +170,38 @@ fn post(port: u16, path: &str, body: &str) -> Option<u16> {
     stream.read_to_end(&mut raw).ok()?;
     let text = String::from_utf8_lossy(&raw).into_owned();
     text.lines().next()?.split_whitespace().nth(1)?.parse().ok()
+}
+
+/// What `statement` declares: its SECRET paths (`secret_refs`) and its REFERENCE-CAPABLE, not
+/// secret, paths (its extensions' `reference_fields`), as the host reads them off its rendering.
+fn declared(
+    statement: &busbar_contract::abi::mechanism::door::Statement,
+) -> (Vec<String>, Vec<String>) {
+    use busbar_contract::abi::mechanism::rendering;
+    // SAFETY: a linked sink's `STATEMENT` names only `'static` strings and lists.
+    let bytes = unsafe { rendering::render(statement) }.expect("the Statement renders");
+    let stated = rendering::read(&bytes).expect("the rendering reads back");
+    let reference = stated
+        .reference_fields()
+        .expect("the reference-capable list reads");
+    (stated.secret_refs, reference)
+}
+
+/// A `url` is reference-capable, never secret (a literal url, 1.5.5's BOOT cells, passes as
+/// written); the webhook's `auth_header.value` is the credential, declared secret.
+#[test]
+fn the_export_sinks_declare_url_reference_capable_and_the_auth_header_value_secret() {
+    let (none, url) = (Vec::<String>::new(), vec!["url".to_string()]);
+    assert_eq!(
+        declared(&busbar_export_otlp::door::STATEMENT),
+        (none, url.clone()),
+        "otlp: `url` reference-capable, nothing secret"
+    );
+    assert_eq!(
+        declared(&busbar_export_webhook::STATEMENT),
+        (vec!["auth_header.value".to_string()], url),
+        "request-log-webhook: `auth_header.value` secret, `url` reference-capable"
+    );
 }
 
 #[test]

@@ -50,7 +50,7 @@ pub(super) fn axis() -> Option<&'static dyn ExportAxis> {
 /// `settings` (K9a S2), rendered under the instance, so a plugin sink's settings errors surface at
 /// the same moment and in the same words a built-in's do.
 ///
-/// The sink validates its settings with each declared secret reference resolved
+/// The sink validates its settings with each reference at a declared path resolved
 /// ([`sink_settings`]); one that does not resolve is the instance's problem, in place of the
 /// sink's verdict on a value it was never handed.
 pub(crate) fn probe(
@@ -62,8 +62,7 @@ pub(crate) fn probe(
     let (streams, problems) = match sink_settings(axis, module, settings) {
         Ok(cfg) => axis.probe(module, name, &cfg)?,
         Err(e) => {
-            let raw = Value::Object(settings.clone());
-            let (streams, _) = axis.probe(module, name, &raw)?;
+            let (streams, _) = axis.probe(module, name, &Value::Object(settings.clone()))?;
             (streams, vec![format!("export.{name}.settings: {e}")])
         }
     };
@@ -72,22 +71,23 @@ pub(crate) fn probe(
 }
 
 /// `settings` as the sink is handed them: each secret reference (`{env:}`, `{file:}`, `{module:}`)
-/// written at a path `module`'s Statement declares secret (`secret_refs`) RESOLVED IN PLACE to its
-/// string, as 1.5.5 resolved the exporters' `url` and `auth_header.value` (THE DESIGN: references
-/// resolve in place; the export host lends nothing, so a sink reads the value itself at probe,
-/// check and open alike). Resolved through the linked secret modules (`env` / `file`) at config
-/// time, fail-closed: an unresolvable reference is the `Err`, naming the field, never a dangling
-/// reference handed to the sink. A reference at a path the module did NOT declare is left as
-/// written: that is the undeclared-reference refusal's to word (`config_validate`), not this.
+/// at a path `module`'s Statement declares, secret (`secret_refs`) or reference-capable (its
+/// extensions' `reference_fields`, lead ruling item 7a), RESOLVED IN PLACE to its string, as 1.5.5
+/// resolved an exporter's `url` (the export host lends nothing, so a sink reads the value itself at
+/// probe, check and open alike). A literal is handed as written. Resolved through the built-in
+/// sources (`env`, `file`) at config time, fail-closed: an unresolvable reference is the `Err`,
+/// naming the field, never a dangling reference handed to the sink. A reference at a path the
+/// module did NOT declare leaves the settings as written: that is the undeclared-reference
+/// refusal's to word (`config_validate`), not this.
 ///
-/// The configuration keeps the reference; only the returned value carries the secret, and only for
-/// the one call it is handed to.
+/// The configuration keeps the reference; only the returned value carries what it resolved to, and
+/// only for the one call it is handed to.
 pub(crate) fn sink_settings(
     axis: &dyn ExportAxis,
     module: &str,
     settings: &serde_json::Map<String, Value>,
 ) -> Result<Value, String> {
-    let declared = axis.secret_refs(module);
+    let declared = [axis.secret_refs(module), axis.reference_fields(module)].concat();
     let tree = Value::Object(settings.clone());
     if declared.is_empty()
         || busbar_contract::secret_fields::undeclared_reference(&tree, &declared).is_some()
@@ -96,12 +96,13 @@ pub(crate) fn sink_settings(
     }
     crate::config::secret::resolve_settings(
         settings,
+        &[],
         &declared,
         module,
         &crate::config::secret::SecretResolver::builtins_only(),
         &busbar_contract::config_time::ConfigScope::config_time(),
     )
-    .map(Value::Object)
+    .map(|resolved| resolved.as_value().clone())
 }
 
 /// Stream bytes as the vocabulary's streams (a byte outside it was refused at load).
@@ -131,6 +132,7 @@ pub(crate) fn one_instance(module: &str) -> bool {
 /// `module`'s own check across `instances` at the LIMITS phase, its findings verbatim — asked while
 /// the configuration is resolved, for a `one_instance` module configured more than once: the
 /// plugin words its own refusal.
+///
 /// Each instance is handed as its sink reads it ([`sink_settings`]); one whose declared reference
 /// does not resolve is already refused by [`probe`] and is left out.
 pub(crate) fn check_one_instance(module: &str, instances: &[(String, Value)]) -> Vec<String> {
@@ -250,7 +252,7 @@ pub fn open(cfg: &ExportCfg) -> Result<(), String> {
     let (mut errors, mut opened) = (Vec::new(), Vec::new());
     for p in &cfg.plugins {
         let (name, module, def) = (&p.name, p.def.module.trim(), &p.def);
-        // Each declared secret reference resolved in place, fail-closed ([`sink_settings`]).
+        // Each declared reference resolved in place, fail-closed ([`sink_settings`]).
         let settings = match sink_settings(axis, module, &def.settings) {
             Ok(settings) => settings,
             Err(e) => {

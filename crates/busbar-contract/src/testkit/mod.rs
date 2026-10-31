@@ -6,5 +6,3 @@
 //! socket or a process, reads the environment or the clock. It is compiled only under `cfg(test)` or
 //! the dev-only `test-seal` feature (Locked Decision #33: no testkit ships), so a release build has
 //! none of it and a plugin reaches it only on its `[dev-dependencies]` edge.
-
-pub mod store_v3;

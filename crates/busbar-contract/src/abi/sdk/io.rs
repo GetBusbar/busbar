@@ -421,6 +421,31 @@ impl<'h> Io<'h> {
         let port = u32::try_from(o.value).map_err(|_| IoFailure::Fault)?;
         Ok((port, count(o.len, cap)?))
     }
+
+    /// `io.ends` on a spawned program's handle: its exit code once the program ITSELF has exited,
+    /// `None` while it runs (and for any other handle, and on a host that predates `exited`, which
+    /// always wrote that byte as zero). A descendant still holding the program's output keeps the
+    /// pipe open, so a carrier reads the program's end here, not from the pipe.
+    ///
+    /// # Errors
+    ///
+    /// Not the caller's handle.
+    pub fn program_exit(&mut self, handle: u64) -> IoAnswer<Option<u32>> {
+        let mut peer = [0_u8; MAX_ADDR];
+        let i = AddrIn {
+            head: head(),
+            handle,
+            addr_buf: peer.as_mut_ptr(),
+            addr_cap: peer.len(),
+        };
+        let o = self.now(op::ENDS, |s| s.ends, i)?;
+        if o.exited == 0 {
+            return Ok(None);
+        }
+        u32::try_from(o.value)
+            .map(Some)
+            .map_err(|_| IoFailure::Fault)
+    }
 }
 
 /// A count the host wrote: at most `cap`, else the host broke the rule.

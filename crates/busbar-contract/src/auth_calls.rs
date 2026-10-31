@@ -505,6 +505,46 @@ pub trait AuthAxis: Send + Sync {
         let _ = (style, credential, settings);
         Ok(Vec::new())
     }
+
+    /// THE OUTBOUND STYLES this build's auth rows declare, as a provider's `auth:` may name them:
+    /// each row's tail styles, linked rows first in registration order, then dropped-in rows, in
+    /// [`listed_styles`] order (ranked first by rank, then unranked in that order; a name stated
+    /// twice listed once, at its first place), each with its declared flags. Read without opening
+    /// an instance. Empty by default.
+    fn outbound_styles(&self) -> Vec<DeclaredStyle> {
+        Vec::new()
+    }
+}
+
+/// ONE OUTBOUND STYLE an auth row declares ([`AuthAxis::outbound_styles`]): its name and its
+/// `abi::auth::StyleDecl::flags` (the `STYLE_*` bits and its list rank).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeclaredStyle {
+    /// The style name: an open string a provider's `auth:` resolves against.
+    pub name: String,
+    /// Its declared flags.
+    pub flags: u32,
+}
+
+/// THE ONE ORDER the host lists outbound styles in: `declared` (every row's styles, linked rows
+/// first in registration order, then dropped-in rows, each row's in its tail's order) with the
+/// ranked styles first, by rank ([`crate::abi::auth::style_rank`]), then the unranked ones in the
+/// order given; two of one rank keep the order given, and a name stated twice is listed once, at
+/// its first place in that order.
+#[must_use]
+pub fn listed_styles(declared: impl IntoIterator<Item = DeclaredStyle>) -> Vec<DeclaredStyle> {
+    let mut out: Vec<DeclaredStyle> = Vec::new();
+    for style in declared {
+        if !out.iter().any(|s| s.name == style.name) {
+            out.push(style);
+        }
+    }
+    // Stable: equal keys keep the order given. Unranked (`0`) sorts after every rank.
+    out.sort_by_key(|s| match crate::abi::auth::style_rank(s.flags) {
+        0 => u32::MAX,
+        rank => rank,
+    });
+    out
 }
 
 /// ONE AUTH PLUGIN SERVING AN OUTBOUND STYLE ([`AuthAxis::serving`]): its instance, and the style
@@ -668,7 +708,8 @@ pub trait PerRequestHandle: Send + Sync {
     /// The handle this request's auth call is made on, as the last refresh left it: a load, never a
     /// resolution, an open or a wait (it is asked on the request path). `None` when the last
     /// refresh found the credential unavailable (it no longer resolves, or its new value would not
-    /// bind): the request is refused and nothing is presented.
+    /// bind), or when its lease ran out on busbar's clock with no refresh that renewed it: the
+    /// request is refused and nothing is presented.
     fn handle_now(&self) -> Option<u64>;
 }
 
