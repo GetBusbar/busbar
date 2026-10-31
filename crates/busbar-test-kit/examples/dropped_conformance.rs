@@ -298,6 +298,7 @@ fn resolve(p: &Plugin<Secret>, settings: &[u8]) -> Resolved {
 ///   `known`           `{ "resolve": <resolve settings>, "material": <what it resolves to> }`
 ///   `unknown`         resolve settings naming a secret it does not hold (FAILED, NOT_FOUND)
 ///   `malformed`       resolve settings that are not a reference (FAILED, INVALID)
+///   `bad_references`  optional: more resolve settings that are not a reference (FAILED, INVALID)
 fn secret_script(lib: &Path, stated: &[u8], inputs: &serde_json::Value) {
     let s = &inputs["secret"];
     assert!(
@@ -318,6 +319,16 @@ fn secret_script(lib: &Path, stated: &[u8], inputs: &serde_json::Value) {
         !material.is_empty(),
         "the known secret's material is not empty"
     );
+    // Optional: absent (or null), no more malformed references are resolved.
+    let bad_references: Vec<&str> = match &s["bad_references"] {
+        serde_json::Value::Null => Vec::new(),
+        v => v
+            .as_array()
+            .expect("conformance.json: `bad_references` must be an array")
+            .iter()
+            .map(|v| v.as_str().expect("`bad_references` entries are strings"))
+            .collect(),
+    };
 
     let (p, _d) = load::<Secret>(lib, stated).expect("the dropped-in secret plugin loads");
     assert_eq!(p.kind(), KindCode::Secret);
@@ -426,6 +437,25 @@ fn secret_script(lib: &Path, stated: &[u8], inputs: &serde_json::Value) {
         secret::ERROR_KIND_INVALID,
         "a malformed reference is INVALID"
     );
+    for b in &bad_references {
+        let r = resolve(&p, b.as_bytes());
+        heard("resolve, bad reference", &r.c);
+        assert_eq!(
+            r.c.outcome,
+            Outcome::Failed,
+            "{}",
+            line("resolve, bad reference", &r.c)
+        );
+        assert_eq!(
+            r.kind,
+            secret::ERROR_KIND_INVALID,
+            "a reference that is not one is INVALID: {b}"
+        );
+        assert!(
+            r.got.is_empty() && r.c.lease == 0,
+            "a FAILED resolve carries nothing"
+        );
+    }
 
     // No lease was granted: a release of one is refused.
     let r = release(&p, 1);
@@ -437,9 +467,25 @@ fn secret_script(lib: &Path, stated: &[u8], inputs: &serde_json::Value) {
     let r = refresh(&p, bad[0].as_bytes());
     heard("refresh, bad", &r);
     assert_eq!(r.outcome, Outcome::Failed, "{}", line("refresh, bad", &r));
+    // The refused refresh kept the instance as it was: the known name still resolves, BEFORE the
+    // good refresh re-reads anything.
+    let r = resolve(&p, known);
+    heard("resolve after a refused refresh", &r.c);
+    assert_eq!(
+        r.c.outcome,
+        Outcome::Ready,
+        "{}",
+        line("resolve after a refused refresh", &r.c)
+    );
+    assert_eq!(r.kind, secret::ERROR_KIND_UNSET);
+    assert_eq!(
+        r.got, material,
+        "a refused refresh keeps the known secret's material"
+    );
+    assert_eq!(r.c.lease, 0);
     let r = refresh(&p, settings);
     assert_eq!(r.outcome, Outcome::Ready, "{}", line("refresh", &r));
-    // The refused refresh kept the instance as it was: the known name still resolves.
+    // After the good refresh: the known name resolves.
     let r = resolve(&p, known);
     heard("resolve after refresh", &r.c);
     assert_eq!(

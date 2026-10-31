@@ -545,3 +545,36 @@ fn an_accepting_framers_agreed_protocol_is_read_back_against_the_listeners_offer
         drop(held);
     });
 }
+
+/// RED (T1, tcp TT1): A RETIRED LISTENER IS UNBOUND WHEN IT IS DROPPED. A listener bound through a
+/// carrier holds the host's listening handle the carrier made at `listen`; dropping the
+/// [`Listening`] (the need retired, the generation replaced) closes that handle at once, so the
+/// address stops accepting then, not when the carrier's instance closes.
+#[test]
+fn a_dropped_listener_stops_accepting_at_once() {
+    worker().block_on(async {
+        for l in [
+            plain(
+                Arc::new(TestDoor::identity("bytes")),
+                AcceptLimits::default(),
+            ),
+            Listening::bind_stream(
+                Some(&crate::support::via()),
+                "127.0.0.1:0",
+                AcceptLimits::default(),
+            )
+            .unwrap(),
+        ] {
+            let addr = l.local_addr();
+            let live = Client::connect(addr).await;
+            assert!(live.is_ok(), "a live listener accepts");
+            drop(live);
+            drop(l);
+            let after = Client::connect(addr).await;
+            assert!(
+                after.is_err(),
+                "a dropped listener's address accepts nothing: {after:?}"
+            );
+        }
+    });
+}

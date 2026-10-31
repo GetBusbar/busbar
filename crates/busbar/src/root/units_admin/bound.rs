@@ -106,10 +106,12 @@ fn query_param<'t>(target: &'t str, name: &str) -> Option<&'t str> {
 /// false, as on a node that never sealed one. The identity holds when every count is priceable; a
 /// row the card refuses (#42) is a finding naming it, and every other check still runs. The journal
 /// (what the boot could not read back, the amendment chain, the audit chain, every chain the store
-/// keeps) is verified as before, through `audit`.
+/// keeps) is verified as before, through `audit`; `journal` is the node's amendment journal,
+/// verified as it is held now (a binding no root gave one holds no amendments to check).
 pub(crate) fn verify_effect(
     ledger: &dyn LedgerView,
     audit: Option<&dyn AuditView>,
+    journal: Option<&busbar_kernel_audit::amend::NodeAmendments>,
 ) -> Result<AdminAnswer, GovernanceError> {
     let priced = ledger.priced().map_err(|why| {
         tracing::warn!(why = %why, "verify could not read the ledger's counts");
@@ -139,7 +141,7 @@ pub(crate) fn verify_effect(
     }
     // THE AMENDMENT CHAIN, verified as it is held now: an edit made to the node's held content
     // accesses after boot is a finding.
-    if let Err(broken) = crate::root::durability::verify_held() {
+    if let Some(Err(broken)) = journal.map(crate::root::durability::verify_held) {
         findings.push(format!("amendment chain: {broken}"));
     }
     if let Some(audit) = audit {

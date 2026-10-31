@@ -386,10 +386,13 @@ async fn the_kernel_ranking_double_states_what_the_linked_ranking_door_states() 
     ] {
         let refusal =
             |axis: &Arc<dyn HookAxis>, name: &str| axis.open(name, name, &settings, budget).err();
-        // The door's refusal, its Statement name and its own prefix read as the double's name.
+        // The door's refusal, its Statement name and its own prefix (`hook-ranking: ` before
+        // 1.6.0, its alias `ranking: ` from then, as webrequest's `webrequest: `) read as the
+        // double's name.
         let want = refusal(&linked, &real.name).map(|e| {
             e.replace(&real.name, ranking_double::NAME)
                 .replace("hook-ranking", ranking_double::NAME)
+                .replace("ranking: ", &format!("{}: ", ranking_double::NAME))
         });
         assert!(want.is_some(), "the linked door refuses {settings}");
         assert_eq!(
