@@ -393,6 +393,13 @@ mod immutable_store {
             }
             self.0.put_credential(secret)
         }
+        fn rewrap_credential(
+            &self,
+            expected: &CredentialSecret,
+            replacement: &str,
+        ) -> RecordStoreResult<bool> {
+            self.0.rewrap_credential(expected, replacement)
+        }
         fn list_credentials(&self, key: &str) -> RecordStoreResult<Vec<CredentialMeta>> {
             self.0.list_credentials(key)
         }
@@ -459,5 +466,68 @@ mod immutable_store {
     #[test]
     fn legacy_plaintext_is_sealed_without_allowing_ordinary_live_secret_replacement() {
         rewrap(true);
+    }
+
+    #[test]
+    fn racing_rewraps_apply_once_and_stale_replay_cannot_increment_revision() {
+        let store = Arc::new(MemoryStore::new());
+        mint(&node(store.clone(), 1, None));
+        let expected = row(&store);
+        let replacement = keys(2, Some(1))
+            .seal(&expected.meta, b"replacement")
+            .unwrap();
+        let barrier = Arc::new(std::sync::Barrier::new(3));
+        let workers: Vec<_> = (0..2)
+            .map(|_| {
+                let (store, expected, replacement, barrier) = (
+                    store.clone(),
+                    expected.clone(),
+                    replacement.clone(),
+                    barrier.clone(),
+                );
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    store.rewrap_credential(&expected, &replacement).unwrap()
+                })
+            })
+            .collect();
+        barrier.wait();
+        let applied = workers
+            .into_iter()
+            .map(|w| usize::from(w.join().unwrap()))
+            .sum::<usize>();
+        assert_eq!(applied, 1);
+        let after = row(&store);
+        assert_eq!(after.secret, replacement);
+        let mut meta = after.meta.clone();
+        meta.revision = expected.meta.revision;
+        assert_eq!(
+            meta, expected.meta,
+            "CAS only changes envelope and store revision"
+        );
+        assert!(!store.rewrap_credential(&expected, &replacement).unwrap());
+        assert_eq!(row(&store), after, "replay makes no write");
+    }
+
+    #[test]
+    fn rewrap_cannot_resurrect_a_revoked_or_deleted_snapshot() {
+        for delete in [false, true] {
+            let store = Arc::new(MemoryStore::new());
+            mint(&node(store.clone(), 1, None));
+            let expected = row(&store);
+            let replacement = keys(2, Some(1))
+                .seal(&expected.meta, b"replacement")
+                .unwrap();
+            if delete {
+                store.delete_key(&expected.meta.key_id).unwrap();
+            } else {
+                store
+                    .revoke_credential(&expected.meta.id, "retired")
+                    .unwrap();
+            }
+            let before = store.list_credentials_since(0).unwrap();
+            assert!(!store.rewrap_credential(&expected, &replacement).unwrap());
+            assert_eq!(store.list_credentials_since(0).unwrap(), before);
+        }
     }
 }
