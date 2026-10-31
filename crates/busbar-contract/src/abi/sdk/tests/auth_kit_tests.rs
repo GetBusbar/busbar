@@ -239,10 +239,10 @@ fn a_short_buffer_writes_nothing_and_names_what_it_needs() {
 }
 
 /// An IdP that could not answer (owner-signed 2026-10-30, OWNER-QUEUE.md item "IdP errors"):
-/// [`login_outage`] answers LOGIN_OUTAGE, READY, and carries the IdP's delay in the reply's
-/// extensions under `retry_after`, as ASCII decimal, written into the HOST's identity buffer (the
-/// one memory the host reads back after the call); with no delay the extensions are absent. The
-/// kind's own check accepts both.
+/// [`login_outage`] answers LOGIN_OUTAGE, READY, and carries the IdP's delay as the reply-extensions
+/// entry `retry_after`, ASCII decimal, written into the HOST's identity buffer (the one memory the
+/// host reads back after the call); with no delay nothing is written. The kind's own check accepts
+/// both.
 #[test]
 fn a_login_outage_carries_the_idps_retry_after_in_the_hosts_buffer() {
     use crate::abi::auth::{retry_after_of, EXT_RETRY_AFTER, LOGIN_OUTAGE};
@@ -251,24 +251,21 @@ fn a_login_outage_carries_the_idps_retry_after_in_the_hosts_buffer() {
         let (outcome, out, mut bytes, mut spans) = login_on(outage_plugin::MACRO_DOOR, 64, 4);
         assert_eq!(outcome, Outcome::Ready, "{stated:?}");
         assert_eq!(out.verdict, LOGIN_OUTAGE, "{stated:?}");
-        let ext = out.head.extensions;
+        // The harness clears the reply's head pointers before handing it back, so the entry is
+        // read where the host reads it: the host's own identity buffer, written from its start.
         match stated {
             Some(n) => {
-                let start = bytes.as_ptr() as usize;
-                let at = (ext.ptr as usize)
-                    .checked_sub(start)
-                    .expect("the extensions point into the host's identity buffer");
-                assert!(at + ext.len <= bytes.len(), "inside the host's buffer");
-                let blob = &bytes[at..at + ext.len];
+                let entry = crate::abi::auth::retry_after_extensions(n);
+                assert_eq!(&bytes[..entry.len()], &entry[..], "{stated:?}");
+                assert!(bytes[entry.len()..].iter().all(|b| *b == 0));
+                let blob = &bytes[..entry.len()];
                 assert_eq!(
                     crate::abi::mechanism::extensions::get(blob, EXT_RETRY_AFTER),
                     Some(n.to_string().as_bytes())
                 );
                 assert_eq!(retry_after_of(blob), Some(n));
             }
-            None => {
-                assert!(ext.ptr.is_null() && ext.len == 0, "absent: {ext:?}");
-            }
+            None => assert!(bytes.iter().all(|b| *b == 0), "nothing written"),
         }
         let host = IdentityBuf {
             buf: bytes.as_mut_ptr(),
@@ -283,6 +280,5 @@ fn a_login_outage_carries_the_idps_retry_after_in_the_hosts_buffer() {
     RETRY_AFTER.with(|r| r.set(Some(120)));
     let (outcome, out, bytes, _) = login_on(outage_plugin::MACRO_DOOR, 4, 1);
     assert_eq!((outcome, out.verdict), (Outcome::Ready, LOGIN_OUTAGE));
-    assert!(out.head.extensions.ptr.is_null());
     assert!(bytes.iter().all(|b| *b == 0));
 }
