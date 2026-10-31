@@ -61,7 +61,7 @@ use zeroize::{Zeroize, Zeroizing};
 pub use floor::{AuthFloor, PgAuth, RequireAuth};
 pub use form::{CredUrl, PasswordAt, UserinfoUrl};
 pub use form_body::{FormBody, FormValue};
-pub use resolved::resolved;
+pub use resolved::{resolved, EMPTY_VALUE};
 pub use settings::{settings, SettingsError};
 pub use settings::{settings_lent, SECRET_MARKER};
 pub(crate) use write::confirm_secure;

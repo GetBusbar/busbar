@@ -255,7 +255,7 @@ impl busbar_contract::export_calls::ExportAxis for LoaderExports {
         &self,
         module: &str,
         phase: u32,
-        instances: &[(String, serde_json::Value)],
+        instances: &[(String, &serde_json::Value)],
     ) -> Option<Vec<String>> {
         match sink(module) {
             Some(rows) => rows.check(module, phase, instances),

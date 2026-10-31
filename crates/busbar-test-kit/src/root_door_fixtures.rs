@@ -454,3 +454,775 @@ pub mod migrate_stub {
         kind_ops: { resolve: busbar_contract::abi::sdk::Safe<Resolve> },
     }
 }
+
+/// A TEST HTTP/1.1 FRAMER'S ACCEPTING SIDE, in Rust behind the connector's [`FramerDoor`] seam: the
+/// least an accepting framer does, for the composition root's data door cells (core never tests a
+/// plugin). Each whole request (a request line, field lines, a `content-length` body) comes up as
+/// one field block with its method and target in the stream's head slots, then its body; an
+/// answer's first emit is its head (a field block, with the status on the emit), every later one
+/// its body. It records what crossed: each `begin`'s lent guest list and each head emit's status.
+///
+/// [`FramerDoor`]: busbar_core_connector::framer::FramerDoor
+pub mod h1_accept {
+    use std::collections::{HashMap, VecDeque};
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::Mutex;
+
+    use busbar_contract::abi::mechanism::call::Outcome;
+    use busbar_contract::abi::transport::{
+        fields, FramePiece, FrameSpan, FramerOut, FramerSink, HeadSlots, PIECE_END,
+        PIECE_END_OF_FRAME, PIECE_FIELDS, ROLE_FRAMER, YIELD_ENDED,
+    };
+    use busbar_core_connector::framer::{Call, Crossed, DoorFacts, FramerDoor};
+
+    /// The instance identity the fixture states.
+    pub const INSTANCE: u64 = 0x5eed;
+
+    /// What one `begin` was lent: each line's id, auth points and whether it carries a handle.
+    pub type Lent = Vec<(u32, u32, bool)>;
+
+    #[derive(Default)]
+    struct State {
+        inbound: Vec<u8>,
+        outbound: VecDeque<u8>,
+        next: u64,
+        ended: bool,
+    }
+
+    /// The fixture.
+    pub struct H1Accept {
+        facts: DoorFacts,
+        accepts: bool,
+        framings: Mutex<HashMap<u64, State>>,
+        next: AtomicU64,
+        /// The guest list every `begin` was lent, in order.
+        pub begun: Mutex<Vec<Lent>>,
+        /// The status every head emit carried, in order.
+        pub statuses: Mutex<Vec<u32>>,
+    }
+
+    impl H1Accept {
+        /// The fixture answering `http`; `accepts` = its tail states `FACT_ACCEPTS`.
+        #[must_use]
+        pub fn new(accepts: bool) -> Self {
+            Self {
+                facts: DoorFacts {
+                    name: "test-h1-accept".into(),
+                    claims: vec!["http"],
+                    role: ROLE_FRAMER,
+                    composes_over: Vec::new(),
+                    ported: false,
+                    status_rows: Vec::new(),
+                    duplex: Vec::new(),
+                    datagram: false,
+                },
+                accepts,
+                framings: Mutex::new(HashMap::new()),
+                next: AtomicU64::new(1),
+                begun: Mutex::new(Vec::new()),
+                statuses: Mutex::new(Vec::new()),
+            }
+        }
+    }
+
+    fn raw<'a>(ptr: *const u8, len: usize) -> &'a [u8] {
+        if ptr.is_null() || len == 0 {
+            return &[];
+        }
+        // SAFETY: host-borrowed input of `len` bytes, valid for the call.
+        unsafe { std::slice::from_raw_parts(ptr, len) }
+    }
+
+    fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
+        hay.windows(needle.len()).position(|w| w == needle)
+    }
+
+    /// One request as it came up: method, target, field block, body.
+    type Request = (Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>);
+
+    /// One whole request off the front of `inbound`.
+    fn request(inbound: &mut Vec<u8>) -> Option<Request> {
+        let head_end = find(inbound, b"\r\n\r\n")?;
+        let head = String::from_utf8_lossy(&inbound[..head_end]).into_owned();
+        let mut lines = head.split("\r\n");
+        let mut start = lines.next()?.split(' ');
+        let (method, target) = (start.next()?.to_owned(), start.next()?.to_owned());
+        let mut block = Vec::new();
+        let mut len = 0_usize;
+        for line in lines {
+            let (name, value) = line.split_once(':')?;
+            let (name, value) = (name.trim().to_ascii_lowercase(), value.trim());
+            if name == "content-length" {
+                len = value.parse().ok()?;
+                continue;
+            }
+            if fields::hop_by_hop(&name, std::iter::empty()) {
+                continue;
+            }
+            block.extend_from_slice(name.as_bytes());
+            block.extend_from_slice(fields::SEPARATOR);
+            block.extend_from_slice(value.as_bytes());
+            block.extend_from_slice(fields::LINE_END);
+        }
+        if inbound.len() < head_end + 4 + len {
+            return None;
+        }
+        let body = inbound[head_end + 4..head_end + 4 + len].to_vec();
+        inbound.drain(..head_end + 4 + len);
+        Some((method.into_bytes(), target.into_bytes(), block, body))
+    }
+
+    /// Answer what the framing owes: its wire bytes, and every whole request it holds.
+    fn answer(st: &mut State, sink: &FramerSink, o: &mut FramerOut) {
+        let y = &mut o.yielded;
+        let w = st.outbound.len().min(sink.wire_cap);
+        for i in 0..w {
+            let b = st.outbound.pop_front().unwrap_or_default();
+            // SAFETY: a host buffer of `wire_cap` bytes; `i < w <= wire_cap`.
+            unsafe { sink.wire.add(i).write(b) };
+        }
+        y.wire_len = w as u64;
+        let (mut frame, mut pieces, mut heads) = (0_usize, 0_usize, 0_usize);
+        let put = |bytes: &[u8], frame: &mut usize| -> u64 {
+            let at = *frame;
+            // SAFETY: the host's frame buffer; the cells' requests fit it.
+            unsafe {
+                std::ptr::copy_nonoverlapping(bytes.as_ptr(), sink.frame.add(at), bytes.len());
+            }
+            *frame += bytes.len();
+            at as u64
+        };
+        while pieces + 2 <= sink.pieces_cap && heads < sink.heads_cap {
+            let Some((method, target, block, body)) = request(&mut st.inbound) else {
+                break;
+            };
+            let stream = st.next * 2 + 1;
+            st.next += 1;
+            let m = put(&method, &mut frame);
+            let t = put(&target, &mut frame);
+            let b = put(&block, &mut frame);
+            // SAFETY: `heads < heads_cap` and `pieces + 2 <= pieces_cap`.
+            unsafe {
+                sink.heads.add(heads).write(HeadSlots {
+                    stream,
+                    method: FrameSpan {
+                        offset: m,
+                        len: method.len() as u64,
+                    },
+                    target: FrameSpan {
+                        offset: t,
+                        len: target.len() as u64,
+                    },
+                    ..HeadSlots::default()
+                });
+                let end = if body.is_empty() { PIECE_END } else { 0 };
+                sink.pieces.add(pieces).write(FramePiece {
+                    stream,
+                    offset: b,
+                    len: block.len() as u64,
+                    code: 0,
+                    status_class: 0,
+                    flags: PIECE_FIELDS | PIECE_END_OF_FRAME | end,
+                    fault: 0,
+                    retry_after_secs: 0,
+                    declared_len: 0,
+                });
+                pieces += 1;
+                if !body.is_empty() {
+                    let at = put(&body, &mut frame);
+                    sink.pieces.add(pieces).write(FramePiece {
+                        stream,
+                        offset: at,
+                        len: body.len() as u64,
+                        code: 0,
+                        status_class: 0,
+                        flags: PIECE_END_OF_FRAME | PIECE_END,
+                        fault: 0,
+                        retry_after_secs: 0,
+                        declared_len: 0,
+                    });
+                    pieces += 1;
+                }
+            }
+            heads += 1;
+        }
+        y.frame_len = frame as u64;
+        y.pieces_len = pieces as u32;
+        y.heads_len = heads as u32;
+        if st.ended && st.outbound.is_empty() {
+            y.flags |= YIELD_ENDED;
+        }
+    }
+
+    /// The reason phrase of the statuses the cells answer.
+    fn reason(status: u32) -> &'static str {
+        match status {
+            200 => "OK",
+            404 => "Not Found",
+            _ => "",
+        }
+    }
+
+    impl FramerDoor for H1Accept {
+        fn facts(&self) -> &DoorFacts {
+            &self.facts
+        }
+
+        fn accepts(&self) -> bool {
+            self.accepts
+        }
+
+        fn instance(&self) -> Option<u64> {
+            Some(INSTANCE)
+        }
+
+        fn cross(&self, call: Call<'_>) -> Crossed {
+            let ok = Crossed {
+                outcome: Outcome::Ready,
+                error: None,
+            };
+            let failed = Crossed {
+                outcome: Outcome::Failed,
+                error: Some(b"no such framing".to_vec()),
+            };
+            let mut framings = self.framings.lock().unwrap_or_else(|e| e.into_inner());
+            match call {
+                Call::Locate(_, _) => ok,
+                Call::Begin(i, o) => {
+                    let lines = if i.lines.is_null() {
+                        &[][..]
+                    } else {
+                        // SAFETY: the host's line table, `lines_len` live entries for the call.
+                        unsafe { std::slice::from_raw_parts(i.lines, i.lines_len) }
+                    };
+                    self.begun.lock().unwrap_or_else(|e| e.into_inner()).push(
+                        lines
+                            .iter()
+                            .map(|l| (l.line, l.points, !l.auth.is_none()))
+                            .collect(),
+                    );
+                    let token = self.next.fetch_add(1, Ordering::Relaxed);
+                    let mut st = State::default();
+                    answer(&mut st, &i.sink, o);
+                    framings.insert(token, st);
+                    o.framing = token;
+                    ok
+                }
+                Call::Ingest(i, o) => match framings.get_mut(&i.framing) {
+                    None => failed,
+                    Some(st) => {
+                        st.inbound.extend_from_slice(raw(i.bytes, i.len));
+                        st.ended |= i.end != 0;
+                        answer(st, &i.sink, o);
+                        ok
+                    }
+                },
+                Call::Emit(i, o) => match framings.get_mut(&i.framing) {
+                    None => failed,
+                    Some(st) => {
+                        let bytes = raw(i.bytes, i.len);
+                        if i.status != 0 {
+                            self.statuses
+                                .lock()
+                                .unwrap_or_else(|e| e.into_inner())
+                                .push(i.status);
+                            let line = format!("HTTP/1.1 {} {}\r\n", i.status, reason(i.status));
+                            st.outbound.extend(line.as_bytes());
+                            st.outbound.extend(bytes);
+                            st.outbound.extend(b"\r\n");
+                        } else {
+                            st.outbound.extend(bytes);
+                        }
+                        answer(st, &i.sink, o);
+                        ok
+                    }
+                },
+                Call::Timer(i, o) => match framings.get_mut(&i.framing) {
+                    None => failed,
+                    Some(st) => {
+                        answer(st, &i.sink, o);
+                        ok
+                    }
+                },
+                Call::Refuse(i, o) => match framings.get_mut(&i.framing) {
+                    None => failed,
+                    Some(st) => {
+                        answer(st, &i.sink, o);
+                        ok
+                    }
+                },
+                Call::Finish(i, o) => {
+                    framings.remove(&i.framing);
+                    o.yielded.flags = YIELD_ENDED;
+                    ok
+                }
+                Call::Encode(_, _) | Call::Detach(_, _) | Call::Adopt(_, _) => Crossed {
+                    outcome: Outcome::Refused,
+                    error: Some(b"not this fixture's".to_vec()),
+                },
+            }
+        }
+    }
+}
+
+/// Controlled pending response emits over the accepting HTTP fixture.
+pub mod pending_h1_accept {
+    use super::h1_accept::H1Accept;
+    use busbar_core_connector::framer::FramerDoor;
+    use std::sync::Arc;
+
+    #[derive(Default)]
+    struct HeadGate {
+        released: std::sync::atomic::AtomicBool,
+        waker: std::sync::Mutex<Option<std::task::Waker>>,
+    }
+
+    impl HeadGate {
+        fn release(&self) {
+            self.released
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            if let Some(waker) = self.waker.lock().unwrap().take() {
+                waker.wake();
+            }
+        }
+    }
+
+    struct HeadTicket {
+        ticket: busbar_contract::abi::mechanism::ticket::Ticket,
+        gate: Arc<HeadGate>,
+    }
+
+    impl busbar_core_connector::carrier::Side for HeadTicket {
+        fn ticket(&self) -> busbar_contract::abi::mechanism::ticket::Ticket {
+            self.ticket
+        }
+
+        fn register(&self, waker: &std::task::Waker) {
+            *self.gate.waker.lock().unwrap() = Some(waker.clone());
+        }
+    }
+
+    struct HeldHead {
+        bytes: Vec<u8>,
+        framing: u64,
+        stream: u64,
+        status: u32,
+        end: u32,
+        flags: u32,
+        deadline_ns: u64,
+    }
+
+    /// A single-request HTTP fixture with a one-shot gate holding a response emit until release.
+    pub struct ParkedHeadDoor {
+        inner: H1Accept,
+        gate: Arc<HeadGate>,
+        entered: tokio::sync::Notify,
+        held: std::sync::Mutex<Option<HeldHead>>,
+        next: std::sync::atomic::AtomicU32,
+        final_body: bool,
+        completed: std::sync::atomic::AtomicU32,
+    }
+
+    /// A fresh fixture with its response-head gate closed.
+    pub fn parked_head() -> ParkedHeadDoor {
+        ParkedHeadDoor {
+            inner: H1Accept::new(true),
+            gate: Arc::new(HeadGate::default()),
+            entered: tokio::sync::Notify::new(),
+            held: std::sync::Mutex::new(None),
+            next: std::sync::atomic::AtomicU32::new(1),
+            final_body: false,
+            completed: std::sync::atomic::AtomicU32::new(0),
+        }
+    }
+
+    /// A fresh fixture that parks the final body emit, after all body bytes have been produced.
+    pub fn parked_final_body() -> ParkedHeadDoor {
+        ParkedHeadDoor {
+            final_body: true,
+            ..parked_head()
+        }
+    }
+
+    impl ParkedHeadDoor {
+        /// Wait until the response-head crossing has copied its input and parked.
+        pub async fn wait_for_head(&self) {
+            self.entered.notified().await;
+        }
+
+        /// Wait until the selected response emit has copied its input and parked.
+        pub async fn wait_for_emit(&self) {
+            self.entered.notified().await;
+        }
+
+        /// Release the copied emit and wake its registered connection task.
+        pub fn release(&self) {
+            self.gate.release();
+        }
+
+        /// Every response status the underlying accepting fixture emitted.
+        pub fn statuses(&self) -> Vec<u32> {
+            self.inner.statuses.lock().unwrap().clone()
+        }
+
+        /// Number of selected emits that completed through the accepting fixture.
+        pub fn completions(&self) -> u32 {
+            self.completed.load(std::sync::atomic::Ordering::SeqCst)
+        }
+    }
+
+    impl FramerDoor for ParkedHeadDoor {
+        fn facts(&self) -> &busbar_core_connector::framer::DoorFacts {
+            self.inner.facts()
+        }
+
+        fn accepts(&self) -> bool {
+            self.inner.accepts()
+        }
+
+        fn instance(&self) -> Option<u64> {
+            self.inner.instance()
+        }
+
+        fn cross(
+            &self,
+            call: busbar_core_connector::framer::Call<'_>,
+        ) -> busbar_core_connector::framer::Crossed {
+            self.inner.cross(call)
+        }
+
+        fn framing_side(&self) -> Option<Box<dyn busbar_core_connector::carrier::Side>> {
+            Some(Box::new(HeadTicket {
+                ticket: busbar_contract::abi::mechanism::ticket::Ticket {
+                    slot: self.next.fetch_add(1, std::sync::atomic::Ordering::SeqCst),
+                    generation: 1,
+                },
+                gate: Arc::clone(&self.gate),
+            }))
+        }
+
+        fn cross_on(
+            &self,
+            _side: &dyn busbar_core_connector::carrier::Side,
+            resume: bool,
+            call: busbar_core_connector::framer::Call<'_>,
+        ) -> busbar_core_connector::framer::Crossed {
+            use busbar_contract::abi::mechanism::call::Outcome;
+            use busbar_core_connector::framer::{Call, Crossed};
+            match call {
+                Call::Emit(input, output)
+                    if resume
+                        || (!self.final_body && input.status != 0)
+                        || (self.final_body && input.status == 0 && input.end_of_frame != 0) =>
+                {
+                    if !resume {
+                        // SAFETY: the host lends these input bytes for this crossing only. Retain an
+                        // owned copy, never its pointer or sink, while the emit is parked.
+                        let bytes = if input.len == 0 {
+                            Vec::new()
+                        } else {
+                            unsafe { std::slice::from_raw_parts(input.bytes, input.len) }.to_vec()
+                        };
+                        *self.held.lock().unwrap() = Some(HeldHead {
+                            bytes,
+                            framing: input.framing,
+                            stream: input.stream,
+                            status: input.status,
+                            end: input.end_of_frame,
+                            flags: input.flags,
+                            deadline_ns: input.deadline_ns,
+                        });
+                        self.entered.notify_one();
+                    }
+                    if !self.gate.released.load(std::sync::atomic::Ordering::SeqCst) {
+                        return Crossed {
+                            outcome: Outcome::Pending,
+                            error: None,
+                        };
+                    }
+                    let held = self
+                        .held
+                        .lock()
+                        .unwrap()
+                        .take()
+                        .expect("the pending emit is owned");
+                    let mut replay = *input;
+                    replay.bytes = held.bytes.as_ptr();
+                    replay.len = held.bytes.len();
+                    replay.framing = held.framing;
+                    replay.stream = held.stream;
+                    replay.status = held.status;
+                    replay.end_of_frame = held.end;
+                    replay.flags = held.flags;
+                    replay.deadline_ns = held.deadline_ns;
+                    let crossed = self.inner.cross(Call::Emit(&mut replay, output));
+                    if crossed.outcome == Outcome::Ready {
+                        self.completed
+                            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    }
+                    crossed
+                }
+                other => self.inner.cross(other),
+            }
+        }
+    }
+}
+
+/// A two-stream accepting protocol: input bytes `1` and `3` open independent requests.
+/// Stream one's response head parks; stream three can finish before it is released.
+pub mod pending_mux_accept {
+    use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+    use std::sync::{Arc, Mutex};
+
+    use busbar_contract::abi::mechanism::call::Outcome;
+    use busbar_contract::abi::mechanism::ticket::Ticket;
+    use busbar_contract::abi::transport::{
+        FramePiece, FrameSpan, FramerOut, FramerSink, HeadSlots, PIECE_END, PIECE_END_OF_FRAME,
+        PIECE_FIELDS, ROLE_FRAMER,
+    };
+    use busbar_core_connector::framer::{Call, Crossed, DoorFacts, FramerDoor};
+
+    #[derive(Default)]
+    struct Gate {
+        released: AtomicBool,
+        wake: Mutex<Option<std::task::Waker>>,
+    }
+
+    struct Side {
+        ticket: Ticket,
+        gate: Arc<Gate>,
+    }
+
+    impl busbar_core_connector::carrier::Side for Side {
+        fn ticket(&self) -> Ticket {
+            self.ticket
+        }
+
+        fn register(&self, waker: &std::task::Waker) {
+            *self.gate.wake.lock().unwrap() = Some(waker.clone());
+        }
+    }
+
+    /// Owned response data retained for inspection, never a pointer into a crossing.
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub struct Emitted {
+        pub stream: u64,
+        pub status: u32,
+        pub bytes: Vec<u8>,
+        pub end: bool,
+    }
+
+    /// One connection, with a gate on stream one's head and independently emitted stream three.
+    pub struct Mux {
+        facts: DoorFacts,
+        session: bool,
+        gate: Arc<Gate>,
+        entered: tokio::sync::Notify,
+        second_done: tokio::sync::Notify,
+        held: Mutex<Option<Emitted>>,
+        emitted: Mutex<Vec<Emitted>>,
+        next: AtomicU32,
+    }
+
+    impl Default for Mux {
+        fn default() -> Self {
+            Self {
+                session: false,
+                facts: DoorFacts {
+                    name: "test-pending-mux".into(),
+                    claims: vec!["http"],
+                    role: ROLE_FRAMER,
+                    composes_over: Vec::new(),
+                    ported: false,
+                    status_rows: Vec::new(),
+                    duplex: Vec::new(),
+                    datagram: false,
+                },
+                gate: Arc::new(Gate::default()),
+                entered: tokio::sync::Notify::new(),
+                second_done: tokio::sync::Notify::new(),
+                held: Mutex::new(None),
+                emitted: Mutex::new(Vec::new()),
+                next: AtomicU32::new(1),
+            }
+        }
+    }
+
+    impl Mux {
+        pub fn with_session() -> Self {
+            let mut fixture = Self {
+                session: true,
+                ..Self::default()
+            };
+            fixture.facts.claims.push("ws");
+            fixture
+        }
+
+        pub async fn wait_for_head(&self) {
+            self.entered.notified().await;
+        }
+
+        pub async fn wait_for_second(&self) {
+            self.second_done.notified().await;
+        }
+
+        pub fn release(&self) {
+            self.gate.released.store(true, Ordering::SeqCst);
+            if let Some(wake) = self.gate.wake.lock().unwrap().take() {
+                wake.wake();
+            }
+        }
+
+        pub fn emitted(&self) -> Vec<Emitted> {
+            self.emitted.lock().unwrap().clone()
+        }
+    }
+
+    fn copied(ptr: *const u8, len: usize) -> Vec<u8> {
+        if len == 0 {
+            return Vec::new();
+        }
+        // SAFETY: the crossing lends `len` bytes for this call. Only the owned copy survives it.
+        unsafe { std::slice::from_raw_parts(ptr, len) }.to_vec()
+    }
+
+    fn request(stream: u64, sink: &FramerSink, out: &mut FramerOut) {
+        let path: &[u8] = if stream == 1 { b"/first" } else { b"/second" };
+        assert!(sink.frame_cap >= 3 + path.len() && sink.heads_cap >= 1 && sink.pieces_cap >= 1);
+        // SAFETY: the three sink buffers have been checked above; only this crossing uses them.
+        unsafe {
+            std::ptr::copy_nonoverlapping(b"GET".as_ptr(), sink.frame, 3);
+            std::ptr::copy_nonoverlapping(path.as_ptr(), sink.frame.add(3), path.len());
+            sink.heads.write(HeadSlots {
+                stream,
+                method: FrameSpan { offset: 0, len: 3 },
+                target: FrameSpan {
+                    offset: 3,
+                    len: path.len() as u64,
+                },
+                ..HeadSlots::default()
+            });
+            sink.pieces.write(FramePiece {
+                stream,
+                flags: PIECE_FIELDS | PIECE_END_OF_FRAME | PIECE_END,
+                ..FramePiece::default()
+            });
+        }
+        out.yielded.frame_len = (3 + path.len()) as u64;
+        out.yielded.heads_len = 1;
+        out.yielded.pieces_len = 1;
+    }
+
+    impl FramerDoor for Mux {
+        fn facts(&self) -> &DoorFacts {
+            &self.facts
+        }
+        fn accepts(&self) -> bool {
+            true
+        }
+        fn instance(&self) -> Option<u64> {
+            Some(0x5eee)
+        }
+
+        fn framing_side(&self) -> Option<Box<dyn busbar_core_connector::carrier::Side>> {
+            Some(Box::new(Side {
+                ticket: Ticket {
+                    slot: self.next.fetch_add(1, Ordering::SeqCst),
+                    generation: 1,
+                },
+                gate: Arc::clone(&self.gate),
+            }))
+        }
+
+        fn cross(&self, call: Call<'_>) -> Crossed {
+            self.cross_on(
+                &Side {
+                    ticket: Ticket {
+                        slot: 0,
+                        generation: 1,
+                    },
+                    gate: Arc::clone(&self.gate),
+                },
+                false,
+                call,
+            )
+        }
+
+        fn cross_on(
+            &self,
+            _: &dyn busbar_core_connector::carrier::Side,
+            resume: bool,
+            call: Call<'_>,
+        ) -> Crossed {
+            let ready = Crossed {
+                outcome: Outcome::Ready,
+                error: None,
+            };
+            match call {
+                Call::Begin(_, out) => out.framing = 1,
+                Call::Ingest(input, out) => {
+                    let bytes = copied(input.bytes, input.len);
+                    assert!(bytes.len() <= 1, "send one stream opener at a time");
+                    if let Some(&byte) = bytes.first() {
+                        assert!(byte == b'1' || byte == b'3');
+                        request(u64::from(byte - b'0'), &input.sink, out);
+                    }
+                }
+                Call::Emit(input, _) => {
+                    let value = if resume {
+                        if !self.gate.released.load(Ordering::SeqCst) {
+                            return Crossed {
+                                outcome: Outcome::Pending,
+                                error: None,
+                            };
+                        }
+                        self.held
+                            .lock()
+                            .unwrap()
+                            .take()
+                            .expect("owned pending head")
+                    } else {
+                        let value = Emitted {
+                            stream: input.stream,
+                            status: input.status,
+                            bytes: copied(input.bytes, input.len),
+                            end: input.end_of_frame != 0,
+                        };
+                        if input.stream == 1
+                            && ((self.session
+                                && input.framing == 2
+                                && !self.gate.released.load(Ordering::SeqCst))
+                                || (!self.session && input.status != 0))
+                        {
+                            *self.held.lock().unwrap() = Some(value);
+                            self.entered.notify_one();
+                            return Crossed {
+                                outcome: Outcome::Pending,
+                                error: None,
+                            };
+                        }
+                        value
+                    };
+                    let second_done = value.stream == 3 && value.status == 0 && value.end;
+                    self.emitted.lock().unwrap().push(value);
+                    if second_done {
+                        self.second_done.notify_one();
+                    }
+                }
+                Call::Detach(_, _) if self.session => {}
+                Call::Adopt(_, out) if self.session => out.framing = 2,
+                Call::Locate(_, _)
+                | Call::Timer(_, _)
+                | Call::Refuse(_, _)
+                | Call::Finish(_, _) => {}
+                Call::Encode(_, _) | Call::Detach(_, _) | Call::Adopt(_, _) => {
+                    return Crossed {
+                        outcome: Outcome::Refused,
+                        error: Some(b"not this fixture's".to_vec()),
+                    }
+                }
+            }
+            ready
+        }
+    }
+}

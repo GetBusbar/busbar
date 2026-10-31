@@ -980,6 +980,8 @@ pub struct PendingDoor {
     pub host: Arc<AuthHost>,
     /// The stream whose head emit calls the auth.
     pub pend: u64,
+    /// The adoption itself waits on the host before installing the framing.
+    pub pend_adopt: bool,
     next: AtomicU32,
     taken: Mutex<HashMap<Ticket, Vec<u8>>>,
     /// Every fresh `emit` crossing that carried bytes, in order.
@@ -997,6 +999,7 @@ impl PendingDoor {
             inner,
             host: Arc::new(AuthHost::default()),
             pend,
+            pend_adopt: false,
             next: AtomicU32::new(100),
             taken: Mutex::new(HashMap::new()),
             emitted: Mutex::new(Vec::new()),
@@ -1036,6 +1039,7 @@ impl FramerDoor for PendingDoor {
         let t = side.ticket();
         let op = match &call {
             Call::Begin(..) => "begin",
+            Call::Adopt(..) => "adopt",
             Call::Ingest(..) => "ingest",
             Call::Emit(..) => "emit",
             _ => "other",
@@ -1045,6 +1049,30 @@ impl FramerDoor for PendingDoor {
             Call::Begin(i, o) => {
                 self.begun.lock().unwrap().push((i.points, i.auth));
                 self.inner.cross(Call::Begin(i, o))
+            }
+            Call::Adopt(i, o) if self.pend_adopt => {
+                if !resume {
+                    self.host.new_op(t);
+                    self.taken
+                        .lock()
+                        .unwrap()
+                        .insert(t, raw(i.leftover, i.leftover_len).to_vec());
+                } else {
+                    assert_eq!(
+                        i.leftover_len, 0,
+                        "adopt resumes with no new leftover bytes"
+                    );
+                }
+                if self.host.call(t, 0).is_none() {
+                    return Crossed {
+                        outcome: Outcome::Pending,
+                        error: None,
+                    };
+                }
+                let bytes = self.taken.lock().unwrap().remove(&t).unwrap_or_default();
+                i.leftover = bytes.as_ptr();
+                i.leftover_len = bytes.len();
+                self.inner.cross(Call::Adopt(i, o))
             }
             Call::Emit(i, o) => {
                 if !resume && i.len != 0 {
@@ -1107,4 +1135,22 @@ pub fn pieces_on_lanes(sink: &FramerSink, o: &mut FramerOut, lane_bytes: &[u8]) 
     }
     o.yielded.frame_len = lane_bytes.len() as u64;
     o.yielded.pieces_len = lane_bytes.len() as u32;
+}
+
+pub fn writable_on_lane(sink: &FramerSink, out: &mut FramerOut, stream: u64) {
+    // SAFETY: the host's buffers offer room for one zero-length signal piece.
+    unsafe {
+        sink.pieces.write(FramePiece {
+            stream,
+            offset: 0,
+            len: 0,
+            code: 0,
+            status_class: 0,
+            flags: PIECE_WRITABLE,
+            fault: 0,
+            retry_after_secs: 0,
+            declared_len: 0,
+        });
+    }
+    out.yielded.pieces_len = 1;
 }

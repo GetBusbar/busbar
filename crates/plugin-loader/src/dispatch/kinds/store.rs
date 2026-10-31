@@ -90,6 +90,8 @@ pub struct StoreFacts {
     /// The settings paths the Statement declares secret (`secret_refs`): taken out of the settings
     /// and lent to `open` as `OpenIn.secrets`, as every other kind's are.
     pub secret_refs: Vec<String>,
+    /// Explicit slot-8 envelope CAS capability, read from the Statement extensions.
+    pub credential_rewrap: bool,
 }
 
 /// The store's tail, read from the Statement: a whole [`store::StoreTail`] whose flags are `0` or
@@ -122,6 +124,14 @@ fn store_facts(st: &Statement) -> Result<StoreFacts, String> {
         durable_plane: flag(t.durable_plane, "durable_plane")?,
         fork_refusal: flag(t.fork_refusal, "fork_refusal")?,
         secret_refs,
+        credential_rewrap: {
+            // SAFETY: the checked Statement owns its static extension bytes.
+            let bytes = unsafe { crate::dispatch::plugin::blob_bytes(st.extensions) };
+            busbar_contract::abi::mechanism::extensions::get(
+                bytes,
+                busbar_contract::abi::sdk::store::rewrap::INTENT,
+            ) == Some(b"1".as_slice())
+        },
     })
 }
 

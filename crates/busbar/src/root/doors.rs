@@ -131,6 +131,8 @@ pub fn row_bind(row: &str) -> Result<Bind, String> {
 pub struct Dispatched {
     live: Arc<Live>,
     facts: DoorFacts,
+    /// Its tail states `FACT_ACCEPTS`.
+    accepts: bool,
     /// Its Statement states it renders sealed values (TSEAL, `abi::transport::EXT_SEALED_VALUES`).
     seals: bool,
     on: Arc<Dispatcher>,
@@ -304,6 +306,7 @@ impl Dispatched {
         // DISCOVERY AT BOOT (ARCHITECT 2026-10-02): a door that states `ready` is awaited here,
         // after its `open` and before any listener binds; its refusal refuses the boot.
         plugin.ready(&on, super::loader::dispatch::ready::READY_DEADLINE)?;
+        let accepts = stated.accepts;
         let facts = DoorFacts {
             name: plugin.name().to_owned(),
             claims: stated.claims,
@@ -332,6 +335,7 @@ impl Dispatched {
         Ok(Self {
             live,
             facts,
+            accepts,
             seals: stated.seals,
             on,
         })
@@ -401,6 +405,14 @@ fn go_inline<I: InFrame, O: OutFrame>(
 impl FramerDoor for Dispatched {
     fn facts(&self) -> &DoorFacts {
         &self.facts
+    }
+
+    fn accepts(&self) -> bool {
+        self.accepts
+    }
+
+    fn instance(&self) -> Option<u64> {
+        Some(self.live.plugin.instance().0)
     }
 
     fn seals_values(&self) -> bool {

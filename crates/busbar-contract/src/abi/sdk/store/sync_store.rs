@@ -154,6 +154,7 @@ impl<T: SyncStore> StoreSlots for T {
         put_usage(bucket_id: &str, window_start: u64, ledger: &UsageLedger) -> ();
         list_metering(bucket: u64) -> Vec<MeteringRow>;
         put_credential(secret: &CredentialSecret) -> ();
+        rewrap_credential(expected: &CredentialSecret, replacement: &str) -> bool;
         put_key_with_credential(key: &VirtualKey, secret: &CredentialSecret) -> ();
         list_credentials(key_id: &str) -> Vec<CredentialMeta>;
         revoke_credential(id: &str, reason: &str) -> ();

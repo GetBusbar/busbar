@@ -799,6 +799,30 @@ slot!(
 slot!(
     /// `put_credential` (slot 8).
     PutCredential(BlobIn, OutHead) |s, i, o, cx| {
+        let extensions = i.field(|i| &i.head.extensions).bytes();
+        if let Some(version) = crate::abi::mechanism::extensions::get(extensions, super::rewrap::INTENT) {
+            if version != b"1" {
+                return refused(s, o, Text::render(format_args!("unsupported credential rewrap intent")));
+            }
+            let record = i.field(|i| &i.record);
+            if record.fmt() != BLOB_JSON || record.flags() & BLOB_SECRET == 0 {
+                return refused(s, o, Text::render(format_args!("credential rewrap requires a secret JSON record")));
+            }
+            let request = match serde_json::from_slice::<super::rewrap::Request>(record.bytes()) {
+                Ok(request) if request.version == 1 => request,
+                _ => return refused(s, o, Text::render(format_args!("invalid credential rewrap request"))),
+            };
+            return match step!(o, s.store.rewrap_credential(cx, &request.expected, &request.replacement)) {
+                Ok(applied) => {
+                    let value: &[u8] = if applied { b"applied" } else { b"conflict" };
+                    let bytes = crate::abi::mechanism::extensions::encode(&[(super::rewrap::RESULT, value)]).into_boxed_slice();
+                    o.extensions = blob_over(&bytes, BLOB_OCTETS, false);
+                    o.lease = s.lease(Leased { bytes: vec![bytes], _blobs: Box::new([]), _strs: Box::new([]), secret: false });
+                    Outcome::Ready
+                }
+                Err(e) => failed(s, o, e.0),
+            };
+        }
         match json::<CredentialSecret>(i.field(|i| &i.record)) {
             Ok(c) => done(s, o, step!(o, s.store.put_credential(cx, &c))),
             Err(e) => refused(s, o, e),

@@ -12,7 +12,7 @@
 //! `agents`, and the session plane's realtime doors mounted and audience-checked. The control
 //! boots the SAME binary with each plane section present and requires every one of those back.
 #![cfg(unix)]
-#![cfg(linked_every_plane)]
+#![cfg(linked_every_plane_door)]
 
 mod common;
 

@@ -105,6 +105,7 @@ fn the_memory_store_states_its_facts_in_its_tail() {
             durable_plane: false,
             fork_refusal: true,
             secret_refs: Vec::new(),
+            credential_rewrap: false,
         }
     );
     assert!(!s.name().is_empty(), "the store states its name");

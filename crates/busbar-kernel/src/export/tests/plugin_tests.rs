@@ -269,7 +269,7 @@ impl ExportAxis for DeclaringAxis {
     fn probe(&self, _: &str, _: &str, _: &Value) -> Option<busbar_contract::export_calls::Probed> {
         None
     }
-    fn check(&self, _: &str, _: u32, _: &[(String, Value)]) -> Option<Vec<String>> {
+    fn check(&self, _: &str, _: u32, _: &[(String, &Value)]) -> Option<Vec<String>> {
         None
     }
     fn open(&self, module: &str, _: &str, _: &Value) -> Result<Arc<dyn ExportCalls>, String> {
@@ -321,9 +321,14 @@ fn a_reference_at_a_reference_capable_url_reaches_the_sink_resolved() {
         "batch": 10,
     }));
     let handed = sink_settings(&DeclaringAxis, "declaring-sink", &written).expect("resolves");
+    let diagnostic = format!("{handed:?}");
+    assert!(
+        !diagnostic.contains("Bearer t0k"),
+        "the settings owner must not expose a resolved credential through Debug"
+    );
     assert_eq!(
-        handed,
-        serde_json::json!({
+        handed.as_value(),
+        &serde_json::json!({
             "url": "https://siem.example/in",
             "auth_header": { "name": "Authorization", "value": "Bearer t0k" },
             "batch": 10,
@@ -333,8 +338,10 @@ fn a_reference_at_a_reference_capable_url_reaches_the_sink_resolved() {
 
     let literal = settings_of(serde_json::json!({ "url": "https://collector.example/v1/traces" }));
     assert_eq!(
-        sink_settings(&DeclaringAxis, "declaring-sink", &literal).expect("as written"),
-        Value::Object(literal.clone())
+        sink_settings(&DeclaringAxis, "declaring-sink", &literal)
+            .expect("as written")
+            .as_value(),
+        &Value::Object(literal.clone())
     );
 
     // Fail-closed: an unset variable at the url is the error, naming the field.
@@ -348,8 +355,73 @@ fn a_reference_at_a_reference_capable_url_reaches_the_sink_resolved() {
     // the undeclared-reference refusal's to word (`config_validate`), not this resolution's.
     let undeclared = settings_of(serde_json::json!({ "url": { "env": "NEVER_READ" } }));
     assert_eq!(
-        sink_settings(&DeclaringAxis, "silent-sink", &undeclared).expect("as written"),
-        Value::Object(undeclared.clone())
+        sink_settings(&DeclaringAxis, "silent-sink", &undeclared)
+            .expect("as written")
+            .as_value(),
+        &Value::Object(undeclared.clone())
+    );
+}
+
+#[test]
+fn export_reference_diagnostics_keep_secret_and_plain_fields_distinct() {
+    use crate::test_support::warn_capture::WarnCapture;
+    use tracing_subscriber::layer::SubscriberExt as _;
+
+    let url_var = format!("BUSBAR_T_EXPORT_CLASS_URL_{}", std::process::id());
+    let token_var = format!("BUSBAR_T_EXPORT_CLASS_TOKEN_{}", std::process::id());
+    let url = "https://classification.example/collector";
+    let token = "Bearer export-classification-fixture";
+    std::env::set_var(&url_var, url);
+    std::env::set_var(&token_var, token);
+    let written = settings_of(serde_json::json!({
+        "url": { "env": url_var },
+        "auth_header": { "name": "Authorization", "value": { "env": token_var } },
+    }));
+    let cap = WarnCapture::capturing_debug();
+    let subscriber = tracing_subscriber::registry().with(cap.clone());
+    let handed = tracing::subscriber::with_default(subscriber, || {
+        sink_settings(&DeclaringAxis, "declaring-sink", &written)
+    });
+    std::env::remove_var(&url_var);
+    std::env::remove_var(&token_var);
+    let handed = handed.expect("the two references resolve");
+    assert_eq!(handed.as_value()["url"], url);
+    assert_eq!(handed.as_value()["auth_header"]["value"], token);
+    assert_eq!(written["url"], serde_json::json!({ "env": url_var }));
+    assert_eq!(
+        written["auth_header"]["value"],
+        serde_json::json!({ "env": token_var })
+    );
+    let literal = settings_of(serde_json::json!({
+        "url": "https://literal.example/collector",
+        "auth_header": { "name": "Authorization", "value": "Bearer literal-fixture" },
+    }));
+    assert_eq!(
+        sink_settings(&DeclaringAxis, "declaring-sink", &literal)
+            .expect("existing literal settings still pass through")
+            .as_value(),
+        &Value::Object(literal.clone())
+    );
+    let events = cap.messages();
+    assert!(
+        events
+            .iter()
+            .all(|line| !line.contains(url) && !line.contains(token)),
+        "reference diagnostics must never include resolved values"
+    );
+    assert!(
+        events
+            .iter()
+            .any(|line| line.contains("setting=url ")
+                && line.contains("reference-capable (not secret)")),
+        "the URL reference must retain its plain-setting classification"
+    );
+    assert!(
+        events
+            .iter()
+            .any(|line| line.contains("setting=auth_header.value ")
+                && line.contains("SECRET REFERENCE")),
+        "the declared credential must be identified as a secret reference"
     );
 }
 

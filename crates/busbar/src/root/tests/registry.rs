@@ -114,7 +114,7 @@ fn every_linked_transport_and_plane_registers() {
 /// that gains or loses a claim moves the total without a number here to edit; the design's own
 /// table is checked against the planes' declarations, not against a copy of them.
 // Gated on every plane linked: the invariants are stated over the whole linked set.
-#[cfg(linked_every_plane)]
+#[cfg(linked_every_plane_door)]
 #[test]
 fn every_linked_planes_claims_are_its_declared_claims() {
     let claims = linked_claims();
@@ -163,7 +163,7 @@ fn every_linked_planes_claims_are_its_declared_claims() {
 /// constraints they are, rather than as fragments that overlap anything, shrinks it without ever
 /// answering "disjoint" for a pair one arrival satisfies.
 // Gated on every plane linked: the invariants are stated over the whole linked set.
-#[cfg(linked_every_plane)]
+#[cfg(linked_every_plane_door)]
 #[test]
 fn every_cross_plane_overlap_is_one_family_or_the_other_and_the_seal_resolves_them_all() {
     use busbar_kernel::grammar::family;
@@ -207,7 +207,7 @@ fn every_cross_plane_overlap_is_one_family_or_the_other_and_the_seal_resolves_th
 /// A pair that fits none of these would be the interesting one: a conservative answer with no
 /// account of itself. There is none, and the assertion is that there is none.
 // Gated on every plane linked: the invariants are stated over the whole linked set.
-#[cfg(linked_every_plane)]
+#[cfg(linked_every_plane_door)]
 #[test]
 fn every_remaining_path_overlap_is_a_shape_and_not_a_gap() {
     use busbar_contract::grammar::PathSeg;
@@ -249,7 +249,7 @@ fn every_remaining_path_overlap_is_a_shape_and_not_a_gap() {
 /// of them is a refusal: the refusal list is held empty, which is the whole claim of this file —
 /// the declared set of planes seals.
 // Gated on every plane linked: the invariants are stated over the whole linked set.
-#[cfg(linked_every_plane)]
+#[cfg(linked_every_plane_door)]
 #[test]
 fn every_cross_plane_overlap_is_resolved_by_precedence_and_none_refuses() {
     let claims = linked_claims();
@@ -285,7 +285,7 @@ fn every_cross_plane_overlap_is_resolved_by_precedence_and_none_refuses() {
 /// order — so it is stable across boots and a change to it is a change to a claim's selector,
 /// never to a table of the shipped composition.
 // Gated on every plane linked: the invariants are stated over the whole linked set.
-#[cfg(linked_every_plane)]
+#[cfg(linked_every_plane_door)]
 #[test]
 fn the_sealed_order_is_most_specific_first_and_stable() {
     use busbar_kernel::registry::precedence;
@@ -614,7 +614,7 @@ fn a_claim_on_a_transport_with_no_crate_refuses_at_boot() {
 /// the claims sealed, and the one transport gap was all that stood between the declared
 /// composition and a node that boots.
 // Gated on every plane linked: the invariants are stated over the whole linked set.
-#[cfg(linked_every_plane)]
+#[cfg(linked_every_plane_door)]
 #[test]
 fn the_seal_answers_now_that_every_claim_names_a_registered_transport() {
     let sealed = seal(&crate::LINKED, Dropped::NONE, TransportSettings::default())

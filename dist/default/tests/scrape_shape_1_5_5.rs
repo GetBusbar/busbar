@@ -18,10 +18,8 @@
 //! from in-process; this one boots the real shipped binary end to end so the plane crates'
 //! actual `Cargo.toml` feature wiring, not a unit-test fixture, is what is under test).
 #![cfg(unix)]
-// "Every plane compiled in" is `linked_every_plane` (build.rs: every linked row carrying the `plane`
-// axis is enabled); a build missing one is not the shape this test is about, so it skips rather than
-// giving a false pass/fail.
-#![cfg(linked_every_plane)]
+// This fixture describes the full distribution with every plane door enabled.
+#![cfg(linked_every_plane_door)]
 
 mod common;
 

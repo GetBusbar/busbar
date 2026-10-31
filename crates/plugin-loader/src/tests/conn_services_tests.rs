@@ -648,6 +648,50 @@ fn a_trust_from_need_is_declared_with_its_settings_ca_at_open_and_every_refresh(
     );
 }
 
+/// A trust anchor [`Recording`] refuses, as the connector refuses a PEM that is no trust anchor.
+const NOT_A_PEM: &str = "NOT-A-PEM";
+
+/// RED (S7): an `open` whose settings name a trust anchor the table refuses FAILS, naming the
+/// setting, before the plugin is entered: the operator learns of a bad CA at open, not at the
+/// first call that dials. An anchor the table takes opens as before.
+#[test]
+fn an_open_whose_settings_ca_the_table_refuses_fails_naming_it() {
+    let table = Arc::new(Recording::default());
+    let p = bound(Box::leak(Box::new(TRUSTING)), &table);
+    let mut f = Frame::new(
+        OpenIn {
+            head: in_head(),
+            host: std::ptr::null(),
+            settings: settings(br#"{"ca":"NOT-A-PEM"}"#),
+            secrets: std::ptr::null(),
+            secrets_len: 0,
+            generation: 1,
+            err_buf: std::ptr::null_mut(),
+            err_cap: 0,
+        },
+        OpenOut {
+            head: out_head(),
+            instance: std::ptr::null_mut(),
+            err_len: 0,
+        },
+    );
+    let c = p.call(slot::OPEN, &mut f);
+    assert_eq!(
+        c.outcome,
+        Outcome::Failed,
+        "a refused trust anchor fails the open"
+    );
+    let text = c.open_failure("trusting");
+    assert!(text.contains("settings.ca"), "{text}");
+    assert!(
+        !text.contains(NOT_A_PEM),
+        "the value is never repeated: {text}"
+    );
+
+    let good = bound(Box::leak(Box::new(TRUSTING)), &table);
+    assert_eq!(open_with(&good, br#"{"ca":"PEM-A"}"#), Outcome::Ready);
+}
+
 /// A need whose trust anchors come from the OWNED namespace: `owned.agent_push.ca`.
 const OWNED_TRUSTING: [Need; 1] = [Need {
     target_from: NONE,
@@ -3202,7 +3246,7 @@ fn a_need_refused_by_the_table_is_audited_in_its_word() {
     let label = "bind-audit-trust-refused";
     let table = Arc::new(Recording::default());
     let p = bound_labelled(Box::leak(Box::new(TRUSTING)), &table, label);
-    assert_eq!(open_with(&p, br#"{"ca":"junk"}"#), Outcome::Ready);
+    assert_eq!(open_with(&p, br#"{"ca":"junk"}"#), Outcome::Failed);
     assert_eq!(
         refused_for(label),
         vec![format!(
@@ -3242,7 +3286,8 @@ fn an_unwritten_settings_trust_is_refused_but_not_audited() {
         .map(|(.., trust)| trust.clone())
         .collect();
     assert_eq!(trusts, vec![None, None]);
-    // A junk anchor is a refusal, audited.
+    // The table refuses and audits the need. Refresh still returns the existing plugin's
+    // outcome; it does not become a new OPEN or make that refused need available.
     assert_eq!(refresh_with(&p, br#"{"ca":"junk"}"#), Outcome::Ready);
     assert_eq!(
         refused_for(label),
