@@ -135,6 +135,9 @@ signed by the owner (spec: `docs/design/BUSBAR-1.6.0.md`).
   outside a zone id, a number-like last label that is no IPv4 address (`db.1`, `1.2.3.4.5`), and
   non-ASCII that UTS #46 cannot map. Every other ASCII host gets 1.5.5's verdicts and texts, and a CIDR
   entry is still refused with 1.5.5's text (owner-approved 2026-10-21).
+- **`--print-metadata-blocklist` prints every metadata entry the guard enforces.**
+  1.6.0: `--print-metadata-blocklist` now also lists `fd00:ec2::23` (EC2 task metadata) and `fe80::/10` (IPv6 link-local), which the guard already refused; the eleven 1.5.5 lines are unchanged and in the same order.
+  Exit status and stderr are unchanged (owner-signed 2026-10-30).
 - **The OIDC auth plugin no longer follows a redirect into a private network or a metadata service.**
   1.6.0 Changed: the OIDC auth plugin refuses a discovery or JWKS redirect to a cloud metadata or IPv6 link-local host from any host, and a redirect to a private or loopback host (an IP literal, or the localhost name) unless the hop that sent it is itself on a private or loopback host; each hop is judged by the host that redirected, so a chain that leaves through a public host cannot come back into the private network. The check reads the literal host only, with no DNS lookup, so an identity provider reached by any other DNS name counts as public.
   The refusal names the URL that was asked, not the redirect target:
@@ -595,6 +598,14 @@ minted secret carries over.
 - 1.6.0 Changed: every audit entry carries its `scheme`, the signing scheme of the record.
   `GET /api/v1/admin/audit` items gain `scheme`, and `openapi.json` marks it required.
   **Migration:** none; every 1.5.5 member is unchanged.
+- 1.6.0 Changed: every recipe number in a `GET /api/v1/admin/audit/range` record is published as its decimal text in a JSON string.
+  That covers `seq`, `unit_key`, `incarnation`, `parent`, `wall`, `mono`, `node`, `hook_failed`,
+  `stale_policy`, `tier_bp`, `fee_count`, `rate_card_version`, `lease_epoch`, `policy_epoch`, the
+  group counts and every number inside a group. The sealing `node` is a uniform 64-bit draw, so a
+  JSON reader that maps numbers to doubles rounded it and reported an honest chain as tampered.
+  The digest framing is unchanged; the envelope members (`from`, `to`, `next_seq`, and a head's
+  `seq`/`wall`) stay JSON numbers. **Migration:** a third-party verifier parses each recipe number
+  from its decimal text, framing it by the kind column of `docs/audit-chain-digest-v4.md`.
 - 1.6.0 Changed: a newly sealed audit record signs under `busbar.audit.digest.v4`, which drops `currency` from the digest and adds `incarnation` and `node`.
   Money is unitless abstract cost, so the signed preimage no longer names a denomination. A record
   already sealed keeps verifying under `busbar.audit.digest.v2`, and every record in
@@ -660,6 +671,14 @@ and the `at` field on the hook view is joined by `fires_at`, which carries the r
   The body is the gateway's at-capacity answer, the one `limits.max_inbound_concurrent` sheds
   with. A bad credential is still answered `401`, and the admin API keeps 1.5.5's answer. **Migration:** a
   client that retries a `503` after its `Retry-After` needs no change.
+- 1.6.0 Breaking: when an inbound auth plugin's `verify` answers no verdict (it failed, for example an OIDC plugin whose key set is unavailable, faulted, or timed out), the request is refused with `503` and `Retry-After: 1` instead of 1.5.5's `401`.
+  This applies on the data plane, on `POST /auth/token` and on the admin API (where the body is the
+  admin envelope's `unavailable` code). A rejected credential is still answered `401`, and the
+  operator log names the provider that answered no verdict, never the credential. The lead signed
+  this on 2026-10-30 under owner delegation (SIGN-auth-kind), extending the owner-signed rule that an
+  IdP outage answers `503`, never `401`. **Migration:** a client that retries a `503` after its
+  `Retry-After` needs no change. A client that treated a `401` from a failing IdP as "discard the
+  token" now keeps a valid token through the outage.
 - 1.6.0 Breaking: the destination guard now also judges an A2A peer's fetches, a streaming upstream and a duplex or WebSocket dial, so a private, loopback or cloud-metadata destination there is refused unless the configuration allows it, as a private provider host is.
   **Migration:** name an internal peer or upstream in `advanced.allow_destinations` (an A2A
   registration may also set its own `allow_private: true`), as a provider on an internal DNS name

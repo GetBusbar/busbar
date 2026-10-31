@@ -21,7 +21,7 @@ busbar_contract::hyper_io!(hyper::body::Bytes);
 
 use busbar_contract::abi::mechanism::call::Outcome;
 use busbar_contract::abi::sdk::door::Entry;
-use busbar_contract::abi::sdk::{Instance, Lent, Out, Safe, SafeSlot};
+use busbar_contract::abi::sdk::{HostBuf, Instance, Lent, Out, Safe, SafeSlot};
 use busbar_contract::abi::transport::{
     slot, FramePiece, FramerOut, FramingIn, HeadSlots, PIECE_CONTINUED, PIECE_END,
     PIECE_END_OF_FRAME, PIECE_FIELDS, PIECE_HAS_CODE, PIECE_HAS_DECLARED_LEN, PIECE_STREAM_FAILED,
@@ -131,6 +131,10 @@ struct Owes {
 impl Owed for Owes {
     fn take_wire(&mut self, cap: usize) -> Vec<u8> {
         self.io.take_wire(cap)
+    }
+    // As a framer over a `HostIo` answers it: the wire bytes go straight into the host's buffer.
+    fn wire_into(&mut self, into: &mut HostBuf<'_, u8>) {
+        self.io.wire_into(into);
     }
     fn wire_pending(&self) -> bool {
         self.io.wire_pending()

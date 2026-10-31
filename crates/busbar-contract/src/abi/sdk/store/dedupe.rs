@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE `op_id` DEDUPE, ONCE FOR EVERY STORE (`abi::store` S1-S4). A store keeps, per `op_id` it
+//! THE `op_id` DEDUPE, ONCE FOR EVERY STORE (`abi::store` S1-S5). A store keeps, per `op_id` it
 //! applied, the op's BODY: a fixed 32-byte digest of the op's value fields ([`Dedupe::body`]). An
 //! op is NEW (no body recorded: apply it, record the body in the same atomic step), a REPLAY (the
 //! same body: apply nothing, answer done) or a CONFLICT (a different body: apply nothing,

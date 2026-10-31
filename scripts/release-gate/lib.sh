@@ -337,8 +337,9 @@ contract_jq() {  # contract_jq <jq-filter>
 }
 
 # The five PUBLISHED targets — the ones that become named GitHub Release assets. Targets with
-# "published": false exist in the contract because they are built (the musl binaries that go into
-# the container image) but they are not assets and must not be asserted as such.
+# "published": false exist in the contract because they are built (the container images) but they
+# are not assets and must not be asserted as such. Since W17 the images package the published
+# linux-gnu binaries, so no unpublished BINARY is built.
 published_targets() {
   contract_jq '.targets[] | select(.published == true) | .target'
 }

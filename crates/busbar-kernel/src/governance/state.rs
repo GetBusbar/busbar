@@ -117,7 +117,7 @@ impl GovState {
             by_id,
             by_credential,
         }));
-        let refresh_lock = Arc::new(std::sync::Mutex::new(()));
+        let refresh_order = Arc::new(CacheOrder::default());
         // The set was just read from the store, so the staleness clock starts NOW. `RevocationSync`
         // owns its own handle to the store: its refresh runs on the blocking pool and so cannot
         // borrow from `GovState`. Each re-sync also reloads the key caches from the store, so a key
@@ -128,8 +128,8 @@ impl GovState {
             denylist,
             busbar_kernel::store::now(),
             {
-                let (store, caches, lock) = (store.clone(), caches.clone(), refresh_lock.clone());
-                Box::new(move || reload_caches(store.as_ref(), &caches, &lock))
+                let (store, caches, order) = (store.clone(), caches.clone(), refresh_order.clone());
+                Box::new(move || reload_caches(store.as_ref(), &caches, &order))
             },
         );
         // THE PER-BOOT CALLER-REFERENCE KEY (row 159 H2 residual, ARCHITECT ruling): the key a
@@ -161,13 +161,22 @@ impl GovState {
             signing: RwLock::new(signer.map(|s| Arc::new(SigningMaterial::new(s)))),
             at_rest: RwLock::new(None),
             denylist,
-            refresh_lock,
-            self_mint_lock: std::sync::Mutex::new(()),
+            refresh_order,
+            revoke_claims: claims::ClaimSet::new(),
+            self_mint_claims: claims::ClaimSet::new(),
             self_mint_holds: std::sync::atomic::AtomicBool::new(
                 SELF_MINT_HOLDS_ADMIN_AND_PROVIDER_STATE,
             ),
             store_calls: std::sync::OnceLock::new(),
+            amendments: Arc::default(),
         })
+    }
+
+    /// THE NODE'S AMENDMENT JOURNAL this state owns: the one every hook and export read of this
+    /// node is sealed on.
+    #[must_use]
+    pub fn amendments(&self) -> &Arc<crate::audit::amend::NodeAmendments> {
+        &self.amendments
     }
 
     /// Keep the configured store's store v3 slots beside its 1.5.5 op set, once (boot opens the
@@ -321,16 +330,12 @@ impl GovState {
         // killed the SigV4 credential (or was never live to begin with) before the cheaper,
         // faster-to-propagate denylist write is attempted.
         //
-        // Held across BOTH the store writes above and the targeted cache patch below, same as
-        // `refresh()` holds it across its own load+swap (see `refresh_lock`'s doc comment — this
-        // is the same lost-update guard, extended to cover `revoke`'s targeted patch too). Without
-        // this, a concurrent `refresh()` (triggered by any unrelated key mutation) can `load()` a
-        // store snapshot that races these writes, then swap it in AFTER this targeted patch,
-        // silently reverting the just-revoked key's cache entry back to enabled. Held for the
-        // whole function, not just the final block: the store writes must also be inside the
-        // mutual-exclusion window, or a `refresh()` could still slip its `load()` in between them
-        // and this patch.
-        let _refresh_guard = self.refresh_lock.lock().unwrap_or_else(|e| e.into_inner());
+        // One revoke of this subject at a time (see `revoke_claims`); no lock is held across the
+        // store writes below (§11.13 M1). The targeted cache patch at the end goes through
+        // `refresh_order`, which is the lost-update guard: a concurrent `refresh()` whose `load()`
+        // began before the patch is applied never swaps its snapshot in after it (it reloads), so
+        // it cannot revert the just-revoked key's cache entry to enabled.
+        let _claim = self.revoke_claims.claim(sub.to_string());
         let mut revoked_creds = Vec::new();
         for cred in self.store.list_credentials(sub)? {
             if cred.revoked_at.is_none() {
@@ -355,7 +360,7 @@ impl GovState {
         // table scan). Everything the caches need to reflect is already known from the writes
         // above: the (possibly) updated key row, and exactly which `(kind, public_id)` pairs were
         // just revoked.
-        {
+        self.refresh_order.patch(|| {
             let mut c = self.caches_write();
             self.denylist.insert(sub);
             if let Some(key) = new_key {
@@ -364,7 +369,7 @@ impl GovState {
             for (kind, public_id) in &revoked_creds {
                 c.by_credential.remove(&(kind.clone(), public_id.clone()));
             }
-        }
+        });
         Ok(())
     }
 
@@ -880,12 +885,24 @@ impl GovState {
     /// per-shard swap) and a key never migrates shards, so any two calls partition the arrivals
     /// between them by construction and cannot double-send. Returns the number of deltas written.
     pub fn flush_metering(&self) -> usize {
+        self.flush_metering_inner(false)
+    }
+
+    /// The SHUTDOWN flush: [`Self::flush_metering`], except that a failure is reported as the
+    /// terminal loss it is (one error naming the unrecorded cells), not as a retry that will never
+    /// run because the process is about to exit.
+    pub fn flush_metering_final(&self) -> usize {
+        self.flush_metering_inner(true)
+    }
+
+    fn flush_metering_inner(&self, shutdown: bool) -> usize {
         let taken = self.pending_metering.drain();
         let mut flushed = 0usize;
         // Aggregate failures: during a store outage EVERY pending key fails on the same tick, so a
         // per-key `warn!` spams. Emit exactly ONE throttled warn per tick carrying the failed count;
         // the per-key detail (key + error) stays at `debug!`.
         let mut failed = 0usize;
+        let mut unrecorded: Vec<String> = Vec::new();
         let mut last_error: Option<String> = None;
         for ((key_id, bucket, model, provider, priced_from_ms), counts) in taken {
             if counts.is_zero() {
@@ -913,7 +930,11 @@ impl GovState {
                 Ok(()) => flushed += 1,
                 Err(e) => {
                     failed += 1;
-                    tracing::debug!(key = %key_id, error = %e, "metering flush failed for key; will retry next tick");
+                    if shutdown {
+                        unrecorded.push(format!("{key_id}/{model}/{provider}@{bucket}"));
+                    } else {
+                        tracing::debug!(key = %key_id, error = %e, "metering flush failed for key; will retry next tick");
+                    }
                     last_error = Some(e.to_string());
                     // Re-queue the failed delta through the SAME sharded, bounded accrual as the hot
                     // path (it lands back in the key's own shard). Under a sustained outage with
@@ -926,7 +947,17 @@ impl GovState {
                 }
             }
         }
-        if failed > 0 {
+        if failed > 0 && shutdown {
+            diag_error!(
+                METERING_FLUSH_PARTIAL_FAILURE,
+                failed,
+                flushed,
+                error = last_error.as_deref().unwrap_or(""),
+                "shutdown metering flush: the store is unreachable and the process is exiting; \
+                 {failed} metering cell(s) are NOT recorded: {}",
+                unrecorded.join(", ")
+            );
+        } else if failed > 0 {
             diag_warn!(
                 METERING_FLUSH_PARTIAL_FAILURE,
                 failed,
@@ -1435,8 +1466,10 @@ impl GovState {
     /// Returns the number of cells dropped. A group's cells are `group:<name>@<window>[#<scope>]`,
     /// one per (window, pool scope), so this is a sweep across every shard rather than a single-key
     /// remove. It is only reachable for a group that is GONE, so there is no cap left for the drop
-    /// to reset; the write-behind flush is additive and already committed whatever spend was
-    /// ledgered, so no durable data is lost either.
+    /// to reset. A cell that is still DIRTY (spend ledgered since the last flush, or a delta a
+    /// failed write re-marked) is KEPT, because the flush has not committed it yet and dropping it
+    /// would shorten the group's usage row; the next flush writes it and the amortized sweep reaps
+    /// it once clean.
     ///
     /// The match is [`crate::cost::is_bucket_of_group`] — anchored at BOTH ends — not
     /// `starts_with("group:<name>@")`. A group name MAY contain `@` (nothing charset-checks it, and
@@ -1453,7 +1486,9 @@ impl GovState {
         let mut dropped = 0usize;
         for mut shard in self.budget.write_all() {
             let before = shard.len();
-            shard.retain(|id, _| !crate::cost::is_bucket_of_group(id, group));
+            // A DIRTY cell still owes the store a delta, so it stays until a flush has taken it
+            // (the sweep's retain does the same); only a clean cell is dropped here.
+            shard.retain(|id, c| c.dirty || !crate::cost::is_bucket_of_group(id, group));
             dropped += before - shard.len();
         }
         // The per-group in-flight `concurrent` gauge is materialised on the first admission of a
@@ -2392,6 +2427,17 @@ impl GovState {
     /// the lock but writing off it keeps the hot-path lock hold O(dirty). Returns the number of
     /// deltas flushed.
     pub fn flush_budgets(&self) -> usize {
+        self.flush_budgets_inner(false)
+    }
+
+    /// The SHUTDOWN flush: [`Self::flush_budgets`], except that a failure is reported as the
+    /// terminal loss it is (one error naming the unrecorded buckets), not as a retry that will
+    /// never run because the process is about to exit.
+    pub fn flush_budgets_final(&self) -> usize {
+        self.flush_budgets_inner(true)
+    }
+
+    fn flush_budgets_inner(&self, shutdown: bool) -> usize {
         /// The baselines a live cell's delta was taken against: they become the acked baseline on
         /// success.
         struct Acked {
@@ -2450,6 +2496,7 @@ impl GovState {
         // per-bucket `warn!` spams. Emit exactly ONE throttled warn per tick with the failed count;
         // per-bucket detail (bucket + error) stays at `debug!`.
         let mut failed = 0usize;
+        let mut unrecorded: Vec<String> = Vec::new();
         let mut last_error: Option<String> = None;
         for snap in dirty {
             let outcome = if snap.delta.is_zero() {
@@ -2495,7 +2542,11 @@ impl GovState {
                 }
                 Err(e) => {
                     failed += 1;
-                    tracing::debug!(bucket = %snap.bucket_id, error = %e, "budget flush failed for bucket; will retry next tick");
+                    if shutdown {
+                        unrecorded.push(format!("{}@{}", snap.bucket_id, snap.window));
+                    } else {
+                        tracing::debug!(bucket = %snap.bucket_id, error = %e, "budget flush failed for bucket; will retry next tick");
+                    }
                     last_error = Some(e.to_string());
                     if snap.acked.is_none() {
                         // A rolled window's delta: parked back under its window for the next tick.
@@ -2512,7 +2563,17 @@ impl GovState {
                 }
             }
         }
-        if failed > 0 {
+        if failed > 0 && shutdown {
+            diag_error!(
+                BUDGET_FLUSH_PARTIAL_FAILURE,
+                failed,
+                flushed,
+                error = last_error.as_deref().unwrap_or(""),
+                "shutdown budget flush: the store is unreachable and the process is exiting; \
+                 {failed} bucket window(s) are NOT recorded: {}",
+                unrecorded.join(", ")
+            );
+        } else if failed > 0 {
             diag_warn!(
                 BUDGET_FLUSH_PARTIAL_FAILURE,
                 failed,
@@ -2640,29 +2701,39 @@ impl GovState {
     /// `delete_key`/`rotate_key` below, and this crate's own tests. Nothing outside busbar-core
     /// names it, so the cache-reload door is not part of the engine's public surface.
     pub fn refresh(&self) -> RecordStoreResult<()> {
-        reload_caches(self.store.as_ref(), &self.caches, &self.refresh_lock)
+        reload_caches(self.store.as_ref(), &self.caches, &self.refresh_order)
     }
 }
 
 /// RELOAD BOTH KEY CACHES from `store` and swap them in: after this node's own mutation, and on every
 /// fleet re-sync ([`super::revocation::RevocationSync`]).
 ///
-/// Serialized on `lock` for the whole load→swap so a slow reload can't clobber a newer one's cache
-/// with strictly-older store state (lost-update guard): a later reload's load cannot begin until an
-/// earlier one has swapped. Both indices live under the one `caches` lock, so a concurrent reader sees
-/// either the entire old pair or the entire new pair.
+/// Ordered by `order` so a slow reload can't clobber a newer one's cache with strictly-older store
+/// state, nor revert a targeted patch applied while it loaded (lost-update guard), with no lock held
+/// across the store load (§11.13 M1): a load older than the last swap is dropped (that swap began
+/// later, so it carries this caller's mutation), and a load older than the last patch is redone. Both
+/// indices live under the one `caches` lock, so a concurrent reader sees either the entire old pair
+/// or the entire new pair.
 fn reload_caches(
     store: &dyn RecordStore,
     caches: &RwLock<GovCaches>,
-    lock: &std::sync::Mutex<()>,
+    order: &CacheOrder,
 ) -> RecordStoreResult<()> {
-    let _refresh_guard = lock.lock().unwrap_or_else(|e| e.into_inner());
-    let fresh = GovState::load(store)?;
-    let fresh_cred = GovState::load_by_credential(store, &fresh, busbar_kernel::store::now())?;
-    let mut c = caches.write().unwrap_or_else(|p| p.into_inner());
-    c.by_id = fresh;
-    c.by_credential = fresh_cred;
-    Ok(())
+    loop {
+        let ticket = order.ticket();
+        let fresh = GovState::load(store)?;
+        let fresh_cred = GovState::load_by_credential(store, &fresh, busbar_kernel::store::now())?;
+        match order.turn(ticket) {
+            CacheTurn::Swap(_turn) => {
+                let mut c = caches.write().unwrap_or_else(|p| p.into_inner());
+                c.by_id = fresh;
+                c.by_credential = fresh_cred;
+                return Ok(());
+            }
+            CacheTurn::Stale => return Ok(()),
+            CacheTurn::Reload => continue,
+        }
+    }
 }
 
 /// Whether an ALL-TIME (`window_start == 0`) budget cell still backs an ENFORCED cap — the exact

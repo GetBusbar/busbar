@@ -561,17 +561,20 @@ fn open_claims(records: &[JournalRecord]) -> (Vec<ClaimTaken>, u64) {
 /// ([`journal_body`]), so the journal can answer for it after the cache has let
 /// it go. Content is not in it for the same reason it is not in the record: the journal is a
 /// financial record exempt from erasure, so anything put in it can never be taken out.
-#[must_use]
-pub fn audit_body(record: &AuditRecord) -> Vec<u8> {
+///
+/// # Errors
+///
+/// A text field does not fit the body's length prefix: refused whole, never cut.
+pub fn audit_body(record: &AuditRecord) -> Result<Vec<u8>, busbar_kernel_audit::FieldTooLong> {
     journal_body(record)
 }
 
 /// The journal entry a sealed audit record goes on the chain as: its whole body, stamped with its
 /// own two clocks and the epochs it ran under.
-fn audit_entry(record: &AuditRecord) -> Entry {
-    Entry::new(RecordClass::Transaction, audit_body(record))
+fn audit_entry(record: &AuditRecord) -> Result<Entry, busbar_kernel_audit::FieldTooLong> {
+    Ok(Entry::new(RecordClass::Transaction, audit_body(record)?)
         .at(record.wall, record.mono)
-        .under(record.controls.lease_epoch, record.controls.policy_epoch)
+        .under(record.controls.lease_epoch, record.controls.policy_epoch))
 }
 
 /// Read one journal record back as the sealed audit record it keeps, if it keeps one. A usage

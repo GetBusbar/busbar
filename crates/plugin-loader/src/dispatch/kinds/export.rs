@@ -30,6 +30,8 @@ pub struct ExportFacts {
     pub families: Vec<(String, u8, Vec<String>)>,
     /// The Statement's `one_instance` mark: at most one instance of the plugin may be configured.
     pub one_instance: bool,
+    /// Its extensions' `span_records`: it takes each `traces` line's full span record.
+    pub span_records: bool,
 }
 
 /// A `'static` Statement string, copied; `None` when malformed.
@@ -117,7 +119,12 @@ fn facts(st: &Statement) -> Result<ExportFacts, String> {
         let name = owned(f.name).ok_or("a metric family's name is over-long")?;
         families.push((name, f.kind, keys));
     }
+    // SAFETY: a door's Statement is `'static` plugin data; its extensions blob holds its stated
+    // length (a NULL one reads as none).
+    let ext = unsafe { crate::dispatch::plugin::blob_bytes(st.extensions) };
+    let span_records = busbar_contract::abi::mechanism::extensions::span_records(ext)?;
     Ok(ExportFacts {
+        span_records,
         streams: streams.to_vec(),
         routes,
         families,
