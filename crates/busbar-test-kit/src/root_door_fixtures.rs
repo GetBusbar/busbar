@@ -765,7 +765,7 @@ pub mod h1_accept {
     }
 }
 
-/// Controlled pending response-head behavior over the accepting HTTP fixture.
+/// Controlled pending response emits over the accepting HTTP fixture.
 pub mod pending_h1_accept {
     use super::h1_accept::H1Accept;
     use busbar_core_connector::framer::FramerDoor;
@@ -804,17 +804,23 @@ pub mod pending_h1_accept {
 
     struct HeldHead {
         bytes: Vec<u8>,
+        framing: u64,
+        stream: u64,
         status: u32,
         end: u32,
+        flags: u32,
+        deadline_ns: u64,
     }
 
-    /// A single-request HTTP fixture with a one-shot gate holding its response head until release.
+    /// A single-request HTTP fixture with a one-shot gate holding a response emit until release.
     pub struct ParkedHeadDoor {
         inner: H1Accept,
         gate: Arc<HeadGate>,
         entered: tokio::sync::Notify,
         held: std::sync::Mutex<Option<HeldHead>>,
         next: std::sync::atomic::AtomicU32,
+        final_body: bool,
+        completed: std::sync::atomic::AtomicU32,
     }
 
     /// A fresh fixture with its response-head gate closed.
@@ -825,6 +831,16 @@ pub mod pending_h1_accept {
             entered: tokio::sync::Notify::new(),
             held: std::sync::Mutex::new(None),
             next: std::sync::atomic::AtomicU32::new(1),
+            final_body: false,
+            completed: std::sync::atomic::AtomicU32::new(0),
+        }
+    }
+
+    /// A fresh fixture that parks the final body emit, after all body bytes have been produced.
+    pub fn parked_final_body() -> ParkedHeadDoor {
+        ParkedHeadDoor {
+            final_body: true,
+            ..parked_head()
         }
     }
 
@@ -834,7 +850,12 @@ pub mod pending_h1_accept {
             self.entered.notified().await;
         }
 
-        /// Release the copied head and wake its registered connection task.
+        /// Wait until the selected response emit has copied its input and parked.
+        pub async fn wait_for_emit(&self) {
+            self.entered.notified().await;
+        }
+
+        /// Release the copied emit and wake its registered connection task.
         pub fn release(&self) {
             self.gate.release();
         }
@@ -842,6 +863,11 @@ pub mod pending_h1_accept {
         /// Every response status the underlying accepting fixture emitted.
         pub fn statuses(&self) -> Vec<u32> {
             self.inner.statuses.lock().unwrap().clone()
+        }
+
+        /// Number of selected emits that completed through the accepting fixture.
+        pub fn completions(&self) -> u32 {
+            self.completed.load(std::sync::atomic::Ordering::SeqCst)
         }
     }
 
@@ -884,10 +910,14 @@ pub mod pending_h1_accept {
             use busbar_contract::abi::mechanism::call::Outcome;
             use busbar_core_connector::framer::{Call, Crossed};
             match call {
-                Call::Emit(input, output) if input.status != 0 || resume => {
+                Call::Emit(input, output)
+                    if resume
+                        || (!self.final_body && input.status != 0)
+                        || (self.final_body && input.status == 0 && input.end_of_frame != 0) =>
+                {
                     if !resume {
                         // SAFETY: the host lends these input bytes for this crossing only. Retain an
-                        // owned copy, never its pointer or sink, while the head is parked.
+                        // owned copy, never its pointer or sink, while the emit is parked.
                         let bytes = if input.len == 0 {
                             Vec::new()
                         } else {
@@ -895,8 +925,12 @@ pub mod pending_h1_accept {
                         };
                         *self.held.lock().unwrap() = Some(HeldHead {
                             bytes,
+                            framing: input.framing,
+                            stream: input.stream,
                             status: input.status,
                             end: input.end_of_frame,
+                            flags: input.flags,
+                            deadline_ns: input.deadline_ns,
                         });
                         self.entered.notify_one();
                     }
@@ -911,13 +945,22 @@ pub mod pending_h1_accept {
                         .lock()
                         .unwrap()
                         .take()
-                        .expect("the pending head is owned");
+                        .expect("the pending emit is owned");
                     let mut replay = *input;
                     replay.bytes = held.bytes.as_ptr();
                     replay.len = held.bytes.len();
+                    replay.framing = held.framing;
+                    replay.stream = held.stream;
                     replay.status = held.status;
                     replay.end_of_frame = held.end;
-                    self.inner.cross(Call::Emit(&mut replay, output))
+                    replay.flags = held.flags;
+                    replay.deadline_ns = held.deadline_ns;
+                    let crossed = self.inner.cross(Call::Emit(&mut replay, output));
+                    if crossed.outcome == Outcome::Ready {
+                        self.completed
+                            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    }
+                    crossed
                 }
                 other => self.inner.cross(other),
             }

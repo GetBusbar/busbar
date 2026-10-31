@@ -189,3 +189,121 @@ async fn a_parked_response_head_keeps_its_body_until_the_head_resumes() {
         .expect("the connection drains")
         .expect("the serving task joins");
 }
+
+#[tokio::test]
+async fn a_final_body_emit_remains_alive_through_graceful_drain() {
+    use std::future::Future as _;
+    use std::pin::Pin;
+    use std::task::{Context, Poll};
+
+    struct ObservedBody {
+        inner: axum::body::Body,
+        done: Option<tokio::sync::oneshot::Sender<()>>,
+    }
+
+    impl http_body::Body for ObservedBody {
+        type Data = bytes::Bytes;
+        type Error = axum::Error;
+
+        fn poll_frame(
+            self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+        ) -> Poll<Option<Result<http_body::Frame<Self::Data>, Self::Error>>> {
+            http_body::Body::poll_frame(Pin::new(&mut self.get_mut().inner), cx)
+        }
+
+        fn size_hint(&self) -> http_body::SizeHint {
+            http_body::Body::size_hint(&self.inner)
+        }
+
+        fn is_end_stream(&self) -> bool {
+            http_body::Body::is_end_stream(&self.inner)
+        }
+    }
+
+    impl Drop for ObservedBody {
+        fn drop(&mut self) {
+            if let Some(done) = self.done.take() {
+                let _ = done.send(());
+            }
+        }
+    }
+
+    let door =
+        Arc::new(busbar_test_kit::root_door_fixtures::pending_h1_accept::parked_final_body());
+    let entry: Arc<dyn FramerDoor> = door.clone();
+    let framer = data_framer(Arc::new(move |scheme: &str| {
+        (scheme == DATA_SCHEME).then(|| Arc::clone(&entry))
+    }))
+    .expect("the accepting fixture is found");
+    let (mut client, server) = tokio::io::duplex(4096);
+    let (stop, stopped) = tokio::sync::watch::channel(false);
+    let (done, produced) = tokio::sync::oneshot::channel();
+    let done = Arc::new(std::sync::Mutex::new(Some(done)));
+    let router = Router::new().route(
+        "/hello",
+        axum::routing::get(move || {
+            let done = done.lock().unwrap().take();
+            async move {
+                axum::response::Response::new(axum::body::Body::new(ObservedBody {
+                    inner: axum::body::Body::from("hi"),
+                    done,
+                }))
+            }
+        }),
+    );
+    let served = super::serve(
+        server,
+        framer,
+        router,
+        false,
+        Duration::from_secs(30),
+        stopped,
+    );
+    tokio::pin!(served);
+    client
+        .write_all(b"GET /hello HTTP/1.1\r\nhost: t\r\n\r\n")
+        .await
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        tokio::select! {
+            () = door.wait_for_emit() => {},
+            () = &mut served => panic!("the connection ended before the final body emit parked"),
+        }
+        tokio::select! {
+            result = produced => result.expect("the response producer has finished"),
+            () = &mut served => panic!("the parked final emit ended its connection"),
+        }
+    })
+    .await
+    .expect("the final emit parks and its producer finishes");
+    assert_eq!(door.completions(), 0);
+    stop.send(true).unwrap();
+    std::future::poll_fn(|cx| {
+        let mut drain = std::pin::pin!(tokio::task::unconstrained(served.as_mut()));
+        assert!(
+            drain.as_mut().poll(cx).is_pending(),
+            "graceful drain must await the final parked body emit"
+        );
+        Poll::Ready(())
+    })
+    .await;
+    door.release();
+    tokio::time::timeout(Duration::from_secs(10), &mut served)
+        .await
+        .expect("the released final emit allows graceful drain");
+    let mut got = String::new();
+    tokio::time::timeout(Duration::from_secs(10), client.read_to_string(&mut got))
+        .await
+        .expect("the drained connection closes")
+        .unwrap();
+    assert!(got.starts_with("HTTP/1.1 200 OK\r\n"), "{got:?}");
+    assert!(got.contains("content-length: 2\r\n"), "{got:?}");
+    assert!(got.ends_with("\r\n\r\nhi"), "{got:?}");
+    assert_eq!(door.statuses(), vec![200]);
+    assert_eq!(
+        door.completions(),
+        1,
+        "the final emit completed exactly once"
+    );
+}
