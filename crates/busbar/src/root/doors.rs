@@ -403,6 +403,47 @@ fn go_inline<I: InFrame, O: OutFrame>(
 }
 
 impl FramerDoor for Dispatched {
+    fn framing_context(
+        &self,
+        listener: u64,
+        connection: u64,
+    ) -> Result<
+        Option<Arc<dyn busbar_contract::framing_scope::FramingScope>>,
+        busbar_core_connector::framer::Refused,
+    > {
+        self.on
+            .framing_context(self.live.plugin.instance().0, listener, connection)
+            .map(|c| Some(c as Arc<dyn busbar_contract::framing_scope::FramingScope>))
+            .map_err(|e| busbar_core_connector::framer::Refused {
+                outcome: Outcome::Refused,
+                error: e.into(),
+            })
+    }
+
+    fn cross_scoped(
+        &self,
+        context: Option<&Arc<dyn busbar_contract::framing_scope::FramingScope>>,
+        side: Option<&dyn Side>,
+        resume: bool,
+        call: Call<'_>,
+    ) -> Crossed {
+        super::loader::dispatch::framing_context::with_context(context.cloned(), || match side {
+            Some(side) => self.cross_on(side, resume, call),
+            None => self.cross(call),
+        })
+    }
+
+    fn cancel_scoped(
+        &self,
+        context: Option<&Arc<dyn busbar_contract::framing_scope::FramingScope>>,
+        side: &dyn Side,
+        call: Carry<'_>,
+    ) -> Crossed {
+        super::loader::dispatch::framing_context::with_context(context.cloned(), || {
+            self.carry(side, false, call)
+        })
+    }
+
     fn facts(&self) -> &DoorFacts {
         &self.facts
     }
@@ -478,6 +519,7 @@ impl FramerDoor for Dispatched {
             Call::Begin(i, o) => go_inline(p, t, resume, slot::BEGIN, i, o),
             Call::Ingest(i, o) => go_inline(p, t, resume, slot::INGEST, i, o),
             Call::Emit(i, o) => go_inline(p, t, resume, slot::EMIT, i, o),
+            Call::Adopt(i, o) => go_inline(p, t, resume, slot::ADOPT, i, o),
             other => self.cross(other),
         }
     }

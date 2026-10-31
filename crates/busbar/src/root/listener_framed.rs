@@ -847,7 +847,7 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
         self.full.clear();
         self.deadline = None;
         self.established.claim = door.facts().claims.first().map(|c| (*c).to_owned());
-        match Framing::adopt(door, SIDE_ACCEPT, &leftover, &self.established) {
+        match Framing::adopt_detached(door, SIDE_ACCEPT, leftover, &self.established) {
             Ok((framing, y)) => {
                 self.framing = Some(framing);
                 self.session = Some(Session::over(stream, pipe));

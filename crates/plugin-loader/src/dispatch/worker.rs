@@ -529,6 +529,7 @@ impl<I: InFrame, O: OutFrame> Job for JobOf<I, O> {
 /// unit, the drain count, the lifecycle exclusion — and settles an unanswered reply as FAULT.
 pub(crate) struct Meta {
     pub(crate) instance: Arc<Instance>,
+    framing: Option<Arc<dyn busbar_contract::framing_scope::FramingScope>>,
     slot: u32,
     class: DeadlineClass,
     deadline_ns: u64,
@@ -1315,6 +1316,7 @@ impl Worker {
         s: u32,
         heads: (*mut InHead, *mut OutHead, u32),
         budget: Duration,
+        framing: Option<Arc<dyn busbar_contract::framing_scope::FramingScope>>,
     ) -> Option<(MutexGuard<'a, WorkerState>, Crossed)> {
         st.crossing = Some(instance.clone());
         let budget = u64::try_from(budget.as_nanos()).unwrap_or(u64::MAX);
@@ -1322,8 +1324,11 @@ impl Worker {
         self.crossing_since
             .store(now_ns().max(1), Ordering::Release);
         drop(st);
-        // SAFETY: the frame is boxed and owned by this crossing; `s` passed `refuse` at submit.
-        let crossed = unsafe { instance.cross(s, heads.0, heads.1, heads.2) };
+        let crossed = {
+            let _framing = super::framing_context::enter(framing);
+            // SAFETY: the frame is boxed and owned by this crossing; `s` passed `refuse` at submit.
+            unsafe { instance.cross(s, heads.0, heads.1, heads.2) }
+        };
         self.crossing_since.store(0, Ordering::Release);
         let mut st = self.lock();
         st.crossing = None;
@@ -1462,6 +1467,7 @@ impl Worker {
                 };
                 cur.pending = false;
                 let inst = cur.meta.instance.clone();
+                let framing = cur.meta.framing.clone();
                 let class = cur.meta.class;
                 let op_slot = cur.meta.slot;
                 let timeout = inst.timeout;
@@ -1485,7 +1491,8 @@ impl Worker {
                 frame.name_unit(unit.unwrap_or(0));
                 let heads = frame.prepare(ticket, class as u8);
                 let budget = env.budgets.of(slot::CANCEL, class);
-                let (mut st, c) = self.cross(st, &inst, slot::CANCEL, heads, budget)?;
+                let (mut st, c) =
+                    self.cross(st, &inst, slot::CANCEL, heads, budget, framing.clone())?;
                 // A cancelled `open` that pended will never answer: the plugin still holds its
                 // half-open box, and no caller will close an instance that never opened. The host
                 // closes it here, once, inside the open's own lifecycle exclusion (given back by
@@ -1497,7 +1504,8 @@ impl Worker {
                     let (mut input, mut out) = (in_head(), out_head());
                     let heads = (&raw mut input, &raw mut out, size_of::<OutHead>() as u32);
                     let budget = env.budgets.of(slot::CLOSE, class);
-                    let (back, closed) = self.cross(st, &inst, slot::CLOSE, heads, budget)?;
+                    let (back, closed) =
+                        self.cross(st, &inst, slot::CLOSE, heads, budget, framing)?;
                     st = back;
                     if closed.outcome != Outcome::Ready {
                         tracing::warn!(
@@ -1526,6 +1534,7 @@ impl Worker {
                 Some(st)
             }
             Action::Drive => {
+                let framing = e.current.as_ref().and_then(|c| c.meta.framing.clone());
                 let Some(d) = e.driver.as_mut() else {
                     return Some(st);
                 };
@@ -1543,7 +1552,7 @@ impl Worker {
                 d.pending = false;
                 let budget = env.budgets.of(slot::DRIVE, DeadlineClass::Connection);
                 env.services.held.enter(ticket, false);
-                let (mut st, c) = self.cross(st, &inst, slot::DRIVE, heads, budget)?;
+                let (mut st, c) = self.cross(st, &inst, slot::DRIVE, heads, budget, framing)?;
                 env.services.held.leave(ticket);
                 if c.outcome == Outcome::Ready {
                     inst.driven.name(frame.named());
@@ -1615,9 +1624,10 @@ impl Worker {
         env: &Env,
     ) -> Option<MutexGuard<'a, WorkerState>> {
         let cur = st.entries[idx as usize].current.as_mut()?;
+        let framing = cur.meta.framing.clone();
         let mut job = cur.job.take()?;
         let heads = job.heads();
-        let (mut st, c) = self.cross(st, inst, s, heads, budget)?;
+        let (mut st, c) = self.cross(st, inst, s, heads, budget, framing)?;
         let e = &mut st.entries[idx as usize];
         let Some(cur) = e.current.as_mut() else {
             return Some(st);
@@ -2126,9 +2136,25 @@ impl Dispatcher {
     /// step 4) from `host`; the first install stands. `false` when one was installed already. With
     /// none installed each of the three answers REFUSED past its checks.
     pub fn install_auth_handle(&self, host: Arc<dyn super::auth_handle::AuthHandleHost>) -> bool {
-        // The inline tickets (one per side of a carried connection) tell it when a framing ends.
-        self.pool.env.inline.tell_ended(Arc::clone(&host));
         self.pool.env.auth.set(host).is_ok()
+    }
+
+    /// Create a host framing leg for a loaded transport owner and listener registration.
+    ///
+    /// # Errors
+    /// A missing owner or an exhausted host identity space.
+    pub fn framing_context(
+        &self,
+        owner: u64,
+        listener: u64,
+        connection: u64,
+    ) -> Result<Arc<super::framing_context::FramingContext>, &'static str> {
+        super::framing_context::FramingContext::new(
+            owner,
+            listener,
+            connection,
+            self.pool.env.auth.get().map(Arc::downgrade),
+        )
     }
 
     /// A ticket for ops driven INLINE on the calling thread ([`super::inline`]): one per side of a
@@ -2472,6 +2498,7 @@ impl Dispatcher {
         let slot = Arc::new(ReplySlot::new());
         let meta = Meta {
             instance: inst.clone(),
+            framing: super::framing_context::current(),
             slot: s,
             class,
             deadline_ns,

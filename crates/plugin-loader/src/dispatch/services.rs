@@ -1749,6 +1749,21 @@ unsafe fn put_auth(stored: &Stored, i: &svc::AuthCallIn) -> Result<Answered, Ans
 /// the mechanism, so a call it keeps pends on its own ticket and the re-issued handle reads the
 /// stored answer, short-buffer rule included. With no kernel side installed:
 /// [`AUTH_HANDLE_NOT_SERVED`].
+fn service_framing(
+    owner: u64,
+    conn: u64,
+    ticket: Ticket,
+    teardown: bool,
+) -> Result<Option<u64>, &'static str> {
+    match super::framing_context::current() {
+        Some(context) => {
+            context.check(owner, conn, teardown)?;
+            Ok(Some(context.leg()))
+        }
+        None => Ok((!ticket.is_none()).then(|| super::auth_handle::framing_of(ticket))),
+    }
+}
+
 extern "C" fn auth_call(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
     exact::<svc::AuthCallIn>(
         ctx,
@@ -1787,6 +1802,11 @@ extern "C" fn auth_call(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut
             } else {
                 None
             };
+            let framing = match service_framing(owner, i.conn, head.handle.ticket, false) {
+                Ok(Some(f)) => f,
+                Ok(None) => return Answered::bare(Outcome::Refused, AUTH_IN_MALFORMED),
+                Err(e) => return Answered::bare(Outcome::Refused, e),
+            };
             let ask = AuthCallAsk {
                 owner,
                 generation,
@@ -1798,7 +1818,7 @@ extern "C" fn auth_call(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut
                 request,
                 body,
                 deadline: op_remaining(),
-                framing: super::auth_handle::framing_of(head.handle.ticket),
+                framing,
             };
             // The request a handle is bound to: the line or binding, the unit, the point and the
             // connection and stream it is made on. Never the buffers, which a short answer's
@@ -1855,6 +1875,10 @@ extern "C" fn unit_hand_in(ctx: HostCtx, input: *const c_void, out: *mut Service
             if i.request.scheme == svc::SCHEME_UNDECLARED {
                 return Answered::bare(Outcome::Refused, svc::SCHEME_UNDECLARED_REFUSED);
             }
+            let framing = match service_framing(owner, i.conn, head.handle.ticket, false) {
+                Ok(f) => f,
+                Err(e) => return Answered::bare(Outcome::Refused, e),
+            };
             if super::auth_handle::is_none_line(owner, i.auth.id) {
                 let Some(unit) = super::auth_handle::mint_none_unit(owner, i.line) else {
                     return Answered::bare(Outcome::Failed, super::auth_handle::REF_NO_KEY);
@@ -1884,8 +1908,7 @@ extern "C" fn unit_hand_in(ctx: HostCtx, input: *const c_void, out: *mut Service
                 conn: i.conn,
                 stream: i.stream,
                 request,
-                framing: (!head.handle.ticket.is_none())
-                    .then(|| super::auth_handle::framing_of(head.handle.ticket)),
+                framing,
             };
             match host.hand_in(ask) {
                 Ok((flow, unit)) => {
@@ -1946,6 +1969,10 @@ extern "C" fn unit_refuse(ctx: HostCtx, input: *const c_void, out: *mut ServiceO
         let Some(request) = head_copy(&i.request) else {
             return Answered::bare(Outcome::Refused, AUTH_IN_MALFORMED);
         };
+        let framing = match service_framing(owner, i.conn, h.handle.ticket, true) {
+            Ok(f) => f,
+            Err(e) => return Answered::bare(Outcome::Refused, e),
+        };
         let bytes = match host.refuse(RefuseAsk {
             owner,
             generation,
@@ -1954,8 +1981,7 @@ extern "C" fn unit_refuse(ctx: HostCtx, input: *const c_void, out: *mut ServiceO
             line: i.line,
             conn: i.conn,
             stream: i.stream,
-            framing: (!h.handle.ticket.is_none())
-                .then(|| super::auth_handle::framing_of(h.handle.ticket)),
+            framing,
             request,
         }) {
             Ok(b) => b,

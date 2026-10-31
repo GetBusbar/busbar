@@ -1348,9 +1348,11 @@ impl Instance {
             // the runtime that thread is inside.
             let acting = super::worker::worker_mark();
             let runtime = tokio::runtime::Handle::try_current().ok();
+            let framing = super::framing_context::current();
             let (input, output): (*const c_void, *mut c_void) =
                 (input.cast_const().cast(), out.cast());
             let routed = crate::ffi_thread::on_plugin_thread(|| {
+                let _framing = super::framing_context::enter(framing);
                 let _runtime = runtime.as_ref().map(tokio::runtime::Handle::enter);
                 let _acting = super::worker::acting_for(acting);
                 let _unit = super::services::serving(unit);
@@ -2103,7 +2105,9 @@ impl<K: Kind> Plugin<K> {
             .and_then(std::sync::Weak::upgrade)
             .and_then(|route| route.inline());
         if let Some(tickets) = &inline {
-            tickets.starting(ticket, self.inner.instance, s, resume);
+            if !tickets.starting(ticket, self.inner.instance, s, resume) {
+                return Called::from(Crossed::host(Outcome::Refused));
+            }
         }
         let called = self.call_on(s, frame, ticket, resume);
         if let Some(tickets) = &inline {

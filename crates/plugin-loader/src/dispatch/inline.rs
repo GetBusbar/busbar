@@ -60,6 +60,7 @@ struct Held {
     instance: Option<InstanceId>,
     /// The op whose last call answered short: the one re-call it earns reads the results it kept.
     short: Option<u32>,
+    framing: Option<Arc<dyn busbar_contract::framing_scope::FramingScope>>,
 }
 
 impl Slot {
@@ -136,9 +137,6 @@ pub struct InlineTickets {
     slots: Mutex<(Vec<Arc<Slot>>, Vec<u32>)>,
     /// The dispatcher's service results, which keep what an op on an inline ticket was answered.
     services: Weak<ServiceStore>,
-    /// Told when a ticket is retired: the kernel's side of the auth handle, whose per-framing
-    /// state ends with the connection side the ticket drove.
-    ended: std::sync::OnceLock<Arc<dyn super::auth_handle::AuthHandleHost>>,
 }
 
 impl std::fmt::Debug for InlineTickets {
@@ -155,7 +153,6 @@ impl InlineTickets {
             key,
             slots: Mutex::default(),
             services: Arc::downgrade(services),
-            ended: std::sync::OnceLock::new(),
         }
     }
 
@@ -163,17 +160,31 @@ impl InlineTickets {
     /// `resume`, and not the one re-call of an op whose last call answered short) starts with
     /// nothing kept: the last op's stored service results and kept connector answers under `t` go,
     /// ending their epoch, so a service of the last op still running completes into nothing.
-    pub(crate) fn starting(&self, t: Ticket, instance: InstanceId, s: u32, resume: bool) {
+    pub(crate) fn starting(&self, t: Ticket, instance: InstanceId, s: u32, resume: bool) -> bool {
         let Some(slot) = self.lookup(t) else {
-            return;
+            return false;
         };
         let fresh = {
             let mut held = slot.section();
             if held.generation == 0 || held.generation != t.generation {
-                return;
+                return false;
+            }
+            let framing = super::framing_context::current();
+            let fresh = !resume && held.short != Some(s);
+            if !fresh
+                && (held.instance != Some(instance)
+                    || held.framing.as_ref().map(|f| f.leg()) != framing.as_ref().map(|f| f.leg()))
+            {
+                return false;
+            }
+            if fresh {
+                held.framing = framing;
             }
             held.instance = Some(instance);
-            !resume && held.short.take() != Some(s)
+            if !resume {
+                held.short = None;
+            }
+            fresh
         };
         if fresh {
             if let Some(store) = self.services.upgrade() {
@@ -182,6 +193,7 @@ impl InlineTickets {
             // No lock is held here: the dials it left in flight close at once.
             drop(super::conn_services::forget(instance, t));
         }
+        true
     }
 
     /// The op `s` on the inline ticket `t` returned; `short`: it answered short, and its one
@@ -194,11 +206,6 @@ impl InlineTickets {
         if held.generation != 0 && held.generation == t.generation {
             held.short = short.then_some(s);
         }
-    }
-
-    /// Tell `host` of every ticket retired from here on; the first install stands.
-    pub(crate) fn tell_ended(&self, host: Arc<dyn super::auth_handle::AuthHandleHost>) {
-        let _ = self.ended.set(host);
     }
 
     /// Mint a ticket; `None` when every slot is held.
@@ -217,6 +224,7 @@ impl InlineTickets {
                         waker: None,
                         instance: None,
                         short: None,
+                        framing: None,
                     }),
                 }));
                 i
@@ -300,6 +308,7 @@ impl InlineTickets {
             let old = held.generation;
             held.generation = g;
             held.short = None;
+            held.framing = None;
             (held.waker.take(), held.instance.take(), old)
         };
         drop(gone);
@@ -377,9 +386,5 @@ impl Drop for InlineTicket {
     fn drop(&mut self) {
         let (_, index) = decode(self.ticket.slot);
         self.owner.recycle(index, &self.slot);
-        // The connection side this ticket drove is gone: so is what the kernel held for it.
-        if let Some(host) = self.owner.ended.get() {
-            host.framing_ended(super::auth_handle::framing_of(self.ticket));
-        }
     }
 }

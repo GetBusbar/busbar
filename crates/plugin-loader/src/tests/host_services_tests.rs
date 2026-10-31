@@ -3528,47 +3528,58 @@ fn refuse_in() -> UnitRefuseIn {
 
 // ── the framing: the host's identity of a connection side ─────────────────────────────────────
 
-/// RED (the framing is the host's): an `auth.call` hands the kernel the framing of the ticket its
-/// framer op was made on, never the transport's word for it.
+/// An auth call uses its host-owned framing identity independently of its operation ticket.
 #[test]
-fn red_an_auth_call_names_its_tickets_framing() {
+fn an_auth_call_names_the_host_framing_instead_of_its_operation_ticket() {
     let (d, side) = served_double();
     let r = mint_auth_ref(owner(&d), generation(), 3).expect("minted");
     let mut slot = answer_slot();
     let (mut buf, mut spans) = ([0u8; 64], [NO_FIELD_SPAN; 4]);
     let i = auth_call_into(r, &mut slot, &mut buf, &mut spans);
-    let (ret, o) = call_auth(d.ctx, &i);
+    let framing = crate::dispatch::framing_context::FramingContext::new(
+        owner(&d),
+        71,
+        0,
+        d.route.auth.get().map(Arc::downgrade),
+    )
+    .expect("host framing");
+    let scope: Arc<dyn busbar_contract::framing_scope::FramingScope> = framing.clone();
+    let (ret, o) =
+        crate::dispatch::framing_context::with_context(Some(scope), || call_auth(d.ctx, &i));
     assert_eq!(ret.outcome(), Outcome::Ready, "{}", error(&o));
-    assert_eq!(
-        side.calls.lock().unwrap()[0].framing,
-        crate::dispatch::auth_handle::framing_of(TICKET)
-    );
+    assert_eq!(side.calls.lock().unwrap()[0].framing, framing.leg());
 }
 
-/// RED (the host's end notification): the loader tells the installed kernel side when it retires
-/// a connection side's ticket, naming that framing; a live ticket's framing is never named.
+/// Operation tickets may be retired while sibling operations retain their connection's scope.
 #[test]
-fn red_retiring_a_connection_sides_ticket_ends_its_framing() {
+fn retiring_operation_tickets_does_not_end_the_live_host_framing() {
     let dispatcher = crate::dispatch::Dispatcher::new(crate::dispatch::DispatchConfig::default());
     let side = Arc::new(KernelSide::default());
     let host: Arc<dyn AuthHandleHost> = side.clone();
     assert!(dispatcher.install_auth_handle(host));
+    let framing = dispatcher.framing_context(1, 71, 0).expect("host framing");
+    framing.check(1, 19, false).unwrap();
+    framing.confirm(19).unwrap();
+    let retained = framing.clone();
     let live = dispatcher.inline_ticket().expect("a ticket");
-    let mut ended = Vec::new();
     for _ in 0..8 {
         let t = dispatcher.inline_ticket().expect("a ticket");
-        ended.push(crate::dispatch::auth_handle::framing_of(t.ticket()));
         drop(t);
     }
-    assert_eq!(*side.ended.lock().unwrap(), ended);
-    assert!(!side
-        .ended
-        .lock()
-        .unwrap()
-        .contains(&crate::dispatch::auth_handle::framing_of(live.ticket())));
-    let held = crate::dispatch::auth_handle::framing_of(live.ticket());
+    assert!(side.ended.lock().unwrap().is_empty());
+    assert!(framing.check(1, 19, false).is_ok());
     drop(live);
-    assert_eq!(side.ended.lock().unwrap().last(), Some(&held));
+    assert!(side.ended.lock().unwrap().is_empty());
+    framing.closing();
+    assert!(framing.check(1, 19, false).is_err());
+    assert!(framing.check(1, 19, true).is_ok());
+    framing.end();
+    framing.end();
+    assert_eq!(*side.ended.lock().unwrap(), vec![framing.leg()]);
+    assert!(
+        retained.check(1, 19, true).is_err(),
+        "retaining memory cannot retain ended authority"
+    );
 }
 
 /// RED (R3, the data listener served through its framer's accept side): `unit.hand_in` on a line
