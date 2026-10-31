@@ -1914,7 +1914,7 @@ pub(crate) fn refusals_held() -> usize {
 /// copies it out before the call returns).
 /// Never pends. With no kernel side installed: [`AUTH_HANDLE_NOT_SERVED`].
 extern "C" fn unit_refuse(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
-    exact::<svc::UnitRefuseIn>(ctx, input, out, op::UNIT_REFUSE, |i, owner, h, route, _| {
+    exact::<svc::UnitRefuseIn>(ctx, input, out, op::UNIT_REFUSE, |i, owner, _, route, h| {
         let host = auth_host(&route);
         if let Some(r) = refused_unit(owner, host.as_ref(), &i.unit) {
             return r;
