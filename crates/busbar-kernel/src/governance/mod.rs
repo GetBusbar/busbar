@@ -1805,7 +1805,8 @@ pub async fn purge_usage_windows(gov: &GovState) {
         ),
         Err(e) => tracing::warn!(
             error = %e,
-            "usage ledger: the store did not purge windows past the {}-day horizon; retried in an hour",
+            "usage ledger: this store's usage windows are NOT purged past the {}-day horizon \
+             (it grows until the store implements the purge); retried in an hour",
             USAGE_WINDOW_HORIZON_SECS / SECS_PER_DAY
         ),
     }

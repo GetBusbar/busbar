@@ -41,6 +41,10 @@ use crate::records::{
 mod op;
 pub use op::{Checkout, Op, Services, Step};
 
+/// What a store that does not implement [`StoreSlots::purge_usage_before`] answers.
+pub const PURGE_USAGE_UNSUPPORTED: &str =
+    "this store does not purge usage windows (StoreSlots::purge_usage_before is not implemented)";
+
 /// What `record_scan` answers: `(key, record)` in key order.
 pub type Scanned = Vec<(Vec<u8>, RecordBytes)>;
 
@@ -89,9 +93,28 @@ pub trait StoreSlots: Sized + Send + Sync + 'static {
     /// The store's own refusal text, carried verbatim to the operator.
     fn validate(settings: &[u8]) -> Result<(), String>;
 
-    /// Open an instance from the operator's settings (the section's JSON), its resolved `secrets`
-    /// and the host tables `open` was handed (`OpenIn.host`; `None` when none): its connector is
-    /// reached per op through [`Op`].
+    /// Open an instance from the operator's settings (the section's JSON) and the host tables
+    /// `open` was handed (`OpenIn.host`; `None` when none): its connector is reached per op through
+    /// [`Op`]. THE 1.6.0-dev.2 SHAPE, kept so a store built against it still compiles; a store that
+    /// reads a declared secret implements [`StoreSlots::open_with_secrets`] instead (the settings
+    /// it is handed no longer carry a declared secret). Defaulted to a refusal naming that method,
+    /// so a store implements exactly one of the two.
+    ///
+    /// # Errors
+    /// A text naming why the settings do not open a store, carried verbatim to the operator.
+    #[deprecated(
+        note = "implement `open_with_secrets`: a declared secret is lent there, not in the settings"
+    )]
+    fn open(settings: &[u8], host: Option<Host>) -> Result<Self, String> {
+        let _ = (settings, host);
+        Err(
+            "this store implements neither `StoreSlots::open_with_secrets` nor `StoreSlots::open`"
+                .to_string(),
+        )
+    }
+
+    /// Open an instance from the operator's settings, its resolved `secrets` and the host tables
+    /// `open` was handed: what the door calls.
     ///
     /// THE DECLARED SECRETS (`OpenIn.secrets`), as every kind's `open` takes them: one entry per
     /// Statement `secret_refs` key, in that order (a key the operator left unset is an empty
@@ -100,9 +123,20 @@ pub trait StoreSlots: Sized + Send + Sync + 'static {
     /// declared key OUT of `settings`, so a DSN password is read here and never from the settings.
     /// The bytes are lent for the call: a store that keeps one copies it.
     ///
+    /// DEFAULTED to [`StoreSlots::open`] over the settings as lent (the declared secrets taken
+    /// out), so a store built against the older shape opens as before when it declares none.
+    ///
     /// # Errors
     /// A text naming why the settings do not open a store, carried verbatim to the operator.
-    fn open(settings: &[u8], secrets: &[&[u8]], host: Option<Host>) -> Result<Self, String>;
+    fn open_with_secrets(
+        settings: &[u8],
+        secrets: &[&[u8]],
+        host: Option<Host>,
+    ) -> Result<Self, String> {
+        let _ = secrets;
+        #[allow(deprecated)]
+        Self::open(settings, host)
+    }
 
     /// THE CONNECT STEP of `open` (ARCHITECT ruling 2026-10-03 on Q-L16-2): what the store reaches
     /// before the host counts it opened (its backend's first round trip, a schema check). It runs
@@ -429,7 +463,15 @@ pub trait StoreSlots: Sized + Send + Sync + 'static {
     ///
     /// # Errors
     /// The store's refusal, as the 1.5.5 op set states it.
-    fn purge_usage_before(&self, cx: &mut Op<'_>, before: u64) -> Step<RecordStoreResult<u64>>;
+    ///
+    /// DEFAULTED to a refusal saying so (a store built before this method purges nothing): the
+    /// kernel then warns that this store's usage windows are not purged. Never a pretended count.
+    fn purge_usage_before(&self, cx: &mut Op<'_>, before: u64) -> Step<RecordStoreResult<u64>> {
+        let _ = (cx, before);
+        Step::Ready(Err(crate::records::RecordStoreError(
+            PURGE_USAGE_UNSUPPORTED.to_string(),
+        )))
+    }
 
     /// `delete_plane_record` (slot 23); absent is `Ok`.
     ///

@@ -212,7 +212,7 @@ impl StoreSlots for MemoryStore {
         Ok(())
     }
 
-    fn open(settings: &[u8], _secrets: &[&[u8]], _host: Option<Host>) -> Result<Self, String> {
+    fn open(settings: &[u8], _host: Option<Host>) -> Result<Self, String> {
         let store = Self::new();
         let planted = serde_json::from_slice::<serde_json::Value>(settings)
             .ok()

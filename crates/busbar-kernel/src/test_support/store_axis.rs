@@ -107,7 +107,7 @@ impl<S: StoreSlots> SlotStore<S> {
         mint: OpIdMint,
     ) -> Result<Self, String> {
         let refused = |reason: &str| format!("plugin '{name}' open failed: {reason}");
-        let store = S::open(settings, &[], None).map_err(|e| refused(&e))?;
+        let store = S::open_with_secrets(settings, &[], None).map_err(|e| refused(&e))?;
         match S::connect(&store, &mut Op::detached()) {
             Step::Ready(Ok(())) => Ok(Self { store, name, mint }),
             Step::Ready(Err(e)) => Err(refused(&e)),

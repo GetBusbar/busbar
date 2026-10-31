@@ -327,7 +327,11 @@ impl<H: Hooks> StoreSlots for Wrapped<H> {
         H::validate(settings)
     }
 
-    fn open(settings: &[u8], secrets: &[&[u8]], host: Option<Host>) -> Result<Self, String> {
+    fn open_with_secrets(
+        settings: &[u8],
+        secrets: &[&[u8]],
+        host: Option<Host>,
+    ) -> Result<Self, String> {
         H::open(settings, secrets, host).map(|m| Self(m, PhantomData))
     }
 
