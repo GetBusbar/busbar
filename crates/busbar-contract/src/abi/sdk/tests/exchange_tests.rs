@@ -1375,13 +1375,13 @@ fn debug_contains_canary(rendered: &str, canary: &str) -> bool {
     let compact = |s: &str| s.chars().filter(|c| !c.is_whitespace()).collect::<String>();
     let rendered = compact(rendered);
     rendered.contains(canary)
-        || [
-            format!("{:?}", canary.as_bytes()),
-            format!("{:x?}", canary.as_bytes()),
-            format!("{:X?}", canary.as_bytes()),
-        ]
-        .iter()
-        .any(|bytes| rendered.contains(compact(bytes).trim_matches(['[', ']'])))
+        || debug_renderings(&canary.as_bytes()).iter().any(|bytes| {
+            rendered.contains(
+                compact(bytes)
+                    .trim_matches(['[', ']'])
+                    .trim_end_matches(','),
+            )
+        })
 }
 
 fn debug_hides(value: &impl std::fmt::Debug, canaries: &[&str]) {
