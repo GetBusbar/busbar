@@ -88,6 +88,7 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -114,8 +115,8 @@ use busbar_contract::ids::StreamId;
 use busbar_contract::transport::ConnFacts;
 
 use super::super::{
-    bind, called, close, crossings, dispatcher, input, json, load_dropped_staged, open, output,
-    ready_step, real_door, validate, Counts, Fold, Leg, Recorder, Restated, Subject,
+    bind, called, close, crossings, dispatcher_serving, input, json, load_dropped_staged, open,
+    output, ready_step, real_door, validate, Counts, Fold, Leg, Recorder, Restated, Subject,
 };
 use super::{secret, stated, undeclared, Stated};
 use crate::dispatch::kinds::auth::Auth;
@@ -127,6 +128,46 @@ use crate::dispatch::{
 const T0: u64 = 1_000_000_000_000;
 /// Nanoseconds in a second.
 const NS: u64 = 1_000_000_000;
+
+pub(super) struct Clock {
+    wall_origin: u64,
+    elapsed: AtomicU64,
+}
+
+impl Clock {
+    fn new(timestamp: u64) -> Self {
+        Self {
+            wall_origin: timestamp
+                .max(1_800_000_000)
+                .checked_mul(NS)
+                .expect("the fixture timestamp fits the host's nanosecond clock"),
+            elapsed: AtomicU64::new(0),
+        }
+    }
+
+    fn advance(&self, at: u64) {
+        self.elapsed
+            .fetch_max(at.saturating_sub(T0), Ordering::SeqCst);
+    }
+
+    pub(super) fn reading(&self) -> busbar_contract::services::Reading {
+        let elapsed = self.elapsed.load(Ordering::SeqCst);
+        busbar_contract::services::Reading {
+            wall_ns: self.wall_origin.saturating_add(elapsed),
+            mono_ns: T0.saturating_add(elapsed),
+        }
+    }
+}
+
+fn clock_dispatcher(timestamp: u64) -> (Arc<Clock>, Arc<Dispatcher>) {
+    let clock = Arc::new(Clock::new(timestamp));
+    let dispatcher = dispatcher_serving(super::CredentialHost::clocked(Arc::clone(&clock)));
+    (clock, dispatcher)
+}
+
+#[cfg(all(test, loader_self_tests))]
+#[path = "../../tests/conformance_auth_clock_tests.rs"]
+mod clock_tests;
 /// How long a submitted `tick` is awaited.
 const TICK_WAIT: Duration = Duration::from_secs(10);
 /// The failing endpoint's answer body.
@@ -930,13 +971,6 @@ fn crossed(counter: &Counts<'_>, from: u64, n: u64) {
     }
 }
 
-/// The wall clock, epoch seconds.
-fn epoch_now() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs())
-}
-
 /// The bytes `sp` names in the host's field buffer.
 fn at(buf: &[u8], sp: Span) -> &[u8] {
     buf.get(sp.offset as usize..sp.offset as usize + sp.len as usize)
@@ -944,7 +978,14 @@ fn at(buf: &[u8], sp: Span) -> &[u8] {
 }
 
 /// `tick` at `now_ns` on the instance's driver ticket, awaited: its outcome and `next_tick_ns`.
-fn tick_driver(p: &Plugin<Auth>, d: &Dispatcher, driver: Ticket, now_ns: u64) -> (String, u64) {
+fn tick_driver(
+    p: &Plugin<Auth>,
+    d: &Dispatcher,
+    clock: &Clock,
+    driver: Ticket,
+    now_ns: u64,
+) -> (String, u64) {
+    clock.advance(now_ns);
     let reply = d.tick(p, driver, now_ns);
     let Some(done) = reply.wait(TICK_WAIT) else {
         return ("no answer".to_string(), 0);
@@ -1005,7 +1046,7 @@ pub(super) fn fold(s: &Subject, leg: Leg, door: RawDoorFn, st: &Stated) -> Fold 
                     .collect(),
             ))
         });
-        let d = dispatcher();
+        let (clock, d) = clock_dispatcher(x.head.timestamp);
         let conns = endpoint.clone().map(|e| e as Arc<dyn DeclaredConns>);
         let p = load_leg(s, leg, door, &d, "auth-outbound", conns);
         let mut r = Recorder::new(crossings(&p));
@@ -1061,7 +1102,7 @@ pub(super) fn fold(s: &Subject, leg: Leg, door: RawDoorFn, st: &Stated) -> Fold 
                     },
                 );
                 r.line(&label("tick: the exchange"), 1, || {
-                    let (line, _) = tick_driver(&p, &d, driver, T0);
+                    let (line, _) = tick_driver(&p, &d, &clock, driver, T0);
                     let a = first.answered();
                     let b = second.answered();
                     format!("{line} exchanges={} | {a} | {b}", e.count())
@@ -1074,7 +1115,7 @@ pub(super) fn fold(s: &Subject, leg: Leg, door: RawDoorFn, st: &Stated) -> Fold 
                 r.line(&label("outbound_ready"), 1, || ready_fact(&p, handle));
                 r.line(&label("tick before expiry"), 1, || {
                     let at = T0.saturating_add(m.expires_in / 2 * NS);
-                    let (line, _) = tick_driver(&p, &d, driver, at);
+                    let (line, _) = tick_driver(&p, &d, &clock, driver, at);
                     format!("{line} exchanges={}", e.count())
                 });
                 let s2 = x.head.with_extension(auth::EXT_SCOPE, &od.second_scope);
@@ -1082,7 +1123,8 @@ pub(super) fn fold(s: &Subject, leg: Leg, door: RawDoorFn, st: &Stated) -> Fold 
                     let a = submit_fields(&p, &d, handle, &s2, flags, point).answered();
                     format!("{a} exchanges={}", e.count())
                 });
-                let expired = x.head.at(epoch_now().saturating_add(m.expires_in + 1));
+                clock.advance(T0.saturating_add(m.expires_in.saturating_add(1).saturating_mul(NS)));
+                let expired = x.head.at(clock.reading().wall_ns / NS);
                 r.line(
                     &label("fields on a ticket, past the first token's expiry"),
                     2,
@@ -1101,7 +1143,7 @@ pub(super) fn fold(s: &Subject, leg: Leg, door: RawDoorFn, st: &Stated) -> Fold 
                     .driver(&p, 0)
                     .expect("the instance's driver ticket is minted");
                 let next = r.step(&label("tick: the first mint"), 1, || {
-                    let (line, next) = tick_driver(&p, &d, driver, T0);
+                    let (line, next) = tick_driver(&p, &d, &clock, driver, T0);
                     (format!("{line} exchanges={}", e.count()), next)
                 });
                 r.line(&label("fields #1"), 1, signed);
@@ -1115,7 +1157,7 @@ pub(super) fn fold(s: &Subject, leg: Leg, door: RawDoorFn, st: &Stated) -> Fold 
                     format!("refresh_ahead={ahead}")
                 });
                 r.line(&label("tick: the refresh"), 1, || {
-                    let (line, _) = tick_driver(&p, &d, driver, next.max(T0));
+                    let (line, _) = tick_driver(&p, &d, &clock, driver, next.max(T0));
                     format!("{line} exchanges={}", e.count())
                 });
                 r.line(&label("fields after the refresh"), 1, signed);
@@ -1150,7 +1192,7 @@ pub(super) fn fold(s: &Subject, leg: Leg, door: RawDoorFn, st: &Stated) -> Fold 
         // THE FAILING ENDPOINT, on an instance of its own: every exchange answers 500.
         if x.minting.as_ref().is_some_and(|m| m.on_demand.is_some()) {
             let failing = Arc::new(Endpoint::new(vec![(500, FAILURE_BODY.to_vec())]));
-            let d = dispatcher();
+            let (clock, d) = clock_dispatcher(x.head.timestamp);
             let q = load_leg(
                 s,
                 leg,
@@ -1171,7 +1213,7 @@ pub(super) fn fold(s: &Subject, leg: Leg, door: RawDoorFn, st: &Stated) -> Fold 
                 .driver(&q, 0)
                 .expect("the instance's driver ticket is minted");
             rq.line(&label("failing endpoint: tick"), 1, || {
-                let (line, _) = tick_driver(&q, &d, driver, T0);
+                let (line, _) = tick_driver(&q, &d, &clock, driver, T0);
                 format!("{line} exchanges={}", failing.count())
             });
             rq.line(&label("failing endpoint: fields"), 2, || {
@@ -1186,7 +1228,7 @@ pub(super) fn fold(s: &Subject, leg: Leg, door: RawDoorFn, st: &Stated) -> Fold 
             fold.extend(rq.fold());
         } else if x.minting.is_some() {
             let failing = Arc::new(Endpoint::new(vec![(500, FAILURE_BODY.to_vec())]));
-            let d = dispatcher();
+            let (clock, d) = clock_dispatcher(x.head.timestamp);
             let q = load_leg(
                 s,
                 leg,
@@ -1207,7 +1249,7 @@ pub(super) fn fold(s: &Subject, leg: Leg, door: RawDoorFn, st: &Stated) -> Fold 
                 .driver(&q, 0)
                 .expect("the instance's driver ticket is minted");
             rq.line(&label("failing endpoint: tick"), 1, || {
-                let (line, _) = tick_driver(&q, &d, driver, T0);
+                let (line, _) = tick_driver(&q, &d, &clock, driver, T0);
                 format!("{line} exchanges={}", failing.count())
             });
             rq.line(&label("failing endpoint: fields"), 1, || {
