@@ -278,12 +278,15 @@ fn the_tail_and_the_alias_state_what_they_are_given() {
 fn a_held_op_with_no_instance_answers_in_the_sdks_words() {
     let view = view();
     let check = view.op::<Ops>(|t| &t.check).expect("check");
-    let c = reply::call_in(
-        check,
-        None,
-        &TestIn::<CheckIn>::new()
-            .set(|i| &i.head.op, crate::abi::export::slot::CHECK)
-            .set(|i| &i.phase, CHECK_PHASE_LIMITS),
+    let mut input: CheckIn = zeroed();
+    input.head.op = crate::abi::export::slot::CHECK;
+    input.phase = CHECK_PHASE_LIMITS;
+    // Deliberately malformed ABI entry: call_in protects ordinary fixtures from missing instances.
+    // Enter the raw slot so this checks the SDK's refusal rather than that fixture guard.
+    let c = reply::call(
+        check.parts().0,
+        core::ptr::null_mut(),
+        &input,
         zeroed::<CheckOut>(),
     );
     assert_eq!(c.outcome, Outcome::Refused);
