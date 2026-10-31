@@ -568,6 +568,10 @@ impl ExportCalls for ExportInstance {
         Delivered::Queued
     }
 
+    fn takes_span_records(&self) -> bool {
+        self.shared.facts.span_records
+    }
+
     fn scrape(&self, families: &[Family]) -> Result<Vec<u8>, String> {
         scrape_with(&self.shared.plugin, families, 0)
     }

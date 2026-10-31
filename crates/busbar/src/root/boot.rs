@@ -1030,6 +1030,10 @@ pub fn book(
         lane.hold_lease(lease);
     }
     let node = taken.id;
+    // THE RATE-CARD HISTORY IS KEPT IN THE STORE (MONEY-DESIGN section 3a): the book's rebuild loads it
+    // from `busbar.card.v1` under this node's durable id, re-puts a pending entry from the data
+    // directory's spool, and migrates every chain's journalled cards into it.
+    super::kernel::ROOT_CARD.keep_in_store(calls.clone(), node, data_dir.clone());
     let token = super::kernel::new_kernel().durability_token();
     let mut durability = compose_book(lane, data_dir, node, now, &token)?;
     // The node amendment journal — the one the boot generation carries — is rebuilt from the chain

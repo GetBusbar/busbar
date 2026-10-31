@@ -772,8 +772,9 @@ impl Instance {
     /// Declare each need whose `target_from` or `trust_from` names a config path, with what that
     /// path resolves to in `settings` (the settings `open` or `refresh` hands the plugin), before
     /// the plugin sees them: the target it is pinned to, and the operator CA PEM its connections
-    /// trust on top of the public roots. A path that resolves to nothing is declared without its
-    /// value, which the table refuses; a refresh re-declares, so a changed value moves the pin or
+    /// trust on top of the public roots. A `target_from` that resolves to nothing is declared without
+    /// its value, which the table refuses; a `trust_from` that does (`settings.` or `owned.`) is
+    /// optional, declared without it, and the table takes it as the public roots alone; a refresh re-declares, so a changed value moves the pin or
     /// the trust; a `trust_from` naming a settings path that resolves to nothing is refused by the
     /// table but not audited (an optional anchor the operator did not write). A `trust_from` in the OWNED namespace (`owned.<section>.<key>`,
     /// [`busbar_contract::section::owned_path`]) resolves against `owned` alone (a plane's other

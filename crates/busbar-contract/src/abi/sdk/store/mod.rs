@@ -11,7 +11,7 @@
 //! reads the host's `in`, decodes each record blob, calls the method, and writes the answer into
 //! the host's buffers or under a lease.
 //!
-//! # Dedupe is the store's (S1-S4)
+//! # Dedupe is the store's (S1-S5)
 //!
 //! Every method that takes an [`OpId`] dedupes on it, DURABLY for a durable store: the same
 //! `op_id` with the same value fields applies nothing and answers what the first call answered
@@ -24,6 +24,7 @@
 pub mod door;
 // The `op_id` dedupe: the state machine and the body a store records.
 pub mod dedupe;
+pub mod fork;
 pub mod wire;
 // A record's fields as a backend stores them: scope columns, storable integers, counters.
 pub mod column;
@@ -52,8 +53,9 @@ pub enum OpRefused {
     /// [`DIAG_OPID_CONFLICT`](crate::abi::store::DIAG_OPID_CONFLICT), nothing applied.
     Conflict,
     /// The write could not be applied (a fork at a used `seq`, a backend error): FAILED with this
-    /// text, nothing applied, nothing recorded under the `op_id`. A host cannot tell this from a
-    /// commit whose answer was lost, so it replays the same `op_id` (S5).
+    /// text, nothing applied, nothing recorded under the `op_id`. A host cannot tell a backend error
+    /// from a commit whose answer was lost, so it replays the same `op_id` (S5); a fork it never
+    /// replays.
     Failed(String),
     /// The write was decided before commit and refused (a value its columns cannot hold, a
     /// constraint, a script error before any write): REFUSED with this text, PROVABLY nothing
@@ -99,7 +101,8 @@ pub trait StoreSlots: Sized + Send + Sync + 'static {
     fn open(settings: &[u8], host: Option<Host>) -> Result<Self, String>;
 
     /// THE CONNECT STEP of `open` (ARCHITECT ruling 2026-10-03 on Q-L16-2): what the store reaches
-    /// before the host counts it opened (its backend's first round trip, a schema check). It runs
+    /// before the host counts it opened (its backend's first round trip, a schema check: a backend
+    /// whose stored schema is NEWER than this build's is refused, never written). It runs
     /// on the instance [`StoreSlots::open`] answered, on `open`'s own ticket, and may PEND on the
     /// connector exactly as an op does: the host re-enters `open` on the wake and the door hands
     /// back the same instance and [`Op`] (what it parked, its one connection), never calling
@@ -190,7 +193,7 @@ pub trait StoreSlots: Sized + Send + Sync + 'static {
         deltas: &[MeteringDelta],
     ) -> Step<OpResult<()>>;
 
-    // ── the 1.5.5 op set (slots 0-32), each one body, served through the table ─────────────────
+    // ── the 1.5.5 op set, each one body, served through the table ──────────────────────────────
 
     /// `put_key` (slot 0): upsert `key` by its id.
     ///

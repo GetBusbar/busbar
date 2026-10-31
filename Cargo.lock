@@ -283,6 +283,7 @@ dependencies = [
  "hyper-util",
  "idna_adapter",
  "metrics",
+ "serde",
  "serde_json",
  "serde_yaml_ng",
  "socket2",
