@@ -120,7 +120,7 @@ pub struct Dial {
     pub opening: Option<Opening>,
     /// The first message's head words, method and target (`framer::encode_head`); empty = none.
     pub head_words: HeadWords,
-    /// The destination's sealed trust anchors (the transport pin, ARCHITECT 2026-10-03): the far end's key pin the
+    /// The destination's sealed trust anchors (the transport pin): the far end's key pin the
     /// handshake is held to and the client identity it presents; `None` = none sealed.
     pub anchors: Option<Arc<crate::tls::client::Sealed>>,
 }
@@ -291,9 +291,9 @@ struct Tunnel {
     authority: String,
 }
 
-/// THE REFUSAL OF A FAR END WHOSE KEY IS NOT THE PINNED ONE (the transport pin, ARCHITECT 2026-10-03): the handshake's chain
-/// and name check passed and the leaf certificate's key is another, so the connection is refused
-/// before a request byte is written. The connection's facts still name the key it served.
+/// THE REFUSAL OF A FAR END WHOSE KEY IS NOT THE PINNED ONE (the transport pin): the handshake's
+/// chain and name check passed and the leaf certificate's key is another, so the connection is
+/// refused before a request byte is written. The connection's facts still name the key it served.
 pub const PIN_REFUSED: &str =
     "tls: the far end's key is not the one its trust anchors pin; refused before any request byte";
 
@@ -438,6 +438,41 @@ impl Connection {
     }
 }
 
+/// THE HEAD THE FRAMER WAS PROMISED (THE DESIGN section 6, step 5): the dial's opening completed
+/// with the lines the framer located leaves to the host
+/// ([`busbar_contract::conn::HeadDefaults::completing`]): each of its own lines the opening does
+/// not carry, then `content-length` for a non-empty body where it states the length. The opener's
+/// auth call was handed the same lines (the walk reads them through `head_defaults`), so the head
+/// the framer renders is the head the auth signed. The opener's own fields never state the length
+/// (the connector refuses one, `head_is_refused`); this line is the host's. An opening with nothing
+/// to send stays as it is.
+fn complete_opening(dial: &mut Dial, located: &framer::Located) {
+    let Some((fields, body)) = dial.opening.as_mut() else {
+        return;
+    };
+    let (method, target) = &dial.head_words;
+    if fields.is_empty() && body.is_empty() && method.is_empty() && target.is_empty() {
+        return;
+    }
+    let head = busbar_contract::conn::HeadDefaults {
+        lines: located.defaults.clone(),
+        states_length: located.states_length,
+    };
+    let added = head.completing(
+        |name| {
+            fields
+                .iter()
+                .any(|(n, _)| n.as_bytes().eq_ignore_ascii_case(name))
+        },
+        body.len(),
+    );
+    fields.extend(
+        added
+            .into_iter()
+            .map(|(n, v)| (String::from_utf8_lossy(&n).into_owned(), v)),
+    );
+}
+
 /// Where a dial over a carrier CARRIED AS ITSELF goes: its target is an authority, `host:port`, or
 /// `<claim>://host:port` (`claim` the carrier's own); nothing is offered and no connection security
 /// is asked for at the dial.
@@ -490,11 +525,12 @@ impl Planned {
     ///
     /// [`Failure::Refused`]: the target or the authority names no host, or the entry locates
     /// nothing.
-    pub fn locate(door: Arc<dyn FramerDoor>, via: Via, dial: Dial) -> Result<Self, Failure> {
+    pub fn locate(door: Arc<dyn FramerDoor>, via: Via, mut dial: Dial) -> Result<Self, Failure> {
         endpoint::named(&dial.target).map_err(|e| Failure::Refused(e.to_string()))?;
         let located = framer::locate(door.as_ref(), &dial.target)
             .map_err(|e| Failure::Refused(e.to_string()))?;
         endpoint::named(&located.authority).map_err(|e| Failure::Refused(e.to_string()))?;
+        complete_opening(&mut dial, &located);
         Ok(Self {
             door: Some(door),
             via,
@@ -1085,9 +1121,8 @@ impl Connection {
     }
 
     /// Whether the connection carries CONCURRENT exchanges, one stream each: the protocol agreed
-    /// (in the handshake, or by prior knowledge) is `h2` (RFC 9113; ARCHITECT ruling Q-L18-MUX
-    /// 2026-10-03: concurrent requests to one origin share an h2 connection, h1 stays one request
-    /// per connection).
+    /// (in the handshake, or by prior knowledge) is `h2` (RFC 9113; concurrent requests to one
+    /// origin share an h2 connection, h1 stays one request per connection).
     #[must_use]
     pub fn multiplexes(&self) -> bool {
         self.dialled() && self.live() && self.established.agreed_protocol.as_deref() == Some(b"h2")
@@ -1894,8 +1929,8 @@ impl Connection {
     /// Begin the framing over what the open established, then send the first message and any
     /// early writes.
     fn begin(&mut self) -> Result<(), Failure> {
-        // A dial hands its opening head fields to the framing's begin too, for a wire that
-        // carries them on the connection's opening (ARCHITECT Q-L5B-WS-DIAL).
+        // A dial hands its opening head fields to the framing's begin too, for a wire that carries
+        // them on the connection's opening.
         let opening: &[(String, Vec<u8>)] = match &self.opening {
             Some((fields, _)) if self.side == SIDE_DIAL => fields,
             _ => &[],

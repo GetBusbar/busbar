@@ -428,9 +428,8 @@ fn a_far_end_that_never_reads_fills_the_buffer_and_writes_are_refused_room() {
     });
 }
 
-/// RED (ARCHITECT, the stream-end ruling): an EMPTY message, binary or text, is relayed as a
-/// message, its text bit kept; the stream ends only on the framer's `PIECE_END`, never on an empty
-/// piece.
+/// An EMPTY message, binary or text, is relayed as a message, its text bit kept; the stream ends
+/// only on the framer's `PIECE_END`, never on an empty piece.
 #[test]
 fn empty_messages_relay_and_the_stream_ends_only_on_its_flag() {
     worker().block_on(async {
@@ -513,11 +512,10 @@ fn a_message_handed_up_with_the_frames_end_is_still_answered() {
     });
 }
 
-/// WHY A CONNECTION FAILED, named by stage and the underlying error's own words (ARCHITECT
-/// ruling on a plane's guard words): a closed port fails the socket's open with the socket's own error
-/// (the one this host's own connect to it answers); a far end whose certificate no anchor signs
-/// fails connection security with the TLS stack's own error; a handshake that never finishes is a
-/// deadline.
+/// WHY A CONNECTION FAILED, named by stage and the underlying error's own words: a closed port
+/// fails the socket's open with the socket's own error (the one this host's own connect to it
+/// answers); a far end whose certificate no anchor signs fails connection security with the TLS
+/// stack's own error; a handshake that never finishes is a deadline.
 #[test]
 fn a_failed_connection_names_its_stage_and_the_underlying_error() {
     use busbar_contract::abi::host::conn::connector::{
@@ -603,7 +601,7 @@ fn a_failed_connection_names_its_stage_and_the_underlying_error() {
     });
 }
 
-/// RED (audit core-connector#3, STARTTLS response injection), the connection's own layer: a raw
+/// The connection's own layer, STARTTLS response injection: a raw
 /// stream whose far end answered `OK\n` with forged bytes behind it, the piece taken off the socket
 /// into the connection's inbox and not read. The upgrade is refused and the connection fails: the
 /// forged bytes are never read, least of all as a verified far end's.
@@ -647,7 +645,7 @@ fn an_upgrade_over_a_piece_still_in_the_inbox_is_refused_and_the_connection_fail
     });
 }
 
-/// RED (audit core-connector#6): a far end that sends far more than its holder reads (64 MiB, the
+/// A far end that sends far more than its holder reads (64 MiB, the
 /// holder only waiting on readiness) is held back by the receive cap: the line stops reading, so
 /// the far end's own flow control stops it, short of what it meant to send.
 #[test]
@@ -852,9 +850,9 @@ fn one_write_larger_than_the_tls_send_buffer_crosses_whole() {
     });
 }
 
-/// The agreed protocol is judged against the offer the handshake made (`check_agreed`, audit
-/// contract-src #11) before the framer is handed it: none agreed or an offered id passes, an id
-/// never offered fails the connection, and an id the encoding cannot carry is never offered.
+/// The agreed protocol is judged against the offer the handshake made (`check_agreed`) before the
+/// framer is handed it: none agreed or an offered id passes, an id never offered fails the
+/// connection, and an id the encoding cannot carry is never offered.
 #[test]
 fn the_agreed_protocol_is_one_the_handshake_offered() {
     let offer = protocol_name_list(&[b"pa".to_vec(), Vec::new(), b"proto-b/1".to_vec()]);
@@ -873,7 +871,7 @@ fn the_agreed_protocol_is_one_the_handshake_offered() {
     assert!(protocol_name_list(&[vec![b'x'; 256]]).is_empty());
 }
 
-/// RED (Q128 arch u22 MEDIUM 4; `busbar_contract::abi::transport`, "A STREAM'S OWN BACKPRESSURE":
+/// The contract ( `busbar_contract::abi::transport`, "A STREAM'S OWN BACKPRESSURE":
 /// "the host emits nothing more on that stream, holding whatever feeds it (not-ready, with a
 /// wake), until the framer hands a `PIECE_WRITABLE` piece"): once the framer answers an emit
 /// `YIELD_STREAM_FULL`, the connection takes nothing more on that stream (`Ok(0)`, the writer's
@@ -974,4 +972,107 @@ async fn opened(c: &mut Connection) {
         }
     })
     .await;
+}
+
+/// An opening as a test writes it: its fields and its body.
+type Asked<'a> = (Vec<(&'a str, &'a [u8])>, &'a [u8]);
+
+/// RED: A LOCATED OPENING CARRIES THE HEAD THE FRAMER SAID IT WOULD NOT ADD (THE DESIGN section 6,
+/// step 5). A framer that states its own head lines at `locate` and leaves the body's length to the
+/// host (`LocateOut::states_length`, transport-http #45) renders exactly the head it is handed and
+/// refuses a body no `content-length` frames. So the dial's opening is completed where it is
+/// located: each of the framer's lines the head does not carry, after the caller's fields, then
+/// `content-length: <body length>` last (1.5.5's order: `content-type, accept, host,
+/// content-length`). A line the caller carries is the caller's, never doubled; an empty body states
+/// no length; a framer that states neither gets its opening as written; nothing to send stays
+/// nothing. RED before: the opening went to `encode` as written, and the http door refused every
+/// bodied request ("the envelope cannot be expressed on this wire").
+#[test]
+fn a_located_opening_carries_the_framers_lines_and_the_bodys_length_last() {
+    let stating = Arc::new(TestDoor::new(
+        "stating",
+        &["stating"],
+        &[],
+        Knobs {
+            head_lines: Some(b"accept: */*\r\nhost: 127.0.0.1:9\r\n"),
+            states_length: true,
+            ..Knobs::default()
+        },
+    ));
+    let silent = Arc::new(
+        TestDoor::new("silent", &["silent"], &[], Knobs::default())
+            .with_role(busbar_contract::abi::transport::ROLE_FRAMER),
+    );
+    let located = |door: &Arc<TestDoor>, opening: Option<Asked<'_>>| {
+        let mut d = dial("127.0.0.1:9");
+        d.opening = opening.map(|(fields, body)| {
+            (
+                fields
+                    .into_iter()
+                    .map(|(n, v)| (n.to_owned(), v.to_vec()))
+                    .collect(),
+                body.to_vec().into(),
+            )
+        });
+        let door: Arc<dyn FramerDoor> = door.clone();
+        Planned::locate(door, crate::support::via(), d)
+            .expect("located")
+            .dial()
+            .opening
+            .clone()
+            .map(|(fields, body)| {
+                let fields: Vec<(String, String)> = fields
+                    .into_iter()
+                    .map(|(n, v)| (n, String::from_utf8(v).unwrap()))
+                    .collect();
+                (fields, body.to_vec())
+            })
+    };
+    let pairs = |p: &[(&str, &str)]| -> Vec<(String, String)> {
+        p.iter()
+            .map(|(n, v)| ((*n).to_owned(), (*v).to_owned()))
+            .collect()
+    };
+
+    // A bodied request: the framer's lines after the caller's, the length last.
+    assert_eq!(
+        located(
+            &stating,
+            Some((vec![("content-type", b"application/json")], b"{}"))
+        ),
+        Some((
+            pairs(&[
+                ("content-type", "application/json"),
+                ("accept", "*/*"),
+                ("host", "127.0.0.1:9"),
+                ("content-length", "2"),
+            ]),
+            b"{}".to_vec()
+        ))
+    );
+    // A line the caller carries stays the caller's; an empty body states no length.
+    assert_eq!(
+        located(&stating, Some((vec![("Accept", b"text/plain")], b""))),
+        Some((
+            pairs(&[("Accept", "text/plain"), ("host", "127.0.0.1:9")]),
+            Vec::new()
+        ))
+    );
+    // A framer that states neither: the opening as written.
+    assert_eq!(
+        located(
+            &silent,
+            Some((vec![("content-type", b"application/json")], b"{}"))
+        ),
+        Some((
+            pairs(&[("content-type", "application/json")]),
+            b"{}".to_vec()
+        ))
+    );
+    // Nothing to send stays nothing.
+    assert_eq!(
+        located(&stating, Some((Vec::new(), b""))),
+        Some((Vec::new(), Vec::new()))
+    );
+    assert_eq!(located(&stating, None), None);
 }

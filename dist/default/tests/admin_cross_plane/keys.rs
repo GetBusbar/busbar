@@ -6,6 +6,7 @@
 //! drivers they share.
 
 use busbar_kernel::governance::{GovState, MemoryStore, NewKeySpec};
+use busbar_kernel::plane_driver::serve::ServeTables;
 use busbar_kernel::test_support::protocols::PROTO_ANTHROPIC;
 use std::sync::Arc;
 
@@ -65,17 +66,6 @@ const fn c(
         path,
         headers,
         body,
-    }
-}
-
-/// A TEST-LINKED DOOR PLANE'S INSTANCE, opened over `settings` and published on the kernel's serve
-/// table as the composition root publishes it (K-SERVE): the instance serving its stated admin
-/// routes for as long as the guard lives. The door is the one whose folded row owns `section`.
-struct PublishedDoor(String);
-
-impl Drop for PublishedDoor {
-    fn drop(&mut self) {
-        busbar_kernel::plane_driver::serve::withdraw(&self.0);
     }
 }
 
@@ -177,7 +167,7 @@ async fn drive_unpriced_usage_reads() -> Vec<(String, u16, serde_json::Value)> {
         (busbar_contract::records::UNIT_OUTPUT.to_string(), 200u64),
     ]);
     gov.record_usage(&cost, &in_team, "", "m", &units, now);
-    let usage = busbar_kernel::billing::TokenUsage {
+    let usage = busbar_contract::billing::TokenUsage {
         input: 700,
         output: 200,
         ..Default::default()
@@ -2678,7 +2668,21 @@ async fn named_map_app(
     std::net::SocketAddr,
     tokio::task::JoinHandle<()>,
 ) {
-    named_map_app_opts(tag, reference_corp_ad, true).await
+    named_map_app_opts(tag, reference_corp_ad, true, ServeTables::default()).await
+}
+
+/// [`named_map_app`] whose generation is lent `tables`, the admin table a door was published into
+/// ([`publish_door`]), as the composition root lends the boot generation its own.
+async fn named_map_app_serving(
+    tag: &str,
+    tables: ServeTables,
+) -> (
+    std::path::PathBuf,
+    std::path::PathBuf,
+    std::net::SocketAddr,
+    tokio::task::JoinHandle<()>,
+) {
+    named_map_app_opts(tag, false, true, tables).await
 }
 
 /// [`named_map_app`] with the base `export:` entry made OPTIONAL. `base_export == false` is the
@@ -2689,6 +2693,7 @@ async fn named_map_app_opts(
     tag: &str,
     reference_corp_ad: bool,
     base_export: bool,
+    tables: ServeTables,
 ) -> (
     std::path::PathBuf,
     std::path::PathBuf,
@@ -2712,6 +2717,7 @@ async fn named_map_app_opts(
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let mut builder = crate::new_test_app()
         .governance(gov)
+        .serve_tables(tables)
         .overlay_path(overlay.clone())
         .disk_paths(config_path, providers_path)
         .identity_provider(
@@ -2741,7 +2747,8 @@ async fn named_map_app_opts(
         let parse = decl
             .parse_section
             .unwrap_or_else(|| panic!("the `{section}:` plane parses its own section"));
-        let cfg = parse(&disk[section]).unwrap_or_else(|e| panic!("`{section}:` parses: {e}"));
+        let cfg =
+            parse(decl, &disk[section]).unwrap_or_else(|e| panic!("`{section}:` parses: {e}"));
         (
             decl,
             std::sync::Arc::<dyn busbar_kernel::config::plane_sections::PlaneCfg>::from(cfg),
@@ -2770,7 +2777,7 @@ async fn named_map_app_opts(
                     prior: None,
                     providers: None,
                 };
-                if let Some(slot) = (decl.build)(&ctx) {
+                if let Some(slot) = (decl.build)(decl, &ctx) {
                     builder.install_plane_runtime(decl.key, slot);
                 }
             }
@@ -2790,7 +2797,7 @@ async fn named_map_app_opts(
             prior: None,
             providers: None,
         };
-        if let Some(plane) = (decl.build)(&ctx) {
+        if let Some(plane) = (decl.build)(decl, &ctx) {
             builder.install_plane_runtime(decl.key, plane);
         }
     }
@@ -3159,7 +3166,8 @@ async fn test_admin_v1_identity_provider_refuses_raising_max_admin_scope() {
 async fn test_admin_v1_export_put_that_adds_a_route_reports_restart_required() {
     linked_export_axis();
     // `base_export: false` ⇒ booted with NO exporter, so `/metrics` was never mounted.
-    let (dir, _overlay, addr, handle) = named_map_app_opts("bootfrozen", false, false).await;
+    let (dir, _overlay, addr, handle) =
+        named_map_app_opts("bootfrozen", false, false, ServeTables::default()).await;
     let client = reqwest::Client::new();
     let admin = |r: reqwest::RequestBuilder| {
         r.header("x-admin-token", "admintok")
@@ -3515,7 +3523,11 @@ async fn test_admin_v1_identity_provider_delete_rejects_a_dangling_reference() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-fn publish_door(section: &str, settings: &str) -> PublishedDoor {
+/// A TEST-LINKED DOOR PLANE'S INSTANCE, opened over `settings` and published on an admin table of
+/// its own as the composition root publishes it (K-SERVE): the table, to lend the generation whose
+/// admin router serves the instance's stated admin routes. The door is the one whose folded row
+/// owns `section`.
+fn publish_door(section: &str, settings: &str) -> ServeTables {
     use busbar_plugin_loader::dispatch::kinds::plane::{open_door, Plane};
     use busbar_plugin_loader::dispatch::{
         load_linked, Bind, DispatchConfig, Dispatcher, LinkedRow, NoSink,
@@ -3558,19 +3570,21 @@ fn publish_door(section: &str, settings: &str) -> PublishedDoor {
     let calls = Arc::new(
         busbar_plugin_loader::dispatch::plane_calls::PlaneInstance::new(plane, dispatcher, 0),
     );
-    busbar_kernel::plane_driver::serve::publish(
-        busbar_kernel::plane_driver::serve::ServeTable {
-            instance: instance.clone(),
-            audit_kind,
-            calls,
-            caps: busbar_kernel::plane_driver::BufferCaps::default(),
-            routes,
-            records: None,
-        },
-        &[],
-    )
-    .expect("its admin routes publish");
-    PublishedDoor(instance)
+    let tables = ServeTables::default();
+    tables
+        .publish(
+            busbar_kernel::plane_driver::serve::ServeTable {
+                instance,
+                audit_kind,
+                calls,
+                caps: busbar_kernel::plane_driver::BufferCaps::default(),
+                routes,
+                records: None,
+            },
+            &[],
+        )
+        .expect("its admin routes publish");
+    tables
 }
 
 /// THE DOOR PLANE'S TRUST VERBS' DECLARED ERRORS, produced through the admin router by the door's
@@ -3594,11 +3608,11 @@ async fn drive_door_verb_errors() {
     )
     .expect_err("a passthrough registration is refused at load");
     assert!(refused.starts_with("`tools.base-tools`"), "{refused}");
-    let _published = publish_door(
+    let tables = publish_door(
         "tools",
         r#"{"base-tools": {"url": "https://pass.example/rpc", "pin": {"mechanism": "pinned_pubkey", "key": "sha256/K="}, "tools_allow": {"read": {"schema_hash": "sha256:aa"}}}}"#,
     );
-    let (_dir, _overlay, addr, handle) = named_map_app("door-verbs", false).await;
+    let (_dir, _overlay, addr, handle) = named_map_app_serving("door-verbs", tables).await;
     let client = reqwest::Client::new();
     let send = |method: reqwest::Method, path: &str| {
         client
@@ -3617,6 +3631,54 @@ async fn drive_door_verb_errors() {
         assert_eq!(body.pointer("/error/code").unwrap(), "not_found", "{body}");
     }
     handle.abort();
+}
+
+/// A DOOR'S ADMIN ROUTE IS SERVED OFF THE LIVE GENERATION'S OWN TABLE: two admin routers in one
+/// process over the same deployment, one whose generation was lent the table the door was
+/// published into and one whose generation was lent none. The first serves the door's `connect`
+/// (its passthrough registration's `400 invalid_request`); the second answers the same request as
+/// no published instance names it (`404 not_found`). While the table was one process-wide value,
+/// both routers served the door.
+#[tokio::test]
+async fn a_door_admin_route_is_served_only_by_the_generation_lent_its_table() {
+    let tables = publish_door(
+        "tools",
+        r#"{"base-tools": {"url": "https://pass.example/rpc", "pin": {"mechanism": "pinned_pubkey", "key": "sha256/K="}, "upstream_credentials": "passthrough", "tools_allow": {"read": {"schema_hash": "sha256:aa"}}}}"#,
+    );
+    let (lent_dir, _lent_overlay, lent, lent_handle) =
+        named_map_app_serving("door-table-lent", tables).await;
+    let (unlent_dir, _unlent_overlay, unlent, unlent_handle) =
+        named_map_app("door-table-unlent", false).await;
+    let client = reqwest::Client::new();
+    let connect = |addr: std::net::SocketAddr| {
+        client
+            .post(format!(
+                "http://{addr}/api/v1/admin/tools/base-tools/connect"
+            ))
+            .header("x-admin-token", "admintok")
+            .send()
+    };
+    let r = connect(lent).await.unwrap();
+    let status = r.status().as_u16();
+    let body: serde_json::Value = r.json().await.unwrap();
+    assert_eq!(status, 400, "the lent generation serves the door: {body}");
+    assert_eq!(
+        body.pointer("/error/code").unwrap(),
+        "invalid_request",
+        "{body}"
+    );
+    let r = connect(unlent).await.unwrap();
+    let status = r.status().as_u16();
+    let body: serde_json::Value = r.json().await.unwrap();
+    assert_eq!(
+        status, 404,
+        "a generation lent no table serves no door: {body}"
+    );
+    assert_eq!(body.pointer("/error/code").unwrap(), "not_found", "{body}");
+    lent_handle.abort();
+    unlent_handle.abort();
+    let _ = std::fs::remove_dir_all(&lent_dir);
+    let _ = std::fs::remove_dir_all(&unlent_dir);
 }
 
 /// The DER `SubjectPublicKeyInfo` of `issuer`'s Ed25519 key (RFC 8410 section 4), base64: the key
@@ -3648,8 +3710,8 @@ async fn drive_agent_door_verb_errors() {
             "pin": {"mechanism": "jws_issuer_key", "key": issuer_key_info(&issuer)}
         }
     });
-    let _published = publish_door("agents", &section.to_string());
-    let (_dir, _overlay, addr, handle) = named_map_app("agent-door-verbs", false).await;
+    let tables = publish_door("agents", &section.to_string());
+    let (_dir, _overlay, addr, handle) = named_map_app_serving("agent-door-verbs", tables).await;
     let client = reqwest::Client::new();
     let send = |path: &str, body: &str| {
         client

@@ -483,6 +483,7 @@ name = "busbar-kernel-egress"
 version = "1.6.0"
 dependencies = [
  "busbar-contract",
+ "busbar-kernel-breaker",
 ]
 
 [[package]]
@@ -548,6 +549,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tungstenite",
+ "zeroize",
 ]
 
 [[package]]

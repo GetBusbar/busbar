@@ -260,7 +260,7 @@ dependencies = [
 [[package]]
 name = "busbar-auth-oauth"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-auth-oauth?rev=a1ab87c9f5e2ad8d07a581b14f55ea88669847e8#a1ab87c9f5e2ad8d07a581b14f55ea88669847e8"
+source = "git+https://github.com/GetBusbar/busbar-auth-oauth?rev=ce2dbffe2825d36abc92488b7d6f88b1df856219#ce2dbffe2825d36abc92488b7d6f88b1df856219"
 dependencies = [
  "base64 0.22.1",
  "busbar-contract",
@@ -275,7 +275,7 @@ dependencies = [
 [[package]]
 name = "busbar-auth-oidc"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-auth-oidc?rev=82b88d5f331a31124cdfccc65fa3d7e9d78fb8ab#82b88d5f331a31124cdfccc65fa3d7e9d78fb8ab"
+source = "git+https://github.com/GetBusbar/busbar-auth-oidc?rev=a19d1133275dde33ac49f16801865c1bfe406d5a#a19d1133275dde33ac49f16801865c1bfe406d5a"
 dependencies = [
  "base64 0.22.1",
  "busbar-contract",
@@ -291,7 +291,7 @@ dependencies = [
 [[package]]
 name = "busbar-auth-oidc-plugin"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-auth-oidc?rev=82b88d5f331a31124cdfccc65fa3d7e9d78fb8ab#82b88d5f331a31124cdfccc65fa3d7e9d78fb8ab"
+source = "git+https://github.com/GetBusbar/busbar-auth-oidc?rev=a19d1133275dde33ac49f16801865c1bfe406d5a#a19d1133275dde33ac49f16801865c1bfe406d5a"
 dependencies = [
  "busbar-auth-oidc",
  "busbar-contract",
@@ -300,13 +300,14 @@ dependencies = [
 [[package]]
 name = "busbar-auth-sigv4"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-auth-sigv4?rev=aaf683a69f866c5f251a1aaa17e17bc69ad22a71#aaf683a69f866c5f251a1aaa17e17bc69ad22a71"
+source = "git+https://github.com/GetBusbar/busbar-auth-sigv4?rev=9f1c32c292c5f21b3e568ccc84ec18b65da4b28e#9f1c32c292c5f21b3e568ccc84ec18b65da4b28e"
 dependencies = [
  "busbar-contract",
  "hex",
  "ring",
  "serde",
  "serde_json",
+ "tracing",
  "zeroize",
 ]
 
@@ -505,8 +506,8 @@ dependencies = [
 
 [[package]]
 name = "busbar-export-file"
-version = "1.5.0"
-source = "git+https://github.com/GetBusbar/busbar-export-file?rev=51e744af4a46222e7bb5ecb8d5c86b97a450f929#51e744af4a46222e7bb5ecb8d5c86b97a450f929"
+version = "1.6.0"
+source = "git+https://github.com/GetBusbar/busbar-export-file?rev=edf728488f7f7be8e2e4df5bbb46c82998439cb7#edf728488f7f7be8e2e4df5bbb46c82998439cb7"
 dependencies = [
  "busbar-contract",
  "serde",
@@ -516,8 +517,8 @@ dependencies = [
 
 [[package]]
 name = "busbar-export-file-plugin"
-version = "1.5.0"
-source = "git+https://github.com/GetBusbar/busbar-export-file?rev=51e744af4a46222e7bb5ecb8d5c86b97a450f929#51e744af4a46222e7bb5ecb8d5c86b97a450f929"
+version = "1.6.0"
+source = "git+https://github.com/GetBusbar/busbar-export-file?rev=edf728488f7f7be8e2e4df5bbb46c82998439cb7#edf728488f7f7be8e2e4df5bbb46c82998439cb7"
 dependencies = [
  "busbar-contract",
  "busbar-export-file",
@@ -526,7 +527,7 @@ dependencies = [
 [[package]]
 name = "busbar-export-otlp"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-export-otlp?rev=6e7c9327103382e5ee9e5b223c5306eea82ef51f#6e7c9327103382e5ee9e5b223c5306eea82ef51f"
+source = "git+https://github.com/GetBusbar/busbar-export-otlp?rev=3e1726f336a3f94bc120117100e72f033b992748#3e1726f336a3f94bc120117100e72f033b992748"
 dependencies = [
  "base64 0.22.1",
  "busbar-contract",
@@ -541,7 +542,7 @@ dependencies = [
 [[package]]
 name = "busbar-export-otlp-plugin"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-export-otlp?rev=6e7c9327103382e5ee9e5b223c5306eea82ef51f#6e7c9327103382e5ee9e5b223c5306eea82ef51f"
+source = "git+https://github.com/GetBusbar/busbar-export-otlp?rev=3e1726f336a3f94bc120117100e72f033b992748#3e1726f336a3f94bc120117100e72f033b992748"
 dependencies = [
  "busbar-contract",
  "busbar-export-otlp",
@@ -549,8 +550,8 @@ dependencies = [
 
 [[package]]
 name = "busbar-export-prometheus"
-version = "1.5.0"
-source = "git+https://github.com/GetBusbar/busbar-export-prometheus?rev=8535098ecf2723bf73dc6e4b1a3174c63b0d8500#8535098ecf2723bf73dc6e4b1a3174c63b0d8500"
+version = "1.6.0"
+source = "git+https://github.com/GetBusbar/busbar-export-prometheus?rev=c573115bd3e17df2cf4753d9d941ba8327170734#c573115bd3e17df2cf4753d9d941ba8327170734"
 dependencies = [
  "busbar-contract",
  "serde",
@@ -559,8 +560,8 @@ dependencies = [
 
 [[package]]
 name = "busbar-export-prometheus-plugin"
-version = "1.5.0"
-source = "git+https://github.com/GetBusbar/busbar-export-prometheus?rev=8535098ecf2723bf73dc6e4b1a3174c63b0d8500#8535098ecf2723bf73dc6e4b1a3174c63b0d8500"
+version = "1.6.0"
+source = "git+https://github.com/GetBusbar/busbar-export-prometheus?rev=c573115bd3e17df2cf4753d9d941ba8327170734#c573115bd3e17df2cf4753d9d941ba8327170734"
 dependencies = [
  "busbar-contract",
  "busbar-export-prometheus",
@@ -655,6 +656,7 @@ name = "busbar-kernel-egress"
 version = "1.6.0"
 dependencies = [
  "busbar-contract",
+ "busbar-kernel-breaker",
 ]
 
 [[package]]
@@ -685,7 +687,7 @@ dependencies = [
 [[package]]
 name = "busbar-plane-a2a"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-plane-a2a?rev=26d7a653bc1dc47e5ed6568fddb83394ea3480b8#26d7a653bc1dc47e5ed6568fddb83394ea3480b8"
+source = "git+https://github.com/GetBusbar/busbar-plane-a2a?rev=29d9bcbe4c267318f5e71a3768c65b1a14791313#29d9bcbe4c267318f5e71a3768c65b1a14791313"
 dependencies = [
  "base64 0.22.1",
  "busbar-contract",
@@ -768,6 +770,7 @@ dependencies = [
  "tar",
  "tokio",
  "tracing",
+ "zeroize",
 ]
 
 [[package]]
@@ -793,7 +796,7 @@ dependencies = [
 [[package]]
 name = "busbar-store-memory"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-store-memory?rev=dfce32ebc3b9c705183a055c33e409bd7290eb68#dfce32ebc3b9c705183a055c33e409bd7290eb68"
+source = "git+https://github.com/GetBusbar/busbar-store-memory?rev=5927d5e43343227c4fa331a61d33ced623be7687#5927d5e43343227c4fa331a61d33ced623be7687"
 dependencies = [
  "busbar-contract",
  "serde_json",
@@ -820,7 +823,7 @@ dependencies = [
 [[package]]
 name = "busbar-transport-grpc"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-transport-grpc?rev=7789b68211cfb6bf480f09f23c507f7ddeb4b9c5#7789b68211cfb6bf480f09f23c507f7ddeb4b9c5"
+source = "git+https://github.com/GetBusbar/busbar-transport-grpc?rev=6287c350d026988965ed88dea9fa0e67cd27b04d#6287c350d026988965ed88dea9fa0e67cd27b04d"
 dependencies = [
  "busbar-contract",
  "bytes",
@@ -848,7 +851,7 @@ dependencies = [
 [[package]]
 name = "busbar-transport-stdio"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-transport-stdio?rev=70c6ce925e45022cc7bdbc5f2b011f009189c2ae#70c6ce925e45022cc7bdbc5f2b011f009189c2ae"
+source = "git+https://github.com/GetBusbar/busbar-transport-stdio?rev=bfdfbd76eea2b3b49f523237cd8b846efc0d7124#bfdfbd76eea2b3b49f523237cd8b846efc0d7124"
 dependencies = [
  "busbar-contract",
 ]
@@ -873,7 +876,7 @@ dependencies = [
 [[package]]
 name = "busbar-transport-webrtc"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-transport-webrtc?rev=ba08e0e0185742b3946fcf08c0967749c52c9c27#ba08e0e0185742b3946fcf08c0967749c52c9c27"
+source = "git+https://github.com/GetBusbar/busbar-transport-webrtc?rev=6d6bf95f200af51f7f2a4304301dd232ec3722b5#6d6bf95f200af51f7f2a4304301dd232ec3722b5"
 dependencies = [
  "aes",
  "busbar-contract",
@@ -885,7 +888,7 @@ dependencies = [
 [[package]]
 name = "busbar-transport-ws"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-transport-ws?rev=72a7f4102734e47e1c2ac997a597b1b5453ef8e7#72a7f4102734e47e1c2ac997a597b1b5453ef8e7"
+source = "git+https://github.com/GetBusbar/busbar-transport-ws?rev=2a0e6b9e092677306d560b4a3c5774e0905eb669#2a0e6b9e092677306d560b4a3c5774e0905eb669"
 dependencies = [
  "busbar-contract",
  "httpdate",
