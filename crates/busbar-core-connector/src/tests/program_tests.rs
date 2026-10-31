@@ -954,3 +954,6 @@ fn a_retired_members_supervision_key_is_signalled_retired_once() {
         );
     });
 }
+
+#[path = "program_retirement_tests.rs"]
+mod retirement_order;
