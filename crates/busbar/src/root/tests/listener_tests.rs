@@ -244,7 +244,7 @@ async fn body_read_timeout_trips_on_stalled_body() {
         request_body_read_timeout_secs: 1,
         ..busbar_kernel::config::LimitsResolved::default()
     };
-    let _limits_guard = busbar_kernel::config::limits::InstallGuard::install(&limits);
+    let _limits_guard = busbar_kernel_testkit::limits::InstallGuard::install(&limits);
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -312,12 +312,12 @@ async fn a_rejected_configs_limits_do_not_govern_later_connections() {
     let _guard = LIMITS_TEST_LOCK.lock().await;
     // The "accepted config that is already serving": the historical defaults (30s inter-frame).
     // Itself guarded so this test leaks nothing to the rest of the binary.
-    let _baseline = busbar_kernel::config::limits::InstallGuard::install(
+    let _baseline = busbar_kernel_testkit::limits::InstallGuard::install(
         &busbar_kernel::config::LimitsResolved::default(),
     );
     {
         // A candidate config whose build then FAILS. Its limits are live while the build runs…
-        let _rejected = busbar_kernel::config::limits::InstallGuard::install(
+        let _rejected = busbar_kernel_testkit::limits::InstallGuard::install(
             &busbar_kernel::config::LimitsResolved {
                 request_body_read_timeout_secs: 1,
                 ..busbar_kernel::config::LimitsResolved::default()
@@ -395,7 +395,7 @@ async fn throughput_floor_trips_on_a_dribble_the_inter_frame_timer_cannot_catch(
     // `uninstalled_accessors_return_historical_defaults` asserts against the UNINSTALLED state.
     // That it currently passes is an accident of the values happening to equal the defaults; the
     // guard makes it a property instead of a coincidence.
-    let _limits_guard = busbar_kernel::config::limits::InstallGuard::install(
+    let _limits_guard = busbar_kernel_testkit::limits::InstallGuard::install(
         &busbar_kernel::config::LimitsResolved::default(),
     );
 
@@ -476,7 +476,7 @@ async fn a_fast_large_upload_is_not_killed_by_the_throughput_floor() {
     let _guard = LIMITS_TEST_LOCK.lock().await;
     // Through the RAII guard, not the bare setter — see the note in
     // `throughput_floor_trips_on_a_dribble_the_inter_frame_timer_cannot_catch`.
-    let _limits_guard = busbar_kernel::config::limits::InstallGuard::install(
+    let _limits_guard = busbar_kernel_testkit::limits::InstallGuard::install(
         &busbar_kernel::config::LimitsResolved::default(),
     );
 
@@ -566,7 +566,7 @@ async fn total_deadline_trips_on_a_body_that_stays_above_the_floor_forever() {
     // `busbar_kernel::proxy::max_translate_body_bytes() == DEFAULT_REQUEST_BODY_MAX_BYTES` — so whether the suite
     // passed depended on that test happening to run BEFORE this one. Never committed, so it
     // always rolls back at the end of this test.
-    let _limits_guard = busbar_kernel::config::limits::InstallGuard::install(&limits);
+    let _limits_guard = busbar_kernel_testkit::limits::InstallGuard::install(&limits);
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();

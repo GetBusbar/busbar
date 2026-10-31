@@ -34,13 +34,21 @@ const HOOK_TAIL_FROZEN: usize = std::mem::size_of::<Tail>();
 pub const NO_TAIL: &str =
     "a hook Statement states no hook tail: a hook states its class and grants (abi::sdk::hook::tail)";
 
+/// The refusal of a hook tail stating `routes` (H7).
+pub const ROUTES_REFUSED: &str = "the hook tail states routes: the host serves no hook route (it \
+     never calls `serve`); a hook states none";
+
+/// The refusal of a hook tail stating `requested_signals` (H7).
+pub const SIGNALS_REFUSED: &str = "the hook tail states requested_signals: the signals a hook is \
+     lent are the operator's `hooks:` configuration, never its tail; a hook states none";
+
 /// WHAT A HOOK STATES ABOUT ITSELF, read once at bind: its name, its tail's class and grants and
 /// the hook words its `MARK_WORD_HOOK` marks claim. Read back through
 /// [`crate::dispatch::Plugin::context`].
 ///
 /// A hook Statement with NO kind tail is refused ([`NO_TAIL`], ARCHITECT Q-SO8): every 1.6.0 hook
 /// states its class and grants (`abi::sdk::hook::tail`); none is assumed for it.
-fn facts(st: &Statement) -> Result<HookFacts, String> {
+pub(crate) fn facts(st: &Statement) -> Result<HookFacts, String> {
     let name = owned(st.name).ok_or("a hook's name is over-long")?;
     if st.kind_tail.is_null() {
         return Err(NO_TAIL.to_string());
@@ -62,6 +70,14 @@ fn facts(st: &Statement) -> Result<HookFacts, String> {
             "the hook tail states user access {}",
             t.user_access
         ));
+    }
+    // A SURFACE NOTHING READS IS REFUSED (H7): the host never calls `serve` and never reads the
+    // tail's signal list, so a hook stating either would load a promise nothing keeps.
+    if t.routes_len != 0 {
+        return Err(ROUTES_REFUSED.to_string());
+    }
+    if t.requested_signals_len != 0 {
+        return Err(SIGNALS_REFUSED.to_string());
     }
     let mut facts = HookFacts {
         name,

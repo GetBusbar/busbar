@@ -85,9 +85,9 @@
 //!   only — the prompt view (WIRE-HOOK Q5), `groups:` filter); it never holds the request. [`slot::CONFIGURE`], [`slot::STATUS`], [`slot::DESCRIBE`] (O): run on a FRESH
 //!   MANAGEMENT INSTANCE through the same door; status and describe return the 1.5.5 blobs (as
 //!   [`Blob`] payloads — off-path JSON is allowed here); configure acks the pushed version, 5s
-//!   deadline, a nack does not commit. [`slot::SERVE`] (O): routes are instance facts
-//!   ([`Tail::routes`]), confined to `/hooks/<name>/*`; none/key/admin auth is enforced before
-//!   `serve`; admin routes are admin-listener only (kernel routing, not a new shape here).
+//!   deadline, a nack does not commit. [`slot::SERVE`] (O): RETIRED (H7): the host never calls it
+//!   and serves no hook route; a tail stating [`Tail::routes`] is refused at bind. The slot stays
+//!   in the table (every slot is non-NULL), filled with the SDK's stub.
 //! - **Kernel normalizers** (HOST-SIDE, enforced on the fixed struct, unchanged from 1.5.5; not new
 //!   shapes): `reject_status` clamped to 400-499, else 403 when [`VERB_HAS_REJECT_STATUS`] is
 //!   unset; the full 1.5.5 sanitiser on the reject-message bytes (control characters, U+2028/2029,
@@ -961,10 +961,18 @@ pub struct Tail {
     pub _reserved: [u8; 3],
     /// The [`signal`] ids this instance wants reported on [`RequestView::signals`] /
     /// [`CandidateDynamic::signals`].
+    ///
+    /// RETIRED (H7): stated empty. The signals a hook is lent are the operator's `hooks:`
+    /// configuration, never this list: the host never reads it, and refuses at bind a tail that
+    /// states any.
     pub requested_signals: *const u32,
     /// How many.
     pub requested_signals_len: usize,
     /// The HTTP routes this instance serves via `serve`, confined to `/hooks/<name>/*`.
+    ///
+    /// RETIRED (H7): stated empty. The host serves no hook route and never calls `serve` (its
+    /// slot stays in the table, filled with the SDK's stub); it refuses at bind a tail that
+    /// states any route.
     pub routes: *const Route,
     /// How many.
     pub routes_len: usize,

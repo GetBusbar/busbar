@@ -1572,3 +1572,42 @@ fn red_a_request_the_builder_refuses_answers_the_builders_text() {
     );
     closed::<OpenUnsendable>(p);
 }
+
+// ── a scripted far end drives a PENDING decide to its answer (E11) ──────────────────────────────
+
+/// RED (the shared test kit, E11): a plugin's test drives an op that asks the far end through
+/// PENDING to its answer over the kit's scripted far end ([`crate::abi::sdk::test_support::far`]):
+/// every service pends once, the op is RESUMED, and the test reads what was sent. The `decide` POSTs
+/// once, closes its stream, and answers the far end's status as its order.
+#[test]
+fn a_scripted_far_end_drives_a_pending_decide_to_its_answer() {
+    use crate::abi::sdk::test_support::fake::FakeHost;
+    use crate::abi::sdk::test_support::far::Far;
+    let far = Far::answering(2, b"{}");
+    let host = FakeHost::new().far();
+    let mut open: OpenIn = zeroed();
+    open.host = host.tables_for_tests();
+    let p = opened_with::<OpenForward>(&open);
+    let frame = frame_with(caps(4, 64));
+    let mut input = frame.input();
+    input.head.ticket = TICKET;
+    let mut entries = 0;
+    let (outcome, out) = loop {
+        entries += 1;
+        assert!(entries < 40, "the decide never answered");
+        let mut out: DecideOut = zeroed();
+        let o = call::<Decide<OpenForward>>(p, slot::DECIDE, &input, &mut out);
+        if o != Outcome::Pending {
+            break (o, out);
+        }
+        input.head.flags = FLAG_RESUME;
+    };
+    assert_eq!(outcome, Outcome::Ready);
+    assert!(entries > 1, "the far end pends: the decide was resumed");
+    assert_eq!(frame.order(out.order_written), vec![2]);
+    assert_eq!(far.posts(), 1, "one POST per decide");
+    assert_eq!(far.sent()[0].method, b"POST");
+    assert!(far.sent()[0].ended);
+    assert_eq!(far.held(), 0, "the exchange closed its stream");
+    closed::<OpenForward>(p);
+}

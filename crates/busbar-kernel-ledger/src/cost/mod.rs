@@ -82,7 +82,10 @@ mod view;
 /// The exact count type the one function prices — re-exported so a caller driving a
 /// [`Tally`] names it through the crate that prices it.
 pub use busbar_contract::count::Count;
-pub use history::{Author, CardEntry, CardEntryDraft, History, HistorySeq, HistoryView};
+pub use history::{
+    Author, CardEntry, CardEntryDraft, EntryId, EntryKey, History, HistorySeq, HistoryView,
+    ENTRY_ID_LEN, ENTRY_KEY_LEN,
+};
 pub use posting::{
     checked_apply_tier, price, price_at_card, price_fail_closed, Posting, Priced, PricedLine,
     Quantity, Unpriceable, FEE_CLASS, STANDARD_TIER_BP,

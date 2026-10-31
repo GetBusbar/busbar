@@ -388,11 +388,18 @@ async fn the_kernel_ranking_double_states_what_the_linked_ranking_door_states() 
             |axis: &Arc<dyn HookAxis>, name: &str| axis.open(name, name, &settings, budget).err();
         // The door's refusal, its Statement name read as the double's name. Its words are bare:
         // the host names the plugin (`plugin '<name>' open failed: ...`). The pinned door from
-        // before that rule spelled `hook-ranking: ` in front of its words itself; that self-prefix
-        // is read as absent, so the double proves the door's words, not its spelling of its name.
+        // before that rule spelled `hook-ranking: ` or `ranking: ` at the start of its reason.
+        // Only that prefix is read as absent; the remaining reason is compared byte for byte.
         let want = refusal(&linked, &real.name).map(|e| {
-            e.replace("hook-ranking: ", "")
-                .replace(&real.name, ranking_double::NAME)
+            let envelope = format!("plugin '{}' open failed: ", real.name);
+            let reason = e
+                .strip_prefix(&envelope)
+                .unwrap_or_else(|| panic!("the host's open-refusal envelope: {e}"));
+            let reason = reason
+                .strip_prefix("hook-ranking: ")
+                .or_else(|| reason.strip_prefix("ranking: "))
+                .unwrap_or(reason);
+            format!("plugin '{}' open failed: {reason}", ranking_double::NAME)
         });
         assert!(want.is_some(), "the linked door refuses {settings}");
         assert_eq!(

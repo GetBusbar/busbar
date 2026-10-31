@@ -118,10 +118,53 @@ mod plugin {
     }
 }
 
+thread_local! {
+    /// The IdP's delay [`Outage`] answers with, per test thread.
+    static RETRY_AFTER: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
+}
+
+/// `complete_login`: [`login_outage`], with the delay [`RETRY_AFTER`] holds.
+struct Outage;
+
+impl SafeSlot for Outage {
+    type In = CompleteLoginIn;
+    type Out = IdentifyOut;
+    type State = Held<Probe>;
+    fn call(
+        _: Instance<'_, Held<Probe>>,
+        input: Lent<'_, CompleteLoginIn>,
+        mut out: Out<'_, IdentifyOut>,
+    ) -> Outcome {
+        login_outage(
+            RETRY_AFTER.with(std::cell::Cell::get),
+            input.out_buf(),
+            &mut out,
+        )
+    }
+}
+
+mod outage_plugin {
+    crate::plugin_door! {
+        ops: super::Ops,
+        statement: super::statement("probe-outage", "0.0.1", 4),
+        lifecycle: life(super::Probe),
+        kind_ops: { complete_login: super::Safe<super::Outage> },
+    }
+}
+
 /// One `complete_login` with host buffers of `cap` bytes and `groups` spans: the answer, and the
 /// bytes and group spans as the host holds them after it.
 fn login(cap: usize, groups: usize) -> (Outcome, IdentifyOut, Vec<u8>, Vec<Span>) {
-    let view = DoorView::of(plugin::MACRO_DOOR);
+    login_on(plugin::MACRO_DOOR, cap, groups)
+}
+
+/// [`login`] on `door`.
+fn login_on(
+    door: crate::abi::sdk::door::MacroDoor,
+    cap: usize,
+    groups: usize,
+) -> (Outcome, IdentifyOut, Vec<u8>, Vec<Span>) {
+    let view = DoorView::of(door);
     let open = view.op::<Ops>(|t| &t.head.open).expect("open");
     let complete = view
         .op::<Ops>(|t| &t.complete_login)
@@ -193,4 +236,49 @@ fn a_short_buffer_writes_nothing_and_names_what_it_needs() {
         assert!(bytes.iter().all(|b| *b == 0));
         assert!(spans.iter().all(|s| s.len == 0));
     }
+}
+
+/// An IdP that could not answer (owner-signed 2026-10-30, OWNER-QUEUE.md item "IdP errors"):
+/// [`login_outage`] answers LOGIN_OUTAGE, READY, and carries the IdP's delay as the reply-extensions
+/// entry `retry_after`, ASCII decimal, written into the HOST's identity buffer (the one memory the
+/// host reads back after the call); with no delay nothing is written. The kind's own check accepts
+/// both.
+#[test]
+fn a_login_outage_carries_the_idps_retry_after_in_the_hosts_buffer() {
+    use crate::abi::auth::{retry_after_of, EXT_RETRY_AFTER, LOGIN_OUTAGE};
+    for stated in [Some(120), Some(0), Some(u64::MAX), None] {
+        RETRY_AFTER.with(|r| r.set(stated));
+        let (outcome, out, mut bytes, mut spans) = login_on(outage_plugin::MACRO_DOOR, 64, 4);
+        assert_eq!(outcome, Outcome::Ready, "{stated:?}");
+        assert_eq!(out.verdict, LOGIN_OUTAGE, "{stated:?}");
+        // The harness clears the reply's head pointers before handing it back, so the entry is
+        // read where the host reads it: the host's own identity buffer, written from its start.
+        match stated {
+            Some(n) => {
+                let entry = crate::abi::auth::retry_after_extensions(n);
+                assert_eq!(&bytes[..entry.len()], &entry[..], "{stated:?}");
+                assert!(bytes[entry.len()..].iter().all(|b| *b == 0));
+                let blob = &bytes[..entry.len()];
+                assert_eq!(
+                    crate::abi::mechanism::extensions::get(blob, EXT_RETRY_AFTER),
+                    Some(n.to_string().as_bytes())
+                );
+                assert_eq!(retry_after_of(blob), Some(n));
+            }
+            None => assert!(bytes.iter().all(|b| *b == 0), "nothing written"),
+        }
+        let host = IdentityBuf {
+            buf: bytes.as_mut_ptr(),
+            buf_cap: bytes.len(),
+            groups: spans.as_mut_ptr(),
+            groups_cap: 4,
+            _reserved: 0,
+        };
+        check_complete_login(outcome, &out, &host, &[]).expect("the kind's check passes");
+    }
+    // A host buffer too small for the entry: still the outage, its delay left absent.
+    RETRY_AFTER.with(|r| r.set(Some(120)));
+    let (outcome, out, bytes, _) = login_on(outage_plugin::MACRO_DOOR, 4, 1);
+    assert_eq!((outcome, out.verdict), (Outcome::Ready, LOGIN_OUTAGE));
+    assert!(bytes.iter().all(|b| *b == 0));
 }

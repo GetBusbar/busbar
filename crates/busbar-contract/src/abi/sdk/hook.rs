@@ -2,7 +2,8 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE HOOK KIND'S SDK: a hook plugin over the hook kind's door (`abi::hook`), written against
-//! typed views ([`Hook`]). [`hook_door!`](crate::hook_door) emits the door; every slot is the SDK's own.
+//! typed views ([`Hook`]). [`export_plugin!`](crate::export_plugin)'s `hook` arm emits the door;
+//! every slot is the SDK's own.
 //!
 //! * [`Decoded`] — a `decide`/`transform` `in` read as a view borrowed from the host's `in` for
 //!   the call (text and the prompt body zero-copy), and
@@ -1133,32 +1134,29 @@ hook_op!(
     }
 );
 
-/// THE HOOK DOOR: a hook plugin's `pub extern "C" fn door()`, every slot the SDK's own (on the
-/// safe layer) over the plugin's [`HookOpen`]. Invoked once in the plugin's logic crate.
+/// The hook door under its old name, kept one release so plugins re-pin at leisure:
+/// [`export_plugin!`](crate::export_plugin)'s `hook` arm.
 ///
-/// ```ignore
+/// ```
+/// use busbar_contract::abi::sdk::hook::{Hook, HookOpen};
+/// struct Quiet;
+/// impl Hook for Quiet {}
+/// struct Open;
+/// impl HookOpen for Open {
+///     fn open(_: &str) -> Result<Box<dyn Hook>, String> {
+///         Ok(Box::new(Quiet))
+///     }
+/// }
 /// busbar_contract::hook_door! {
-///     open: MyOpen,
+///     open: Open,
 ///     statement: busbar_contract::abi::sdk::door::statement("my-hook", "1.0.0", 64),
 /// }
+/// # fn main() { let _ = door(); }
 /// ```
 #[macro_export]
 macro_rules! hook_door {
     (open: $open:ty, statement: $statement:expr $(,)?) => {
-        $crate::plugin_door! {
-            ops: $crate::abi::hook::Ops,
-            statement: $statement,
-            lifecycle: life($crate::abi::sdk::hook::HookLife<$open>),
-            kind_ops: {
-                decide: $crate::abi::sdk::Safe<$crate::abi::sdk::hook::Decide<$open>>,
-                transform: $crate::abi::sdk::Safe<$crate::abi::sdk::hook::Transform<$open>>,
-                notify: $crate::abi::sdk::Safe<$crate::abi::sdk::hook::Notify<$open>>,
-                configure: $crate::abi::sdk::Safe<$crate::abi::sdk::hook::Configure<$open>>,
-                status: $crate::abi::sdk::Safe<$crate::abi::sdk::hook::Status<$open>>,
-                describe: $crate::abi::sdk::Safe<$crate::abi::sdk::hook::Describe<$open>>,
-                serve: $crate::abi::sdk::Safe<$crate::abi::sdk::hook::Serve<$open>>,
-            },
-        }
+        $crate::export_plugin! { hook: $open, statement: $statement }
     };
 }
 

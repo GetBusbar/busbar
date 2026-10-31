@@ -221,11 +221,11 @@ fn a_record_names_the_node_that_sealed_it_in_its_digest_and_its_range_read() {
 
     let raw = busbar_kernel_audit::expose::range_body(&chain_a, std::slice::from_ref(&a), 1, 1);
     assert!(
-        raw.contains("\"mono\":1000,\"node\":11,"),
-        "the range read does not publish the node, as a number, straight after mono: {raw}"
+        raw.contains("\"mono\":\"1000\",\"node\":\"11\","),
+        "the range read does not publish the node, as its decimal text, straight after mono: {raw}"
     );
     let body: serde_json::Value = serde_json::from_str(&raw).expect("a published body is JSON");
-    assert_eq!(body["records"][0]["node"], serde_json::json!(11));
+    assert_eq!(body["records"][0]["node"], serde_json::json!("11"));
 }
 
 /// TWO BOOTS THAT MINT THE SAME UNIT KEY SEAL TWO DIFFERENT RECORDS. A unit key restarts with the
