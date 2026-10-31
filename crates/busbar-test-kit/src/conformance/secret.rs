@@ -209,9 +209,12 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     // `check` judges a reference with no instance: it crosses before any `open`.
     if let Some((accepted, refused)) = &checks {
         for (i, c) in accepted.iter().enumerate() {
-            r.judged(&format!("check accepted #{i}"), 1, Want::Starts("Ready "), || {
-                check(&p, c)
-            });
+            r.judged(
+                &format!("check accepted #{i}"),
+                1,
+                Want::Starts("Ready "),
+                || check(&p, c),
+            );
         }
         for (i, c) in refused.iter().enumerate() {
             r.judged(
@@ -254,9 +257,12 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     });
     // A refresh over settings `validate` refuses is refused, naming why, and the instance keeps
     // serving its last settings.
-    r.judged("refresh bad", 1, Want::Starts("Failed lease=false "), || {
-        called(&refresh(&p, &bad[0]))
-    });
+    r.judged(
+        "refresh bad",
+        1,
+        Want::Starts("Failed lease=false "),
+        || called(&refresh(&p, &bad[0])),
+    );
     r.line("resolve after refused refresh", 1, || {
         resolve(&p, &d, &known, &material)
     });
@@ -313,7 +319,8 @@ fn contract(fold: &Fold) {
     let malformed = (0..)
         .map(malformed_label)
         .take_while(|l| fold.iter().any(|s| &s.label == l));
-    let mut failing: Vec<(String, u32)> = vec![("resolve unknown".into(), secret::ERROR_KIND_NOT_FOUND)];
+    let mut failing: Vec<(String, u32)> =
+        vec![("resolve unknown".into(), secret::ERROR_KIND_NOT_FOUND)];
     failing.extend(malformed.map(|l| (l, secret::ERROR_KIND_INVALID)));
     if fold.iter().any(|s| s.label == "resolve empty") {
         failing.push(("resolve empty".into(), secret::ERROR_KIND_INVALID));

@@ -31,8 +31,8 @@ use busbar_contract::abi::mechanism::door::DoorFn;
 use busbar_contract::abi::mechanism::lifecycle::slot as life;
 use busbar_contract::abi::mechanism::KindCode;
 use busbar_contract::abi::secret::{
-    slot, CheckIn, ResolveIn, ResolveOut, ERROR_KIND_DENIED, ERROR_KIND_INTERNAL, ERROR_KIND_UNAVAILABLE,
-    ERROR_KIND_UNSET, FIRST_SECRET_CAP, MAX_SECRET_BYTES,
+    slot, CheckIn, ResolveIn, ResolveOut, ERROR_KIND_DENIED, ERROR_KIND_INTERNAL,
+    ERROR_KIND_UNAVAILABLE, ERROR_KIND_UNSET, FIRST_SECRET_CAP, MAX_SECRET_BYTES,
 };
 use busbar_contract::config_time::{ConfigScope, RESOLVE_OFF_CONFIG_TIME};
 use busbar_contract::conn::DeclaredConns;

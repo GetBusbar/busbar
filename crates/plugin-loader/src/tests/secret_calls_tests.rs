@@ -321,7 +321,10 @@ fn a_reference_the_plugins_check_refuses_is_refused_on_the_axis() {
     let mut rows = SecretRows::new(dispatcher, || None);
     rows.link(checking::door).expect("the checking door links");
     assert_eq!(
-        rows.check(CHECKING_NAME, &serde_json::json!({ "path": "relative/key" })),
+        rows.check(
+            CHECKING_NAME,
+            &serde_json::json!({ "path": "relative/key" })
+        ),
         Err(vec![NOT_ABSOLUTE.to_string()])
     );
     assert_eq!(

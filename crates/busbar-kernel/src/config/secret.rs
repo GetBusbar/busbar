@@ -184,12 +184,15 @@ impl SecretResolver {
             return Ok(material);
         }
         let Some(f) = &self.plugin else {
-            return Err(refusal(ERROR_KIND_INVALID, format!(
-                "secret module '{module}' is not a built-in (`env` / `file`) and the plugin \
+            return Err(refusal(
+                ERROR_KIND_INVALID,
+                format!(
+                    "secret module '{module}' is not a built-in (`env` / `file`) and the plugin \
                  subsystem is not enabled, so no secret plugin can resolve {}; a secret that \
                  cannot resolve is a hard error (fail-closed)",
-                secret.describe()
-            )));
+                    secret.describe()
+                ),
+            ));
         };
         let bytes = f(module, &settings, scope).map_err(|r| {
             refusal(

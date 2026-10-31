@@ -601,7 +601,8 @@ impl busbar_contract::secret::SecretResolve for Recorded {
 /// reference-capable field.
 #[test]
 fn a_resolved_setting_is_moved_into_the_bag_never_copied() {
-    let reference = serde_json::json!({ (busbar_contract::secret_ref::SECRET_MODULE_ENV): "UNUSED" });
+    let reference =
+        serde_json::json!({ (busbar_contract::secret_ref::SECRET_MODULE_ENV): "UNUSED" });
     let settings = obj(&[("licenseKey", reference.clone()), ("url", reference)]);
     let resolver = Recorded::default();
     let out = resolve_settings(

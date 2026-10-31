@@ -14,9 +14,7 @@
 use busbar_contract::abi::mechanism::call::{OutHead, Outcome};
 use busbar_contract::abi::sdk::life::{Held, Life, Refreshed, Refusal};
 use busbar_contract::abi::sdk::{Instance, Lent, Out, SafeSlot};
-use busbar_contract::abi::secret::{
-    cancel, CheckIn, ResolveIn, ResolveOut, ERROR_KIND_NOT_FOUND,
-};
+use busbar_contract::abi::secret::{cancel, CheckIn, ResolveIn, ResolveOut, ERROR_KIND_NOT_FOUND};
 
 /// The broken door's Statement name.
 pub const BROKEN_NAME: &str = "both-ways-secret-broken";
