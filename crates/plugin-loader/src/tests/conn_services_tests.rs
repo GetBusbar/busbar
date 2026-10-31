@@ -1730,6 +1730,57 @@ fn facts_expose_the_peer_certificate_hash() {
     assert_eq!(read(2), (1, Some("ab".repeat(32))), "secured");
 }
 
+/// RED (THE DESIGN §11.12, "on resume the plugin re-issues the SAME handle and receives the stored
+/// result"): `FACTS` wrote the caller's `StreamFacts`, so a replayed handle writes the same facts
+/// again into the `facts` the replay lends, never a kept READY over memory nothing touched. A store
+/// op answering short re-runs on its ticket with its kept answers. The facts are the ones the first
+/// run was answered, not the stream's now (it was upgraded, or closed, later in that run), and their
+/// strings stay readable for the replay after the stream closed.
+#[test]
+fn a_replayed_facts_writes_the_same_facts_again() {
+    use busbar_contract::abi::host::conn::connector::{FactsIn, StreamFacts, StreamIn};
+    let table = Arc::new(Scripted::default());
+    let p = bound_over(&table);
+    let stream = opened_stream(&p, 0).value;
+    let ask = |seq: u32| {
+        // SAFETY: an all-zero `StreamFacts` is a valid value the slot overwrites.
+        let mut f: StreamFacts = unsafe { std::mem::zeroed() };
+        let i = FactsIn {
+            head: head_of::<FactsIn>(service::FACTS, seq),
+            stream,
+            facts: &mut f,
+        };
+        let out = call(&p, CONN_SLOTS.facts, &i);
+        let text = |s: AbiStr| {
+            (!s.ptr.is_null()).then(|| {
+                // SAFETY: the host holds the facts' strings for the caller.
+                String::from_utf8(unsafe { std::slice::from_raw_parts(s.ptr, s.len) }.to_vec())
+                    .unwrap()
+            })
+        };
+        (ready(&out), f.secure, text(f.peer_cert_hash))
+    };
+    *table.facts.lock().unwrap() = Some(ConnFacts {
+        peer_cert: Some(busbar_contract::transport::wire::CertFacts {
+            subject: String::new(),
+            issuer: String::new(),
+            fingerprint: "ab".repeat(32),
+        }),
+        ..ConnFacts::default()
+    });
+    let secured = (true, 1, Some("ab".repeat(32)));
+    assert_eq!(ask(1), secured, "the first run's facts");
+    // The stream's facts move on after the first run asked.
+    *table.facts.lock().unwrap() = Some(ConnFacts::default());
+    assert_eq!(ask(1), secured, "the replayed facts");
+    let c = StreamIn {
+        head: head_of::<StreamIn>(service::CLOSE, 2),
+        stream,
+    };
+    assert!(ready(&call(&p, CONN_SLOTS.close, &c)));
+    assert_eq!(ask(1), secured, "the replayed facts, the stream closed");
+}
+
 /// Q-L16-4: `UpgradeIn::flags`' verify-off reaches the table; an `in` from before the flags
 /// (`UPGRADE_IN_V1_SIZE`) reads them as 0, never past what the head states.
 #[test]
