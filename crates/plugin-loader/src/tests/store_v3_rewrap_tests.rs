@@ -10,6 +10,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 static CAS: AtomicUsize = AtomicUsize::new(0);
 static PUT: AtomicUsize = AtomicUsize::new(0);
+#[path = "store_v3_rewrap_result_tests.rs"]
+mod broken_result;
 struct Maintenance;
 impl Hooks for Maintenance {
     fn put_credential(
@@ -164,4 +166,11 @@ fn maintenance_requires_capability_intent_and_explicit_result_and_survives_pendi
         1,
         "ordinary PUT remains its own operation"
     );
+    for (door, expected_error) in broken_result::CASES {
+        let store = super::pend_tests::open(door);
+        let error = store
+            .rewrap_credential(&row("applied"), replacement)
+            .unwrap_err();
+        assert!(error.0.contains(expected_error), "{}", error.0);
+    }
 }
