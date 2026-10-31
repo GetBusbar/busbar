@@ -442,7 +442,7 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
             }
             moved |= self.parked(cx);
             while !self.pending.is_empty() {
-                match self.apply_front(cx) {
+                match self.apply_front() {
                     Step::Done => moved = true,
                     Step::Wait => break,
                 }
@@ -751,33 +751,35 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
         );
     }
 
-    /// Apply the first pending op, as far as the socket's room allows.
-    fn apply_front(&mut self, cx: &mut Context<'_>) -> Step {
-        let Some((stream, op)) = self.pending.front() else {
-            return Step::Done;
-        };
-        let stream = *stream;
-        // A parked crossing owns this stream until it resumes. In particular, accepting a head
-        // is not permission to emit its body, retire it, or detach its framing while it is pending.
-        if self.framing.as_ref().is_some_and(|framing| {
-            framing.holds(stream) || matches!(op, Op::Switch { .. }) && framing.parked()
-        }) {
-            return Step::Wait;
-        }
-        let waits = match op {
-            Op::Head { .. } | Op::Data { .. } => {
-                self.out.len() >= WRITE_ROOM || self.full.contains(&stream)
+    /// Apply the first runnable op, preserving stream order and connection-wide switches.
+    fn apply_front(&mut self) -> Step {
+        let mut blocked = HashSet::new();
+        let mut next = None;
+        let framing = self.framing.as_ref();
+        for (index, (stream, op)) in self.pending.iter().enumerate() {
+            // Nothing crosses a switch: it waits for every earlier queued op and parked crossing.
+            if matches!(op, Op::Switch { .. }) {
+                if index == 0 && !framing.is_some_and(Framing::parked) {
+                    next = Some(index);
+                }
+                break;
             }
-            _ => false,
-        };
-        if waits {
-            // The socket drains, or the framer hands the stream's writable piece: a read or a
-            // write wakes the connection.
-            let _ = cx;
-            return Step::Wait;
+            let waits = framing.is_some_and(|framing| framing.holds(*stream))
+                || matches!(op, Op::Head { .. } | Op::Data { .. })
+                    && (self.out.len() >= WRITE_ROOM || self.full.contains(stream));
+            if waits || blocked.contains(stream) {
+                // Later work on this stream, including refusal/retirement, cannot overtake it.
+                blocked.insert(*stream);
+                continue;
+            }
+            next = Some(index);
+            break;
         }
-        let Some((stream, op)) = self.pending.pop_front() else {
-            return Step::Done;
+        let Some(index) = next else {
+            return Step::Wait;
+        };
+        let Some((stream, op)) = self.pending.remove(index) else {
+            return Step::Wait;
         };
         let Some(framing) = self.framing.as_mut() else {
             return Step::Done;
