@@ -338,7 +338,10 @@ fn completed(outcome: Outcome, out: &IdentifyOut, held: &CompleteHeld) -> LoginO
                 ttl_secs: id.ttl_secs,
             })
         }
-        LOGIN_OUTAGE => LoginOutcome::Outage,
+        // The IdP's delay, read only from the host's own identity buffer (`EXT_RETRY_AFTER`).
+        LOGIN_OUTAGE => LoginOutcome::Outage {
+            retry_after_secs: held.id.retry_after(out.head.extensions),
+        },
         LOGIN_SECURITY_CHECK_FAILED => LoginOutcome::SecurityCheckFailed,
         LOGIN_BAD_CREDENTIAL => LoginOutcome::Reject,
         _ => LoginOutcome::Reject,

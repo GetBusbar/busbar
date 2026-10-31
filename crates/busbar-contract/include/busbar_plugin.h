@@ -228,6 +228,7 @@ extern "C" {
 #define BB_AUTH_MODE_OWN UINT32_C(1) /* [`FieldsIn::mode`]: the plugin's own bound credential. */
 #define BB_AUTH_MODE_PASSTHROUGH UINT32_C(2) /* [`FieldsIn::mode`]: pass the caller's verified credential ([`FieldsIn::caller_credential`]). */
 #define BB_AUTH_EXT_SCOPE "scope" /* `fields`' EXTENSIONS KEY ([`crate::abi::mechanism::extensions`], carried in */
+#define BB_AUTH_EXT_RETRY_AFTER "retry_after" /* `complete_login`'s REPLY EXTENSIONS KEY: on a [`LOGIN_OUTAGE`], the IdP's `Retry-After`. */
 #define BB_AUTH_SCOPE_REQUEST_FIELD "busbar-auth-scope" /* THE REQUEST FIELD BY WHICH A PLUGIN STATES ITS PER-CALL SCOPE to the host: a field of this name */
 #define BB_AUTH_NO_MEMBER_AUTH_FIELD "busbar-no-member-auth" /* THE REQUEST FIELD BY WHICH A PLUGIN WAIVES ITS MEMBER'S BINDING FOR ONE REQUEST: a field of this */
 #define BB_AUTH_FIELD_SENSITIVE UINT32_C(1) /* [`FieldSpan::flags`]: when SET, an h2 encoder sends the field never-indexed. 1.5.5 sent its */
