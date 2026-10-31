@@ -36,6 +36,437 @@ use hook_door_plugin::{
     BROKEN_NAME, MAX_INFLIGHT, NAME, PANICKING_NAME, REJECT_STATUS, UNTAILED_NAME,
 };
 
+/// The SDK's refresh boundary, through a loaded door and real connector services. No worker or
+/// timing race is needed: an inline ticket explicitly resumes the exchange parked by its first call.
+mod sdk_refresh {
+    use std::collections::HashMap;
+    use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex, OnceLock};
+    use std::task::Poll;
+
+    use busbar_contract::abi::hook::{self, DecideIn, DecideOut, NotifyIn, TransformOut};
+    use busbar_contract::abi::host::conn::connector::{Need, DIRECTION_OUTBOUND, KEEP_NAMED};
+    use busbar_contract::abi::mechanism::call::{AbiStr, Blob, OutHead, Outcome};
+    use busbar_contract::abi::mechanism::door::Statement;
+    use busbar_contract::abi::mechanism::lifecycle::{self as lc, CancelIn, CancelOut, RefreshIn};
+    use busbar_contract::abi::mechanism::rendering::ReadNeed;
+    use busbar_contract::abi::mechanism::ticket::Ticket;
+    use busbar_contract::abi::sdk::cred::Cred;
+    use busbar_contract::abi::sdk::door::{abi_str, statement};
+    use busbar_contract::abi::sdk::exchange::{Op, Request};
+    use busbar_contract::abi::sdk::hook::{
+        Decoded, DecodedTap, Hook, HookOpen, RewriteVerdict, Verdict,
+    };
+    use busbar_contract::conn::{
+        ConnError, ConnId, ConnSlab, Conns, DeclaredConns, InstanceId, NeedId, OpenDesc, Piece,
+        PieceKind,
+    };
+    use busbar_contract::ids::StreamId;
+    use busbar_contract::transport::ConnFacts;
+    use zeroize::Zeroizing;
+
+    use crate::dispatch::kinds::hook::Hook as HookKind;
+    use crate::dispatch::{
+        load_linked, Called, ConnTable, DispatchConfig, Dispatcher, Frame, LinkedRow, Plugin,
+    };
+    use crate::door_both_ways::{bind, close, input, octets, open, output};
+
+    const OLD: &str = "old-hook-credential-CANARY";
+    const NEW: &str = "new-hook-credential-CANARY";
+
+    #[derive(Default)]
+    struct Probe {
+        old_dropped: AtomicUsize,
+        calls: Mutex<Vec<String>>,
+    }
+
+    fn probes() -> &'static Mutex<HashMap<u64, Arc<Probe>>> {
+        static PROBES: OnceLock<Mutex<HashMap<u64, Arc<Probe>>>> = OnceLock::new();
+        PROBES.get_or_init(Mutex::default)
+    }
+
+    struct Forwarder {
+        probe: Arc<Probe>,
+        secret: String,
+        cred: Cred,
+    }
+
+    impl Drop for Forwarder {
+        fn drop(&mut self) {
+            if self.secret == OLD {
+                self.probe.old_dropped.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+    }
+
+    impl Forwarder {
+        fn exchange(&self, op: &Op<'_>) -> Poll<String> {
+            self.probe.calls.lock().unwrap().push(self.secret.clone());
+            op.exchange_sealed(0, Some("http://hook.example"), || {
+                Ok((
+                    Request {
+                        method: b"POST".to_vec(),
+                        target: b"/hook".to_vec(),
+                        ..Request::default()
+                    },
+                    vec![(0, b"authorization".to_vec(), self.cred.field())],
+                ))
+            })
+            .map(|reply| {
+                let reply = reply.expect("the scripted reply completes");
+                let reason =
+                    String::from_utf8(reply.reason.expect("the peer's canary reason")).unwrap();
+                reason.replace(&self.secret, "<redacted>")
+            })
+        }
+    }
+
+    impl Hook for Forwarder {
+        fn decide(&self, _: &Decoded<'_>, op: &Op<'_>) -> Poll<Verdict> {
+            self.exchange(op).map(Verdict::Failed)
+        }
+        fn transform(&self, _: &Decoded<'_>, op: &Op<'_>) -> Poll<RewriteVerdict> {
+            self.exchange(op).map(RewriteVerdict::Failed)
+        }
+        fn notify(&self, _: &DecodedTap<'_>, op: &Op<'_>) -> Poll<()> {
+            self.exchange(op)
+                .map(|reason| assert_eq!(reason, "<redacted>"))
+        }
+    }
+
+    struct Open;
+    impl HookOpen for Open {
+        fn open(settings: &str) -> Result<Box<dyn Hook>, String> {
+            let settings: serde_json::Value = serde_json::from_str(settings).unwrap();
+            let secret = settings["secret"].as_str().unwrap().to_string();
+            Ok(Box::new(Forwarder {
+                probe: Arc::clone(&probes().lock().unwrap()[&settings["scope"].as_u64().unwrap()]),
+                cred: Cred::captured(Zeroizing::new(secret.as_bytes().to_vec())),
+                secret,
+            }))
+        }
+    }
+
+    const NEEDS: [Need; 1] = [Need {
+        direction: DIRECTION_OUTBOUND,
+        egress_class: 0,
+        transport: abi_str("http"),
+        auth: AbiStr::ZERO,
+        target_from: AbiStr::ZERO,
+        trust_from: AbiStr::ZERO,
+        details: Blob::ABSENT,
+        keep_response_headers: std::ptr::null(),
+        keep_response_headers_len: 0,
+        timeout_ms: 0,
+        keep_mode: KEEP_NAMED,
+        _reserved: 0,
+        deny_response_headers: std::ptr::null(),
+        deny_response_headers_len: 0,
+    }];
+
+    const TAIL: hook::Tail =
+        busbar_contract::abi::sdk::hook::tail(hook::CLASS_GATE, hook::PROMPT_NO, hook::USER_NO);
+
+    busbar_contract::hook_door! {
+        open: Open,
+        statement: Statement {
+            needs: NEEDS.as_ptr(), needs_len: NEEDS.len(),
+            ..busbar_contract::abi::sdk::hook::statement_with_tail(statement("refreshing-hook-sdk", "1", 64), &TAIL)
+        },
+    }
+
+    #[derive(Default)]
+    struct Peer {
+        slab: ConnSlab<Mutex<(String, bool)>>,
+        released: AtomicBool,
+        credentials: Mutex<Vec<String>>,
+        closed: AtomicUsize,
+    }
+    impl DeclaredConns for Peer {
+        fn declare(
+            &self,
+            owner: InstanceId,
+            need: NeedId,
+            _: &ReadNeed,
+            _: Option<&str>,
+            _: Option<&str>,
+        ) -> Result<(), ConnError> {
+            self.slab.declare(owner, need);
+            Ok(())
+        }
+        fn declared(&self, owner: InstanceId, need: NeedId) -> Option<Result<(), ConnError>> {
+            self.slab.check_need(owner, need).ok().map(Ok)
+        }
+        fn framed(&self, _: InstanceId, _: NeedId) -> bool {
+            true
+        }
+        fn serves_scheme(&self, scheme: &str) -> bool {
+            scheme == "http"
+        }
+    }
+    impl Conns for Peer {
+        fn open(
+            &self,
+            owner: InstanceId,
+            need: NeedId,
+            desc: &OpenDesc<'_>,
+        ) -> Result<ConnId, ConnError> {
+            let credential = String::from_utf8(
+                desc.fields
+                    .iter()
+                    .find(|(name, _)| *name == "authorization")
+                    .unwrap()
+                    .1
+                    .to_vec(),
+            )
+            .unwrap();
+            self.credentials.lock().unwrap().push(credential.clone());
+            self.slab
+                .insert(owner, need, Mutex::new((credential, false)))
+        }
+        fn write(
+            &self,
+            _: InstanceId,
+            _: ConnId,
+            bytes: &[u8],
+            _: bool,
+            _: bool,
+        ) -> Result<usize, ConnError> {
+            Ok(bytes.len())
+        }
+        fn read(
+            &self,
+            owner: InstanceId,
+            conn: ConnId,
+            _: u64,
+            buf: &mut [u8],
+        ) -> Result<Piece, ConnError> {
+            if !self.released.load(Ordering::SeqCst) {
+                return Err(ConnError::Pending);
+            }
+            let (_, state) = self.slab.get(owner, conn)?;
+            let mut state = state.lock().unwrap();
+            let first = !state.1;
+            state.1 = true;
+            if first {
+                buf[..state.0.len()].copy_from_slice(state.0.as_bytes());
+            }
+            Ok(Piece {
+                kind: if first {
+                    PieceKind::Fields
+                } else {
+                    PieceKind::Completion
+                },
+                stream: StreamId(0),
+                len: 0,
+                end: true,
+                status: None,
+                status_code: first.then_some(503),
+                status_namespace: None,
+                retry_after_secs: None,
+                fault: None,
+                reason: first.then_some(0..state.0.len()),
+                declared_len: None,
+            })
+        }
+        fn wait(&self, _: InstanceId, _: &[ConnId], _: u64) -> Result<usize, ConnError> {
+            Err(ConnError::Pending)
+        }
+        fn facts(&self, _: InstanceId, _: ConnId) -> Result<ConnFacts, ConnError> {
+            Ok(ConnFacts::default())
+        }
+        fn close(&self, owner: InstanceId, conn: ConnId) -> Result<(), ConnError> {
+            self.slab.remove(owner, conn)?;
+            self.closed.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    struct Loaded {
+        scope: u64,
+        plugin: Plugin<HookKind>,
+        dispatcher: Dispatcher,
+        peer: Arc<Peer>,
+        probe: Arc<Probe>,
+    }
+    impl Loaded {
+        fn new() -> Self {
+            static NEXT: AtomicU64 = AtomicU64::new(1);
+            let scope = NEXT.fetch_add(1, Ordering::SeqCst);
+            let probe = Arc::new(Probe::default());
+            probes().lock().unwrap().insert(scope, Arc::clone(&probe));
+            let dispatcher = Dispatcher::new(DispatchConfig::default());
+            let peer = Arc::new(Peer::default());
+            let mut binding = bind(&dispatcher);
+            binding.conns = ConnTable::Host(peer.clone());
+            let plugin = load_linked::<HookKind>(&LinkedRow::of(door).unwrap(), binding).unwrap();
+            let loaded = Self {
+                scope,
+                plugin,
+                dispatcher,
+                peer,
+                probe,
+            };
+            assert_eq!(
+                open(&loaded.plugin, &loaded.settings(OLD)).outcome,
+                Outcome::Ready
+            );
+            loaded
+        }
+        fn settings(&self, secret: &str) -> Vec<u8> {
+            serde_json::to_vec(&serde_json::json!({"scope": self.scope, "secret": secret})).unwrap()
+        }
+        fn refresh(&self) {
+            let settings = self.settings(NEW);
+            let mut f: Frame<RefreshIn, OutHead> = Frame::new(input(), output());
+            f.input.settings = octets(&settings);
+            f.input.generation = 2;
+            assert_eq!(
+                self.plugin.call(lc::slot::REFRESH, &mut f).outcome,
+                Outcome::Ready
+            );
+        }
+        fn cancel(&self, ticket: Ticket) {
+            let mut f: Frame<CancelIn, CancelOut> = Frame::new(input(), output());
+            f.input.ticket = ticket;
+            assert_eq!(
+                self.plugin.call(lc::slot::CANCEL, &mut f).outcome,
+                Outcome::Ready
+            );
+            assert_eq!(f.out.disposition, hook::cancel::ABORTED);
+        }
+        fn call(&self, slot: u32, ticket: Ticket, resume: bool, malformed: bool) -> Called {
+            if slot == hook::slot::NOTIFY {
+                let mut f: Frame<NotifyIn, OutHead> = Frame::new(input(), output());
+                if malformed {
+                    f.input.present = u32::MAX;
+                }
+                self.plugin.call_inline(ticket, resume, slot, &mut f)
+            } else {
+                let mut i: DecideIn = input();
+                if malformed {
+                    i.present = hook::VIEW_HAS_PROMPT;
+                    i.prompt.message_count = 1;
+                }
+                if slot == hook::slot::DECIDE {
+                    self.plugin.call_inline(
+                        ticket,
+                        resume,
+                        slot,
+                        &mut Frame::<_, DecideOut>::new(i, output()),
+                    )
+                } else {
+                    self.plugin.call_inline(
+                        ticket,
+                        resume,
+                        slot,
+                        &mut Frame::<_, TransformOut>::new(i, output()),
+                    )
+                }
+            }
+        }
+    }
+    impl Drop for Loaded {
+        fn drop(&mut self) {
+            close(&self.plugin);
+            probes().lock().unwrap().remove(&self.scope);
+        }
+    }
+
+    #[test]
+    fn loaded_hook_sdk_pending_operations_keep_their_credential_across_refresh() {
+        for slot in [
+            hook::slot::DECIDE,
+            hook::slot::TRANSFORM,
+            hook::slot::NOTIFY,
+        ] {
+            let h = Loaded::new();
+            let old = h.dispatcher.inline_ticket().unwrap();
+            assert_eq!(
+                h.call(slot, old.ticket(), false, false).outcome,
+                Outcome::Pending
+            );
+            h.refresh();
+            assert_eq!(
+                h.probe.old_dropped.load(Ordering::SeqCst),
+                0,
+                "refresh must retain the pending Hook"
+            );
+            let fresh = h.dispatcher.inline_ticket().unwrap();
+            assert_eq!(
+                h.call(slot, fresh.ticket(), false, false).outcome,
+                Outcome::Pending
+            );
+            assert_eq!(*h.peer.credentials.lock().unwrap(), [OLD, NEW]);
+            h.cancel(fresh.ticket());
+            h.peer.released.store(true, Ordering::SeqCst);
+            let answer = h.call(slot, old.ticket(), true, false);
+            assert_eq!(
+                answer.outcome,
+                if slot == hook::slot::NOTIFY {
+                    Outcome::Ready
+                } else {
+                    Outcome::Failed
+                }
+            );
+            if slot != hook::slot::NOTIFY {
+                assert_eq!(answer.error.as_deref(), Some(b"<redacted>".as_slice()));
+            }
+            assert_eq!(*h.probe.calls.lock().unwrap(), [OLD, NEW, OLD]);
+            assert_eq!(
+                h.probe.old_dropped.load(Ordering::SeqCst),
+                1,
+                "terminal answer releases the original Hook"
+            );
+            assert_eq!(h.peer.closed.load(Ordering::SeqCst), 2);
+        }
+    }
+
+    #[test]
+    fn loaded_hook_sdk_cancel_fault_and_fresh_entry_release_the_pending_hook() {
+        for slot in [
+            hook::slot::DECIDE,
+            hook::slot::TRANSFORM,
+            hook::slot::NOTIFY,
+        ] {
+            for cleanup in ["cancel", "fault", "fresh"] {
+                let h = Loaded::new();
+                let ticket = h.dispatcher.inline_ticket().unwrap();
+                assert_eq!(
+                    h.call(slot, ticket.ticket(), false, false).outcome,
+                    Outcome::Pending
+                );
+                h.refresh();
+                assert_eq!(h.probe.old_dropped.load(Ordering::SeqCst), 0);
+                match cleanup {
+                    "cancel" => h.cancel(ticket.ticket()),
+                    "fault" => assert_eq!(
+                        h.call(slot, ticket.ticket(), true, true).outcome,
+                        Outcome::Fault
+                    ),
+                    _ => {
+                        assert_eq!(
+                            h.call(slot, ticket.ticket(), false, false).outcome,
+                            Outcome::Pending
+                        );
+                        assert_eq!(*h.peer.credentials.lock().unwrap(), [OLD, NEW]);
+                        h.cancel(ticket.ticket());
+                    }
+                }
+                assert_eq!(
+                    h.probe.old_dropped.load(Ordering::SeqCst),
+                    1,
+                    "{cleanup} must release the original Hook"
+                );
+                assert_eq!(
+                    h.peer.closed.load(Ordering::SeqCst),
+                    if cleanup == "fresh" { 2 } else { 1 }
+                );
+            }
+        }
+    }
+}
+
 /// Every call's budget.
 const BUDGET: Duration = Duration::from_secs(5);
 
