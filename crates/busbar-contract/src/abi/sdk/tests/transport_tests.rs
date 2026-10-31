@@ -55,7 +55,7 @@ impl SafeSlot for Flush {
         _: Lent<'_, ConnIn>,
         mut out: Out<'_, OutHead>,
     ) -> Outcome {
-        match carried(&i, "flush") {
+        match crate::carried!(i, "flush") {
             Ok(_) => Outcome::Ready,
             Err(r) => out.fail(r),
         }
@@ -132,6 +132,28 @@ fn a_role_stub_and_a_carrier_op_without_io_answer_in_words() {
         out(),
     );
     assert_eq!(c.outcome, Outcome::Ready);
+}
+
+/// A carrier op on no open instance is FAILED saying so: the words reach the caller although the
+/// host lends no reason buffer to a call on no instance.
+#[test]
+fn a_carrier_op_on_no_instance_answers_in_words() {
+    let view = DoorView::of(plugin::MACRO_DOOR);
+    let (flush, _, _) = view.op::<Ops>(|t| &t.flush).expect("flush").parts();
+    let mut input: ConnIn = zeroed();
+    input.head.size = std::mem::size_of::<ConnIn>() as u32;
+    input.head.op = slot::FLUSH;
+    let mut o = out();
+    let raw = flush(
+        std::ptr::null_mut(),
+        std::ptr::from_ref(&input).cast(),
+        std::ptr::from_mut(&mut o).cast(),
+    );
+    assert_eq!(raw.outcome(), Outcome::Failed);
+    assert!(!o.error.ptr.is_null(), "the words reach the caller");
+    // SAFETY: a non-null `error` names `len` bytes the door lent for the call's answer.
+    let words = unsafe { std::slice::from_raw_parts(o.error.ptr, o.error.len) };
+    assert_eq!(String::from_utf8_lossy(words), "flush: no open instance");
 }
 
 /// A transport's settings: empty or an object of keys it reads; any other key refused naming it,

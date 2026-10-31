@@ -74,7 +74,9 @@
 //!   the store cannot hold, a constraint, a script error before any write). FAILED proves nothing:
 //!   a store answers FAILED whenever it cannot know whether its commit landed (a lost commit or EXEC
 //!   reply, a dropped session), so the host replays the same `op_id` with the same body until READY
-//!   or REFUSED, and only a REFUSED write is ever split or re-sent under a new `op_id`.
+//!   or REFUSED, and only a REFUSED write is ever split or re-sent under a new `op_id`. The one
+//!   deterministic answer that is FAILED is a FORK (slot 19 under `fork_refusal`: a different
+//!   record at an occupied chain position): the host never replays a fork under the same `op_id`.
 
 pub mod check;
 pub mod ledger;
@@ -82,6 +84,8 @@ pub mod money;
 pub mod plane;
 pub mod records;
 
+use crate::abi::mechanism::decl::abi_struct;
+pub use check::check_answer;
 pub use ledger::*;
 pub use money::*;
 pub use plane::*;
@@ -106,42 +110,40 @@ pub const LAYOUT_FINGERPRINT: u64 = 0x56bdc8a89ba6e6e0;
 /// crossing its table, each with every field. A struct `abi/store/` gains is listed here (gate
 /// `abi-location`).
 pub const LAYOUT_SHAPES: &[&[u64]] = &[
-    crate::layout_shape!(HostBuf => ptr, cap),
-    crate::layout_shape!(HostBlobs => items, items_cap, bytes),
-    crate::layout_shape!(HostBytesOut => head, found, _reserved, written, needed),
-    crate::layout_shape!(HostListOut =>
-        head, items_written, bytes_written, needed_items, needed_bytes
-    ),
-    crate::layout_shape!(LeasedBlobOut => head, found, _reserved, record),
-    crate::layout_shape!(LeasedListOut => head, items, items_len),
-    crate::layout_shape!(LeasedStrListOut => head, items, items_len),
-    crate::layout_shape!(CountOut => head, count),
-    crate::layout_shape!(VerdictOut => head, verdict, _reserved),
-    crate::layout_shape!(StoreTail => head, durable_plane, fork_refusal, _reserved),
+    HostBuf::LAYOUT,
+    HostBlobs::LAYOUT,
+    HostBytesOut::LAYOUT,
+    HostListOut::LAYOUT,
+    LeasedBlobOut::LAYOUT,
+    LeasedListOut::LAYOUT,
+    LeasedStrListOut::LAYOUT,
+    CountOut::LAYOUT,
+    VerdictOut::LAYOUT,
+    StoreTail::LAYOUT,
     crate::layout_shape!(OpId =>),
-    crate::layout_shape!(UsageCell => bucket, window_start, delta),
-    crate::layout_shape!(AddUsageBatchIn => head, op_id, cells, cells_len),
-    crate::layout_shape!(OpBlobsIn => head, op_id, records, records_len),
-    crate::layout_shape!(IdIn => head, id),
-    crate::layout_shape!(U64In => head, value),
-    crate::layout_shape!(WindowIn => head, bucket, window_start),
-    crate::layout_shape!(PutUsageIn => head, bucket, window_start, ledger),
-    crate::layout_shape!(BlobIn => head, record),
-    crate::layout_shape!(KeyWithCredentialIn => head, key, credential),
-    crate::layout_shape!(KindIdIn => head, kind, id),
-    crate::layout_shape!(IdReasonIn => head, id, reason),
-    crate::layout_shape!(PlaneRecordRow => kind, id, parent, seq, ts, disposition, _reserved, body),
-    crate::layout_shape!(UpsertPlaneRecordIn => head, record),
-    crate::layout_shape!(AppendPlaneRecordIn => head, op_id, record),
-    crate::layout_shape!(GetPlaneRecordIn => head, kind, id, body),
-    crate::layout_shape!(ListPlaneRecordsIn => head, kind, selector, _reserved, parent, out),
-    crate::layout_shape!(KindBeforeIn => head, kind, before, retention, _reserved),
-    crate::layout_shape!(TokenIn => head, kind, token, expires_at, now),
-    crate::layout_shape!(RecordPutIn => head, schema, key, value),
-    crate::layout_shape!(RecordGetIn => head, schema, key, value),
-    crate::layout_shape!(RecordEntry => key, value),
-    crate::layout_shape!(HostRecords => items, items_cap, bytes),
-    crate::layout_shape!(RecordScanIn => head, schema, prefix, limit, _reserved, out),
+    UsageCell::LAYOUT,
+    AddUsageBatchIn::LAYOUT,
+    OpBlobsIn::LAYOUT,
+    IdIn::LAYOUT,
+    U64In::LAYOUT,
+    WindowIn::LAYOUT,
+    PutUsageIn::LAYOUT,
+    BlobIn::LAYOUT,
+    KeyWithCredentialIn::LAYOUT,
+    KindIdIn::LAYOUT,
+    IdReasonIn::LAYOUT,
+    PlaneRecordRow::LAYOUT,
+    UpsertPlaneRecordIn::LAYOUT,
+    AppendPlaneRecordIn::LAYOUT,
+    GetPlaneRecordIn::LAYOUT,
+    ListPlaneRecordsIn::LAYOUT,
+    KindBeforeIn::LAYOUT,
+    TokenIn::LAYOUT,
+    RecordPutIn::LAYOUT,
+    RecordGetIn::LAYOUT,
+    RecordEntry::LAYOUT,
+    HostRecords::LAYOUT,
+    RecordScanIn::LAYOUT,
     crate::layout_shape!(Ops =>
         head, put_key, get_key, list_keys, delete_key, list_keys_since, get_usage, put_usage,
         list_metering, put_credential, put_key_with_credential, list_credentials,
@@ -155,64 +157,66 @@ pub const LAYOUT_SHAPES: &[&[u64]] = &[
 
 // ── shared host-buffer shapes (mechanism memory class (i)) ────────────────────────────────────
 
-/// A HOST-owned byte buffer a request-path result is written into: pointer + capacity. The plugin
-/// writes at most `cap` bytes and never keeps the pointer past the op.
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct HostBuf {
-    /// The buffer; NULL only with `cap == 0`.
-    pub ptr: *mut u8,
-    /// Its capacity in bytes.
-    pub cap: usize,
-}
+abi_struct! {
+    /// A HOST-owned byte buffer a request-path result is written into: pointer + capacity. The plugin
+    /// writes at most `cap` bytes and never keeps the pointer past the op.
+    #[repr(C)]
+    #[derive(Debug, Clone, Copy)]
+    pub struct HostBuf {
+        /// The buffer; NULL only with `cap == 0`.
+        pub ptr: *mut u8,
+        /// Its capacity in bytes.
+        pub cap: usize,
+    }
 
-/// A HOST-owned list of blobs: an array of [`Blob`] slots and one byte buffer the blobs point into.
-/// The plugin copies each item into `bytes` and writes a [`Blob`] whose `ptr` points inside it.
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct HostBlobs {
-    /// The blob slots.
-    pub items: *mut Blob,
-    /// How many slots.
-    pub items_cap: usize,
-    /// The bytes the blobs point into.
-    pub bytes: HostBuf,
-}
+    /// A HOST-owned list of blobs: an array of [`Blob`] slots and one byte buffer the blobs point into.
+    /// The plugin copies each item into `bytes` and writes a [`Blob`] whose `ptr` points inside it.
+    #[repr(C)]
+    #[derive(Debug, Clone, Copy)]
+    pub struct HostBlobs {
+        /// The blob slots.
+        pub items: *mut Blob,
+        /// How many slots.
+        pub items_cap: usize,
+        /// The bytes the blobs point into.
+        pub bytes: HostBuf,
+    }
 
-/// The `out` of a request-path single-value read into a [`HostBuf`]: on READY `written` bytes are
-/// in the buffer and `needed == 0`; a value over the capacity is the short-buffer answer (M-SB, on
-/// [`OutHead`]) with `needed` its full length.
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct HostBytesOut {
-    /// The head.
-    pub head: OutHead,
-    /// [`FOUND`] or [`ABSENT`].
-    pub found: u32,
-    /// Alignment padding.
-    pub _reserved: u32,
-    /// How many bytes were written.
-    pub written: u64,
-    /// On a short FAILED, the value's full length; `0` otherwise.
-    pub needed: u64,
-}
+    /// The `out` of a request-path single-value read into a [`HostBuf`]: on READY `written` bytes are
+    /// in the buffer and `needed == 0`; a value over the capacity is the short-buffer answer (M-SB, on
+    /// [`OutHead`]) with `needed` its full length.
+    #[repr(C)]
+    #[derive(Debug, Clone, Copy)]
+    pub struct HostBytesOut {
+        /// The head.
+        pub head: OutHead,
+        /// [`FOUND`] or [`ABSENT`].
+        pub found: u32,
+        /// Alignment padding.
+        pub _reserved: u32,
+        /// How many bytes were written.
+        pub written: u64,
+        /// On a short FAILED, the value's full length; `0` otherwise.
+        pub needed: u64,
+    }
 
-/// The `out` of a request-path list written into host buffers: on READY `items_written` items and
-/// `bytes_written` bytes are in the buffers and both `needed_*` are `0`; a list over either
-/// capacity is the short-buffer answer (M-SB, on [`OutHead`]) with the full sizes in `needed_*`.
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct HostListOut {
-    /// The head.
-    pub head: OutHead,
-    /// How many items were written.
-    pub items_written: u64,
-    /// How many bytes of the byte buffer the written items use.
-    pub bytes_written: u64,
-    /// On a short FAILED, how many items the whole answer holds; `0` otherwise.
-    pub needed_items: u64,
-    /// On a short FAILED, how many bytes the whole answer needs; `0` otherwise.
-    pub needed_bytes: u64,
+    /// The `out` of a request-path list written into host buffers: on READY `items_written` items and
+    /// `bytes_written` bytes are in the buffers and both `needed_*` are `0`; a list over either
+    /// capacity is the short-buffer answer (M-SB, on [`OutHead`]) with the full sizes in `needed_*`.
+    #[repr(C)]
+    #[derive(Debug, Clone, Copy)]
+    pub struct HostListOut {
+        /// The head.
+        pub head: OutHead,
+        /// How many items were written.
+        pub items_written: u64,
+        /// How many bytes of the byte buffer the written items use.
+        pub bytes_written: u64,
+        /// On a short FAILED, how many items the whole answer holds; `0` otherwise.
+        pub needed_items: u64,
+        /// On a short FAILED, how many bytes the whole answer needs; `0` otherwise.
+        pub needed_bytes: u64,
+    }
 }
 
 /// [`HostBytesOut::found`]: the record exists and was written.
@@ -223,65 +227,67 @@ pub const ABSENT: u32 = 0;
 
 // ── shared off-path result shapes (mechanism memory class (iv)) ───────────────────────────────
 
-/// The `out` of an off-path single-record read: a plugin-owned blob held under `head.lease`.
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct LeasedBlobOut {
-    /// The head; `head.lease` holds `record` until `release`.
-    pub head: OutHead,
-    /// [`FOUND`] or [`ABSENT`].
-    pub found: u32,
-    /// Alignment padding.
-    pub _reserved: u32,
-    /// The record; absent when `found == ABSENT`.
-    pub record: Blob,
-}
+abi_struct! {
+    /// The `out` of an off-path single-record read: a plugin-owned blob held under `head.lease`.
+    #[repr(C)]
+    #[derive(Debug, Clone, Copy)]
+    pub struct LeasedBlobOut {
+        /// The head; `head.lease` holds `record` until `release`.
+        pub head: OutHead,
+        /// [`FOUND`] or [`ABSENT`].
+        pub found: u32,
+        /// Alignment padding.
+        pub _reserved: u32,
+        /// The record; absent when `found == ABSENT`.
+        pub record: Blob,
+    }
 
-/// The `out` of an off-path list of records: plugin-owned blobs held under `head.lease`.
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct LeasedListOut {
-    /// The head; `head.lease` holds `items` and their bytes until `release`.
-    pub head: OutHead,
-    /// The records, in the op's stated order.
-    pub items: *const Blob,
-    /// How many.
-    pub items_len: usize,
-}
+    /// The `out` of an off-path list of records: plugin-owned blobs held under `head.lease`.
+    #[repr(C)]
+    #[derive(Debug, Clone, Copy)]
+    pub struct LeasedListOut {
+        /// The head; `head.lease` holds `items` and their bytes until `release`.
+        pub head: OutHead,
+        /// The records, in the op's stated order.
+        pub items: *const Blob,
+        /// How many.
+        pub items_len: usize,
+    }
 
-/// The `out` of an off-path list of strings: plugin-owned strings held under `head.lease`.
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct LeasedStrListOut {
-    /// The head; `head.lease` holds `items` and their bytes until `release`.
-    pub head: OutHead,
-    /// The strings.
-    pub items: *const AbiStr,
-    /// How many.
-    pub items_len: usize,
-}
+    /// The `out` of an off-path list of strings: plugin-owned strings held under `head.lease`.
+    #[repr(C)]
+    #[derive(Debug, Clone, Copy)]
+    pub struct LeasedStrListOut {
+        /// The head; `head.lease` holds `items` and their bytes until `release`.
+        pub head: OutHead,
+        /// The strings.
+        pub items: *const AbiStr,
+        /// How many.
+        pub items_len: usize,
+    }
 
-/// The `out` of a count (a purge's rows removed).
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct CountOut {
-    /// The head.
-    pub head: OutHead,
-    /// The count.
-    pub count: u64,
-}
+    /// The `out` of a count (a purge's rows removed).
+    #[repr(C)]
+    #[derive(Debug, Clone, Copy)]
+    pub struct CountOut {
+        /// The head.
+        pub head: OutHead,
+        /// The count.
+        pub count: u64,
+    }
 
-/// The `out` of a yes/no check. [`VERDICT_NO`] is `0`, so an `out` nobody wrote is a NO: the
-/// token checks are fail-closed (records.rs:1548-1554, :1580-1587).
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct VerdictOut {
-    /// The head.
-    pub head: OutHead,
-    /// [`VERDICT_YES`] or [`VERDICT_NO`].
-    pub verdict: u32,
-    /// Alignment padding.
-    pub _reserved: u32,
+    /// The `out` of a yes/no check. [`VERDICT_NO`] is `0`, so an `out` nobody wrote is a NO: the
+    /// token checks are fail-closed (records.rs:1548-1554, :1580-1587).
+    #[repr(C)]
+    #[derive(Debug, Clone, Copy)]
+    pub struct VerdictOut {
+        /// The head.
+        pub head: OutHead,
+        /// [`VERDICT_YES`] or [`VERDICT_NO`].
+        pub verdict: u32,
+        /// Alignment padding.
+        pub _reserved: u32,
+    }
 }
 
 /// [`VerdictOut::verdict`]: no (and the fail-closed zero).
@@ -291,22 +297,24 @@ pub const VERDICT_YES: u32 = 1;
 
 // ── the Statement tail ───────────────────────────────────────────────────────────────────────
 
-/// The store kind's Statement tail (B.1 "Tail": `durable_plane`, `fork_refusal`). Each fact is
-/// `0` (no) or `1` (yes). `ephemeral` is a Statement mark, not a tail fact
-/// ([`MARK_EPHEMERAL`](crate::abi::mechanism::door::MARK_EPHEMERAL); the design's One Statement rule).
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct StoreTail {
-    /// The head; `size == size_of::<StoreTail>()`.
-    pub head: KindTailHead,
-    /// The store keeps plane records durably (a store that does not answers the plane-record
-    /// slots with nothing kept, as the 1.5.5-default RAM store did, records.rs:1481-1487).
-    pub durable_plane: u8,
-    /// The store refuses a DIFFERENT record at an already-used append sequence as a fork, rather
-    /// than overwriting it (Q79-fork-refusal, THE DESIGN's owner questions, ruled 2026-09-27).
-    pub fork_refusal: u8,
-    /// Alignment padding.
-    pub _reserved: [u8; 6],
+abi_struct! {
+    /// The store kind's Statement tail (B.1 "Tail": `durable_plane`, `fork_refusal`). Each fact is
+    /// `0` (no) or `1` (yes). `ephemeral` is a Statement mark, not a tail fact
+    /// ([`MARK_EPHEMERAL`](crate::abi::mechanism::door::MARK_EPHEMERAL); the design's One Statement rule).
+    #[repr(C)]
+    #[derive(Debug, Clone, Copy)]
+    pub struct StoreTail {
+        /// The head; `size == size_of::<StoreTail>()`.
+        pub head: KindTailHead,
+        /// The store keeps plane records durably (a store that does not answers the plane-record
+        /// slots with nothing kept, as the 1.5.5-default RAM store did, records.rs:1481-1487).
+        pub durable_plane: u8,
+        /// The store refuses a DIFFERENT record at an already-used append sequence as a fork, rather
+        /// than overwriting it (Q79-fork-refusal, THE DESIGN's owner questions, ruled 2026-09-27).
+        pub fork_refusal: u8,
+        /// Alignment padding.
+        pub _reserved: [u8; 6],
+    }
 }
 
 impl StoreTail {

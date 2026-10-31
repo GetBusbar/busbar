@@ -47,9 +47,9 @@
 //!
 //! **Lock order.** `CONFIG_MUTATION_LOCK` is private to this file and is acquired ONLY by
 //! `config_transaction`; it is always released last (it is the outermost lock). `EXISTENCE_GATE`
-//! (the std `Mutex` serializing key-row check-then-write, `crate::admin::EXISTENCE_GATE`) is only
-//! ever taken INSIDE a `spawn_blocking` closure and is never held across an await. There is thus a
-//! single global acquisition order (config lock, then existence gate) and no cycle.
+//! (the per-key-id claim serializing key-row check-then-write in the admin crate) is only ever
+//! claimed INSIDE a `spawn_blocking` closure and is never held across an await. There is thus a
+//! single global acquisition order (config lock, then existence claim) and no cycle.
 //!
 //! **Lock hold time.** The apply phase (persist, swap, and every deferred store/disk step) runs on a
 //! blocking thread that OWNS the guard, so the lock is held for as long as that work takes. It never

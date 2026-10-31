@@ -174,6 +174,8 @@ pub mod datagram;
 pub mod fields;
 pub mod route;
 
+pub use check::check_answer;
+
 /// A guest-list line an accepting transport is lent ([`BeginIn::lines`]).
 pub use route::LineEntry;
 

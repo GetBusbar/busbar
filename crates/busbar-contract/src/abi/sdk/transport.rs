@@ -11,8 +11,12 @@
 //!   object against them, a key it does not read or a value its kind refuses refused.
 //! * [`DEFAULT_BODY_MAX`] — the request-body bound's declared default, as a setting declaration
 //!   states it.
-//! * [`carried`] — a carrier op's instance and its armed host I/O, or the refusal a call on neither
+//! * [`carried!`](crate::carried) — a carrier op's instance and its armed host I/O, or the refusal a call on neither
 //!   earns.
+//! * [`table::Table`] — what an instance holds by token (framings, connections, calls), one lock per
+//!   value, none shared between two.
+//! * [`sink`] — a framer's sink fill ([`sink::fill`], [`sink::Piece`], [`sink::field_cut`]), over
+//!   any frame buffer.
 //!
 //! The HOT transport lowering that lived here (`export_carrier!`, `export_framer!`, the per-method
 //! `#[repr(C)]` slot bridges and the decl a transport cdylib exported as `busbar_transport_decl`) is
@@ -27,6 +31,9 @@ use crate::abi::shared::code;
 use crate::abi::transport::{SettingDecl, SETTING_COUNT, SETTING_FLAG, SETTING_TEXT};
 use crate::grammar::SelectorForm;
 use crate::transport::DEFAULT_REQUEST_BODY_MAX_BYTES;
+
+pub mod sink;
+pub mod table;
 
 /// `forms` as their codes, in declared order.
 #[must_use]
@@ -141,22 +148,38 @@ pub fn settings_reading(
     Ok(object)
 }
 
-/// Carrier op `op`'s open instance and the host's armed I/O for it on the op's ticket.
+/// Carrier op `$op`'s open instance and the host's armed I/O for it on the op's ticket, e.g.
+/// `carried!(i, "flush")`; its refusals are static words, which reach the caller even from a call
+/// on no instance (there is no reason buffer to keep an owned text in).
+///
+/// FAILED: `<op>: no open instance`, or `<op>: the host lent this carrier no I/O`.
+#[macro_export]
+macro_rules! carried {
+    ($i:expr, $op:literal) => {
+        $crate::abi::sdk::transport::carried_saying(
+            &$i,
+            concat!($op, ": no open instance"),
+            concat!($op, ": the host lent this carrier no I/O"),
+        )
+    };
+}
+
+/// [`carried!`](crate::carried)'s body: the instance and its armed I/O, or FAILED saying
+/// `no_instance` / `no_io`.
 ///
 /// # Errors
-/// FAILED: `<op>: no open instance`, or `<op>: the host lent this carrier no I/O`.
-pub fn carried<'a, L: Life>(
+/// FAILED: no open instance, or no armed I/O.
+pub fn carried_saying<'a, L: Life>(
     i: &Instance<'a, Held<L>>,
-    op: &str,
+    no_instance: &'static str,
+    no_io: &'static str,
 ) -> Result<(&'a L, Io<'a>), Refusal> {
-    let held = i
-        .get()
-        .ok_or_else(|| Refusal::failed(format!("{op}: no open instance")))?;
+    let held = i.get().ok_or(Refusal::failed(no_instance))?;
     let io = held
         .host()
         .map(|h| h.io(i.ticket()))
         .filter(Io::armed)
-        .ok_or_else(|| Refusal::failed(format!("{op}: the host lent this carrier no I/O")))?;
+        .ok_or(Refusal::failed(no_io))?;
     Ok((held.life(), io))
 }
 
