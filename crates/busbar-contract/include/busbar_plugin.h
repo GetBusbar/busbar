@@ -159,18 +159,20 @@ extern "C" {
 #define BB_STORE_RETENTION_TERMINAL_ONLY UINT32_C(1) /* [`KindBeforeIn::retention`]: only the kind's `DISPOSITION_TERMINAL` rows older than `before` */
 
 /* secret */
-#define BB_SECRET_ABI_VERSION UINT32_C(2) /* The secret kind's ABI version: v1.5.5 shipped `1` (`SECRET_ABI_VERSION`), so 1.6.0 ships `2`. */
+#define BB_SECRET_ABI_VERSION UINT32_C(2) /* The secret kind's ABI version. */
 #define BB_SECRET_LAYOUT_FINGERPRINT UINT64_C(0x7195caed69bcfcbd) /* The secret kind's layout fingerprint ([`crate::abi::mechanism::layout`]): the fold of */
 #define BB_SECRET_SLOT_RESOLVE UINT32_C(9) /* `resolve`. */
 #define BB_SECRET_SLOT_CHECK UINT32_C(10) /* `check`. */
+#define BB_SECRET_KIND_SLOTS UINT32_C(2) /* How many slots the secret kind adds after the shared lifecycle (`resolve` and `check`). */
 #define BB_SECRET_SLOTS UINT32_C(11) /* How many slots the secret kind's whole table holds (the lifecycle, `resolve` and `check`). */
 #define BB_SECRET_ERROR_KIND_UNSET UINT32_C(0) /* [`ResolveOut::error_kind`]: unset (a `Ready` answer). */
-#define BB_SECRET_ERROR_KIND_NOT_FOUND UINT32_C(1) /* [`ResolveOut::error_kind`]: the named secret does not exist — OLD `SecretErrorKind::NotFound`. */
-#define BB_SECRET_ERROR_KIND_UNAVAILABLE UINT32_C(2) /* [`ResolveOut::error_kind`]: the backend (vault, filesystem, environment) could not be reached — */
-#define BB_SECRET_ERROR_KIND_DENIED UINT32_C(3) /* [`ResolveOut::error_kind`]: the caller is not entitled to it — OLD `SecretErrorKind::Denied`. */
-#define BB_SECRET_ERROR_KIND_INVALID UINT32_C(4) /* [`ResolveOut::error_kind`]: the settings blob itself is malformed — OLD */
-#define BB_SECRET_ERROR_KIND_INTERNAL UINT32_C(5) /* [`ResolveOut::error_kind`]: an internal fault in the plugin, not classified above — OLD */
+#define BB_SECRET_ERROR_KIND_NOT_FOUND UINT32_C(1) /* [`ResolveOut::error_kind`]: the named secret does not exist. */
+#define BB_SECRET_ERROR_KIND_UNAVAILABLE UINT32_C(2) /* [`ResolveOut::error_kind`]: the source holding the secret could not be reached. */
+#define BB_SECRET_ERROR_KIND_DENIED UINT32_C(3) /* [`ResolveOut::error_kind`]: the caller is not entitled to it. */
+#define BB_SECRET_ERROR_KIND_INVALID UINT32_C(4) /* [`ResolveOut::error_kind`]: the settings blob itself is malformed, or the value is not a */
+#define BB_SECRET_ERROR_KIND_INTERNAL UINT32_C(5) /* [`ResolveOut::error_kind`]: an internal fault in the plugin, not classified above. */
 #define BB_SECRET_FIRST_SECRET_CAP ((size_t)4096) /* The host's first secret buffer, in bytes: an API key or a token fits; a larger value (a PEM */
+#define BB_SECRET_MAX_SECRET_BYTES ((size_t)0x100000) /* THE LARGEST SECRET a `resolve` may answer, in bytes (1 MiB): the most a short answer may name in */
 #define BB_SECRET_CANCEL_ABORTED UINT32_C(0) /* The pending `resolve` was aborted; no lease was granted. */
 
 /* auth */
