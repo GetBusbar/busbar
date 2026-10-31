@@ -769,7 +769,7 @@ impl GuestLines {
 pub const LINES_ON_DIAL: &str = "a dialled framing is lent no guest list";
 
 /// A TICKETED FRAMER OP, as the framing issues it (and re-issues it on a resume): `begin`,
-/// `ingest` or `emit`, its bytes borrowed while it crosses and owned once it parks.
+/// `adopt`, `ingest` or `emit`, its bytes borrowed while it crosses and owned once it parks.
 #[derive(Debug)]
 enum Ticketed<'a> {
     Begin {
@@ -780,6 +780,11 @@ enum Ticketed<'a> {
         binding: AuthBinding,
         /// The listener's guest list, on an accepting side.
         guests: Option<Arc<GuestLines>>,
+    },
+    Adopt {
+        side: u32,
+        established: Established,
+        leftover: std::borrow::Cow<'a, [u8]>,
     },
     Ingest {
         bytes: std::borrow::Cow<'a, [u8]>,
@@ -815,6 +820,13 @@ impl Ticketed<'_> {
                 binding,
                 guests,
             },
+            Self::Adopt {
+                side, established, ..
+            } => Ticketed::Adopt {
+                side,
+                established,
+                leftover: std::borrow::Cow::Owned(Vec::new()),
+            },
             // A parked op's resume carries no new bytes: the framer took them whole when the op
             // first crossed, so none is kept.
             Self::Ingest { end, .. } => Ticketed::Ingest {
@@ -839,12 +851,12 @@ impl Ticketed<'_> {
         }
     }
 
-    /// The stream a parked op of this kind holds: an emit's own; `None` for `begin` (which holds
-    /// the whole framing) and `ingest` (whose stream only the framer knows).
+    /// The stream a parked op holds: an emit's own; `None` for `begin`/`adopt` (the whole
+    /// framing) and `ingest` (whose stream only the framer knows).
     const fn stream(&self) -> Option<u64> {
         match self {
             Self::Emit { stream, .. } => Some(*stream),
-            Self::Begin { .. } | Self::Ingest { .. } => None,
+            Self::Begin { .. } | Self::Adopt { .. } | Self::Ingest { .. } => None,
         }
     }
 }
@@ -1241,7 +1253,6 @@ impl Recalls {
 /// Which op a `YIELD_MORE` re-call repeats.
 #[derive(Clone, Copy)]
 enum Again {
-    Ingest,
     Timer,
     Refuse(Option<u64>, u32, bool),
 }
@@ -1448,21 +1459,21 @@ impl Framing {
         !self.parked.is_empty()
     }
 
-    /// Whether the framing's `begin` is parked: no other op crosses until it completes.
+    /// Whether the framing's `begin` or `adopt` is parked: no other op crosses until it completes.
     #[must_use]
     pub fn begin_parked(&self) -> bool {
         self.parked
             .iter()
-            .any(|p| matches!(p.op, Ticketed::Begin { .. }))
+            .any(|p| matches!(p.op, Ticketed::Begin { .. } | Ticketed::Adopt { .. }))
     }
 
-    /// Whether `stream` is held: the framing's `begin` is parked, or an `emit` on `stream` is.
+    /// Whether `stream` is held: the framing's `begin`/`adopt` is parked, or an `emit` on it is.
     /// A held stream's next emit waits, in order, for the parked op to complete.
     #[must_use]
     pub fn holds(&self, stream: u64) -> bool {
         self.parked.iter().any(|p| match p.op.stream() {
             Some(s) => s == stream,
-            None => matches!(p.op, Ticketed::Begin { .. }),
+            None => matches!(p.op, Ticketed::Begin { .. } | Ticketed::Adopt { .. }),
         })
     }
 
@@ -1603,6 +1614,22 @@ impl Framing {
                 i.sink = sink;
                 cross(Call::Begin(&mut i, &mut o))
             }
+            Ticketed::Adopt {
+                side,
+                established,
+                leftover,
+            } => {
+                let facts = established.facts();
+                let mut i: AdoptIn = blank_in();
+                i.side = *side;
+                i.facts = &facts;
+                if fresh {
+                    i.leftover = leftover.as_ptr();
+                    i.leftover_len = leftover.len();
+                }
+                i.sink = sink;
+                cross(Call::Adopt(&mut i, &mut o))
+            }
             Ticketed::Ingest { bytes, end } => {
                 let mut i: IngestIn = blank_in();
                 i.framing = self.token;
@@ -1692,11 +1719,25 @@ impl Framing {
             }
             ready(c)?;
             let begin = matches!(op, Ticketed::Begin { .. });
-            if begin {
+            let adopt = matches!(op, Ticketed::Adopt { .. });
+            if begin || adopt {
                 self.token = o.framing;
             }
             if self.bufs.take(&o, &mut yielded)? {
                 return Ok(Some(yielded));
+            }
+            if adopt {
+                // After adoption, drain leftover input on the same ticket without lending it again.
+                return self.run_on(
+                    Ticketed::Ingest {
+                        bytes: std::borrow::Cow::Borrowed(&[]),
+                        end: false,
+                    },
+                    yielded,
+                    true,
+                    false,
+                    ticket,
+                );
             }
             if begin {
                 // What `begin` still owes comes out on `timer` re-calls, never another `begin`.
@@ -1749,29 +1790,22 @@ impl Framing {
         leftover: &[u8],
         established: &Established,
     ) -> Result<(Self, Yielded), Refused> {
-        let mut bufs = Buffers::for_side(side);
-        let facts = established.facts();
-        let mut i: AdoptIn = blank_in();
-        i.side = side;
-        i.facts = &facts;
-        i.leftover = leftover.as_ptr();
-        i.leftover_len = leftover.len();
-        i.sink = bufs.sink();
-        let mut o: FramerOut = blank_out();
-        ready(door.cross(Call::Adopt(&mut i, &mut o)))?;
-        let mut f = Self {
+        let ticket = door.framing_side();
+        let mut framing = Self {
             door,
-            token: o.framing,
-            bufs,
-            ticketed: false,
+            token: 0,
+            bufs: Buffers::for_side(side),
+            ticketed: ticket.is_some(),
             idle: Vec::new(),
             parked: Vec::new(),
         };
-        let mut y = Yielded::default();
-        if !f.bufs.take(&o, &mut y)? {
-            f.more(Again::Ingest, &mut y)?;
-        }
-        Ok((f, y))
+        let op = Ticketed::Adopt {
+            side,
+            established: established.clone(),
+            leftover: std::borrow::Cow::Borrowed(leftover),
+        };
+        let yielded = framing.run(op, Yielded::default(), false, false, ticket)?;
+        Ok((framing, yielded.unwrap_or_default()))
     }
 
     /// The entry this framing is on.
@@ -1787,12 +1821,6 @@ impl Framing {
             let sink = self.bufs.sink();
             let mut o: FramerOut = blank_out();
             let c = match again {
-                Again::Ingest => {
-                    let mut i: IngestIn = blank_in();
-                    i.framing = self.token;
-                    i.sink = sink;
-                    self.door.cross(Call::Ingest(&mut i, &mut o))
-                }
                 Again::Refuse(stream, status, head_sent) => {
                     let mut i: RefuseIn = blank_in();
                     i.framing = self.token;

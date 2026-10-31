@@ -971,3 +971,48 @@ fn an_adopted_framing_keeps_pending_emits_on_their_own_tickets() {
         .filter(|(_, _, resume)| *resume)
         .all(|(_, ticket, _)| *ticket == held));
 }
+
+#[test]
+fn a_pending_adoption_resumes_on_its_ticket_without_replaying_leftover_bytes() {
+    let mut door = PendingDoor::new(TestDoor::identity("bytes"), 99);
+    door.pend_adopt = true;
+    let door = Arc::new(door);
+    let (mut framing, first) = Framing::adopt(
+        door.clone(),
+        SIDE_ACCEPT,
+        b"leftover",
+        &Established::plain_for_test(),
+    )
+    .expect("the adoption parks");
+    assert_eq!(first, Yielded::default());
+    assert!(framing.begin_parked() && framing.holds(1) && framing.holds(3));
+    assert!(framing.emit(3, b"too soon", true, false).is_err());
+    assert!(framing.poll_parked(&mut noop_cx()).is_pending());
+    door.host.complete(9);
+    let std::task::Poll::Ready(Ok(done)) = framing.poll_parked(&mut noop_cx()) else {
+        panic!("adoption resumes after its host answers");
+    };
+    assert_eq!(
+        done.pieces
+            .iter()
+            .flat_map(|p| p.bytes.iter().copied())
+            .collect::<Vec<_>>(),
+        b"leftover"
+    );
+    assert!(!framing.begin_parked() && !framing.parked());
+    assert_ne!(framing.token(), 0);
+    assert_eq!(
+        door.inner.count("adopt"),
+        1,
+        "the underlying adoption runs once"
+    );
+    assert_eq!(door.host.calls(), 1);
+    let calls = door.on.lock().unwrap();
+    let adopts: Vec<_> = calls.iter().filter(|(op, _, _)| *op == "adopt").collect();
+    assert!(adopts.len() >= 3);
+    let ticket = adopts[0].1;
+    assert!(!adopts[0].2);
+    assert!(adopts[1..]
+        .iter()
+        .all(|(_, t, resume)| *t == ticket && *resume));
+}
