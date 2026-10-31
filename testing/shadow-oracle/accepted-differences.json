@@ -4945,8 +4945,8 @@
       "kind": "improvement",
       "changelog": "1.6.0 Changed: a request that asks for a stream is answered as a stream in the caller's own dialect even when the upstream answers with one whole body; the conversion is audited (`egress.stream_synthesized`) and billed from the upstream's body.",
       "by": "owner (Matthew Jackson), 2026-10-27 (signature recorded ~/Developer/tmp/cleanup/NEXT.md:328)",
-      "cells": "^(llm\\|anthropic\\|bedrock\\|request\\|ok_stream_whole_answer|llm\\|anthropic\\|cohere\\|request\\|ok_stream_whole_answer|llm\\|anthropic\\|gemini\\|request\\|ok_stream_whole_answer|llm\\|anthropic\\|openai\\|request\\|ok_stream_whole_answer|llm\\|anthropic\\|responses\\|request\\|ok_stream_whole_answer|llm\\|cohere\\|anthropic\\|request\\|ok_stream_whole_answer|llm\\|cohere\\|bedrock\\|request\\|ok_stream_whole_answer|llm\\|cohere\\|gemini\\|request\\|ok_stream_whole_answer|llm\\|cohere\\|openai\\|request\\|ok_stream_whole_answer|llm\\|cohere\\|responses\\|request\\|ok_stream_whole_answer|llm\\|gemini\\|anthropic\\|request\\|ok_stream_whole_answer|llm\\|gemini\\|bedrock\\|request\\|ok_stream_whole_answer|llm\\|gemini\\|cohere\\|request\\|ok_stream_whole_answer|llm\\|gemini\\|openai\\|request\\|ok_stream_whole_answer|llm\\|gemini\\|responses\\|request\\|ok_stream_whole_answer|llm\\|openai\\|anthropic\\|request\\|ok_stream_whole_answer|llm\\|openai\\|bedrock\\|request\\|ok_stream_whole_answer|llm\\|openai\\|cohere\\|request\\|ok_stream_whole_answer|llm\\|openai\\|gemini\\|request\\|ok_stream_whole_answer|llm\\|openai\\|responses\\|request\\|ok_stream_whole_answer|llm\\|responses\\|anthropic\\|request\\|ok_stream_whole_answer|llm\\|responses\\|bedrock\\|request\\|ok_stream_whole_answer|llm\\|responses\\|cohere\\|request\\|ok_stream_whole_answer|llm\\|responses\\|gemini\\|request\\|ok_stream_whole_answer|llm\\|responses\\|openai\\|request\\|ok_stream_whole_answer|llm\\|anthropic\\|responses\\|request\\|ok_stream|llm\\|bedrock\\|responses\\|request\\|ok_stream|llm\\|cohere\\|responses\\|request\\|ok_stream|llm\\|gemini\\|responses\\|request\\|ok_stream|llm\\|openai\\|responses\\|request\\|ok_stream)$",
-      "expected_cells": 30,
+      "cells": "^(llm\\|anthropic\\|bedrock\\|request\\|ok_stream_whole_answer|llm\\|anthropic\\|cohere\\|request\\|ok_stream_whole_answer|llm\\|anthropic\\|gemini\\|request\\|ok_stream_whole_answer|llm\\|anthropic\\|openai\\|request\\|ok_stream_whole_answer|llm\\|anthropic\\|responses\\|request\\|ok_stream_whole_answer|llm\\|cohere\\|anthropic\\|request\\|ok_stream_whole_answer|llm\\|cohere\\|bedrock\\|request\\|ok_stream_whole_answer|llm\\|cohere\\|gemini\\|request\\|ok_stream_whole_answer|llm\\|cohere\\|openai\\|request\\|ok_stream_whole_answer|llm\\|cohere\\|responses\\|request\\|ok_stream_whole_answer|llm\\|gemini\\|anthropic\\|request\\|ok_stream_whole_answer|llm\\|gemini\\|bedrock\\|request\\|ok_stream_whole_answer|llm\\|gemini\\|cohere\\|request\\|ok_stream_whole_answer|llm\\|gemini\\|openai\\|request\\|ok_stream_whole_answer|llm\\|gemini\\|responses\\|request\\|ok_stream_whole_answer|llm\\|openai\\|anthropic\\|request\\|ok_stream_whole_answer|llm\\|openai\\|bedrock\\|request\\|ok_stream_whole_answer|llm\\|openai\\|cohere\\|request\\|ok_stream_whole_answer|llm\\|openai\\|gemini\\|request\\|ok_stream_whole_answer|llm\\|openai\\|responses\\|request\\|ok_stream_whole_answer|llm\\|responses\\|anthropic\\|request\\|ok_stream_whole_answer|llm\\|responses\\|bedrock\\|request\\|ok_stream_whole_answer|llm\\|responses\\|cohere\\|request\\|ok_stream_whole_answer|llm\\|responses\\|gemini\\|request\\|ok_stream_whole_answer|llm\\|responses\\|openai\\|request\\|ok_stream_whole_answer|llm\\|anthropic\\|responses\\|request\\|ok_stream|llm\\|bedrock\\|responses\\|request\\|ok_stream|llm\\|cohere\\|responses\\|request\\|ok_stream|llm\\|gemini\\|responses\\|request\\|ok_stream|llm\\|openai\\|responses\\|request\\|ok_stream|llm\\|responses\\|responses\\|request\\|ok_stream|llm\\|anthropic\\|anthropic\\|request\\|ok_stream_whole_answer|llm\\|bedrock\\|bedrock\\|request\\|ok_stream_whole_answer|llm\\|cohere\\|cohere\\|request\\|ok_stream_whole_answer|llm\\|gemini\\|gemini\\|request\\|ok_stream_whole_answer|llm\\|openai\\|openai\\|request\\|ok_stream_whole_answer|llm\\|responses\\|responses\\|request\\|ok_stream_whole_answer)$",
+      "expected_cells": 37,
       "classes": [
         "headers",
         "body",
@@ -4965,6 +4965,14 @@
           {
             "cell": "llm|openai|anthropic|request|ok_stream_whole_answer",
             "body_contains": "data: [DONE]"
+          },
+          {
+            "cell": "llm|openai|openai|request|ok_stream_whole_answer",
+            "body_contains": "data: [DONE]"
+          },
+          {
+            "cell": "llm|responses|responses|request|ok_stream",
+            "body_contains": "response.completed"
           }
         ]
       },
@@ -4976,13 +4984,18 @@
           "who": "owner (Matthew Jackson)",
           "when": "2026-10-28",
           "ruling": "OWNER SIGNED 2026-10-28 (asked by the coordinator with the before/after below): extend S-1-SYNTH by the 5 cells llm|{anthropic,bedrock,cohere,gemini,openai}|responses|request|ok_stream. Before: application/json, one whole JSON body, no audit row. After: text/event-stream in the caller's format, plus one egress.stream_synthesized audit row."
+        },
+        "widened_2026_10_31": {
+          "who": "lead, under owner delegation (busbar 1.6.0)",
+          "when": "2026-10-31",
+          "ruling": "LEAD-SIGNED 2026-10-31 under owner delegation (~/Developer/tmp/cleanup/SIGN-plane-llm-stream.md, Row A): extend S-1-SYNTH by the 7 same-dialect cells llm|responses|responses|request|ok_stream and llm|{anthropic,bedrock,cohere,gemini,openai,responses} same-dialect |request|ok_stream_whole_answer (30 -> 37). Before (1.5.5): 200, application/json, the whole JSON body, no audit row. After: 200, text/event-stream synthesized in the caller's dialect from the whole body, one egress.stream_synthesized audit row naming the far dialect; usage billed from the body (same counts). llm|gemini|gemini|request|ok_stream_array_whole_answer is unchanged and not covered."
         }
       },
       "expires": {
         "baseline": "1.5.5",
         "by": "2026-12-31"
       },
-      "rationale": "SPLIT 2026-10-27 out of S-1 (ORACLE-116 review): on these 25 cells a stream:true request reaches a far end of another dialect that answers one whole JSON body. 1.5.5 relayed that body as application/json; 1.6.0 answers the caller in its own dialect AND mode, a stream synthesised from the whole body (owner rule of 2026-10-27). headers: content-type application/json -> the caller's stream type. body: the JSON document -> the caller's event stream carrying the same answer. effects.audit: the conversion writes one applied `egress.stream_synthesized` row naming the far dialect (busbar-plane-llm #53). Money is unchanged: the stream is billed from the far end's whole body (no usage class is forgiven). PREMISE (evaluated): the anthropic door's synthesised stream opens with `message_start` and the openai door's ends with `[DONE]`, i.e. each is the caller's own stream shape. WIDENED 2026-10-28 (OWNER signed 2026-10-28): the 5 cells llm|anthropic|responses|request|ok_stream, llm|bedrock|responses|request|ok_stream, llm|cohere|responses|request|ok_stream, llm|gemini|responses|request|ok_stream and llm|openai|responses|request|ok_stream (+5, 30). Before: application/json, one whole JSON body, no audit row. After: text/event-stream in the caller's format, plus one egress.stream_synthesized audit row. These cells only."
+      "rationale": "SPLIT 2026-10-27 out of S-1 (ORACLE-116 review): on these 25 cells a stream:true request reaches a far end of another dialect that answers one whole JSON body. 1.5.5 relayed that body as application/json; 1.6.0 answers the caller in its own dialect AND mode, a stream synthesised from the whole body (owner rule of 2026-10-27). headers: content-type application/json -> the caller's stream type. body: the JSON document -> the caller's event stream carrying the same answer. effects.audit: the conversion writes one applied `egress.stream_synthesized` row naming the far dialect (busbar-plane-llm #53). Money is unchanged: the stream is billed from the far end's whole body (no usage class is forgiven). PREMISE (evaluated): the anthropic door's synthesised stream opens with `message_start` and the openai door's ends with `[DONE]`, i.e. each is the caller's own stream shape. WIDENED 2026-10-28 (OWNER signed 2026-10-28): the 5 cells llm|anthropic|responses|request|ok_stream, llm|bedrock|responses|request|ok_stream, llm|cohere|responses|request|ok_stream, llm|gemini|responses|request|ok_stream and llm|openai|responses|request|ok_stream (+5, 30). Before: application/json, one whole JSON body, no audit row. After: text/event-stream in the caller's format, plus one egress.stream_synthesized audit row. These cells only. WIDENED 2026-10-31 (LEAD-SIGNED under owner delegation, SIGN-plane-llm-stream.md Row A): the same rule within one dialect. The 7 cells llm|responses|responses|request|ok_stream, llm|anthropic|anthropic|request|ok_stream_whole_answer, llm|bedrock|bedrock|request|ok_stream_whole_answer, llm|cohere|cohere|request|ok_stream_whole_answer, llm|gemini|gemini|request|ok_stream_whole_answer, llm|openai|openai|request|ok_stream_whole_answer and llm|responses|responses|request|ok_stream_whole_answer (+7, 37): a stream:true caller whose far end of its own dialect answered one whole body. Before: application/json, the whole JSON body, no audit row. After: text/event-stream synthesized in the caller's dialect, plus one egress.stream_synthesized audit row; billed from the body (same counts, once). busbar-plane-llm llm-conformance-landed (red 8aa1a4f, fix 82c0d42, relay.rs takes_whole). PREMISE widened with it: the openai door's same-dialect whole answer ends with [DONE] and the responses door's same-dialect ok_stream carries response.completed, so the entry forgives nothing (WITHHELD) on a dist that still pins a plane-llm without the change. The JSON-array gemini caller (ok_stream_array_whole_answer) keeps its array; not covered."
     },
     {
       "id": "S-1-AUDIT a stream synthesised for a Bedrock caller writes its egress.stream_synthesized audit row",
@@ -5074,6 +5087,40 @@
         "by": "2026-12-31"
       },
       "rationale": "Signed bytes (ORACLE-SIGNOFF, plane-llm #44): the frame's `:exception-type` header value moves from `InternalServerException` to `internalServerException`, as the ConverseStream output union names it; the payload `{\"message\":\"The response stream was interrupted.\"}` is unchanged (the frame CRCs change with the header; the recording holds the decoded frames). A transform: only that one exception-name string is read back as 1.5.5's; every other frame stays judged."
+    },
+    {
+      "id": "FIXTURE-RESP-CUT the mock's Responses stream frames carry the Response's required members (llm|responses|responses|request|stream_upstream_cut)",
+      "kind": "improvement",
+      "changelog": null,
+      "changelog_reason": "A conformance/oracle fixture change, not a product change: busbar relays a same-dialect far end's frames verbatim in 1.5.5 and 1.6.0 alike (Law 11); only the mock upstream's frame moved.",
+      "by": "lead, under owner delegation, 2026-10-31 (~/Developer/tmp/cleanup/SIGN-plane-llm-stream.md, Row B)",
+      "signoff": {
+        "who": "lead, under owner delegation (busbar 1.6.0)",
+        "when": "2026-10-31",
+        "ruling": "LEAD-SIGNED 2026-10-31 under owner delegation (~/Developer/tmp/cleanup/SIGN-plane-llm-stream.md, Row B): busbar-release crates/busbar-release-oracle/src/recorder/mock_upstream/bodies.rs openai_responses_stream's response.created / response.completed frames gain created_at:0, error:null, incomplete_details:null, instructions:null, metadata:null, output:[], parallel_tool_calls:true, temperature:null, tool_choice:\"auto\", tools:[], top_p:null (as responses_stream_error already does). The cut cell's body moves only because the fixture frame moved; signed as FIXTURE (no product change). The golden is not edited."
+      },
+      "expires": {
+        "baseline": "1.5.5",
+        "by": "2026-12-31"
+      },
+      "cells": "^llm\\|responses\\|responses\\|request\\|stream_upstream_cut$",
+      "expected_cells": 1,
+      "classes": [
+        "body"
+      ],
+      "transform": {
+        "candidate": [
+          [
+            "\"response\":\\{\"created_at\":0,\"error\":null,\"id\":\"resp_oracle\",\"incomplete_details\":null,\"instructions\":null,\"metadata\":null,\"model\":\"m-openai-responses\",\"object\":\"response\",\"output\":\\[\\],\"parallel_tool_calls\":true,\"status\":\"in_progress\",\"temperature\":null,\"tool_choice\":\"auto\",\"tools\":\\[\\],\"top_p\":null\\}",
+            "\"response\":{\"id\":\"resp_oracle\",\"model\":\"m-openai-responses\",\"object\":\"response\",\"status\":\"in_progress\"}"
+          ]
+        ]
+      },
+      "premise": {
+        "cell": "llm|responses|responses|request|stream_upstream_cut",
+        "body_contains": "\"parallel_tool_calls\":true,\"status\":\"in_progress\""
+      },
+      "rationale": "LEAD-SIGNED 2026-10-31 (~/Developer/tmp/cleanup/SIGN-plane-llm-stream.md, Row B), FIXTURE: the mock upstream's response.created frame (the one frame the cut relays before the socket dies) now carries every member the published Response schema requires. busbar relays it verbatim (1.5.5 and 1.6.0 alike, Law 11), so only that frame's response object moves. A transform: exactly the new response.created object is read back as 1.5.5's {id, model, object, status}; every other byte of the cut stream (busbar's own response.failed frame included) stays judged. PREMISE: the relayed frame carries the new members, i.e. the judge's recorder carries the busbar-release Row B mock; on an older judge the entry is WITHHELD and the cell is unchanged."
     }
   ]
 }
