@@ -679,6 +679,36 @@ impl HostServices for CredentialHost {
     fn trust_verify(&self, _: &Caller, _: &str, _: &[u8], _: &[u8]) -> Stored {
         Stored::refused(UNSERVED)
     }
+    fn trust_unreached(&self, _: &Caller, _: &str) -> Stored {
+        Stored::refused(UNSERVED)
+    }
+    fn trust_sight_item(&self, _: &Caller, _: &str, _: &str, _: &str) -> Stored {
+        Stored::refused(UNSERVED)
+    }
+    fn trust_decide(
+        &self,
+        _: &Caller,
+        _: busbar_contract::services::TrustKeyRef<'_>,
+        _: Option<&str>,
+        _: bool,
+    ) -> Stored {
+        Stored::refused(UNSERVED)
+    }
+    fn trust_state(&self, _: &Caller, _: &str) -> Stored {
+        Stored::refused(UNSERVED)
+    }
+    fn session_emit(&self, _: &Caller, _: u64, _: &[u8]) -> Stored {
+        Stored::refused(UNSERVED)
+    }
+    fn ticket_mint(&self, _: &Caller, _: Option<u64>, _: u64, _: &[u8]) -> Stored {
+        Stored::refused(UNSERVED)
+    }
+    fn ticket_take(&self, _: &Caller, _: Option<u64>) -> Stored {
+        Stored::refused(UNSERVED)
+    }
+    fn trust_serves(&self, _: &Caller, _: &str, _: Option<&str>, _: Option<&str>) -> Stored {
+        Stored::refused(UNSERVED)
+    }
     fn entitlement_check(&self, _: &Caller, _: Option<u64>, _: &str) -> Stored {
         Stored::refused(UNSERVED)
     }

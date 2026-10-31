@@ -6,6 +6,7 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 
 /// The busbar-owned config overlay (persistence substrate for API-applied hook changes).
+pub mod card;
 pub mod overlay;
 
 /// The credential positions `${VAR}` filled, and the settings a plane is handed over them: a secret
@@ -1851,8 +1852,9 @@ pub fn resolve_export(defs: &ExportDefs, errors: &mut Vec<String>) -> ExportCfg 
             def.durable,
             errors,
         );
-        // A `one_instance` module configured again: its own `check` (limits phase) words the
-        // refusal, once, over every instance of it; the extra instance is not resolved.
+        // A `one_instance` module configured again: the host words the refusal around the reason
+        // its own `check` (limits phase) gives, once, over every instance of it; the extra
+        // instance is not resolved.
         if crate::export::plugin::one_instance(module) {
             if seen_once.contains(&module) {
                 if !refused.contains(&module) {

@@ -65,8 +65,8 @@ use busbar_contract::ids::RecordSchemaId;
 use busbar_contract::kinds::RecordBytes;
 use busbar_contract::records::{RecordStore, RecordStoreResult, Retention};
 use busbar_contract::services::{
-    merge_list, Caller, DiskDest, HookAsk, HostServices, Later, NestAsk, Ran, Reading, RecordsList,
-    Stored,
+    merge_list, Caller, CredentialRead, DiskDest, HookAsk, HostServices, Later, NestAsk, Ran,
+    Reading, RecordsList, Stored,
 };
 
 /// The refusal of a record write past the write queue's bound.
@@ -684,6 +684,8 @@ pub struct KernelServices {
     sessions: Mutex<HashMap<u64, CarrierSession>>,
     /// The verify cache behind `verify.*`.
     verify: crate::host_verify::VerifyBook,
+    /// The credential source `records.secret` reads ([`Self::with_credentials`]).
+    credentials: Option<Arc<dyn CredentialRead>>,
     /// The ticket press behind `ticket.mint`, attached late; unattached, every mint is refused.
     tickets: OnceLock<Arc<dyn TicketPress>>,
 }
@@ -763,6 +765,7 @@ impl KernelServices {
             disk: Arc::default(),
             sessions: Mutex::default(),
             verify: crate::host_verify::VerifyBook::default(),
+            credentials: None,
             tickets: OnceLock::new(),
         }
     }
@@ -872,6 +875,14 @@ impl KernelServices {
     #[must_use]
     pub fn with_dest_judge(mut self, judge: Arc<dyn DestJudge>) -> Self {
         self.judge = Some(judge);
+        self
+    }
+
+    /// The same services serving `records.secret` from `credentials`: the secret in span `0`, its
+    /// liveness as the value; REFUSED [`NOT_READABLE`] while the source is not installed.
+    #[must_use]
+    pub fn with_credentials(mut self, credentials: Arc<dyn CredentialRead>) -> Self {
+        self.credentials = Some(credentials);
         self
     }
 
@@ -1578,9 +1589,11 @@ pub const POOL_REFUSED: &str = "the pool refused the store call";
 pub const STORE_FAILED: &str = "the store did not answer";
 /// The FAILED answer of a `trust.decide` whose decision the store could not keep.
 pub const DECISION_UNKEPT: &str = "the trust decision could not be kept";
-/// The refusal of a `records.secret` read by services that hold no credential source (the root
-/// composes the credential source over these services).
+/// The refusal of a `records.secret` read by services that hold no credential source
+/// ([`KernelServices::with_credentials`]).
 pub const NO_CREDENTIAL_SOURCE: &str = "no credential source";
+/// The refusal of a `records.secret` read before a late credential source is installed.
+pub const NOT_READABLE: &str = "the credential read is not installed yet";
 /// The refusal of a `random.fill` of no bytes or more than `MAX_RANDOM_FILL`.
 pub const FILL_OUT_OF_RANGE: &str = "a fill asks for 1 to MAX_RANDOM_FILL bytes";
 /// The FAILED answer of a `random.fill` the OS randomness source did not serve.
@@ -1894,8 +1907,31 @@ impl HostServices for KernelServices {
         })
     }
 
-    fn records_secret(&self, _kind: &str, _id: &str, _later: Later) -> Ran {
-        Ran::Now(Stored::refused(NO_CREDENTIAL_SOURCE))
+    fn records_secret(&self, kind: &str, id: &str, _later: Later) -> Ran {
+        let Some(credentials) = self.credentials.as_ref() else {
+            return Ran::Now(Stored::refused(NO_CREDENTIAL_SOURCE));
+        };
+        if !credentials.installed() {
+            return Ran::Now(Stored::refused(NOT_READABLE));
+        }
+        let (secret, live) = credentials.read(kind, id);
+        let bytes = secret.expose(&crate::seal::lend()).as_bytes().to_vec();
+        let span = ItemSpan {
+            key: absent_span(),
+            value: Span {
+                offset: 0,
+                len: u32::try_from(bytes.len()).unwrap_or(u32::MAX),
+            },
+        };
+        Ran::Now(Stored {
+            bytes,
+            spans: vec![span],
+            ..Stored::ready(if live {
+                svc::SECRET_LIVE
+            } else {
+                svc::SECRET_NOT_LIVE
+            })
+        })
     }
 
     fn disk_append(&self, dest: &DiskDest, bytes: Vec<u8>, later: Later) -> Ran {

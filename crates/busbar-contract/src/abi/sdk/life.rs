@@ -51,6 +51,7 @@
 //! # fn main() { let _ = door(); }
 //! ```
 
+use std::any::Any;
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::marker::PhantomData;
@@ -346,6 +347,25 @@ pub struct Refreshed {
     pub counted: Option<Counted>,
 }
 
+/// What an open's second step ([`Life::opening`]) answers.
+#[derive(Debug)]
+pub enum Opening {
+    /// Reached: the open is READY.
+    Ready,
+    /// Not yet: re-enter `open` at `wake_at_ns` (`0` = when a connector service the step made
+    /// completes); `parked` is kept on the ticket and handed back on that entry.
+    Pending {
+        /// When to re-enter.
+        wake_at_ns: u64,
+        /// What the step keeps across the pend.
+        parked: Box<dyn Any + Send + Sync>,
+    },
+    /// The open fails with this text.
+    Failed(Refusal),
+    /// The step broke a rule (it pended with nothing to wake it): FAULT.
+    Fault,
+}
+
 /// A diagnostic the plugin's Statement declares, raised by the instance an `open` or `refresh`
 /// built: the host audits one at warn or error on the plugin's behalf (a flagged open loaded,
 /// `plugin.open`, `degraded`), and writes it to the plugin's own log.
@@ -387,7 +407,42 @@ pub trait Life: Send + Sync + Sized + 'static {
     /// Why it will not open.
     fn open(settings: &[u8], secrets: &[&[u8]], generation: u64) -> Result<Self, Refusal>;
 
-    /// `refresh` to `generation` with `settings` and `secrets`.
+    /// `open` over the host tables the call hands it (`OpenIn.host`; `None` when none): what the
+    /// `open` slot calls. The default is [`Life::open`]; a kind whose instance keeps the tables
+    /// from its first moment (the store's) states it.
+    ///
+    /// # Errors
+    /// Why it will not open.
+    fn open_on(
+        settings: &[u8],
+        secrets: &[&[u8]],
+        generation: u64,
+        host: Option<&Host>,
+    ) -> Result<Self, Refusal> {
+        let _ = host;
+        Self::open(settings, secrets, generation)
+    }
+
+    /// THE OPEN'S SECOND STEP: what the opened instance reaches before the host counts it opened
+    /// (a store's connect step), on `open`'s ticket with the instance's host tables. It may PEND
+    /// ([`Opening::Pending`], with what it parks): the host re-enters `open` on the wake, and the
+    /// SDK hands the same instance what it parked (`parked`; `None` on the first entry), never
+    /// opening it again. An [`Opening::Failed`] fails the load with its text, as an `open` refusal
+    /// does. The default reaches nothing.
+    fn opening(
+        &self,
+        host: Option<&Host>,
+        ticket: Ticket,
+        parked: Option<Box<dyn Any + Send + Sync>>,
+    ) -> Opening {
+        let _ = (host, ticket, parked);
+        Opening::Ready
+    }
+
+    /// `refresh` to `generation` with `settings` and `secrets`. Only a kind the host refreshes
+    /// (`abi::mechanism::lifecycle`, WHICH KINDS THE HOST REFRESHES) states its own; for every
+    /// other kind the default answers, REFUSED in [`NOT_REFRESHED`]'s words: a changed
+    /// configuration reaches such an instance only through a fresh `open`.
     ///
     /// # Errors
     /// Why the refresh did not apply.
@@ -396,7 +451,10 @@ pub trait Life: Send + Sync + Sized + 'static {
         settings: &[u8],
         secrets: &[&[u8]],
         generation: u64,
-    ) -> Result<Refreshed, Refusal>;
+    ) -> Result<Refreshed, Refusal> {
+        let _ = (settings, secrets, generation);
+        Err(Refusal::refused(NOT_REFRESHED))
+    }
 
     /// `retire` of `generation`: nothing held per generation unless the kind says so.
     fn retire(&self, generation: u64) {
@@ -478,9 +536,7 @@ impl<L> std::fmt::Debug for Held<L> {
 }
 
 impl<L: Life> Held<L> {
-    /// The instance state over `life`, with no lease held and the host tables `host`. A kind
-    /// whose `open` the generic slot cannot serve (the store's, whose connect step pends) builds
-    /// it itself.
+    /// The instance state over `life`, with no lease held and the host tables `host`.
     pub(crate) fn new(life: L, host: Option<Host>) -> Self {
         Self {
             life,
@@ -553,6 +609,55 @@ fn secrets<'a>(list: LentList<'a, Blob>) -> Vec<&'a [u8]> {
 /// What `release` answers for a lease this instance does not hold.
 pub const NO_SUCH_LEASE: &str = "release: no such lease";
 
+/// What the default [`Life::refresh`] answers: the instance takes a changed configuration only
+/// through a fresh `open`.
+pub const NOT_REFRESHED: &str =
+    "refresh: this instance is not refreshed; a changed configuration applies when it is opened again";
+
+/// What an [`Opened`] op answers when the host calls it with no open instance (never, under the
+/// call contract: the host crosses a kind op only on an instance whose `open` answered READY).
+pub const NO_INSTANCE: &str = "this op runs only on an open instance, and none is open";
+
+/// A KIND OP OVER AN OPEN INSTANCE: [`SafeSlot`] with the no-instance answer stated once, by the
+/// SDK. The body is handed the instance's [`Held<L>`] (and the call's [`Instance`], for its ticket
+/// and what it parks); named in [`plugin_door!`](crate::plugin_door) as `Safe<Opened<S>>`.
+pub trait HeldSlot {
+    /// The slot's `in`.
+    type In: crate::abi::sdk::door::AbiIn;
+    /// The slot's `out`.
+    type Out: crate::abi::sdk::door::AbiOut;
+    /// The kind's lifecycle the instance is opened by.
+    type Life: Life;
+    /// The body, on the open instance `held`.
+    fn call(
+        held: &Held<Self::Life>,
+        instance: &Instance<'_, Held<Self::Life>>,
+        input: Lent<'_, Self::In>,
+        out: Out<'_, Self::Out>,
+    ) -> Outcome;
+}
+
+/// [`HeldSlot`] `S` as a [`SafeSlot`]: with no open instance it answers REFUSED in
+/// [`NO_INSTANCE`]'s words before `S`'s body runs.
+#[derive(Debug)]
+pub struct Opened<S>(PhantomData<S>);
+
+impl<S: HeldSlot> SafeSlot for Opened<S> {
+    type In = S::In;
+    type Out = S::Out;
+    type State = Held<S::Life>;
+    fn call(
+        instance: Instance<'_, Held<S::Life>>,
+        input: Lent<'_, S::In>,
+        mut out: Out<'_, S::Out>,
+    ) -> Outcome {
+        let Some(held) = instance.get() else {
+            return out.fail(Refusal::refused(NO_INSTANCE));
+        };
+        S::call(held, &instance, input, out)
+    }
+}
+
 macro_rules! life_slot {
     ($(#[$doc:meta])* $name:ident($in:ty => $out:ty) |$inst:pat_param, $input:pat_param, $o:ident| $body:block) => {
         $(#[$doc])*
@@ -584,20 +689,61 @@ life_slot!(
 );
 
 life_slot!(
-    /// `open`: [`Life::open`]; the SDK holds the state it answers.
+    /// `open`: [`Life::open_on`], then its second step [`Life::opening`]; the SDK holds the state
+    /// it answers. A PENDING step installs the instance NOW, its parked state on the ticket (the
+    /// box is retained across the pend); the RESUME runs the step again on that instance, and a
+    /// RESUME with no instance or nothing parked is FAULT (an open never runs afresh on it).
     Open(OpenIn => OpenOut) |instance, input, out| {
+        let host = input.host().map(|h| Host::of(&h));
+        let ticket = instance.ticket();
+        if instance.resuming() {
+            let Some(h) = instance.get() else {
+                return Outcome::Fault;
+            };
+            let Some(parked) = instance.resume_value::<Box<dyn Any + Send + Sync>>() else {
+                return Outcome::Fault;
+            };
+            return match h.life.opening(h.host(), ticket, Some(parked)) {
+                Opening::Ready => {
+                    raise(h, &mut out.raw().head);
+                    Outcome::Ready
+                }
+                Opening::Pending { wake_at_ns, parked } => {
+                    out.raw().head.wake_at_ns = wake_at_ns;
+                    instance.park(parked);
+                    Outcome::Pending
+                }
+                Opening::Failed(r) => out.fail(r),
+                Opening::Fault => Outcome::Fault,
+            };
+        }
         let settings = input.field(|i| &i.settings).bytes();
-        match L::open(settings, &secrets(input.secrets()), input.generation) {
-            Ok(life) => {
-                let host = input.host().map(|h| Host::of(&h));
+        let opened = L::open_on(
+            settings,
+            &secrets(input.secrets()),
+            input.generation,
+            host.as_ref(),
+        );
+        let held = match opened {
+            Ok(life) => Held::new(life, host),
+            Err(r) => return out.fail(r),
+        };
+        match held.life.opening(held.host(), ticket, None) {
+            Opening::Ready => {
                 // Raised from the state before it is installed: the instance is not this
                 // call's to read until `open` returns (`Instance::get` answers `None` here).
-                let held = Held::new(life, host);
                 raise(&held, &mut out.raw().head);
                 instance.open(held);
                 Outcome::Ready
             }
-            Err(r) => out.fail(r),
+            Opening::Pending { wake_at_ns, parked } => {
+                out.raw().head.wake_at_ns = wake_at_ns;
+                instance.open_parking(held, parked);
+                Outcome::Pending
+            }
+            // Nothing installed: the reason goes into the host's lent reason buffer.
+            Opening::Failed(r) => out.fail(r),
+            Opening::Fault => Outcome::Fault,
         }
     }
 );

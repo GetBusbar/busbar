@@ -129,14 +129,15 @@ pub(crate) fn one_instance(module: &str) -> bool {
     axis().is_some_and(|axis| axis.one_instance(module))
 }
 
-/// `module`'s own check across `instances` at the LIMITS phase, its findings verbatim — asked while
-/// the configuration is resolved, for a `one_instance` module configured more than once: the
-/// plugin words its own refusal.
+/// The refusal of a `one_instance` module configured more than once, across `instances` — asked
+/// while the configuration is resolved; `module`'s own check at the LIMITS phase gives its reason
+/// ([`word_one_instance`]).
 ///
 /// Each instance is handed as its sink reads it ([`sink_settings`]); one whose declared reference
 /// does not resolve is already refused by [`probe`] and is left out.
 pub(crate) fn check_one_instance(module: &str, instances: &[(String, Value)]) -> Vec<String> {
-    axis()
+    let names: Vec<String> = instances.iter().map(|(n, _)| n.clone()).collect();
+    let found = axis()
         .and_then(|axis| {
             let instances: Vec<(String, Value)> = instances
                 .iter()
@@ -153,7 +154,38 @@ pub(crate) fn check_one_instance(module: &str, instances: &[(String, Value)]) ->
                 &instances,
             )
         })
-        .unwrap_or_default()
+        .unwrap_or_default();
+    word_one_instance(module, &names, found)
+}
+
+/// Why a second instance of a `one_instance` module cannot run, when its check gives no reason.
+const ONE_INSTANCE_WHY: &str = "The module runs as one instance, so a second instance could only \
+                                be silently ignored — keep a single instance.";
+
+/// THE ONE-INSTANCE REFUSAL, worded by the host (export ABI defect 8): one line for each of
+/// `names` (configuration order) after the first, naming the first, around the reason `module`'s
+/// LIMITS check `found` (its lines joined), or [`ONE_INSTANCE_WHY`] when it found none. A plugin
+/// built on an SDK that worded the whole line (`export.<name>: …`) keeps its lines verbatim.
+pub(crate) fn word_one_instance(module: &str, names: &[String], found: Vec<String>) -> Vec<String> {
+    if found.iter().any(|line| line.starts_with("export.")) {
+        return found;
+    }
+    let Some((first, rest)) = names.split_first() else {
+        return Vec::new();
+    };
+    let why = if found.is_empty() {
+        ONE_INSTANCE_WHY.to_string()
+    } else {
+        found.join(" ")
+    };
+    rest.iter()
+        .map(|name| {
+            format!(
+                "export.{name}: a second `module: {module}` instance (already defined as \
+                 '{first}'). {why}"
+            )
+        })
+        .collect()
 }
 
 /// The sinks' own checks across every instance of each axis module `cfg` configures, in
@@ -203,6 +235,9 @@ pub(super) struct PluginSink {
     pub(super) span_record: bool,
     /// Its admission, as it stated it when started ([`start`]).
     admission: OnceLock<Admission>,
+    /// THE NODE'S AMENDMENT JOURNAL every hand-off to this sink is recorded on, as an access: the
+    /// one the node's first generation holds ([`record_reads_on`]).
+    reads: OnceLock<Arc<crate::audit::amend::NodeAmendments>>,
 }
 
 /// A started sink's admission: whether it takes deliveries this run, and its in-flight gate.
@@ -284,6 +319,7 @@ pub fn open(cfg: &ExportCfg) -> Result<(), String> {
             scrape: p.scrape,
             projection,
             admission: OnceLock::new(),
+            reads: OnceLock::new(),
         });
     }
     if !errors.is_empty() {
@@ -293,6 +329,15 @@ pub fn open(cfg: &ExportCfg) -> Result<(), String> {
     // What a span CALLSITE's interest is depends on which sinks exist (`super::traces::layer`).
     tracing::callsite::rebuild_interest_cache();
     Ok(())
+}
+
+/// RECORD EVERY HAND-OFF TO THE OPENED SINKS ON `amendments`, the node's amendment journal: set
+/// once, by the node's first generation (the sinks are opened before it is built, and live as long
+/// as the process does). A second call leaves each sink on the journal it was first given.
+pub(crate) fn record_reads_on(amendments: &Arc<crate::audit::amend::NodeAmendments>) {
+    for s in sinks() {
+        let _ = s.reads.set(Arc::clone(amendments));
+    }
 }
 
 /// Hand the request-log line to every opened sink subscribed to `logs`, built to that sink's own
@@ -325,8 +370,9 @@ pub(super) fn deliver_to(
 /// at a default that would then hold for the life of the process. A sink at its in-flight bound, or
 /// whose queue refuses it, sheds it (counted on its gate and on its declared shed counter); a sink
 /// that errors is logged. Neither reaches the caller. The access amendment records what the sink
-/// QUEUED: a shed line never reached it, so it is never audited as read. `f` is told whether the
-/// sink takes full span records ([`PluginSink::span_record`]).
+/// QUEUED, on the node's journal the sink was given ([`record_reads_on`]): a shed line never
+/// reached it, so it is never audited as read. `f` is told whether the sink takes full span
+/// records ([`PluginSink::span_record`]).
 fn deliver_one(
     s: &PluginSink,
     stream: ExportStream,
@@ -347,7 +393,11 @@ fn deliver_one(
     let payload = f(s.projection, s.span_record);
     let line = serde_json::to_vec(&*payload).unwrap_or_default();
     match s.sink.deliver(stream as u8, line, Box::new(permit)) {
-        Delivered::Queued => crate::audit::amend::export_read(&s.module, op, &payload),
+        Delivered::Queued => {
+            if let Some(amendments) = s.reads.get() {
+                crate::audit::amend::export_read(amendments, &s.module, op, &payload);
+            }
+        }
         Delivered::Shed => s.sink.shed(),
     }
 }

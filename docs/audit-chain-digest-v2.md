@@ -66,8 +66,8 @@ a firewalled node be audited and an airgapped operator `curl` their own evidence
 | `GET /api/v1/admin/audit/keys` | The public keys, so a verifier never has to ask us for a key out of band. |
 
 The range read carries the records' *digest inputs*, already reduced to the exact text or number
-that goes into the preimage. That is deliberate: a verifier should not have to reimplement our enum
-spellings to check a signature.
+that goes into the preimage (a number as its decimal text; see 3.3). That is deliberate: a verifier
+should not have to reimplement our enum spellings to check a signature.
 
 A range whose window runs off either end of what the node holds is **shorter**, not an error.
 
@@ -106,15 +106,27 @@ its records are already on disk. That is a different stream with a different tag
 
 `framed(7)` and `framed("7")` are different byte strings. A verifier that treats `tier_bp` as text,
 or `emission_delta` as a number, computes a different digest and will report an honest chain as tampered.
-The `kind` column below is not documentation, it is part of the contract. The published body keeps
-the distinction visible: recipe numbers are JSON numbers, recipe texts are JSON strings.
+The `kind` column below is not documentation, it is part of the contract — and it is the **only**
+place the kind is stated. The published body carries every recipe field as a JSON string (3.3), so
+the JSON type does not say how to frame a field; the `kind` column does.
 
-### 3.3 Wide numbers travel as text
+### 3.3 Every recipe number travels as decimal text
 
-`emission_delta` is signed. It is digested as its **decimal text** (`"-7"`) and published as a JSON
-**string**, because
-a JSON number wide enough to hold them is not safely readable by most parsers — and through an
-`f64` it is not readable at all.
+**Every recipe number is published as its canonical decimal text in a JSON string** (`"seq": "1"`,
+`"lines_count": "0"`, `"children": ["5"]`), in the record and inside every repeated group alike:
+unsigned ASCII digits, no sign, no leading zero (other than `"0"` itself), no whitespace, and a value
+that fits in an unsigned 64-bit integer. A verifier should refuse anything else, including a recipe
+number published as a JSON number. The framing does not change: a `number` field is framed as
+`be_u64(8) ‖ be_u64(value)`, with `value` parsed from that text. Every recipe number is an unsigned
+64-bit integer, and a JSON number above 2^53 is not safely readable through a double, so a verifier
+whose JSON reader rounded it would report an honest chain as tampered.
+
+`emission_delta` is signed. It is a `text` field: digested as its **decimal text** (`"-7"`) and
+published as that same string.
+
+The body's **envelope** members are not recipe fields and stay JSON numbers: the range's `from` and
+`to`, the head read's `next_seq`, and the `seq` and `wall` of a head or `anchor` object. They are
+chain positions and whole seconds, and stay far below 2^53 for the life of any chain.
 
 ### 3.4 Absent optional fields digest as the empty string
 
@@ -284,41 +296,41 @@ preimage is 468 bytes; the digest is
   "records": [
     {
       "prev_hash": "",
-      "seq": 1,
+      "seq": "1",
       "subject_tag": "node",
       "subject_value": "7",
-      "unit_key": 9,
+      "unit_key": "9",
       "op_class": "chat.completion",
       "destination": "",
-      "parent": 0,
+      "parent": "0",
       "pre_hook_head": "",
       "post_hook_head": "",
-      "wall": 1700000000,
-      "mono": 42,
+      "wall": "1700000000",
+      "mono": "42",
       "origin_kind": "client",
       "outcome": "Completed",
       "step": "",
       "finish": "Error",
-      "hook_failed": 1,
+      "hook_failed": "1",
       "emission_delta": "-7",
-      "stale_policy": 1,
-      "lines_count": 0,
+      "stale_policy": "1",
+      "lines_count": "0",
       "lines": [],
-      "tier_bp": 9000,
-      "fee_count": 1,
+      "tier_bp": "9000",
+      "fee_count": "1",
       "currency": "USD",
-      "rate_card_version": 3,
+      "rate_card_version": "3",
       "bucket_chain_ref": "chain:free>paid",
       "hold_ref": "",
       "settle_ref": "",
       "slice_ref": "",
       "lease_ref": "",
-      "lease_epoch": 4,
-      "policy_epoch": 7,
-      "hooks_count": 0,
+      "lease_epoch": "4",
+      "policy_epoch": "7",
+      "hooks_count": "0",
       "hooks": [],
-      "replayed": 1,
-      "children_count": 0,
+      "replayed": "1",
+      "children_count": "0",
       "children": [],
       "correlation_hash": "",
       "hash": "4efb8ac1465c9894e4d44aca49670f040db93ed8a16e08a19225e76f499c2eb8",
@@ -365,8 +377,9 @@ preimage is 468 bytes; the digest is
 ```
 
 Checking it, with nothing but this page: walk the field table in section 3.6, take each member
-named there out of the record above, frame it (`be_u64(len) ‖ bytes` for a text, `be_u64(8) ‖
-be_u64(v)` for a number), concatenate with nothing between, and SHA-256 the result. You get
+named there out of the record above, frame it by its `kind` (`be_u64(len) ‖ bytes` for a text,
+`be_u64(8) ‖ be_u64(v)` for a number, where `v` is the member's decimal text parsed as an unsigned
+64-bit integer), concatenate with nothing between, and SHA-256 the result. You get
 `4efb8ac1465c9894e4d44aca49670f040db93ed8a16e08a19225e76f499c2eb8`, which is the `hash` the record
 carries. Then prepend `busbar.audit.record.v1` and one `0x00` byte to those 64 hex characters and
 check the `signature` against the `public_key` above with any ed25519 implementation you already

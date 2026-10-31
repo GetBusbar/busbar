@@ -372,6 +372,20 @@ impl HostIo {
         }
     }
 
+    /// RETIRE the listening handle `id` (the one a carrier's `listen` made, [`HostIo::settle`]): it
+    /// is closed at once and names nothing from here on, so its address stops accepting now, not
+    /// when the carrier's instance closes. The handle is the host's (`abi::transport`, "a retired
+    /// listener"): a carrier's later `accept` on it is FAILED as an unknown handle. Any other
+    /// handle, or one no longer held, is left alone.
+    pub fn retire_listener(&self, id: u64) {
+        if let Some(e) = self
+            .handles
+            .release(id, |e| matches!(e.kind, Kind::Listener(_)))
+        {
+            ended(&e);
+        }
+    }
+
     fn release(&self, owner: u64, id: u64) -> IoResult<Arc<Entry>> {
         self.handles
             .release(id, |e| e.owner == owner)

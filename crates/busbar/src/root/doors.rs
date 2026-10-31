@@ -46,6 +46,11 @@ pub fn install_dispatcher(d: Arc<Dispatcher>) {
 
 /// The dispatcher every transport door is adopted by.
 pub fn dispatcher() -> &'static Dispatcher {
+    process_dispatcher()
+}
+
+/// [`dispatcher`], as the shared handle a door opened on it holds ([`Dispatched::open`]).
+fn process_dispatcher() -> &'static Arc<Dispatcher> {
     ONE.get_or_init(|| {
         let d = Dispatcher::new(DispatchConfig::default());
         let _ = d.lend_seal(busbar_kernel::seal::lend());
@@ -81,11 +86,17 @@ fn plugin_logs() -> &'static PluginLogConfig {
 /// is relabelled as it opens: a linked row with its row name ([`row_bind`]), a dropped-in door
 /// with its plugin's name (the registry), so the label is unique per instance.
 pub fn bind() -> Bind {
+    bind_on(dispatcher())
+}
+
+/// [`bind`], adopted by `on`: a composition of its own (a root cell's rig) binds its doors on its
+/// own dispatcher, never on whichever one the process took first.
+pub fn bind_on(on: &Dispatcher) -> Bind {
     Bind {
         instance: Arc::from("transport"),
         max_inflight_cap: 1024,
         sink: Arc::new(NoSink),
-        dispatcher: dispatcher().adopter(),
+        dispatcher: on.adopter(),
         // A transport door is a FRAMER the connector drives (a carrier dials over host io.* fds):
         // it declares no need, so it serves with no table, and one that declared a need would be
         // refused at bind.
@@ -115,12 +126,14 @@ pub fn row_bind(row: &str) -> Result<Bind, String> {
     })
 }
 
-/// One transport door, opened, as the connector reaches it.
+/// One transport door, opened, as the connector reaches it: on the dispatcher it was bound on,
+/// whose tickets its carried connections and framings run on.
 pub struct Dispatched {
     live: Arc<Live>,
     facts: DoorFacts,
     /// Its tail states `FACT_ACCEPTS`.
     accepts: bool,
+    on: Arc<Dispatcher>,
 }
 
 /// ONE OPENED TRANSPORT INSTANCE, as a config apply refreshes it: the instance, the setting paths
@@ -257,6 +270,20 @@ impl Dispatched {
         plugin: Plugin<TransportKind>,
         settings: &busbar_contract::transport::TransportSettings,
     ) -> Result<Self, String> {
+        Self::open_on(plugin, settings, Arc::clone(process_dispatcher()))
+    }
+
+    /// [`Dispatched::open`], for a `plugin` bound on `on` ([`bind_on`]): its `ready`, its host I/O
+    /// and every ticket it runs on are `on`'s.
+    ///
+    /// # Errors
+    ///
+    /// The plugin would not open, or it is no transport.
+    pub fn open_on(
+        plugin: Plugin<TransportKind>,
+        settings: &busbar_contract::transport::TransportSettings,
+        on: Arc<Dispatcher>,
+    ) -> Result<Self, String> {
         let stated = plugin
             .context::<TransportFacts>()
             .cloned()
@@ -276,7 +303,7 @@ impl Dispatched {
         }
         // DISCOVERY AT BOOT (ARCHITECT 2026-10-02): a door that states `ready` is awaited here,
         // after its `open` and before any listener binds; its refusal refuses the boot.
-        plugin.ready(dispatcher(), super::loader::dispatch::ready::READY_DEADLINE)?;
+        plugin.ready(&on, super::loader::dispatch::ready::READY_DEADLINE)?;
         let accepts = stated.accepts;
         let facts = DoorFacts {
             name: plugin.name().to_owned(),
@@ -294,7 +321,7 @@ impl Dispatched {
                 .collect(),
         };
         // A carrier moves bytes over the host's I/O (`io.*`): the process's one, the connector's.
-        let _ = dispatcher().install_io(busbar_core_connector::hostio::process());
+        let _ = on.install_io(busbar_core_connector::hostio::process());
         let live = Arc::new(Live {
             plugin,
             settings_keys: stated.settings_keys,
@@ -303,11 +330,7 @@ impl Dispatched {
         LIVE.lock()
             .unwrap_or_else(PoisonError::into_inner)
             .push(Arc::downgrade(&live));
-        Ok(Self {
-            live,
-            facts,
-            accepts,
-        })
+        Ok(Self { live, facts, accepts, on })
     }
 
     /// REFRESH this instance with the deployment's applied `settings`: what [`refresh_live`] does
@@ -337,8 +360,8 @@ fn go<I: InFrame, O: OutFrame>(p: &Plugin<TransportKind>, s: u32, i: &mut I, o: 
     }
 }
 
-/// One side of a carried connection: an inline ticket of the process's one dispatcher, the one
-/// every transport door is adopted by (its wakes route there).
+/// One side of a carried connection: an inline ticket of the dispatcher its door is adopted by (its
+/// wakes route there).
 struct InlineSide(super::loader::dispatch::InlineTicket);
 
 impl Side for InlineSide {
@@ -388,7 +411,7 @@ impl FramerDoor for Dispatched {
         if self.facts.role != busbar_contract::abi::transport::ROLE_CARRIER {
             return None;
         }
-        dispatcher()
+        self.on
             .inline_ticket()
             .map(|t| Box::new(InlineSide(t)) as Box<dyn Side>)
     }
@@ -425,14 +448,14 @@ impl FramerDoor for Dispatched {
     }
 
     /// A framer's framing runs its ticketed ops (`begin`, `ingest`, `emit`) on inline tickets of
-    /// the process's one dispatcher, as a carrier's side does: each may call the auth service,
+    /// the dispatcher its door is adopted by, as a carrier's side does: each may call the auth service,
     /// which may pend, and its wake routes there. A new one each time the framing asks, so an op
     /// parked on one stream's ticket holds that stream alone.
     fn framing_side(&self) -> Option<Box<dyn Side>> {
         if self.facts.role != busbar_contract::abi::transport::ROLE_FRAMER {
             return None;
         }
-        dispatcher()
+        self.on
             .inline_ticket()
             .map(|t| Box::new(InlineSide(t)) as Box<dyn Side>)
     }

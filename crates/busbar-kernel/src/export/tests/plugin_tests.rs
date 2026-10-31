@@ -169,7 +169,7 @@ impl ExportCalls for AnsweringSink {
     }
 }
 
-/// An opened (not yet started) sink over `double`.
+/// An opened (not yet started) sink over `double`, recording its reads on a journal of its own.
 fn opened(module: &str, double: Arc<AnsweringSink>) -> PluginSink {
     PluginSink {
         name: module.to_string(),
@@ -179,6 +179,7 @@ fn opened(module: &str, double: Arc<AnsweringSink>) -> PluginSink {
         projection: Projection::for_test(&[ExportStream::Logs], &[]),
         span_record: false,
         admission: OnceLock::new(),
+        reads: OnceLock::from(Arc::new(crate::audit::amend::NodeAmendments::new())),
     }
 }
 
@@ -190,9 +191,12 @@ fn double(answer: Delivered, stated: Option<(bool, u64, String)>) -> Arc<Answeri
     })
 }
 
-/// The export access amendments sealed under `op` (each test uses its own label).
-fn reads_under(op: &str) -> usize {
-    crate::audit::amend::node_recent()
+/// The export access amendments `s` sealed on its journal under `op` (each test uses its own label).
+fn reads_under(s: &PluginSink, op: &str) -> usize {
+    s.reads
+        .get()
+        .map(|journal| journal.recent())
+        .unwrap_or_default()
         .into_iter()
         .filter(|a| {
             matches!(&a.body, crate::audit::amend::AmendBody::Access(x) if x.op_class.as_str() == op)
@@ -214,7 +218,7 @@ fn a_shed_line_is_not_audited_as_read_and_a_queued_one_is() {
     start_one(&s);
     deliver_one(&s, ExportStream::Logs, "q128b-u31-36-shed", &mut payload);
     assert_eq!(
-        reads_under("q128b-u31-36-shed"),
+        reads_under(&s, "q128b-u31-36-shed"),
         0,
         "a shed line is no read"
     );
@@ -225,7 +229,7 @@ fn a_shed_line_is_not_audited_as_read_and_a_queued_one_is() {
     start_one(&s);
     deliver_one(&s, ExportStream::Logs, "q128b-u31-36-queued", &mut payload);
     assert_eq!(
-        reads_under("q128b-u31-36-queued"),
+        reads_under(&s, "q128b-u31-36-queued"),
         1,
         "a queued line is one read"
     );
@@ -242,7 +246,7 @@ fn a_delivery_before_start_never_overrides_the_sinks_stated_admission() {
     let s = opened("q128b-u31-37", Arc::clone(&paused));
     deliver_one(&s, ExportStream::Logs, "q128b-u31-37-early", &mut payload);
     assert_eq!(
-        reads_under("q128b-u31-37-early"),
+        reads_under(&s, "q128b-u31-37-early"),
         0,
         "nothing is fed before start"
     );
@@ -250,7 +254,7 @@ fn a_delivery_before_start_never_overrides_the_sinks_stated_admission() {
     start_one(&s);
     deliver_one(&s, ExportStream::Logs, "q128b-u31-37-late", &mut payload);
     assert_eq!(
-        reads_under("q128b-u31-37-late"),
+        reads_under(&s, "q128b-u31-37-late"),
         0,
         "the sink stated live: false, and that holds"
     );
@@ -346,5 +350,37 @@ fn a_reference_at_a_reference_capable_url_reaches_the_sink_resolved() {
     assert_eq!(
         sink_settings(&DeclaringAxis, "silent-sink", &undeclared).expect("as written"),
         Value::Object(undeclared.clone())
+    );
+}
+
+/// RED (export ABI defect 8): the HOST words the refusal of every instance of a `one_instance`
+/// module after the first, naming the first, around the reason the module's check gives — and
+/// in its own reason when the check gives none. Before, the plugin worded the whole line, and a
+/// module whose check found nothing let a second instance through unrefused and unresolved.
+#[test]
+fn the_host_words_the_one_instance_refusal() {
+    let names = ["a".to_string(), "b".to_string(), "c".to_string()];
+    let why = "The sink holds one port, so a second instance could only be ignored.";
+    assert_eq!(
+        word_one_instance("probe", &names, vec![why.to_string()]),
+        [
+            format!("export.b: a second `module: probe` instance (already defined as 'a'). {why}"),
+            format!("export.c: a second `module: probe` instance (already defined as 'a'). {why}"),
+        ]
+    );
+    let unworded = word_one_instance("probe", &names[..2], Vec::new());
+    assert_eq!(unworded.len(), 1, "{unworded:?}");
+    assert!(
+        unworded[0]
+            .starts_with("export.b: a second `module: probe` instance (already defined as 'a'). "),
+        "{unworded:?}"
+    );
+    // A plugin built on an SDK that worded the whole line keeps its line, verbatim.
+    let whole = vec![
+        "export.b: a second `module: probe` instance (already defined as 'a'). Old.".to_string(),
+    ];
+    assert_eq!(
+        word_one_instance("probe", &names[..2], whole.clone()),
+        whole
     );
 }

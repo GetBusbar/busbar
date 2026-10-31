@@ -250,3 +250,322 @@ fn an_instance_let_go_has_its_io_handles_reaped() {
     drop(plugin);
     assert_eq!(*io.0.lock().unwrap(), vec![owner]);
 }
+
+/// The scrape sink's door with `span_records: true` added to its Statement's extensions.
+extern "C" fn span_records_door() -> &'static busbar_contract::abi::mechanism::door::Door {
+    use busbar_contract::abi::mechanism::door::{Door, Statement};
+    use busbar_contract::abi::mechanism::extensions::{encode, statement_blob};
+    use std::sync::atomic::{AtomicPtr, Ordering};
+    static DOOR: AtomicPtr<Door> = AtomicPtr::new(std::ptr::null_mut());
+    let mut door = DOOR.load(Ordering::Acquire);
+    if door.is_null() {
+        let real: &'static Door = SCRAPE_DOOR();
+        // SAFETY: the real door's Statement is `'static` plugin data.
+        let st = unsafe { *real.statement() };
+        // SAFETY: as above; its extensions blob holds its stated length.
+        let mut ext = unsafe { crate::dispatch::plugin::blob_bytes(st.extensions) }.to_vec();
+        ext.extend(encode(&[("span_records", b"true")]));
+        let ext: &'static [u8] = Box::leak(ext.into_boxed_slice());
+        let stated: &'static Statement = Box::leak(Box::new(Statement {
+            extensions: statement_blob(ext),
+            ..st
+        }));
+        let mut d = real.parts();
+        d.statement = stated;
+        // SAFETY: a copy of the real door with its Statement replaced by a `'static` one.
+        let made: *mut Door = Box::leak(Box::new(unsafe { Door::__from_parts(d) }));
+        door = match DOOR.compare_exchange(
+            std::ptr::null_mut(),
+            made,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
+            Ok(_) => made,
+            Err(first) => first,
+        };
+    }
+    // SAFETY: a leaked, never-freed `Door`, so `'static`.
+    unsafe { &*door }
+}
+
+/// A DOOR STATES IT TAKES FULL SPAN RECORDS through its Statement's extensions (`span_records`,
+/// status row 173): the instance it opens answers `takes_span_records`, so the kernel adds each
+/// `traces` line's `span` member (everything the previous release's exporter sent: attributes,
+/// events, status). A door that states nothing takes none. RED: an instance that never answers it
+/// leaves every export door's span record unsent.
+#[test]
+fn a_door_that_states_span_records_takes_them() {
+    let open = |door: busbar_contract::abi::mechanism::door::DoorFn| {
+        let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
+        let row = LinkedRow::of(door).expect("the door states itself");
+        let bind = Bind {
+            instance: Arc::from("export.metrics"),
+            max_inflight_cap: 64,
+            sink: Arc::new(NoSink),
+            dispatcher: dispatcher.adopter(),
+            conns: crate::dispatch::ConnTable::NoNeeds,
+        };
+        let plugin = load_linked::<Export>(&row, bind).expect("the linked door loads");
+        ExportInstance::open(plugin, dispatcher, br#"{"buffer_seconds":60}"#)
+            .expect("the sink opens")
+    };
+    assert!(open(span_records_door).takes_span_records());
+    assert!(!open(SCRAPE_DOOR).takes_span_records());
+}
+
+/// THE LEAK WITNESS: an export door whose `status` answers FAILED and whose `check` answers REFUSED,
+/// each still naming a lease over bytes it holds, and whose `serve` answers READY with how many
+/// leases it still holds as its status code.
+mod leaky {
+    use busbar_contract::abi::export::{
+        CheckIn, CheckOut, DeliverIn, ExportStream, ScrapeIn, ScrapeOut, ServeIn, ServeOut,
+        StatusOut, Tail,
+    };
+    use busbar_contract::abi::mechanism::call::{InHead, OutHead, Outcome};
+    use busbar_contract::abi::mechanism::door::{KindTailHead, Statement};
+    use busbar_contract::abi::sdk::life::{Held, Life, Refreshed, Refusal};
+    use busbar_contract::abi::sdk::{Instance, Lent, Out, Safe, SafeSlot};
+
+    pub struct Leaky;
+
+    impl Life for Leaky {
+        const CANCEL: u32 = 0;
+        fn open(_: &[u8], _: &[&[u8]], _: u64) -> Result<Self, Refusal> {
+            Ok(Leaky)
+        }
+        fn refresh(&self, _: &[u8], _: &[&[u8]], _: u64) -> Result<Refreshed, Refusal> {
+            Ok(Refreshed::default())
+        }
+    }
+
+    pub struct Ready<I, O>(std::marker::PhantomData<(I, O)>);
+    impl<I: busbar_contract::abi::sdk::door::AbiIn, O: busbar_contract::abi::sdk::door::AbiOut>
+        SafeSlot for Ready<I, O>
+    {
+        type In = I;
+        type Out = O;
+        type State = Held<Leaky>;
+        fn call(_: Instance<'_, Held<Leaky>>, _: Lent<'_, I>, _: Out<'_, O>) -> Outcome {
+            Outcome::Ready
+        }
+    }
+
+    pub struct Status;
+    impl SafeSlot for Status {
+        type In = InHead;
+        type Out = StatusOut;
+        type State = Held<Leaky>;
+        fn call(
+            i: Instance<'_, Held<Leaky>>,
+            _: Lent<'_, InHead>,
+            mut out: Out<'_, StatusOut>,
+        ) -> Outcome {
+            let Some(h) = i.get() else {
+                return Outcome::Fault;
+            };
+            out.keep(h.leases(), vec![0_u8; 64]);
+            out.fail(Refusal::failed("the status is unavailable"))
+        }
+    }
+
+    pub struct Check;
+    impl SafeSlot for Check {
+        type In = CheckIn;
+        type Out = CheckOut;
+        type State = Held<Leaky>;
+        fn call(
+            i: Instance<'_, Held<Leaky>>,
+            _: Lent<'_, CheckIn>,
+            mut out: Out<'_, CheckOut>,
+        ) -> Outcome {
+            let Some(h) = i.get() else {
+                return Outcome::Fault;
+            };
+            out.keep(h.leases(), vec![0_u8; 64]);
+            out.fail(Refusal::refused("no checks here"))
+        }
+    }
+
+    pub struct Serve;
+    impl SafeSlot for Serve {
+        type In = ServeIn;
+        type Out = ServeOut;
+        type State = Held<Leaky>;
+        fn call(
+            i: Instance<'_, Held<Leaky>>,
+            _: Lent<'_, ServeIn>,
+            mut out: Out<'_, ServeOut>,
+        ) -> Outcome {
+            let held = i.get().map_or(u16::MAX, |h| h.leases().held() as u16);
+            out.set(|o| &o.status_code, held);
+            Outcome::Ready
+        }
+    }
+
+    const STREAMS: &[u8] = &[ExportStream::Logs as u8];
+    const TAIL: Tail = Tail {
+        head: KindTailHead {
+            size: std::mem::size_of::<Tail>() as u32,
+            ..KindTailHead::ZERO
+        },
+        streams: STREAMS.as_ptr(),
+        streams_len: STREAMS.len(),
+        ..Tail::ZERO
+    };
+    const STATEMENT: Statement = Statement {
+        kind_tail: (&TAIL as *const Tail).cast::<KindTailHead>(),
+        ..busbar_contract::abi::sdk::door::statement("leaky-export-witness", "0", 4)
+    };
+
+    busbar_contract::plugin_door! {
+        ops: busbar_contract::abi::export::Ops,
+        statement: STATEMENT,
+        lifecycle: life(Leaky),
+        kind_ops: {
+            deliver: Safe<Ready<DeliverIn, OutHead>>,
+            scrape: Safe<Ready<ScrapeIn, ScrapeOut>>,
+            status: Safe<Status>,
+            check: Safe<Check>,
+            serve: Safe<Serve>,
+        },
+    }
+}
+
+/// RED (export ABI defect 6): a lease an answer names is released whatever the outcome. Before, the
+/// host released a lease only on READY, so a FAILED `status` or a REFUSED `check` that named one
+/// left the plugin holding its memory for the instance's life.
+#[test]
+fn a_lease_named_on_a_failed_or_refused_answer_is_released() {
+    let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
+    let row = LinkedRow::of(leaky::door).expect("the door states itself");
+    let bind = Bind {
+        instance: Arc::from("export.leaky"),
+        max_inflight_cap: 4,
+        sink: Arc::new(NoSink),
+        dispatcher: dispatcher.adopter(),
+        conns: crate::dispatch::ConnTable::NoNeeds,
+    };
+    let plugin = load_linked::<Export>(&row, bind).expect("the linked door loads");
+    let sink = ExportInstance::open(plugin, dispatcher, b"{}").expect("the witness opens");
+    assert_eq!(sink.status(), None, "a FAILED status reports nothing");
+    assert!(
+        check(sink.plugin(), 0, &[]).is_err(),
+        "a REFUSED check is an error"
+    );
+    let req = ServeRequest {
+        method: "GET",
+        path: "/exports/leaky/held",
+        query: None,
+        headers: &[],
+        body: &[],
+    };
+    let held = sink.serve(&req).expect("serve answers").status;
+    assert_eq!(
+        held, 0,
+        "leases the plugin still holds after FAILED/REFUSED answers"
+    );
+}
+
+/// A PUSH-ONLY export door: it carries `logs`, declares no route and states no `scrape` and no
+/// `serve` (both NULL in its table); `ROUTED` declares a route and still states no `serve`.
+mod push_only {
+    use busbar_contract::abi::export::{
+        CheckIn, CheckOut, DeliverIn, ExportStream, Route, StatusOut, Tail, ROUTE_AUTH_KEY,
+    };
+    use busbar_contract::abi::mechanism::call::{AbiStr, InHead, OutHead};
+    use busbar_contract::abi::mechanism::door::{KindTailHead, Statement};
+    use busbar_contract::abi::sdk::Safe;
+
+    use super::leaky::Ready;
+
+    const STREAMS: &[u8] = &[ExportStream::Logs as u8];
+    const TAIL: Tail = Tail {
+        head: KindTailHead {
+            size: std::mem::size_of::<Tail>() as u32,
+            ..KindTailHead::ZERO
+        },
+        streams: STREAMS.as_ptr(),
+        streams_len: STREAMS.len(),
+        ..Tail::ZERO
+    };
+    const STATEMENT: Statement = Statement {
+        kind_tail: (&TAIL as *const Tail).cast::<KindTailHead>(),
+        ..busbar_contract::abi::sdk::door::statement("push-only-export-witness", "0", 4)
+    };
+
+    busbar_contract::plugin_door! {
+        ops: busbar_contract::abi::export::Ops,
+        statement: STATEMENT,
+        lifecycle: life(super::leaky::Leaky),
+        kind_ops: {
+            deliver: Safe<Ready<DeliverIn, OutHead>>,
+            status: Safe<Ready<InHead, StatusOut>>,
+            check: Safe<Ready<CheckIn, CheckOut>>,
+        },
+    }
+
+    pub mod routed {
+        use super::*;
+
+        const PATH: &str = "/exports/routed/state";
+        const ROUTES: &[Route] = &[Route {
+            path: AbiStr {
+                ptr: PATH.as_ptr(),
+                len: PATH.len(),
+            },
+            method: AbiStr {
+                ptr: "GET".as_ptr(),
+                len: 3,
+            },
+            auth: ROUTE_AUTH_KEY,
+            _reserved: 0,
+        }];
+        const TAIL: Tail = Tail {
+            routes: ROUTES.as_ptr(),
+            routes_len: ROUTES.len(),
+            ..super::TAIL
+        };
+        const STATEMENT: Statement = Statement {
+            kind_tail: (&TAIL as *const Tail).cast::<KindTailHead>(),
+            ..busbar_contract::abi::sdk::door::statement("routed-export-witness", "0", 4)
+        };
+
+        busbar_contract::plugin_door! {
+            ops: busbar_contract::abi::export::Ops,
+            statement: STATEMENT,
+            lifecycle: life(super::super::leaky::Leaky),
+            kind_ops: {
+                deliver: Safe<Ready<DeliverIn, OutHead>>,
+                status: Safe<Ready<InHead, StatusOut>>,
+                check: Safe<Ready<CheckIn, CheckOut>>,
+            },
+        }
+    }
+}
+
+/// RED (export ABI defect 2): the export kind's own ops a door's Statement makes unreachable are
+/// optional — `scrape` with no `metrics` stream, `serve` with no route, `deliver` with no stream
+/// but `metrics` — so a push sink states neither `scrape` nor `serve`. A door that declares a route
+/// still owes `serve`. Before, every export slot was mandatory and the push sink was refused.
+#[test]
+fn a_push_sink_may_leave_scrape_and_serve_unstated() {
+    let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
+    let bind = |name: &str| Bind {
+        instance: Arc::from(name),
+        max_inflight_cap: 4,
+        sink: Arc::new(NoSink),
+        dispatcher: dispatcher.adopter(),
+        conns: crate::dispatch::ConnTable::NoNeeds,
+    };
+    let row = LinkedRow::of(push_only::door).expect("the door states itself");
+    let plugin = load_linked::<Export>(&row, bind("export.push")).expect("the push sink loads");
+    ExportInstance::open(plugin, dispatcher.clone(), b"{}").expect("the push sink opens");
+    let routed = LinkedRow::of(push_only::routed::door).expect("the door states itself");
+    let Err(refused) = load_linked::<Export>(&routed, bind("export.routed")) else {
+        panic!("a door that declares a route owes serve");
+    };
+    assert_eq!(
+        refused.to_string(),
+        crate::dispatch::LoadError::NullSlot(slot::SERVE).to_string()
+    );
+}

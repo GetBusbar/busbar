@@ -6,8 +6,8 @@
 //! once at bind, through the kind's own `check_tail` / `check_tail_entries`, into [`ExportFacts`].
 
 use busbar_contract::abi::export::{
-    self, slot, validate, CheckIn, CheckOut, DeliverIn, ScrapeIn, ScrapeOut, ServeIn, ServeOut,
-    StatusOut, Tail,
+    self, slot, validate, CheckIn, CheckOut, DeliverIn, ExportStream, ScrapeIn, ScrapeOut, ServeIn,
+    ServeOut, StatusOut, Tail,
 };
 use busbar_contract::abi::mechanism::call::{AbiStr, InHead, OutHead, Outcome};
 use busbar_contract::abi::mechanism::check::Fault;
@@ -30,6 +30,8 @@ pub struct ExportFacts {
     pub families: Vec<(String, u8, Vec<String>)>,
     /// The Statement's `one_instance` mark: at most one instance of the plugin may be configured.
     pub one_instance: bool,
+    /// Its extensions' `span_records`: it takes each `traces` line's full span record.
+    pub span_records: bool,
 }
 
 /// A `'static` Statement string, copied; `None` when malformed.
@@ -117,7 +119,12 @@ fn facts(st: &Statement) -> Result<ExportFacts, String> {
         let name = owned(f.name).ok_or("a metric family's name is over-long")?;
         families.push((name, f.kind, keys));
     }
+    // SAFETY: a door's Statement is `'static` plugin data; its extensions blob holds its stated
+    // length (a NULL one reads as none).
+    let ext = unsafe { crate::dispatch::plugin::blob_bytes(st.extensions) };
+    let span_records = busbar_contract::abi::mechanism::extensions::span_records(ext)?;
     Ok(ExportFacts {
+        span_records,
         streams: streams.to_vec(),
         routes,
         families,
@@ -146,6 +153,22 @@ impl Kind for Export {
 
     fn context(st: &Statement) -> Result<Option<Box<Context>>, String> {
         Ok(Some(Box::new(facts(st)?)))
+    }
+
+    /// THE OPS A PUSH OR PULL SINK NEVER HEARS (export ABI defect 2): `scrape` when it carries no
+    /// `metrics` stream, `serve` when it declares no route, `deliver` when it carries no stream
+    /// but `metrics` (the host delivers every other stream, never `metrics`).
+    fn optional_by_statement(s: u32, st: &Statement) -> bool {
+        let Ok(f) = facts(st) else {
+            return false;
+        };
+        let metrics = ExportStream::Metrics as u8;
+        match s {
+            slot::DELIVER => f.streams.iter().all(|&b| b == metrics),
+            slot::SCRAPE => !f.streams.contains(&metrics),
+            slot::SERVE => f.routes.is_empty(),
+            _ => false,
+        }
     }
 
     fn op_name(s: u32) -> &'static str {
