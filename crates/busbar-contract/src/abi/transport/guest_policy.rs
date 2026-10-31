@@ -12,11 +12,95 @@ use crate::abi::host::service::LINE_NONE;
 use std::collections::HashSet;
 
 /// A framer reply asks the host to open this stream before route matching or auth.
-/// Its value is the stream id as eight little-endian bytes.
+/// Its value is [`Open`]'s versioned, pointer-free bytes.
 pub const EXT_GUEST_OPEN: &str = "guest.open";
 /// The following call lends the selected generation's policy to the requesting operation.
 pub const EXT_GUEST_POLICY: &str = "guest.policy";
 const VERSION: u32 = 1;
+
+/// A reply confirming that the stream may use a previously decoded policy identity.
+/// The framer must possess that exact listener/generation before accepting this reply.
+pub const EXT_GUEST_CURRENT: &str = "guest.current";
+
+/// A stream opening, with the policy generation already cached by its framer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Open {
+    /// The plugin-local stream, bound by the host to the current framing leg.
+    pub stream: u64,
+    /// The cached generation, or zero when the framer needs the full policy.
+    pub known_generation: u64,
+}
+
+impl Open {
+    /// Encode an opening without allocation.
+    #[must_use]
+    pub fn encode(self) -> [u8; size_of::<u32>() + 2 * size_of::<u64>()] {
+        let mut out = [0; size_of::<u32>() + 2 * size_of::<u64>()];
+        out[..4].copy_from_slice(&VERSION.to_le_bytes());
+        out[4..12].copy_from_slice(&self.stream.to_le_bytes());
+        out[12..].copy_from_slice(&self.known_generation.to_le_bytes());
+        out
+    }
+
+    /// Decode an entire opening value.
+    ///
+    /// # Errors
+    /// Unknown versions, truncation, or trailing bytes.
+    pub fn decode(bytes: &[u8]) -> Result<Self, &'static str> {
+        let mut reader = Reader(bytes);
+        if reader.u32()? != VERSION {
+            return Err("the stream-open version is unknown");
+        }
+        let open = Self {
+            stream: reader.u64()?,
+            known_generation: reader.u64()?,
+        };
+        if !reader.0.is_empty() {
+            return Err("the stream-open value has trailing bytes");
+        }
+        Ok(open)
+    }
+}
+
+/// The identity of an immutable listener policy. Acknowledging it avoids resending route rows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Identity {
+    /// The host-owned listener registration.
+    pub listener: u64,
+    /// Its configuration generation.
+    pub generation: u64,
+}
+
+impl Identity {
+    /// Encode an acknowledgement without allocation.
+    ///
+    /// # Errors
+    /// An absent listener or generation.
+    pub fn encode(self) -> Result<[u8; size_of::<u32>() + 2 * size_of::<u64>()], &'static str> {
+        if self.listener == 0 || self.generation == 0 {
+            return Err("the policy has no listener or generation");
+        }
+        Ok(Open {
+            stream: self.listener,
+            known_generation: self.generation,
+        }
+        .encode())
+    }
+
+    /// Decode a whole acknowledgement; the caller still checks it against its cached policy.
+    ///
+    /// # Errors
+    /// An invalid identity, unknown version, truncation, or trailing bytes.
+    pub fn decode(bytes: &[u8]) -> Result<Self, &'static str> {
+        let open = Open::decode(bytes)?;
+        let identity = Self {
+            listener: open.stream,
+            generation: open.known_generation,
+        };
+        identity.encode()?;
+        Ok(identity)
+    }
+}
 
 /// ONE LINE OF A LISTENER'S GUEST LIST, owned, as the connector lends it to an accepting framer's
 /// `begin` (`BeginIn::lines`, one `LineEntry` each; THE DESIGN §6, "Auth points and guest

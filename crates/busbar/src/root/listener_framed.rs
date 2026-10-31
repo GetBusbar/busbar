@@ -34,12 +34,11 @@ use std::task::{Context, Poll};
 use axum::body::Body as AxumBody;
 use axum::http::{HeaderMap, HeaderName, HeaderValue, Method, Request, Response, Uri, Version};
 use axum::Router;
-use busbar_contract::abi::transport::route::{METHOD_ANY, PATH_CONTAINS};
 use busbar_contract::abi::transport::{
     fields, CLOSE_DRAIN, CLOSE_NORMAL, ROLE_FRAMER, SIDE_ACCEPT,
 };
 use busbar_core_connector::framer::{
-    self, Established, FramerDoor, Framing, Got, GuestLine, GuestLines, Head, Yielded,
+    self, Established, FramerDoor, Framing, Got, GuestLines, Head, Yielded,
 };
 use bytes::Bytes;
 use http_body::{Body as _, Frame};
@@ -82,6 +81,7 @@ pub type FramerFor = Arc<dyn Fn(&str) -> Option<Arc<dyn FramerDoor>> + Send + Sy
 pub struct DataFramer {
     door: Arc<dyn FramerDoor>,
     owner: u64,
+    listener: Arc<crate::root::inbound::ListenerRegistration>,
     offer: Vec<Vec<u8>>,
     upgrade: FramerFor,
 }
@@ -105,10 +105,19 @@ pub fn data_framer(framer_for: FramerFor) -> Option<DataFramer> {
         return None;
     }
     let owner = door.instance().filter(|o| *o != 0)?;
+    static LISTENERS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    let listener = LISTENERS
+        .fetch_update(
+            std::sync::atomic::Ordering::Relaxed,
+            std::sync::atomic::Ordering::Relaxed,
+            |n| n.checked_add(1),
+        )
+        .ok()?;
     let offer = framer::accept_offer(door.as_ref()).unwrap_or_default();
     Some(DataFramer {
         door,
         owner,
+        listener: crate::root::inbound::ListenerRegistration::new(owner, listener),
         offer,
         upgrade: framer_for,
     })
@@ -121,22 +130,9 @@ impl DataFramer {
         &self.door
     }
 
-    /// The listener's guest list, lent at each accept: its one `none` line, its ref minted at the
-    /// generation published now. `None` when the host's key cannot be drawn.
+    /// The configured listener policy for the generation published at this accept.
     pub(in crate::root) fn guests(&self) -> Option<Arc<GuestLines>> {
-        let auth =
-            crate::root::loader::dispatch::auth_handle::lend_none_line(self.owner, DATA_LINE_REF)?;
-        Some(Arc::new(GuestLines::new(vec![GuestLine {
-            line: DATA_LINE,
-            points: 0,
-            auth,
-            body_limit: 0,
-            methods: METHOD_ANY,
-            path_form: PATH_CONTAINS,
-            path: "/".to_owned(),
-            fields: Vec::new(),
-            rung: 0,
-        }])))
+        self.listener.guests()
     }
 
     /// Whether the protocol at 1-based `position` of the accepting offer is HTTP/2.
@@ -173,7 +169,9 @@ enum Op {
         pipe: busbar_kernel::plane_routes::SessionPipe,
     },
     /// The stream's task ended.
-    Ended,
+    Ended {
+        scope: Option<Arc<dyn busbar_contract::framing_scope::FramingScope>>,
+    },
 }
 
 /// A stream task's end of its connection.
@@ -213,11 +211,16 @@ impl Emitter {
 }
 
 /// A stream's end, however its task ends (answered, failed, or aborted).
-struct StreamEnd(Emitter);
+struct StreamEnd(
+    Emitter,
+    Option<Arc<dyn busbar_contract::framing_scope::FramingScope>>,
+);
 
 impl Drop for StreamEnd {
     fn drop(&mut self) {
-        self.0.send(Op::Ended);
+        self.0.send(Op::Ended {
+            scope: self.1.take(),
+        });
     }
 }
 
@@ -718,6 +721,7 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
             tx: self.tx.clone(),
         };
         let slot = SessionSlot::default();
+        let scope = self.framing.as_ref().and_then(Framing::scope).cloned();
         let request = request_of(
             &head,
             &piece.bytes,
@@ -727,6 +731,52 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
         );
         let task = match request {
             Some(mut req) => {
+                if let Some(scope) = scope.as_ref().filter(|scope| scope.listener() != 0) {
+                    let request_head = busbar_kernel::inbound::Head {
+                        method: req.method().as_str().to_owned(),
+                        target: req.uri().path().to_owned(),
+                        authority: head
+                            .authority
+                            .as_deref()
+                            .and_then(|bytes| std::str::from_utf8(bytes).ok())
+                            .map(str::to_owned)
+                            .unwrap_or_else(|| {
+                                req.headers()
+                                    .get(axum::http::header::HOST)
+                                    .and_then(|value| value.to_str().ok())
+                                    .unwrap_or_default()
+                                    .to_owned()
+                            }),
+                        query: req.uri().query().map(str::to_owned),
+                        fields: req
+                            .headers()
+                            .iter()
+                            .map(|(name, value)| {
+                                (name.as_str().to_owned(), value.as_bytes().to_vec())
+                            })
+                            .collect(),
+                    };
+                    match crate::root::inbound::host().claim_request(
+                        scope.owner(),
+                        scope.leg(),
+                        stream,
+                        &request_head,
+                    ) {
+                        Ok(admission) => {
+                            req.extensions_mut().insert(admission);
+                        }
+                        Err(_) => {
+                            out.send(Op::Refuse {
+                                status: 401,
+                                head_sent: false,
+                            });
+                            out.send(Op::Ended {
+                                scope: Some(Arc::clone(scope)),
+                            });
+                            return;
+                        }
+                    }
+                }
                 req.extensions_mut()
                     .insert(super::listener_scheme(self.secured));
                 req.extensions_mut().insert(slot.clone());
@@ -738,14 +788,21 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
                         *req.method(),
                         Method::GET | Method::HEAD | Method::OPTIONS | Method::TRACE
                     );
-                self.tasks
-                    .spawn(serve_stream(self.router.clone(), req, defer, slot, out))
+                self.tasks.spawn(serve_stream(
+                    self.router.clone(),
+                    req,
+                    defer,
+                    slot,
+                    out,
+                    scope,
+                ))
             }
             None => {
                 out.send(Op::Refuse {
                     status: 400,
                     head_sent: false,
                 });
+                out.send(Op::Ended { scope });
                 return;
             }
         };
@@ -814,9 +871,12 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
                 }
             }
             Op::Switch { pipe } => self.switch(stream, pipe),
-            Op::Ended => {
+            Op::Ended { scope } => {
                 self.inflows.remove(&stream);
                 self.full.remove(&stream);
+                if let Some(scope) = scope {
+                    scope.stream_ended(stream);
+                }
             }
         }
         Step::Done
@@ -953,8 +1013,9 @@ async fn serve_stream(
     defer: bool,
     slot: SessionSlot,
     out: Emitter,
+    scope: Option<Arc<dyn busbar_contract::framing_scope::FramingScope>>,
 ) {
-    let _end = StreamEnd(out.clone());
+    let _end = StreamEnd(out.clone(), scope);
     let req = if defer {
         let (parts, body) = req.into_parts();
         match read_whole(body).await {

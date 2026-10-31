@@ -408,6 +408,22 @@ impl Drop for Unbound {
     }
 }
 
+/// A host policy reply lent for one crossing. The Scope also retains its bytes if it pends.
+struct PolicyReply {
+    input: *mut InHead,
+    original: Blob,
+    _bytes: Arc<[u8]>,
+}
+
+impl Drop for PolicyReply {
+    fn drop(&mut self) {
+        // SAFETY: the host frame outlives its crossing, including every early return.
+        unsafe {
+            (*self.input).extensions = self.original;
+        }
+    }
+}
+
 impl Instance {
     /// WHAT THE INSTANCE HOLDS ON THE HOST GOES, once it can never cross again (quarantined,
     /// faulted or let go): its connector streams ([`super::conn_services::purge`]) and every host
@@ -1241,6 +1257,45 @@ impl Instance {
                 head.flags & busbar_contract::abi::mechanism::call::FLAG_RESUME != 0,
             )
         };
+        let scope = (self.kind == KindCode::Transport)
+            .then(super::framing_context::current)
+            .flatten();
+        let _policy_reply = match scope
+            .as_ref()
+            .and_then(|scope| scope.operation_reply(ticket))
+        {
+            Some(reply) => {
+                // SAFETY: the host owns this input head and its original extension bytes.
+                let original = unsafe { (*input).extensions };
+                // SAFETY: the original host blob lives with this operation's frame.
+                let prior = unsafe { blob_bytes(original) };
+                let bytes = if prior.is_empty() || reply.ends_with(prior) {
+                    reply
+                } else {
+                    let mut joined = reply.to_vec();
+                    joined.extend_from_slice(prior);
+                    Arc::from(joined)
+                };
+                if let Some(scope) = &scope {
+                    scope.hold_operation_reply(ticket, Arc::clone(&bytes));
+                }
+                // SAFETY: the guard restores the head; Scope retains bytes across PENDING.
+                unsafe {
+                    (*input).extensions = Blob {
+                        ptr: bytes.as_ptr(),
+                        len: bytes.len(),
+                        fmt: busbar_contract::abi::mechanism::call::BLOB_OCTETS,
+                        flags: 0,
+                    };
+                }
+                Some(PolicyReply {
+                    input,
+                    original,
+                    _bytes: bytes,
+                })
+            }
+            None => None,
+        };
         // A `validate`, of every kind, is lent a reason buffer for its crossing alone (it never
         // pends): it names what it wrote in `head.error`, read below while the buffer lives.
         let mut validate_reason = (s == slot::VALIDATE).then(|| vec![0_u8; OPEN_REASON_CAP]);
@@ -1418,6 +1473,50 @@ impl Instance {
                     "a plugin answer broke its kind's rule; the op answers FAULT"
                 );
                 return Crossed::host(Outcome::Fault).unread(head.lease);
+            }
+        }
+        if self.kind == KindCode::Transport {
+            use busbar_contract::abi::mechanism::{call::BLOB_OCTETS, extensions};
+            use busbar_contract::abi::transport::{guest_policy, FramerOut, YIELD_MORE};
+            if outcome != Outcome::Pending {
+                if let Some(scope) = &scope {
+                    scope.operation_done(ticket);
+                }
+            }
+            // SAFETY: plugin extension ranges are bounded before the slice is formed and read
+            // before its answer lease or ticket can be released/reused.
+            let Some(bytes) = (unsafe { validate::lent(head.extensions.ptr, head.extensions.len) })
+            else {
+                return Crossed::host(Outcome::Fault).unread(head.lease);
+            };
+            if let Some(value) = extensions::get(bytes, guest_policy::EXT_GUEST_OPEN) {
+                if head.extensions.fmt != BLOB_OCTETS
+                    || outcome != Outcome::Ready
+                    || (out_size as usize) < size_of::<FramerOut>()
+                {
+                    return Crossed::host(Outcome::Fault).unread(head.lease);
+                }
+                // SAFETY: this transport answer was checked by its kind and holds FramerOut.
+                let framed = unsafe { &*out.cast::<FramerOut>() };
+                if framed.yielded.flags & YIELD_MORE == 0
+                    || framed.yielded.wire_len != 0
+                    || framed.yielded.frame_len != 0
+                    || framed.yielded.pieces_len != 0
+                {
+                    return Crossed::host(Outcome::Fault).unread(head.lease);
+                }
+                let opened = guest_policy::Open::decode(value).and_then(|open| {
+                    scope
+                        .as_ref()
+                        .ok_or(super::framing_context::CONTEXT_REFUSED)?
+                        .open_stream(ticket, open)
+                });
+                if let Err(error) = opened {
+                    return Crossed {
+                        error: Some(error.as_bytes().to_vec()),
+                        ..Crossed::host(Outcome::Refused).unread(head.lease)
+                    };
+                }
             }
         }
         let short = outcome == Outcome::Failed && (self.short)(&answer);

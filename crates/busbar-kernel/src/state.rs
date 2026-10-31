@@ -1031,6 +1031,9 @@ where
         parts: &mut axum::http::request::Parts,
         state: &S,
     ) -> Result<Self, Self::Rejection> {
+        if let Some(admission) = parts.extensions.get::<crate::inbound::RequestAdmission>() {
+            return Ok(CurrentApp(admission.app()));
+        }
         // `State` extraction of the handle is Infallible (the handle is always present in state).
         let axum::extract::State(handle) =
             axum::extract::State::<Arc<AppHandle>>::from_request_parts(parts, state).await?;

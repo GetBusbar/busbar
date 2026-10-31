@@ -98,6 +98,8 @@ pub struct TransportFacts {
     /// It renders sealed values: its Statement's `extensions` states the record
     /// (`abi::transport::EXT_SEALED_VALUES`, TSEAL).
     pub seals: bool,
+    /// Its Adopt consumes the host's inherited session extension before yielding frames.
+    pub adopts_session: bool,
 }
 
 /// WHAT A COMPILED-IN TRANSPORT DOOR STATES, read off its Statement without binding it (no
@@ -195,6 +197,11 @@ fn tail_facts(st: &Statement) -> Result<TransportFacts, String> {
     let offered = check_offered_points(extensions).map_err(broke)?;
     let seals =
         busbar_contract::abi::transport::check::check_sealed_values(extensions).map_err(broke)?;
+    let adopts_session =
+        busbar_contract::abi::mechanism::extensions::get(
+            extensions,
+            busbar_contract::abi::transport::adopted_session::EXT_ADOPTED_SESSION,
+        ) == Some(busbar_contract::abi::transport::adopted_session::SUPPORT_ADOPTED_SESSION);
     let claims: Vec<&'static str> = names
         .iter()
         .map(|c| owned(*c, "claim"))
@@ -236,6 +243,7 @@ fn tail_facts(st: &Statement) -> Result<TransportFacts, String> {
     check_fault_rows(faults, tail.claim_rows_len as u64).map_err(broke)?;
     check_fault_cover(status, faults).map_err(broke)?;
     Ok(TransportFacts {
+        adopts_session,
         name: owned(st.name, "Statement name")?,
         datagram: tail.framing == busbar_contract::abi::transport::FRAMING_DATAGRAM,
         accepts: tail.facts & busbar_contract::abi::transport::FACT_ACCEPTS != 0,

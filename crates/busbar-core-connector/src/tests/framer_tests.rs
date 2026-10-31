@@ -11,6 +11,9 @@ use busbar_contract::abi::transport::{SIDE_ACCEPT, SIDE_DIAL};
 use super::*;
 use crate::support::{Knobs, TestDoor};
 
+#[path = "framer_loan_tests.rs"]
+mod loan_tests;
+
 #[test]
 fn a_full_sink_is_re_called_until_every_byte_is_out() {
     let door = Arc::new(TestDoor::identity("bytes"));

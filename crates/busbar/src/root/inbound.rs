@@ -23,8 +23,9 @@
 //! accepts there (`boot::refuse_inbound` still refuses that binding). The legacy data door and its
 //! own verify are untouched: one serving path at a time.
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, OnceLock, PoisonError};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError, Weak};
 
 use busbar_contract::abi::auth::{FIELD_QUERY, FIELD_SENSITIVE};
 use busbar_contract::auth_calls::StripPlace;
@@ -32,7 +33,7 @@ use busbar_kernel::inbound::{self as kin, Inbound};
 
 use crate::root::loader::dispatch::auth_handle::{
     self, AuthCallAnswer, AuthCallAsk, AuthDone, AuthHandleHost, AuthRan, HandInAsk, HeadCopy,
-    RefusalBytes, RefuseAsk, UnitSecret,
+    RefusalBytes, RefuseAsk, StreamPolicy, UnitSecret,
 };
 
 /// The identity the root's own data door serves the data listener under: the composition root's
@@ -153,17 +154,97 @@ impl AuthHandleHost for LoaderSide {
         &self,
         ask: HandInAsk,
     ) -> Result<(u32, busbar_contract::abi::host::service::UnitRef), &'static str> {
-        self.0.hand_in(kin::HandIn {
-            owner: ask.owner,
-            generation: ask.generation,
-            auth: ask.auth,
-            unit: ask.unit,
-            line: ask.line,
-            conn: ask.conn,
-            stream: ask.stream,
-            framing: ask.framing,
-            head: head_of(ask.request),
-        })
+        self.hand_in_with_deadline(ask, None)
+    }
+
+    fn hand_in_with_deadline(
+        &self,
+        ask: HandInAsk,
+        deadline: Option<std::time::Duration>,
+    ) -> Result<(u32, busbar_contract::abi::host::service::UnitRef), &'static str> {
+        self.0.hand_in_with_deadline(
+            kin::HandIn {
+                owner: ask.owner,
+                generation: ask.generation,
+                auth: ask.auth,
+                unit: ask.unit,
+                line: ask.line,
+                conn: ask.conn,
+                stream: ask.stream,
+                framing: ask.framing,
+                head: head_of(ask.request),
+            },
+            deadline.map(|remaining| std::time::Instant::now() + remaining),
+        )
+    }
+
+    fn requires_scope(&self) -> bool {
+        true
+    }
+
+    fn framing_started(
+        &self,
+        owner: u64,
+        listener: u64,
+        framing: u64,
+    ) -> Result<Option<StreamPolicy>, &'static str> {
+        let registration = registered(owner, listener).ok_or(kin::NO_LIST)?;
+        let policy = registration.policy().ok_or(kin::NO_LIST)?;
+        self.0
+            .framing_started(owner, listener, framing, policy.policy.generation)?;
+        Ok(Some(policy))
+    }
+
+    fn stream_open(
+        &self,
+        owner: u64,
+        listener: u64,
+        framing: u64,
+        stream: u64,
+    ) -> Result<StreamPolicy, &'static str> {
+        let registration = registered(owner, listener).ok_or(kin::NO_LIST)?;
+        loop {
+            let policy = registration.policy().ok_or(kin::NO_LIST)?;
+            match self
+                .0
+                .grant_stream(owner, framing, stream, policy.policy.generation)
+            {
+                Ok(()) => return Ok(policy),
+                Err(kin::NO_LIST)
+                    if published()
+                        .load_full()
+                        .is_some_and(|now| now.generation != policy.policy.generation) =>
+                {
+                    continue
+                }
+                Err(error) => return Err(error),
+            }
+        }
+    }
+
+    fn stream_ended(&self, owner: u64, framing: u64, stream: u64) {
+        self.0.stream_ended(owner, framing, stream);
+    }
+
+    fn framing_ready(&self, owner: u64, framing: u64) {
+        self.0.framing_ready(owner, framing);
+    }
+
+    fn framing_detached(&self, owner: u64, framing: u64) -> Result<(), &'static str> {
+        self.0.framing_detached(owner, framing)
+    }
+
+    fn framing_adopting(
+        &self,
+        source: busbar_contract::framing_scope::AdoptionSource,
+        owner: u64,
+        framing: u64,
+    ) -> Result<busbar_contract::framing_scope::SessionTransfer, &'static str> {
+        self.0.framing_adopting(source, owner, framing)
+    }
+
+    fn framing_adopted(&self, owner: u64, framing: u64, conn: u64) -> Result<(), &'static str> {
+        self.0.framing_adopted(owner, framing, conn)
     }
 
     fn framing_ended(&self, framing: u64) {
@@ -216,6 +297,187 @@ pub fn stage(
     *staged() = Some((guests, refusals));
 }
 
+struct Published {
+    generation: u64,
+    listener: kin::Listener,
+}
+
+fn published() -> &'static arc_swap::ArcSwapOption<Published> {
+    static ONE: OnceLock<arc_swap::ArcSwapOption<Published>> = OnceLock::new();
+    ONE.get_or_init(arc_swap::ArcSwapOption::empty)
+}
+
+/// A data listener registration shared by its accept loop and live connections.
+/// The cache owns only route rows; policy Apps stay with the published snapshot and units.
+pub(in crate::root) struct ListenerRegistration {
+    owner: u64,
+    id: u64,
+    rows: Mutex<Option<StreamPolicy>>,
+    installed: AtomicU64,
+}
+
+impl ListenerRegistration {
+    pub(in crate::root) fn new(owner: u64, id: u64) -> Arc<Self> {
+        let registration = Arc::new(Self {
+            owner,
+            id,
+            rows: Mutex::new(None),
+            installed: AtomicU64::new(0),
+        });
+        registrations()
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert((owner, id), Arc::downgrade(&registration));
+        registration
+    }
+
+    pub(in crate::root) fn guests(&self) -> Option<Arc<busbar_core_connector::framer::GuestLines>> {
+        self.policy().map(|policy| {
+            Arc::new(busbar_core_connector::framer::GuestLines::published(
+                policy.policy,
+            ))
+        })
+    }
+
+    fn policy(&self) -> Option<StreamPolicy> {
+        use busbar_contract::abi::mechanism::extensions;
+        use busbar_contract::abi::transport::guest_policy::{self, GuestLine, Identity, Policy};
+        loop {
+            let snapshot = published().load_full()?;
+            let cached = self
+                .rows
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .as_ref()
+                .filter(|policy| policy.policy.generation == snapshot.generation)
+                .cloned();
+            let candidate = match cached {
+                Some(policy) => policy,
+                None => {
+                    let mut listener = snapshot.listener.clone();
+                    listener.ids = listener
+                        .guests
+                        .lines()
+                        .iter()
+                        .map(|_| auth_handle::next_ref_id(auth_handle::RefSpace::Line))
+                        .collect();
+                    let lines = listener
+                        .specs()
+                        .into_iter()
+                        .zip(listener.guests.lines())
+                        .map(|(spec, line)| {
+                            Some(GuestLine {
+                                line: spec.line,
+                                points: spec.points,
+                                auth: auth_handle::mint_auth_ref(
+                                    self.owner,
+                                    snapshot.generation,
+                                    spec.auth,
+                                )?,
+                                body_limit: spec.body_limit,
+                                methods: line.route.methods,
+                                path_form: line.route.path_form,
+                                path: line.route.path.clone(),
+                                fields: line.route.fields.clone(),
+                                rung: line.route.rung,
+                            })
+                        })
+                        .collect::<Option<Vec<_>>>()?;
+                    let policy = Arc::new(Policy {
+                        listener: self.id,
+                        generation: snapshot.generation,
+                        lines,
+                    });
+                    let bytes =
+                        guest_policy::encode(self.id, snapshot.generation, &policy.lines).ok()?;
+                    let identity = Identity {
+                        listener: self.id,
+                        generation: snapshot.generation,
+                    }
+                    .encode()
+                    .ok()?;
+                    StreamPolicy {
+                        policy,
+                        full: extensions::encode(&[(guest_policy::EXT_GUEST_POLICY, &bytes)])
+                            .into(),
+                        current: extensions::encode(&[(
+                            guest_policy::EXT_GUEST_CURRENT,
+                            &identity,
+                        )])
+                        .into(),
+                    }
+                }
+            };
+            let current_generation = published().load_full().map(|now| now.generation);
+            if current_generation != Some(snapshot.generation) {
+                continue;
+            }
+            let policy = {
+                let mut cache = self.rows.lock().unwrap_or_else(PoisonError::into_inner);
+                if cache
+                    .as_ref()
+                    .is_some_and(|policy| policy.policy.generation > snapshot.generation)
+                {
+                    continue;
+                }
+                if let Some(existing) = cache
+                    .as_ref()
+                    .filter(|policy| policy.policy.generation == snapshot.generation)
+                {
+                    existing.clone()
+                } else {
+                    *cache = Some(candidate.clone());
+                    candidate
+                }
+            };
+            if self.installed.load(Ordering::Acquire) < snapshot.generation {
+                let mut listener = snapshot.listener.clone();
+                listener.ids = policy
+                    .policy
+                    .lines
+                    .iter()
+                    .map(|line| line.auth.id)
+                    .collect();
+                host()
+                    .install_at(self.owner, self.id, snapshot.generation, listener)
+                    .ok()?;
+                self.installed
+                    .fetch_max(snapshot.generation, Ordering::Release);
+            }
+            if let Some(current) = published().load_full() {
+                if current.generation != snapshot.generation {
+                    host().retire_before(current.generation);
+                    continue;
+                }
+            }
+            return Some(policy);
+        }
+    }
+}
+
+fn registrations() -> &'static Mutex<HashMap<(u64, u64), Weak<ListenerRegistration>>> {
+    static ONE: OnceLock<Mutex<HashMap<(u64, u64), Weak<ListenerRegistration>>>> = OnceLock::new();
+    ONE.get_or_init(Mutex::default)
+}
+
+fn registered(owner: u64, listener: u64) -> Option<Arc<ListenerRegistration>> {
+    registrations()
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .get(&(owner, listener))
+        .and_then(Weak::upgrade)
+}
+
+impl Drop for ListenerRegistration {
+    fn drop(&mut self) {
+        registrations()
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&(self.owner, self.id));
+        host().forget_listener(self.owner, self.id);
+    }
+}
+
 /// The last generation published.
 static GENERATION: AtomicU64 = AtomicU64::new(0);
 
@@ -256,6 +518,10 @@ pub fn publish(app: &Arc<busbar_kernel::state::App>) -> Option<u64> {
         ids,
         signed_ingress: kin::signed_by_dialect(),
     };
+    let snapshot = Arc::new(Published {
+        generation,
+        listener: listener.clone(),
+    });
     if let Err(e) = host().install(ROOT_OWNER, generation, listener) {
         tracing::error!(
             generation,
@@ -264,6 +530,9 @@ pub fn publish(app: &Arc<busbar_kernel::state::App>) -> Option<u64> {
         );
         return None;
     }
+    let retired = published().swap(Some(snapshot));
     auth_handle::publish_generation(generation);
+    host().retire_before(generation);
+    drop(retired);
     Some(generation)
 }

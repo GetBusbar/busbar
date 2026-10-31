@@ -3287,11 +3287,13 @@ impl DoorRequest {
 
     /// The request a door claim's route was handed (`None` when its engine is not the kernel's).
     fn of(ctx: PlaneReqCtx) -> Option<Self> {
-        let app = ctx
-            .engine
-            .downcast::<busbar_kernel::state::AppHandle>()
-            .ok()?
-            .load();
+        let app = match ctx.engine.downcast::<busbar_kernel::state::App>() {
+            Ok(app) => app,
+            Err(engine) => engine
+                .downcast::<busbar_kernel::state::AppHandle>()
+                .ok()?
+                .load(),
+        };
         // A caller never states the carrier session its arrival came over: only the line carrier
         // does, for the session it holds open ([`lines`]).
         let mut headers = ctx.headers;

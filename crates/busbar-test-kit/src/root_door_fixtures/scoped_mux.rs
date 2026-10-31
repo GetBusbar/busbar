@@ -5,7 +5,8 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::marker::PhantomData;
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::task::Poll;
 
 use busbar_contract::abi::auth::POINT_HEAD;
@@ -16,6 +17,7 @@ use busbar_contract::abi::mechanism::ticket::{CompletionHandle, Ticket};
 use busbar_contract::abi::sdk::door::{abi_str, statement, AbiIn, AbiOut};
 use busbar_contract::abi::sdk::life::{Held, Life, Refusal};
 use busbar_contract::abi::sdk::services::HeadViewArgs;
+use busbar_contract::abi::sdk::transport::policy::Loans;
 use busbar_contract::abi::sdk::transport::sink::{fill, Owed, Piece};
 use busbar_contract::abi::sdk::{HostBuf, Instance, Lent, Out, Safe, SafeSlot};
 use busbar_contract::abi::transport as t;
@@ -24,6 +26,7 @@ busbar_contract::own_seal!(Own);
 
 /// The local token, intentionally reused by different host connections.
 pub const TOKEN: u64 = 41;
+static NEXT_TOKEN: AtomicU64 = AtomicU64::new(TOKEN + 2);
 const CLAIM_NAMES: &[AbiStr] = &[abi_str("http")];
 const CLAIMS: &[t::Claim] = &[t::Claim {
     session: 1,
@@ -54,6 +57,9 @@ const STATEMENT: Statement = Statement {
 /// Per-instance fixture state; no callback blocks a plugin crossing.
 pub struct Mux {
     auth: Mutex<AuthRef>,
+    opening: Mutex<HashMap<Ticket, u64>>,
+    policies: Mutex<HashMap<u64, Loans>>,
+    streams: Mutex<HashMap<(u64, u64), Arc<t::guest_policy::Policy>>>,
     pending: Mutex<HashMap<Ticket, Pending>>,
     owed: Mutex<HashMap<Ticket, Queue>>,
     finished: Mutex<Vec<u64>>,
@@ -70,6 +76,9 @@ impl Life for Mux {
     fn open(_: &[u8], _: &[&[u8]], _: u64) -> Result<Self, Refusal> {
         Ok(Self {
             auth: Mutex::new(AuthRef::NONE),
+            opening: Mutex::default(),
+            policies: Mutex::default(),
+            streams: Mutex::default(),
             pending: Mutex::default(),
             owed: Mutex::default(),
             finished: Mutex::default(),
@@ -120,13 +129,14 @@ impl Owed<Vec<u8>> for Queue {
 
 type State = Held<Mux>;
 
-fn authenticate(held: &State, ticket: Ticket, stream: u64) -> Poll<Result<(), ()>> {
-    authenticate_at(held, ticket, stream, 0, false)
+fn authenticate(held: &State, ticket: Ticket, framing: u64, stream: u64) -> Poll<Result<(), ()>> {
+    authenticate_at(held, ticket, framing, stream, 0, false)
 }
 
 fn authenticate_at(
     held: &State,
     ticket: Ticket,
+    framing: u64,
     stream: u64,
     seq: u32,
     resumed: bool,
@@ -134,7 +144,14 @@ fn authenticate_at(
     let Some(services) = held.host().and_then(|h| h.services()) else {
         return Poll::Ready(Err(()));
     };
-    let auth = *held.life().auth.lock().unwrap();
+    let auth = held
+        .life()
+        .streams
+        .lock()
+        .unwrap()
+        .get(&(framing, stream))
+        .and_then(|policy| policy.lines.first())
+        .map_or_else(|| *held.life().auth.lock().unwrap(), |line| line.auth);
     let target = format!("/tickets/{}/{}", ticket.slot, ticket.generation);
     let request = HeadViewArgs {
         method: "POST",
@@ -153,7 +170,7 @@ fn authenticate_at(
         auth,
         UnitRef::NONE,
         POINT_HEAD,
-        TOKEN,
+        framing,
         stream,
         &request,
         None,
@@ -182,15 +199,50 @@ impl SafeSlot for Begin {
             return Outcome::Refused;
         };
         *held.life().auth.lock().unwrap() = line.auth;
+        let policies = match Loans::from_initial(i.field(|i| &i.head.extensions).bytes()) {
+            Ok(policies) => policies,
+            Err(_) => return Outcome::Refused,
+        };
+        let existing = held
+            .life()
+            .opening
+            .lock()
+            .unwrap()
+            .get(&i.head.ticket)
+            .copied();
+        let framing = match (existing, policies) {
+            (Some(token), _) => token,
+            (None, Some(policies)) => {
+                let Ok(token) =
+                    NEXT_TOKEN
+                        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_add(1))
+                else {
+                    return Outcome::Refused;
+                };
+                held.life().policies.lock().unwrap().insert(token, policies);
+                token
+            }
+            (None, None) => TOKEN,
+        };
+        held.life()
+            .opening
+            .lock()
+            .unwrap()
+            .insert(i.head.ticket, framing);
         let mismatch = i.target().as_str() == Ok("mismatch");
         if mismatch {
-            match authenticate(held, i.head.ticket, 7) {
+            match authenticate(held, i.head.ticket, framing, 7) {
                 Poll::Pending => return Outcome::Pending,
-                Poll::Ready(Err(())) => return Outcome::Refused,
+                Poll::Ready(Err(())) => {
+                    held.life().opening.lock().unwrap().remove(&i.head.ticket);
+                    held.life().policies.lock().unwrap().remove(&framing);
+                    return Outcome::Refused;
+                }
                 Poll::Ready(Ok(())) => {}
             }
         }
-        o.set(|o| &o.framing, TOKEN + u64::from(mismatch));
+        held.life().opening.lock().unwrap().remove(&i.head.ticket);
+        o.set(|o| &o.framing, framing + u64::from(mismatch));
         Outcome::Ready
     }
 }
@@ -238,7 +290,33 @@ impl SafeSlot for Ingest {
                     .to_le_bytes()
                     .to_vec()
             } else {
-                match authenticate(held, ticket, stream) {
+                if !state
+                    .streams
+                    .lock()
+                    .unwrap()
+                    .contains_key(&(i.framing, stream))
+                {
+                    if let Some(policies) = state.policies.lock().unwrap().get_mut(&i.framing) {
+                        match policies.open(
+                            ticket,
+                            stream,
+                            i.field(|i| &i.head.extensions).bytes(),
+                            &mut o,
+                            held.leases(),
+                        ) {
+                            Ok(Some(policy)) => {
+                                state
+                                    .streams
+                                    .lock()
+                                    .unwrap()
+                                    .insert((i.framing, stream), policy);
+                            }
+                            Ok(None) => return Outcome::Ready,
+                            Err(_) => return Outcome::Refused,
+                        }
+                    }
+                }
+                match authenticate(held, ticket, i.framing, stream) {
                     Poll::Pending => return Outcome::Pending,
                     Poll::Ready(Err(())) => return Outcome::Refused,
                     Poll::Ready(Ok(())) => {}
@@ -252,7 +330,7 @@ impl SafeSlot for Ingest {
                         }
                         return Outcome::Pending;
                     }
-                    match authenticate_at(held, ticket, stream + 10, 1, resumed) {
+                    match authenticate_at(held, ticket, i.framing, stream + 10, 1, resumed) {
                         Poll::Pending => return Outcome::Pending,
                         Poll::Ready(Err(())) => return Outcome::Refused,
                         Poll::Ready(Ok(())) => {}
@@ -290,6 +368,12 @@ impl SafeSlot for Finish {
             return Outcome::Fault;
         };
         held.life().finished.lock().unwrap().push(i.framing);
+        held.life().policies.lock().unwrap().remove(&i.framing);
+        held.life()
+            .streams
+            .lock()
+            .unwrap()
+            .retain(|(framing, _), _| *framing != i.framing);
         Outcome::Ready
     }
 }

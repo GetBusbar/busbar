@@ -1574,13 +1574,31 @@ fn request_generation(
     owner: u64,
     host: Option<&Arc<dyn AuthHandleHost>>,
     unit: &svc::UnitRef,
-) -> u64 {
+    conn: u64,
+    stream: u64,
+    peer: bool,
+    teardown: bool,
+) -> Result<u64, &'static str> {
+    let context = super::framing_context::current();
+    if let Some(context) = &context {
+        context.check(owner, conn, teardown)?;
+    } else if host.is_some_and(|host| host.requires_scope()) {
+        return Err(super::framing_context::CONTEXT_REFUSED);
+    }
     if !unit.is_none() {
         if let Some(secret) = host.and_then(|h| h.unit_secret(owner, unit.id)) {
-            return secret.generation;
+            return Ok(secret.generation);
         }
     }
-    super::auth_handle::generation()
+    if let Some(context) = context.filter(|scope| scope.listener() != 0) {
+        if let Some(generation) = context.policy_generation(stream, peer) {
+            return Ok(generation);
+        }
+        if host.is_some_and(|host| host.requires_scope()) {
+            return Err(super::framing_context::CONTEXT_REFUSED);
+        }
+    }
+    Ok(super::auth_handle::generation())
 }
 
 /// A presented unit (#74): none passes. With no kernel side installed any other is refused
@@ -1772,7 +1790,18 @@ extern "C" fn auth_call(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut
         op::AUTH_CALL,
         |i, owner, store, route, head| {
             let host = auth_host(&route);
-            let generation = request_generation(owner, host.as_ref(), &i.unit);
+            let generation = match request_generation(
+                owner,
+                host.as_ref(),
+                &i.unit,
+                i.conn,
+                i.stream,
+                i.point == busbar_contract::abi::auth::POINT_PEER,
+                false,
+            ) {
+                Ok(generation) => generation,
+                Err(error) => return Answered::bare(Outcome::Refused, error),
+            };
             if let Some(r) = refused_ref(owner, generation, &i.auth)
                 .or_else(|| refused_unit(owner, host.as_ref(), &i.unit))
             {
@@ -1862,7 +1891,18 @@ extern "C" fn unit_hand_in(ctx: HostCtx, input: *const c_void, out: *mut Service
         op::UNIT_HAND_IN,
         |i, owner, _, route, head| {
             let host = auth_host(&route);
-            let generation = request_generation(owner, host.as_ref(), &i.unit);
+            let generation = match request_generation(
+                owner,
+                host.as_ref(),
+                &i.unit,
+                i.conn,
+                i.stream,
+                false,
+                false,
+            ) {
+                Ok(generation) => generation,
+                Err(error) => return Answered::bare(Outcome::Refused, error),
+            };
             if let Some(r) = refused_ref(owner, generation, &i.auth)
                 .or_else(|| refused_unit(owner, host.as_ref(), &i.unit))
             {
@@ -1910,7 +1950,7 @@ extern "C" fn unit_hand_in(ctx: HostCtx, input: *const c_void, out: *mut Service
                 request,
                 framing,
             };
-            match host.hand_in(ask) {
+            match host.hand_in_with_deadline(ask, op_remaining()) {
                 Ok((flow, unit)) => {
                     // SAFETY: the caller's answer slot, checked non-NULL by `check_unit_hand_in_in`.
                     unsafe {
@@ -1956,7 +1996,18 @@ pub(crate) fn refusals_held() -> usize {
 extern "C" fn unit_refuse(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
     exact::<svc::UnitRefuseIn>(ctx, input, out, op::UNIT_REFUSE, |i, owner, _, route, h| {
         let host = auth_host(&route);
-        let generation = request_generation(owner, host.as_ref(), &i.unit);
+        let generation = match request_generation(
+            owner,
+            host.as_ref(),
+            &i.unit,
+            i.conn,
+            i.stream,
+            false,
+            true,
+        ) {
+            Ok(generation) => generation,
+            Err(error) => return Answered::bare(Outcome::Refused, error),
+        };
         if let Some(r) = refused_unit(owner, host.as_ref(), &i.unit) {
             return r;
         }

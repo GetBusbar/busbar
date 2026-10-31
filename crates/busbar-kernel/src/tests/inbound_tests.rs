@@ -29,6 +29,7 @@ struct Script {
     answer: VerifyAnswer,
     calls: AtomicUsize,
     lent: Mutex<Vec<String>>,
+    candidates: Mutex<Vec<Option<Secret<Vec<u8>>>>>,
 }
 
 impl Script {
@@ -41,12 +42,381 @@ impl Script {
             },
             calls: AtomicUsize::new(0),
             lent: Mutex::default(),
+            candidates: Mutex::default(),
         })
     }
 
     fn calls(&self) -> usize {
         self.calls.load(Ordering::SeqCst)
     }
+}
+
+fn ticket_kit(gov: &Arc<crate::governance::GovState>, earlier: Arc<Script>) -> Kit {
+    let points = AuthPoints(POINT_HEAD | earlier.points.bits());
+    let k = kit_over(
+        crate::test_support::TestApp::new()
+            .keys_chain()
+            .governance(Arc::clone(gov))
+            .build(),
+        vec!["earlier".into(), crate::config::KEYS_MODULE.into()],
+        points,
+        &[("earlier", earlier)],
+    );
+    let mut listener = k.inbound.table(OWNER, GEN).unwrap().listener.clone();
+    listener.door_refusals = vec![crate::plane_routes::PlaneRefusalSpec {
+        route: crate::plane_routes::DoorRouteId {
+            path: MESSAGES.into(),
+            method: busbar_contract::abi::mechanism::route::RouteMethod::Post,
+        },
+        refuse: Arc::new(|_, _| {
+            axum::http::Response::builder()
+                .status(401)
+                .body(axum::body::Body::empty())
+                .unwrap()
+        }),
+        ticket_prefix: Some("tk_".into()),
+        signed_ingress: Arc::from([]),
+    }];
+    k.inbound.install_at(OWNER, 71, GEN, listener).unwrap();
+    k.inbound.framing_started(OWNER, 71, 1, GEN).unwrap();
+    k.inbound.grant_stream(OWNER, 1, 1, GEN).unwrap();
+    k
+}
+
+async fn through_final_gate(
+    k: &Kit,
+    receipt: RequestAdmission,
+    head: &Head,
+) -> (u16, Option<Vec<u8>>) {
+    use tower::ServiceExt as _;
+    let observed = Arc::new(Mutex::new(None));
+    let held = Arc::clone(&observed);
+    let handle = Arc::new(crate::state::AppHandle::new(Arc::clone(&k.app)));
+    let table = k
+        .inbound
+        .request_table(
+            OWNER,
+            GEN,
+            RequestBinding {
+                conn: 1,
+                stream: 1,
+                framing: Some(1),
+            },
+            UnitRef::NONE,
+            false,
+        )
+        .unwrap();
+    let routes: &'static crate::core_routes::CoreRouteTable =
+        Box::leak(Box::new(table.doors.clone()));
+    let router = axum::Router::new()
+        .route(
+            MESSAGES,
+            axum::routing::post(move |req: axum::extract::Request| {
+                let held = Arc::clone(&held);
+                async move {
+                    let consumed = req
+                        .extensions()
+                        .get::<crate::auth::ConsumedCredentials>()
+                        .unwrap();
+                    *held.lock().unwrap() = consumed.ticket.clone();
+                    assert!(!req.headers().contains_key("authorization"));
+                    axum::http::StatusCode::OK
+                }
+            }),
+        )
+        .layer(axum::middleware::from_fn_with_state(
+            handle.clone(),
+            move |app: crate::state::CurrentApp,
+                  req: axum::extract::Request,
+                  next: axum::middleware::Next| {
+                crate::auth::auth_middleware(app, routes, req, next)
+            },
+        ))
+        .with_state(handle);
+    let mut request = axum::http::Request::builder()
+        .method("POST")
+        .uri(head.path_and_query())
+        .body(axum::body::Body::empty())
+        .unwrap();
+    *request.headers_mut() = header_map(head);
+    request.extensions_mut().insert(receipt);
+    let response = router.oneshot(request).await.unwrap();
+    let record = observed.lock().unwrap().clone();
+    (response.status().as_u16(), record)
+}
+
+#[tokio::test]
+async fn ticket_preflight_skips_the_chain_and_only_the_final_gate_spends_it() {
+    crate::snapshot::init();
+    let gov = signing_gov();
+    let now = crate::store::now();
+    let (id, _) = minted(&gov, now + 3600, now);
+    let (ticket, _) = gov
+        .mint_ticket(&id, "tk_", 600, None, b"ticket-record", now)
+        .unwrap();
+    let earlier = Script::new(AuthPoints::HEAD, Verified::Reject, Vec::new());
+    let k = ticket_kit(&gov, Arc::clone(&earlier));
+    for _ in 0..2 {
+        let original = bearer(&ticket);
+        let answer = k
+            .call(MESSAGES, UnitRef::NONE, POINT_HEAD, original.clone())
+            .unwrap();
+        assert_eq!(
+            answer.flow, FLOW_CONTINUE,
+            "a checked ticket preempts an earlier rejecting plugin"
+        );
+        assert_eq!(earlier.calls(), 0);
+        assert_eq!(
+            k.inbound
+                .admitted(answer.unit.id)
+                .unwrap()
+                .resolved
+                .unwrap()
+                .id,
+            id
+        );
+        let mut changed = original.stripped(&answer.strips).unwrap();
+        changed.target = OTHER.into();
+        assert_eq!(
+            k.hand_in(MESSAGES, MESSAGES, answer.unit, changed).0,
+            FLOW_STOP
+        );
+        k.inbound.exit(answer.unit.id);
+    }
+    let original = bearer(&ticket);
+    let answer = k
+        .call(MESSAGES, UnitRef::NONE, POINT_HEAD, original.clone())
+        .unwrap();
+    assert_eq!(
+        answer.flow, FLOW_CONTINUE,
+        "abandoned and failed hand-ins did not spend the ticket"
+    );
+    let sanitized = original.stripped(&answer.strips).unwrap();
+    assert_eq!(
+        k.hand_in(MESSAGES, MESSAGES, answer.unit, sanitized.clone())
+            .0,
+        FLOW_CONTINUE
+    );
+    let receipt = k.inbound.claim_request(OWNER, 1, 1, &sanitized).unwrap();
+    assert_eq!(
+        through_final_gate(&k, receipt, &sanitized).await,
+        (200, Some(b"ticket-record".to_vec()))
+    );
+    assert!(
+        gov.admit_ticket("tk_", &ticket, now).is_none(),
+        "the final gate spent exactly once"
+    );
+    assert_eq!(spend(&k, bearer(&ticket)).0, FLOW_STOP);
+    assert_eq!(earlier.calls(), 0);
+}
+
+#[test]
+fn ticket_preflight_checks_signature_expiry_standing_record_and_route_prefix() {
+    let gov = signing_gov();
+    let now = crate::store::now();
+    let (id, key) = minted(&gov, now + 3600, now);
+    let earlier = Script::new(
+        AuthPoints::HEAD,
+        identity("must-not-win", "wrong"),
+        Vec::new(),
+    );
+    let k = ticket_kit(&gov, Arc::clone(&earlier));
+    let (expired, _) = gov
+        .mint_ticket(&id, "tk_", 1, None, b"record", now - 5)
+        .unwrap();
+    let relabeled_key = format!("tk_{}", key.strip_prefix("bbk_").unwrap());
+    for invalid in ["tk_malformed", expired.as_str(), relabeled_key.as_str()] {
+        assert_eq!(spend(&k, bearer(invalid)).0, FLOW_STOP);
+        assert_eq!(
+            earlier.calls(),
+            0,
+            "a matched-prefix failure cannot fall back to a plugin"
+        );
+    }
+    let (ticket, _) = gov
+        .mint_ticket(&id, "tk_", 600, None, b"record", now)
+        .unwrap();
+    gov.revoke(&id, "preflight").unwrap();
+    assert_eq!(spend(&k, bearer(&ticket)).0, FLOW_STOP);
+    assert_eq!(earlier.calls(), 0);
+    let ordinary = Script::new(AuthPoints::HEAD, Verified::Pass, Vec::new());
+    let fresh = signing_gov();
+    let (id, token) = minted(&fresh, now + 3600, now);
+    let k = ticket_kit(&fresh, Arc::clone(&ordinary));
+    assert_eq!(
+        spend(&k, bearer(&token)).0,
+        FLOW_CONTINUE,
+        "ordinary keys still work on ticket routes"
+    );
+    let (wrong_prefix, _) = fresh
+        .mint_ticket(&id, "other_", 600, None, b"record", now)
+        .unwrap();
+    assert_eq!(spend(&k, bearer(&wrong_prefix)).0, FLOW_STOP);
+    assert!(
+        fresh.admit_ticket("other_", &wrong_prefix, now).is_some(),
+        "the wrong route did not spend it"
+    );
+}
+
+#[test]
+fn the_inbound_verifier_receives_the_default_candidate_without_rewriting_lines() {
+    for (configured_as, scheme, expected) in [
+        (false, "Bearer", Some("candidate")),
+        (false, "DPoP", None),
+        (true, "DPoP", Some("candidate")),
+    ] {
+        let script = Script::new(
+            AuthPoints::HEAD,
+            identity("external-idp", "verified"),
+            Vec::new(),
+        );
+        let mut app = crate::test_support::TestApp::new();
+        if configured_as {
+            app = app.oauth_as_plane(Arc::new(()));
+        }
+        let k = kit_over(
+            app.build(),
+            vec!["idp".into()],
+            AuthPoints::HEAD,
+            &[("idp", Arc::clone(&script))],
+        );
+        let head = post(
+            MESSAGES,
+            &[
+                ("Authorization", &format!("{scheme} candidate")),
+                ("x-safe", "unchanged"),
+            ],
+            None,
+        );
+        assert_eq!(spend(&k, head).0, FLOW_CONTINUE);
+        let candidates = script.candidates.lock().unwrap();
+        assert_eq!(
+            candidates[0]
+                .as_ref()
+                .map(|c| c.expose(&crate::seal::lend()).as_slice()),
+            expected.map(str::as_bytes)
+        );
+        assert_eq!(*script.lent.lock().unwrap(), ["authorization", "x-safe"]);
+    }
+}
+
+#[test]
+fn dpop_candidate_preflight_verifies_the_key_but_does_not_require_or_claim_a_proof() {
+    let gov = signing_gov();
+    let now = crate::store::now();
+    let (_, token) = minted(&gov, now + 3600, now);
+    for configured_as in [false, true] {
+        let mut app = crate::test_support::TestApp::new()
+            .keys_chain()
+            .governance(Arc::clone(&gov));
+        if configured_as {
+            app = app.oauth_as_plane(Arc::new(()));
+        }
+        let k = kit_over(
+            app.build(),
+            vec![crate::config::KEYS_MODULE.into()],
+            AuthPoints::HEAD,
+            &[],
+        );
+        let head = post(
+            MESSAGES,
+            &[("Authorization", &format!("DPoP {token}"))],
+            None,
+        );
+        assert_eq!(
+            spend(&k, head).0,
+            if configured_as {
+                FLOW_CONTINUE
+            } else {
+                FLOW_STOP
+            }
+        );
+        let invalid = post(
+            MESSAGES,
+            &[("Authorization", "DPoP bbk_not-a-signed-key")],
+            None,
+        );
+        assert_eq!(
+            spend(&k, invalid).0,
+            FLOW_STOP,
+            "extracting a candidate is never proof of identity"
+        );
+    }
+}
+
+#[test]
+fn later_verifiers_and_keys_keep_the_original_candidate_after_declared_stripping() {
+    let gov = signing_gov();
+    let now = crate::store::now();
+    let (_, token) = minted(&gov, now + 3600, now);
+    for scheme in ["Bearer", "DPoP"] {
+        let head_auth = Script::new(
+            AuthPoints::HEAD,
+            Verified::Pass,
+            vec![Strip::field("authorization")],
+        );
+        let body_auth = Script::new(AuthPoints(POINT_HEAD_BODY), Verified::Pass, Vec::new());
+        let app = crate::test_support::TestApp::new()
+            .keys_chain()
+            .governance(Arc::clone(&gov))
+            .oauth_as_plane(Arc::new(()))
+            .build();
+        let k = kit_over(
+            app,
+            vec![
+                "head".into(),
+                "body".into(),
+                crate::config::KEYS_MODULE.into(),
+            ],
+            AuthPoints(POINT_HEAD | POINT_HEAD_BODY),
+            &[("head", head_auth), ("body", Arc::clone(&body_auth))],
+        );
+        let original = post(
+            MESSAGES,
+            &[("Authorization", &format!("{scheme} {token}"))],
+            None,
+        );
+        let first = k
+            .call(MESSAGES, UnitRef::NONE, POINT_HEAD, original.clone())
+            .unwrap();
+        let stripped = original.stripped(&first.strips).unwrap();
+        let last = k
+            .call(MESSAGES, first.unit, POINT_HEAD_BODY, stripped.clone())
+            .unwrap();
+        assert_eq!(last.flow, FLOW_CONTINUE);
+        let candidates = body_auth.candidates.lock().unwrap();
+        assert_eq!(
+            candidates[0].as_ref().unwrap().expose(&crate::seal::lend()),
+            token.as_bytes()
+        );
+        assert_eq!(
+            k.hand_in(MESSAGES, MESSAGES, first.unit, stripped).0,
+            FLOW_CONTINUE
+        );
+    }
+}
+
+#[test]
+fn a_ticket_never_overrides_a_refused_connection() {
+    let gov = signing_gov();
+    let now = crate::store::now();
+    let (id, _) = minted(&gov, now + 3600, now);
+    let (ticket, _) = gov
+        .mint_ticket(&id, "tk_", 600, None, b"record", now)
+        .unwrap();
+    let earlier = Script::new(AuthPoints(POINT_PEER), Verified::Reject, Vec::new());
+    let k = ticket_kit(&gov, earlier);
+    assert_eq!(
+        k.call(MESSAGES, UnitRef::NONE, POINT_PEER, Head::default())
+            .unwrap()
+            .flow,
+        FLOW_STOP
+    );
+    assert_eq!(spend(&k, bearer(&ticket)).0, FLOW_STOP);
+    assert!(
+        gov.admit_ticket("tk_", &ticket, now).is_some(),
+        "a refused connection spent nothing"
+    );
 }
 
 /// A `verify` answered before anything crossed.
@@ -83,6 +453,10 @@ impl AuthCalls for Script {
     }
     fn verify(&self, request: VerifyRequest) -> Box<dyn Verifying> {
         self.calls.fetch_add(1, Ordering::SeqCst);
+        self.candidates
+            .lock()
+            .unwrap()
+            .push(request.credential.clone());
         self.lent
             .lock()
             .unwrap()
@@ -389,6 +763,78 @@ fn identity(subject: &str, credential: &str) -> Verified {
 }
 
 #[test]
+fn only_the_successful_unchanged_hand_in_can_be_claimed_once() {
+    let script = Script::new(
+        AuthPoints::HEAD,
+        identity("caller", "credential"),
+        vec![Strip::field("authorization".to_string())],
+    );
+    let k = kit(&[("a", Arc::clone(&script))]);
+    let listener = k.inbound.table(OWNER, GEN).unwrap().listener.clone();
+    k.inbound.install_at(OWNER, 71, GEN, listener).unwrap();
+    k.inbound.framing_started(OWNER, 71, 1, GEN).unwrap();
+    k.inbound.grant_stream(OWNER, 1, 1, GEN).unwrap();
+    let original = post(
+        MESSAGES,
+        &[("Authorization", "credential"), ("X-Trace", "one")],
+        Some("a=1"),
+    );
+    let answer = k
+        .call(MESSAGES, UnitRef::NONE, POINT_HEAD, original.clone())
+        .unwrap();
+    assert_eq!(answer.flow, FLOW_CONTINUE);
+    assert!(k.inbound.claim_request(OWNER, 1, 1, &original).is_err());
+    assert_eq!(
+        k.hand_in(MESSAGES, MESSAGES, answer.unit, original).0,
+        FLOW_STOP,
+        "an unstripped credential refuses hand-in"
+    );
+    let sanitized = post(MESSAGES, &[("x-trace", "one")], Some("a=1"));
+    assert!(k.inbound.claim_request(OWNER, 1, 1, &sanitized).is_err());
+    let changed_field = post(MESSAGES, &[("x-trace", "changed")], Some("a=1"));
+    assert_eq!(
+        k.hand_in(MESSAGES, MESSAGES, answer.unit, changed_field).0,
+        FLOW_STOP,
+        "hand-in cannot change an authenticated non-credential field"
+    );
+    let changed_query = post(MESSAGES, &[("x-trace", "one")], Some("a=2"));
+    assert_eq!(
+        k.hand_in(MESSAGES, MESSAGES, answer.unit, changed_query).0,
+        FLOW_STOP,
+        "hand-in cannot change an authenticated query"
+    );
+    assert_eq!(
+        k.hand_in(MESSAGES, MESSAGES, answer.unit, sanitized.clone())
+            .0,
+        FLOW_CONTINUE
+    );
+    assert!(k
+        .inbound
+        .claim_request(OWNER + 1, 1, 1, &sanitized)
+        .is_err());
+    assert!(k.inbound.claim_request(OWNER, 1, 2, &sanitized).is_err());
+    let changed = post(OTHER, &[("x-trace", "one")], Some("a=1"));
+    assert!(k.inbound.claim_request(OWNER, 1, 1, &changed).is_err());
+    let emitted = post(MESSAGES, &[("X-TRACE", "one")], Some("a=1"));
+    let admission = k
+        .inbound
+        .claim_request(OWNER, 1, 1, &emitted)
+        .expect("the unchanged request claims its successful hand-in");
+    assert!(Arc::ptr_eq(&admission.app(), &k.app));
+    assert!(matches!(
+        admission.verdict(),
+        crate::auth::ChainVerdict::Identified { principal, .. } if principal.id == "caller"
+    ));
+    assert!(k.inbound.claim_request(OWNER, 1, 1, &emitted).is_err());
+    assert_eq!(script.calls(), 1, "claiming does not re-run the verifier");
+    k.inbound.stream_ended(OWNER, 1, 1);
+    assert!(k.inbound.unit_secret(OWNER, answer.unit.id).is_none());
+    assert!(k.inbound.grant_stream(OWNER, 1, 1, GEN).is_err());
+    assert!(Arc::ptr_eq(&admission.app(), &k.app));
+    assert!(!futures::executor::block_on(admission.claim_replay()));
+}
+
+#[test]
 fn an_active_unit_keeps_its_policy_after_three_reloads_without_reopening_the_old_list() {
     let a = Script::new(
         AuthPoints::HEAD,
@@ -488,6 +934,311 @@ fn an_active_unit_keeps_its_policy_after_three_reloads_without_reopening_the_old
         "a pinned table does not authenticate a forged unit"
     );
     assert!(released, "unit exit releases the last old-policy reference");
+}
+
+fn transfer_request() -> (Kit, UnitRef, RequestAdmission, Arc<Script>) {
+    let script = Script::new(
+        AuthPoints::HEAD,
+        identity("session-caller", "credential"),
+        Vec::new(),
+    );
+    let k = kit(&[("a", Arc::clone(&script))]);
+    let listener = k.inbound.table(OWNER, GEN).unwrap().listener.clone();
+    k.inbound.install_at(OWNER, 71, GEN, listener).unwrap();
+    k.inbound.framing_started(OWNER, 71, 1, GEN).unwrap();
+    k.inbound.grant_stream(OWNER, 1, 1, GEN).unwrap();
+    let head = post(MESSAGES, &[], None);
+    let unit = k
+        .call(MESSAGES, UnitRef::NONE, POINT_HEAD, head.clone())
+        .unwrap()
+        .unit;
+    assert_eq!(
+        k.hand_in(MESSAGES, MESSAGES, unit, head.clone()).0,
+        FLOW_CONTINUE
+    );
+    let admission = k.inbound.claim_request(OWNER, 1, 1, &head).unwrap();
+    (k, unit, admission, script)
+}
+
+fn transfer_source() -> busbar_contract::framing_scope::AdoptionSource {
+    busbar_contract::framing_scope::AdoptionSource {
+        owner: OWNER,
+        listener: 71,
+        leg: 1,
+        conn: 1,
+    }
+}
+
+#[test]
+fn an_adopted_session_moves_owner_token_and_mac_without_reauthenticating_or_changing_app() {
+    for destination_owner in [OWNER, OWNER + 90] {
+        let (k, old, admission, script) = transfer_request();
+        let auth = k.id(MESSAGES);
+        let line = k.line(MESSAGES);
+        let old_secret = k.inbound.unit_secret(OWNER, old.id).unwrap().0;
+        assert!(futures::executor::block_on(admission.claim_replay()));
+        k.inbound.framing_detached(OWNER, 1).unwrap();
+        let staged = k
+            .inbound
+            .framing_adopting(transfer_source(), destination_owner, 19)
+            .unwrap();
+        assert_eq!(staged.session.unit.id, old.id);
+        assert_eq!(staged.session.stream, 1);
+        assert_eq!(staged.generation, GEN);
+        assert!(k.inbound.unit_secret(OWNER, old.id).is_none());
+        assert!(
+            k.inbound.unit_secret(destination_owner, old.id).is_none(),
+            "staging grants no service authority"
+        );
+        assert!(k
+            .inbound
+            .grant_stream(destination_owner, 19, 2, GEN)
+            .is_err());
+        let binding = RequestBinding {
+            conn: 803,
+            stream: 1,
+            framing: Some(19),
+        };
+        assert!(!k.inbound.verified(
+            destination_owner,
+            Some(GEN),
+            Some(line),
+            binding,
+            staged.session.unit
+        ));
+        let mut replacement = k.inbound.table(OWNER, GEN).unwrap().listener.clone();
+        replacement.app = crate::test_support::TestApp::new().build();
+        for generation in GEN + 1..=GEN + 3 {
+            k.inbound
+                .install_at(OWNER, 71, generation, replacement.clone())
+                .unwrap();
+        }
+        k.inbound
+            .framing_adopted(destination_owner, 19, 803)
+            .unwrap();
+        assert_ne!(
+            k.inbound.unit_secret(destination_owner, old.id).unwrap().0,
+            old_secret
+        );
+        assert!(!k
+            .inbound
+            .verified(destination_owner, Some(GEN), Some(line), binding, old));
+        assert!(k.inbound.verified(
+            destination_owner,
+            Some(GEN),
+            Some(line),
+            binding,
+            staged.session.unit
+        ));
+        for foreign in [
+            RequestBinding { conn: 1, ..binding },
+            RequestBinding {
+                stream: 2,
+                ..binding
+            },
+            RequestBinding {
+                framing: Some(1),
+                ..binding
+            },
+        ] {
+            assert!(!k.inbound.verified(
+                destination_owner,
+                Some(GEN),
+                Some(line),
+                foreign,
+                staged.session.unit
+            ));
+        }
+        assert!(!k.inbound.verified(
+            destination_owner + 1,
+            Some(GEN),
+            Some(line),
+            binding,
+            staged.session.unit
+        ));
+        k.inbound.stream_ended(OWNER, 1, 1);
+        k.inbound.framing_ended(1);
+        assert!(k.inbound.verified(
+            destination_owner,
+            Some(GEN),
+            Some(line),
+            binding,
+            staged.session.unit
+        ));
+        let continuation = k
+            .inbound
+            .auth_call(
+                Call {
+                    owner: destination_owner,
+                    generation: GEN,
+                    auth,
+                    unit: staged.session.unit,
+                    point: POINT_HEAD,
+                    conn: 803,
+                    stream: 1,
+                    framing: 19,
+                    head: post(MESSAGES, &[], None),
+                    body: None,
+                    deadline: None,
+                },
+                Box::new(|_| panic!("an existing verdict does not pend")),
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(continuation.flow, FLOW_CONTINUE);
+        assert_eq!(script.calls(), 1);
+        assert!(Arc::ptr_eq(&admission.app(), &k.app));
+        assert!(futures::executor::block_on(admission.claim_replay()));
+        assert_eq!(
+            k.inbound
+                .with_credential(old.id, |c| c.expose(&crate::seal::lend()).clone()),
+            Some("credential".to_string())
+        );
+        k.inbound.framing_ended(19);
+        assert!(k.inbound.unit_secret(destination_owner, old.id).is_none());
+        assert!(!futures::executor::block_on(admission.claim_replay()));
+    }
+}
+
+#[test]
+fn an_abandoned_session_transfer_retires_its_credential_and_cannot_commit_late() {
+    for ended in [1, 19] {
+        let (k, old, admission, _) = transfer_request();
+        k.inbound.framing_detached(OWNER, 1).unwrap();
+        let moved = k
+            .inbound
+            .framing_adopting(transfer_source(), OWNER + 90, 19)
+            .unwrap();
+        k.inbound.framing_ended(ended);
+        assert!(k.inbound.framing_adopted(OWNER + 90, 19, 803).is_err());
+        assert!(k.inbound.unit_secret(OWNER, old.id).is_none());
+        assert!(k
+            .inbound
+            .unit_secret(OWNER + 90, moved.session.unit.id)
+            .is_none());
+        assert!(k.inbound.with_credential(old.id, |_| ()).is_none());
+        assert!(!futures::executor::block_on(admission.claim_replay()));
+        k.inbound.framing_ended(1);
+        k.inbound.framing_ended(19);
+    }
+}
+
+#[test]
+fn transfer_requires_the_live_claimed_hand_in_on_the_exact_detached_source() {
+    let (k, old, _, _) = transfer_request();
+    assert!(
+        k.inbound
+            .framing_adopting(transfer_source(), OWNER + 90, 19)
+            .is_err(),
+        "a live source has not detached"
+    );
+    k.inbound.framing_detached(OWNER, 1).unwrap();
+    for source in [
+        busbar_contract::framing_scope::AdoptionSource {
+            owner: OWNER + 1,
+            ..transfer_source()
+        },
+        busbar_contract::framing_scope::AdoptionSource {
+            listener: 72,
+            ..transfer_source()
+        },
+        busbar_contract::framing_scope::AdoptionSource {
+            leg: 2,
+            ..transfer_source()
+        },
+        busbar_contract::framing_scope::AdoptionSource {
+            conn: 2,
+            ..transfer_source()
+        },
+    ] {
+        assert!(k.inbound.framing_adopting(source, OWNER + 90, 19).is_err());
+    }
+    assert!(k.inbound.unit_secret(OWNER, old.id).is_some());
+    k.inbound.stream_ended(OWNER, 1, 1);
+    assert!(k
+        .inbound
+        .framing_adopting(transfer_source(), OWNER + 90, 19)
+        .is_err());
+
+    let script = Script::new(
+        AuthPoints::HEAD,
+        identity("caller", "credential"),
+        Vec::new(),
+    );
+    let k = kit(&[("a", script)]);
+    let listener = k.inbound.table(OWNER, GEN).unwrap().listener.clone();
+    k.inbound.install_at(OWNER, 71, GEN, listener).unwrap();
+    k.inbound.framing_started(OWNER, 71, 1, GEN).unwrap();
+    k.inbound.grant_stream(OWNER, 1, 1, GEN).unwrap();
+    let head = post(MESSAGES, &[], None);
+    let unit = k
+        .call(MESSAGES, UnitRef::NONE, POINT_HEAD, head.clone())
+        .unwrap()
+        .unit;
+    assert_eq!(k.hand_in(MESSAGES, MESSAGES, unit, head).0, FLOW_CONTINUE);
+    k.inbound.framing_detached(OWNER, 1).unwrap();
+    assert!(
+        k.inbound
+            .framing_adopting(transfer_source(), OWNER + 90, 19)
+            .is_err(),
+        "a plugin hand-in alone is not the host's claimed admission"
+    );
+}
+
+#[test]
+fn two_claimed_requests_cannot_be_guessed_into_one_session_transfer() {
+    let (k, first, _admission, _) = transfer_request();
+    k.inbound.grant_stream(OWNER, 1, 2, GEN).unwrap();
+    let head = post(MESSAGES, &[], None);
+    let second = k
+        .inbound
+        .auth_call(
+            Call {
+                owner: OWNER,
+                generation: GEN,
+                auth: k.id(MESSAGES),
+                unit: UnitRef::NONE,
+                point: POINT_HEAD,
+                conn: 1,
+                stream: 2,
+                framing: 1,
+                head: head.clone(),
+                body: None,
+                deadline: None,
+            },
+            Box::new(|_| panic!("script answers immediately")),
+        )
+        .unwrap()
+        .unwrap()
+        .unit;
+    assert_eq!(
+        k.inbound
+            .hand_in(HandIn {
+                owner: OWNER,
+                generation: GEN,
+                auth: k.id(MESSAGES),
+                unit: second,
+                line: k.line(MESSAGES),
+                conn: 1,
+                stream: 2,
+                framing: Some(1),
+                head: head.clone(),
+            })
+            .unwrap()
+            .0,
+        FLOW_CONTINUE
+    );
+    let _second_admission = k.inbound.claim_request(OWNER, 1, 2, &head).unwrap();
+    k.inbound.framing_detached(OWNER, 1).unwrap();
+    assert!(k
+        .inbound
+        .framing_adopting(transfer_source(), OWNER + 90, 19)
+        .is_err());
+    assert!(k.inbound.unit_secret(OWNER, first.id).is_some());
+    assert!(k.inbound.unit_secret(OWNER, second.id).is_some());
+    k.inbound.framing_ended(1);
+    assert!(k.inbound.unit_secret(OWNER, first.id).is_none());
+    assert!(k.inbound.unit_secret(OWNER, second.id).is_none());
 }
 
 fn names() -> Vec<Strip> {
@@ -786,28 +1537,20 @@ fn red_hand_in_stops_an_auth_line_with_no_verdict() {
 fn red_hand_in_stops_while_a_named_line_is_still_present() {
     let a = Script::new(AuthPoints::HEAD, identity("alice", "k"), names());
     let k = kit(&[("a", a)]);
-    let ans = k
-        .call(
-            MESSAGES,
-            UnitRef::NONE,
-            POINT_HEAD,
-            post(MESSAGES, &[], None),
-        )
-        .unwrap();
-    let hand = |head| k.hand_in(MESSAGES, MESSAGES, ans.unit, head).0;
-    assert_eq!(
-        hand(post(MESSAGES, &[("Authorization", "x")], None)),
-        FLOW_STOP
-    );
-    assert_eq!(hand(post(MESSAGES, &[], Some("a=1&key=x"))), FLOW_STOP);
-    assert_eq!(
-        hand(post(MESSAGES, &[], Some("Key=x&keys=1"))),
-        FLOW_CONTINUE
-    );
-    assert_eq!(
-        hand(post(MESSAGES, &[("x-other", "1")], Some("a=1"))),
-        FLOW_CONTINUE
-    );
+    for (head, expected) in [
+        (post(MESSAGES, &[("Authorization", "x")], None), FLOW_STOP),
+        (post(MESSAGES, &[], Some("a=1&key=x")), FLOW_STOP),
+        (post(MESSAGES, &[], Some("Key=x&keys=1")), FLOW_CONTINUE),
+        (
+            post(MESSAGES, &[("x-other", "1")], Some("a=1")),
+            FLOW_CONTINUE,
+        ),
+    ] {
+        let ans = k
+            .call(MESSAGES, UnitRef::NONE, POINT_HEAD, head.clone())
+            .unwrap();
+        assert_eq!(k.hand_in(MESSAGES, MESSAGES, ans.unit, head).0, expected);
+    }
 }
 
 /// RED (l.949-950): a `none` line's request is handed in with no unit, and the kernel mints it
@@ -1840,5 +2583,294 @@ fn red_a_unitless_refusal_is_shaped_by_the_requests_path() {
             ));
             assert_eq!(got, want, "cause {cause} on {path}");
         }
+    }
+}
+
+#[test]
+fn a_head_body_continuation_cannot_authenticate_another_head_for_the_original_unit() {
+    for mutation in [
+        "method",
+        "path",
+        "authority",
+        "field",
+        "query",
+        "credential",
+        "added",
+    ] {
+        let head_auth = Script::new(
+            AuthPoints::HEAD,
+            Verified::Pass,
+            vec![
+                Strip::field("authorization".to_string()),
+                Strip::query("token".to_string()),
+            ],
+        );
+        let body_auth = Script::new(
+            AuthPoints(POINT_HEAD_BODY),
+            identity("identity-for-B", "verified-B"),
+            Vec::new(),
+        );
+        let k = kit(&[("head", head_auth), ("body", Arc::clone(&body_auth))]);
+        let original = post(
+            MESSAGES,
+            &[("Authorization", "secret-A"), ("X-Resource", "A")],
+            Some("token=a&scope=A"),
+        );
+        let first = k
+            .call(MESSAGES, UnitRef::NONE, POINT_HEAD, original.clone())
+            .unwrap();
+        let mut changed = original.clone();
+        match mutation {
+            "method" => changed.method = "PUT".into(),
+            "path" => changed.target = OTHER.into(),
+            "authority" => changed.authority = "other.example".into(),
+            "field" => changed.fields[1].1 = b"B".to_vec(),
+            "query" => changed.query = Some("token=a&scope=B".into()),
+            "credential" => changed.fields[0].1 = b"secret-B".to_vec(),
+            "added" => changed.fields.push(("X-Added".into(), b"B".to_vec())),
+            _ => unreachable!(),
+        }
+        assert_eq!(
+            k.call(MESSAGES, first.unit, POINT_HEAD_BODY, changed),
+            Err(UNIT_FOREIGN),
+            "{mutation}"
+        );
+        assert_eq!(
+            body_auth.calls(),
+            0,
+            "a substituted head must not reach the body verifier"
+        );
+        let sanitized = original.stripped(&first.strips).unwrap();
+        assert_eq!(
+            k.hand_in(MESSAGES, MESSAGES, first.unit, sanitized.clone())
+                .0,
+            FLOW_STOP
+        );
+        assert_eq!(
+            k.call(MESSAGES, first.unit, POINT_HEAD_BODY, original)
+                .unwrap()
+                .flow,
+            FLOW_CONTINUE
+        );
+        assert_eq!(
+            k.hand_in(MESSAGES, MESSAGES, first.unit, sanitized).0,
+            FLOW_CONTINUE
+        );
+    }
+}
+
+#[test]
+fn continuations_allow_only_original_bytes_and_declared_partial_stripping() {
+    for form in ["original", "field", "query", "both", "case"] {
+        let head_auth = Script::new(
+            AuthPoints::HEAD,
+            Verified::Pass,
+            vec![
+                Strip::field("authorization".to_string()),
+                Strip::query("token".to_string()),
+            ],
+        );
+        let body_auth = Script::new(
+            AuthPoints(POINT_HEAD_BODY),
+            identity("caller", "verified"),
+            Vec::new(),
+        );
+        let k = kit(&[("head", head_auth), ("body", Arc::clone(&body_auth))]);
+        let original = post(
+            MESSAGES,
+            &[("Authorization", "secret-A"), ("X-Resource", "A")],
+            Some("token=a&scope=A&token=b"),
+        );
+        let first = k
+            .call(MESSAGES, UnitRef::NONE, POINT_HEAD, original.clone())
+            .unwrap();
+        let mut continuation = original.clone();
+        match form {
+            "original" => {}
+            "field" => {
+                continuation.fields.remove(0);
+            }
+            "query" => continuation.query = Some("scope=A&token=b".into()),
+            "both" => continuation = original.stripped(&first.strips).unwrap(),
+            "case" => {
+                continuation.fields[0].0 = "authorization".into();
+                continuation.fields[1].0 = "x-resource".into();
+            }
+            _ => unreachable!(),
+        }
+        assert_eq!(
+            k.call(MESSAGES, first.unit, POINT_HEAD_BODY, continuation)
+                .unwrap()
+                .flow,
+            FLOW_CONTINUE,
+            "{form}"
+        );
+        assert_eq!(body_auth.calls(), 1);
+        assert_eq!(
+            k.hand_in(
+                MESSAGES,
+                MESSAGES,
+                first.unit,
+                original.stripped(&first.strips).unwrap()
+            )
+            .0,
+            FLOW_CONTINUE
+        );
+    }
+    let head_auth = Script::new(AuthPoints::HEAD, Verified::Pass, Vec::new());
+    let body_auth = Script::new(
+        AuthPoints(POINT_HEAD_BODY),
+        identity("caller", "verified"),
+        Vec::new(),
+    );
+    let k = kit(&[("head", head_auth), ("body", Arc::clone(&body_auth))]);
+    let original = post(MESSAGES, &[], None);
+    let first = k
+        .call(MESSAGES, UnitRef::NONE, POINT_HEAD, original.clone())
+        .unwrap();
+    k.inbound.exit(first.unit.id);
+    assert_eq!(
+        k.call(MESSAGES, first.unit, POINT_HEAD_BODY, original),
+        Err(UNIT_FOREIGN)
+    );
+    assert_eq!(
+        body_auth.calls(),
+        0,
+        "cancellation never revives the old unit"
+    );
+}
+
+#[tokio::test]
+async fn a_host_receipt_forwards_only_the_verifiers_credential_through_the_opaque_reference() {
+    use tower::ServiceExt as _;
+    crate::snapshot::init();
+    for (carrier, verified) in [
+        ("query", Some("query-verified")),
+        ("custom", Some("custom-verified")),
+        ("transformed", Some("normalized-verified")),
+        ("absent", None),
+    ] {
+        let mut bindings = crate::config::RoleBindings::default();
+        bindings
+            .entry("a".into())
+            .or_default()
+            .entry("reader".into())
+            .or_default();
+        let app = crate::test_support::TestApp::new()
+            .role_bindings(bindings)
+            .build();
+        let script = Script::new(
+            AuthPoints::HEAD,
+            Verified::Identity(VerifiedIdentity {
+                subject: "caller".into(),
+                groups: vec!["reader".into()],
+                credential: verified.map(|s| Secret::new(s.to_owned())),
+                ..VerifiedIdentity::default()
+            }),
+            vec![
+                Strip::field("authorization"),
+                Strip::field("x-custom"),
+                Strip::query("token"),
+            ],
+        );
+        let k = kit_over(
+            Arc::clone(&app),
+            vec!["a".into()],
+            AuthPoints::HEAD,
+            &[("a", script)],
+        );
+        let listener = k.inbound.table(OWNER, GEN).unwrap().listener.clone();
+        k.inbound.install_at(OWNER, 71, GEN, listener).unwrap();
+        k.inbound.framing_started(OWNER, 71, 1, GEN).unwrap();
+        k.inbound.grant_stream(OWNER, 1, 1, GEN).unwrap();
+        let original = match carrier {
+            "query" => post(
+                MESSAGES,
+                &[("x-safe", "kept")],
+                Some("token=wire-query&keep=1"),
+            ),
+            "custom" => post(
+                MESSAGES,
+                &[("x-custom", "wire-custom"), ("x-safe", "kept")],
+                Some("keep=1"),
+            ),
+            _ => post(
+                MESSAGES,
+                &[("authorization", "Bearer wire-token"), ("x-safe", "kept")],
+                Some("keep=1"),
+            ),
+        };
+        let unit = k
+            .call(MESSAGES, UnitRef::NONE, POINT_HEAD, original.clone())
+            .unwrap()
+            .unit;
+        let sanitized = original
+            .stripped(&[
+                Strip::field("authorization"),
+                Strip::field("x-custom"),
+                Strip::query("token"),
+            ])
+            .unwrap();
+        assert_eq!(
+            k.hand_in(MESSAGES, MESSAGES, unit, sanitized.clone()).0,
+            FLOW_CONTINUE
+        );
+        let receipt = k.inbound.claim_request(OWNER, 1, 1, &sanitized).unwrap();
+        let observed = Arc::new(Mutex::new(None));
+        let held = Arc::clone(&observed);
+        let handle = Arc::new(crate::state::AppHandle::new(app));
+        let routes: &'static crate::core_routes::CoreRouteTable = Box::leak(Box::default());
+        let router = axum::Router::new()
+            .route(
+                MESSAGES,
+                axum::routing::post(move |req: axum::extract::Request| {
+                    let held = Arc::clone(&held);
+                    async move {
+                        let consumed = req
+                            .extensions()
+                            .get::<crate::auth::ConsumedCredentials>()
+                            .expect("the gate supplied credentials");
+                        let mut plane_headers = req.headers().clone();
+                        consumed.strip(&mut plane_headers);
+                        assert!(!plane_headers.contains_key("authorization"));
+                        assert!(!plane_headers.contains_key("x-custom"));
+                        assert_eq!(req.uri().query(), Some("keep=1"));
+                        let egress = consumed
+                            .caller
+                            .as_ref()
+                            .map(|caller| caller.lend().expose(&crate::seal::lend()).clone());
+                        *held.lock().unwrap() = Some(egress);
+                        axum::http::StatusCode::OK
+                    }
+                }),
+            )
+            .layer(axum::middleware::from_fn_with_state(
+                handle.clone(),
+                move |app: crate::state::CurrentApp,
+                      req: axum::extract::Request,
+                      next: axum::middleware::Next| {
+                    crate::auth::auth_middleware(app, routes, req, next)
+                },
+            ))
+            .with_state(handle);
+        let mut request = axum::http::Request::builder()
+            .method("POST")
+            .uri(sanitized.path_and_query())
+            .body(axum::body::Body::empty())
+            .unwrap();
+        for (name, value) in &sanitized.fields {
+            request.headers_mut().append(
+                axum::http::HeaderName::from_bytes(name.as_bytes()).unwrap(),
+                axum::http::HeaderValue::from_bytes(value).unwrap(),
+            );
+        }
+        request.extensions_mut().insert(receipt);
+        let response = router.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), axum::http::StatusCode::OK, "{carrier}");
+        assert_eq!(
+            *observed.lock().unwrap(),
+            Some(verified.map(|s| s.as_bytes().to_vec())),
+            "{carrier}"
+        );
     }
 }

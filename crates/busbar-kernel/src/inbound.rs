@@ -127,7 +127,53 @@ impl std::fmt::Debug for Head {
     }
 }
 
+impl Drop for Head {
+    fn drop(&mut self) {
+        use zeroize::Zeroize as _;
+        self.target.zeroize();
+        if let Some(query) = &mut self.query {
+            query.zeroize();
+        }
+        for (_, value) in &mut self.fields {
+            value.zeroize();
+        }
+    }
+}
+
 impl Head {
+    fn stripped(&self, strips: &[Strip]) -> Option<Self> {
+        use zeroize::Zeroize as _;
+        let mut head = self.clone();
+        head.fields.retain_mut(|(name, value)| {
+            let remove = strips.iter().any(|strip| {
+                strip.place == StripPlace::Field && strip.name.eq_ignore_ascii_case(name)
+            });
+            if remove {
+                value.zeroize();
+            }
+            !remove
+        });
+        let keys: Vec<&str> = strips
+            .iter()
+            .filter(|strip| strip.place == StripPlace::Query)
+            .map(|strip| strip.name.as_ref())
+            .collect();
+        if !keys.is_empty() {
+            let bytes = bytes::Bytes::from_owner(FieldBytes(zeroize::Zeroizing::new(
+                head.path_and_query().into_bytes(),
+            )));
+            let uri = axum::http::Uri::from_maybe_shared(bytes).ok()?;
+            if let Some(stripped) = crate::auth::without_query_keys(&uri, &keys) {
+                let mut original =
+                    std::mem::replace(&mut head.query, stripped.query().map(str::to_owned));
+                if let Some(query) = &mut original {
+                    query.zeroize();
+                }
+            }
+        }
+        Some(head)
+    }
+
     /// Whether the head carries nothing: the peer point's view.
     fn is_empty(&self) -> bool {
         self.method.is_empty()
@@ -349,6 +395,7 @@ impl std::fmt::Debug for Seals {
 }
 
 /// One listener's table at one generation.
+#[derive(Clone)]
 pub struct Listener {
     /// The sealed guest list.
     pub guests: GuestList,
@@ -443,6 +490,95 @@ pub struct Admitted {
     pub resolved: Option<Arc<crate::governance::VirtualKey>>,
 }
 
+/// A host-claimed request admission. Only a successful hand-in can create one; plugins never
+/// receive this Rust value. Its application snapshot belongs to this request across reloads.
+#[derive(Clone)]
+pub struct RequestAdmission {
+    pub(crate) inner: Arc<AdmittedRequest>,
+}
+
+pub(crate) struct AdmittedRequest {
+    table: Arc<Table>,
+    pub(crate) admitted: Option<Admitted>,
+    pub(crate) original: Head,
+    pub(crate) strips: Vec<Strip>,
+    replay: Option<Arc<ReplayAdmission>>,
+    deadline: Option<std::time::Instant>,
+    alive: Arc<std::sync::atomic::AtomicBool>,
+}
+
+struct ReplayAdmission {
+    pending: crate::auth::PendingClaim,
+    won: tokio::sync::OnceCell<bool>,
+}
+
+impl RequestAdmission {
+    pub(crate) fn app(&self) -> Arc<App> {
+        Arc::clone(&self.inner.table.listener.app)
+    }
+
+    pub(crate) fn verdict(&self) -> crate::auth::ChainVerdict {
+        match &self.inner.admitted {
+            None => crate::auth::ChainVerdict::Open,
+            Some(admitted) => crate::auth::ChainVerdict::Identified {
+                module: admitted.provider.clone(),
+                principal: admitted.resolved.as_ref().map_or_else(
+                    || busbar_contract::auth::Principal {
+                        id: admitted.identity.subject.clone(),
+                        name: admitted.identity.name.clone(),
+                        roles: admitted.identity.groups.clone(),
+                        ttl_secs: admitted.identity.ttl_secs,
+                    },
+                    |key| crate::auth::principal_from_vkey(key),
+                ),
+                resolved: admitted.resolved.clone(),
+            },
+        }
+    }
+
+    pub(crate) async fn claim_replay(&self) -> bool {
+        if !self.inner.alive.load(std::sync::atomic::Ordering::Acquire) {
+            return false;
+        }
+        let Some(replay) = &self.inner.replay else {
+            return true;
+        };
+        if self
+            .inner
+            .deadline
+            .is_some_and(|deadline| std::time::Instant::now() >= deadline)
+        {
+            return false;
+        }
+        let won = until_deadline(
+            self.inner.deadline,
+            replay.won.get_or_init(|| replay.pending.win()),
+        )
+        .await
+        .copied()
+        .unwrap_or(false);
+        won && self.inner.alive.load(std::sync::atomic::Ordering::Acquire)
+    }
+}
+
+fn same_request(left: &Head, right: &Head) -> bool {
+    fn fields(head: &Head) -> std::collections::BTreeMap<String, Vec<&[u8]>> {
+        let mut fields = std::collections::BTreeMap::<String, Vec<&[u8]>>::new();
+        for (name, value) in &head.fields {
+            fields
+                .entry(name.to_ascii_lowercase())
+                .or_default()
+                .push(value);
+        }
+        fields
+    }
+    left.method == right.method
+        && left.target == right.target
+        && left.authority == right.authority
+        && left.query == right.query
+        && fields(left) == fields(right)
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct RequestBinding {
     conn: u64,
@@ -459,17 +595,31 @@ struct UnitState {
     binding: RequestBinding,
     secret: [u64; 2],
     head: Option<Head>,
+    /// The exact sanitized head accepted by a successful, single-use hand-in.
+    handed_head: Option<Head>,
+    claimed: bool,
+    deadline: Option<std::time::Instant>,
+    alive: Arc<std::sync::atomic::AtomicBool>,
     answers: Vec<Option<Judged>>,
     /// The line's auth names, in list order.
     providers: Vec<String>,
     /// Each position's identity, held until the verdict is fixed in list order.
     identities: Vec<Option<VerifiedIdentity>>,
+    replays: Vec<Option<Arc<ReplayAdmission>>>,
+    replay: Option<Arc<ReplayAdmission>>,
     strips: Vec<Strip>,
     admitted: Option<Admitted>,
     /// The verified credential, zeroised when the unit leaves the table (its drop).
     credential: Option<Secret<String>>,
     /// The governance key the `keys` arm resolved, held until the verdict is fixed.
     resolved: Option<Arc<crate::governance::VirtualKey>>,
+}
+
+impl Drop for UnitState {
+    fn drop(&mut self) {
+        self.alive
+            .store(false, std::sync::atomic::Ordering::Release);
+    }
 }
 
 impl UnitState {
@@ -491,9 +641,15 @@ impl UnitState {
             binding,
             secret,
             head: None,
+            handed_head: None,
+            claimed: false,
+            deadline: None,
+            alive: Arc::new(std::sync::atomic::AtomicBool::new(true)),
             answers: vec![None; providers.len()],
             providers: providers.to_vec(),
             identities: vec![None; providers.len()],
+            replays: vec![None; providers.len()],
+            replay: None,
             strips: Vec::new(),
             admitted: None,
             credential: None,
@@ -508,6 +664,7 @@ impl UnitState {
         match self.fixed() {
             Some(Fixed::Admitted(i)) if self.admitted.is_none() => {
                 if let Some(mut id) = self.identities.get_mut(i).and_then(Option::take) {
+                    self.replay = self.replays.get_mut(i).and_then(Option::take);
                     self.credential = id.credential.take();
                     let provider = self.providers.get(i).cloned().unwrap_or_default();
                     let resolved = if provider == crate::config::KEYS_MODULE {
@@ -522,10 +679,12 @@ impl UnitState {
                     });
                 }
                 self.identities.clear();
+                self.replays.clear();
                 self.resolved = None;
             }
             Some(Fixed::Denied | Fixed::Overloaded) => {
                 self.identities.clear();
+                self.replays.clear();
                 self.resolved = None;
             }
             _ => {}
@@ -570,6 +729,27 @@ struct Table {
     request_auths: HashSet<String>,
 }
 
+struct FramingListener {
+    listener: u64,
+    generation: u64,
+    opening: Option<Arc<Table>>,
+    ended_streams: HashSet<u64>,
+    status: FramingStatus,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum FramingStatus {
+    Active,
+    Detached,
+    Adopting,
+}
+
+struct PendingAdoption {
+    source: busbar_contract::framing_scope::AdoptionSource,
+    id: u64,
+    unit: UnitState,
+}
+
 impl Table {
     /// The line handle `id` names on this list.
     fn line_of(&self, id: u64) -> Option<u32> {
@@ -579,8 +759,13 @@ impl Table {
 
 /// THE INBOUND HANDLE'S KERNEL SIDE: the tables, the unit table, and what the root injected.
 pub struct Inbound {
-    tables: RwLock<HashMap<(u64, u64), Arc<Table>>>,
+    tables: RwLock<HashMap<(u64, u64, u64), Arc<Table>>>,
+    /// Host-registered framing leg and its policy loan until Ready.
+    framing_listeners: Mutex<HashMap<(u64, u64), FramingListener>>,
+    /// Host-granted request policy by (owner, framing, stream).
+    stream_grants: Mutex<HashMap<(u64, u64, u64), (u64, Arc<Table>)>>,
     units: Mutex<HashMap<u64, UnitState>>,
+    adoptions: Mutex<HashMap<(u64, u64), PendingAdoption>>,
     /// The connection each framing's calls named, by (owner, framing).
     framing_conns: Mutex<HashMap<(u64, u64), u64>>,
     /// Each framing's `Peer` verdict, by (owner, generation, framing), at most
@@ -622,8 +807,13 @@ fn still_present(strips: &[Strip], head: &Head) -> bool {
             .iter()
             .any(|(n, _)| n.eq_ignore_ascii_case(&s.name)),
         StripPlace::Query => head.query.as_deref().is_some_and(|q| {
-            q.split('&')
-                .any(|pair| pair.split_once('=').map_or(pair, |(k, _)| k) == s.name)
+            q.split('&').any(|pair| {
+                let key = pair.split_once('=').map_or(pair, |(key, _)| key);
+                let decoded = url::form_urlencoded::parse(key.as_bytes())
+                    .next()
+                    .map(|(key, _)| key);
+                key == s.name || decoded.as_deref() == Some(s.name.as_ref())
+            })
         }),
     })
 }
@@ -713,6 +903,7 @@ struct SignedAnswer {
     answer: VerifyAnswer,
     faulted: bool,
     kinds: Vec<String>,
+    provider: String,
 }
 
 /// Whether a request on `path` is answered by a dialect that signs its requests (the dialect's
@@ -735,13 +926,25 @@ pub fn signed_by_dialect() -> SignedIngress {
 }
 
 /// The request's field lines as a header map (a value that is no header value is left out).
-fn header_map(head: &Head) -> axum::http::HeaderMap {
+struct FieldBytes(zeroize::Zeroizing<Vec<u8>>);
+
+impl AsRef<[u8]> for FieldBytes {
+    fn as_ref(&self) -> &[u8] {
+        self.0.as_slice()
+    }
+}
+
+pub(crate) fn header_map(head: &Head) -> axum::http::HeaderMap {
     let mut headers = axum::http::HeaderMap::new();
     for (n, v) in &head.fields {
         if let (Ok(n), Ok(v)) = (
             axum::http::HeaderName::from_bytes(n.as_bytes()),
-            axum::http::HeaderValue::from_bytes(v),
+            axum::http::HeaderValue::from_maybe_shared(bytes::Bytes::from_owner(FieldBytes(
+                zeroize::Zeroizing::new(v.clone()),
+            ))),
         ) {
+            let mut v = v;
+            v.set_sensitive(true);
             headers.append(n, v);
         }
     }
@@ -800,6 +1003,7 @@ fn signed_then_keys(
                             subject: key.id.clone(),
                             key_id: Some(key.id.clone()),
                             key_name: Some(key.name.clone()),
+                            replay: id.replay,
                             ..VerifiedIdentity::default()
                         }),
                         named,
@@ -839,7 +1043,11 @@ fn keys_judged(
         .iter()
         .map(|c| Strip::field(c.as_str().to_string()))
         .collect();
-    match crate::auth::keys_arm_verdict(gov, candidate.as_deref(), now, None) {
+    let expected_aud = app
+        .planes
+        .admission_for(&head.target)
+        .map(|admission| admission.audience.as_str());
+    match crate::auth::keys_arm_verdict(gov, candidate.as_deref(), now, expected_aud) {
         crate::auth::ChainVerdict::Identified {
             principal,
             resolved,
@@ -865,7 +1073,10 @@ impl Inbound {
     pub fn new(seals: Seals, spawn: Spawn, refused: RefusedSink) -> Arc<Self> {
         Arc::new(Self {
             tables: RwLock::default(),
+            framing_listeners: Mutex::default(),
+            stream_grants: Mutex::default(),
             units: Mutex::default(),
+            adoptions: Mutex::default(),
             peers: Mutex::default(),
             framing_conns: Mutex::default(),
             seals,
@@ -884,6 +1095,21 @@ impl Inbound {
     pub fn install(
         &self,
         owner: u64,
+        generation: u64,
+        listener: Listener,
+    ) -> Result<(), &'static str> {
+        self.install_at(owner, 0, generation, listener)
+    }
+
+    /// Install one host-registered listener's policy, independently of sibling listeners
+    /// served by the same transport instance.
+    ///
+    /// # Errors
+    /// The listener's line ids do not satisfy the same checks as [`Self::install`].
+    pub fn install_at(
+        &self,
+        owner: u64,
+        listener_id: u64,
         generation: u64,
         listener: Listener,
     ) -> Result<(), &'static str> {
@@ -910,7 +1136,7 @@ impl Inbound {
         let mut tables = self.tables.write().unwrap_or_else(PoisonError::into_inner);
         let mut retired = Vec::new();
         let replaced = tables.insert(
-            (owner, generation),
+            (owner, listener_id, generation),
             Arc::new(Table {
                 listener,
                 doors,
@@ -919,8 +1145,8 @@ impl Inbound {
             }),
         );
         retired.extend(replaced);
-        tables.retain(|(o, g), table| {
-            let keep = *o != owner || g.saturating_add(1) >= generation;
+        tables.retain(|(o, listener, g), table| {
+            let keep = *o != owner || *listener != listener_id || g.saturating_add(1) >= generation;
             if !keep {
                 retired.push(Arc::clone(table));
             }
@@ -938,23 +1164,390 @@ impl Inbound {
     }
 
     fn table(&self, owner: u64, generation: u64) -> Option<Arc<Table>> {
+        self.table_at(owner, 0, generation)
+    }
+
+    fn table_at(&self, owner: u64, listener: u64, generation: u64) -> Option<Arc<Table>> {
         self.tables
             .read()
             .unwrap_or_else(PoisonError::into_inner)
-            .get(&(owner, generation))
+            .get(&(owner, listener, generation))
             .cloned()
     }
 
-    /// Only an authenticated continuation may use its retired policy. A new unit must resolve
-    /// through the listener's published tables; a retained Arc alone grants no authority.
+    /// The line specifications of one registered listener.
+    #[must_use]
+    pub fn specs_at(&self, owner: u64, listener: u64, generation: u64) -> Option<Vec<LineSpec>> {
+        self.table_at(owner, listener, generation)
+            .map(|t| t.listener.specs())
+    }
+
+    /// Prune unpinned historical lookup tables across all listeners after publication.
+    /// Active units keep their own policy Arc; an idle listener cannot retain a retired App.
+    pub fn retire_before(&self, generation: u64) {
+        let mut tables = self.tables.write().unwrap_or_else(PoisonError::into_inner);
+        let mut retired = Vec::new();
+        tables.retain(|(_, _, old), table| {
+            if old.saturating_add(1) < generation {
+                retired.push(Arc::clone(table));
+                false
+            } else {
+                true
+            }
+        });
+        drop(tables);
+        drop(retired);
+    }
+
+    /// Retire a listener registration without dropping its policy Apps under the table lock.
+    /// Active units retain their own policy until their normal lifetime ends.
+    pub fn forget_listener(&self, owner: u64, listener: u64) {
+        let mut tables = self.tables.write().unwrap_or_else(PoisonError::into_inner);
+        let mut retired = Vec::new();
+        tables.retain(|(o, l, _), table| {
+            if *o == owner && *l == listener {
+                retired.push(Arc::clone(table));
+                false
+            } else {
+                true
+            }
+        });
+        drop(tables);
+        drop(retired);
+    }
+
+    /// Bind a host-owned framing leg to its registered listener before crossing Begin/Adopt.
+    /// This is a trusted host method, never a field in a transport's service input.
+    ///
+    /// # Errors
+    /// Zero identities, a listener with no installed policy, or an attempt to rebind a leg.
+    pub fn framing_started(
+        &self,
+        owner: u64,
+        listener: u64,
+        framing: u64,
+        generation: u64,
+    ) -> Result<(), &'static str> {
+        if owner == 0 || listener == 0 || framing == 0 {
+            return Err(NO_LIST);
+        }
+        let table = self.table_at(owner, listener, generation).ok_or(NO_LIST)?;
+        let mut held = self
+            .framing_listeners
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        match held.entry((owner, framing)) {
+            std::collections::hash_map::Entry::Vacant(at) => {
+                at.insert(FramingListener {
+                    listener,
+                    generation,
+                    opening: Some(Arc::clone(&table)),
+                    ended_streams: HashSet::new(),
+                    status: FramingStatus::Active,
+                });
+                Ok(())
+            }
+            std::collections::hash_map::Entry::Occupied(at)
+                if at.get().listener == listener
+                    && at.get().generation == generation
+                    && at.get().status == FramingStatus::Active =>
+            {
+                Ok(())
+            }
+            _ => Err(UNIT_FOREIGN),
+        }
+    }
+
+    /// Release the opening policy loan once the host finishes Begin/Adopt.
+    pub fn framing_ready(&self, owner: u64, framing: u64) {
+        let opening = self
+            .framing_listeners
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get_mut(&(owner, framing))
+            .and_then(|binding| binding.opening.take());
+        drop(opening);
+    }
+
+    /// Seal a live source against new admissions while its detached owner retains custody.
+    ///
+    /// # Errors
+    /// The source was never registered, already detached, or ended.
+    pub fn framing_detached(&self, owner: u64, framing: u64) -> Result<(), &'static str> {
+        let mut held = self
+            .framing_listeners
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let source = held.get_mut(&(owner, framing)).ok_or(UNIT_FOREIGN)?;
+        if source.status != FramingStatus::Active {
+            return Err(UNIT_FOREIGN);
+        }
+        source.status = FramingStatus::Detached;
+        Ok(())
+    }
+
+    fn claimed_session(
+        units: &HashMap<u64, UnitState>,
+        source: busbar_contract::framing_scope::AdoptionSource,
+    ) -> Result<(u64, u64, u32, [u64; 2]), &'static str> {
+        let mut matching = units.iter().filter(|(_, unit)| {
+            unit.owner == source.owner
+                && unit.binding.framing == Some(source.leg)
+                && unit.claimed
+                && unit.handed_head.is_some()
+        });
+        let (&id, unit) = matching.next().ok_or(UNIT_FOREIGN)?;
+        if matching.next().is_some()
+            || unit.binding.conn != source.conn
+            || !unit.alive.load(std::sync::atomic::Ordering::Acquire)
+            || unit
+                .replay
+                .as_ref()
+                .is_some_and(|replay| replay.won.get() != Some(&true))
+        {
+            return Err(UNIT_FOREIGN);
+        }
+        Ok((id, unit.generation, unit.line, unit.secret))
+    }
+
+    /// Stage the unique claimed admission on an actual detached host framing. The old unit
+    /// loses service authority immediately; its complete state stays owned until READY or abort.
+    /// No plugin-supplied unit reference participates in this decision.
+    ///
+    /// # Errors
+    /// Missing/ambiguous admission, changed or ended source, reused destination, or MAC failure.
+    pub fn framing_adopting(
+        &self,
+        source: busbar_contract::framing_scope::AdoptionSource,
+        owner: u64,
+        framing: u64,
+    ) -> Result<busbar_contract::framing_scope::SessionTransfer, &'static str> {
+        if owner == 0 || framing == 0 || framing == source.leg || source.conn == 0 {
+            return Err(UNIT_FOREIGN);
+        }
+        let original = {
+            let held = self
+                .framing_listeners
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            let binding = held.get(&(source.owner, source.leg)).ok_or(UNIT_FOREIGN)?;
+            if binding.listener != source.listener || binding.status != FramingStatus::Detached {
+                return Err(UNIT_FOREIGN);
+            }
+            Self::claimed_session(&self.units(), source)?
+        };
+        let (id, generation, line, _) = original;
+        let secret = fresh_secret().ok_or(UNIT_UNMINTED)?;
+        let mac = (self.seals.mac)(&UnitTag {
+            secret,
+            generation,
+            owner,
+            line,
+            unit: id,
+        })
+        .ok_or(UNIT_UNMINTED)?;
+        let mut held = self
+            .framing_listeners
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let binding = held.get(&(source.owner, source.leg)).ok_or(UNIT_FOREIGN)?;
+        if binding.listener != source.listener
+            || binding.status != FramingStatus::Detached
+            || held.contains_key(&(owner, framing))
+        {
+            return Err(UNIT_FOREIGN);
+        }
+        let mut pending = self
+            .adoptions
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if pending.contains_key(&(owner, framing))
+            || pending.values().any(|p| p.source.leg == source.leg)
+        {
+            return Err(UNIT_FOREIGN);
+        }
+        let mut units = self.units();
+        if Self::claimed_session(&units, source)? != original {
+            return Err(UNIT_FOREIGN);
+        }
+        let stream = units.get(&id).ok_or(UNIT_FOREIGN)?.binding.stream;
+        if binding.ended_streams.contains(&stream) {
+            return Err(UNIT_FOREIGN);
+        }
+        let mut unit = units.remove(&id).ok_or(UNIT_FOREIGN)?;
+        unit.owner = owner;
+        unit.secret = secret;
+        pending.insert((owner, framing), PendingAdoption { source, id, unit });
+        held.insert(
+            (owner, framing),
+            FramingListener {
+                listener: source.listener,
+                generation,
+                opening: None,
+                ended_streams: HashSet::new(),
+                status: FramingStatus::Adopting,
+            },
+        );
+        Ok(busbar_contract::framing_scope::SessionTransfer {
+            session: busbar_contract::abi::transport::adopted_session::AdoptedSession {
+                stream,
+                unit: UnitRef { id, mac },
+            },
+            generation,
+        })
+    }
+
+    /// Commit staged custody to the destination's confirmed, nonzero local framing token.
+    /// The original Table, App, identity, credential and replay decision move intact.
+    ///
+    /// # Errors
+    /// Either framing ended, the stage was consumed, or the destination already owns a token.
+    pub fn framing_adopted(&self, owner: u64, framing: u64, conn: u64) -> Result<(), &'static str> {
+        if conn == 0 {
+            return Err(UNIT_FOREIGN);
+        }
+        let mut held = self
+            .framing_listeners
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let destination = held.get(&(owner, framing)).ok_or(UNIT_FOREIGN)?;
+        if destination.status != FramingStatus::Adopting {
+            return Err(UNIT_FOREIGN);
+        }
+        let mut pending = self
+            .adoptions
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let stage = pending.get(&(owner, framing)).ok_or(UNIT_FOREIGN)?;
+        if !held
+            .get(&(stage.source.owner, stage.source.leg))
+            .is_some_and(|source| source.status == FramingStatus::Detached)
+            || destination
+                .ended_streams
+                .contains(&stage.unit.binding.stream)
+        {
+            return Err(UNIT_FOREIGN);
+        }
+        let mut conns = self
+            .framing_conns
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if conns.contains_key(&(owner, framing)) {
+            return Err(CONN_MISMATCH);
+        }
+        let mut units = self.units();
+        if units.contains_key(&stage.id) {
+            return Err(UNIT_FOREIGN);
+        }
+        let mut stage = pending.remove(&(owner, framing)).ok_or(UNIT_FOREIGN)?;
+        stage.unit.binding.conn = conn;
+        stage.unit.binding.framing = Some(framing);
+        units.insert(stage.id, stage.unit);
+        conns.insert((owner, framing), conn);
+        held.get_mut(&(owner, framing)).ok_or(UNIT_FOREIGN)?.status = FramingStatus::Active;
+        Ok(())
+    }
+
+    /// Grant a stream the registered listener's exact published policy before host dispatch.
+    /// Repeating a grant at the same generation preserves its original policy pin.
+    ///
+    /// # Errors
+    /// [`NO_LIST`] for an unknown framing or unavailable policy; [`UNIT_FOREIGN`] for a
+    /// different generation on an already granted stream or a changed framing binding.
+    pub fn grant_stream(
+        &self,
+        owner: u64,
+        framing: u64,
+        stream: u64,
+        generation: u64,
+    ) -> Result<(), &'static str> {
+        let key = (owner, framing, stream);
+        let (listener, opening_generation) = {
+            let held = self
+                .framing_listeners
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            let binding = held.get(&(owner, framing)).ok_or(NO_LIST)?;
+            if binding.status != FramingStatus::Active || binding.ended_streams.contains(&stream) {
+                return Err(UNIT_FOREIGN);
+            }
+            let grants = self
+                .stream_grants
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            if let Some((granted, _)) = grants.get(&key) {
+                return if *granted == generation {
+                    Ok(())
+                } else {
+                    Err(UNIT_FOREIGN)
+                };
+            }
+            (binding.listener, binding.generation)
+        };
+        let table = self.table_at(owner, listener, generation).ok_or(NO_LIST)?;
+        let held = self
+            .framing_listeners
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let binding = held.get(&(owner, framing)).ok_or(NO_LIST)?;
+        if binding.listener != listener
+            || binding.generation != opening_generation
+            || binding.status != FramingStatus::Active
+        {
+            return Err(UNIT_FOREIGN);
+        }
+        if binding.ended_streams.contains(&stream) {
+            return Err(UNIT_FOREIGN);
+        }
+        let mut grants = self
+            .stream_grants
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        match grants.entry(key) {
+            std::collections::hash_map::Entry::Vacant(at) => {
+                at.insert((generation, Arc::clone(&table)));
+                Ok(())
+            }
+            std::collections::hash_map::Entry::Occupied(at) if at.get().0 == generation => Ok(()),
+            _ => Err(UNIT_FOREIGN),
+        }
+    }
+
+    /// A fresh registered request requires a host grant. Only Peer may borrow the opening
+    /// policy before Ready; authenticated continuations retain their unit's policy.
     fn request_table(
         &self,
         owner: u64,
         generation: u64,
         binding: RequestBinding,
         unit: UnitRef,
+        peer: bool,
     ) -> Result<Arc<Table>, &'static str> {
         if unit.is_none() {
+            if let Some(framing) = binding.framing {
+                let held = self
+                    .framing_listeners
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner);
+                if let Some(listener) = held.get(&(owner, framing)) {
+                    if listener.status != FramingStatus::Active {
+                        return Err(UNIT_FOREIGN);
+                    }
+                    if peer && listener.generation == generation {
+                        if let Some(table) = &listener.opening {
+                            return Ok(Arc::clone(table));
+                        }
+                    }
+                    return self
+                        .stream_grants
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .get(&(owner, framing, binding.stream))
+                        .filter(|(granted, _)| *granted == generation)
+                        .map(|(_, table)| Arc::clone(table))
+                        .ok_or(NO_LIST);
+                }
+            }
             return self.table(owner, generation).ok_or(NO_LIST);
         }
         if !self.verified(owner, Some(generation), None, binding, unit) {
@@ -989,6 +1582,69 @@ impl Inbound {
         self.units().get(&unit).and_then(|u| u.admitted.clone())
     }
 
+    /// Claim the successful hand-in for a request emitted by this exact host framing and stream.
+    /// The emitted request must preserve the sanitized method, target, authority, query and
+    /// fields. Field names are case-insensitive; duplicate values keep their order.
+    ///
+    /// # Errors
+    /// Missing or ambiguous hand-in, changed request bytes, reuse, or an ended framing/stream.
+    pub fn claim_request(
+        &self,
+        owner: u64,
+        framing: u64,
+        stream: u64,
+        head: &Head,
+    ) -> Result<RequestAdmission, &'static str> {
+        let held = self
+            .framing_listeners
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let binding = held.get(&(owner, framing)).ok_or(NO_LIST)?;
+        if binding.status != FramingStatus::Active || binding.ended_streams.contains(&stream) {
+            return Err(UNIT_FOREIGN);
+        }
+        let mut units = self.units();
+        let mut matching = units.iter().filter(|(_, unit)| {
+            unit.owner == owner
+                && unit.binding.framing == Some(framing)
+                && unit.binding.stream == stream
+                && !unit.claimed
+                && unit.handed_head.is_some()
+        });
+        let id = *matching.next().ok_or(UNIT_FOREIGN)?.0;
+        if matching.next().is_some() {
+            return Err(UNIT_FOREIGN);
+        }
+        let unit = units.get_mut(&id).ok_or(UNIT_FOREIGN)?;
+        let handed = unit.handed_head.as_ref().ok_or(UNIT_FOREIGN)?;
+        if !same_request(handed, head) {
+            return Err(UNIT_FOREIGN);
+        }
+        let line = unit
+            .table
+            .listener
+            .guests
+            .lines()
+            .get(unit.line as usize)
+            .ok_or(NO_LINE)?;
+        if matches!(line.auth, LineAuth::Chain(..)) && unit.admitted.is_none() {
+            return Err(UNIT_FOREIGN);
+        }
+        let admission = RequestAdmission {
+            inner: Arc::new(AdmittedRequest {
+                table: Arc::clone(&unit.table),
+                admitted: unit.admitted.clone(),
+                original: unit.head.as_ref().unwrap_or(handed).clone(),
+                strips: unit.strips.clone(),
+                replay: unit.replay.clone(),
+                deadline: unit.deadline,
+                alive: Arc::clone(&unit.alive),
+            }),
+        };
+        unit.claimed = true;
+        Ok(admission)
+    }
+
     /// `f` over the credential `unit` was verified from, held on the unit (the `caller-credential`
     /// style's, §6.6); `None` when it holds none.
     pub fn with_credential<R>(&self, unit: u64, f: impl FnOnce(&Secret<String>) -> R) -> Option<R> {
@@ -1006,8 +1662,36 @@ impl Inbound {
 
     /// THE HOST'S END NOTIFICATION: the framing `framing` ended (the loader retired the ticket of
     /// the connection side it drove). Its `Peer` verdict, at every generation and for every owner,
-    /// leaves the table (its credential zeroised), and so does the connection it named.
+    /// leaves the table, along with its opening loan, stream grants, units and connection name.
+    /// All retired policy and credential state is dropped after releasing the guards.
     pub fn framing_ended(&self, framing: u64) {
+        let mut held = self
+            .framing_listeners
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let retired_bindings: Vec<_> = held
+            .extract_if(|(_, f), _| *f == framing)
+            .map(|(_, binding)| binding)
+            .collect();
+        let retired_adoptions: Vec<_> = self
+            .adoptions
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .extract_if(|(_, leg), stage| *leg == framing || stage.source.leg == framing)
+            .map(|(_, stage)| stage)
+            .collect();
+        let retired_grants: Vec<_> = self
+            .stream_grants
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .extract_if(|(_, f, _), _| *f == framing)
+            .map(|(_, grant)| grant)
+            .collect();
+        let retired_units: Vec<_> = self
+            .units()
+            .extract_if(|_, u| u.binding.framing == Some(framing))
+            .map(|(_, u)| u)
+            .collect();
         let retired_peers: Vec<_> = self
             .peers()
             .extract_if(|(_, _, f), _| *f == framing)
@@ -1017,12 +1701,59 @@ impl Inbound {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .retain(|(_, f), _| *f != framing);
-        drop(retired_peers);
+        drop(held);
+        drop((
+            retired_bindings,
+            retired_adoptions,
+            retired_grants,
+            retired_units,
+            retired_peers,
+        ));
+    }
+
+    /// Release one host-ended stream's policy grant and request units outside all guards.
+    pub fn stream_ended(&self, owner: u64, framing: u64, stream: u64) {
+        let mut held = self
+            .framing_listeners
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if let Some(binding) = held.get_mut(&(owner, framing)) {
+            binding.ended_streams.insert(stream);
+        }
+        let retired_grant = self
+            .stream_grants
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&(owner, framing, stream));
+        let retired_units: Vec<_> = self
+            .units()
+            .extract_if(|_, unit| {
+                unit.owner == owner
+                    && unit.binding.framing == Some(framing)
+                    && unit.binding.stream == stream
+            })
+            .map(|(_, unit)| unit)
+            .collect();
+        drop(held);
+        drop((retired_grant, retired_units));
     }
 
     /// The connection a framing's calls name: the first call's, and every later call must name the
     /// same ([`CONN_MISMATCH`]).
-    fn same_conn(&self, owner: u64, framing: u64, conn: u64) -> Result<(), &'static str> {
+    fn same_conn(
+        &self,
+        owner: u64,
+        generation: u64,
+        framing: u64,
+        conn: u64,
+    ) -> Result<(), &'static str> {
+        let held = self
+            .framing_listeners
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if !held.contains_key(&(owner, framing)) && self.table(owner, generation).is_none() {
+            return Err(NO_LIST);
+        }
         let mut conns = self
             .framing_conns
             .lock()
@@ -1085,10 +1816,38 @@ impl Inbound {
                     }
                     state.answers[index] = answer;
                     state.identities[index] = peer.identities.get(index).cloned().flatten();
+                    state.replays[index] = peer.replays.get(index).cloned().flatten();
                 }
             }
         }
         state.settle();
+        // End and mint serialize at the framing registry. A policy cloned before teardown
+        // grants no authority to insert a unit after its framing or stream has ended.
+        let held = self
+            .framing_listeners
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if let Some(framing) = binding.framing {
+            match held.get(&(owner, framing)) {
+                Some(listener) => {
+                    if listener.status != FramingStatus::Active
+                        || listener.ended_streams.contains(&binding.stream)
+                        || !self
+                            .stream_grants
+                            .lock()
+                            .unwrap_or_else(PoisonError::into_inner)
+                            .get(&(owner, framing, binding.stream))
+                            .is_some_and(|(g, policy)| {
+                                *g == generation && Arc::ptr_eq(policy, &state.table)
+                            })
+                    {
+                        return Err(UNIT_FOREIGN);
+                    }
+                }
+                None if self.table(owner, generation).is_some() => {}
+                None => return Err(UNIT_FOREIGN),
+            }
+        }
         self.units().insert(unit, state);
         Ok(UnitRef { id: unit, mac })
     }
@@ -1102,6 +1861,18 @@ impl Inbound {
         binding: RequestBinding,
         r: UnitRef,
     ) -> bool {
+        let held = self
+            .framing_listeners
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if let Some(framing) = binding.framing {
+            if held.get(&(owner, framing)).is_some_and(|listener| {
+                listener.status != FramingStatus::Active
+                    || listener.ended_streams.contains(&binding.stream)
+            }) {
+                return false;
+            }
+        }
         let units = self.units();
         let Some(u) = units.get(&r.id) else {
             return false;
@@ -1159,9 +1930,10 @@ impl Inbound {
     /// the connection's verdict opened), then the walk.
     fn prepare(
         self: &Arc<Self>,
-        call: Call,
+        mut call: Call,
     ) -> Result<impl Future<Output = Result<Answer, &'static str>> + Send + 'static, &'static str>
     {
+        let body = call.body.take().map(zeroize::Zeroizing::new);
         let binding = RequestBinding {
             conn: call.conn,
             stream: call.stream,
@@ -1169,12 +1941,9 @@ impl Inbound {
         };
         // Peer calls cannot continue a request unit. Resolve their listener policy first;
         // the Peer rule below rejects any supplied unit before an auth can run.
-        let policy_unit = if AuthPoint::from_bit(call.point) == Some(AuthPoint::Peer) {
-            UnitRef::NONE
-        } else {
-            call.unit
-        };
-        let table = self.request_table(call.owner, call.generation, binding, policy_unit)?;
+        let peer = AuthPoint::from_bit(call.point) == Some(AuthPoint::Peer);
+        let policy_unit = if peer { UnitRef::NONE } else { call.unit };
+        let table = self.request_table(call.owner, call.generation, binding, policy_unit, peer)?;
         let line_ix = table.line_of(call.auth).ok_or(NO_LINE)?;
         let line = table
             .listener
@@ -1192,18 +1961,26 @@ impl Inbound {
         // THE PEER POINT (l.973-978; the Peer rule): once per connection, before any head; no unit,
         // and its answer is continue or stop alone, with no name beside it.
         let peer = point == AuthPoint::Peer;
-        if peer && (!call.unit.is_none() || call.body.is_some() || !call.head.is_empty()) {
+        if peer && (!call.unit.is_none() || body.is_some() || !call.head.is_empty()) {
             return Err(PEER_BYTES);
         }
-        if call
-            .body
+        if body
             .as_ref()
             .is_some_and(|b| b.len() as u64 > table.listener.body_limit)
         {
             return Err(OVER_GATE);
         }
-        self.same_conn(call.owner, call.framing, call.conn)?;
+        self.same_conn(call.owner, call.generation, call.framing, call.conn)?;
         let (target, unit) = if peer {
+            let held = self
+                .framing_listeners
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            if !held.contains_key(&(call.owner, call.framing))
+                && self.table(call.owner, call.generation).is_none()
+            {
+                return Err(NO_LIST);
+            }
             let key = (call.owner, call.generation, call.framing);
             let mut peers = self.peers();
             if !peers.contains_key(&key) && peers.len() >= PEER_CONNECTIONS_MAX {
@@ -1250,6 +2027,7 @@ impl Inbound {
                 return Err(UNIT_FOREIGN);
             };
             if let Some(u) = self.units().get_mut(&unit.id) {
+                u.deadline = call.deadline;
                 if u.head.is_none() {
                     u.head = Some(call.head.clone());
                 }
@@ -1278,7 +2056,7 @@ impl Inbound {
         };
         let me = Arc::clone(self);
         let deadline = call.deadline;
-        let (head, body, conn) = (call.head, call.body, call.conn);
+        let (head, conn) = (call.head, call.conn);
         Ok(async move {
             for p in positions {
                 let undecided = me
@@ -1296,7 +2074,7 @@ impl Inbound {
                 if deadline.is_some_and(|d| std::time::Instant::now() >= d) {
                     // The op the call was made for is past its deadline: no verify runs, and the
                     // position answers no verdict (a deny, fail closed).
-                    me.record(target, p.index, Judging::Nothing, &table);
+                    me.record(target, p.index, &p.provider, Judging::Nothing, &table);
                     break;
                 }
                 let calls = match &p.kind {
@@ -1308,12 +2086,13 @@ impl Inbound {
                         // request carrying a host-held credential verifier's lines is verified by
                         // it over the whole body, before the token path.
                         let app = &table.listener.app;
-                        let reader = (table.listener.signed_ingress)(app, &head.target)
-                            .then(|| app.auth.signed_reader(&header_map(&head)))
-                            .flatten();
+                        let reader = (app.planes.admission_for(&head.target).is_none()
+                            && (table.listener.signed_ingress)(app, &head.target))
+                        .then(|| app.auth.signed_reader(&header_map(&head)))
+                        .flatten();
                         let signed = match reader {
                             None => None,
-                            Some((calls, kinds)) => {
+                            Some((provider, calls, kinds)) => {
                                 let unit_id = match target {
                                     Target::Unit(u) => u,
                                     Target::Peer(_) => 0,
@@ -1323,27 +2102,40 @@ impl Inbound {
                                     AuthPoint::HeadBody,
                                     conn,
                                     unit_id,
-                                    Some(body.as_deref().unwrap_or_default()),
+                                    Some(body.as_ref().map_or(&[], |b| b.as_slice())),
                                 );
                                 let mut verifying = calls.verify(req);
                                 let Some(answer) = until_deadline(deadline, &mut verifying).await
                                 else {
-                                    me.record(target, p.index, Judging::Nothing, &table);
+                                    me.record(
+                                        target,
+                                        p.index,
+                                        &p.provider,
+                                        Judging::Nothing,
+                                        &table,
+                                    );
                                     break;
                                 };
                                 Some(SignedAnswer {
                                     faulted: verifying.faulted(),
                                     answer,
                                     kinds,
+                                    provider,
                                 })
                             }
                         };
-                        me.record(target, p.index, Judging::Keys(&head, signed), &table);
+                        me.record(
+                            target,
+                            p.index,
+                            &p.provider,
+                            Judging::Keys(&head, signed),
+                            &table,
+                        );
                         continue;
                     }
                     PositionKind::Plugin(None) => {
                         // A line naming an auth the generation did not open: fail closed.
-                        me.record(target, p.index, Judging::Nothing, &table);
+                        me.record(target, p.index, &p.provider, Judging::Nothing, &table);
                         continue;
                     }
                     PositionKind::Plugin(Some(calls)) => Arc::clone(calls),
@@ -1355,7 +2147,13 @@ impl Inbound {
                     Target::Unit(u) => u,
                     Target::Peer(_) => 0,
                 };
-                let req = verify_request(&head, point, conn, unit_id, body.as_deref());
+                let req = verify_request(
+                    &head,
+                    point,
+                    conn,
+                    unit_id,
+                    body.as_ref().map(|b| b.as_slice()),
+                );
                 let mut verifying = calls.verify(req);
                 let answer = until_deadline(deadline, &mut verifying).await;
                 let judging = match answer {
@@ -1366,26 +2164,7 @@ impl Inbound {
                     Some(a) => Judging::Answer(a),
                     None => Judging::Nothing,
                 };
-                // THE REPLAY CLAIM, awaited through the store before the verdict is recorded: an
-                // identity whose claim is already taken (or cannot be claimed) is a deny.
-                let judging = match judging {
-                    Judging::Answer(mut a) => {
-                        let replay = match &a.verified {
-                            Verified::Identity(id) => id.replay.clone(),
-                            _ => None,
-                        };
-                        if let Some(r) = replay {
-                            let gov = table.listener.app.governance.as_deref();
-                            let now = crate::store::now();
-                            if !crate::auth::replay_claimed(gov, &p.provider, &r, now).await {
-                                a.verified = Verified::Reject;
-                            }
-                        }
-                        Judging::Answer(a)
-                    }
-                    other => other,
-                };
-                me.record(target, p.index, judging, &table);
+                me.record(target, p.index, &p.provider, judging, &table);
             }
             let (flow, strips) = me
                 .with_state(target, |u| {
@@ -1406,9 +2185,21 @@ impl Inbound {
     /// rule, the lines it named, and, once the verdict is fixed in list order on an identity, that
     /// identity, its credential taken out of it, and for the `keys` arm the governance key it
     /// resolved.
-    fn record(&self, target: Target, index: usize, judging: Judging<'_>, table: &Table) {
+    fn record(
+        &self,
+        target: Target,
+        index: usize,
+        provider: &str,
+        judging: Judging<'_>,
+        table: &Table,
+    ) {
         let gov = table.listener.app.governance.as_deref();
         let now = crate::store::now();
+        let replay_provider = match &judging {
+            Judging::Keys(_, Some(signed)) => signed.provider.as_str(),
+            _ => provider,
+        }
+        .to_owned();
         let (judged, identity, strips, resolved) = match judging {
             Judging::Nothing => (Judged::Denied, None, Vec::new(), None),
             Judging::Keys(head, signed) => {
@@ -1416,7 +2207,7 @@ impl Inbound {
             }
             Judging::Answer(a) => {
                 let (judged, identity) = match a.verified {
-                    // The replay claim was made before the answer was recorded.
+                    // The final admission gate claims replay only after every deny decision.
                     Verified::Identity(id) => (Judged::Identity, Some(id)),
                     Verified::Pass => (Judged::Pass, None),
                     Verified::Reject | Verified::Failed => (Judged::Denied, None),
@@ -1425,6 +2216,20 @@ impl Inbound {
                 (judged, identity, a.strips, None)
             }
         };
+        let replay = identity.as_ref().and_then(|id| {
+            crate::auth::PendingClaim::for_identity(
+                &replay_provider,
+                id,
+                table.listener.app.governance.clone(),
+                now,
+            )
+            .map(|pending| {
+                Arc::new(ReplayAdmission {
+                    pending,
+                    won: tokio::sync::OnceCell::new(),
+                })
+            })
+        });
         self.with_state(target, |u| {
             for s in strips {
                 if !u.strips.contains(&s) {
@@ -1436,6 +2241,9 @@ impl Inbound {
             }
             if let Some(slot) = u.identities.get_mut(index) {
                 *slot = identity;
+            }
+            if let Some(slot) = u.replays.get_mut(index) {
+                *slot = replay;
             }
             if resolved.is_some() {
                 u.resolved = resolved;
@@ -1456,14 +2264,26 @@ impl Inbound {
     /// [`NO_LIST`] for a listener the kernel holds no list for; [`UNIT_FOREIGN`] for a presented
     /// unit it did not mint for this owner; [`UNIT_UNMINTED`] when no unit could be minted.
     pub fn hand_in(&self, h: HandIn) -> Result<(u32, UnitRef), &'static str> {
+        self.hand_in_with_deadline(h, None)
+    }
+
+    /// Hand in a request with its actual host operation deadline for the final replay claim.
+    ///
+    /// # Errors
+    /// The same ownership and admission failures as [`Self::hand_in`].
+    pub fn hand_in_with_deadline(
+        &self,
+        h: HandIn,
+        deadline: Option<std::time::Instant>,
+    ) -> Result<(u32, UnitRef), &'static str> {
         let binding = RequestBinding {
             conn: h.conn,
             stream: h.stream,
             framing: h.framing,
         };
-        let table = self.request_table(h.owner, h.generation, binding, h.unit)?;
+        let table = self.request_table(h.owner, h.generation, binding, h.unit, false)?;
         if let Some(f) = h.framing {
-            self.same_conn(h.owner, f, h.conn)?;
+            self.same_conn(h.owner, h.generation, f, h.conn)?;
         }
         let lines = table.listener.guests.lines();
         let unit = if h.unit.is_none() {
@@ -1489,8 +2309,17 @@ impl Inbound {
         } else {
             FLOW_STOP
         };
-        if let Some(u) = self.units().get_mut(&unit.id) {
-            u.head = Some(h.head);
+        let mut units = self.units();
+        let u = units.get_mut(&unit.id).ok_or(UNIT_FOREIGN)?;
+        if u.head.is_none() {
+            u.head = Some(h.head.clone());
+        }
+        if flow == FLOW_CONTINUE {
+            if u.handed_head.is_some() || u.claimed {
+                return Err(UNIT_FOREIGN);
+            }
+            u.handed_head = Some(h.head);
+            u.deadline = deadline;
         }
         Ok((flow, unit))
     }
@@ -1526,6 +2355,14 @@ impl Inbound {
         if u.line != h.line || u.generation != h.generation {
             return false;
         }
+        if let Some(original) = &u.head {
+            if !original
+                .stripped(&u.strips)
+                .is_some_and(|original| same_request(&original, &h.head))
+            {
+                return false;
+            }
+        }
         // (b) unless the line's auth is none, a first-hand identity from that line's auth.
         if matches!(line.auth, LineAuth::Chain(..))
             && !matches!(u.fixed(), Some(Fixed::Admitted(_)))
@@ -1554,6 +2391,7 @@ impl Inbound {
                 framing: r.framing,
             },
             r.unit,
+            false,
         )?;
         let line = if r.cause == REFUSE_NO_ROUTE {
             None

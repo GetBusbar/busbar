@@ -390,6 +390,17 @@ pub struct UnitSecret {
     pub line: u32,
 }
 
+/// An immutable policy loan selected by the serving host, never by a transport.
+#[derive(Debug, Clone)]
+pub struct StreamPolicy {
+    /// The actual listener, generation and route rows.
+    pub policy: Arc<busbar_contract::abi::transport::guest_policy::Policy>,
+    /// The full policy extension, encoded once per generation.
+    pub full: Arc<[u8]>,
+    /// The small unchanged-policy acknowledgement extension.
+    pub current: Arc<[u8]>,
+}
+
 /// THE KERNEL'S SIDE OF THE HOST AUTH HANDLE (THE DESIGN §6, "Auth points and guest lists", step 4;
 /// Part 2 #65, #74), as the loader calls it. The composition root installs one on the dispatcher
 /// ([`Dispatcher::install_auth_handle`](super::Dispatcher::install_auth_handle)) over the kernel's
@@ -410,12 +421,93 @@ pub trait AuthHandleHost: Send + Sync {
     /// The kernel serves no list for the caller, or holds no record of its unit.
     fn hand_in(&self, ask: HandInAsk) -> Result<(u32, UnitRef), &'static str>;
 
+    /// Hand in with the remaining deadline of the actual host operation, outside the C frame.
+    ///
+    /// # Errors
+    /// The same failures as [`Self::hand_in`].
+    fn hand_in_with_deadline(
+        &self,
+        ask: HandInAsk,
+        _deadline: Option<std::time::Duration>,
+    ) -> Result<(u32, UnitRef), &'static str> {
+        self.hand_in(ask)
+    }
+
     /// `unit.refuse`: the refusal's bytes, or REFUSED with the text. Never pends.
     ///
     /// # Errors
     ///
     /// The kernel serves no list for the caller, or the cause names no line it holds.
     fn refuse(&self, ask: RefuseAsk) -> Result<RefusalBytes, &'static str>;
+
+    /// Register a host-owned listener/framing binding before Begin or Adopt crosses the door.
+    /// This is host metadata and is never a transport-supplied service argument.
+    ///
+    /// # Errors
+    /// The serving host refuses the listener or an attempted framing rebind.
+    fn framing_started(
+        &self,
+        _owner: u64,
+        _listener: u64,
+        _framing: u64,
+    ) -> Result<Option<StreamPolicy>, &'static str> {
+        Ok(None)
+    }
+
+    /// The concrete serving host requires a trusted framing and per-stream policy grant.
+    fn requires_scope(&self) -> bool {
+        false
+    }
+
+    /// Select and pin the listener policy for one new stream before matching or auth.
+    ///
+    /// # Errors
+    /// The framing/listener is unknown or the stream already belongs to another policy.
+    fn stream_open(
+        &self,
+        _owner: u64,
+        _listener: u64,
+        _framing: u64,
+        _stream: u64,
+    ) -> Result<StreamPolicy, &'static str> {
+        Err("the host serves no stream policy")
+    }
+
+    /// Release a stream's grant and request state after its host lifetime ends.
+    fn stream_ended(&self, _owner: u64, _framing: u64, _stream: u64) {}
+
+    /// Begin completed; its initial policy pin can retire independently of stream grants.
+    fn framing_ready(&self, _owner: u64, _framing: u64) {}
+
+    /// Seal a detached source against new admissions without retiring its units.
+    ///
+    /// # Errors
+    /// The source is not a live registered framing.
+    fn framing_detached(&self, _owner: u64, _framing: u64) -> Result<(), &'static str> {
+        Err("the host cannot detach an admitted session")
+    }
+
+    /// Move a unique host-claimed admission into staged destination custody.
+    /// No unit reference supplied by a plugin authorizes this operation.
+    ///
+    /// # Errors
+    /// Missing, ambiguous or ended source admission, or an already used destination.
+    fn framing_adopting(
+        &self,
+        _source: busbar_contract::framing_scope::AdoptionSource,
+        _owner: u64,
+        _framing: u64,
+    ) -> Result<busbar_contract::framing_scope::SessionTransfer, &'static str> {
+        Err("the host cannot transfer an admitted session")
+    }
+
+    /// Commit staged custody to the adopting framer's READY token.
+    ///
+    /// # Errors
+    /// The staged source or destination ended before confirmation.
+    fn framing_adopted(&self, _owner: u64, _framing: u64, _conn: u64) -> Result<(), &'static str> {
+        Err("the host has no staged session")
+    }
 
     /// THE FRAMING ENDED: the loader retired the ticket `framing` names (the connection side it
     /// drove was dropped). Everything the kernel holds for that framing goes.

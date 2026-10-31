@@ -2159,6 +2159,22 @@ impl Dispatcher {
         )
     }
 
+    /// Create a destination leg from the trusted custody of a detached source.
+    ///
+    /// # Errors
+    /// The source cannot be inherited by this loaded owner.
+    pub fn adopting_context(
+        &self,
+        owner: u64,
+        source: Arc<dyn busbar_contract::framing_scope::FramingScope>,
+    ) -> Result<Arc<super::framing_context::FramingContext>, &'static str> {
+        super::framing_context::FramingContext::adopt(
+            owner,
+            source,
+            self.pool.env.auth.get().map(Arc::downgrade),
+        )
+    }
+
     /// A ticket for ops driven INLINE on the calling thread ([`super::inline`]): one per side of a
     /// carrier's connection. `None` when every inline slot is held.
     #[must_use]

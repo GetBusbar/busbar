@@ -649,9 +649,7 @@ fn mount_plane_route(
         path,
         method,
         auth,
-        move |axum::extract::State(handle): axum::extract::State<
-            std::sync::Arc<state::AppHandle>,
-        >,
+        move |state::CurrentApp(app): state::CurrentApp,
               // Kept for its rejection alone (a capture that is not UTF-8 is refused before the
               // handler, as it always was); no handler reads the captures.
               _: axum::extract::RawPathParams,
@@ -680,7 +678,7 @@ fn mount_plane_route(
             let slot = slot.clone();
             let ctx_path = ctx_path.clone();
             async move {
-                let engine: std::sync::Arc<dyn std::any::Any + Send + Sync> = handle;
+                let engine: std::sync::Arc<dyn std::any::Any + Send + Sync> = app;
                 let ctx = busbar_kernel::plane_routes::PlaneReqCtx {
                     path: ctx_path,
                     uri,

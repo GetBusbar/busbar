@@ -85,3 +85,54 @@ fn invalid_route_handle_line_and_body_point_pairs_are_refused_before_encoding() 
     bad.fields[0].0 = u32::MAX;
     assert!(encode(17, 3, &[bad]).is_err());
 }
+
+#[test]
+fn openings_and_unchanged_policy_replies_are_exact_versioned_values() {
+    for open in [
+        Open {
+            stream: 0,
+            known_generation: 0,
+        },
+        Open {
+            stream: u64::MAX,
+            known_generation: u64::MAX,
+        },
+    ] {
+        let bytes = open.encode();
+        assert_eq!(Open::decode(&bytes).unwrap(), open);
+        for end in 0..bytes.len() {
+            assert!(Open::decode(&bytes[..end]).is_err());
+        }
+        let mut extra = bytes.to_vec();
+        extra.push(0);
+        assert!(Open::decode(&extra).is_err());
+    }
+    let identity = Identity {
+        listener: 17,
+        generation: 3,
+    };
+    assert_eq!(
+        Identity::decode(&identity.encode().unwrap()).unwrap(),
+        identity
+    );
+    assert!(Identity {
+        listener: 0,
+        generation: 3
+    }
+    .encode()
+    .is_err());
+    assert!(Identity {
+        listener: 17,
+        generation: 0
+    }
+    .encode()
+    .is_err());
+    assert!(Identity::decode(
+        &Open {
+            stream: 0,
+            known_generation: 3
+        }
+        .encode()
+    )
+    .is_err());
+}

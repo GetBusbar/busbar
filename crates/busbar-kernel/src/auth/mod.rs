@@ -290,6 +290,14 @@ impl std::fmt::Debug for PendingClaim {
 }
 
 impl PendingClaim {
+    pub(crate) fn for_identity(
+        provider: &str,
+        identity: &busbar_contract::auth_calls::VerifiedIdentity,
+        gov: Option<std::sync::Arc<crate::governance::GovState>>,
+        now: u64,
+    ) -> Option<Self> {
+        Self::of(ReplayClaim::of(provider, identity.replay.clone(), now), gov)
+    }
     fn of(
         claim: Option<ReplayClaim>,
         gov: Option<std::sync::Arc<crate::governance::GovState>>,
@@ -369,7 +377,7 @@ fn strike_named(req: &mut Request<Body>, consumed: &mut ConsumedCredentials, str
 
 /// `uri` without the query pairs whose key is one of `keys` — matched case-sensitively, as sent or
 /// percent-decoded — every other pair kept byte for byte, in order; `None` when no pair goes.
-fn without_query_keys(uri: &axum::http::Uri, keys: &[&str]) -> Option<axum::http::Uri> {
+pub(crate) fn without_query_keys(uri: &axum::http::Uri, keys: &[&str]) -> Option<axum::http::Uri> {
     let query = uri.query()?;
     let named = |pair: &&str| {
         let key = pair.split_once('=').map_or(*pair, |(k, _)| k);
@@ -1095,14 +1103,17 @@ impl AuthMiddleware {
     pub(crate) fn signed_reader(
         &self,
         headers: &HeaderMap,
-    ) -> Option<(std::sync::Arc<dyn AuthCalls>, Vec<String>)> {
+    ) -> Option<(String, std::sync::Arc<dyn AuthCalls>, Vec<String>)> {
         if !self.keys_in_chain {
             return None;
         }
-        self.readers
-            .iter()
-            .find(|r| r.carried(headers))
-            .map(|r| (std::sync::Arc::clone(&r.calls), r.kinds.clone()))
+        self.readers.iter().find(|r| r.carried(headers)).map(|r| {
+            (
+                r.name.clone(),
+                std::sync::Arc::clone(&r.calls),
+                r.kinds.clone(),
+            )
+        })
     }
 
     /// THE POINT SET OF THE DATA CHAIN'S POSITION `provider` (THE DESIGN §6, "Auth points and
@@ -1489,7 +1500,7 @@ pub(crate) fn keys_arm_verdict(
 /// label, no roles (a vkey is a direct grant, not a group membership resolved through
 /// role_bindings). Shared by the bearer `keys` arm and the ingress-protocol AWS SigV4
 /// request-signing pre-step so both attach an identical principal.
-fn principal_from_vkey(key: &crate::governance::VirtualKey) -> Principal {
+pub(crate) fn principal_from_vkey(key: &crate::governance::VirtualKey) -> Principal {
     Principal {
         id: key.id.clone(),
         name: Some(key.name.clone()),
@@ -2390,6 +2401,13 @@ pub(crate) async fn auth_middleware(
     mut req: Request<Body>,
     next: Next,
 ) -> Result<Response, Response> {
+    let inbound = req
+        .extensions()
+        .get::<crate::inbound::RequestAdmission>()
+        .cloned();
+    let inbound_headers = inbound
+        .as_ref()
+        .map(|admission| crate::inbound::header_map(&admission.inner.original));
     // Clone the path so no immutable borrow of `req` is held while we later mutate its extensions.
     // Stage timer for the middleware's OWN work; taken (recording) before every `next.run` below so
     // downstream handler time is never attributed to auth. No-op unless `BUSBAR_PROFILE` is set.
@@ -2469,7 +2487,9 @@ pub(crate) async fn auth_middleware(
     // caller used, in that style's order (`carried`). This single value drives BOTH the static-allowlist
     // check and the governance virtual-key lookup, so every scheme is validated identically and in
     // constant time. Replaces the previous Bearer-only `bearer_token`.
-    let client_token: Option<String> = app.auth.extract_client_token(req.headers());
+    let client_token: Option<String> = app
+        .auth
+        .extract_client_token(inbound_headers.as_ref().unwrap_or_else(|| req.headers()));
     // RFC 9449 SENDER CONSTRAINT, on the data plane only (`auth::dpop`). A request that is neither
     // a DPoP presentation nor a bound bearer is `Unconstrained` and nothing below changes for it.
     let mut dpop_proven = false;
@@ -2483,7 +2503,7 @@ pub(crate) async fn auth_middleware(
             &app,
             req.method(),
             &path,
-            req.headers(),
+            inbound_headers.as_ref().unwrap_or_else(|| req.headers()),
             client_token.as_deref(),
             &mut read,
         )
@@ -2542,7 +2562,7 @@ pub(crate) async fn auth_middleware(
             &app,
             req.method().as_str(),
             target,
-            req.headers(),
+            inbound_headers.as_ref().unwrap_or_else(|| req.headers()),
             false,
             true,
             &mut strips,
@@ -2712,14 +2732,17 @@ pub(crate) async fn auth_middleware(
     // 3b A and B, and 2026-10-17), looked up by the raw path whatever the verb.
     let ingress_signed = core_routes.signed_ingress(&path);
     // The lines the chain's positions named for the transport, struck once the request is admitted.
-    let mut strips = Vec::new();
+    let mut strips = inbound
+        .as_ref()
+        .map_or_else(Vec::new, |admission| admission.inner.strips.clone());
     // The pre-step is CONFINED TO THE RESIDUAL PLANE (`admission.is_none()`). An audience-bound
     // plane admits bearer tokens only: a signed request produces an identity with no audience
     // anywhere in it, so allowing it here would be a second door into an audience-bound plane that
     // the RFC 8707 check does not stand behind.
-    let reader = (admission.is_none() && app.auth.keys_in_chain && ingress_signed)
-        .then(|| app.auth.readers.iter().find(|r| r.carried(req.headers())))
-        .flatten();
+    let reader =
+        (inbound.is_none() && admission.is_none() && app.auth.keys_in_chain && ingress_signed)
+            .then(|| app.auth.readers.iter().find(|r| r.carried(req.headers())))
+            .flatten();
     // The verified identity's replay claim, UNWON until the gate's last deny decision is made.
     let mut pending: Option<PendingClaim> = None;
     let signed = match reader {
@@ -2863,14 +2886,18 @@ pub(crate) async fn auth_middleware(
                 }
             }
         }
-        let (judged, named, claim) = AuthMiddleware::judge_chain_on_request_path_naming(
-            &app.auth,
-            client_token.clone(),
-            ChainHead::of(&req),
-            app.governance.clone(),
-            admission.as_ref().map(|a| a.audience.clone()),
-        )
-        .await;
+        let (judged, named, claim) = if let Some(admission) = &inbound {
+            (Ok(admission.verdict()), Vec::new(), None)
+        } else {
+            AuthMiddleware::judge_chain_on_request_path_naming(
+                &app.auth,
+                client_token.clone(),
+                ChainHead::of(&req),
+                app.governance.clone(),
+                admission.as_ref().map(|a| a.audience.clone()),
+            )
+            .await
+        };
         match judged {
             Ok(verdict) => {
                 // The union (THE DESIGN §6.3): a signed-request verifier that PASSed named its
@@ -2898,7 +2925,14 @@ pub(crate) async fn auth_middleware(
     // identity, before the request reaches budget, rate admission or the plane. A refused request
     // claims nothing; a claim lost is the refusal a denied chain answers.
     let resolved = match resolve_data_plane_identity(&app, verdict) {
-        Ok(admitted) if claim_won(pending.as_ref()).await => Ok(admitted),
+        Ok(admitted)
+            if match &inbound {
+                Some(admission) => admission.claim_replay().await,
+                None => claim_won(pending.as_ref()).await,
+            } =>
+        {
+            Ok(admitted)
+        }
         Ok(_) => Err(IdentityRefusal::Denied),
         Err(refused) => Err(refused),
     };

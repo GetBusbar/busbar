@@ -135,6 +135,8 @@ pub struct Dispatched {
     accepts: bool,
     /// Its Statement states it renders sealed values (TSEAL, `abi::transport::EXT_SEALED_VALUES`).
     seals: bool,
+    /// Its Adopt consumes the host's admitted-session extension.
+    adopts_session: bool,
     on: Arc<Dispatcher>,
 }
 
@@ -337,6 +339,7 @@ impl Dispatched {
             facts,
             accepts,
             seals: stated.seals,
+            adopts_session: stated.adopts_session,
             on,
         })
     }
@@ -403,6 +406,28 @@ fn go_inline<I: InFrame, O: OutFrame>(
 }
 
 impl FramerDoor for Dispatched {
+    fn adopting_context(
+        &self,
+        source: Arc<dyn busbar_contract::framing_scope::FramingScope>,
+    ) -> Result<
+        Option<Arc<dyn busbar_contract::framing_scope::FramingScope>>,
+        busbar_core_connector::framer::Refused,
+    > {
+        if source.listener() != 0 && !self.adopts_session {
+            return Err(busbar_core_connector::framer::Refused {
+                outcome: Outcome::Refused,
+                error: "the transport does not consume inherited host sessions".into(),
+            });
+        }
+        self.on
+            .adopting_context(self.live.plugin.instance().0, source)
+            .map(|c| Some(c as Arc<dyn busbar_contract::framing_scope::FramingScope>))
+            .map_err(|error| busbar_core_connector::framer::Refused {
+                outcome: Outcome::Refused,
+                error: error.into(),
+            })
+    }
+
     fn framing_context(
         &self,
         listener: u64,

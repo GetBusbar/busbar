@@ -292,6 +292,7 @@ impl RsaKey {
 /// both PROVISIONED BY CONFIG (`oauth_as.clients:`), which is how a deployment gets one: RFC 7591
 /// registration cannot carry a key.
 struct Subject {
+    app: Arc<busbar_kernel::state::App>,
     origin: String,
     client: reqwest::Client,
     /// `CLIENT_ID`'s registered key.
@@ -344,6 +345,7 @@ async fn serve(fapi2: bool) -> Subject {
         axum::serve(listener, router).await.expect("serve");
     });
     Subject {
+        app,
         origin,
         client: reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
@@ -1073,6 +1075,242 @@ async fn a_dpop_bound_token_reaches_the_resource_with_its_proof() {
             "`{scheme}` with a valid proof is admitted"
         );
     }
+}
+
+/// The IdP position is the existing stand-in, with an assertion that inbound lent the actual
+/// default candidate. The real AS seam verifies the proof; this is not a JWT-chain certification.
+struct InboundCandidate {
+    calls: Arc<dyn busbar_contract::auth_calls::AuthCalls>,
+    expected: busbar_contract::redacted::Secret<Vec<u8>>,
+    seen: AtomicU64,
+}
+
+impl busbar_contract::auth_calls::AuthCalls for InboundCandidate {
+    fn name(&self) -> &str {
+        "inbound-candidate"
+    }
+    fn facts(&self) -> u32 {
+        self.calls.facts()
+    }
+    fn verify_now(
+        &self,
+        request: &busbar_contract::auth_calls::VerifyRequest,
+    ) -> Option<busbar_contract::auth_calls::VerifyAnswer> {
+        self.calls.verify_now(request)
+    }
+    fn verify(
+        &self,
+        request: busbar_contract::auth_calls::VerifyRequest,
+    ) -> Box<dyn busbar_contract::auth_calls::Verifying> {
+        assert_eq!(
+            request.credential.as_ref(),
+            Some(&self.expected),
+            "the original candidate reaches the IdP verifier"
+        );
+        self.seen.fetch_add(1, Ordering::SeqCst);
+        self.calls.verify(request)
+    }
+    fn refresh(&self) -> Result<u64, String> {
+        self.calls.refresh()
+    }
+}
+
+async fn resource_after_inbound(s: &Subject, token: &str, scheme: &str, proofs: &[String]) -> u16 {
+    use busbar_contract::abi::auth::{AuthPoints, POINT_HEAD};
+    use busbar_contract::abi::host::service::{UnitRef, FLOW_CONTINUE};
+    use busbar_contract::abi::transport::route::{METHOD_GET, PATH_EXACT};
+    use busbar_kernel::guest::{Claimant, GuestList, Line, LineAuth, Route};
+    use busbar_kernel::inbound::{Call, HandIn, Head, Inbound, Listener, Seals};
+
+    let provider = "test-idp-module";
+    let verifier = Arc::new(InboundCandidate {
+        calls: s
+            .app
+            .auth
+            .position_calls(provider)
+            .expect("the existing IdP stand-in"),
+        expected: busbar_contract::redacted::Secret::new(token.as_bytes().to_vec()),
+        seen: AtomicU64::new(0),
+    });
+    let count = Arc::new(AtomicU64::new(100));
+    let inbound = Inbound::new(
+        Seals {
+            mint: Arc::new(move || count.fetch_add(1, Ordering::SeqCst)),
+            mac: Arc::new(|tag| {
+                Some(tag.unit ^ tag.owner ^ tag.generation ^ tag.secret[0] ^ tag.secret[1])
+            }),
+        },
+        Arc::new(|future| {
+            tokio::spawn(future);
+        }),
+        Arc::new(|_| {}),
+    );
+    let guests = GuestList::seal(vec![Line {
+        route: Route {
+            methods: METHOD_GET,
+            path_form: PATH_EXACT,
+            path: "/stats".into(),
+            fields: Vec::new(),
+            rung: 0,
+        },
+        claimant: Claimant::Clean("stats".into()),
+        dialect: 0,
+        auth: LineAuth::Chain(vec![provider.into()], AuthPoints::HEAD),
+        upgrade: None,
+        offered: AuthPoints::HEAD,
+    }])
+    .unwrap();
+    inbound
+        .install_at(
+            7,
+            71,
+            3,
+            Listener {
+                guests,
+                auths: std::collections::HashMap::from([(
+                    provider.into(),
+                    Arc::clone(&verifier) as Arc<dyn busbar_contract::auth_calls::AuthCalls>,
+                )]),
+                body_limit: 1024,
+                app: Arc::clone(&s.app),
+                door_refusals: Vec::new(),
+                ids: vec![10],
+                signed_ingress: Arc::new(|_, _| false),
+            },
+        )
+        .unwrap();
+    inbound.framing_started(7, 71, 1, 3).unwrap();
+    inbound.grant_stream(7, 1, 1, 3).unwrap();
+    let mut head = Head {
+        method: "GET".into(),
+        target: "/stats".into(),
+        authority: String::new(),
+        query: None,
+        fields: vec![(
+            "authorization".into(),
+            format!("{scheme} {token}").into_bytes(),
+        )],
+    };
+    head.fields.extend(
+        proofs
+            .iter()
+            .map(|proof| ("dpop".into(), proof.as_bytes().to_vec())),
+    );
+    let (send, recv) = tokio::sync::oneshot::channel();
+    let answer = match inbound.auth_call(
+        Call {
+            owner: 7,
+            generation: 3,
+            auth: 10,
+            unit: UnitRef::NONE,
+            point: POINT_HEAD,
+            conn: 1,
+            stream: 1,
+            framing: 1,
+            head: head.clone(),
+            body: None,
+            deadline: None,
+        },
+        Box::new(move |answer| {
+            let _ = send.send(answer);
+        }),
+    ) {
+        Some(answer) => answer,
+        None => recv.await.unwrap(),
+    }
+    .unwrap();
+    assert_eq!(
+        answer.flow, FLOW_CONTINUE,
+        "candidate preflight does not spend or certify a proof"
+    );
+    assert_eq!(verifier.seen.load(Ordering::SeqCst), 1);
+    head.fields.retain(|(name, _)| {
+        !answer.strips.iter().any(|strip| {
+            strip.place == busbar_contract::auth_calls::StripPlace::Field
+                && strip.name.eq_ignore_ascii_case(name)
+        })
+    });
+    assert_eq!(
+        inbound
+            .hand_in(HandIn {
+                owner: 7,
+                generation: 3,
+                auth: 10,
+                unit: answer.unit,
+                line: 0,
+                conn: 1,
+                stream: 1,
+                framing: Some(1),
+                head: head.clone(),
+            })
+            .unwrap()
+            .0,
+        FLOW_CONTINUE
+    );
+    let receipt = inbound.claim_request(7, 1, 1, &head).unwrap();
+    // Host-only injection, outside the real kernel router, mirrors the composition root's
+    // claim after hand-in. The request's original credential/proof remains in the receipt.
+    let router = busbar_kernel::build_router(Arc::clone(&s.app)).layer(axum::Extension(receipt));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        axum::serve(listener, router).await.unwrap();
+    });
+    let mut request = s.client.get(format!("http://{addr}/stats"));
+    for (name, value) in &head.fields {
+        request = request.header(name.as_str(), value.as_slice());
+    }
+    let status = request.send().await.unwrap().status().as_u16();
+    server.abort();
+    inbound.exit(answer.unit.id);
+    status
+}
+
+#[tokio::test]
+async fn an_inbound_receipt_preserves_real_dpop_proof_checks_and_single_use() {
+    let s = serve(true).await;
+    let dpop = Key::new("inbound-dpop");
+    let token = bound_token(&s, &dpop).await;
+    let htu = format!("{}/stats", s.origin);
+    let good = || dpop.resource_proof("GET", &htu, Some(&ath(&token)), now());
+    assert_eq!(
+        resource_after_inbound(&s, &token, "DPoP", &[]).await,
+        401,
+        "missing proof"
+    );
+    assert_eq!(
+        resource_after_inbound(&s, &token, "Bearer", &[good()]).await,
+        401,
+        "a bound bearer remains refused"
+    );
+    for proof in [
+        "not.a.proof".to_string(),
+        Key::new("foreign-proof-key").resource_proof("GET", &htu, Some(&ath(&token)), now()),
+        dpop.resource_proof("POST", &htu, Some(&ath(&token)), now()),
+        dpop.resource_proof(
+            "GET",
+            &format!("{}/elsewhere", s.origin),
+            Some(&ath(&token)),
+            now(),
+        ),
+        dpop.resource_proof("GET", &htu, Some(&ath("different-token")), now()),
+    ] {
+        assert_eq!(
+            resource_after_inbound(&s, &token, "DPoP", &[proof]).await,
+            401
+        );
+    }
+    let once = good();
+    assert_eq!(
+        resource_after_inbound(&s, &token, "DPoP", std::slice::from_ref(&once)).await,
+        200,
+        "inbound did not consume the proof; the real AS verifies it at the final gate"
+    );
+    assert_eq!(
+        resource_after_inbound(&s, &token, "DPoP", &[once]).await,
+        401,
+        "the final gate consumed this jti exactly once"
+    );
 }
 
 /// Every refusal RFC 9449 s4.3 and s7 demand of a resource, each one deviation from the admitted

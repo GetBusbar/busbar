@@ -17,6 +17,146 @@ use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
 use super::{data_framer, DataFramer, DATA_LINE, DATA_SCHEME};
 
+#[tokio::test]
+async fn reset_before_any_head_releases_the_old_app_but_body_end_keeps_its_loan() {
+    use crate::root::doors::{bind_on, Dispatched};
+    use crate::root::inbound;
+    use crate::root::loader::dispatch::{DispatchConfig, Dispatcher};
+    use busbar_contract::abi::auth::AuthPoints;
+    use busbar_contract::abi::mechanism::ticket::Ticket;
+    use busbar_contract::abi::transport::guest_policy::Open;
+    use busbar_contract::abi::transport::route::{METHOD_POST, PATH_CONTAINS};
+    use busbar_contract::transport::TransportSettings;
+    use busbar_core_connector::framer::{Established, Framing, Got};
+    use busbar_kernel::guest::{Claimant, GuestList, Line, LineAuth, Route};
+    use busbar_kernel::test_support::TestApp;
+    use busbar_test_kit::root_door_fixtures::scoped_mux;
+
+    let _publishing = crate::root::PUBLISHING.lock().await;
+    let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
+    assert!(inbound::install(&dispatcher));
+    let plugin =
+        crate::root::test_plugins::linked_transport(scoped_mux::door, bind_on(&dispatcher));
+    let door: Arc<dyn FramerDoor> =
+        Arc::new(Dispatched::open_on(plugin, &TransportSettings::default(), dispatcher).unwrap());
+    let framer = data_framer(Arc::new(move |scheme| {
+        (scheme == DATA_SCHEME).then(|| Arc::clone(&door))
+    }))
+    .unwrap();
+    let guests = GuestList::seal(vec![Line {
+        route: Route {
+            methods: METHOD_POST,
+            path_form: PATH_CONTAINS,
+            path: "/".into(),
+            fields: Vec::new(),
+            rung: 0,
+        },
+        claimant: Claimant::Plane("body-wait-fixture".into()),
+        dialect: 0,
+        auth: LineAuth::None,
+        upgrade: None,
+        offered: AuthPoints(0),
+    }])
+    .unwrap();
+    inbound::stage(guests, Vec::new());
+    let old_app = TestApp::new().build();
+    let old = Arc::downgrade(&old_app);
+    assert!(inbound::publish(&old_app).is_some());
+    let established = Established {
+        scheme: Established::scheme_of(false),
+        ..Established::default()
+    };
+    let (framing, _) = Framing::begin_lent(
+        Arc::clone(framer.door()),
+        busbar_contract::abi::transport::SIDE_ACCEPT,
+        "",
+        &established,
+        framer.guests(),
+    )
+    .unwrap();
+    let scope = framing.scope().unwrap().clone();
+    scope
+        .open_stream(
+            Ticket::NONE,
+            Open {
+                stream: 5,
+                known_generation: 0,
+            },
+        )
+        .unwrap();
+    let generation = scope.policy_generation(5, false).unwrap();
+    scope.operation_finished(Ticket::NONE, false);
+    drop(old_app);
+    let new_app = TestApp::new().build();
+    for _ in 0..3 {
+        assert!(inbound::publish(&new_app).is_some());
+    }
+    assert!(
+        old.upgrade().is_some(),
+        "the unadmitted stream pins its actual policy App"
+    );
+
+    let (_client, server) = tokio::io::duplex(1024);
+    let (tx, ops) = tokio::sync::mpsc::unbounded_channel();
+    let mut conn = super::Conn {
+        io: crate::root::listener::Lingering(Some(server)),
+        framing: Some(framing),
+        framer,
+        router: Router::new(),
+        secured: false,
+        established,
+        timeout: Duration::from_secs(30),
+        out: Default::default(),
+        read_done: false,
+        ended: false,
+        heads: Default::default(),
+        inflows: Default::default(),
+        tasks: tokio::task::JoinSet::new(),
+        ops,
+        tx,
+        pending: Default::default(),
+        full: Default::default(),
+        deadline: None,
+        session: None,
+        agreed: 0,
+        stopping: false,
+        failed: false,
+        first_byte: None,
+    };
+    let terminal = |failed| Got {
+        stream: 5,
+        bytes: Vec::new(),
+        end_of_frame: true,
+        status_code: None,
+        handoff: false,
+        status_class: 0,
+        fault: 0,
+        retry_after_secs: None,
+        declared_len: None,
+        fields: false,
+        text: false,
+        reason: None,
+        failed,
+        end: true,
+    };
+    conn.piece(terminal(false));
+    assert!(
+        old.upgrade().is_some(),
+        "body completion must preserve the policy until hand-in"
+    );
+    assert_eq!(scope.policy_generation(5, false), Some(generation));
+    conn.piece(terminal(true));
+    assert_eq!(scope.policy_generation(5, false), None);
+    assert!(
+        old.upgrade().is_none(),
+        "a reset with no published head retires the grant and App"
+    );
+    assert!(
+        conn.framing.is_some(),
+        "retiring one stream leaves the connection live"
+    );
+}
+
 /// The data listener's framer as the boot finds it: the one answering [`DATA_SCHEME`].
 fn found(door: Arc<H1Accept>) -> Option<DataFramer> {
     let door: Arc<dyn FramerDoor> = door;

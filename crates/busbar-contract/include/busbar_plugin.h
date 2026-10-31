@@ -471,6 +471,8 @@ extern "C" {
 #define BB_PLANE_PROJECT_REWRITE_NOT_APPLICABLE UINT32_C(0x40000000) /* THE REWRITE-NOT-APPLICABLE MARK, in `ProjectOut::view.flags` of a READY `project` that carried */
 
 /* transport */
+#define BB_TRANSPORT_EXT_ADOPTED_SESSION "session.adopted" /* An Adopt input's host-issued session reference, in the shared extensions envelope. */
+#define BB_TRANSPORT_SUPPORT_ADOPTED_SESSION "1" /* A Statement advertises this extension value when its Adopt consumes inherited sessions. */
 #define BB_TRANSPORT_MAX_PIECES UINT64_C(4096) /* The most frame pieces one framer answer may produce. */
 #define BB_TRANSPORT_MAX_CLAIMS UINT64_C(1024) /* The most claims one transport entry may make. */
 #define BB_TRANSPORT_MAX_ALPN_BYTES UINT64_C(65535) /* The most bytes one protocol offer may take (a TLS ProtocolNameList is at most `2^16 - 1`). */
@@ -492,6 +494,7 @@ extern "C" {
 #define BB_TRANSPORT_LINE_END "\x0d\n" /* After a field's value. */
 #define BB_TRANSPORT_EXT_GUEST_OPEN "guest.open" /* A framer reply asks the host to open this stream before route matching or auth. */
 #define BB_TRANSPORT_EXT_GUEST_POLICY "guest.policy" /* The following call lends the selected generation's policy to the requesting operation. */
+#define BB_TRANSPORT_EXT_GUEST_CURRENT "guest.current" /* A reply confirming that the stream may use a previously decoded policy identity. */
 #define BB_TRANSPORT_ABI_VERSION UINT32_C(1) /* The transport kind's ABI version: new in 1.6.0 (v1.5.5 had no transport kind ABI), so it ships `1`. */
 #define BB_TRANSPORT_LAYOUT_FINGERPRINT UINT64_C(0x715dbad81f3872c0) /* The transport kind's layout fingerprint ([`crate::abi::mechanism::layout`]): the fold of */
 #define BB_TRANSPORT_SLOT_LISTEN UINT32_C(9) /* Carrier: bind a listener. */

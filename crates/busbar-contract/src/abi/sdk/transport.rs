@@ -32,6 +32,7 @@ use crate::abi::transport::{SettingDecl, SETTING_COUNT, SETTING_FLAG, SETTING_TE
 use crate::grammar::SelectorForm;
 use crate::transport::DEFAULT_REQUEST_BODY_MAX_BYTES;
 
+pub mod policy;
 pub mod sink;
 pub mod table;
 

@@ -169,6 +169,7 @@
 //! assert_eq!(size_of::<Ops>(), size_of::<OpsHead>() + 8 * KIND_SLOTS as usize);
 //! ```
 
+pub mod adopted_session;
 pub mod check;
 pub mod datagram;
 pub mod fields;

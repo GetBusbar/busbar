@@ -165,6 +165,21 @@ pub trait FramerDoor: Send + Sync {
         Ok(None)
     }
 
+    /// Create a destination leg using the detached source's trusted admission custody.
+    ///
+    /// # Errors
+    /// This door cannot inherit a host-owned framing.
+    fn adopting_context(
+        &self,
+        source: Arc<dyn busbar_contract::framing_scope::FramingScope>,
+    ) -> Result<Option<Arc<dyn busbar_contract::framing_scope::FramingScope>>, Refused> {
+        let _ = source;
+        Err(Refused {
+            outcome: Outcome::Refused,
+            error: "the door cannot inherit a host session".into(),
+        })
+    }
+
     /// One framing crossing with its host context, including ticketless operations and resumes.
     fn cross_scoped(
         &self,
@@ -693,6 +708,14 @@ pub struct Detached {
     context: Option<Arc<dyn busbar_contract::framing_scope::FramingScope>>,
 }
 
+impl Drop for Detached {
+    fn drop(&mut self) {
+        if let Some(context) = self.context.take() {
+            context.end();
+        }
+    }
+}
+
 /// The most ticketed ops one framing may have parked at once: each holds a ticket of the host's,
 /// so a far end that opens stream after stream whose auth pends cannot hold the host's tickets
 /// without bound (the framing FAULTs past it).
@@ -763,41 +786,60 @@ pub use busbar_contract::abi::transport::guest_policy::GuestLine;
 /// A LISTENER'S GUEST LIST, in the kernel's match order, as the connector lends it to a framing
 /// accepted on the listener. Held by the framing for its life; its `begin` crossing is handed it
 /// as [`BeginIn::lines`].
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GuestLines {
-    lines: Vec<GuestLine>,
-    listener: u64,
+    policy: Arc<busbar_contract::abi::transport::guest_policy::Policy>,
+}
+
+impl Default for GuestLines {
+    fn default() -> Self {
+        Self::new(Vec::new())
+    }
 }
 
 impl GuestLines {
-    /// The list, in match order.
+    /// A standalone list without a host registration.
     #[must_use]
     pub fn new(lines: Vec<GuestLine>) -> Self {
-        Self { lines, listener: 0 }
+        Self::registered(0, lines)
     }
 
     /// A list associated with its host listener registration.
     #[must_use]
     pub fn registered(listener: u64, lines: Vec<GuestLine>) -> Self {
-        Self { lines, listener }
+        Self::published(Arc::new(
+            busbar_contract::abi::transport::guest_policy::Policy {
+                listener,
+                generation: 0,
+                lines,
+            },
+        ))
+    }
+
+    /// The host-selected immutable policy for an opening or stream grant.
+    #[must_use]
+    pub fn published(policy: Arc<busbar_contract::abi::transport::guest_policy::Policy>) -> Self {
+        Self { policy }
     }
 
     /// The host listener registration associated with this list.
     #[must_use]
     pub fn listener(&self) -> u64 {
-        self.listener
+        self.policy.listener
     }
 
     /// Its lines, in match order.
     #[must_use]
     pub fn lines(&self) -> &[GuestLine] {
-        &self.lines
+        &self.policy.lines
     }
 
-    /// The auth points the lines' auths declare, together; `0` = every line's auth is `none`.
+    /// The auth points the lines' auths declare, together.
     #[must_use]
     pub fn points(&self) -> u32 {
-        self.lines.iter().fold(0, |p, l| p | l.points)
+        self.lines()
+            .iter()
+            .fold(0, |points, line| points | line.points)
     }
 }
 
@@ -1471,6 +1513,11 @@ impl Framing {
         guests: Option<Arc<GuestLines>>,
     ) -> Result<(Self, Yielded), Refused> {
         let context = door.framing_context(guests.as_ref().map_or(0, |g| g.listener()), 0)?;
+        let guests = context
+            .as_ref()
+            .and_then(|scope| scope.opening_policy())
+            .map(|policy| Arc::new(GuestLines::published(policy)))
+            .or(guests);
         let mut f = Self {
             door,
             context,
@@ -1842,8 +1889,7 @@ impl Framing {
             side,
             std::borrow::Cow::Borrowed(leftover),
             established,
-            0,
-            0,
+            None,
         )
     }
 
@@ -1855,20 +1901,27 @@ impl Framing {
     pub fn adopt_detached(
         door: Arc<dyn FramerDoor>,
         side: u32,
-        detached: Detached,
+        mut detached: Detached,
         established: &Established,
     ) -> Result<(Self, Yielded), Refused> {
-        let (listener, connection) = detached
-            .context
-            .as_ref()
-            .map_or((0, 0), |c| (c.listener(), c.connection()));
+        let context =
+            match detached.context.as_ref() {
+                Some(source) => Some(door.adopting_context(Arc::clone(source))?.ok_or_else(
+                    || Refused {
+                        outcome: Outcome::Refused,
+                        error: "adoption lost its host framing context".into(),
+                    },
+                )?),
+                None => None,
+            };
+        // The destination now owns the source through READY, cancellation or failure.
+        drop(detached.context.take());
         Self::adopt_context(
             door,
             side,
-            std::borrow::Cow::Owned(detached.bytes),
+            std::borrow::Cow::Owned(std::mem::take(&mut detached.bytes)),
             established,
-            listener,
-            connection,
+            context,
         )
     }
 
@@ -1877,11 +1930,13 @@ impl Framing {
         side: u32,
         leftover: std::borrow::Cow<'_, [u8]>,
         established: &Established,
-        listener: u64,
-        connection: u64,
+        context: Option<Arc<dyn busbar_contract::framing_scope::FramingScope>>,
     ) -> Result<(Self, Yielded), Refused> {
         let ticket = door.framing_side();
-        let context = door.framing_context(listener, connection)?;
+        let context = match context {
+            Some(context) => Some(context),
+            None => door.framing_context(0, 0)?,
+        };
         let mut framing = Self {
             door,
             context,
@@ -1904,6 +1959,12 @@ impl Framing {
     #[must_use]
     pub fn door(&self) -> &Arc<dyn FramerDoor> {
         &self.door
+    }
+
+    /// The host ownership of this framing, independent of its operation tickets.
+    #[must_use]
+    pub fn scope(&self) -> Option<&Arc<dyn busbar_contract::framing_scope::FramingScope>> {
+        self.context.as_ref()
     }
 
     /// Re-call `again` with no new bytes until the framer owes nothing more.
@@ -2128,10 +2189,13 @@ impl Framing {
             })?);
             if o.yielded.flags & YIELD_MORE == 0 {
                 self.token = 0;
-                let context = self.context.take();
-                if let Some(context) = &context {
-                    context.end();
+                if let Some(context) = &self.context {
+                    context.detach().map_err(|error| Refused {
+                        outcome: Outcome::Refused,
+                        error: error.into(),
+                    })?;
                 }
+                let context = self.context.take();
                 return Ok(Detached {
                     bytes: left,
                     context,
