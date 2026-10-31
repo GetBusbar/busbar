@@ -19,6 +19,9 @@ use crate::guest::{Claimant, Route};
 #[path = "inbound_peer_points.rs"]
 mod inbound_peer_points;
 
+#[path = "inbound_reader_deadline.rs"]
+mod inbound_reader_deadline;
+
 /// One auth's double: answers every `verify` with `answer`, counting the calls and keeping the
 /// field-line names it was lent.
 struct Script {
@@ -1329,7 +1332,11 @@ const SIGNED_LINE: &str = "x-signed-credential";
 
 /// A kit whose chain is `keys` with `reader` as its host-held credentials' verifier reading the
 /// issued kind, over `gov`; every path is answered by a dialect that signs when `signs`.
-fn reader_kit(gov: &Arc<crate::governance::GovState>, reader: Arc<Script>, signs: bool) -> Kit {
+fn reader_kit<R: AuthCalls + 'static>(
+    gov: &Arc<crate::governance::GovState>,
+    reader: Arc<R>,
+    signs: bool,
+) -> Kit {
     let (kind, _) = crate::test_support::issued::double();
     let cfg = crate::config::AuthCfg {
         chain: vec![crate::config::AuthChainEntry::bare(
