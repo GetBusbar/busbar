@@ -249,3 +249,30 @@ fn contract(fold: &Fold) {
         at("resolve after close")
     );
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{malformed_inputs, malformed_label};
+
+    /// RED (SC2): `malformed` is one input (the original key, unchanged) or a list, and the
+    /// suite always adds the wrong-shape reference `{"name":5}`, once.
+    #[test]
+    fn malformed_is_one_input_or_a_list_and_always_judges_the_wrong_shape() {
+        let one = serde_json::json!({ "malformed": "[]" });
+        assert_eq!(
+            malformed_inputs(&one),
+            vec![b"[]".to_vec(), br#"{"name":5}"#.to_vec()]
+        );
+        let list = serde_json::json!({ "malformed": ["[]", { "name": 5 }, { "key": [] }] });
+        assert_eq!(
+            malformed_inputs(&list),
+            vec![
+                b"[]".to_vec(),
+                br#"{"name":5}"#.to_vec(),
+                br#"{"key":[]}"#.to_vec()
+            ]
+        );
+        assert_eq!(malformed_label(0), "resolve malformed");
+        assert_eq!(malformed_label(2), "resolve malformed #2");
+    }
+}
