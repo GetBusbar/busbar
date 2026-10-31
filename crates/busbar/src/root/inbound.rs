@@ -455,8 +455,10 @@ impl ListenerRegistration {
     }
 }
 
-fn registrations() -> &'static Mutex<HashMap<(u64, u64), Weak<ListenerRegistration>>> {
-    static ONE: OnceLock<Mutex<HashMap<(u64, u64), Weak<ListenerRegistration>>>> = OnceLock::new();
+type ListenerRegistrations = Mutex<HashMap<(u64, u64), Weak<ListenerRegistration>>>;
+
+fn registrations() -> &'static ListenerRegistrations {
+    static ONE: OnceLock<ListenerRegistrations> = OnceLock::new();
     ONE.get_or_init(Mutex::default)
 }
 
