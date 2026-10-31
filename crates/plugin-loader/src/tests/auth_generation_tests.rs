@@ -58,7 +58,7 @@ fn existing_units_keep_their_generation_at_all_three_services_but_new_requests_c
     assert_eq!(side.hands.lock().unwrap()[0].generation, old_generation);
 
     let mut refusal = RefusalAnswer {
-        size: 0,
+        size: size_of::<RefusalAnswer>() as u32,
         status: 0,
         _reserved: 0,
         fields: std::ptr::null(),
