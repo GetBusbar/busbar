@@ -2178,7 +2178,7 @@ fn declared_signed_ticket_kit(
                 .unwrap()
         }),
         ticket_prefix: Some("tk_".into()),
-        signed_ingress: Arc::from([format!("{MESSAGES}*")]),
+        signed_ingress: Arc::from(["/v1/*messages".to_string()]),
     }];
     k.inbound.install_at(OWNER, 71, GEN, listener).unwrap();
     k.inbound.framing_started(OWNER, 71, 1, GEN).unwrap();
