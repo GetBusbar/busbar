@@ -452,6 +452,7 @@ struct RequestBinding {
 
 /// One unit, as the kernel holds it.
 struct UnitState {
+    table: Arc<Table>,
     owner: u64,
     generation: u64,
     line: u32,
@@ -480,8 +481,10 @@ impl UnitState {
         secret: [u64; 2],
         providers: &[String],
         binding: RequestBinding,
+        table: Arc<Table>,
     ) -> Self {
         Self {
+            table,
             owner,
             generation,
             line,
@@ -902,6 +905,27 @@ impl Inbound {
             .cloned()
     }
 
+    /// Only an authenticated continuation may use its retired policy. A new unit must resolve
+    /// through the listener's published tables; a retained Arc alone grants no authority.
+    fn request_table(
+        &self,
+        owner: u64,
+        generation: u64,
+        binding: RequestBinding,
+        unit: UnitRef,
+    ) -> Result<Arc<Table>, &'static str> {
+        if unit.is_none() {
+            return self.table(owner, generation).ok_or(NO_LIST);
+        }
+        if !self.verified(owner, Some(generation), None, binding, unit) {
+            return Err(UNIT_FOREIGN);
+        }
+        self.units()
+            .get(&unit.id)
+            .map(|u| Arc::clone(&u.table))
+            .ok_or(UNIT_FOREIGN)
+    }
+
     fn units(&self) -> std::sync::MutexGuard<'_, HashMap<u64, UnitState>> {
         self.units.lock().unwrap_or_else(PoisonError::into_inner)
     }
@@ -936,18 +960,24 @@ impl Inbound {
 
     /// The unit leaves the table: its credential is zeroised (its drop).
     pub fn exit(&self, unit: u64) {
-        drop(self.units().remove(&unit));
+        let retired = self.units().remove(&unit);
+        drop(retired);
     }
 
     /// THE HOST'S END NOTIFICATION: the framing `framing` ended (the loader retired the ticket of
     /// the connection side it drove). Its `Peer` verdict, at every generation and for every owner,
     /// leaves the table (its credential zeroised), and so does the connection it named.
     pub fn framing_ended(&self, framing: u64) {
-        self.peers().retain(|(_, _, f), _| *f != framing);
+        let retired_peers: Vec<_> = self
+            .peers()
+            .extract_if(|(_, _, f), _| *f == framing)
+            .map(|(_, u)| u)
+            .collect();
         self.framing_conns
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .retain(|(_, f), _| *f != framing);
+        drop(retired_peers);
     }
 
     /// The connection a framing's calls name: the first call's, and every later call must name the
@@ -985,6 +1015,7 @@ impl Inbound {
         line: u32,
         providers: &[String],
         binding: RequestBinding,
+        table: Arc<Table>,
     ) -> Result<UnitRef, &'static str> {
         let secret = fresh_secret().ok_or(UNIT_UNMINTED)?;
         let unit = (self.seals.mint)();
@@ -999,7 +1030,7 @@ impl Inbound {
             unit,
         })
         .ok_or(UNIT_UNMINTED)?;
-        let mut state = UnitState::open(owner, generation, line, secret, providers, binding);
+        let mut state = UnitState::open(owner, generation, line, secret, providers, binding, table);
         if let Some(peer) = binding.framing.and_then(|f| {
             self.peers()
                 .get(&(owner, generation, f))
@@ -1081,7 +1112,12 @@ impl Inbound {
         call: Call,
     ) -> Result<impl Future<Output = Result<Answer, &'static str>> + Send + 'static, &'static str>
     {
-        let table = self.table(call.owner, call.generation).ok_or(NO_LIST)?;
+        let binding = RequestBinding {
+            conn: call.conn,
+            stream: call.stream,
+            framing: Some(call.framing),
+        };
+        let table = self.request_table(call.owner, call.generation, binding, call.unit)?;
         let line_ix = table.line_of(call.auth).ok_or(NO_LINE)?;
         let line = table
             .listener
@@ -1110,11 +1146,6 @@ impl Inbound {
             return Err(OVER_GATE);
         }
         self.same_conn(call.owner, call.framing, call.conn)?;
-        let binding = RequestBinding {
-            conn: call.conn,
-            stream: call.stream,
-            framing: Some(call.framing),
-        };
         let (target, unit) = if peer {
             let key = (call.owner, call.generation, call.framing);
             let mut peers = self.peers();
@@ -1136,12 +1167,20 @@ impl Inbound {
                     [0; 2],
                     &providers,
                     binding,
+                    Arc::clone(&table),
                 )
             });
             (Target::Peer(key), UnitRef::NONE)
         } else {
             let unit = if call.unit.is_none() {
-                self.mint(call.owner, call.generation, line_ix, &providers, binding)?
+                self.mint(
+                    call.owner,
+                    call.generation,
+                    line_ix,
+                    &providers,
+                    binding,
+                    Arc::clone(&table),
+                )?
             } else if self.verified(
                 call.owner,
                 Some(call.generation),
@@ -1358,22 +1397,29 @@ impl Inbound {
     /// [`NO_LIST`] for a listener the kernel holds no list for; [`UNIT_FOREIGN`] for a presented
     /// unit it did not mint for this owner; [`UNIT_UNMINTED`] when no unit could be minted.
     pub fn hand_in(&self, h: HandIn) -> Result<(u32, UnitRef), &'static str> {
-        let table = self.table(h.owner, h.generation).ok_or(NO_LIST)?;
-        if let Some(f) = h.framing {
-            self.same_conn(h.owner, f, h.conn)?;
-        }
-        let lines = table.listener.guests.lines();
         let binding = RequestBinding {
             conn: h.conn,
             stream: h.stream,
             framing: h.framing,
         };
+        let table = self.request_table(h.owner, h.generation, binding, h.unit)?;
+        if let Some(f) = h.framing {
+            self.same_conn(h.owner, f, h.conn)?;
+        }
+        let lines = table.listener.guests.lines();
         let unit = if h.unit.is_none() {
             let names: &[String] = match lines.get(h.line as usize).map(|l| &l.auth) {
                 Some(LineAuth::Chain(names, _)) => names,
                 _ => &[],
             };
-            self.mint(h.owner, h.generation, h.line, &ordered(names), binding)?
+            self.mint(
+                h.owner,
+                h.generation,
+                h.line,
+                &ordered(names),
+                binding,
+                Arc::clone(&table),
+            )?
         } else if self.verified(h.owner, None, None, binding, h.unit) {
             h.unit
         } else {
@@ -1440,7 +1486,16 @@ impl Inbound {
     /// kernel did not mint for this owner and line, [`CAUSE_UNKNOWN`].
     pub fn refuse(&self, r: Refuse) -> Result<Refusal, &'static str> {
         use axum::http::StatusCode;
-        let table = self.table(r.owner, r.generation).ok_or(NO_LIST)?;
+        let table = self.request_table(
+            r.owner,
+            r.generation,
+            RequestBinding {
+                conn: r.conn,
+                stream: r.stream,
+                framing: r.framing,
+            },
+            r.unit,
+        )?;
         let line = if r.cause == REFUSE_NO_ROUTE {
             None
         } else {
