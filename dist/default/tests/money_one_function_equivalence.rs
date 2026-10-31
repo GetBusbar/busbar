@@ -896,6 +896,7 @@ mod declared {
                 busbar_plugin_loader::dispatch::kinds::plane::stated_facts(*door)
                     .expect("the linked plane door declares valid billable classes")
                     .1
+                    .served
                     .billable_classes
             })
             .filter(|class| !busbar_contract::records::RESERVED_UNITS.contains(class))
