@@ -674,9 +674,11 @@ pub type SignedIngress = Arc<dyn Fn(&App, &str) -> bool + Send + Sync>;
 pub fn signed_by_dialect() -> SignedIngress {
     Arc::new(|app: &App, path: &str| {
         let ingress = app.planes.ingress_of(path);
-        matches!(ingress, crate::plane::Ingress::Fallback(_))
-            && crate::proto::decl_for(crate::ingress::native::envelope_dialect(ingress))
-                .is_some_and(|d| d.uses_sigv4_ingress_auth())
+        matches!(ingress, crate::plane_driver::dispatch::Ingress::Fallback(_))
+            && crate::ingress::protocols::decl_for(crate::ingress::native::envelope_dialect(
+                ingress,
+            ))
+            .is_some_and(|d| d.uses_sigv4_ingress_auth())
     })
 }
 
@@ -1147,7 +1149,7 @@ impl Inbound {
                 if deadline.is_some_and(|d| std::time::Instant::now() >= d) {
                     // The op the call was made for is past its deadline: no verify runs, and the
                     // position answers no verdict (a deny, fail closed).
-                    me.record(target, p.index, &p.provider, Judging::Nothing, &table);
+                    me.record(target, p.index, Judging::Nothing, &table);
                     break;
                 }
                 let calls = match &p.kind {
@@ -1185,18 +1187,12 @@ impl Inbound {
                                 })
                             }
                         };
-                        me.record(
-                            target,
-                            p.index,
-                            &p.provider,
-                            Judging::Keys(&head, signed),
-                            &table,
-                        );
+                        me.record(target, p.index, Judging::Keys(&head, signed), &table);
                         continue;
                     }
                     PositionKind::Plugin(None) => {
                         // A line naming an auth the generation did not open: fail closed.
-                        me.record(target, p.index, &p.provider, Judging::Nothing, &table);
+                        me.record(target, p.index, Judging::Nothing, &table);
                         continue;
                     }
                     PositionKind::Plugin(Some(calls)) => Arc::clone(calls),
@@ -1226,7 +1222,26 @@ impl Inbound {
                     Some(a) => Judging::Answer(a),
                     None => Judging::Nothing,
                 };
-                me.record(target, p.index, &p.provider, judging, &table);
+                // THE REPLAY CLAIM, awaited through the store before the verdict is recorded: an
+                // identity whose claim is already taken (or cannot be claimed) is a deny.
+                let judging = match judging {
+                    Judging::Answer(mut a) => {
+                        let replay = match &a.verified {
+                            Verified::Identity(id) => id.replay.clone(),
+                            _ => None,
+                        };
+                        if let Some(r) = replay {
+                            let gov = table.listener.app.governance.as_deref();
+                            let now = crate::store::now();
+                            if !crate::auth::replay_claimed(gov, &p.provider, &r, now).await {
+                                a.verified = Verified::Reject;
+                            }
+                        }
+                        Judging::Answer(a)
+                    }
+                    other => other,
+                };
+                me.record(target, p.index, judging, &table);
             }
             let (flow, strips) = me
                 .with_state(target, |u| {
@@ -1247,14 +1262,7 @@ impl Inbound {
     /// rule, the lines it named, and, once the verdict is fixed in list order on an identity, that
     /// identity, its credential taken out of it, and for the `keys` arm the governance key it
     /// resolved.
-    fn record(
-        &self,
-        target: Target,
-        index: usize,
-        provider: &str,
-        judging: Judging<'_>,
-        table: &Table,
-    ) {
+    fn record(&self, target: Target, index: usize, judging: Judging<'_>, table: &Table) {
         let gov = table.listener.app.governance.as_deref();
         let now = crate::store::now();
         let (judged, identity, strips, resolved) = match judging {
@@ -1264,17 +1272,8 @@ impl Inbound {
             }
             Judging::Answer(a) => {
                 let (judged, identity) = match a.verified {
-                    Verified::Identity(id) => {
-                        let claimed = id
-                            .replay
-                            .as_deref()
-                            .is_none_or(|r| crate::auth::replay_claimed(gov, provider, r, now));
-                        if claimed {
-                            (Judged::Identity, Some(id))
-                        } else {
-                            (Judged::Denied, None)
-                        }
-                    }
+                    // The replay claim was made before the answer was recorded.
+                    Verified::Identity(id) => (Judged::Identity, Some(id)),
                     Verified::Pass => (Judged::Pass, None),
                     Verified::Reject | Verified::Failed => (Judged::Denied, None),
                     Verified::Overloaded => (Judged::Overloaded, None),
@@ -1429,21 +1428,21 @@ impl Inbound {
                 &app.planes,
                 &path,
                 StatusCode::NOT_FOUND,
-                crate::taxonomy::ERR_TYPE_NOT_FOUND,
+                busbar_contract::protocol::ERR_TYPE_NOT_FOUND,
                 "the requested resource was not found",
             ),
             REFUSE_METHOD_MISS => crate::router::fallback_error_response(
                 &app.planes,
                 &path,
                 StatusCode::METHOD_NOT_ALLOWED,
-                crate::taxonomy::ERR_TYPE_INVALID_REQUEST,
+                busbar_contract::protocol::ERR_TYPE_INVALID_REQUEST,
                 "method not allowed for this resource",
             ),
             REFUSE_OVER_GATE => crate::router::fallback_error_response(
                 &app.planes,
                 &path,
                 StatusCode::PAYLOAD_TOO_LARGE,
-                crate::proxy::KIND_REQUEST_TOO_LARGE,
+                busbar_contract::protocol::KIND_REQUEST_TOO_LARGE,
                 "request body exceeds the maximum allowed size",
             ),
             REFUSE_STOPPED | REFUSE_CHECK_FAILED if overloaded => {

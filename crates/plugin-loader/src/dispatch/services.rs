@@ -455,11 +455,12 @@ pub(crate) unsafe fn serve(
     into: Option<&ServiceBufs>,
     body: impl FnOnce(Option<Completer>) -> Ran,
 ) -> Answered {
-    // SAFETY: the caller's contract, which is `deliver`'s.
     serve_with(
         store,
         route,
         head,
+        req,
+        // SAFETY: the caller's contract, which is `deliver`'s.
         |stored| unsafe { deliver(stored, into) },
         body,
     )
@@ -472,6 +473,7 @@ pub(crate) fn serve_with(
     store: &Arc<ServiceStore>,
     route: &Waking,
     head: &ServiceHead,
+    req: u64,
     put: impl FnOnce(&Stored) -> Result<Answered, Answered>,
     body: impl FnOnce(Option<Completer>) -> Ran,
 ) -> Answered {
@@ -498,24 +500,20 @@ pub(crate) fn serve_with(
         return Answered::fault();
     }
     let bound = Bound { op: head.op, req };
-    // SAFETY: the caller's contract.
-    let a = unsafe { serve_kept(store, route, h, bound, into, body) };
+    let a = serve_kept(store, route, h, bound, put, body);
     store.held.answered(h, a.outcome == Outcome::Pending);
     a
 }
 
 /// [`serve`] under the ticketed handle `h`, bound at its first use to `bound` (the service and the
 /// request's fingerprint): run once, stored, redeemed on the handle; a call naming another `bound`
-/// is [`rebound`].
-///
-/// # Safety
-/// As [`deliver`].
-unsafe fn serve_kept(
+/// is [`rebound`]. `put` writes a stored result into the caller's memory.
+fn serve_kept(
     store: &Arc<ServiceStore>,
     route: &Waking,
     h: CompletionHandle,
     bound: Bound,
-    into: Option<&ServiceBufs>,
+    put: impl FnOnce(&Stored) -> Result<Answered, Answered>,
     body: impl FnOnce(Option<Completer>) -> Ran,
 ) -> Answered {
     // The epoch of the op on the ticket: the one its first result minted, or a fresh one; `None`
@@ -1843,10 +1841,21 @@ extern "C" fn auth_call(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut
                 deadline: op_remaining(),
                 framing: super::auth_handle::framing_of(head.handle.ticket),
             };
+            // The request a handle is bound to: the line or binding, the unit, the point and the
+            // connection and stream it is made on. Never the buffers, which a short answer's
+            // re-call may change.
+            let req = Fp::of(&[
+                &i.auth.id.to_le_bytes(),
+                &i.unit.id.to_le_bytes(),
+                &i.point.to_le_bytes(),
+                &i.conn.to_le_bytes(),
+                &i.stream.to_le_bytes(),
+            ]);
             serve_with(
                 &store,
                 &route,
                 &head,
+                req,
                 // SAFETY: `i`'s buffers and slot checked by `check_auth_call_in` above.
                 |stored| unsafe { put_auth(stored, &i) },
                 |completer| {

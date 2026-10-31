@@ -735,7 +735,7 @@ fn red_every_refusal_is_the_kernels_and_byte_identical_to_todays_builders() {
             &k.app.planes,
             "/nope",
             StatusCode::NOT_FOUND,
-            crate::taxonomy::ERR_TYPE_NOT_FOUND,
+            busbar_contract::protocol::ERR_TYPE_NOT_FOUND,
             "the requested resource was not found",
         ))
     );
@@ -763,7 +763,7 @@ fn red_every_refusal_is_the_kernels_and_byte_identical_to_todays_builders() {
             &k.app.planes,
             MESSAGES,
             StatusCode::METHOD_NOT_ALLOWED,
-            crate::taxonomy::ERR_TYPE_INVALID_REQUEST,
+            busbar_contract::protocol::ERR_TYPE_INVALID_REQUEST,
             "method not allowed for this resource",
         ))
     );
@@ -776,7 +776,7 @@ fn red_every_refusal_is_the_kernels_and_byte_identical_to_todays_builders() {
             &k.app.planes,
             MESSAGES,
             StatusCode::PAYLOAD_TOO_LARGE,
-            crate::proxy::KIND_REQUEST_TOO_LARGE,
+            busbar_contract::protocol::KIND_REQUEST_TOO_LARGE,
             "request body exceeds the maximum allowed size",
         ))
     );
@@ -1529,21 +1529,21 @@ fn red_a_unitless_refusal_is_shaped_by_the_requests_path() {
             REFUSE_NO_ROUTE,
             LINE_NONE,
             StatusCode::NOT_FOUND,
-            crate::taxonomy::ERR_TYPE_NOT_FOUND,
+            busbar_contract::protocol::ERR_TYPE_NOT_FOUND,
             "the requested resource was not found",
         ),
         (
             REFUSE_METHOD_MISS,
             k.line(MESSAGES),
             StatusCode::METHOD_NOT_ALLOWED,
-            crate::taxonomy::ERR_TYPE_INVALID_REQUEST,
+            busbar_contract::protocol::ERR_TYPE_INVALID_REQUEST,
             "method not allowed for this resource",
         ),
         (
             REFUSE_OVER_GATE,
             k.line(MESSAGES),
             StatusCode::PAYLOAD_TOO_LARGE,
-            crate::proxy::KIND_REQUEST_TOO_LARGE,
+            busbar_contract::protocol::KIND_REQUEST_TOO_LARGE,
             "request body exceeds the maximum allowed size",
         ),
     ] {

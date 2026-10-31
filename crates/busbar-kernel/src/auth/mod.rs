@@ -2858,6 +2858,7 @@ impl AuthMiddleware {
     ) -> Self {
         self.keys_in_chain = true;
         self.readers.push(CredentialReader {
+            name: "test-reader".to_owned(),
             kinds,
             issued: None,
             carriers: carriers

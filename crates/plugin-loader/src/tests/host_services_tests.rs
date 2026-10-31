@@ -3005,6 +3005,8 @@ fn red_two_instances_on_one_ticket_each_keep_their_own_results() {
         error(&o)
     );
     assert_eq!(d.route.provider.judged.load(Ordering::SeqCst), 2);
+}
+
 /// ONE ALLOCATOR, TWO SPACES: a line's id never sets the top bit and is never `0`; a binding's
 /// always sets it; each id names its space. RED arm: no line id and binding id ever coincide.
 #[test]
