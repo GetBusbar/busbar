@@ -1002,6 +1002,20 @@ pub struct DoorApply {
 
 impl DoorApply {
     #[must_use]
+    pub fn listen_setting(&self, carrier: &str) -> Option<String> {
+        use busbar_contract::abi::host::conn::connector::DIRECTION_INBOUND;
+        let f = &self.served_facts;
+        f.need_auths
+            .iter()
+            .zip(&f.need_targets)
+            .zip(&f.need_transports)
+            .find(|(((direction, _), target), transport)| {
+                *direction == DIRECTION_INBOUND && !target.is_empty() && **transport == carrier
+            })
+            .map(|((_, target), _)| format!("{}.{target}.listen", f.section))
+    }
+
+    #[must_use]
     pub fn current(&self) -> Arc<DoorLive> {
         Arc::clone(
             &self
@@ -4883,17 +4897,26 @@ impl DataRoutes {
             .and_then(|doors| doors.get())
             .unwrap_or(&self.served.claim_doors);
         let Some(claim_door) = doors.get(&carrier) else {
-            return stated(
-                (refusal_status(ReasonCode::NoDestination), Vec::new()),
-                Body::empty(),
+            let setting = self.served.planes[door.plane]
+                .live
+                .listen_setting(&carrier)
+                .unwrap_or_else(|| format!("the `{carrier}` listener's `listen`"));
+            let text = format!(
+                "this deployment serves no media for the offer: no listener is configured for its \
+                 `{carrier}` carrier (set `{setting}`)"
             );
+            return self.refused_open(&door, &arrival, &carrier, ReasonCode::NoDestination, &text);
         };
         let opened = match serve_datagram::Opened::open(&claim_door, framer, &arrival.body) {
             Ok(o) => o,
-            Err(_) => {
-                return stated(
-                    (refusal_status(ReasonCode::DecodeFailed), Vec::new()),
-                    Body::empty(),
+            Err(why) => {
+                let text = format!("the offer cannot open a media session: {why}");
+                return self.refused_open(
+                    &door,
+                    &arrival,
+                    &carrier,
+                    ReasonCode::DecodeFailed,
+                    &text,
                 );
             }
         };
@@ -4942,6 +4965,41 @@ impl DataRoutes {
                 Body::empty(),
             ),
         }
+    }
+
+    fn refused_open(
+        &self,
+        door: &SessionDoor,
+        arrival: &Arrival,
+        carrier: &str,
+        reason: ReasonCode,
+        text: &str,
+    ) -> Response {
+        let served = &self.served.planes[door.plane];
+        let status = refusal_status(reason);
+        let dialect = served
+            .snapshot
+            .claims
+            .get(arrival.claim as usize)
+            .map_or(0, |c| u32::from(c.refusal_dialect));
+        let rendered = served
+            .driver
+            .refuse_kernel(reason, status, text, dialect, &arrival.target)
+            .unwrap_or_else(|| Rendered {
+                status,
+                fields: Vec::new(),
+                body: text.as_bytes().to_vec(),
+            });
+        busbar_kernel::audit::auditlog::emit_admin_hostless_now(
+            "door.session_open",
+            &format!("{}:{carrier}", served.instance),
+            busbar_contract::vocab::OUTCOME_REJECTED,
+            door.principal.as_str(),
+        );
+        stated(
+            (rendered.status, rendered.fields),
+            Body::from(rendered.body),
+        )
     }
 
     fn arrived(&self, plane: usize, claim: u32, req: DoorRequest) -> (SessionDoor, Arrival, Bytes) {
