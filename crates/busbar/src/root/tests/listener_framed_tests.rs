@@ -111,3 +111,19 @@ async fn the_data_listener_is_served_through_its_framers_accept_side() {
 fn a_framer_that_does_not_accept_is_not_the_data_listeners() {
     assert!(found(Arc::new(H1Accept::new(false))).is_none());
 }
+
+/// RED (the framed data listener bounds a silent connection, as the hyper loop's HTTP/1 header
+/// read bound did): a plain connection that sends nothing is closed once
+/// the first-byte bound (30 s, the hyper loop's header read bound) passes with no byte, even though its framer states no deadline.
+#[tokio::test(start_paused = true)]
+async fn a_silent_connection_is_closed_at_the_first_byte_bound() {
+    let door = Arc::new(H1Accept::new(true));
+    let framer = found(door).expect("found");
+    let (_client, server) = tokio::io::duplex(1024);
+    let (_stop, stop) = tokio::sync::watch::channel(false);
+    let router = Router::new();
+    let served = super::serve(server, framer, router, false, Duration::from_secs(30), stop);
+    tokio::time::timeout(Duration::from_secs(31), served)
+        .await
+        .expect("a connection that sends nothing is closed at the bound");
+}
