@@ -1422,6 +1422,7 @@ impl EgressFarEnd<'_> {
                 .fields
                 .iter()
                 .filter(|(n, _)| !auth.iter().any(|f| f.name.eq_ignore_ascii_case(n)))
+                .filter(|(n, _)| !busbar_contract::conn::is_sealed_fields_field(n))
                 .map(|(n, v)| (String::from_utf8_lossy(n).into_owned(), v.clone())),
         );
         // The framer's own lines last, as 1.5.5's client added its defaults after every field the
@@ -1436,6 +1437,20 @@ impl EgressFarEnd<'_> {
                 })
                 .map(|(n, v)| (String::from_utf8_lossy(n).into_owned(), v.clone())),
         );
+        // THE CREDENTIAL'S FIELDS ARE NAMED SEALED (TSEAL, `conn::SEALED_FIELDS_FIELD`): the
+        // connector hands a framer that renders sealed values filler for them, never the
+        // credential, and splices the real bytes in at connection security. A plane's own field of
+        // that name was dropped above: only the host names what is sealed.
+        let sealed: Vec<String> = auth
+            .iter()
+            .map(|f| String::from_utf8_lossy(&f.name).to_ascii_lowercase())
+            .collect();
+        if !sealed.is_empty() {
+            head.0.push((
+                busbar_contract::conn::SEALED_FIELDS_FIELD.to_owned(),
+                sealed.join(",").into_bytes(),
+            ));
+        }
         drop(auth);
         let borrowed: Vec<(&str, &[u8])> = head
             .0

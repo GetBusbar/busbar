@@ -257,6 +257,9 @@ pub struct Connection {
     /// emit the framer answered `YIELD_STREAM_FULL`. Nothing more is emitted on one until the
     /// framer hands a writable piece for it, or its end or failure piece.
     full: std::collections::HashSet<u64>,
+    /// SEALED CREDENTIAL VALUES (TSEAL, [`crate::seal`]): the real bytes of the fillers the framer
+    /// was handed, not yet spliced into its wire output.
+    seals: crate::seal::Seals,
 }
 
 /// One write held back until the framing takes it: its stream, bytes, whether they end the
@@ -855,6 +858,7 @@ impl Connection {
             offer: Vec::new(),
             agreed: 0,
             full: std::collections::HashSet::new(),
+            seals: crate::seal::Seals::default(),
         })
     }
 }
@@ -917,6 +921,7 @@ impl Connection {
             offer: Vec::new(),
             agreed: 0,
             full: std::collections::HashSet::new(),
+            seals: crate::seal::Seals::default(),
             security_error: None,
             key_pin: None,
             presented: Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -1080,6 +1085,7 @@ impl Connection {
             offer: accept.alpn.clone(),
             agreed: 0,
             full: std::collections::HashSet::new(),
+            seals: crate::seal::Seals::default(),
         };
         if conn.tls.is_none() {
             conn.begin()?;
@@ -1186,12 +1192,17 @@ impl Connection {
             Phase::Ended => return Err(Failure::Closed),
             _ => {}
         }
+        let mut opening = opening;
+        self.seal(&mut opening)?;
         let body_len = self.opening_body_len(opening.as_ref());
         let Some(message) = self.encode_opening(opening, head_words)? else {
             return Ok(());
         };
         match self.phase {
-            Phase::Open => self.put_opening(stream, &message, true, false, body_len)?,
+            Phase::Open => {
+                self.put_opening(stream, &message, true, false, body_len)?;
+                self.sealed_sent(stream)?;
+            }
             _ => self.early.push(Early {
                 body_len,
                 ..Early::of(stream, &message, true, false)
@@ -1929,6 +1940,12 @@ impl Connection {
     /// Begin the framing over what the open established, then send the first message and any
     /// early writes.
     fn begin(&mut self) -> Result<(), Failure> {
+        // THE OPENING IS SEALED FIRST (TSEAL): neither the begin nor the encode below is handed a
+        // credential value a sealing framer renders as filler.
+        let mut opening = self.opening.take();
+        let sealed = self.seal(&mut opening);
+        self.opening = opening;
+        sealed?;
         // A dial hands its opening head fields to the framing's begin too, for a wire that carries
         // them on the connection's opening.
         let opening: &[(String, Vec<u8>)] = match &self.opening {
@@ -1978,10 +1995,37 @@ impl Connection {
             // itself (a stream with writes waiting takes every later write behind them).
             let held = std::mem::take(&mut self.early);
             let sent = self.put_opening(EXCHANGE_STREAM, &message, true, false, body_len);
+            let sealed = sent.and_then(|()| self.sealed_sent(EXCHANGE_STREAM));
             self.early.extend(held);
-            sent?;
+            sealed?;
+        } else {
+            // A wire that carries the opening's fields on its begin rendered them there.
+            self.sealed_sent(EXCHANGE_STREAM)?;
         }
         Ok(())
+    }
+
+    /// SEAL `opening` (TSEAL, [`crate::seal`]): its sealed-fields field taken out; over a framer
+    /// that renders sealed values, each sealed value swapped for filler, held here to splice.
+    fn seal(&mut self, opening: &mut Option<Opening>) -> Result<(), Failure> {
+        let sealing = self.door.as_ref().is_some_and(|d| d.seals_values());
+        let secured = self.tls.is_some();
+        self.seals
+            .seal(opening, sealing, secured)
+            .map_err(|e| Failure::Refused(e.to_owned()))
+    }
+
+    /// AN OPENING'S SEALED VALUES ARE ALL SPLICED once it was emitted on `stream`: a filler the
+    /// framer did not render verbatim fails the connection, its real bytes wiped. An opening still
+    /// held back (its stream parked) is judged when it goes.
+    fn sealed_sent(&mut self, stream: u64) -> Result<(), Failure> {
+        if !self.seals.pending() || self.early.iter().any(|e| e.stream == stream) {
+            return Ok(());
+        }
+        self.seals.clear();
+        let f = Failure::Refused(crate::seal::SEAL_BROKEN.to_owned());
+        self.phase = Phase::Failed(f.clone());
+        Err(f)
     }
 
     /// THE TRANSPORT PIN, held on a dialled connection whose handshake just completed: the far end's
@@ -2115,11 +2159,23 @@ impl Connection {
 
     /// Take what the framer answered: its wire bytes to the socket (through TLS), its pieces to
     /// the inbox, its deadline to the timer, its end to the connection.
-    fn absorb(&mut self, y: Yielded) -> Result<(), Failure> {
+    fn absorb(&mut self, mut y: Yielded) -> Result<(), Failure> {
         if !y.wire.is_empty() {
+            // THE SPLICE (TSEAL): the real bytes over the framer's filler, only at the write into
+            // connection security; the output is wiped once written.
+            let spliced = self.tls.is_some() && self.seals.pending();
+            if spliced {
+                self.seals
+                    .splice(&mut y.wire)
+                    .map_err(|e| Failure::Refused(e.to_owned()))?;
+            }
             match self.tls.as_mut() {
                 Some(tls) => {
-                    tls.writer().write_all(&y.wire).map_err(failed)?;
+                    let written = tls.writer().write_all(&y.wire).map_err(failed);
+                    if spliced {
+                        crate::seal::wipe(&mut y.wire);
+                    }
+                    written?;
                     self.tls_out()?;
                 }
                 None => self.queue(&y.wire, false),
