@@ -131,6 +131,8 @@ pub fn row_bind(row: &str) -> Result<Bind, String> {
 pub struct Dispatched {
     live: Arc<Live>,
     facts: DoorFacts,
+    /// Its Statement states it renders sealed values (TSEAL, `abi::transport::EXT_SEALED_VALUES`).
+    seals: bool,
     on: Arc<Dispatcher>,
 }
 
@@ -327,7 +329,12 @@ impl Dispatched {
         LIVE.lock()
             .unwrap_or_else(PoisonError::into_inner)
             .push(Arc::downgrade(&live));
-        Ok(Self { live, facts, on })
+        Ok(Self {
+            live,
+            facts,
+            seals: stated.seals,
+            on,
+        })
     }
 
     /// REFRESH this instance with the deployment's applied `settings`: what [`refresh_live`] does
@@ -394,6 +401,10 @@ fn go_inline<I: InFrame, O: OutFrame>(
 impl FramerDoor for Dispatched {
     fn facts(&self) -> &DoorFacts {
         &self.facts
+    }
+
+    fn seals_values(&self) -> bool {
+        self.seals
     }
 
     fn side(&self) -> Option<Box<dyn Side>> {
