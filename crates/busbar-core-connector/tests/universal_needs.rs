@@ -259,6 +259,73 @@ fn the_connector_drives_the_dropped_in_http_door_against_a_real_server() {
     });
 }
 
+/// A BODIED REQUEST GOES OUT THROUGH THE DROPPED-IN HTTP DOOR, its length stated once: whichever
+/// side states it (the host, before the auth, for a door that leaves the length to the host; the
+/// door itself, for one that predates that), the far end reads exactly one `content-length`, the
+/// body's, and no request is refused for a body no length frames (transport-http #45: "the
+/// envelope cannot be expressed on this wire").
+#[test]
+fn a_bodied_request_goes_out_through_the_dropped_in_http_door_with_its_length() {
+    use busbar_core_connector::compose::{Connection, Dial};
+
+    let door = composing_door();
+    let scheme = door.facts().claims[0];
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    rt.block_on(async {
+        let (far, seen_rx) =
+            serve_once(respond(scheme, "{V} 200 OK\r\ncontent-length: 2\r\n\r\nok")).await;
+        let mut c = Connection::dial(
+            door,
+            &support::via(),
+            Dial {
+                target: format!("{scheme}://{far}/v1/probe"),
+                tls: None,
+                alpn: Vec::new(),
+                open_timeout: std::time::Duration::from_secs(5),
+                opening: Some((
+                    vec![
+                        ("method".to_owned(), b"POST".to_vec()),
+                        ("path".to_owned(), b"/v1/probe".to_vec()),
+                        ("content-type".to_owned(), b"application/json".to_vec()),
+                    ],
+                    b"{\"a\":1}".to_vec().into(),
+                )),
+                head_words: Default::default(),
+                anchors: None,
+            },
+        )
+        .expect("the connector dials through the http door");
+        let first = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            futures::future::poll_fn(|cx| c.poll_piece(cx)),
+        )
+        .await
+        .expect("the server answers")
+        .expect("the request is sent, never refused")
+        .expect("a head piece");
+        assert_eq!(first.status_code, Some(200));
+        let seen = seen_rx.await.unwrap();
+        assert!(seen.starts_with("POST /v1/probe "), "{seen}");
+        let lengths: Vec<&str> = seen
+            .split("\r\n")
+            .filter(|l| {
+                l.split_once(':')
+                    .is_some_and(|(n, _)| n.eq_ignore_ascii_case("content-length"))
+            })
+            .collect();
+        assert_eq!(lengths.len(), 1, "{seen}");
+        assert_eq!(
+            lengths[0].split_once(':').map(|(_, v)| v.trim()),
+            Some("7"),
+            "{seen}"
+        );
+        c.close();
+    });
+}
+
 /// THE CONNECTOR DRIVES A DROPPED-IN DOOR THAT FRAMES THE HOST'S SOCKET against a real far end: the
 /// opening message and a write go out through the door, the echo comes back as its frames, byte for
 /// byte. The door is the neutral frame door, which names no transport.

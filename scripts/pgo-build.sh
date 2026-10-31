@@ -160,6 +160,15 @@ else
     *)                 LSE_FLAG="" ;;
   esac
 fi
+# C-RUNTIME LINKAGE (W17): the MSVC build links the CRT statically (+crt-static), so a Windows
+# binary needs no Visual C++ Redistributable. Carried here because this script sets RUSTFLAGS, and an
+# explicit RUSTFLAGS makes cargo ignore .cargo/config.toml's target.<triple>.rustflags, which holds
+# the same flag for every other build. Joins both phases, like LSE_FLAG. Windows declares pgo:false
+# today, so this is parity with release-build.sh's non-PGO arm rather than a live branch.
+case "$EFFECTIVE_TRIPLE" in
+  *-windows-msvc) CRT_FLAG="-Ctarget-feature=+crt-static" ;;
+  *)              CRT_FLAG="" ;;
+esac
 # THE deterministic output path (see fail-closed rule above).
 OUT="target/pgo/${TARGET_SEG}release/busbar"
 # Positive-proof marker: written only after a verified PGO build; the workflow gates on it.
@@ -206,7 +215,7 @@ rm -rf "$PROF_DIR"; mkdir -p "$PROF_DIR"
 # must be gathered on the same ISA variant the optimized build targets, or the profile is a
 # statement about a different binary.
 # shellcheck disable=SC2086  # TARGET_FLAG is deliberately unquoted (see its definition)
-RUSTFLAGS="-Cprofile-generate=$PROF_DIR${LSE_FLAG:+ $LSE_FLAG}" \
+RUSTFLAGS="-Cprofile-generate=$PROF_DIR${LSE_FLAG:+ $LSE_FLAG}${CRT_FLAG:+ $CRT_FLAG}" \
   cargo build --release --locked --manifest-path dist/default/Cargo.toml --bin busbar $TARGET_FLAG --target-dir target/pgo-gen \
   || pgo_fail "instrumented build failed"
 INSTRUMENTED="target/pgo-gen/${TARGET_SEG}release/busbar"
@@ -344,60 +353,7 @@ PY
 # ---- busbar training config (mirrors the benchmark manifest's shape) -------------------------
 # Written per trainer run because each run binds its own port stride (see the training loop);
 # everything except the ports is byte-identical across runs.
-write_run_configs() {
-  local run_port="$1" run_mock_port="$2"
-  cat > "$WORK/config.yaml" <<YAML
-listen: "127.0.0.1:$run_port"
-admin_listen: "127.0.0.1:$((run_port + 1))"
-# 1.5.3 grammar. Two keys moved and the old spellings are now fail-closed boot refusals, which is
-# how this script broke the 1.5.3 Docker build: PGO is mandatory, the instrumented binary refused
-# its own training config, and the release could not produce an image. The trainer must be written
-# in the grammar of the binary it trains.
-#   observability.emit_server_timing -> advanced.response_headers.server_timing (block DELETED)
-#   auth.upstream_credentials        -> pools.upstream_credentials (all-pools default)
-advanced:
-  response_headers:
-    server_timing: true
-# Signed-key front door. Production traffic is governed - Bearer bbk_* tokens through the keys
-# arm, group admission, per-principal reqlog chains - and with the old empty chain NONE of that
-# trained: ed25519 verify, the governance admit/charge, and the governed reqlog branch were laid
-# out as cold code (the old "Bearer pgo-token" header was extracted and never verified). The
-# trainer mints one throwaway key per run against its own admin listener (the store is
-# in-memory, so the binding row only exists inside this process - exactly right for a trainer).
-identity-providers:
-  admin-tokens: { module: admin-tokens, token: { env: PGO_ADMIN_TOKEN } }
-auth:
-  chain: [keys]
-  admin_auth: [admin-tokens]
-  signing_key: { env: PGO_SIGNING_KEY }
-# Effectively-unbounded caps: the point is to run the admission check-and-charge path hot, not
-# to exercise 429s (the refusal sliver in phase 2 covers the reject arms, lightly).
-groups:
-  bench:
-    limits:
-      - { requests: 100000000, per: minute }
-      - { concurrent: 4096 }
-providers:
-  mock:
-    api_key: { env: PGO_MOCK_KEY }
-models:
-  gpt-4o-mini:
-    provider: mock
-    max_concurrent: 512
-    max_requests: -1
-pools:
-  upstream_credentials: own
-  bench-pool:
-    members:
-      - model: gpt-4o-mini
-YAML
-  cat > "$WORK/providers.yaml" <<YAML
-mock:
-  protocol: openai
-  base_url: http://127.0.0.1:$run_mock_port
-  error_map: {}
-YAML
-}
+. scripts/pgo-config.sh
 
 # ---- phase 2: train --------------------------------------------------------------------------
 # Per-run shape counts: 1/RUN_DIV of the historical single-run mix (see TRAIN_RUNS/RUN_DIV at
@@ -587,7 +543,7 @@ MERGED_SIZE="$(wc -c < "$MERGED" | tr -d ' ')"
 # definition near the top of this file. $LSE_FLAG (arm64 default only; see its definition) joins
 # here exactly as it joined the instrumented build, and BOLT's emit-relocs path is unchanged by it.
 # shellcheck disable=SC2086  # TARGET_FLAG is deliberately unquoted (see its definition)
-RUSTFLAGS="-Cprofile-use=$MERGED${EMIT_RELOCS:+ $EMIT_RELOCS}${LSE_FLAG:+ $LSE_FLAG}" \
+RUSTFLAGS="-Cprofile-use=$MERGED${EMIT_RELOCS:+ $EMIT_RELOCS}${LSE_FLAG:+ $LSE_FLAG}${CRT_FLAG:+ $CRT_FLAG}" \
   cargo build --release --locked --manifest-path dist/default/Cargo.toml --bin busbar $TARGET_FLAG --target-dir target/pgo \
   || pgo_fail "optimized (-Cprofile-use) build failed"
 [ -x "$OUT" ] || pgo_fail "optimized binary missing at $OUT"

@@ -367,7 +367,7 @@ fn main() {
         eprintln!("busbar: {e}");
         std::process::exit(1);
     }
-    let dispatcher = root::dispatch::boot(WORKERS.0, late_services.clone());
+    let dispatcher = root::dispatch::boot(WORKERS.0, &late_services);
     root::doors::install_dispatcher(dispatcher);
     // PROTOCOL REGISTRATION FIRST — before the CLI flags, because `--validate` reads the protocol
     // set. This is the composition root's whole knowledge of the protocol crates: one line per
@@ -804,10 +804,6 @@ async fn run(
     // Each door plane's pools, by its section key: each door plane's section carries its own pools
     // (DoorPools), captured before `cfg` is consumed.
     let door_pools = root::serve::door_pools(&cfg.plane_pools);
-    // The root breaker's per-pool ladders, read off the same `pools:` the build resolves each pool's
-    // own dispatch cfg from, before `cfg` is consumed.
-    #[cfg(feature = "root-admin")]
-    let breaker_policy = root::adapters::BreakerPolicy::from_pools(&cfg.pools);
 
     // THE ROOT'S RULES every configuration is judged by before a generation is built from it
     // (`busbar_kernel::appbuild::RootRules`): handed to the boot build here, kept by each generation
@@ -913,16 +909,10 @@ async fn run(
             .into_iter()
             .map(|(model, lane)| (model.to_string(), lane))
             .collect(),
-        app: {
-            let (live, boot) = (
-                std::sync::Arc::clone(&door_live_handle),
-                std::sync::Arc::clone(&app),
-            );
-            std::sync::Arc::new(move || {
-                live.get()
-                    .map_or_else(|| std::sync::Arc::clone(&boot), |h| h.load())
-            })
-        },
+        app: root::model_egress::LiveApp::new(
+            std::sync::Arc::clone(&door_live_handle),
+            std::sync::Arc::clone(&app),
+        ),
     };
     let door_reach = root::door_steps::DoorReach {
         providers: &door_providers,
@@ -1131,14 +1121,10 @@ async fn run(
                     .into_iter()
                     .map(|(model, lane)| (model.to_string(), lane))
                     .collect(),
-                app: {
-                    let (live, fallback) =
-                        (std::sync::Arc::clone(&live), std::sync::Arc::clone(next));
-                    std::sync::Arc::new(move || {
-                        live.get()
-                            .map_or_else(|| std::sync::Arc::clone(&fallback), |h| h.load())
-                    })
-                },
+                app: root::model_egress::LiveApp::new(
+                    std::sync::Arc::clone(&live),
+                    std::sync::Arc::clone(next),
+                ),
             };
             let reach = root::door_steps::DoorReach {
                 providers: &cfg.providers,
@@ -1222,7 +1208,7 @@ async fn run(
             book,
             None,
             &late_services,
-            breaker_policy,
+            root::adapters::BreakerPolicy::new(),
         ),
         None => admin_router,
     };

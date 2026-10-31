@@ -80,6 +80,8 @@ extern "C" {
 #define BB_MECH_SECTION_CONSUMED UINT32_C(4) /* [`Section::flags`]: the plugin reads the section but does not own its grammar. */
 #define BB_MECH_SECTION_SELECTS UINT32_C(16) /* [`Section::flags`]: this section's presence uses the plane (it selects it at boot, Law 7). */
 #define BB_MECH_EXT_DECLARES "declares" /* THE `declares` DOCUMENT'S KEY in a door's `Statement::extensions` (ARCHITECT ruling 2026-10-21 */
+#define BB_MECH_EXT_REFERENCE_FIELDS "reference_fields" /* THE REFERENCE-CAPABLE, NOT-SECRET SETTINGS FIELDS' KEY in a door's `Statement::extensions` (lead */
+#define BB_MECH_EXT_SPAN_RECORDS "span_records" /* THE FULL SPAN RECORDS' KEY in an export door's `Statement::extensions` (status row 173). Its */
 #define BB_MECH_SLOT_VALIDATE UINT32_C(0) /* `validate`. */
 #define BB_MECH_SLOT_OPEN UINT32_C(1) /* `open`. */
 #define BB_MECH_SLOT_REFRESH UINT32_C(2) /* `refresh`. */
@@ -226,6 +228,7 @@ extern "C" {
 #define BB_AUTH_MODE_OWN UINT32_C(1) /* [`FieldsIn::mode`]: the plugin's own bound credential. */
 #define BB_AUTH_MODE_PASSTHROUGH UINT32_C(2) /* [`FieldsIn::mode`]: pass the caller's verified credential ([`FieldsIn::caller_credential`]). */
 #define BB_AUTH_EXT_SCOPE "scope" /* `fields`' EXTENSIONS KEY ([`crate::abi::mechanism::extensions`], carried in */
+#define BB_AUTH_EXT_RETRY_AFTER "retry_after" /* `complete_login`'s REPLY EXTENSIONS KEY: on a [`LOGIN_OUTAGE`], the IdP's `Retry-After`. */
 #define BB_AUTH_SCOPE_REQUEST_FIELD "busbar-auth-scope" /* THE REQUEST FIELD BY WHICH A PLUGIN STATES ITS PER-CALL SCOPE to the host: a field of this name */
 #define BB_AUTH_NO_MEMBER_AUTH_FIELD "busbar-no-member-auth" /* THE REQUEST FIELD BY WHICH A PLUGIN WAIVES ITS MEMBER'S BINDING FOR ONE REQUEST: a field of this */
 #define BB_AUTH_FIELD_SENSITIVE UINT32_C(1) /* [`FieldSpan::flags`]: when SET, an h2 encoder sends the field never-indexed. 1.5.5 sent its */
@@ -313,7 +316,7 @@ extern "C" {
 #define BB_HOOK_HARD_MAX_SIGNALS UINT64_C(1024) /* The most signal entries one view may carry (a FAULT ceiling: the catalog holds ten signals). */
 
 /* export */
-#define BB_EXPORT_ABI_VERSION UINT32_C(3) /* The export kind's ABI version: v1.5.5 shipped `2` (`EXPORT_ABI_VERSION`), so 1.6.0 ships `3`. */
+#define BB_EXPORT_ABI_VERSION UINT32_C(3) /* The export kind's ABI version, `3`: `2` was the JSON export contract's, refused at scan. */
 #define BB_EXPORT_LAYOUT_FINGERPRINT UINT64_C(0x95a37b669466aab6) /* The export kind's layout fingerprint ([`crate::abi::mechanism::layout`]): the fold of */
 #define BB_EXPORT_SLOT_DELIVER UINT32_C(9) /* `deliver`. */
 #define BB_EXPORT_SLOT_SCRAPE UINT32_C(10) /* `scrape`. */
@@ -499,7 +502,7 @@ extern "C" {
 #define BB_TRANSPORT_SLOT_BEGIN UINT32_C(18) /* Framer: begin framing a connection. */
 #define BB_TRANSPORT_SLOT_INGEST UINT32_C(19) /* Framer: bytes from the far side. */
 #define BB_TRANSPORT_SLOT_EMIT UINT32_C(20) /* Framer: bytes for the far side, on one stream. */
-#define BB_TRANSPORT_SLOT_ENCODE UINT32_C(21) /* Framer: render an envelope (fields + body). */
+#define BB_TRANSPORT_SLOT_ENCODE UINT32_C(21) /* Framer: render an envelope (fields + body), WHOLE: an answer with `YIELD_MORE` is a FAULT. */
 #define BB_TRANSPORT_SLOT_REFUSE UINT32_C(22) /* Framer: render a refusal. */
 #define BB_TRANSPORT_SLOT_FINISH UINT32_C(23) /* Framer: close the framing. */
 #define BB_TRANSPORT_SLOT_DETACH UINT32_C(24) /* Framer: hand back the unconsumed bytes (an upgrade). */
@@ -521,6 +524,7 @@ extern "C" {
 #define BB_TRANSPORT_FACT_DETACHES UINT32_C(16) /* [`TransportTail::facts`]: the transport detaches a live connection for a hand-off. */
 #define BB_TRANSPORT_FACT_ADOPTS UINT32_C(32) /* [`TransportTail::facts`]: the transport adopts a connection handed to it. */
 #define BB_TRANSPORT_EXT_OFFERED_POINTS "offered-points" /* THE OFFERED-POINTS RECORD: the key under which a transport's Statement `extensions` states */
+#define BB_TRANSPORT_EXT_SEALED_VALUES "sealed-values" /* THE SEALED-VALUES RECORD (TSEAL): the key under which a FRAMER's Statement `extensions` states */
 #define BB_TRANSPORT_SIDE_ACCEPT UINT32_C(0) /* `side`: the accepting end. */
 #define BB_TRANSPORT_SIDE_DIAL UINT32_C(1) /* `side`: the dialing end. */
 #define BB_TRANSPORT_SIDE_ACCEPT_STREAM UINT32_C(2) /* `side`: the accepting end of ONE STREAM whose connection and head the host's own framer carries */
@@ -557,6 +561,7 @@ extern "C" {
 #define BB_TRANSPORT_SETTING_TEXT UINT32_C(3) /* [`SettingDecl::kind`]: text. */
 #define BB_TRANSPORT_DEST_AUTHORITY UINT32_C(0) /* [`Destination::kind`]: an authority. */
 #define BB_TRANSPORT_DEST_PROGRAM UINT32_C(1) /* [`Destination::kind`]: a program the carrier runs. */
+#define BB_TRANSPORT_DEST_RETIRED UINT32_C(2) /* [`Destination::kind`]: NOTHING TO OPEN, the KEY-RETIRED SIGNAL (T5). The member whose */
 #define BB_TRANSPORT_PIECE_END_OF_FRAME UINT16_C(1) /* [`FramePiece::flags`]: the piece completes its frame. */
 #define BB_TRANSPORT_PIECE_HAS_CODE UINT16_C(2) /* [`FramePiece::flags`]: `code` is present. */
 #define BB_TRANSPORT_PIECE_HAS_RETRY_AFTER UINT16_C(4) /* [`FramePiece::flags`]: `retry_after_secs` is present. */
@@ -567,12 +572,14 @@ extern "C" {
 #define BB_TRANSPORT_PIECE_END UINT16_C(128) /* [`FramePiece::flags`]: the stream ENDS whole here; no piece of it follows. The ONLY way a */
 #define BB_TRANSPORT_PIECE_WRITABLE UINT16_C(256) /* [`FramePiece::flags`]: the stream is WRITABLE again: the queue an `emit` answered with */
 #define BB_TRANSPORT_PIECE_HAS_DECLARED_LEN UINT16_C(512) /* [`FramePiece::flags`], with [`PIECE_FIELDS`]: `declared_len` is present, the body length the */
+#define BB_TRANSPORT_PIECE_INTERIM UINT16_C(1024) /* [`FramePiece::flags`], with [`PIECE_FIELDS`] and [`PIECE_HAS_CODE`]: the field block is an */
+#define BB_TRANSPORT_PIECE_CODE_HANDOFF UINT16_C(2048) /* [`FramePiece::flags`], with [`PIECE_HAS_CODE`]: `code` (and the `status_class` and `fault` read */
 #define BB_TRANSPORT_FRAME_PIECE_SIZE UINT32_C(48) /* The size of one [`FramePiece`], in bytes: the stride of [`FramerSink::pieces`]. */
 #define BB_TRANSPORT_EMIT_TEXT UINT32_C(1) /* [`EmitIn::flags`]: the bytes are a TEXT message, not a binary one, on a wire whose messages are */
 #define BB_TRANSPORT_WRITE_END_OF_FRAME UINT32_C(1) /* [`WriteIn::flags`]: the bytes complete a FRAME of the carrier's own wire, for a carrier that */
 #define BB_TRANSPORT_READ_END_OF_FRAME UINT32_C(1) /* [`IoOut::flags`] on a `read`: the bytes complete a FRAME of the carrier's own wire. A carrier */
 #define BB_TRANSPORT_YIELD_ENDED UINT32_C(1) /* [`FramerYield::flags`]: no frame follows on this connection. */
-#define BB_TRANSPORT_YIELD_MORE UINT32_C(2) /* [`FramerYield::flags`]: a buffer filled; call the same op again once drained. */
+#define BB_TRANSPORT_YIELD_MORE UINT32_C(2) /* [`FramerYield::flags`]: a buffer filled; call the same op again once drained. Never on `encode` */
 #define BB_TRANSPORT_YIELD_HAS_DEADLINE UINT32_C(4) /* [`FramerYield::flags`]: `next_deadline_ns` is set; call [`slot::TIMER`] then. */
 #define BB_TRANSPORT_YIELD_STREAM_FULL UINT32_C(8) /* [`FramerYield::flags`], on `emit` only: the bytes were taken and the stream's queue is at its */
 #define BB_TRANSPORT_METHOD_GET UINT32_C(1) /* `GET`. */
@@ -620,6 +627,7 @@ extern "C" {
 #define BB_HCONN_SERVICE_WRITE_REQUEST UINT32_C(13) /* Write one piece of a request on a FRAMED stream, with its descriptor: the framer builds its */
 #define BB_HCONN_SERVICES UINT32_C(14) /* How many services [`ConnectorSlots`] holds. */
 #define BB_HCONN_WITHIN_SEPARATOR "," /* The separator between the addresses of [`EstablishIn::within`]. */
+#define BB_HCONN_WITHIN_REQUEST_FIELD "busbar-dial-within" /* THE REQUEST FIELD BY WHICH A PLUGIN PINS A REQUEST'S DIAL (SEC-8F1), the request-path twin of */
 #define BB_HCONN_CAUSE_NONE UINT64_C(0) /* `ServiceOut::value` of a connector service answering FAILED or REFUSED: no cause named. */
 #define BB_HCONN_CAUSE_CONNECT UINT64_C(1) /* `ServiceOut::value` on a failure: the socket's open failed; `error` is the socket's error. */
 #define BB_HCONN_CAUSE_SECURITY UINT64_C(2) /* `ServiceOut::value` on a failure: connection security failed; `error` is its own error. */

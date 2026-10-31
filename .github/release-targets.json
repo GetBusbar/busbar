@@ -40,7 +40,7 @@
     "            below is what asserts it, and a target claiming a runner of a different",
     "            architecture is a contract violation.",
     "            LATCHKEY MIGRATION (phase 4, LK-7): the three linux/x86_64 rows (the default linux",
-    "            binary, the musl binary feeding docker.yml's amd64 image, and the amd64 image row",
+    "            binary (which also feeds the amd64 image), and the amd64 image row",
     "            itself) moved from ubuntu-latest to latchkey-xlarge (each trains a PGO profile, a",
     "            real build). arm64 (ubuntu-24.04-arm), macOS (macos-15-intel / macos-latest) and",
     "            Windows (windows-latest) rows are UNCHANGED -- Latchkey has none of those three",
@@ -54,10 +54,20 @@
     "  arch      the machine architecture the shipped binary MUST report. This is a contract row:",
     "            an artifact named aarch64 that contains x86_64 bytes is a 100%-broken artifact.",
     "  format    the object format the shipped binary MUST be (elf / macho / pe).",
-    "  linkage   `dynamic` or `static`. The release binaries are glibc/libSystem/MSVC dynamic; the",
-    "            docker.yml musl binaries are static because FROM scratch has no loader. Declaring",
-    "            it per target means the linkage assertion is one contract row rather than an ad-hoc",
-    "            `ldd | grep` in one workflow and nowhere else.",
+    "  linkage   `dynamic` or `static`. EVERY target is `dynamic` (W17): a binary that cannot dlopen",
+    "            cannot load a dropped-in plugin, and KICKOFF requires every plugin to work compiled-in",
+    "            OR dropped-in. A static musl binary cannot dlopen (musl's static libc answers every",
+    "            dlopen with `Dynamic loading not supported`), which is why the musl rows that fed the",
+    "            FROM-scratch image are gone. What the binary may depend on is the contract's",
+    "            `runtime_deps` row: only the OS's own C runtime and loader.",
+    "  glibc_max the newest glibc symbol version a linux-gnu binary may require: the baseline it",
+    "            runs on. Building on a newer glibc raises the floor silently (ubuntu-24.04 links",
+    "            GLIBC_2.39), so the linux-gnu rows build inside `linux_build_image` (manylinux_2_28,",
+    "            glibc 2.28: RHEL/Alma/Rocky 8+, Debian 10+, Ubuntu 20.04+, AL2023), release-build.sh",
+    "            refuses a host glibc newer than this, and `runtime_deps` asserts it on the bytes.",
+    "  packaged_into  the image target a binary is packaged into, byte for byte. The linux-gnu",
+    "            default rows feed the images, so the image and the tarball are ONE artifact (the",
+    "            image is a glibc base, gcr.io/distroless/cc, not scratch).",
     "  plugin_asset  the asset name of the REAL signed first-party plugin used to prove, on this",
     "            platform, that the shipped binary verifies a first-party signature. Functional, not",
     "            a grep: it is the check that would have caught the aarch64 defect on 1.5.1."
@@ -101,6 +111,16 @@
     ]
   },
   "pgo_floor": 4,
+  "linux_build_image": {
+    "_comment": [
+      "W17: the pinned baseline environment every linux-gnu row builds in (scripts/release/in-baseline.sh).",
+      "manylinux_2_28 is AlmaLinux 8 with glibc 2.28 and a current GCC toolset: the PyPA baseline that",
+      "uv, ruff and pydantic-core ship their Linux binaries from. Digest-pinned; bump both together."
+    ],
+    "glibc": "2.28",
+    "x86_64": "quay.io/pypa/manylinux_2_28_x86_64@sha256:e0adf18521ad35192df733a6c62d35df7801957d24e0470238aacecfab2188a3",
+    "aarch64": "quay.io/pypa/manylinux_2_28_aarch64@sha256:a3e02308c822fb6ce0d12248b0c941817ba5e1a1bc9e7bb5929f29c50eaa40a9"
+  },
   "targets": [
     {
       "target": "x86_64-unknown-linux-gnu",
@@ -111,10 +131,11 @@
       "arch": "x86_64",
       "format": "elf",
       "linkage": "dynamic",
+      "glibc_max": "2.28",
       "plugin_asset": "busbar-store-sqlite-1.0.4-x86_64-unknown-linux-gnu.tar.gz",
       "kind": "binary",
       "published": true,
-      "packaged_into": ""
+      "packaged_into": "image-linux-amd64"
     },
     {
       "target": "aarch64-unknown-linux-gnu",
@@ -125,10 +146,11 @@
       "arch": "aarch64",
       "format": "elf",
       "linkage": "dynamic",
+      "glibc_max": "2.28",
       "plugin_asset": "busbar-store-sqlite-1.0.4-aarch64-unknown-linux-gnu.tar.gz",
       "kind": "binary",
       "published": true,
-      "packaged_into": ""
+      "packaged_into": "image-linux-arm64"
     },
     {
       "_variant_comment": [
@@ -154,6 +176,7 @@
       "arch": "aarch64",
       "format": "elf",
       "linkage": "dynamic",
+      "glibc_max": "2.28",
       "plugin_asset": "busbar-store-sqlite-1.0.4-aarch64-unknown-linux-gnu.tar.gz",
       "kind": "binary",
       "published": true,
@@ -212,34 +235,6 @@
       "packaged_into": ""
     },
     {
-      "target": "x86_64-unknown-linux-musl",
-      "runner": "latchkey-xlarge",
-      "pgo": true,
-      "archive": "tar.gz",
-      "exe": "busbar",
-      "arch": "x86_64",
-      "format": "elf",
-      "linkage": "static",
-      "kind": "binary",
-      "published": false,
-      "packaged_into": "image-linux-amd64",
-      "plugin_asset": ""
-    },
-    {
-      "target": "aarch64-unknown-linux-musl",
-      "runner": "ubuntu-24.04-arm",
-      "pgo": true,
-      "archive": "tar.gz",
-      "exe": "busbar",
-      "arch": "aarch64",
-      "format": "elf",
-      "linkage": "static",
-      "kind": "binary",
-      "published": false,
-      "packaged_into": "image-linux-arm64",
-      "plugin_asset": ""
-    },
-    {
       "target": "image-linux-amd64",
       "kind": "image",
       "platform": "linux/amd64",
@@ -248,7 +243,7 @@
       "pgo": true,
       "exe": "busbar",
       "format": "elf",
-      "linkage": "static",
+      "linkage": "dynamic",
       "archive": "oci",
       "plugin_asset": "",
       "published": false,
@@ -263,7 +258,7 @@
       "pgo": true,
       "exe": "busbar",
       "format": "elf",
-      "linkage": "static",
+      "linkage": "dynamic",
       "archive": "oci",
       "plugin_asset": "",
       "published": false,

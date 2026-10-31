@@ -214,6 +214,7 @@ impl LoginMethods {
             let mut resolved = crate::config::secret::resolve_settings(
                 &mc.settings,
                 &registry.secret_slots(&mc.module),
+                &registry.reference_slots(&mc.module),
                 &mc.module,
                 secret_resolver,
                 &busbar_contract::config_time::ConfigScope::config_time(),
@@ -462,7 +463,7 @@ pub async fn issue_self_key(
     let SelfMint {
         principal,
         team,
-        granted_pools: pools,
+        granted_scopes: pools,
         ttl,
     } = match admit_self_mint(
         &verdict,

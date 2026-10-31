@@ -14,10 +14,9 @@ use crate::diagnostics::{
 
 #[allow(unused_imports)]
 use crate::{
-    admin, audit, auth, billing, breaker, catalogue, config, config_validate, core_routes, cost,
-    durable, endpoints, export, governance, handlers, hooks, ingress, ir, json, limits, oauth_as,
-    observability, operation, plugin_routes, profile, snapshot, state, store, telemetry, tls,
-    transport, trust,
+    admin, audit, auth, catalogue, config, config_validate, core_routes, cost, durable, endpoints,
+    export, governance, hooks, ingress, ir, json, limits, oauth_as, observability, operation,
+    plugin_routes, profile, snapshot, state, store, telemetry, transport, trust,
 };
 
 /// The FLEET DATA DIR the first-party anti-downgrade floor persists under, or `None` when this
@@ -292,93 +291,60 @@ pub type HookAxisBuild =
         &std::sync::Arc<dyn PluginRows>,
     ) -> Result<std::sync::Arc<dyn busbar_contract::hook_calls::HookAxis>, String>;
 
-/// A test build has no root: its store double ([`crate::test_support::store_double`]) and ranking
-/// double stand in for the root's entries, the in-crate secret double
-/// ([`crate::test_support::secrets`]) as the secret axis, and the test axis for the exports.
-#[cfg(any(test, feature = "test-support"))]
-const STAND_IN: RootInstall = RootInstall {
-    stores: &[crate::test_support::store_double::STORE],
-    registry_build: Some(crate::test_support::registry_stand_in),
-    plugins_fetch: Some(crate::test_support::fetch_stand_in),
-    hook_axis: Some(crate::test_support::hook_axis_stand_in),
-    // A test build links no hook row of the root's: the operator surface lists none, unless the
-    // root's own test binary hands its names in (`test_support::install_root_hook_names`).
-    hook_names: &[],
-    store_axis: Some(crate::test_support::store_axis_stand_in),
-    secret_axis: Some(&crate::test_support::SecretsStandIn),
-    secret_admit: None,
-    // A test build has no root ledger: no holder hears an apply and no dater dates an accrual,
-    // unless a test binary hands its own in (`test_support::rate_holders`).
-    rate_apply: None,
-    rate_epoch: None,
-    export_axis: Some(&crate::test_support::export_axis::STAND_IN),
-    admission: Some(&crate::test_support::AdmissionStandIn),
-    durable: Some(&crate::test_support::DurableStandIn),
-    plugin_logs: None,
-    hook_answers: None,
-    auth_chain_module: Some(crate::test_support::auth_chain_module_stand_in),
-    dispatch_latched: None,
-    // The in-process stand-in (no loader): the build's linked auth rows answered in process, a
-    // dropped-in auth row refused at its open, the double for every outbound style.
-    auth_axis: Some(crate::test_support::outbound_auth::stand_in),
-    // The test auth modules the stand-in axis answers in process.
-    in_process_auth: Some(crate::test_support::auth_modules::answers),
-    // A test build has no root to project a configuration for its door planes.
-    config_projection: None,
-};
-
-/// The composition root's linked store and hook entries (the build's in-process stores and, when
-/// compiled in, its ranking hooks) and its registry build, installed once before the first
-/// resolution.
-static ROOT_ROWS: std::sync::OnceLock<RootInstall> = std::sync::OnceLock::new();
+/// The install record: null until the composition root installs its rows ([`install_linked_rows`],
+/// the first install stands) or a test binary publishes its own ([`publish_root_rows`]). Every
+/// pointer stored here comes from `Box::leak` and is never freed or written through.
+static ROOT_ROWS: std::sync::atomic::AtomicPtr<RootInstall> =
+    std::sync::atomic::AtomicPtr::new(std::ptr::null_mut());
 
 /// THE ROOT'S DOOR onto the cold-kind axis: its linked tables' `stores` and `hooks` entries and the
 /// root's registry build (the first install stands). The kernel names none of the plugins it
 /// registers, and no store is a default (#2 rule (1), #40; Q-STORE = (B)).
 pub fn install_linked_rows(rows: RootInstall) {
-    let _ = ROOT_ROWS.set(rows);
+    let fresh: *mut RootInstall = Box::leak(Box::new(rows));
+    let _ = ROOT_ROWS.compare_exchange(
+        std::ptr::null_mut(),
+        fresh,
+        std::sync::atomic::Ordering::AcqRel,
+        std::sync::atomic::Ordering::Acquire,
+    );
 }
 
-/// The installed root rows (a test build stands its fixtures in). Admin's store catalog lists
-/// `stores`, the stores this build links.
+/// Set the install record to `rows`, replacing any set before. The composition root never calls
+/// this: it installs once through [`install_linked_rows`]. A test binary, which has no root,
+/// publishes the rows it stands in through it.
+#[doc(hidden)]
+pub fn publish_root_rows(rows: RootInstall) {
+    ROOT_ROWS.store(
+        Box::leak(Box::new(rows)),
+        std::sync::atomic::Ordering::Release,
+    );
+}
+
+/// The installed root rows. Admin's store catalog lists `stores`, the stores this build links.
+#[allow(unsafe_code)]
 pub fn root_rows() -> RootInstall {
-    #[cfg(any(test, feature = "test-support"))]
-    let mut rows = match TEST_ROOT.get().copied() {
-        Some(rows) => rows,
-        None => {
-            let _ = ROOT_ROWS.set(STAND_IN);
-            ROOT_ROWS.get().copied().unwrap_or_default()
-        }
-    };
-    #[cfg(not(any(test, feature = "test-support")))]
-    let rows = ROOT_ROWS.get().copied().unwrap_or_default();
+    let ptr = ROOT_ROWS.load(std::sync::atomic::Ordering::Acquire);
+    if ptr.is_null() {
+        return unset();
+    }
+    // SAFETY: `ptr` is non-null and was stored in `ROOT_ROWS` from `Box::leak`, which is never
+    // freed or mutated; the Acquire load that read it pairs with the store that wrote it.
+    unsafe { *ptr }
+}
+
+/// The install record before any is installed: none in a shipped build; a test build, which has no
+/// root, reads its stand-in rows until it publishes its own.
+fn unset() -> RootInstall {
     #[cfg(any(test, feature = "test-support"))]
     {
-        if let Some(hook_names) = TEST_ROOT_HOOK_NAMES.get().copied() {
-            rows.hook_names = hook_names;
-        }
-        if let Some(open) = TEST_ROOT_AUTH_AXIS.get().copied() {
-            rows.auth_axis = Some(open);
-        }
+        crate::test_support::root::STAND_IN
     }
-    rows
+    #[cfg(not(any(test, feature = "test-support")))]
+    {
+        RootInstall::default()
+    }
 }
-
-/// A TEST BINARY'S OWN ROOT, over the stand-in: what a test of the composition root's package
-/// installs when it drives the kernel in process over the loader it may name (the kernel names none,
-/// so its stand-in rows are in-process doubles). Read ahead of the stand-in, whichever read came
-/// first; the first install stands.
-#[cfg(any(test, feature = "test-support"))]
-pub(crate) static TEST_ROOT: std::sync::OnceLock<RootInstall> = std::sync::OnceLock::new();
-
-/// The hook names the composition root's OWN test binary hands in, in the root's words (its
-/// generated linked-hook list): a test build's install record reports them in place of the
-/// stand-in's none, whichever read came first, so a document that test binary renders names the
-/// hooks the shipped binary names ([`crate::test_support::install_root_hook_names`]). The first
-/// hand-in stands.
-#[cfg(any(test, feature = "test-support"))]
-pub(crate) static TEST_ROOT_HOOK_NAMES: std::sync::OnceLock<&'static [&'static str]> =
-    std::sync::OnceLock::new();
 
 /// THE ROOT'S DOOR onto the auth axis: its linked table's `auths` entries (the first install
 /// stands; the authenticate step holds them) and their names. Every admin auth module — the operator
@@ -406,13 +372,6 @@ pub fn inbound_auth_names(rows: &[LinkedAuth]) -> Vec<&'static str> {
 /// composition root's (it holds the dispatcher), installed once; the kernel names neither the
 /// dispatcher nor the rows it opens (ARCHITECT ruling 2026-09-30, AUTH-DOOR Q1).
 pub type AuthAxisOpener = fn(Arc<dyn PluginRows>) -> Arc<dyn busbar_contract::auth_calls::AuthAxis>;
-
-/// The auth-axis opener the composition root's OWN test binary hands in
-/// ([`crate::test_support::install_root_auth_axis`]): a test build's install record reports it in
-/// place of the stand-in's, whichever read came first. The first hand-in stands.
-#[cfg(any(test, feature = "test-support"))]
-pub(crate) static TEST_ROOT_AUTH_AXIS: std::sync::OnceLock<AuthAxisOpener> =
-    std::sync::OnceLock::new();
 
 /// This build's auth axis over `registry`, through the opener on the root's install record
 /// ([`RootInstall::auth_axis`]); `None` (no opener installed): no auth row answers anything. A
@@ -959,14 +918,24 @@ fn log_build(n: BuildNote<'_>, dir: &str) {
                         first_party,
                         "plugin validated"
                     ),
-                    busbar_contract::plugin_rows::Trust::Allowed { reason } => diag_warn!(
-                        PLUGIN_LOADED_UNVERIFIED,
-                        plugin = %p.name,
-                        alias = %p.alias,
-                        kind = %p.kind,
-                        reason = %reason,
-                        "plugin validated as UNVERIFIED (permitted by an explicit plugins.trust opt-in)"
-                    ),
+                    busbar_contract::plugin_rows::Trust::Allowed { reason } => {
+                        diag_warn!(
+                            PLUGIN_LOADED_UNVERIFIED,
+                            plugin = %p.name,
+                            alias = %p.alias,
+                            kind = %p.kind,
+                            reason = %reason,
+                            "plugin validated as UNVERIFIED (permitted by an explicit plugins.trust opt-in)"
+                        );
+                        // AUDITED (item 1): the host's category, never the evaluator's reason
+                        // text (it carries manifest bytes); the warning above names the reason.
+                        crate::audit::auditlog::record_plugin_refusal(
+                            crate::audit::auditlog::PluginRefusal::Unverified,
+                            "file",
+                            &p.file,
+                            "unverified",
+                        );
+                    }
                 }
             }
         }
@@ -1206,6 +1175,10 @@ pub(crate) fn build_secret_resolver(
         config::secret::resolve_settings(
             &mcfg.settings,
             &registry.secret_slots(module),
+            // A secret module's settings reach its open AS WRITTEN (the secret axis lends its
+            // declared secrets; it holds no seal to read a resolved text), so no field of one is
+            // reference-capable: a reference there that is not a declared secret stays refused.
+            &[],
             module,
             &builtins,
             &busbar_contract::config_time::ConfigScope::config_time(),

@@ -443,7 +443,7 @@ fn admin_token_secret_ref_re_resolves_on_apply() {
     std::fs::write(&key_path, hex::encode([7u8; 32])).unwrap();
 
     let prior =
-        busbar_kernel::test_support::build_once(cfg_with_credentials(&token_path, &key_path), None)
+        busbar_kernel_testkit::app::build_once(cfg_with_credentials(&token_path, &key_path), None)
             .expect("boot");
     let gov = prior.governance.clone().expect("governance");
     assert_eq!(
@@ -454,7 +454,7 @@ fn admin_token_secret_ref_re_resolves_on_apply() {
 
     // THE ROTATION: the operator replaces the secret behind the ref, then reloads.
     std::fs::write(&token_path, "tok-v2").unwrap();
-    let next = busbar_kernel::test_support::build_once(
+    let next = busbar_kernel_testkit::app::build_once(
         cfg_with_credentials(&token_path, &key_path),
         Some(&prior),
     )
@@ -503,7 +503,7 @@ fn signing_key_secret_ref_re_resolves_on_apply_and_fails_closed() {
     std::fs::write(&key_path, hex::encode([7u8; 32])).unwrap();
 
     let prior =
-        busbar_kernel::test_support::build_once(cfg_with_credentials(&token_path, &key_path), None)
+        busbar_kernel_testkit::app::build_once(cfg_with_credentials(&token_path, &key_path), None)
             .expect("boot");
     let gov = prior.governance.clone().expect("governance");
     let spec = busbar_kernel::governance::NewKeySpec {
@@ -523,7 +523,7 @@ fn signing_key_secret_ref_re_resolves_on_apply_and_fails_closed() {
 
     // THE ROTATION: new key material behind the same ref, then reload.
     std::fs::write(&key_path, hex::encode([9u8; 32])).unwrap();
-    busbar_kernel::test_support::build_once(
+    busbar_kernel_testkit::app::build_once(
         cfg_with_credentials(&token_path, &key_path),
         Some(&prior),
     )
@@ -551,7 +551,7 @@ fn signing_key_secret_ref_re_resolves_on_apply_and_fails_closed() {
 
     // FAIL-CLOSED: an unresolvable ref refuses the apply outright.
     std::fs::remove_file(&key_path).unwrap();
-    let err = match busbar_kernel::test_support::build_once(
+    let err = match busbar_kernel_testkit::app::build_once(
         cfg_with_credentials(&token_path, &key_path),
         Some(&prior),
     ) {
@@ -582,7 +582,7 @@ fn blank_admin_token_refuses_to_start() {
     for blank in ["", "   ", "\n\t "] {
         let token_path = dir.join("admin.token");
         std::fs::write(&token_path, blank).unwrap();
-        let err = match busbar_kernel::test_support::build_once(
+        let err = match busbar_kernel_testkit::app::build_once(
             cfg_with_credentials(&token_path, &key_path),
             None,
         ) {
@@ -608,7 +608,7 @@ fn blank_admin_token_refuses_to_start() {
     let token_path = dir.join("admin.token");
     std::fs::write(&token_path, "real-token").unwrap();
     let app =
-        busbar_kernel::test_support::build_once(cfg_with_credentials(&token_path, &key_path), None)
+        busbar_kernel_testkit::app::build_once(cfg_with_credentials(&token_path, &key_path), None)
             .expect("boot");
     let gov = app.governance.clone().expect("governance");
     assert_eq!(
@@ -674,7 +674,7 @@ async fn renamed_provider_is_the_operator_credential(module: &str) {
     let ops: config::IdentityProviderCfg =
         serde_yaml::from_str(&format!("module: {module}")).expect("ops");
     cfg.identity_providers.insert("ops".to_string(), ops);
-    let app = Arc::new(busbar_kernel::test_support::build_once(cfg, None).expect("boot"));
+    let app = Arc::new(busbar_kernel_testkit::app::build_once(cfg, None).expect("boot"));
     let _ = std::fs::remove_dir_all(&dir);
 
     assert!(
@@ -902,7 +902,7 @@ fn a_swapped_admin_chain_is_the_loops_next_door() {
     std::fs::write(&token_path, "tok-live").unwrap();
     std::fs::write(&key_path, hex::encode([7u8; 32])).unwrap();
     let closed = Arc::new(
-        busbar_kernel::test_support::build_once(cfg_with_credentials(&token_path, &key_path), None)
+        busbar_kernel_testkit::app::build_once(cfg_with_credentials(&token_path, &key_path), None)
             .expect("boot"),
     );
     let mut open = (*closed).clone();
@@ -1062,6 +1062,7 @@ async fn test_role_bound_principal_governed_like_a_virtual_key() {
              [rekey-model]\n  gpool-b:\n    members: [rekey-model]",
         )
         .expect("the section"),
+        busbar_contract::section::RESERVED_POOLS_KEY,
     )
     .expect("the pools");
     // What the caller reads: the identity refusal's 401, the grant's 403, else served.

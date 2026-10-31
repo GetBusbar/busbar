@@ -572,7 +572,7 @@ impl<'call, T: Send + Sync + 'static> Instance<'call, T> {
     }
 }
 
-/// A slot body with no `unsafe`: [`Slot`](crate::abi::sdk::door::Slot)'s safe form, named in
+/// A slot body with no `unsafe`: [`RawSlot`](crate::abi::sdk::door::RawSlot)'s safe form, named in
 /// [`plugin_door!`](crate::plugin_door) as [`Safe<Self>`].
 pub trait SafeSlot {
     /// The slot's `in`.
@@ -653,13 +653,13 @@ pub trait SafeSlot {
 /// ```compile_fail,E0080
 /// use busbar_contract::abi::mechanism::call::{InHead, OutHead, Outcome};
 /// use busbar_contract::abi::mechanism::lifecycle::*;
-/// use busbar_contract::abi::sdk::door::Slot;
+/// use busbar_contract::abi::sdk::door::RawSlot;
 /// use busbar_contract::abi::sdk::{Instance, Lent, Out, Safe, SafeSlot};
 /// # use std::ffi::c_void;
 /// # macro_rules! ready { ($n:ident, $i:ty, $o:ty) => {
 /// #     struct $n;
-/// #     impl Slot for $n { type In = $i; type Out = $o;
-/// #         fn call(_: *mut c_void, _: &$i, _: Out<'_, $o>) -> Outcome { Outcome::Ready } }
+/// #     impl RawSlot for $n { type In = $i; type Out = $o;
+/// #         unsafe fn call(_: *mut c_void, _: &$i, _: &mut $o) -> Outcome { Outcome::Ready } }
 /// # } }
 /// # ready!(V, ValidateIn, OutHead); ready!(Rf, RefreshIn, OutHead); ready!(Rt, GenIn, OutHead);
 /// # ready!(Dr, DriveIn, OutHead); ready!(Cn, CancelIn, CancelOut); ready!(Rl, ReleaseIn, OutHead);
@@ -688,7 +688,9 @@ pub trait SafeSlot {
 #[derive(Debug)]
 pub struct Safe<S>(PhantomData<S>);
 
-impl<S: SafeSlot> Entry for Safe<S> {
+// SAFETY: `SAFE` is true and earned: `enter` reads the instance only as the SDK's `Tagged` box,
+// and an `open` behind `Safe` answers only the box it minted.
+unsafe impl<S: SafeSlot> Entry for Safe<S> {
     type In = S::In;
     type Out = S::Out;
     const SAFE: bool = true;

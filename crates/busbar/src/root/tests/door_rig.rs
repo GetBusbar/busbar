@@ -220,10 +220,7 @@ pub(crate) fn attach_late(late: &LateServices, gov: &Arc<GovState>) {
 
 /// The process's dispatcher over `late`, `workers` wide, as boot builds it.
 pub(crate) fn dispatcher(workers: usize, late: &Arc<LateServices>) -> Arc<Dispatcher> {
-    Arc::new(crate::root::dispatch::build(
-        workers,
-        Arc::clone(late) as Arc<dyn HostServices>,
-    ))
+    Arc::new(crate::root::dispatch::build(workers, late))
 }
 
 /// THE PROCESS'S CONNECTOR, as boot builds it: every linked transport door a framer entry, every
@@ -437,6 +434,7 @@ pub(crate) struct DoorCompose<'a> {
     hooks: Option<HookStage>,
     post: Option<Arc<NodeEndPost>>,
     framers: Option<Arc<Connector>>,
+    tables: Option<&'a busbar_kernel::plane_driver::serve::ServeTables>,
 }
 
 impl<'a> DoorCompose<'a> {
@@ -459,7 +457,20 @@ impl<'a> DoorCompose<'a> {
             hooks: None,
             post: None,
             framers: None,
+            tables: None,
         }
+    }
+
+    /// THE ADMIN TABLE the doors are published into (busbar #1834: a value each generation
+    /// carries), so a cell lends the same table to the App it builds and the admin router answers
+    /// the doors' routes off it. Unset: a table of the composition's own, which no App reads.
+    #[must_use]
+    pub(crate) fn tables(
+        mut self,
+        tables: &'a busbar_kernel::plane_driver::serve::ServeTables,
+    ) -> Self {
+        self.tables = Some(tables);
+        self
     }
 
     /// The deployment's public base URL.
@@ -524,6 +535,7 @@ impl<'a> DoorCompose<'a> {
     }
 
     fn composed(&self, egress: Option<&DoorEgress<'_>>) -> Result<Served, String> {
+        let own = busbar_kernel::plane_driver::serve::ServeTables::default();
         super::compose_planes(
             &self.doors,
             self.dispatcher,
@@ -533,7 +545,7 @@ impl<'a> DoorCompose<'a> {
             self.money,
             egress,
             self.hooks.as_ref(),
-            &busbar_kernel::plane_driver::serve::ServeTables::default(),
+            self.tables.unwrap_or(&own),
         )
     }
 }

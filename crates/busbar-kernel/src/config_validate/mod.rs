@@ -976,6 +976,19 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
                         }
                     }
                 }
+                // Rule (plane grants, W9): an `allowed_{kind}s` grant names a kind an installed
+                // plane declares. A grant of a kind nothing serves is refused, never left inert.
+                for field in binding.plane_grants.keys() {
+                    let declared = crate::governance::plane_grant_kind(field)
+                        .is_some_and(|kind| crate::governance::plane_declares_kind(&kind));
+                    if !declared {
+                        errors.push(format!(
+                            "role_bindings.{module}.{role}.{field} grants a scope kind no \
+                             installed plane declares; remove it, or install the plane whose \
+                             grants it names"
+                        ));
+                    }
+                }
                 if let Some(group) = binding.group.as_deref() {
                     if !cfg.groups.contains_key(group) {
                         errors.push(format!(
@@ -2307,6 +2320,17 @@ pub fn metadata_denylist_entries() -> Vec<String> {
     .collect()
 }
 
+/// EVERY entry the guard enforces as metadata, as `--print-metadata-blocklist` prints it (the
+/// security doc calls that list the ground truth): [`metadata_denylist_entries`] in 1.5.5's order,
+/// then the two enforced entries 1.5.5 never listed, the EC2 task-metadata endpoint `fd00:ec2::23`
+/// and IPv6 link-local `fe80::/10`. Appended, so every line 1.5.5 printed keeps its place. The
+/// boot line's count stays on [`metadata_denylist_entries`] (1.5.5's displayed list).
+pub fn metadata_enforced_entries() -> Vec<String> {
+    let mut entries = metadata_denylist_entries();
+    entries.extend(["fd00:ec2::23".to_string(), "fe80::/10".to_string()]);
+    entries
+}
+
 pub mod deal;
 /// Enumerating every secret reference in the resolved config, and the two-layer guard that makes
 /// forgetting one impossible rather than merely discouraged. Its own module because the guard is a
@@ -2404,7 +2428,7 @@ fn validate_providers_with(
         }
 
         for (code, mapped_class) in provider_cfg.error_map() {
-            if crate::config::status_class_from_str(mapped_class).is_none() {
+            if busbar_contract::upstream::StatusClass::parse(mapped_class).is_none() {
                 errors.push(format!(
                     "provider '{provider_name}' error_map code '{code}': invalid StatusClass '{mapped_class}', must be one of: rate_limit, overloaded, server_error, timeout, network, auth, billing, client_error, context_length"
                 ));

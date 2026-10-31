@@ -40,6 +40,9 @@ struct Entry {
     /// For a linked auth row stated by [`Rows::with_linked_secret_slots`]: the secret reference
     /// keys its door's Statement names in `secret_refs`.
     secret_slots: Vec<String>,
+    /// For a row stated by [`Rows::with_dropped_reference_slots`]: the reference-capable, not-secret
+    /// paths its Statement's extensions name (`reference_fields`).
+    reference_slots: Vec<String>,
 }
 
 impl Entry {
@@ -122,6 +125,7 @@ fn linked_entry(name: &str, alias: &str, kind: &str, door: DoorFn, ephemeral: bo
         door: Some(door),
         inbound_style: Vec::new(),
         secret_slots: Vec::new(),
+        reference_slots: Vec::new(),
     }
 }
 
@@ -204,6 +208,17 @@ impl Rows {
         self
     }
 
+    /// `self` with the dropped-in `row` admitted, its Statement's extensions naming `slots`
+    /// reference-capable, not secret (`reference_fields`, lead ruling item 7a).
+    #[must_use]
+    pub fn with_dropped_reference_slots(mut self, row: Row, slots: &[&str]) -> Self {
+        self = self.with_dropped(row);
+        if let Some(e) = self.dropped.last_mut() {
+            e.reference_slots = slots.iter().map(|s| (*s).to_string()).collect();
+        }
+        self
+    }
+
     /// `self` with the dropped-in `row` admitted after the rows it already has.
     #[must_use]
     pub fn with_dropped(mut self, row: Row) -> Self {
@@ -213,6 +228,7 @@ impl Rows {
             door: None,
             inbound_style: Vec::new(),
             secret_slots: Vec::new(),
+            reference_slots: Vec::new(),
         });
         self
     }
@@ -358,6 +374,12 @@ impl PluginRows for Rows {
     fn secret_slots(&self, name_or_alias: &str) -> Vec<String> {
         self.entry(name_or_alias)
             .map(|e| e.secret_slots.clone())
+            .unwrap_or_default()
+    }
+
+    fn reference_slots(&self, name_or_alias: &str) -> Vec<String> {
+        self.entry(name_or_alias)
+            .map(|e| e.reference_slots.clone())
             .unwrap_or_default()
     }
 

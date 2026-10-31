@@ -286,7 +286,7 @@ fn test_validate_rejects_bad_protocol() {
 #[test]
 fn test_error_map_invalid_class_message_lists_full_valid_set() {
     // The invalid-StatusClass diagnostic must enumerate EVERY class that
-    // breaker::status_class_from_str accepts; `context_length` was historically
+    // StatusClass::parse accepts; `context_length` was historically
     // omitted from the message even though it is a valid mapping target, so an
     // operator who saw the error could not learn it was an allowed value.
     let mut providers = HashMap::new();
@@ -306,7 +306,7 @@ fn test_error_map_invalid_class_message_lists_full_valid_set() {
         .unwrap_or_else(|| panic!("expected invalid-StatusClass error; got: {errs:?}"));
     assert!(
             msg.contains("context_length"),
-            "valid-values list must include 'context_length' (it is accepted by status_class_from_str); got: {msg}"
+            "valid-values list must include 'context_length' (it is accepted by StatusClass::parse); got: {msg}"
         );
 
     // Guard against drift in the other direction: every class the breaker accepts
@@ -323,7 +323,7 @@ fn test_error_map_invalid_class_message_lists_full_valid_set() {
         "context_length",
     ] {
         assert!(
-            crate::config::status_class_from_str(class).is_some(),
+            busbar_contract::upstream::StatusClass::parse(class).is_some(),
             "test invariant: '{class}' should be a real StatusClass"
         );
         assert!(
@@ -936,21 +936,36 @@ fn test_validate_accepts_a_private_or_loopback_literal_base_url() {
     }
 }
 
-/// E1 PARITY: the metadata denylist DISPLAYS 1.5.5's eleven entries (`--print-metadata-blocklist`
-/// and the boot line's count), and the guard ENFORCES twelve: the EC2 task-metadata endpoint
-/// `fd00:ec2::23` is refused beside the eleven, though it is not listed.
+/// The boot line's COUNT keeps 1.5.5's eleven displayed entries (E1 parity), and
+/// `--print-metadata-blocklist` prints EVERY entry the guard enforces (security.md: the flag is the
+/// ground truth; owner ruling for 1.6.0: the doc binds): the eleven plus the EC2 task-metadata
+/// endpoint `fd00:ec2::23` and IPv6 link-local `fe80::/10`, each of which the guard refuses.
 #[test]
-fn test_the_metadata_denylist_displays_eleven_and_enforces_twelve() {
-    let shown = crate::config_validate::metadata_denylist_entries();
-    assert_eq!(shown.len(), 11, "1.5.5's displayed list: {shown:?}");
-    assert!(!shown.iter().any(|e| e == "fd00:ec2::23"), "{shown:?}");
+fn test_the_boot_count_shows_eleven_and_the_printed_list_every_enforced_entry() {
+    let counted = crate::config_validate::metadata_denylist_entries();
+    assert_eq!(counted.len(), 11, "1.5.5's displayed count: {counted:?}");
+    let printed = crate::config_validate::metadata_enforced_entries();
+    assert_eq!(printed.len(), 13, "every enforced entry: {printed:?}");
+    for entry in &counted {
+        assert!(printed.contains(entry), "{entry} is printed: {printed:?}");
+    }
+    for entry in ["fd00:ec2::23", "fe80::/10"] {
+        assert!(
+            printed.iter().any(|e| e == entry),
+            "{entry} is printed: {printed:?}"
+        );
+    }
     let task: std::net::IpAddr = "fd00:ec2::23".parse().expect("an address");
     assert!(
         busbar_contract::net::ip_is_cloud_metadata(&task),
-        "the twelfth entry is enforced"
+        "the EC2 task-metadata endpoint is enforced"
     );
     let imds: std::net::IpAddr = "fd00:ec2::254".parse().expect("an address");
     assert!(busbar_contract::net::ip_is_cloud_metadata(&imds));
+    assert!(
+        busbar_contract::net::host_is_link_local_v6("fe80::1"),
+        "IPv6 link-local is refused as metadata is"
+    );
 }
 
 #[test]
@@ -1685,6 +1700,41 @@ fn test_validate_rejects_unknown_failover_exclusion() {
     );
 }
 
+/// W9 — A ROLE BINDING'S PLANE GRANT NAMES A DECLARED KIND, OR IT IS REFUSED. `allowed_{kind}s`
+/// beside `allowed_pools` is a role-binding key, and a kind no installed plane declares is refused
+/// at validation naming the binding and the field, never left to sit inert while the operator
+/// believes it granted. A key that is not a grant field at all stays refused at parse.
+#[test]
+fn a_role_binding_grant_of_an_undeclared_kind_is_refused_at_validation() {
+    let binding: config::RoleBindingCfg = serde_yaml::from_str("allowed_widgets: [x]\n")
+        .expect("`allowed_{kind}s` is a role-binding key");
+    let (providers, models, pools) = valid_maps();
+    let mut cfg = make_root_cfg(providers, models, pools);
+    let mut auth = config::AuthCfg::default_none();
+    auth.chain = vec![config::AuthChainEntry::bare("keys")];
+    auth.role_bindings.insert(
+        "keys".to_string(),
+        std::collections::BTreeMap::from([("ops".to_string(), binding)]),
+    );
+    cfg.auth = Some(auth);
+    let errs = validate(&cfg).expect_err("an undeclared kind must fail validation");
+    assert!(
+        errs.iter()
+            .any(|e| e.contains("role_bindings.keys.ops") && e.contains("allowed_widgets")),
+        "expected the undeclared-kind error naming the binding and field; got: {errs:?}"
+    );
+    for not_a_grant in [
+        "grop: x\n",
+        "allowed_widgets: x\n",
+        "allowed_widgets: [1]\n",
+    ] {
+        assert!(
+            serde_yaml::from_str::<config::RoleBindingCfg>(not_a_grant).is_err(),
+            "`{not_a_grant}` is not a role-binding grant"
+        );
+    }
+}
+
 #[test]
 fn test_validate_rejects_bad_chain_and_role_binding_scopes() {
     // Both scope-token rules, on the 1.5.0 surface: a typo'd chain-entry `max_admin_scope` and a
@@ -1706,6 +1756,7 @@ fn test_validate_rejects_bad_chain_and_role_binding_scopes() {
                 group: None,
                 admin_scope: Some("readonly".to_string()), // typo (it's read-only)
                 verbs: None,
+                plane_grants: Default::default(),
             },
         )]),
     );
@@ -1810,6 +1861,7 @@ fn validate_admin_scope_mint_now_errors() {
                 group: None,
                 admin_scope: Some("mint".to_string()),
                 verbs: None,
+                plane_grants: Default::default(),
             },
         )]),
     );
@@ -5409,6 +5461,7 @@ fn test_validate_role_binding_group_must_exist() {
         group: Some("squad".to_string()),
         admin_scope: None,
         verbs: None,
+        plane_grants: Default::default(),
     };
     let (providers, models, pools) = valid_maps();
     let mut cfg = make_root_cfg(providers, models, pools);

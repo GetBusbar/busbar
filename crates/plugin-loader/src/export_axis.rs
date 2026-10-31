@@ -233,9 +233,12 @@ impl<'r> ExportRows<'r> {
     /// The sink's own checks across `instances` of `module` at `phase`; `None` when `module` is
     /// not an export row.
     ///
-    /// `check` runs on an instance opened for it alone, over the settings of the first instance
-    /// that opens. An instance whose settings do not open is already refused by its own probe, and
-    /// the checks across the others still run.
+    /// `check` runs on an instance opened for it alone (bound with no connection table, so it
+    /// reaches nothing), over the settings of the first instance that opens. An instance whose
+    /// settings its sink refuses is already refused by its own probe, and the checks across the
+    /// others still run. A row that will not load here, or whose every instance validates and
+    /// still will not open, answers why as its one finding: the sink's checks did not run, and
+    /// the configuration is not reported clean (export ABI defect 3).
     #[must_use]
     pub fn check(
         &self,
@@ -254,19 +257,28 @@ impl<'r> ExportRows<'r> {
         } else {
             &listed[..]
         };
+        let unchecked = |why: String| Some(vec![format!("export `module: {module}`: {why}")]);
+        let mut unopened = None;
         for (named, settings) in candidates {
-            let Ok(p) = self.load(row, &label(named), None) else {
-                return Some(Vec::new());
+            let p = match self.load(row, &label(named), None) {
+                Ok(p) => p,
+                Err(why) => return unchecked(why),
             };
-            let Ok(opened) = ExportInstance::open(p, self.dispatcher.clone(), settings) else {
+            if export_door::validate(&p, settings).is_err() {
+                // Its probe refuses these settings, naming the instance.
                 continue;
-            };
-            return Some(
-                export_door::check(opened.plugin(), phase, &listed)
-                    .unwrap_or_else(|e| vec![format!("export `module: {module}`: {e}")]),
-            );
+            }
+            match ExportInstance::open(p, self.dispatcher.clone(), settings) {
+                Ok(opened) => {
+                    return Some(
+                        export_door::check(opened.plugin(), phase, &listed)
+                            .unwrap_or_else(|e| vec![format!("export `module: {module}`: {e}")]),
+                    )
+                }
+                Err(why) => unopened = Some(why),
+            }
         }
-        Some(Vec::new())
+        unopened.map_or_else(|| Some(Vec::new()), unchecked)
     }
 
     /// OPEN one instance of `module` with `settings` under the host's instance `label`.

@@ -159,14 +159,15 @@ pub struct RootHistory {
     /// One append at a time — a config apply or a signed correction — so an entry's number on the
     /// history and its record's position on the chain are the same order.
     applying: Mutex<()>,
-    /// THE CARD A CONFIG CHANGE STAGED: on the journal, not yet published, because the change it
-    /// was staged for has not committed. Published by the commit ([`Self::apply_rates`]) or
-    /// withdrawn ([`Self::withdraw_staged`]).
-    staged: Mutex<Option<CardApplied>>,
-    /// The form of the config card in force, as the journal holds it: what a withdrawal puts back
-    /// behind a staged card whose change did not commit, or behind a card the journal left in doubt
-    /// ([`Self::withdraw`]).
+    /// The form of the config card in force, as the journal holds it.
     in_force: Mutex<Option<CardForm>>,
+    /// **THE FLEET-SHARED HISTORY IN THE STORE** (MONEY-DESIGN section 3a): set by the production boot
+    /// before its book opens ([`Self::keep_in_store`]). Once it is loaded nothing is journalled,
+    /// and every change of the configured card appends an entry to it.
+    store: std::sync::OnceLock<Arc<crate::root::card_history::CardStore>>,
+    /// The card the boot's configuration resolved: the history's opening entry, or the boot's own
+    /// change, once the history is loaded.
+    boot_card: Mutex<Option<busbar_kernel::config::card::CardFields>>,
 }
 
 /// Where a holder's applied cards go (see [`RootHistory::arm_journal`]).
@@ -190,6 +191,34 @@ enum CardJournal {
     },
 }
 
+/// Why the boot's rebuild of the dated history refused the boot.
+#[derive(Debug)]
+pub enum CardBootError {
+    /// The journal could not make one of the boot's cards durable.
+    Lost(busbar_contract::caps::DurabilityLost),
+    /// The store would not read the history back or take the opening entry.
+    Store(String),
+}
+
+impl From<busbar_contract::caps::DurabilityLost> for CardBootError {
+    fn from(lost: busbar_contract::caps::DurabilityLost) -> Self {
+        CardBootError::Lost(lost)
+    }
+}
+
+impl std::fmt::Display for CardBootError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            CardBootError::Lost(lost) => write!(
+                f,
+                "the journal could not make the boot's rate card durable at step {}",
+                lost.step().as_str()
+            ),
+            CardBootError::Store(why) => f.write_str(why),
+        }
+    }
+}
+
 /// WHY A CONFIG CARD APPLY WAS REFUSED: the card was not made durable, so the card in force is the
 /// one that was (MONEY-AUDIT D-6).
 #[derive(Debug)]
@@ -208,6 +237,9 @@ pub enum CardRefused {
     /// The boot's book has rebuilt the history but its handle is not bound yet: there is no journal
     /// the card could go on.
     Unbound,
+    /// The history is kept in the store, where only `PUT /config/settings` writes it: a build's
+    /// rates are the card in force already.
+    InStore,
 }
 
 impl std::fmt::Debug for RootHistory {
@@ -223,7 +255,13 @@ impl RootHistory {
     /// caller and leaves this one reading the snapshot it was admitted under.
     #[must_use]
     pub fn pin(&self) -> Option<PinnedHistory> {
-        let history = self.history.load_full()?;
+        // A UNIT PRICES WITH THIS NODE'S OWN CARD (MONEY-DESIGN section 3a): the history kept in the
+        // store, resolved so this node's own entry prices from its start whatever another node
+        // loaded since. Views read the fleet's ([`Self::history`]).
+        let history = match self.card_store() {
+            Some(store) => store.node_history()?,
+            None => self.history()?,
+        };
         let at = history.head()?;
         Some(PinnedHistory { history, at })
     }
@@ -241,7 +279,107 @@ impl RootHistory {
     /// a posting could resolve to — never a node whose postings are free.
     #[must_use]
     pub fn history(&self) -> Option<Arc<busbar_kernel_ledger::cost::History>> {
-        self.history.load_full()
+        match self.store.get() {
+            Some(store) if store.is_loaded() => store.history(),
+            _ => self.history.load_full(),
+        }
+    }
+
+    /// **KEEP THE HISTORY IN THE STORE** (MONEY-DESIGN section 3a): the production boot names the store,
+    /// its durable node id and its data directory before its book opens; the book's rebuild then
+    /// loads the fleet-shared history ([`Self::rebuild_from_chain`]) instead of journalling cards.
+    pub fn keep_in_store(
+        &self,
+        calls: Arc<dyn busbar_contract::store_calls::StoreCalls>,
+        node: u64,
+        data_dir: Option<std::path::PathBuf>,
+    ) {
+        let _ = self.store.set(crate::root::card_history::CardStore::new(
+            calls, node, data_dir,
+        ));
+    }
+
+    /// The store-kept history, once it is loaded.
+    #[must_use]
+    pub fn card_store(&self) -> Option<&Arc<crate::root::card_history::CardStore>> {
+        self.store.get().filter(|s| s.is_loaded())
+    }
+
+    /// Whether the history is kept in the store (the journal keeps no card).
+    #[must_use]
+    pub fn keeps_store(&self) -> bool {
+        self.store.get().is_some()
+    }
+
+    /// Why STRICT MODE refuses a new admission now, or `None`: a card entry this node prices with
+    /// is pending confirmation from the store (see
+    /// [`crate::root::card_history::CardStore::pending_refusal`]).
+    #[must_use]
+    pub fn pending_refusal(&self) -> Option<String> {
+        self.card_store().and_then(|s| s.pending_refusal())
+    }
+
+    /// THE CARD A CONFIGURATION RESOLVED, with who or what changed it. Before the history is
+    /// loaded, the first one (the boot's) is kept for the boot; after, it is applied to the history
+    /// ([`crate::root::card_history::CardStore::apply`]).
+    pub fn card_applied(&self, card: &busbar_kernel::config::card::CardFields, origin: &str) {
+        match self.card_store() {
+            Some(store) => {
+                store.apply(card, origin);
+            }
+            None => {
+                let mut boot = self.boot_card.lock().unwrap_or_else(|p| p.into_inner());
+                if boot.is_none() {
+                    *boot = Some(card.clone());
+                }
+            }
+        }
+    }
+
+    /// The store boot without a book, for a test that drives a holder kept in a test store.
+    #[cfg(test)]
+    pub(crate) fn boot_in_store(
+        &self,
+        own: Option<&[busbar_kernel_wal::JournalRecord]>,
+    ) -> Result<(), String> {
+        let store = self.store.get().ok_or("no store kept")?;
+        self.boot_store(store, own)
+    }
+
+    /// THE STORE BOOT, run by the book's rebuild: every chain's card records migrated, the history
+    /// read, opened if empty, and the boot's card applied.
+    fn boot_store(
+        &self,
+        store: &Arc<crate::root::card_history::CardStore>,
+        own: Option<&[busbar_kernel_wal::JournalRecord]>,
+    ) -> Result<(), String> {
+        let mut chains: Vec<crate::root::card_history::Chain> = Vec::new();
+        if let Some(own) = own {
+            chains.push((store.node(), own.to_vec()));
+        }
+        match crate::root::durability::stored_chains(store.calls().as_ref(), store.node()) {
+            Ok(others) => chains.extend(others),
+            Err(why) => tracing::warn!(
+                "other nodes' journals could not be read for the rate-card migration: {why}"
+            ),
+        }
+        let migrated = crate::root::card_history::migrated(&chains, store.node());
+        // The boot's own build raised its card before the book opened. A process with no rate
+        // holder raised none (a test binary's book): the history is NOT opened with an empty card
+        // nobody configured, and the holder keeps its in-memory history.
+        let Some(card) = self
+            .boot_card
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone()
+        else {
+            tracing::error!(
+                "the boot raised no rate card before its book opened; the rate-card history in the \
+                 store is not opened with an empty one"
+            );
+            return Ok(());
+        };
+        store.boot(&card, &format!("boot of node {}", store.node()), migrated)
     }
 
     /// **THE ONLY MUTATOR: APPEND.** Put `card` on the history effective from `now_ms`, and return
@@ -320,11 +458,10 @@ impl RootHistory {
     /// JOURNAL FIRST, PUBLISH SECOND (MONEY-AUDIT D-6). A card published before its record is
     /// durable prices postings in an era a restart cannot reproduce: the rebuilt history lacks the
     /// entry and every row earned under it reprices at the card before. So an apply the journal
-    /// will not take is REFUSED: the card in force stays the one that was. A refusal is IN DOUBT,
-    /// not absent — the journal chained the record and the log retained it — so the card in force
-    /// is journalled back behind it at the same instant and both land on the live history, which
-    /// then prices every instant as the rebuilt chain does (REV-293 #1); the refused record's
-    /// policy epoch is spent, so no later entry shares it.
+    /// will not take is REFUSED: the card in force stays the one that was, and there is no WITHDRAW
+    /// (MONEY-DESIGN section 3a); the refused record's policy epoch is spent, so no later entry
+    /// shares it. A holder that keeps its history in the store ([`Self::keep_in_store`], every
+    /// production boot) journals no card at all.
     ///
     /// # Errors
     ///
@@ -337,19 +474,13 @@ impl RootHistory {
     ) -> Result<busbar_kernel_ledger::cost::HistorySeq, CardRefused> {
         let _one_at_a_time = self.applying.lock().unwrap_or_else(|p| p.into_inner());
         register_classes(rates);
+        // THE HISTORY IN THE STORE IS THE ONLY SOURCE OF PRICES once it is kept there (MONEY-DESIGN
+        // section 3a): no build writes it, so an apply's rates are the card in force already.
+        if self.store.get().is_some() {
+            return Err(CardRefused::InStore);
+        }
         let card = card_from_raw(rates);
         let form = CardForm::of(rates, &card);
-        // THE COMMIT OF A STAGED CARD: already on the journal, so it is published as journalled —
-        // its own `effective_from`, its own epoch — and nothing is written twice. A staged card
-        // that is not this one belongs to a change that did not commit, and is withdrawn first.
-        let staged = self.staged.lock().unwrap_or_else(|p| p.into_inner()).take();
-        if let Some(staged) = staged {
-            if staged.form == form {
-                *self.in_force.lock().unwrap_or_else(|p| p.into_inner()) = Some(form);
-                return Ok(self.append_config(card, staged.appended_at, staged.policy_epoch));
-            }
-            self.withdraw(staged, now_ms);
-        }
         // One apply at a time (the lock above), so the epoch and the `effective_from` read here are
         // the ones the append below lands with.
         let policy_epoch = self.resolutions.load(std::sync::atomic::Ordering::Relaxed);
@@ -375,14 +506,9 @@ impl RootHistory {
         );
     }
 
-    /// Journal `applied` BEFORE it is published (the caller publishes on `Ok`). A refusal the
-    /// journal left IN DOUBT ([`CardRefused::Lost`]) is withdrawn as it is refused: the card in
-    /// force goes on the journal behind it at the same instant, and both entries land on the live
-    /// history in one step, so the live node prices every instant as the history a restart rebuilds
-    /// from the chain — whichever way the log's retry lands (REV-293 #1). A card the log dropped
-    /// outright ([`CardRefused::Dropped`]) can never land, and nothing is published for it. The
-    /// caller holds `applying`.
-    fn journal_or_withdraw(&self, applied: CardApplied, now_ms: u64) -> Result<(), CardRefused> {
+    /// Journal `applied` BEFORE it is published (the caller publishes on `Ok`). A refusal refuses
+    /// the apply: there is no WITHDRAW (MONEY-DESIGN section 3a). The caller holds `applying`.
+    fn journal_or_withdraw(&self, applied: CardApplied, _now_ms: u64) -> Result<(), CardRefused> {
         match self.journal_applied(applied.clone()) {
             Ok(()) => {
                 self.spend_epoch(applied.policy_epoch);
@@ -395,121 +521,9 @@ impl RootHistory {
             }
             Err(CardRefused::Lost(lost)) => {
                 self.spend_epoch(applied.policy_epoch);
-                self.withdraw(applied, now_ms);
                 Err(CardRefused::Lost(lost))
             }
-        }
-    }
-
-    /// Put the card in force back on the journal at `in_doubt`'s own `effective_from`, behind it, so
-    /// the in-doubt entry — a card the journal left in doubt, or a staged card whose config change
-    /// did not commit (REV-309 #2: both entries land in memory whatever the put-back's answer) —
-    /// never prices an instant — on the chain a restart rebuilds from (where the
-    /// equal `effective_from` resolves to the later entry), and in memory, where both entries land
-    /// in one step whatever the journal answers for the second: an in-doubt answer is retained
-    /// behind the first and lands with it. Only a put-back the log dropped outright leaves the
-    /// in-doubt card alone on the live history, which is then the one the chain will hold. The
-    /// caller holds `applying`.
-    fn withdraw(&self, in_doubt: CardApplied, now_ms: u64) {
-        let prior = self
-            .in_force
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .clone();
-        let mut drafts = vec![in_doubt.draft()];
-        match prior {
-            None => tracing::error!(
-                effective_from = in_doubt.effective_from,
-                "a rate card the journal left in doubt has no card in force to put back behind it"
-            ),
-            Some(prior) => {
-                let policy_epoch = self.resolutions.load(std::sync::atomic::Ordering::Relaxed);
-                let back = CardApplied {
-                    effective_from: in_doubt.effective_from,
-                    appended_at: now_ms,
-                    policy_epoch,
-                    form: prior,
-                };
-                match self.journal_applied(back.clone()) {
-                    Ok(()) | Err(CardRefused::Lost(_)) => {
-                        self.spend_epoch(policy_epoch);
-                        drafts.push(back.draft());
-                    }
-                    Err(refused) => {
-                        self.spend_epoch(policy_epoch);
-                        tracing::error!(
-                            ?refused,
-                            effective_from = in_doubt.effective_from,
-                            "the log dropped the card in force put back behind a rate card left in \
-                             doubt: the in-doubt card prices from this instant, as the chain holds it"
-                        );
-                    }
-                }
-            }
-        }
-        self.history.rcu(|current| {
-            let mut next = match current {
-                Some(history) => busbar_kernel_ledger::cost::History::clone(history),
-                None => busbar_kernel_ledger::cost::History::new(),
-            };
-            for draft in &drafts {
-                next.append(draft.clone());
-            }
-            Some(Arc::new(next))
-        });
-    }
-
-    /// **STAGE THE CARD A CONFIG CHANGE IS ABOUT TO COMMIT** (MONEY-AUDIT D-6, ARCHITECT ruling
-    /// 2026-10-02): put it on the journal BEFORE the change is saved, and publish nothing. The
-    /// commit publishes it ([`Self::apply_rates`]); a change that does not commit withdraws it
-    /// ([`Self::withdraw_staged`]). Only a bound journal stages: a holder journalling nothing (Off)
-    /// or holding the boot's card for its book (Armed) has nothing to make durable yet.
-    ///
-    /// # Errors
-    ///
-    /// The journal refused the card, or the book's handle is not bound yet: the config change is
-    /// refused whole, so the old configuration and the old card both stay — a refusal the journal
-    /// left in doubt with the card in force journalled back behind the staged one.
-    pub fn stage_rates(
-        &self,
-        rates: &busbar_kernel::rate_apply::RawRates<'_>,
-        now_ms: u64,
-    ) -> Result<(), CardRefused> {
-        let _one_at_a_time = self.applying.lock().unwrap_or_else(|p| p.into_inner());
-        match *self.journal.lock().unwrap_or_else(|p| p.into_inner()) {
-            CardJournal::Off | CardJournal::Armed(_) => return Ok(()),
-            CardJournal::Restored => return Err(CardRefused::Unbound),
-            CardJournal::Bound { .. } => {}
-        }
-        let stale = self.staged.lock().unwrap_or_else(|p| p.into_inner()).take();
-        if let Some(stale) = stale {
-            self.withdraw(stale, now_ms);
-        }
-        register_classes(rates);
-        let card = card_from_raw(rates);
-        let policy_epoch = self.resolutions.load(std::sync::atomic::Ordering::Relaxed);
-        let applied = CardApplied {
-            effective_from: self.effective_from_for(now_ms),
-            appended_at: now_ms,
-            policy_epoch,
-            form: CardForm::of(rates, &card),
-        };
-        // A refusal the journal left in doubt is withdrawn as it is refused (REV-309 #1): the
-        // staged record is chained and retained, so it lands with the next append, and without the
-        // card in force behind it a restart would price from the staging at a card neither the
-        // configuration nor the live history ever held. A card the log dropped outright never
-        // lands and is put back by nothing: fail closed.
-        self.journal_or_withdraw(applied.clone(), now_ms)?;
-        *self.staged.lock().unwrap_or_else(|p| p.into_inner()) = Some(applied);
-        Ok(())
-    }
-
-    /// **THE STAGED CARD'S CONFIG CHANGE DID NOT COMMIT**: withdraw it. A no-op with nothing staged.
-    pub fn withdraw_staged(&self, now_ms: u64) {
-        let _one_at_a_time = self.applying.lock().unwrap_or_else(|p| p.into_inner());
-        let staged = self.staged.lock().unwrap_or_else(|p| p.into_inner()).take();
-        if let Some(staged) = staged {
-            self.withdraw(staged, now_ms);
+            Err(CardRefused::InStore) => Err(CardRefused::InStore),
         }
     }
 
@@ -568,7 +582,10 @@ impl RootHistory {
     ///   resolution is appended, dated at the instant it landed, ONLY where it differs from the
     ///   newest journalled config card: a restart that changed no price appends nothing and moves
     ///   nothing; a restart that did prices what happens after the boot and nothing before it.
-    fn restore(journalled: Vec<JournalledCard>, held: Vec<CardApplied>) -> RestoredHistory {
+    pub(crate) fn restore(
+        journalled: Vec<JournalledCard>,
+        held: Vec<CardApplied>,
+    ) -> RestoredHistory {
         use busbar_kernel_ledger::cost::{CardEntryDraft, History};
         let mut refused: Vec<CorrectionRefused> = Vec::new();
         let mut opening: Option<CardEntryDraft> = None;
@@ -671,7 +688,15 @@ impl RootHistory {
         &'static self,
         durability: &mut crate::root::durability::Durability,
         records: Option<&[busbar_kernel_wal::JournalRecord]>,
-    ) -> Result<Vec<CorrectionRefused>, busbar_contract::caps::DurabilityLost> {
+    ) -> Result<Vec<CorrectionRefused>, CardBootError> {
+        if let Some(store) = self.store.get() {
+            // THE HISTORY IS KEPT IN THE STORE: nothing is journalled, and the boot loads it.
+            *self.journal.lock().unwrap_or_else(|p| p.into_inner()) = CardJournal::Off;
+            self.boot_store(store, records)
+                .map_err(CardBootError::Store)?;
+            durability.cards_from = Some(self);
+            return Ok(Vec::new());
+        }
         let Some(records) = records else {
             self.disarm_journal();
             return Ok(Vec::new());
@@ -766,8 +791,22 @@ impl RootHistory {
         correction: &Correction,
         seal: impl FnOnce(&busbar_kernel_ledger::cost::RateCard, CorrectionBase) -> Result<(), E>,
     ) -> Result<busbar_kernel_ledger::cost::HistorySeq, AmendRefused<E>> {
+        self.amend_by(correction, "admin", seal)
+    }
+
+    /// [`Self::amend`], naming who amended (the history entry's actor).
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::amend`].
+    pub fn amend_by<E>(
+        &self,
+        correction: &Correction,
+        actor: &str,
+        seal: impl FnOnce(&busbar_kernel_ledger::cost::RateCard, CorrectionBase) -> Result<(), E>,
+    ) -> Result<busbar_kernel_ledger::cost::HistorySeq, AmendRefused<E>> {
         let _one_at_a_time = self.applying.lock().unwrap_or_else(|p| p.into_inner());
-        let current = self.history.load_full().ok_or(AmendRefused::NoHistory)?;
+        let current = self.history().ok_or(AmendRefused::NoHistory)?;
         // OWNER ruling #32 (2026-09-29): A CORRECTION THAT WOULD CUT INSIDE A STORED ROW IS
         // REFUSED. `appended_at` is the first instant of the second the correction arrived in, so a
         // unit stored later in that second is counted as stored.
@@ -783,6 +822,34 @@ impl RootHistory {
             .draft_over(current.current())
             .ok_or(AmendRefused::NoSoleCard)?;
         seal(&draft.card, base).map_err(AmendRefused::Seal)?;
+        // KEPT IN THE STORE: the amend is an entry like a PUT's, written write-before-apply, its card
+        // the card covering its start with the named cells set (MONEY-DESIGN section 3a "Amends").
+        if let Some(store) = self.card_store() {
+            let until = correction
+                .effective_until
+                .ok_or_else(|| AmendRefused::Store("an amend must name its end".to_string()))?;
+            let (_, base_card) = store
+                .card_at(correction.effective_from)
+                .ok_or(AmendRefused::NoSoleCard)?;
+            let cells: Vec<(String, String, u64)> = correction
+                .cells
+                .iter()
+                .map(|(cell, nanos)| (cell.lane.clone(), cell.class.clone(), *nanos))
+                .collect();
+            let card = cells_onto(&base_card, &cells, correction.fee);
+            let reason_hash = match &correction.author {
+                busbar_kernel_ledger::cost::Author::Amend { reason_hash } => *reason_hash,
+                _ => [0; 32],
+            };
+            let key = store
+                .amend(correction.effective_from, until, card, reason_hash, actor)
+                .map_err(AmendRefused::Store)?;
+            let history = store.history().ok_or(AmendRefused::NoHistory)?;
+            return history
+                .entry(&key)
+                .map(busbar_kernel_ledger::cost::CardEntry::seq)
+                .ok_or(AmendRefused::NoHistory);
+        }
         // Every other append runs under the same lock, so the history the draft was resolved
         // against is the history it lands on.
         let mut next = busbar_kernel_ledger::cost::History::clone(&current);
@@ -795,7 +862,7 @@ impl RootHistory {
     /// reports the head; it is never on a pricing path.
     #[must_use]
     pub fn len(&self) -> usize {
-        self.history.load().as_ref().map_or(0, |h| h.len())
+        self.history().as_ref().map_or(0, |h| h.len())
     }
 
     /// Whether no configuration has been resolved yet.
@@ -884,24 +951,20 @@ pub(crate) fn card_from_config<'r>(
 pub struct CardRepricer;
 
 impl busbar_kernel::rate_apply::RateApply for CardRepricer {
-    fn rates_staged(&self, rates: &busbar_kernel::rate_apply::RawRates<'_>) -> Result<(), String> {
-        ROOT_CARD
-            .stage_rates(rates, busbar_kernel::store::now_ms())
-            .map_err(|refused| format!("the journal did not take the rate card ({refused:?})"))
-    }
-
-    fn rates_withdrawn(&self) {
-        ROOT_CARD.withdraw_staged(busbar_kernel::store::now_ms());
-    }
-
     fn rates_applied(&self, rates: &busbar_kernel::rate_apply::RawRates<'_>) {
-        if let Err(refused) = ROOT_CARD.apply_rates(rates, busbar_kernel::store::now_ms()) {
-            tracing::error!(
+        match ROOT_CARD.apply_rates(rates, busbar_kernel::store::now_ms()) {
+            // The history is the store's: a build's rates are the card in force already.
+            Ok(_) | Err(CardRefused::InStore) => {}
+            Err(refused) => tracing::error!(
                 ?refused,
                 "the journal did not take an applied rate card: the apply is refused and the card \
                  in force is unchanged"
-            );
+            ),
         }
+    }
+
+    fn card_applied(&self, card: &busbar_kernel::config::card::CardFields, origin: &str) {
+        ROOT_CARD.card_applied(card, origin);
     }
 }
 
@@ -1096,6 +1159,99 @@ impl CardForm {
     }
 }
 
+impl CardForm {
+    /// The card this form holds, as the configuration spells it: each lane's four reserved rates
+    /// and open classes in micro-units, the flat fee and each plane's fees. A cell the card could
+    /// not represent leaves its whole lane off, which refuses every class on it (#42), as
+    /// [`Self::card`] does.
+    #[must_use]
+    pub fn to_fields(&self) -> busbar_kernel::config::card::CardFields {
+        let unpriced: std::collections::BTreeSet<&str> = self
+            .cells
+            .iter()
+            .filter(|(_, _, nanos)| nanos.is_none())
+            .map(|(lane, _, _)| lane.as_str())
+            .collect();
+        let mut composed: std::collections::BTreeMap<String, busbar_kernel::config::RateEntryCfg> =
+            std::collections::BTreeMap::new();
+        if self.present {
+            for lane in self.lanes.iter().filter(|l| !unpriced.contains(l.as_str())) {
+                composed.entry(lane.clone()).or_default();
+            }
+        }
+        let mut fields = busbar_kernel::config::card::CardFields::from_composed(
+            self.present.then_some(&composed),
+            i64::try_from(self.flat).unwrap_or(i64::MAX),
+            self.planes
+                .iter()
+                .map(|(plane, request, session)| {
+                    (
+                        plane.clone(),
+                        busbar_kernel_ledger::cost::PlaneFees {
+                            per_request: i64::try_from(*request).unwrap_or(i64::MAX),
+                            per_session: i64::try_from(*session).unwrap_or(i64::MAX),
+                        },
+                    )
+                })
+                .collect(),
+        );
+        let cells: Vec<(String, String, u64)> = self
+            .cells
+            .iter()
+            .filter(|(lane, _, _)| !unpriced.contains(lane.as_str()))
+            .filter_map(|(lane, class, nanos)| nanos.map(|n| (lane.clone(), class.clone(), n)))
+            .chain(self.units.iter().cloned())
+            .collect();
+        fields = cells_onto(&fields, &cells, None);
+        fields
+    }
+}
+
+/// A rate in nano-units per unit, as the configuration's micro-unit decimal: exact, three places.
+fn micro_of(nanos: u64) -> f64 {
+    format!("{}.{:03}", nanos / 1000, nanos % 1000)
+        .parse()
+        .unwrap_or(0.0)
+}
+
+/// `base` with each `(lane, class, nano-units)` cell set and, when named, the flat fee: the card a
+/// correction or a migrated record prices with. A lane is the composed key (a plane-qualified lane
+/// is that plane's); a reserved class sets its tier rate, any other class its open-class rate.
+#[must_use]
+pub(crate) fn cells_onto(
+    base: &busbar_kernel::config::card::CardFields,
+    cells: &[(String, String, u64)],
+    fee: Option<i64>,
+) -> busbar_kernel::config::card::CardFields {
+    let mut composed = base.composed().unwrap_or_default();
+    for (lane, class, nanos) in cells {
+        let entry = composed.entry(lane.clone()).or_default();
+        match class.as_str() {
+            busbar_kernel_ledger::cost::CLASS_INPUT => entry.input_utok = micro_of(*nanos),
+            busbar_kernel_ledger::cost::CLASS_OUTPUT => entry.output_utok = micro_of(*nanos),
+            busbar_kernel_ledger::cost::CLASS_CACHE_READ => {
+                entry.cache_read_utok = micro_of(*nanos)
+            }
+            busbar_kernel_ledger::cost::CLASS_CACHE_WRITE => {
+                entry.cache_write_utok = micro_of(*nanos);
+            }
+            other => {
+                let text = format!("{}.{:03}", nanos / 1000, nanos % 1000);
+                if let Ok(rate) = busbar_kernel_ledger::cost::UnitRate::parse_micros(&text) {
+                    entry.units.insert(other.to_string(), rate);
+                }
+            }
+        }
+    }
+    let present =
+        base.rate_card.is_some() || !base.plane_rate_cards.is_empty() || !cells.is_empty();
+    busbar_kernel::config::card::CardFields::from_composed(
+        present.then_some(&composed),
+        fee.unwrap_or(base.per_request_fee),
+        base.plane_fees.clone(),
+    )
+}
+
 /// **ONE CONFIG APPLY, JOURNALLED**: the card and the instant it took effect from.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CardApplied {
@@ -1112,7 +1268,7 @@ pub struct CardApplied {
 
 impl CardApplied {
     /// The history entry this record is.
-    fn draft(&self) -> busbar_kernel_ledger::cost::CardEntryDraft {
+    pub(crate) fn draft(&self) -> busbar_kernel_ledger::cost::CardEntryDraft {
         busbar_kernel_ledger::cost::CardEntryDraft {
             effective_from: self.effective_from,
             effective_until: None,
@@ -1441,13 +1597,16 @@ pub enum AmendRefused<E> {
     CutsRow(u64),
     /// The seal (the durable record written ahead of the append) refused.
     Seal(E),
+    /// The store-kept history refused the entry (a pending entry, a far-future head, an open-ended
+    /// amend, or the store's first-attempt refusal).
+    Store(String),
 }
 
 /// What [`RootHistory::restore`] rebuilt from the chain: the history, the boot's records the book
 /// must journal before it is published, the next policy epoch, the newest config card, and every
 /// journalled correction the rebuild refused ([`CorrectionRefused`]).
-struct RestoredHistory {
-    history: busbar_kernel_ledger::cost::History,
+pub(crate) struct RestoredHistory {
+    pub(crate) history: busbar_kernel_ledger::cost::History,
     write: Vec<CardApplied>,
     next_epoch: u64,
     newest: Option<CardForm>,
@@ -1465,6 +1624,23 @@ pub(crate) fn journalled_cards(
             CardApplied::from_body(&r.body)
                 .map(JournalledCard::Applied)
                 .or_else(|| journalled_amendment(&r.body))
+        })
+        .collect()
+}
+
+/// [`journalled_cards`], each with its record's sequence number and body: what the rate-card
+/// migration copies (MONEY-DESIGN section 3a), keyed by the record it came from.
+pub(crate) fn journalled_cards_at(
+    records: &[busbar_kernel_wal::JournalRecord],
+) -> Vec<(u64, Vec<u8>, JournalledCard)> {
+    records
+        .iter()
+        .filter(|r| r.class == busbar_kernel_wal::RecordClass::Policy)
+        .filter_map(|r| {
+            CardApplied::from_body(&r.body)
+                .map(JournalledCard::Applied)
+                .or_else(|| journalled_amendment(&r.body))
+                .map(|card| (r.node_seq, r.body.clone(), card))
         })
         .collect()
 }
@@ -1601,13 +1777,6 @@ pub type VerbStoreHandle = Option<Arc<dyn busbar_contract::verb_store::Store + S
 /// functions or unit structs the step calls with the facts it was handed — and holding an empty
 /// value for each of them would be furniture rather than structure.
 pub struct ProductionUnits {
-    /// Every `(pool, destination)` breaker cell and every destination's lifetime budget, behind the
-    /// port the egress unit reaches it through.
-    ///
-    /// There is exactly one of these and it is reached only here. Two breaker units would be two
-    /// sets of cells: a trip recorded through one would be invisible to the other, and a lane the
-    /// walk had benched would still read as ready at Verify.
-    pub breaker: crate::root::adapters::BreakerAdapter,
     /// The seams the authenticate step is handed beside the request: the signed-key verifier and the
     /// revocation view — and NO credential cache. The node's one flushable cache is the kernel's; a
     /// second one here would be a second answer to "has this credential been seen" that an
@@ -1667,14 +1836,12 @@ impl ProductionUnits {
     pub fn new(
         kernel: &busbar_kernel::teller::Kernel,
         durability: crate::root::durability::Durability,
-        breaker_policy: crate::root::adapters::BreakerPolicy,
         #[cfg(feature = "root-admin")] admin: crate::root::units_admin::AdminBinding,
         store: VerbStoreHandle,
     ) -> Self {
         ProductionUnits::new_sharing(
             kernel,
             Arc::new(Mutex::new(durability)),
-            breaker_policy,
             #[cfg(feature = "root-admin")]
             admin,
             store,
@@ -1692,12 +1859,10 @@ impl ProductionUnits {
     pub fn new_sharing(
         kernel: &busbar_kernel::teller::Kernel,
         durability: Arc<Mutex<crate::root::durability::Durability>>,
-        breaker_policy: crate::root::adapters::BreakerPolicy,
         #[cfg(feature = "root-admin")] admin: crate::root::units_admin::AdminBinding,
         store: VerbStoreHandle,
     ) -> Self {
         ProductionUnits {
-            breaker: crate::root::adapters::BreakerAdapter::with_policy(breaker_policy),
             // The unbound posture, which is the one a node has until it is handed a directory:
             // the cache is real, and the two authorities are absent rather than permissive. A
             // deployment whose keys are busbar's own binds them through
@@ -1783,7 +1948,6 @@ impl ProductionUnits {
         let mut units = ProductionUnits::new_sharing(
             &kernel,
             Arc::clone(&durability),
-            crate::root::adapters::BreakerPolicy::new(),
             crate::root::units_admin::AdminBinding::new(dispatch, door),
             store,
         );

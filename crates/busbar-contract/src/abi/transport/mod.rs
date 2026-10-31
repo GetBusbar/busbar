@@ -45,7 +45,10 @@
 //! buffer answers READY with [`YIELD_MORE`] and the host calls the same op again once it has
 //! drained them. That RE-CALL CARRIES NO NEW BYTES (an `ingest` or `emit` of length `0`): the bytes
 //! of the first call were taken whole, and the re-call answers only what the first could not hold,
-//! continuing where it stopped. A framer that answers any byte or piece twice is wrong.
+//! continuing where it stopped. A framer that answers any byte or piece twice is wrong. `encode` is
+//! the exception: it has no framing to continue, so it answers WHOLE into a `wire` the host sizes
+//! for the message, and an `encode` answered with [`YIELD_MORE`] is a FAULT (the host never sends
+//! a truncated message as the whole one).
 //!
 //! A FRAMER PENDS ONLY ON A TICKETED AUTH CALL. `begin`, `ingest` and `emit` are TICKETED ops (their
 //! contracts state `may_pend`, deadline class Stream): each runs on a ticket of its own and may call
@@ -170,6 +173,8 @@ pub mod check;
 pub mod datagram;
 pub mod fields;
 pub mod route;
+
+pub use check::check_answer;
 
 /// A guest-list line an accepting transport is lent ([`BeginIn::lines`]).
 pub use route::LineEntry;
@@ -343,7 +348,7 @@ pub mod slot {
     pub const INGEST: u32 = LIFECYCLE_SLOTS + 10;
     /// Framer: bytes for the far side, on one stream.
     pub const EMIT: u32 = LIFECYCLE_SLOTS + 11;
-    /// Framer: render an envelope (fields + body).
+    /// Framer: render an envelope (fields + body), WHOLE: an answer with `YIELD_MORE` is a FAULT.
     pub const ENCODE: u32 = LIFECYCLE_SLOTS + 12;
     /// Framer: render a refusal.
     pub const REFUSE: u32 = LIFECYCLE_SLOTS + 13;
@@ -394,7 +399,7 @@ pub struct Ops {
     /// [`slot::EMIT`]: in [`EmitIn`], out [`FramerOut`].
     pub emit: Option<Op>,
     /// [`slot::ENCODE`]: in [`EncodeIn`], out [`FramerOut`]; a refusal to render is FAILED with the
-    /// reason in `head.error`.
+    /// reason in `head.error`. It answers whole: READY with [`YIELD_MORE`] is a FAULT, never re-called.
     pub encode: Option<Op>,
     /// [`slot::REFUSE`]: in [`RefuseIn`], out [`FramerOut`].
     pub refuse: Option<Op>,
@@ -489,6 +494,19 @@ pub const FACT_ADOPTS: u32 = 32;
 /// A transport that states no record offers `{Head, HeadBody}`, the request points 1.5.5's chain
 /// was called at. Boot refuses a line whose auth needs a point its transport does not offer.
 pub const EXT_OFFERED_POINTS: &str = "offered-points";
+
+/// THE SEALED-VALUES RECORD (TSEAL): the key under which a FRAMER's Statement `extensions` states
+/// that it renders sealed values (an empty value; any other refuses the load,
+/// [`check::check_sealed_values`]). Such a framer promises that every field value it is handed
+/// (`BeginIn::fields`, `EncodeIn::fields`, and the bytes of an opening it is emitted) it renders
+/// VERBATIM, contiguously, exactly once: on a wire with HPACK/QPACK, as a literal never-indexed
+/// string without Huffman coding. The host then hands it FILLER of exactly a credential value's
+/// length in place of the value (random bytes in `A-Za-z0-9`), never the credential, and splices
+/// the real bytes over the filler in the framer's wire output where the host secures the
+/// connection; an opening whose filler is not rendered exactly once is refused before its bytes
+/// leave, and a sealed value is never written to a connection the host does not secure (its open is
+/// refused). A framer that states no record is handed the credential bytes, as before.
+pub const EXT_SEALED_VALUES: &str = "sealed-values";
 
 /// `side`: the accepting end.
 pub const SIDE_ACCEPT: u32 = 0;
@@ -586,6 +604,15 @@ pub const SETTING_TEXT: u32 = 3;
 pub const DEST_AUTHORITY: u32 = 0;
 /// [`Destination::kind`]: a program the carrier runs.
 pub const DEST_PROGRAM: u32 = 1;
+/// [`Destination::kind`]: NOTHING TO OPEN, the KEY-RETIRED SIGNAL (T5). The member whose
+/// [`DialIn::supervision_key`] the dial carries is retired (its registration gone, or its program
+/// changed by a re-declaration) and is never dialled again: a carrier that supervises what it runs
+/// forgets that key's supervision and answers READY (`conn` `0`, no connection); any other carrier
+/// may refuse it, and the host reads nothing from the answer. The host admits nothing for it, so
+/// no `io.*` call it makes reaches anything. The host sends it once per retired member, after the
+/// member's last program connection was shut, and never under a host lock. The rest of the
+/// destination is empty.
+pub const DEST_RETIRED: u32 = 2;
 
 /// [`FramePiece::flags`]: the piece completes its frame.
 pub const PIECE_END_OF_FRAME: u16 = 1;
@@ -629,6 +656,18 @@ pub const PIECE_WRITABLE: u16 = 256;
 /// message's head declared on the wire. Never on any other piece.
 pub const PIECE_HAS_DECLARED_LEN: u16 = 512;
 
+/// [`FramePiece::flags`], with [`PIECE_FIELDS`] and [`PIECE_HAS_CODE`]: the field block is an
+/// INTERIM head (a status-line `1xx` other than the switch an upgrade takes): informational, never
+/// the answer's head; the final head follows on the same stream. On every piece of the block; never
+/// with [`PIECE_END`] or [`PIECE_HAS_DECLARED_LEN`]. The host never reads it as the final head.
+pub const PIECE_INTERIM: u16 = 1024;
+
+/// [`FramePiece::flags`], with [`PIECE_HAS_CODE`]: `code` (and the `status_class` and `fault` read
+/// from it) is in the numbering of the HANDSHAKE the connection opened with, the status-line one
+/// (`http`), not the claim's own: an upgrade's handshake answer, e.g. a refused upgrade's `403`.
+/// The host reads the code in that numbering.
+pub const PIECE_CODE_HANDOFF: u16 = 2048;
+
 /// The size of one [`FramePiece`], in bytes: the stride of [`FramerSink::pieces`].
 /// [`TransportTail::frame_piece_size`] states it, so a framer built against another piece layout
 /// is refused at load, never read wrong.
@@ -652,7 +691,8 @@ pub const READ_END_OF_FRAME: u32 = 1;
 
 /// [`FramerYield::flags`]: no frame follows on this connection.
 pub const YIELD_ENDED: u32 = 1;
-/// [`FramerYield::flags`]: a buffer filled; call the same op again once drained.
+/// [`FramerYield::flags`]: a buffer filled; call the same op again once drained. Never on `encode`
+/// (it answers whole; the host FAULTs it).
 pub const YIELD_MORE: u32 = 2;
 /// [`FramerYield::flags`]: `next_deadline_ns` is set; call [`slot::TIMER`] then.
 pub const YIELD_HAS_DEADLINE: u32 = 4;
@@ -957,7 +997,7 @@ impl TransportTail {
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct Destination {
-    /// [`DEST_AUTHORITY`] | [`DEST_PROGRAM`].
+    /// [`DEST_AUTHORITY`] | [`DEST_PROGRAM`] | [`DEST_RETIRED`].
     pub kind: u32,
     /// Alignment padding.
     pub _reserved: u32,
@@ -1198,6 +1238,12 @@ pub struct ListenOut {
     /// The head.
     pub head: OutHead,
     /// The listener token.
+    ///
+    /// A RETIRED LISTENER (no op of its own): the listening handle the carrier's `listen` made
+    /// through the host's I/O is the host's, and the host closes it when it retires the listener
+    /// (its need retired, its generation replaced), so the address stops accepting at once. The
+    /// token then names a handle no longer held: an `accept` on it is FAILED, and the carrier
+    /// forgets the token there or at its instance's close.
     pub listener: u64,
     /// Bytes of `addr_buf` written (no short path: at most `addr_cap`).
     pub addr_written: u64,
@@ -1783,12 +1829,12 @@ super::sdk::door::slot_structs!(
     /// use busbar_contract::abi::transport::{ReadIn, RefuseIn, ShutIn, WriteIn};
     /// use busbar_contract::abi::mechanism::call::{InHead, OutHead, Outcome};
     /// use busbar_contract::abi::mechanism::lifecycle::*;
-    /// use busbar_contract::abi::sdk::door::Slot;
+    /// use busbar_contract::abi::sdk::door::RawSlot;
     /// # use std::ffi::c_void;
     /// # macro_rules! ready { ($n:ident, $i:ty, $o:ty) => {
     /// #     struct $n;
-    /// #     impl Slot for $n { type In = $i; type Out = $o;
-    /// #         fn call(_: *mut c_void, _: &$i, _: &mut $o) -> Outcome { Outcome::Ready } }
+    /// #     impl RawSlot for $n { type In = $i; type Out = $o;
+    /// #         unsafe fn call(_: *mut c_void, _: &$i, _: &mut $o) -> Outcome { Outcome::Ready } }
     /// # } }
     /// # ready!(V, ValidateIn, OutHead); ready!(Op_, OpenIn, OpenOut); ready!(Rf, RefreshIn, OutHead);
     /// # ready!(Rt, GenIn, OutHead); ready!(Tk, TickIn, TickOut); ready!(Dr, DriveIn, OutHead);

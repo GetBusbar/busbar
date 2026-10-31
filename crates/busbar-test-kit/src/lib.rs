@@ -36,11 +36,18 @@ pub mod https_conns;
 /// writes `unsafe`, kept here so the `forbid(unsafe_code)` root holds no such expansion.
 #[allow(unsafe_code)] // TEST ONLY: plugin_door! fixtures the composition root's tests drive
 pub mod root_door_fixtures;
+/// The host-services test double: a test overrides only the services it serves.
+pub mod services_double;
 /// The facts the test connection tables stand in for, read from data (`stand_in.json`).
 pub mod stand_in;
 /// The stream connection table over real local sockets.
 pub mod tcp_conns;
 /// A local token issuer (an ES256 key, its JWKS, signed tokens).
 pub mod test_issuer;
+/// The plugin test support: a door's Statement and ops as Rust values, the all-zero value of a
+/// reviewed ABI struct, a fake host, and door calls whose replies are copied out. No `unsafe` in the
+/// plugin's own tests.
+#[allow(unsafe_code)] // REVIEWED: the one read of each kind a plugin test needs, once
+pub mod test_support;
 /// An in-memory log double: the WARN-and-above events a test's code emitted.
 pub mod warn_capture;

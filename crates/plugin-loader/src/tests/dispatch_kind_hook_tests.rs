@@ -421,3 +421,42 @@ fn zeroed_pending_and_refused_pass_every_op() {
         );
     }
 }
+
+/// RED (H7): A HOOK STATES NO SURFACE THE HOST NEVER READS. The host never calls a hook's `serve`
+/// (no route under `/hooks/<name>/*` is served) and never reads its tail's `requested_signals`
+/// (the signals a hook is lent are the operator's `hooks:` configuration), so a tail stating
+/// either is refused at bind, naming the field, instead of loading a promise nothing keeps. The
+/// tail stating neither binds.
+#[test]
+fn a_hook_tail_stating_routes_or_requested_signals_is_refused_at_bind() {
+    use busbar_contract::abi::hook::{Route, Tail, CLASS_GATE, PROMPT_NO, USER_NO};
+    use busbar_contract::abi::mechanism::call::AbiStr;
+    use busbar_contract::abi::mechanism::door::{KindTailHead, Statement};
+    let routes: &'static [Route] = Box::leak(Box::new([Route {
+        path: AbiStr::ZERO,
+        method: AbiStr::ZERO,
+        auth: 0,
+        _reserved: 0,
+    }]));
+    static SIGNALS: [u32; 1] = [1];
+    static NAME: &[u8] = b"hooks-h7";
+    let plain = Tail::EMPTY.with_access(CLASS_GATE, PROMPT_NO, USER_NO);
+    let bind = |t: &Tail| {
+        let st = Statement {
+            name: AbiStr {
+                ptr: NAME.as_ptr(),
+                len: NAME.len(),
+            },
+            kind_tail: std::ptr::from_ref(t).cast::<KindTailHead>(),
+            ..Statement::ZERO
+        };
+        crate::dispatch::kinds::hook::facts(&st).map(|_| ())
+    };
+    assert_eq!(bind(&plain), Ok(()), "a tail stating neither binds");
+    let routed = plain.with_routes(routes);
+    let err = bind(&routed).expect_err("routes are refused");
+    assert!(err.contains("routes"), "{err}");
+    let signalled = plain.with_requested_signals(&SIGNALS);
+    let err = bind(&signalled).expect_err("requested signals are refused");
+    assert!(err.contains("requested_signals"), "{err}");
+}

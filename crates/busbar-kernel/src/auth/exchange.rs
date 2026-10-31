@@ -74,7 +74,7 @@ pub(crate) async fn exchange(
             return refusal(ExchangeError::Unauthorized)
         }
     };
-    let verdict = AuthMiddleware::run_chain_on_request_path(
+    let (judged, _, claim) = AuthMiddleware::judge_chain_on_request_path_naming(
         &app.auth,
         candidate,
         crate::auth::ChainHead::of(&req),
@@ -87,11 +87,25 @@ pub(crate) async fn exchange(
         None,
     )
     .await;
+    let verdict = match judged {
+        Ok(verdict) => verdict,
+        // A position whose verify answered NO VERDICT (FAILED, a FAULT): the caller's credential was
+        // never judged, so nothing is minted and the exchange answers as the data plane does,
+        // refused with 503 and `Retry-After`, never the bad credential's 401 (SIGN-auth-kind
+        // 2026-10-30, lead-signed under owner delegation, extending the owner-signed 2026-10-30
+        // rule "an IdP outage answers 503, never 401").
+        Err(super::VerifierUnavailable::NoVerdict) => {
+            return crate::limits::admission::inbound_overloaded_response()
+        }
+        // An overloaded position is the exchange's 401, as 1.5.5 denied a saturated verifier (the
+        // 503 for it, owner ruling Q134, is the data-plane middleware's alone).
+        Err(super::VerifierUnavailable::Overloaded) => super::ChainVerdict::Denied,
+    };
 
     let SelfMint {
         principal,
         team,
-        granted_pools: pools,
+        granted_scopes: pools,
         ttl,
     } = match admit_self_mint(
         &verdict,
@@ -116,6 +130,13 @@ pub(crate) async fn exchange(
             "governance is disabled: cannot mint keys".to_string(),
         ));
     };
+    // The replay claim is the exchange's LAST decision, before it mints: an exchange refused above
+    // claims nothing, and a claim lost is the refusal a denied chain answers.
+    if let Some(claim) = claim {
+        if !claim.win().await {
+            return refusal(ExchangeError::Unauthorized);
+        }
+    }
     // The provisioner auto-creates the `user:<sub>` leaf under `team` on first exchange (limits from
     // the team's `child_default`) so the minted key is immediately usable, not a 429 MissingGroup.
     let provisioner = Arc::new(HandleProvisioner::new(handle.clone(), principal.id.clone()));

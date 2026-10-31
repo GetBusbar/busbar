@@ -129,11 +129,13 @@ enum Mode {
 
 /// Where a listener's connections come from.
 enum Source {
-    /// The carrier's listener, accepted on its own side.
+    /// The carrier's listener, accepted on its own side; `bound` is the host's listening handle
+    /// its `listen` made, retired when the listener is dropped.
     Carrier {
         via: Via,
         listener: u64,
         side: Driven,
+        bound: Option<u64>,
     },
     /// The host's own listening socket: a STREAM listener with no carrier loaded to listen through
     /// (a build that links none); its sockets are handed up as they arrive.
@@ -170,9 +172,13 @@ fn other(t: String) -> std::io::Error {
     std::io::Error::other(t)
 }
 
-/// The carrier's `listen` on `bind`, the host admitting exactly it: the listener and the address
-/// bound.
-pub(crate) fn listen_through(via: &Via, bind: &str) -> std::io::Result<(u64, Driven, SocketAddr)> {
+/// What a carrier's `listen` came to: its listener token, the side its accepts run on, the host's
+/// listening handle it made (`None` = the host saw none made) and the address bound.
+pub(crate) type Bound = (u64, Driven, Option<u64>, SocketAddr);
+
+/// The carrier's `listen` on `bind`, the host admitting exactly it: the listener, the host's
+/// handle it made and the address bound.
+pub(crate) fn listen_through(via: &Via, bind: &str) -> std::io::Result<Bound> {
     let mut side = Driven::of(via.door.as_ref())
         .ok_or_else(|| other("the transport is no carrier the host drives".into()))?;
     via.io
@@ -187,14 +193,17 @@ pub(crate) fn listen_through(via: &Via, bind: &str) -> std::io::Result<(u64, Dri
     i.addr_cap = addr.len();
     let mut o: ListenOut = blank_out();
     let c = side.cross(via.door.as_ref(), Carry::Listen(&mut i, &mut o), None);
-    let _ = via.io.settle(side.ticket());
+    let (made, _) = via.io.settle(side.ticket());
     match c {
         Some(c) if c.outcome == Outcome::Ready => {
             let n = usize::try_from(o.addr_written).unwrap_or(0).min(addr.len());
-            let local = String::from_utf8_lossy(&addr[..n])
-                .parse::<SocketAddr>()
-                .map_err(|_| other("the carrier bound no address".into()))?;
-            Ok((o.listener, side, local))
+            let Ok(local) = String::from_utf8_lossy(&addr[..n]).parse::<SocketAddr>() else {
+                if let Some(h) = made {
+                    via.io.retire_listener(h);
+                }
+                return Err(other("the carrier bound no address".into()));
+            };
+            Ok((o.listener, side, made, local))
         }
         Some(c) => Err(other(text(&c))),
         None => Err(other("a listen may not pend".into())),
@@ -217,13 +226,14 @@ impl Listening {
         alpn: Vec<Vec<u8>>,
         limits: AcceptLimits,
     ) -> std::io::Result<Self> {
-        let (listener, side, local) = listen_through(via, bind)?;
+        let (listener, side, bound, local) = listen_through(via, bind)?;
         Ok(Self {
             mode: door.map_or(Mode::Carried, Mode::Framed),
             source: Source::Carrier {
                 via: via.clone(),
                 listener,
                 side,
+                bound,
             },
             local,
             accept: Accept {
@@ -257,12 +267,13 @@ impl Listening {
     ) -> std::io::Result<Self> {
         let (source, local) = match via {
             Some(via) => {
-                let (listener, side, local) = listen_through(via, bind)?;
+                let (listener, side, bound, local) = listen_through(via, bind)?;
                 (
                     Source::Carrier {
                         via: via.clone(),
                         listener,
                         side,
+                        bound,
                     },
                     local,
                 )
@@ -364,6 +375,7 @@ impl Listening {
                     via,
                     listener,
                     side,
+                    ..
                 } => {
                     std::task::ready!(accept_through(via, *listener, side, cx))
                 }
@@ -387,6 +399,23 @@ impl Listening {
                     }
                 }
             }
+        }
+    }
+}
+
+/// A RETIRED LISTENER STOPS ACCEPTING AT ONCE (T1): the host's listening handle its carrier's
+/// `listen` made is closed when the listener is dropped, whatever the carrier still holds (its
+/// token names a handle no longer held; its instance's close forgets it). A host listener closes
+/// with its socket.
+impl Drop for Listening {
+    fn drop(&mut self) {
+        if let Source::Carrier {
+            via,
+            bound: Some(h),
+            ..
+        } = &self.source
+        {
+            via.io.retire_listener(*h);
         }
     }
 }

@@ -6,6 +6,7 @@ use super::*;
 // core, so the shim had exactly one caller and is deleted instead of repointed twice.
 use busbar_kernel::store::{LaneHealthSnapshot, PoolCellHealthSnapshot};
 
+#[cfg(any(test, feature = "test-support"))]
 use crate::diagnostics::{diag_warn, LANE_HARD_DOWN};
 
 mod availability;
@@ -230,18 +231,6 @@ impl HealthState {
         }
     }
 
-    /// Re-set the hard-down sticky cooldown and the honoured-`Retry-After` ceiling on a store already
-    /// in service (the process-lifetime plane store takes each generation's `limits.*` here). Learned
-    /// cells are untouched; an already-armed cooldown keeps its `until`.
-    pub(crate) fn set_limits(
-        &self,
-        hard_down_cooldown_secs: u64,
-        max_honored_retry_after_secs: u64,
-    ) {
-        self.unit
-            .set_limits(hard_down_cooldown_secs, max_honored_retry_after_secs);
-    }
-
     /// Construct with PRIOR HEALTH STATE restored by stable lane identity: each lane whose
     /// (member, route) appears in `restored` starts with that snapshot's breaker/cooldown/streak/
     /// hard-down/latency/counters instead of fresh state — the carry-over that makes a lane-set
@@ -431,7 +420,7 @@ pub fn breaker_cfg_to_runtime(cfg: &crate::config::BreakerCfg) -> BreakerCfg {
         honor_retry_after: true,
         trip,
         // `pools.<pool>.breaker:` is the primary plane's only breaker surface, and that plane walks
-        // its members. The plane cells do not parse config (see `PlaneBreakers::new`).
+        // its members.
         bench_below_trip_threshold: true,
     }
 }
@@ -602,12 +591,8 @@ impl HealthState {
         ls.ok.add();
     }
 
-    // Production callers: the test-only `record_hard_down` trait wrapper, and
-    // `store::breaker_admission::PlaneBreakers::record_signal` — a registered target's hard-down is
-    // PER CELL by design (the degenerate cells share one lane index, so the all-cells primitive
-    // would trip every other registered target). With no plane consumer compiled in that caller is
-    // vestigial, so this reads dead in such a non-test build alone.
-    #[allow(dead_code)]
+    // One cell's hard-down, for the test-only `record_hard_down` trait wrapper.
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn record_hard_down_for(&self, pool: &str, lane: usize, reason: &str) {
         let ls = self.get_lane(lane);
         // Hard-down is RECOVERABLE — long sticky cooldown + Open, recovered via the half-open

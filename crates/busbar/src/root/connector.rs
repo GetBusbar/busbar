@@ -103,6 +103,37 @@ pub fn entries(
         .collect()
 }
 
+/// [`entries`], each door bound and opened on `on` rather than the process's transport dispatcher:
+/// a root cell's composition of its own (its rig) opens its transports on its own dispatcher.
+///
+/// # Errors
+///
+/// The first door that would not load or open.
+#[cfg(test)]
+pub(crate) fn entries_on(
+    on: &Arc<crate::root::loader::dispatch::Dispatcher>,
+    doors: &[(&str, DoorFn)],
+    settings: &TransportSettings,
+) -> Result<Vec<Entry>, String> {
+    doors
+        .iter()
+        .map(|(key, door)| {
+            let plugin = LinkedRow::of(*door)
+                .and_then(|row| load_linked::<TransportKind>(&row, crate::root::doors::bind_on(on)))
+                .map_err(|e| format!("transport `{key}`: {e}"))?;
+            let door: Arc<dyn FramerDoor> = Arc::new(crate::root::doors::Dispatched::open_on(
+                plugin,
+                settings,
+                Arc::clone(on),
+            )?);
+            Ok(Entry {
+                door,
+                alpn: Vec::new(),
+            })
+        })
+        .collect()
+}
+
 /// THE CONNECTOR'S ENTRIES IN DECLARED ORDER (ARCHITECT, p2-transport-carrier): the build's linked
 /// rows in the order the build declares them, then every door dropped into `plugins.dir` in the
 /// directory's sorted order (the loader's plugin file listing), each the one instance the boot

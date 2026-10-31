@@ -8,10 +8,9 @@ use axum::Router;
 
 #[allow(unused_imports)]
 use crate::{
-    admin, audit, auth, billing, breaker, catalogue, config, config_validate, core_routes, cost,
-    durable, endpoints, export, governance, handlers, hooks, ingress, ir, json, limits, oauth_as,
-    observability, operation, plugin_routes, profile, state, store, telemetry, tls, transport,
-    trust,
+    admin, audit, auth, catalogue, config, config_validate, core_routes, cost, durable, endpoints,
+    export, governance, hooks, ingress, ir, json, limits, oauth_as, observability, operation,
+    plugin_routes, profile, state, store, telemetry, transport, trust,
 };
 
 /// Response header name for the W3C Server-Timing field.
@@ -122,7 +121,7 @@ pub(crate) async fn method_not_allowed_handler(
         uri.path(),
         target_of(&uri),
         axum::http::StatusCode::METHOD_NOT_ALLOWED,
-        crate::taxonomy::ERR_TYPE_INVALID_REQUEST,
+        busbar_contract::protocol::ERR_TYPE_INVALID_REQUEST,
         "method not allowed for this resource",
     )
 }

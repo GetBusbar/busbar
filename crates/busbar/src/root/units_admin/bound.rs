@@ -106,10 +106,12 @@ fn query_param<'t>(target: &'t str, name: &str) -> Option<&'t str> {
 /// false, as on a node that never sealed one. The identity holds when every count is priceable; a
 /// row the card refuses (#42) is a finding naming it, and every other check still runs. The journal
 /// (what the boot could not read back, the amendment chain, the audit chain, every chain the store
-/// keeps) is verified as before, through `audit`.
+/// keeps) is verified as before, through `audit`; `journal` is the node's amendment journal,
+/// verified as it is held now (a binding no root gave one holds no amendments to check).
 pub(crate) fn verify_effect(
     ledger: &dyn LedgerView,
     audit: Option<&dyn AuditView>,
+    journal: Option<&busbar_kernel_audit::amend::NodeAmendments>,
 ) -> Result<AdminAnswer, GovernanceError> {
     let priced = ledger.priced().map_err(|why| {
         tracing::warn!(why = %why, "verify could not read the ledger's counts");
@@ -139,7 +141,7 @@ pub(crate) fn verify_effect(
     }
     // THE AMENDMENT CHAIN, verified as it is held now: an edit made to the node's held content
     // accesses after boot is a finding.
-    if let Err(broken) = crate::root::durability::verify_held() {
+    if let Some(Err(broken)) = journal.map(crate::root::durability::verify_held) {
         findings.push(format!("amendment chain: {broken}"));
     }
     if let Some(audit) = audit {
@@ -508,7 +510,8 @@ pub fn live_planes(app: Arc<busbar_kernel::state::AppHandle>) -> PlaneLookup {
 /// THE PRODUCTION ADMIN DOOR: the request judged on the LIVE snapshot's admin chain, through the
 /// kernel's own verdict — the chain the kernel middleware reads and a
 /// `PUT /api/v1/admin/admin-auth` swaps, read per call, so the swap is the next unit's door. The
-/// operator credential reads the request's head through its door, on the spot.
+/// operator credential reads the request's head through its door, on the spot. The identity's
+/// replay claim comes back UNWON: the admin unit wins it once its own last deny decision is made.
 #[must_use]
 pub fn live_admin_door(app: Arc<busbar_kernel::state::AppHandle>) -> super::AdminDoorFn {
     Arc::new(move |request: &super::AdminRequest| {
@@ -516,7 +519,7 @@ pub fn live_admin_door(app: Arc<busbar_kernel::state::AppHandle>) -> super::Admi
             .filter_map(|(name, value)| Some((name.parse().ok()?, value.parse().ok()?)))
             .collect();
         let snapshot = app.snapshot();
-        busbar_kernel::auth::admin_door(&snapshot, &request.method, &request.path, &headers)
+        busbar_kernel::auth::admin_verdict(&snapshot, &request.method, &request.path, &headers)
     })
 }
 

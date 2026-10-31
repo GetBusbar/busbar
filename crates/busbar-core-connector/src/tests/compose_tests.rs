@@ -973,3 +973,229 @@ async fn opened(c: &mut Connection) {
     })
     .await;
 }
+
+/// An opening as a test writes it: its fields and its body.
+type Asked<'a> = (Vec<(&'a str, &'a [u8])>, &'a [u8]);
+
+/// RED: A LOCATED OPENING CARRIES THE HEAD THE FRAMER SAID IT WOULD NOT ADD (THE DESIGN section 6,
+/// step 5). A framer that states its own head lines at `locate` and leaves the body's length to the
+/// host (`LocateOut::states_length`, transport-http #45) renders exactly the head it is handed and
+/// refuses a body no `content-length` frames. So the dial's opening is completed where it is
+/// located: each of the framer's lines the head does not carry, after the caller's fields, then
+/// `content-length: <body length>` last (1.5.5's order: `content-type, accept, host,
+/// content-length`). A line the caller carries is the caller's, never doubled; an empty body states
+/// no length; a framer that states neither gets its opening as written; nothing to send stays
+/// nothing. RED before: the opening went to `encode` as written, and the http door refused every
+/// bodied request ("the envelope cannot be expressed on this wire").
+#[test]
+fn a_located_opening_carries_the_framers_lines_and_the_bodys_length_last() {
+    let stating = Arc::new(TestDoor::new(
+        "stating",
+        &["stating"],
+        &[],
+        Knobs {
+            head_lines: Some(b"accept: */*\r\nhost: 127.0.0.1:9\r\n"),
+            states_length: true,
+            ..Knobs::default()
+        },
+    ));
+    let silent = Arc::new(
+        TestDoor::new("silent", &["silent"], &[], Knobs::default())
+            .with_role(busbar_contract::abi::transport::ROLE_FRAMER),
+    );
+    let located = |door: &Arc<TestDoor>, opening: Option<Asked<'_>>| {
+        let mut d = dial("127.0.0.1:9");
+        d.opening = opening.map(|(fields, body)| {
+            (
+                fields
+                    .into_iter()
+                    .map(|(n, v)| (n.to_owned(), v.to_vec()))
+                    .collect(),
+                body.to_vec().into(),
+            )
+        });
+        let door: Arc<dyn FramerDoor> = door.clone();
+        Planned::locate(door, crate::support::via(), d)
+            .expect("located")
+            .dial()
+            .opening
+            .clone()
+            .map(|(fields, body)| {
+                let fields: Vec<(String, String)> = fields
+                    .into_iter()
+                    .map(|(n, v)| (n, String::from_utf8(v).unwrap()))
+                    .collect();
+                (fields, body.to_vec())
+            })
+    };
+    let pairs = |p: &[(&str, &str)]| -> Vec<(String, String)> {
+        p.iter()
+            .map(|(n, v)| ((*n).to_owned(), (*v).to_owned()))
+            .collect()
+    };
+
+    // A bodied request: the framer's lines after the caller's, the length last.
+    assert_eq!(
+        located(
+            &stating,
+            Some((vec![("content-type", b"application/json")], b"{}"))
+        ),
+        Some((
+            pairs(&[
+                ("content-type", "application/json"),
+                ("accept", "*/*"),
+                ("host", "127.0.0.1:9"),
+                ("content-length", "2"),
+            ]),
+            b"{}".to_vec()
+        ))
+    );
+    // A line the caller carries stays the caller's; an empty body states no length.
+    assert_eq!(
+        located(&stating, Some((vec![("Accept", b"text/plain")], b""))),
+        Some((
+            pairs(&[("Accept", "text/plain"), ("host", "127.0.0.1:9")]),
+            Vec::new()
+        ))
+    );
+    // A framer that states neither: the opening as written.
+    assert_eq!(
+        located(
+            &silent,
+            Some((vec![("content-type", b"application/json")], b"{}"))
+        ),
+        Some((
+            pairs(&[("content-type", "application/json")]),
+            b"{}".to_vec()
+        ))
+    );
+    // Nothing to send stays nothing.
+    assert_eq!(
+        located(&stating, Some((Vec::new(), b""))),
+        Some((Vec::new(), Vec::new()))
+    );
+    assert_eq!(located(&stating, None), None);
+}
+
+/// RED (TSEAL; "the plane never sees credential bytes"): OVER A FRAMER THAT RENDERS SEALED VALUES
+/// (`abi::transport::EXT_SEALED_VALUES`), THE CREDENTIAL NEVER CROSSES TO IT. An opening naming its
+/// credential field sealed (`conn::SEALED_FIELDS_FIELD`, the host's own field) hands the framer
+/// filler of the value's length; the far end, over the host's TLS, reads the real credential where
+/// the framer rendered the filler, and never the host's field. Over a connection the host does not
+/// secure, the open fails and the far end reads no credential byte.
+#[test]
+fn a_sealed_credential_reaches_the_far_end_and_never_the_framer() {
+    use busbar_contract::conn::SEALED_FIELDS_FIELD;
+    const SECRET: &[u8] = b"Bearer sealed-credential-0123456789";
+    crate::tls::install_crypto_provider();
+    let (ca, leaf, key) = localhost_cert();
+    let opening = || {
+        Some((
+            vec![
+                ("authorization".to_owned(), SECRET.to_vec()),
+                ("x-plain".to_owned(), b"visible".to_vec()),
+                (SEALED_FIELDS_FIELD.to_owned(), b"authorization".to_vec()),
+            ],
+            b"BODY".to_vec().into(),
+        ))
+    };
+    let knobs = |secure: bool| Knobs {
+        secure_name: secure.then_some("localhost"),
+        seals: true,
+        render_fields: true,
+        ..Knobs::default()
+    };
+    worker().block_on(async move {
+        let mut server = rustls::ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(
+                vec![leaf.into()],
+                rustls_pki_types::PrivateKeyDer::try_from(key).unwrap(),
+            )
+            .unwrap();
+        server.alpn_protocols = vec![b"http/1.1".to_vec()];
+        let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(server));
+        let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let far = l.local_addr().unwrap().to_string();
+        let read = tokio::spawn(async move {
+            let (s, _) = l.accept().await.unwrap();
+            let mut s = acceptor.accept(s).await.unwrap();
+            let mut got = Vec::new();
+            let mut buf = [0_u8; 512];
+            while !got.ends_with(b"BODY") {
+                match tokio::time::timeout(Duration::from_secs(5), s.read(&mut buf)).await {
+                    Ok(Ok(n)) if n > 0 => got.extend_from_slice(&buf[..n]),
+                    _ => break,
+                }
+            }
+            got
+        });
+        let door = Arc::new(TestDoor::new("sec", &["sec"], &[], knobs(true)));
+        let trust = busbar_contract::transport::trust::EgressTrust {
+            extra_anchors: vec![ca],
+            ..Default::default()
+        };
+        let mut d = dial(&far);
+        d.tls = Some(Arc::new(
+            crate::tls::client::build_client_config(&trust).expect("a usable client config"),
+        ));
+        d.opening = opening();
+        let mut c = Connection::dial(
+            Arc::clone(&door) as Arc<dyn crate::framer::FramerDoor>,
+            &crate::support::via(),
+            d,
+        )
+        .unwrap();
+        let _ = tokio::time::timeout(Duration::from_secs(2), next(&mut c)).await;
+        let got = read.await.unwrap();
+        let contains = |hay: &[u8], needle: &[u8]| hay.windows(needle.len()).any(|w| w == needle);
+        assert!(
+            contains(&got, SECRET),
+            "the far end reads the credential: {}",
+            String::from_utf8_lossy(&got)
+        );
+        assert!(contains(&got, b"x-plain: visible"));
+        assert!(
+            !contains(&got, SEALED_FIELDS_FIELD.as_bytes()),
+            "the host's field is never sent"
+        );
+        let handed = door.handed.lock().unwrap().clone();
+        assert!(!handed.is_empty(), "the framer framed the opening");
+        assert!(
+            !contains(&handed, &SECRET[7..]),
+            "the framer was handed the credential: {}",
+            String::from_utf8_lossy(&handed)
+        );
+
+        // In the clear: refused, and the far end reads no credential byte.
+        let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let far = l.local_addr().unwrap().to_string();
+        let read = tokio::spawn(async move {
+            let (mut s, _) = l.accept().await.unwrap();
+            let mut got = Vec::new();
+            let _ = tokio::time::timeout(Duration::from_secs(2), s.read_to_end(&mut got)).await;
+            got
+        });
+        let door = Arc::new(TestDoor::new("sec", &["sec"], &[], knobs(false)));
+        let mut d = dial(&far);
+        d.opening = opening();
+        let mut c = Connection::dial(
+            Arc::clone(&door) as Arc<dyn crate::framer::FramerDoor>,
+            &crate::support::via(),
+            d,
+        )
+        .unwrap();
+        let failed = tokio::time::timeout(Duration::from_secs(2), next(&mut c)).await;
+        assert!(
+            matches!(failed, Ok(Err(_))),
+            "a sealed value in the clear fails the open: {failed:?}"
+        );
+        drop(c);
+        let got = read.await.unwrap();
+        assert!(
+            !contains(&got, &SECRET[7..]),
+            "nothing of the credential is sent in the clear"
+        );
+        assert!(!contains(&door.handed.lock().unwrap(), &SECRET[7..]));
+    });
+}

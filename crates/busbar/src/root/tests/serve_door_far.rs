@@ -263,7 +263,8 @@ async fn the_planes_fault_reading_reaches_the_breaker_through_the_doors_far_end(
     // A routed unit of plane `p`: its one entry `e`, named directly, performed at most once.
     let facts = door_facts("p", &[], &[], &[], "a", Vec::new());
     let section: serde_yaml::Value = serde_yaml::from_str("e: {}").expect("yaml");
-    let pools = DoorPools::of(&section).expect("the pools");
+    let pools = DoorPools::of(&section, busbar_contract::section::TOOL_CALL_SECTION_KEY)
+        .expect("the pools");
     let steps = DoorSteps::new(
         &facts,
         &pools,
@@ -302,12 +303,11 @@ async fn the_planes_fault_reading_reaches_the_breaker_through_the_doors_far_end(
     let egress = Egress {
         caller: InstanceId(9),
         conns: Arc::new(BadGateway::default()),
-        breaker: book.clone(),
+        breaker: busbar_kernel::plane_driver::fixed_breaker(book.clone()),
         capacity: Arc::new(Free),
         clock: Arc::new(Wall),
         journal: Arc::new(Quiet),
         telemetry: Arc::new(Quiet),
-        floor: WeightedFloor::new(),
         pools: HashMap::from([(
             pool_name.clone(),
             Pool {
@@ -319,6 +319,7 @@ async fn the_planes_fault_reading_reaches_the_breaker_through_the_doors_far_end(
                     exclusions: Vec::new(),
                 },
                 on_exhausted: OnExhausted::Status503,
+                floor: WeightedFloor::new(),
             },
         )]),
         routes: HashMap::from([(

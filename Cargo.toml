@@ -9,6 +9,7 @@ members = [
     "crates/busbar-core-oauth2",
     "crates/busbar-contract",
     "crates/busbar-kernel",
+    "crates/busbar-kernel-testkit",
     "crates/busbar-kernel-identity",
     "crates/busbar-kernel-ledger",
     "crates/busbar-kernel-egress",
