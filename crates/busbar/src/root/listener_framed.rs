@@ -516,8 +516,15 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
         if y.agreed != 0 {
             self.agreed = y.agreed;
         }
-        for stream in &y.writable {
-            self.full.remove(stream);
+        for flow in &y.flow {
+            match flow {
+                framer::StreamFlow::Full(stream) => {
+                    self.full.insert(*stream);
+                }
+                framer::StreamFlow::Writable(stream) => {
+                    self.full.remove(stream);
+                }
+            }
         }
         for g in y.pieces.iter().filter(|g| g.ends_stream() || g.failed) {
             self.full.remove(&g.stream);
@@ -792,20 +799,12 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
                 done,
             } => {
                 let r = framing.emit_head(stream, &fields, end, status);
-                let full = r.as_ref().is_ok_and(|y| y.full);
                 let ok = self.took(r);
-                if full {
-                    self.full.insert(stream);
-                }
                 let _ = done.send(ok);
             }
             Op::Data { bytes, end, done } => {
                 let r = framing.emit(stream, &bytes, end, false);
-                let full = r.as_ref().is_ok_and(|y| y.full);
                 let ok = self.took(r);
-                if full {
-                    self.full.insert(stream);
-                }
                 let _ = done.send(ok);
             }
             Op::Refuse { status, head_sent } => {

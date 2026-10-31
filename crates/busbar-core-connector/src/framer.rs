@@ -241,6 +241,15 @@ pub struct Head {
     pub reason: Option<Vec<u8>>,
 }
 
+/// A stream's backpressure change, retained in crossing order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StreamFlow {
+    /// The emit was taken; further emits wait for this stream to become writable.
+    Full(u64),
+    /// The stream may be emitted on again; this signal is never payload.
+    Writable(u64),
+}
+
 /// Everything one op answered, across its `YIELD_MORE` re-calls.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Yielded {
@@ -254,13 +263,8 @@ pub struct Yielded {
     pub ended: bool,
     /// The monotonic instant (host clock, ns) the framer asked to be called at.
     pub deadline_ns: Option<u64>,
-    /// On an `emit`: the bytes were taken and the stream's queue is at the framer's high-water
-    /// mark (`YIELD_STREAM_FULL`): the host emits nothing more on that stream until it is
-    /// writable again ([`Yielded::writable`]) or its last piece arrives.
-    pub full: bool,
-    /// The streams the framer says are writable again (`PIECE_WRITABLE` pieces), in order. Such a
-    /// piece is a signal to the host and never a frame: it is not among [`Yielded::pieces`].
-    pub writable: Vec<u64>,
+    /// Stream backpressure changes, including the original stream of resumed emits.
+    pub flow: Vec<StreamFlow>,
     /// The INTERIM heads (`PIECE_INTERIM` field blocks, a `1xx` ahead of the final head), in
     /// order. Never the answer's head: they are not among [`Yielded::pieces`], whose first field
     /// block on a stream stays its final head.
@@ -498,7 +502,7 @@ impl Buffers {
                 if p.len != 0 || p.flags != PIECE_WRITABLE {
                     return Err(bad("a writable piece with bytes or another flag"));
                 }
-                into.writable.push(p.stream);
+                into.flow.push(StreamFlow::Writable(p.stream));
                 continue;
             }
             let at = usize::try_from(p.offset).map_err(|_| bad("piece"))?;
@@ -590,7 +594,6 @@ impl Buffers {
             into.heads.push(head);
         }
         into.ended |= y.flags & YIELD_ENDED != 0;
-        into.full |= y.flags & YIELD_STREAM_FULL != 0;
         into.deadline_ns = (y.flags & YIELD_HAS_DEADLINE != 0).then_some(y.next_deadline_ns);
         if y.agreed != 0 {
             into.agreed = y.agreed;
@@ -1723,6 +1726,11 @@ impl Framing {
             if begin || adopt {
                 self.token = o.framing;
             }
+            if o.yielded.flags & YIELD_STREAM_FULL != 0 {
+                if let Ticketed::Emit { stream, .. } = &op {
+                    yielded.flow.push(StreamFlow::Full(*stream));
+                }
+            }
             if self.bufs.take(&o, &mut yielded)? {
                 return Ok(Some(yielded));
             }
@@ -2132,6 +2140,7 @@ fn merge(into: &mut Yielded, y: Yielded) {
     into.wire.extend(y.wire);
     into.pieces.extend(y.pieces);
     into.interim.extend(y.interim);
+    into.flow.extend(y.flow);
     into.ended |= y.ended;
     into.deadline_ns = y.deadline_ns.or(into.deadline_ns);
     if y.agreed != 0 {

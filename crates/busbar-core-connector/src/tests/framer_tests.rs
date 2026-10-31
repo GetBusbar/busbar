@@ -1058,8 +1058,9 @@ fn a_resumed_emit_preserves_its_stream_full_answer() {
         other => panic!("the parked emit must complete: {other:?}"),
     };
     assert_eq!(yielded.wire, b"held", "the original bytes are emitted once");
-    assert!(
-        yielded.full,
+    assert_eq!(
+        yielded.flow,
+        [super::StreamFlow::Full(1)],
         "the resumed stream must remain blocked at its high-water mark"
     );
     assert!(!framing.parked());
@@ -1087,8 +1088,8 @@ fn a_resumed_ingest_preserves_its_stream_writable_signal() {
         other => panic!("the parked ingest must complete: {other:?}"),
     };
     assert_eq!(
-        yielded.writable,
-        [1],
+        yielded.flow,
+        [super::StreamFlow::Writable(1)],
         "a resumed readiness signal must reach the caller"
     );
     assert!(
