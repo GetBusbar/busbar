@@ -128,11 +128,11 @@ pub trait AuthModule: Send + Sync {
 //
 // These are the ENGINE-side (api-level) mirrors of the plugin-abi login wire types (the same
 // Identity↔Principal split: the wire types are serde-serializable, these carry no serde and stay in
-// the engine vocabulary). A verify-only auth module needs none of this — [`LoginModule`]'s defaults
-// are fail-closed, so an existing module compiles and behaves unchanged. A login-capable module (an
-// OIDC IdP) overrides them; the CORE, never the module, holds the confidential-client secret.
+// the engine vocabulary). A verify-only auth module needs none of this. A login-capable module (an OIDC IdP)
+// serves `begin_login` and `complete_login`; the CORE, never the module, holds the confidential-client
+// secret.
 
-/// [`LoginModule::begin_login`] input — everything is CORE-generated or public; there is NO secret
+/// `begin_login` input — everything is CORE-generated or public; there is NO secret
 /// field, structurally keeping the confidential-client secret off the begin path.
 #[derive(Debug, Clone, PartialEq)]
 pub struct BeginLogin {
@@ -149,7 +149,7 @@ pub struct BeginLogin {
 }
 
 /// How a login METHOD starts — a pure, declarative classification the chooser reads BEFORE the user
-/// picks (so it never has to call [`LoginModule::begin_login`], which mints PKCE state/nonce — side
+/// picks (so it never has to call `begin_login`, which mints PKCE state/nonce — side
 /// effects). `Redirect` = OAuth-family (send the browser to an external authorize URL); `Credential` =
 /// collect fields directly from the user and let the plugin verify them (LDAP/AD-bind, …).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -179,7 +179,7 @@ pub struct LoginField {
     pub required: bool,
 }
 
-/// A declarative form spec a `Credential`-kind method returns from [`LoginModule::begin_login`]. The
+/// A declarative form spec a `Credential`-kind method returns from `begin_login`. The
 /// core renders WHATEVER fields the plugin declares (username+password, or +totp, …) — generic, not
 /// LDAP-shaped. The submitted values come back keyed by [`LoginField::name`].
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -187,7 +187,7 @@ pub struct LoginForm {
     pub fields: Vec<LoginField>,
 }
 
-/// [`LoginModule::complete_login`] input — an OAuth authorization-code shape OR the generic submitted
+/// `complete_login` input — an OAuth authorization-code shape OR the generic submitted
 /// credential map, plus the response of a prior core-executed [`LoginHop`] fed back for verification.
 ///
 /// Its `Debug` withholds the code, the PKCE verifier and every token response: each is a credential.
@@ -321,32 +321,6 @@ pub enum LoginOutcome {
     /// The identity provider answered, and its answer failed the login's security check (its
     /// identity token's nonce is not the login's): no identity is trusted.
     SecurityCheckFailed,
-}
-
-/// The OPT-IN browser-login capability of an auth module (auth ABI v2). SEPARATE from [`AuthModule`]
-/// (never modify the verify trait): a module that only verifies bearer credentials leaves both
-/// methods at their FAIL-CLOSED defaults and is unaffected. An IdP module overrides them to drive the
-/// hosted-login / headless code→token flow. The CORE holds the confidential-client secret and
-/// executes every [`LoginOutcome::Exchange`] hop; the module never opens a socket and never sees the
-/// secret value.
-pub trait LoginModule: Send + Sync {
-    /// Pure, side-effect-free classification the chooser reads BEFORE the user picks (no `begin_login`
-    /// call, which would mint PKCE state/nonce). Default [`LoginKind::Redirect`] keeps every existing
-    /// OAuth plugin unchanged; a credential/directory module overrides to [`LoginKind::Credential`].
-    fn login_kind(&self) -> LoginKind {
-        LoginKind::Redirect
-    }
-    /// Start browser login: given the core-minted PKCE/state/nonce, return the IdP authorize URL to
-    /// redirect to (redirect flow) or a [`LoginOutcome::Prompt`] form (credential flow). Default:
-    /// `Reject` (this module has no browser login).
-    fn begin_login(&self, _req: &BeginLogin) -> LoginOutcome {
-        LoginOutcome::Reject
-    }
-    /// Handle the callback: return a token-exchange hop for the core to run, or — once a token
-    /// response is fed back — an established `Identify`. Default: `Reject`.
-    fn complete_login(&self, _req: &CompleteLogin) -> LoginOutcome {
-        LoginOutcome::Reject
-    }
 }
 
 /// WHY a chain verdict did not resolve to an admitted identity. The DECISION is closed here; the

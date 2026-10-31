@@ -33,7 +33,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::task::{Context, Poll, Waker};
+use std::task::{Context, Poll};
 use std::time::Duration;
 
 use busbar_contract::abi::auth::{
@@ -46,17 +46,17 @@ use busbar_contract::abi::mechanism::call::{
     Blob, DeadlineClass, Outcome, BLOB_ABSENT, BLOB_JSON, BLOB_OCTETS, BLOB_SECRET,
 };
 use busbar_contract::abi::mechanism::lifecycle::{slot as lc, RefreshIn};
-use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::auth_calls::{
     AuthCalls, Decision, Strip, StripPlace, Verified, VerifiedIdentity, VerifyAnswer,
     VerifyRequest, Verifying,
 };
 
+use crate::dispatch::call::{Answering, Pending, Ticketed};
 use crate::dispatch::kinds::auth::{Auth, AuthFacts};
 use crate::dispatch::lifecycle::{lend, lend_opt, open_frame, validate_call, why};
 use crate::dispatch::{
-    in_head, now_ns, out_head, Diagnostic, Dispatcher, Done, Dropped, EnvelopeSink, Frame, Metric,
-    Plugin, Reply,
+    in_head, now_ns, out_head, Diagnostic, Dispatcher, Done, Dropped, EnvelopeSink, Frame, InFrame,
+    Metric, OutFrame, Plugin,
 };
 
 /// A submitted `verify`'s deadline: past it the op is cancelled and answers FAILED.
@@ -554,30 +554,29 @@ struct Shared {
 }
 
 impl Shared {
-    /// A request ticket on a worker picked by the counter.
-    fn ticket(&self) -> Option<Ticket> {
+    /// A call on a request ticket of its own, on a worker picked by the counter.
+    fn call<I: InFrame, O: OutFrame>(&self) -> Option<Ticketed<I, O>> {
         let n = self.minted.fetch_add(1, Ordering::Relaxed);
         let worker = (n % u64::from(self.dispatcher.workers().max(1))) as u32;
-        self.dispatcher.mint(worker)
+        Ticketed::mint(&self.dispatcher, worker)
     }
 
     fn submit(
         &self,
-        ticket: Ticket,
+        call: &mut Ticketed<VerifyIn, IdentifyOut>,
         held: &Arc<Held>,
         presented: bool,
-    ) -> Reply<VerifyIn, IdentifyOut> {
+    ) {
         let frame = Frame::new(held.input(presented), identify_out());
         let lent: crate::dispatch::Lent = held.clone();
-        self.dispatcher.submit_lent(
+        call.submit(
             &*self.plugin,
-            ticket,
             slot::VERIFY,
             frame,
             DeadlineClass::Call,
             now_ns() + VERIFY_DEADLINE.as_nanos() as u64,
             lent,
-        )
+        );
     }
 }
 
@@ -839,7 +838,7 @@ impl AuthCalls for AuthInstance {
         if p.max_inflight() != 0 && p.inflight() >= p.max_inflight() {
             return Box::new(Settled(Some(Verified::Overloaded.into())));
         }
-        let Some(ticket) = sh.ticket() else {
+        let Some(mut call) = sh.call() else {
             return Box::new(Settled(Some(Verified::Overloaded.into())));
         };
         let presented = request.credential.is_some();
@@ -855,18 +854,17 @@ impl AuthCalls for AuthInstance {
             IDENTITY_GROUPS,
             FIELDS_MAX,
         );
-        let reply = sh.submit(ticket, &held, presented);
-        Box::new(Submitted {
-            shared: sh.clone(),
-            ticket,
-            request,
-            presented,
-            held,
-            reply: Some(reply),
-            recalled: false,
-            answer: None,
-            faulted: false,
-        })
+        sh.submit(&mut call, &held, presented);
+        Box::new(Pending::new(
+            call,
+            Verify {
+                shared: sh.clone(),
+                request,
+                presented,
+                held,
+                recalled: false,
+            },
+        ))
     }
 
     fn refresh(&self) -> Result<u64, String> {
@@ -951,24 +949,23 @@ impl Verifying for Settled {
     }
 }
 
-/// A submitted verify: its reply, the one re-call a short answer earns, then its verdict.
-struct Submitted {
+/// A submitted verify: the one re-call a short answer earns, then its verdict.
+struct Verify {
     shared: Arc<Shared>,
-    ticket: Ticket,
     request: VerifyRequest,
     presented: bool,
     held: Arc<Held>,
-    reply: Option<Reply<VerifyIn, IdentifyOut>>,
     recalled: bool,
-    answer: Option<VerifyAnswer>,
-    /// A step of it (the answer or the short re-call) answered FAULT ([`Verifying::faulted`]).
-    faulted: bool,
 }
 
-impl Submitted {
-    /// Take a completed op: its verdict, or `None` after re-submitting a short answer.
-    fn complete(&mut self, done: Done<VerifyIn, IdentifyOut>) -> Option<VerifyAnswer> {
-        self.faulted |= done.outcome == Outcome::Fault;
+impl Answering<VerifyIn, IdentifyOut> for Verify {
+    type Out = VerifyAnswer;
+
+    fn answer(
+        &mut self,
+        done: Done<VerifyIn, IdentifyOut>,
+        call: &mut Ticketed<VerifyIn, IdentifyOut>,
+    ) -> Option<VerifyAnswer> {
         let out = done.frame.as_ref().map(|f| f.out);
         if done.short && !self.recalled {
             self.recalled = true;
@@ -976,7 +973,7 @@ impl Submitted {
             if let Some((cap, groups, strips)) = grow {
                 let seal = self.shared.dispatcher.seal();
                 self.held = Held::new(&self.request, seal, cap, groups, strips);
-                self.reply = Some(self.shared.submit(self.ticket, &self.held, self.presented));
+                self.shared.submit(call, &self.held, self.presented);
                 return None;
             }
             return Some(Verified::Failed.into());
@@ -986,54 +983,15 @@ impl Submitted {
             None => Verified::Failed.into(),
         })
     }
-
-    fn step(&mut self, cx: &mut Context<'_>) -> Poll<VerifyAnswer> {
-        loop {
-            if let Some(v) = &self.answer {
-                return Poll::Ready(v.clone());
-            }
-            let Some(reply) = self.reply.as_mut() else {
-                return Poll::Ready(Verified::Failed.into());
-            };
-            let done = match Pin::new(reply).poll(cx) {
-                Poll::Ready(d) => d,
-                Poll::Pending => return Poll::Pending,
-            };
-            self.reply = None;
-            if let Some(v) = self.complete(done) {
-                self.answer = Some(v);
-            }
-        }
-    }
 }
 
-impl Future for Submitted {
-    type Output = VerifyAnswer;
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<VerifyAnswer> {
-        self.step(cx)
-    }
-}
-
-impl Verifying for Submitted {
+impl Verifying for Pending<VerifyIn, IdentifyOut, Verify> {
     fn settled(&mut self) -> Option<VerifyAnswer> {
-        let mut cx = Context::from_waker(Waker::noop());
-        match self.step(&mut cx) {
-            Poll::Ready(v) => Some(v),
-            Poll::Pending => None,
-        }
+        self.now()
     }
 
     fn faulted(&self) -> bool {
-        self.faulted
-    }
-}
-
-impl Drop for Submitted {
-    fn drop(&mut self) {
-        // A reply dropped unanswered is a client drop (its op cancelled); the ticket is recycled
-        // once its last op ends.
-        drop(self.reply.take());
-        self.shared.dispatcher.recycle(self.ticket);
+        self.any_fault()
     }
 }
 

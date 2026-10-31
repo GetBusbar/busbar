@@ -56,6 +56,8 @@ mod plugin {
         }
 
         fn verify(&self, r: &VerifyView<'_>) -> Answer {
+            // Named whatever the verdict, from a `const` list: no verify allocates it.
+            const STRIPS: &[Strip] = &[strip_field("x-alt")];
             let verdict = match r.credential().or_else(|| r.line("X-Alt")) {
                 Some(b"good") => Verdict::Identity(VerifiedIdentity {
                     subject: "alice".into(),
@@ -90,7 +92,7 @@ mod plugin {
                 _ => Verdict::Pass,
             };
             Answer {
-                strips: vec![Strip::field("x-alt")],
+                fixed_strips: STRIPS,
                 ..verdict.into()
             }
         }
@@ -837,4 +839,13 @@ fn a_verify_reports_its_diagnostic_through_the_op() {
             &b"the judge noted a key"[..]
         )
     );
+}
+
+/// A `const` strip is the strip [`Strip::field`] names, and a bare verdict names none.
+#[test]
+fn a_const_strip_is_the_field_strip_and_a_bare_verdict_names_none() {
+    const STRIPS: &[Strip] = &[strip_field("authorization")];
+    assert_eq!(STRIPS, [Strip::field("authorization")]);
+    let bare = Answer::from(Verdict::Reject);
+    assert!(bare.strips.is_empty() && bare.fixed_strips.is_empty());
 }

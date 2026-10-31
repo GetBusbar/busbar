@@ -54,31 +54,6 @@ fn auth_module_cacheable_defaults_to_false() {
     assert!(!Minimal.cacheable());
 }
 
-/// `LoginModule`'s three defaults are ALL fail-closed (`Redirect` kind, `Reject` outcome) so an
-/// existing verify-only auth module that implements nothing of `LoginModule` is unaffected and
-/// cannot silently start a login flow.
-#[test]
-fn login_module_defaults_are_fail_closed() {
-    struct VerifyOnly;
-    impl LoginModule for VerifyOnly {}
-
-    assert_eq!(VerifyOnly.login_kind(), LoginKind::Redirect);
-    assert_eq!(
-        VerifyOnly.begin_login(&BeginLogin {
-            redirect_uri: "https://example.invalid/cb".to_string(),
-            state: "s".to_string(),
-            code_challenge: "c".to_string(),
-            nonce: None,
-            scopes: Vec::new(),
-        }),
-        LoginOutcome::Reject
-    );
-    assert_eq!(
-        VerifyOnly.complete_login(&CompleteLogin::default()),
-        LoginOutcome::Reject
-    );
-}
-
 /// RED (auth ABI defect 2): the login step types never print a credential through `Debug`: not
 /// the authorization code or the PKCE verifier, not a hop's form or header values, not a token
 /// response's body. Before, each derived `Debug` and printed them verbatim.
