@@ -719,10 +719,12 @@ unsafe impl<S: SafeSlot> Entry for Safe<S> {
         let reporting: Reporting = Cell::new(None);
         // What its answer leased or published from, checked when it returns.
         let holders: Holders = RefCell::new(Vec::new());
+        // A failed OPEN frees its partial instance before returning, including on resume.
+        // Its owned reason must therefore live in the host's buffer rather than that instance.
         let written = match parked {
-            Some(h) => Out::kept(&mut *out, &h.kept, &reporting, &holders),
+            Some(h) if index != slot::OPEN => Out::kept(&mut *out, &h.kept, &reporting, &holders),
             // SAFETY: `input` is the trampoline's copy of the host's `in` for slot `index`.
-            None => Out::lent(&mut *out, unsafe { lent_reason(index, input) }, &holders),
+            _ => Out::lent(&mut *out, unsafe { lent_reason(index, input) }, &holders),
         };
         // SAFETY: `input` is the trampoline's copy of the host's `in`, whose every pointer is
         // valid for the call (`Entry::enter`'s contract), and it lives until this returns.
