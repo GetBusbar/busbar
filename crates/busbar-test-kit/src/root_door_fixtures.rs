@@ -1050,8 +1050,10 @@ pub mod pending_mux_accept {
 
     impl Mux {
         pub fn with_session() -> Self {
-            let mut fixture = Self::default();
-            fixture.session = true;
+            let mut fixture = Self {
+                session: true,
+                ..Self::default()
+            };
             fixture.facts.claims.push("ws");
             fixture
         }
