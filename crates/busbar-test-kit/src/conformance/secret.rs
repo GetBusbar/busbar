@@ -9,14 +9,21 @@
 //!     "bad_settings": ["<settings `validate` must refuse (FAILED, naming why)>", ...],
 //!     "known":     { "resolve": <resolve settings>, "material": "<what it resolves to>" },
 //!     "unknown":   <resolve settings naming a secret it does not hold: FAILED, NOT_FOUND>,
-//!     "malformed": <resolve settings that are not a reference: FAILED, INVALID>,
-//!     "bad_references": [<more resolve settings that are not a reference: FAILED, INVALID>, ...],
-//!     "empty":     <resolve settings naming a secret whose value is EMPTY: FAILED, INVALID> } }
+//!     "malformed": <resolve settings that are not a reference: FAILED, INVALID>
+//!                  | [<one such>, ...],
+//!     "bad_references": [<more malformed resolve settings: FAILED, INVALID>, ...],
+//!     "empty":     <OPTIONAL: resolve settings naming a secret whose value is empty: FAILED,
+//!                  INVALID, never READY with no material>,
+//!     "check":     <OPTIONAL, for a plugin that serves `check`: { "accepted": [<reference
+//!                  settings `check` passes: READY>, ...], "refused": [<ones it refuses: FAILED,
+//!                  naming why>, ...] }> } }
 //! ```
 //!
-//! `bad_references` is optional: absent, the script resolves no more malformed references than
-//! `malformed`. `empty` is optional (a source whose settings cannot hold an empty value, as one
-//! that refuses it at `validate`, has none to name): absent, no empty secret is resolved.
+//! `malformed` may be one input (the original key) or a list; every entry is judged INVALID, and
+//! the suite adds `{"name": 5}` (a reference whose settings are the wrong shape) to the list. A
+//! refresh over `bad_settings[0]` is recorded; if refused, it leaves the instance serving its last
+//! settings: a resolve after a refused refresh still answers the known material. `bad_references` is
+//! optional and adds separately labelled malformed references.
 //!
 //! Every step is one ticket-less crossing of the secret table, but those the HOST answers without
 //! one (`Instance::refuse`): a resolve before `open`, a second `open`, a resolve after `close`
@@ -28,14 +35,14 @@
 
 use std::sync::{Arc, Mutex};
 
-use busbar_contract::abi::mechanism::call::{Outcome, BLOB_SECRET};
-use busbar_contract::abi::secret::{self, ResolveIn, ResolveOut, FIRST_SECRET_CAP};
+use busbar_contract::abi::mechanism::call::{OutHead, Outcome, BLOB_SECRET};
+use busbar_contract::abi::secret::{self, CheckIn, ResolveIn, ResolveOut, FIRST_SECRET_CAP};
 use busbar_contract::redacted::Secret as Held;
 
 use super::{
     answer, asis, called, closed, crossings, dispatcher, facts, input, input_text, json, listed,
     load, open, opened, output, refresh, refreshed, refused_settings, release, Fold, Leg, Script,
-    Subject,
+    Subject, Want,
 };
 use crate::dispatch::kinds::secret::Secret;
 use crate::dispatch::{Dispatcher, Frame, Plugin};
@@ -132,6 +139,40 @@ fn resolve(p: &Plugin<Secret>, d: &Dispatcher, settings: &[u8], material: &[u8])
     }
 }
 
+/// One `check` of a reference's `settings`, as the host's secret rows make it: ticket-less, with NO
+/// instance, lent a reason buffer. Its line: the call and the reason it wrote.
+fn check(p: &Plugin<Secret>, settings: &[u8]) -> String {
+    let mut reason = vec![0_u8; 4096];
+    let mut f: Frame<CheckIn, OutHead> = Frame::new(input(), output());
+    f.input.settings = json(settings);
+    f.input.err_buf = reason.as_mut_ptr();
+    f.input.err_cap = reason.len();
+    called(&p.call(secret::slot::CHECK, &mut f))
+}
+
+/// The `malformed` inputs: one value (the original key) or a list, and the suite's own reference
+/// of the wrong shape (`{"name": 5}`), each judged INVALID.
+fn malformed_inputs(k: &serde_json::Value) -> Vec<Vec<u8>> {
+    let text = |v: &serde_json::Value| input_text(v, "a secret");
+    let mut all: Vec<Vec<u8>> = match &k["malformed"] {
+        serde_json::Value::Array(list) => list.iter().map(text).collect(),
+        one => vec![text(one)],
+    };
+    let wrong_shape = br#"{"name":5}"#.to_vec();
+    if !all.contains(&wrong_shape) {
+        all.push(wrong_shape);
+    }
+    all
+}
+
+/// The label of the `i`th `malformed` resolve: the first keeps the original label.
+fn malformed_label(i: usize) -> String {
+    match i {
+        0 => "resolve malformed".to_string(),
+        i => format!("resolve malformed #{i}"),
+    }
+}
+
 /// How long the suite waits for one resolve: the host's call deadline.
 const RESOLVE_DEADLINE: std::time::Duration = std::time::Duration::from_secs(30);
 
@@ -147,7 +188,20 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     let known = text(&k["known"]["resolve"]);
     let material = text(&k["known"]["material"]);
     let unknown = text(&k["unknown"]);
-    let malformed = text(&k["malformed"]);
+    let malformed = malformed_inputs(k);
+    let empty = (!k["empty"].is_null()).then(|| text(&k["empty"]));
+    let checks = (!k["check"].is_null()).then(|| {
+        (
+            listed(&k["check"], "secret.check", "accepted")
+                .iter()
+                .map(text)
+                .collect::<Vec<_>>(),
+            listed(&k["check"], "secret.check", "refused")
+                .iter()
+                .map(text)
+                .collect::<Vec<_>>(),
+        )
+    });
     // Optional: absent (or null), no more malformed references are resolved.
     let bad_references: Vec<Vec<u8>> = match &k["bad_references"] {
         serde_json::Value::Null => Vec::new(),
@@ -158,17 +212,31 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
             .map(text)
             .collect(),
     };
-    // Optional: absent (or null), no empty secret is resolved.
-    let empty: Option<Vec<u8>> = match &k["empty"] {
-        serde_json::Value::Null => None,
-        v => Some(text(v)),
-    };
 
     let d = dispatcher();
     let p = load::<Secret>(s, leg, s.bind(&d, "secret")).expect("the secret door loads");
     let mut r = Script::new(crossings(&p));
     r.line("facts", 0, || facts(&p));
     refused_settings(&mut r, &p, &bad, &asis);
+    // `check` judges a reference with no instance: it crosses before any `open`.
+    if let Some((accepted, refused)) = &checks {
+        for (i, c) in accepted.iter().enumerate() {
+            r.judged(
+                &format!("check accepted #{i}"),
+                1,
+                Want::Starts("Ready "),
+                || check(&p, c),
+            );
+        }
+        for (i, c) in refused.iter().enumerate() {
+            r.judged(
+                &format!("check refused #{i}"),
+                1,
+                Want::Starts("Failed lease=false "),
+                || check(&p, c),
+            );
+        }
+    }
     // The host refuses an op on an unopened instance before the crossing (`Instance::refuse`).
     r.line("resolve unopened", 0, || resolve(&p, &d, &known, &material));
     opened(&mut r, (s, &p, &d), &settings, &asis);
@@ -187,16 +255,16 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     r.line("resolve unknown", 1, || {
         resolve(&p, &d, &unknown, &material)
     });
-    r.line("resolve malformed", 1, || {
-        resolve(&p, &d, &malformed, &material)
-    });
+    for (i, m) in malformed.iter().enumerate() {
+        r.line(&malformed_label(i), 1, || resolve(&p, &d, m, &material));
+    }
+    if let Some(empty) = &empty {
+        r.line("resolve empty", 1, || resolve(&p, &d, empty, &material));
+    }
     for (i, b) in bad_references.iter().enumerate() {
         r.line(&format!("resolve bad reference #{i}"), 1, || {
             resolve(&p, &d, b, &material)
         });
-    }
-    if let Some(empty) = &empty {
-        r.line("resolve empty", 1, || resolve(&p, &d, empty, &material));
     }
     // No lease was granted: a release of one is the plugin's refusal.
     r.line("release", 1, || called(&release(&p, 1)));
@@ -231,6 +299,8 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
 /// the instance as it was, so the resolve after it is the known material. `validate`, `open`,
 /// `refresh` and `close` answering READY are the shared steps' ([`super::opened`],
 /// [`super::refreshed`]).
+/// Every malformed-list entry and optional empty value is INVALID; optional `check`
+/// steps are judged as they run.
 fn contract(fold: &Fold) {
     let at = |label: &str| answer(fold, label);
     let known = format!(
@@ -266,18 +336,26 @@ fn contract(fold: &Fold) {
         "a value over the host's buffer is the short-buffer answer: {}",
         at("resolve short")
     );
-    let bad_references = fold
-        .iter()
-        .map(|s| s.label.as_str())
-        .filter(|l| l.starts_with("resolve bad reference #") || *l == "resolve empty")
-        .map(|l| (l, secret::ERROR_KIND_INVALID));
-    for (label, kind) in [
-        ("resolve unknown", secret::ERROR_KIND_NOT_FOUND),
-        ("resolve malformed", secret::ERROR_KIND_INVALID),
-    ]
-    .into_iter()
-    .chain(bad_references)
-    {
+    assert!(
+        fold.iter().any(|s| s.label == "resolve malformed"),
+        "resolve malformed must be judged",
+    );
+    let malformed = (0..)
+        .map(malformed_label)
+        .take_while(|l| fold.iter().any(|s| &s.label == l));
+    let mut failing: Vec<(String, u32)> =
+        vec![("resolve unknown".into(), secret::ERROR_KIND_NOT_FOUND)];
+    failing.extend(malformed.map(|l| (l, secret::ERROR_KIND_INVALID)));
+    if fold.iter().any(|s| s.label == "resolve empty") {
+        failing.push(("resolve empty".into(), secret::ERROR_KIND_INVALID));
+    }
+    failing.extend(
+        fold.iter()
+            .filter(|s| s.label.starts_with("resolve bad reference #"))
+            .map(|s| (s.label.clone(), secret::ERROR_KIND_INVALID)),
+    );
+    for (label, kind) in &failing {
+        let label = label.as_str();
         let tail = format!("kind={kind} material=none secret_flag=false in_host_buffer=false");
         assert!(
             at(label).starts_with("Failed lease=false ") && at(label).ends_with(&tail),
@@ -324,6 +402,33 @@ fn contract(fold: &Fold) {
         "{}",
         at("resolve after close")
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{malformed_inputs, malformed_label};
+
+    /// RED (SC2): `malformed` is one input (the original key, unchanged) or a list, and the
+    /// suite always adds the wrong-shape reference `{"name":5}`, once.
+    #[test]
+    fn malformed_is_one_input_or_a_list_and_always_judges_the_wrong_shape() {
+        let one = serde_json::json!({ "malformed": "[]" });
+        assert_eq!(
+            malformed_inputs(&one),
+            vec![b"[]".to_vec(), br#"{"name":5}"#.to_vec()]
+        );
+        let list = serde_json::json!({ "malformed": ["[]", { "name": 5 }, { "key": [] }] });
+        assert_eq!(
+            malformed_inputs(&list),
+            vec![
+                b"[]".to_vec(),
+                br#"{"name":5}"#.to_vec(),
+                br#"{"key":[]}"#.to_vec()
+            ]
+        );
+        assert_eq!(malformed_label(0), "resolve malformed");
+        assert_eq!(malformed_label(2), "resolve malformed #2");
+    }
 }
 
 #[cfg(all(test, loader_self_tests))]

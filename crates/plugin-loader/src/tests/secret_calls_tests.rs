@@ -310,6 +310,31 @@ fn a_dispatcher_lent_no_seal_refuses_the_reveal() {
     }
 }
 
+/// RED (S2): a reference its plugin's `check` refuses is refused on the axis, at config time and
+/// with no instance opened, in the plugin's own words; one it accepts passes. Before, the slot was
+/// never called, so `--validate` passed a reference that then failed at its first resolve.
+#[test]
+fn a_reference_the_plugins_check_refuses_is_refused_on_the_axis() {
+    use crate::secret_door_conformance_tests::secret_door_plugin::{
+        checking, CHECKING_NAME, NOT_ABSOLUTE,
+    };
+    let mut rows = SecretRows::new(dispatcher, || None);
+    rows.link(checking::door).expect("the checking door links");
+    assert_eq!(
+        rows.check(
+            CHECKING_NAME,
+            &serde_json::json!({ "path": "relative/key" })
+        ),
+        Err(vec![NOT_ABSOLUTE.to_string()])
+    );
+    assert_eq!(
+        rows.check(CHECKING_NAME, &serde_json::json!({ "path": "/run/key" })),
+        Ok(())
+    );
+    // A module no row answers is the registry's to refuse, not the axis's.
+    assert_eq!(rows.check("absent", &serde_json::json!({})), Ok(()));
+}
+
 /// A secret plugin whose value grows between the host's two reads: every `resolve` answers short,
 /// naming one byte more than the buffer it was lent (a file rotated between the reads, a
 /// Kubernetes `..data` swap).
