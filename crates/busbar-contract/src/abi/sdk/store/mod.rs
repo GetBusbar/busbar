@@ -422,6 +422,16 @@ pub trait StoreSlots: Sized + Send + Sync + 'static {
         }
     }
 
+    /// THE USAGE LEDGER'S PURGE: slot 22 under
+    /// [`RETENTION_USAGE_WINDOWS`](crate::abi::store::RETENTION_USAGE_WINDOWS). Remove every usage
+    /// window whose `window_start` is nonzero and earlier than `before`; never the all-time window
+    /// `0`. Answers how many windows went. The kernel calls it past its own window horizon, so a
+    /// durable store's ledger is bounded (a store that kept every window grew without bound).
+    ///
+    /// # Errors
+    /// The store's refusal, as the 1.5.5 op set states it.
+    fn purge_usage_before(&self, cx: &mut Op<'_>, before: u64) -> Step<RecordStoreResult<u64>>;
+
     /// `delete_plane_record` (slot 23); absent is `Ok`.
     ///
     /// # Errors

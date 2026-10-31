@@ -157,6 +157,7 @@ extern "C" {
 #define BB_STORE_SELECT_PARENT UINT32_C(1) /* [`ListPlaneRecordsIn::selector`]: one parent's records, oldest first by `seq` */
 #define BB_STORE_RETENTION_AGE UINT32_C(0) /* [`KindBeforeIn::retention`]: every row of the kind older than `before` goes (`Retention::Age`). */
 #define BB_STORE_RETENTION_TERMINAL_ONLY UINT32_C(1) /* [`KindBeforeIn::retention`]: only the kind's `DISPOSITION_TERMINAL` rows older than `before` */
+#define BB_STORE_RETENTION_USAGE_WINDOWS UINT32_C(2) /* [`KindBeforeIn::retention`]: THE USAGE LEDGER'S PURGE (open160 ST6; no slot of its own, so the */
 
 /* secret */
 #define BB_SECRET_ABI_VERSION UINT32_C(2) /* The secret kind's ABI version: v1.5.5 shipped `1` (`SECRET_ABI_VERSION`), so 1.6.0 ships `2`. */

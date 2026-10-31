@@ -552,6 +552,10 @@ impl<H: Hooks> StoreSlots for Wrapped<H> {
         H::purge_plane_records_before(&self.0, cx, kind, before)
     }
 
+    fn purge_usage_before(&self, cx: &mut Op<'_>, before: u64) -> Step<RecordStoreResult<u64>> {
+        <MemoryStore as StoreSlots>::purge_usage_before(&self.0, cx, before)
+    }
+
     fn purge_plane_records(
         &self,
         cx: &mut Op<'_>,

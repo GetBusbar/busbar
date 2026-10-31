@@ -13,7 +13,7 @@
 //! that binds those outcomes is about them: a `needed_*` on anything but FAILED.
 
 use super::ledger::{HostRecords, RecordEntry};
-use super::plane::{KindBeforeIn, RETENTION_AGE, RETENTION_TERMINAL_ONLY};
+use super::plane::{KindBeforeIn, RETENTION_AGE, RETENTION_TERMINAL_ONLY, RETENTION_USAGE_WINDOWS};
 use super::{
     CountOut, HostBlobs, HostBytesOut, HostListOut, LeasedBlobOut, LeasedListOut, LeasedStrListOut,
     VerdictOut, ABSENT, CANCEL_APPLIED, FOUND, VERDICT_YES,
@@ -433,11 +433,17 @@ pub fn check_count(outcome: Outcome, out: &CountOut) -> Result<(), Fault> {
     Ok(())
 }
 
-/// `purge_plane_records_before`' `in`: its `retention` is [`RETENTION_AGE`] or
-/// [`RETENTION_TERMINAL_ONLY`]. The host writes only those; a store refuses any other code rather
-/// than guess which rows it may drop.
+/// `purge_plane_records_before`' `in`: its `retention` is [`RETENTION_AGE`],
+/// [`RETENTION_TERMINAL_ONLY`] or [`RETENTION_USAGE_WINDOWS`]. The host writes only those; a store
+/// refuses any other code rather than guess which rows it may drop.
 pub fn check_kind_before(input: &KindBeforeIn) -> Result<(), Fault> {
-    if input.retention != RETENTION_AGE && input.retention != RETENTION_TERMINAL_ONLY {
+    if ![
+        RETENTION_AGE,
+        RETENTION_TERMINAL_ONLY,
+        RETENTION_USAGE_WINDOWS,
+    ]
+    .contains(&input.retention)
+    {
         return Err(KIND_BEFORE_RETENTION);
     }
     Ok(())

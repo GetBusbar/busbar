@@ -108,6 +108,15 @@ pub const RETENTION_AGE: u32 = 0;
 /// go (`Retention::TerminalOnly`); an active row is kept however old.
 pub const RETENTION_TERMINAL_ONLY: u32 = 1;
 
+/// [`KindBeforeIn::retention`]: THE USAGE LEDGER'S PURGE (open160 ST6; no slot of its own, so the
+/// table's layout does not move). `kind` is empty; every usage window (the `(bucket,
+/// window_start)` cells `get_usage`, `put_usage` and `add_usage_batch` keep) whose `window_start`
+/// is NONZERO and earlier than `before` goes, and the answer counts the windows removed. The
+/// all-time window `0` is never purged. The kernel drives it past its own 31-day window horizon:
+/// nothing reads a durable window older than that. A store built before this code refuses it, as
+/// any unknown code.
+pub const RETENTION_USAGE_WINDOWS: u32 = 2;
+
 /// `purge_plane_records_before`' `in` (records.rs:1530-1538).
 ///
 /// `retention` and its padding were APPENDED: the door copies the host's `in` up to its stated
@@ -122,8 +131,9 @@ pub struct KindBeforeIn {
     pub kind: AbiStr,
     /// The cutoff (Unix seconds).
     pub before: u64,
-    /// [`RETENTION_AGE`] | [`RETENTION_TERMINAL_ONLY`]: the rule the kind's owner declared; any
-    /// other code is refused.
+    /// [`RETENTION_AGE`] | [`RETENTION_TERMINAL_ONLY`]: the rule the kind's owner declared; or
+    /// [`RETENTION_USAGE_WINDOWS`], the usage ledger's purge (`kind` empty); any other code is
+    /// refused.
     pub retention: u32,
     /// Alignment padding.
     pub _reserved: u32,

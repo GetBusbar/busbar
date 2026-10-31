@@ -346,6 +346,10 @@ impl<S: StoreSlots> StoreCalls for SlotStore<S> {
     fn purge_plane_records_before<'a>(&'a self, kind: &'a str, before: u64) -> StoreCall<'a, u64> {
         ready(self.record(|s, cx| S::purge_plane_records_before(s, cx, kind, before)))
     }
+
+    fn purge_usage_before(&self, before: u64) -> StoreCall<'_, u64> {
+        ready(self.record(|s, cx| S::purge_usage_before(s, cx, before)))
+    }
 }
 
 /// The 1.5.5 op set's error for a store call: a FAILED op's own text unchanged, every other failure

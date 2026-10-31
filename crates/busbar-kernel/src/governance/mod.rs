@@ -1703,6 +1703,10 @@ pub use crate::test_support::store_double::MemoryStore;
 /// transient write failure is retried on the next tick rather than lost. The admin audit log needs no
 /// flush here: its ONE durable path is the neutral journal seam, which persists each record inline as
 /// it is recorded.
+///
+/// THE USAGE LEDGER'S RETENTION (open160 ST6): when it starts and then every
+/// [`USAGE_PURGE_EVERY`], the flusher purges from the durable store every usage window older than
+/// [`USAGE_WINDOW_HORIZON_SECS`] ([`purge_usage_windows`]), so a durable ledger stays bounded.
 pub fn spawn_budget_flusher(
     gov: std::sync::Arc<GovState>,
     mut shutdown: tokio::sync::broadcast::Receiver<()>,
@@ -1718,9 +1722,15 @@ pub fn spawn_budget_flusher(
     // last window's spend.
     let flush_gate = std::sync::Arc::new(tokio::sync::Mutex::new(()));
     tokio::spawn(async move {
+        purge_usage_windows(&gov).await;
+        let mut purged_at = std::time::Instant::now();
         loop {
             tokio::select! {
                 _ = tokio::time::sleep(interval) => {
+                    if purged_at.elapsed() >= USAGE_PURGE_EVERY {
+                        purge_usage_windows(&gov).await;
+                        purged_at = std::time::Instant::now();
+                    }
                     // `flush_budgets` runs SYNCHRONOUS SQLite writes (store `*_inner` on a std Mutex);
                     // calling it inline here would block a Tokio worker thread for the duration of the
                     // durable write. Offload to the blocking pool so the async runtime keeps serving
@@ -1765,6 +1775,40 @@ pub fn spawn_budget_flusher(
             }
         }
     })
+}
+
+/// How long a durable usage window is kept: the engine's own cell horizon (its in-memory sweep
+/// keeps a cell 31 days), which holds the longest window, a month, whole. Nothing reads a durable
+/// window older than it.
+pub const USAGE_WINDOW_HORIZON_SECS: u64 = 31 * SECS_PER_DAY;
+
+/// How often the flusher purges the durable usage ledger past [`USAGE_WINDOW_HORIZON_SECS`].
+pub const USAGE_PURGE_EVERY: std::time::Duration = std::time::Duration::from_secs(60 * 60);
+
+/// Purge every durable usage window older than [`USAGE_WINDOW_HORIZON_SECS`] through the store's
+/// v3 calls (the all-time window `0` is never purged: the store's rule). A governance engine with no
+/// store calls has no durable ledger to purge; a store that cannot purge is reported and retried on
+/// the next cadence.
+pub async fn purge_usage_windows(gov: &GovState) {
+    let Some(calls) = gov.store_calls() else {
+        return;
+    };
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    let before = now.saturating_sub(USAGE_WINDOW_HORIZON_SECS);
+    match calls.purge_usage_before(before).await {
+        Ok(purged) => tracing::debug!(
+            purged,
+            before,
+            "usage ledger: windows past the horizon purged"
+        ),
+        Err(e) => tracing::warn!(
+            error = %e,
+            "usage ledger: the store did not purge windows past the {}-day horizon; retried in an hour",
+            USAGE_WINDOW_HORIZON_SECS / SECS_PER_DAY
+        ),
+    }
 }
 
 #[cfg(test)]

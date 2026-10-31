@@ -238,6 +238,9 @@ pub mod store {
         ) -> Step<RecordStoreResult<u64>> {
             unreachable!("the open-reason store never opens")
         }
+        fn purge_usage_before(&self, _: &mut Op<'_>, _: u64) -> Step<RecordStoreResult<u64>> {
+            unreachable!("the open-reason store never opens")
+        }
         fn delete_plane_record(
             &self,
             _: &mut Op<'_>,

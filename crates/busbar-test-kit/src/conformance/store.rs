@@ -654,6 +654,13 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
         ))
     });
     r.line("usage at the end", LEASED, || ans(b.get_usage(ub, w)));
+    // The usage ledger's purge (slot 22 under `RETENTION_USAGE_WINDOWS`): every window started
+    // before `2w` goes (the one at `w`), the one at `2w` stays.
+    r.line("usage purge", 1, || {
+        ans(block(&rt, st.purge_usage_before(w * 2)))
+    });
+    r.line("usage purged", LEASED, || ans(b.get_usage(ub, w)));
+    r.line("usage kept", LEASED, || ans(b.get_usage("j", w * 2)));
 
     // ── the scope-kind round trip (DECISIONS #11): a plane's kinds are the key's own data, and a
     // dropped-in store must hand the key back byte-identically ──
@@ -802,6 +809,17 @@ fn contract(fold: &Fold, i: &Inputs<'_>) {
         tail("usage at the end").contains("UsageLedger { requests: 4,"),
         "{}",
         at("usage at the end")
+    );
+    assert_eq!(at("usage purge"), "= 1", "the one window before the cutoff");
+    assert!(
+        tail("usage purged").contains("UsageLedger { requests: 0,"),
+        "{}",
+        at("usage purged")
+    );
+    assert!(
+        tail("usage kept").contains("UsageLedger { requests: 9,"),
+        "{}",
+        at("usage kept")
     );
     assert_eq!(at("scope-kind get"), "identical=true plane_grants=true");
     assert_eq!(at("scope-kind list"), "identical=true");

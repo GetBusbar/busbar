@@ -362,6 +362,9 @@ impl StoreSlots for Canned {
     ) -> Step<RecordStoreResult<u64>> {
         unreachable!("not a request-path slot")
     }
+    fn purge_usage_before(&self, _: &mut StoreOp<'_>, _: u64) -> Step<RecordStoreResult<u64>> {
+        unreachable!("not a request-path slot")
+    }
     fn delete_plane_record(
         &self,
         _: &mut StoreOp<'_>,

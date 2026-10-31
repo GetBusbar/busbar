@@ -51,7 +51,8 @@ use crate::abi::store::{
     LeasedListOut, LeasedStrListOut, ListPlaneRecordsIn, OpBlobsIn, PlaneRecordRow, PutUsageIn,
     RecordEntry, RecordGetIn, RecordPutIn, RecordScanIn, StoreTail, TokenIn, U64In,
     UpsertPlaneRecordIn, VerdictOut, WindowIn, ABSENT, CANCEL_UNKNOWN, DIAG_OPID_CONFLICT,
-    DISPOSITION_TERMINAL, FOUND, SELECT_ALL, SELECT_PARENT, VERDICT_NO, VERDICT_YES,
+    DISPOSITION_TERMINAL, FOUND, RETENTION_USAGE_WINDOWS, SELECT_ALL, SELECT_PARENT, VERDICT_NO,
+    VERDICT_YES,
 };
 use crate::bounded::MAX_RECORD_BYTES;
 use crate::kinds::RecordBytes;
@@ -983,6 +984,16 @@ slot!(
     /// rule is refused, never guessed.
     PurgePlaneRecordsBefore(KindBeforeIn, CountOut) |s, i, o, cx| {
         let kind = match text_of(i.field(|i| &i.kind)) { Ok(t) => t, Err(e) => return refused(s, o, e) };
+        // The usage ledger's purge rides this slot under its own code, `kind` empty.
+        if i.retention == RETENTION_USAGE_WINDOWS {
+            if !kind.is_empty() {
+                return refused(s, o, Text::render(format_args!("a usage-window purge names no kind")));
+            }
+            return match step!(o, s.store.purge_usage_before(cx, i.before)) {
+                Ok(n) => { o.count = n; Outcome::Ready }
+                Err(e) => failed(s, o, e.0),
+            };
+        }
         let Some(retention) = Retention::from_code(i.retention) else {
             return refused(s, o, Text::render(format_args!("retention {} is not a retention rule", i.retention)));
         };

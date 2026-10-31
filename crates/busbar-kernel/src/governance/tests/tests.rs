@@ -6280,7 +6280,6 @@ fn a_virtual_keys_generation_is_compared_in_constant_time() {
 /// (`0`) and the live window are kept.
 #[tokio::test]
 async fn a_usage_window_past_the_horizon_is_purged_from_the_durable_store() {
-    use busbar_contract::store_calls::StoreAxis as _;
     use busbar_contract::store_calls::StoreDoor;
     let opened = crate::test_support::store_axis_stand_in()
         .open(

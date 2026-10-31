@@ -1424,6 +1424,24 @@ impl StoreCalls for LoadedStore {
             ran.ok().map(|()| ran.out.count)
         })
     }
+
+    fn purge_usage_before(&self, before: u64) -> StoreCall<'_, u64> {
+        boxed(async move {
+            let r = fixed::<_, CountOut>(
+                slot::PURGE_PLANE_RECORDS_BEFORE,
+                // The usage ledger's purge rides slot 22 under its own code, `kind` empty.
+                owned_in(|o, head| KindBeforeIn {
+                    head,
+                    kind: o.text(""),
+                    before,
+                    retention: st::RETENTION_USAGE_WINDOWS,
+                    _reserved: 0,
+                }),
+            );
+            let (ran, _) = run!(self, submit, r);
+            ran.ok().map(|()| ran.out.count)
+        })
+    }
 }
 
 // ── RecordStore: the synchronous bridge (until M6) ────────────────────────────────────────────────
