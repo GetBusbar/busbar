@@ -28,6 +28,7 @@
 //! kernel publishes one it is `0`.
 
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
 use busbar_contract::abi::host::service::{AuthRef, UnitRef};
 
