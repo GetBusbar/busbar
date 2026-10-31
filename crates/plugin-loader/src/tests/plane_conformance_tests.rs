@@ -137,7 +137,7 @@ mod door {
         CANCEL_ABORTED, EMIT_DONE, EMIT_TO_FAR_END, FROM_CALLER, FROM_FAR_END, FROM_KERNEL,
         MARK_GATE_REJECTED, PIECE_LAST, REFUSAL_GATE, UNITS_REPORTED, VERDICT_OK,
     };
-    use busbar_contract::abi::sdk::door::{kind_op, Lifecycle, Slot};
+    use busbar_contract::abi::sdk::door::{kind_op, Lifecycle, RawSlot};
 
     use crate::dispatch::kinds::plane::Plane;
     use crate::dispatch::{
@@ -581,10 +581,10 @@ mod door {
 
     /// The lifecycle's own `open`: an `OpenOut` with an instance and nowhere to put a snapshot.
     struct LifecycleOpen;
-    impl Slot for LifecycleOpen {
+    impl RawSlot for LifecycleOpen {
         type In = OpenIn;
         type Out = OpenOut;
-        fn call(_: *mut std::ffi::c_void, _: &OpenIn, out: &mut OpenOut) -> Outcome {
+        unsafe fn call(_: *mut std::ffi::c_void, _: &OpenIn, out: &mut OpenOut) -> Outcome {
             out.instance = std::ptr::NonNull::<u8>::dangling().as_ptr().cast();
             Outcome::Ready
         }
@@ -597,10 +597,10 @@ mod door {
     /// `close` takes the token back and frees nothing (the host closes the live instance of an
     /// `open` it judged FAULT after the plugin answered READY).
     struct LifecycleClose;
-    impl Slot for LifecycleClose {
+    impl RawSlot for LifecycleClose {
         type In = busbar_contract::abi::mechanism::call::InHead;
         type Out = busbar_contract::abi::mechanism::call::OutHead;
-        fn call(
+        unsafe fn call(
             _: *mut std::ffi::c_void,
             _: &busbar_contract::abi::mechanism::call::InHead,
             _: &mut busbar_contract::abi::mechanism::call::OutHead,

@@ -22,11 +22,11 @@ use super::{
     FramerOut, HeadSlots, IoOut, ListenOut, LocateOut, SettingDecl, StatusRow, TransportTail,
     CANCEL_COMPLETED, CANCEL_NOTHING_MOVED, FACT_ACCEPTS, FACT_ADOPTS, FACT_DECODES_PAYLOAD,
     FACT_DETACHES, FACT_DIALS, FAULT_CALLER, FAULT_HEALTHY, FRAMING_DATAGRAM, FRAMING_STREAM,
-    MAX_ADDR, PIECE_CONTINUED, PIECE_END, PIECE_END_OF_FRAME, PIECE_FIELDS, PIECE_HAS_CODE,
-    PIECE_HAS_DECLARED_LEN, PIECE_HAS_RETRY_AFTER, PIECE_STREAM_FAILED, PIECE_TEXT, PIECE_WRITABLE,
-    ROLE_CARRIER, ROLE_FRAMER, SETTING_FLAG, SETTING_TEXT, STATUS_AT_TERMINAL, STATUS_OTHER,
-    STATUS_SUCCESS, UNIT0_HANDSHAKE, YIELD_ENDED, YIELD_HAS_DEADLINE, YIELD_MORE,
-    YIELD_STREAM_FULL,
+    MAX_ADDR, PIECE_CODE_HANDOFF, PIECE_CONTINUED, PIECE_END, PIECE_END_OF_FRAME, PIECE_FIELDS,
+    PIECE_HAS_CODE, PIECE_HAS_DECLARED_LEN, PIECE_HAS_RETRY_AFTER, PIECE_INTERIM,
+    PIECE_STREAM_FAILED, PIECE_TEXT, PIECE_WRITABLE, ROLE_CARRIER, ROLE_FRAMER, SETTING_FLAG,
+    SETTING_TEXT, STATUS_AT_TERMINAL, STATUS_OTHER, STATUS_SUCCESS, UNIT0_HANDSHAKE, YIELD_ENDED,
+    YIELD_HAS_DEADLINE, YIELD_MORE, YIELD_STREAM_FULL,
 };
 use super::{AuthPoints, POINT_HEAD, POINT_HEAD_BODY, POINT_PEER};
 use super::{
@@ -248,7 +248,7 @@ abi_op! {
     /// known codes.
     fn check_piece(p: &FramePiece, frame_len: u64) as "framer.piece", PIECE_RULES for p: FramePiece {
         then range(p.offset, p.len, frame_len, "framer.piece.bytes");
-        bits(flags, PIECE_END_OF_FRAME | PIECE_HAS_CODE | PIECE_HAS_RETRY_AFTER | PIECE_STREAM_FAILED | PIECE_FIELDS | PIECE_CONTINUED | PIECE_TEXT | PIECE_END | PIECE_HAS_DECLARED_LEN | PIECE_WRITABLE);
+        bits(flags, PIECE_END_OF_FRAME | PIECE_HAS_CODE | PIECE_HAS_RETRY_AFTER | PIECE_STREAM_FAILED | PIECE_FIELDS | PIECE_CONTINUED | PIECE_TEXT | PIECE_END | PIECE_HAS_DECLARED_LEN | PIECE_WRITABLE | PIECE_INTERIM | PIECE_CODE_HANDOFF);
         // A writable piece is a signal about the stream, never part of a frame: empty, alone.
         deny(p.flags & PIECE_WRITABLE != 0 && (p.len != 0 || p.flags != PIECE_WRITABLE), Contradiction, "framer.piece.writable_not_alone");
         // Text is a fact about a message, an empty one too: a field block, a failed stream's
@@ -263,6 +263,10 @@ abi_op! {
         deny(p.flags & PIECE_CONTINUED != 0 && p.flags & PIECE_FIELDS == 0, Contradiction, "framer.piece.continued_not_fields");
         // A declared body length is a head's statement: a field block carries it, nothing else.
         deny(p.flags & PIECE_HAS_DECLARED_LEN != 0 && p.flags & PIECE_FIELDS == 0, Contradiction, "framer.piece.declared_len_not_fields");
+        // An interim head has its code, and states neither an end nor a body length.
+        deny(p.flags & PIECE_INTERIM != 0 && (p.flags & (PIECE_FIELDS | PIECE_HAS_CODE) != PIECE_FIELDS | PIECE_HAS_CODE || p.flags & (PIECE_END | PIECE_HAS_DECLARED_LEN) != 0), Contradiction, "framer.piece.interim_not_head");
+        // The handshake numbering is meaningful only with a code.
+        deny(p.flags & PIECE_CODE_HANDOFF != 0 && p.flags & PIECE_HAS_CODE == 0, Contradiction, "framer.piece.handoff_without_code");
         // A field block is never a failure's reason.
         deny(p.flags & PIECE_FIELDS != 0 && p.flags & PIECE_STREAM_FAILED != 0, Contradiction, "framer.piece.fields_failed");
         // An empty piece is a whole frame (an empty message, or the stream's end; a writable
@@ -271,6 +275,10 @@ abi_op! {
         deny(((p.len == 0 && p.flags != PIECE_WRITABLE) || p.flags & PIECE_STREAM_FAILED != 0) && p.flags & PIECE_END_OF_FRAME == 0, Contradiction, "framer.piece.end_without_end_of_frame");
         code(status_class, 0u8, STATUS_OTHER);
         code(fault, 0u8, FAULT_HEALTHY);
+        // Unflagged values would silently lose their meaning at the host.
+        deny(p.code != 0 && p.flags & PIECE_HAS_CODE == 0, Contradiction, "framer.piece.code_without_flag");
+        deny(p.retry_after_secs != 0 && p.flags & PIECE_HAS_RETRY_AFTER == 0, Contradiction, "framer.piece.retry_after_without_flag");
+        deny(p.declared_len != 0 && p.flags & PIECE_HAS_DECLARED_LEN == 0, Contradiction, "framer.piece.declared_len_without_flag");
         // The fault reading is a reading OF the piece's code: a piece with no code reads none.
         deny(p.fault != 0 && p.flags & PIECE_HAS_CODE == 0, Contradiction, "framer.piece.fault_without_code");
     }
