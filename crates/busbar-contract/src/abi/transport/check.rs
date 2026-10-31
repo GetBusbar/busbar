@@ -838,6 +838,20 @@ pub fn check_offered_points(extensions: &[u8]) -> Result<AuthPoints, Fault> {
     Ok(AuthPoints(bits))
 }
 
+/// Whether a transport renders sealed values, read from its Statement's `extensions`
+/// ([`super::EXT_SEALED_VALUES`]): `false` when it states no record; the record's value is empty.
+///
+/// # Errors
+///
+/// The record holds a value ([`Rule::Foreign`]).
+pub fn check_sealed_values(extensions: &[u8]) -> Result<bool, Fault> {
+    match crate::abi::mechanism::extensions::get(extensions, super::EXT_SEALED_VALUES) {
+        None => Ok(false),
+        Some([]) => Ok(true),
+        Some(_) => Err(fault(Rule::Foreign, "sealed_values.len")),
+    }
+}
+
 /// The most field predicates one route may carry.
 pub const MAX_ROUTE_FIELDS: u64 = 32;
 

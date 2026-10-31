@@ -490,6 +490,19 @@ pub const FACT_ADOPTS: u32 = 32;
 /// was called at. Boot refuses a line whose auth needs a point its transport does not offer.
 pub const EXT_OFFERED_POINTS: &str = "offered-points";
 
+/// THE SEALED-VALUES RECORD (TSEAL): the key under which a FRAMER's Statement `extensions` states
+/// that it renders sealed values (an empty value; any other refuses the load,
+/// [`check::check_sealed_values`]). Such a framer promises that every field value it is handed
+/// (`BeginIn::fields`, `EncodeIn::fields`, and the bytes of an opening it is emitted) it renders
+/// VERBATIM, contiguously, exactly once: on a wire with HPACK/QPACK, as a literal never-indexed
+/// string without Huffman coding. The host then hands it FILLER of exactly a credential value's
+/// length in place of the value (random bytes in `A-Za-z0-9`), never the credential, and splices
+/// the real bytes over the filler in the framer's wire output where the host secures the
+/// connection; an opening whose filler is not rendered exactly once is refused before its bytes
+/// leave, and a sealed value is never written to a connection the host does not secure (its open is
+/// refused). A framer that states no record is handed the credential bytes, as before.
+pub const EXT_SEALED_VALUES: &str = "sealed-values";
+
 /// `side`: the accepting end.
 pub const SIDE_ACCEPT: u32 = 0;
 /// `side`: the dialing end.

@@ -3364,3 +3364,48 @@ async fn a_framer_that_states_its_length_has_the_bodys_length_last_in_the_head()
     let head: Vec<String> = names(2).into_iter().map(|(n, _)| n).collect();
     assert_eq!(head, ["authorization", "content-type", "accept", "host"]);
 }
+
+/// RED (TSEAL): THE HOST NAMES ITS AUTH FIELDS SEALED TO THE CONNECTOR. A request carrying its
+/// member's credential opens with the host's sealed-fields field (`conn::SEALED_FIELDS_FIELD`)
+/// naming exactly the auth binding's fields, so a framer that renders sealed values is handed filler
+/// for them, never the credential; a request whose member presents nothing names none.
+#[tokio::test]
+async fn a_far_request_names_its_auth_fields_sealed_to_the_connector() {
+    use busbar_contract::abi::auth::NO_MEMBER_AUTH_FIELD;
+    use busbar_contract::conn::SEALED_FIELDS_FIELD;
+    let mut r = rig(
+        &[("a.test", Script::Answer(200, None, vec![b"ok"]))],
+        OnExhausted::Status503,
+        None,
+    );
+    let _ = resolving(&mut r, &[Some(5)]);
+    let t = token();
+    for waived in [false, true] {
+        let far = r.egress.unit(route());
+        let _ = far.member(&t, 1).await;
+        let mut req = request();
+        if waived {
+            req.fields
+                .push((NO_MEMBER_AUTH_FIELD.as_bytes().to_vec(), b"1".to_vec()));
+        }
+        assert!(far.send(&t, req).await);
+        let _ = drain(&far, &t).await;
+    }
+    let sealed: Vec<Option<Vec<u8>>> = r
+        .table
+        .opened
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|(_, head, _, _)| {
+            head.iter()
+                .find(|(n, _)| n == SEALED_FIELDS_FIELD)
+                .map(|(_, v)| v.clone())
+        })
+        .collect();
+    assert_eq!(
+        sealed,
+        vec![Some(b"authorization".to_vec()), None],
+        "the credential's field is named sealed; a request presenting none names none"
+    );
+}

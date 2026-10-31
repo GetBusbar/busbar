@@ -73,6 +73,10 @@ pub struct Knobs {
     /// `locate` answers SHORT, needing this many authority bytes, while the host offers fewer;
     /// offered as many, it answers READY with the target as its authority.
     pub authority_needed: Option<u64>,
+    /// It states the sealed-values record (`abi::transport::EXT_SEALED_VALUES`).
+    pub seals: bool,
+    /// `encode` renders its fields (`name: value` CRLF each, then CRLF) before the body.
+    pub render_fields: bool,
     /// An accepting `begin` states this agreed protocol (`FramerYield::agreed`, a 1-based position
     /// in the accepting offer).
     pub agreed: Option<u32>,
@@ -129,6 +133,9 @@ pub struct TestDoor {
     pub held_keys: Mutex<HashSet<u64>>,
     /// The authority capacity every `locate` crossing offered (`LocateIn::authority_cap`), in order.
     pub locate_caps: Mutex<Vec<usize>>,
+    /// EVERY BYTE THE FRAMER WAS HANDED: each `begin` and `encode` field value and each `emit`'s
+    /// bytes, in order (what a sealed value must never be found in).
+    pub handed: Mutex<Vec<u8>>,
 }
 
 impl TestDoor {
@@ -182,6 +189,7 @@ impl TestDoor {
             dialled_keys: Mutex::new(Vec::new()),
             held_keys: Mutex::new(HashSet::new()),
             locate_caps: Mutex::new(Vec::new()),
+            handed: Mutex::new(Vec::new()),
         }
     }
 
@@ -341,6 +349,10 @@ impl FramerDoor for TestDoor {
         &self.facts
     }
 
+    fn seals_values(&self) -> bool {
+        self.knobs.seals
+    }
+
     fn side(&self) -> Option<Box<dyn Side>> {
         if self.facts.role != busbar_contract::abi::transport::ROLE_CARRIER {
             return None;
@@ -443,6 +455,12 @@ impl FramerDoor for TestDoor {
                     // SAFETY: host-borrowed fields, `fields_len` of them, valid for the call.
                     unsafe { std::slice::from_raw_parts(i.fields, i.fields_len) }
                 };
+                for f in fields {
+                    self.handed
+                        .lock()
+                        .unwrap()
+                        .extend_from_slice(raw(f.value.ptr, f.value.len));
+                }
                 self.begun_fields.lock().unwrap().push(
                     fields
                         .iter()
@@ -522,6 +540,10 @@ impl FramerDoor for TestDoor {
             Call::Emit(i, o) => match framings.get_mut(&i.framing) {
                 None => ("emit", failed("no such framing")),
                 Some(st) => {
+                    self.handed
+                        .lock()
+                        .unwrap()
+                        .extend_from_slice(raw(i.bytes, i.len));
                     st.outbound.extend(raw(i.bytes, i.len));
                     st.emitted += i.len;
                     answer(st, &i.sink, o, silence);
@@ -561,8 +583,22 @@ impl FramerDoor for TestDoor {
                 }
             },
             Call::Encode(i, o) => {
-                let body = raw(i.body, i.body_len);
-                // SAFETY: `encode` is given room for the body.
+                let mut message = Vec::new();
+                if self.knobs.render_fields && !i.fields.is_null() {
+                    // SAFETY: host-borrowed fields, `fields_len` of them, valid for the call.
+                    for f in unsafe { std::slice::from_raw_parts(i.fields, i.fields_len) } {
+                        let value = raw(f.value.ptr, f.value.len);
+                        self.handed.lock().unwrap().extend_from_slice(value);
+                        message.extend_from_slice(raw(f.name.ptr, f.name.len));
+                        message.extend_from_slice(b": ");
+                        message.extend_from_slice(value);
+                        message.extend_from_slice(b"\r\n");
+                    }
+                    message.extend_from_slice(b"\r\n");
+                }
+                message.extend_from_slice(raw(i.body, i.body_len));
+                let body = &message[..];
+                // SAFETY: `encode` is given room for the body and every field.
                 unsafe {
                     std::ptr::copy_nonoverlapping(body.as_ptr(), i.sink.wire, body.len());
                 }

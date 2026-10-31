@@ -613,6 +613,20 @@ impl std::fmt::Debug for ConnAuth {
     }
 }
 
+/// THE OPENER'S SEALED FIELDS (TSEAL): a field of this name in an open's fields is the HOST'S,
+/// never the far end's. Its value names, comma-separated, the fields of the same open whose values
+/// are credential bytes (the bound auth's fields, which the host added). The connector takes it out
+/// before anything is framed and, over a framer that renders sealed values
+/// (`abi::transport::EXT_SEALED_VALUES`), hands the framer filler for those values and splices the
+/// real bytes into its output only where the host secures the connection; no wire ever carries it.
+pub const SEALED_FIELDS_FIELD: &str = "busbar-sealed-fields";
+
+/// Whether the field `name` is [`SEALED_FIELDS_FIELD`] (a field name compares case-insensitively).
+#[must_use]
+pub fn is_sealed_fields_field(name: &[u8]) -> bool {
+    name.eq_ignore_ascii_case(SEALED_FIELDS_FIELD.as_bytes())
+}
+
 /// The field a member-program connection's HEAD carries (the first piece every open on it reads,
 /// a fields piece whose status is a success): the GENERATION of the program it reaches, a decimal
 /// counting the spawns of that member's program from `1`. Two opens that read the same generation

@@ -94,6 +94,12 @@ pub struct DoorFacts {
 pub trait FramerDoor: Send + Sync {
     /// What the entry states.
     fn facts(&self) -> &DoorFacts;
+    /// The entry renders sealed values (`abi::transport::EXT_SEALED_VALUES`): the host hands it
+    /// filler, never a credential value, and splices the real bytes into its wire output. `false`
+    /// unless its Statement states the record.
+    fn seals_values(&self) -> bool {
+        false
+    }
     /// One crossing: the op, answered into its `out`.
     fn cross(&self, call: Call<'_>) -> Crossed;
     /// A new side of a carried connection: a ticket the entry's carrier ops are driven on inline
