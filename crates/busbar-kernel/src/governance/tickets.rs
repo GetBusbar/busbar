@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
+use super::signing::ticket_audience;
 use super::*;
 use crate::host_services::VerifiedTicketIdentity;
 use busbar_contract::records::{PlaneDisposition, PlaneRecordRef, Retention};
@@ -171,7 +172,7 @@ impl GovState {
         let generation = binding_generation(&key.generation_hash);
         let body = material
             .signer
-            .mint_ticket_body(&key.id, exp, generation, &id);
+            .mint_ticket_body(&key.id, exp, generation, &id, prefix);
         let credential = format!("{prefix}{body}");
         let mut identity = VerifiedTicketIdentity {
             id,
