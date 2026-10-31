@@ -3171,8 +3171,9 @@ fn an_unwritten_settings_trust_is_refused_but_not_audited() {
         .map(|(.., trust)| trust.clone())
         .collect();
     assert_eq!(trusts, vec![None, None]);
-    // A junk anchor is a refusal, audited.
-    assert_eq!(refresh_with(&p, br#"{"ca":"junk"}"#), Outcome::Failed);
+    // The table refuses and audits the need. Refresh still returns the existing plugin's
+    // outcome; it does not become a new OPEN or make that refused need available.
+    assert_eq!(refresh_with(&p, br#"{"ca":"junk"}"#), Outcome::Ready);
     assert_eq!(
         refused_for(label),
         vec![format!(
