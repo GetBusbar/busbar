@@ -830,22 +830,25 @@ pub struct GovState {
     /// read OFF the reactor and BOUNDS it. The request path only ever reads the set; see that
     /// module's docs for why, and for what the offload costs.
     denylist: Arc<revocation::RevocationSync>,
-    /// Serializes `refresh` so a slow reader-load cannot clobber a newer swap (lost-update guard).
-    /// `refresh` loads the full key set from the store OUTSIDE the `caches` write lock (to keep that
-    /// critical section short), then swaps. Without serialization, two concurrent refreshes could
-    /// interleave load-A, load-B, swap-B, swap-A where load-A predates B's committed mutation — so
-    /// the final cache is missing B's key until the next mutation. Holding this mutex across the
-    /// ENTIRE load→swap means a later refresh's load begins only after the earlier refresh's swap
-    /// has committed, so it can never contain strictly-older store state. Guarded data is `()`;
-    /// a poisoned lock is recovered with `into_inner()` (serializing is strictly better than not).
-    refresh_lock: Arc<std::sync::Mutex<()>>,
-    /// Serializes the SELF-SERVE mint upsert (`issue_self`/`refresh_self`): each does a
+    /// Orders cache writes so a slow reader-load cannot clobber a newer one (lost-update guard)
+    /// WITHOUT holding a lock across the store load (§11.13 M1). `refresh` loads the full key set
+    /// from the store with no lock held, then swaps. Two concurrent refreshes could interleave
+    /// load-A, load-B, swap-B, swap-A where load-A predates B's committed mutation, and a refresh
+    /// whose load raced `revoke`'s writes could swap after `revoke`'s targeted patch and revert it.
+    /// [`CacheOrder`] tickets every load and every patch: a load older than the last swap is
+    /// dropped, and a load older than the last patch is redone. See [`CacheOrder`].
+    refresh_order: Arc<CacheOrder>,
+    /// Serializes `revoke` per subject: two revokes of one key would otherwise each write a fresh
+    /// generation and patch the cache in the opposite order to their store writes.
+    revoke_claims: claims::ClaimSet<String>,
+    /// Serializes the SELF-SERVE mint upsert (`issue_self`/`refresh_self`) PER SUBJECT: each does a
     /// current-binding CHECK then a write, and without this an issue racing a refresh could strand a
     /// second enabled binding for the same `user:<sub>` (breaking the one-key-per-sub invariant that
-    /// justifies excluding self-keys from the anti-sprawl cap). Guarded data is `()`; a poisoned lock
-    /// is recovered with `into_inner()`. (The deterministic id already makes two concurrent *issues*
-    /// idempotent by id; this closes the issue/refresh interleaving and non-idempotent stores.)
-    self_mint_lock: std::sync::Mutex<()>,
+    /// justifies excluding self-keys from the anti-sprawl cap). A claim, not a lock: no lock is held
+    /// across the store writes, so a mint parked in the store holds up only its own subject's
+    /// logins (§11.13 M1). (The deterministic id already makes two concurrent *issues* idempotent
+    /// by id; this closes the issue/refresh interleaving and non-idempotent stores.)
+    self_mint_claims: claims::ClaimSet<String>,
     /// Whether the self-serve mint holds an admin's state and the minting provider
     /// ([`SELF_MINT_HOLDS_ADMIN_AND_PROVIDER_STATE`]); set from that const at construction.
     self_mint_holds: std::sync::atomic::AtomicBool,
@@ -860,10 +863,91 @@ pub struct GovState {
     caller_refs: crate::plane_driver::CallerRefs,
     /// The deployment keyset's caller-reference material, once the book binds the keyset.
     deployment_caller_ref: RwLock<Option<[u8; 32]>>,
+    /// THE NODE'S AMENDMENT JOURNAL (item 404): every hook or export content access. Held here
+    /// because this state lives as long as the node does and is reused across every config apply —
+    /// an instance the node owns, never a process static. Every `App` generation carries the same
+    /// `Arc` (`App::amendments`).
+    amendments: Arc<crate::audit::amend::NodeAmendments>,
     /// This boot's random caller-reference key: the last resort when the node has neither signing
     /// material nor a deployment keyset, so a verified principal is never lent the empty reference.
     /// Zeroised on drop and never logged (`GovState` has no `Debug`).
     boot_caller_ref: zeroize::Zeroizing<[u8; 32]>,
+}
+
+/// The order of the key caches' writes (see `GovState::refresh_order`). Every reload takes a
+/// TICKET before it reads the store and every targeted patch takes one when it applies, from one
+/// counter, so a higher ticket means a later start. A reload swaps only if no reload with a later
+/// ticket already swapped (that one began after this caller's mutation, so it carries it) and no
+/// patch with a later ticket was applied (this load may predate the patch's writes, so it reloads).
+/// The mutex is held only to take a ticket and to swap or patch, never across a store call.
+#[derive(Default)]
+pub(crate) struct CacheOrder {
+    seq: std::sync::Mutex<CacheSeq>,
+}
+
+#[derive(Default)]
+struct CacheSeq {
+    /// The last ticket handed out.
+    next: u64,
+    /// The ticket of the reload whose snapshot is in the caches.
+    swapped: u64,
+    /// The ticket of the last targeted patch applied.
+    patched: u64,
+}
+
+/// What a reload holding a ticket must do with the snapshot it loaded.
+pub(crate) enum CacheTurn<'a> {
+    /// Swap it in; the caches stay ordered while the guard is held.
+    Swap(CacheTurnGuard<'a>),
+    /// A later reload already swapped: the caches carry everything this load would.
+    Stale,
+    /// A patch landed after this load began: load again.
+    Reload,
+}
+
+/// Held while a reload swaps its snapshot in; records the swap when dropped.
+pub(crate) struct CacheTurnGuard<'a> {
+    seq: std::sync::MutexGuard<'a, CacheSeq>,
+    ticket: u64,
+}
+
+impl Drop for CacheTurnGuard<'_> {
+    fn drop(&mut self) {
+        self.seq.swapped = self.ticket;
+    }
+}
+
+impl CacheOrder {
+    fn lock(&self) -> std::sync::MutexGuard<'_, CacheSeq> {
+        self.seq.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// A ticket for a reload about to read the store.
+    pub(crate) fn ticket(&self) -> u64 {
+        let mut seq = self.lock();
+        seq.next += 1;
+        seq.next
+    }
+
+    /// What a reload with `ticket` does with its snapshot.
+    pub(crate) fn turn(&self, ticket: u64) -> CacheTurn<'_> {
+        let seq = self.lock();
+        if ticket < seq.swapped {
+            CacheTurn::Stale
+        } else if ticket < seq.patched {
+            CacheTurn::Reload
+        } else {
+            CacheTurn::Swap(CacheTurnGuard { seq, ticket })
+        }
+    }
+
+    /// Apply a targeted patch, after its store writes, in order with every reload.
+    pub(crate) fn patch<R>(&self, apply: impl FnOnce() -> R) -> R {
+        let mut seq = self.lock();
+        seq.next += 1;
+        seq.patched = seq.next;
+        apply()
+    }
 }
 
 /// The busbar signing key as ONE unit: the mint-side signer and the verify-side keyset derived
@@ -900,6 +984,8 @@ pub struct RotatedCredential {
 // public spelling is the substrate's own, and nothing outside busbar-core reaches this path.
 
 pub mod revocation;
+// Per-key serialization that holds no lock across a store call (§11.13 M1).
+pub mod claims;
 // A recoverable credential at rest: sealed before the store sees it (CHIP-DESIGN v4.1 change 1).
 pub mod at_rest;
 // The RESOLVED runtime mint policy (`auth.policy:`) — de-aliased out of `admin` (1.6.0, stage 2a):
@@ -985,15 +1071,15 @@ impl std::fmt::Display for SelfMintError {
 }
 
 /// THE single async door onto the self-serve mint path (`GovState::issue_self` /
-/// `GovState::refresh_self`). Both mint fns take `self_mint_lock` — a plain
-/// `std::sync::Mutex`, NOT a `tokio::sync::Mutex` — and, still holding it, perform SYNCHRONOUS
+/// `GovState::refresh_self`). Both mint fns claim the subject in `self_mint_claims` — a blocking
+/// wait, NOT an async one — and, still holding the claim, perform SYNCHRONOUS
 /// store I/O (`write_self_binding` -> `store.put_key`, and on refresh `store.delete_key`). A
 /// durable `Store` plugin implements those with real network/disk I/O. Calling either fn directly
 /// from an `async fn` therefore runs a blocking critical section INLINE on whatever Tokio worker
 /// is executing the handler: under concurrent logins against a slow store, that worker stalls
 /// every other task queued on it, including unrelated data-plane requests. `spawn_blocking` moves
-/// the ENTIRE lock+I/O critical section onto the blocking pool instead, so the mutex is only ever
-/// held on a blocking thread — mirrors `admin/mod.rs`'s `rotate_key`/`config_transaction` pattern
+/// the ENTIRE claim+I/O critical section onto the blocking pool instead, so the claim is only ever
+/// waited for on a blocking thread — mirrors `admin/mod.rs`'s `rotate_key`/`config_transaction` pattern
 /// exactly (the `Arc<GovState>` cloned into the closure, the sync call made there, a `JoinError`
 /// on `.await` mapped to a `StoreError` rather than panicking or unwrapping).
 ///
@@ -1555,6 +1641,7 @@ pub fn accrue_pending(
     key: MeterKey,
     add: MeterCounts,
     cap: usize,
+    warn: &CoalesceWarn,
 ) {
     if let Some(cell) = pending.get_mut(&key) {
         cell.merge(add);
@@ -1581,14 +1668,43 @@ pub fn accrue_pending(
     );
     pending.entry(sentinel).or_default().merge(add);
     metrics::counter!(crate::snapshot::METERING_PENDING_COALESCED_TOTAL).increment(1);
-    // Per-event detail at debug; the metric above is the aggregate, human-cadence signal an operator
-    // alerts on. Kept off `warn!` so a sustained outage does not spam one line per coalesced cell.
-    crate::diagnostics::diag_debug!(
-        crate::diagnostics::METERING_PENDING_OVERFLOW_COALESCED,
-        overflow_bucket = key.1,
-        "metering accumulator at cap ({cap}); coalesced a new cell into the per-bucket overflow \
-         sentinel — totals preserved, per-key attribution collapsed until the store recovers"
-    );
+    // A WARN, but at most one per window (not one per coalesced cell): it names how many cells were
+    // coalesced since the last line, and `busbar_metering_pending_coalesced_total` above carries
+    // the running aggregate.
+    if let Some(coalesced) = warn.note(std::time::Instant::now()) {
+        crate::diagnostics::diag_warn!(
+            crate::diagnostics::METERING_PENDING_OVERFLOW_COALESCED,
+            overflow_bucket = key.1,
+            coalesced,
+            "metering accumulator at cap ({cap}); coalesced {coalesced} cell(s) into the per-bucket \
+             overflow sentinel — totals preserved, per-key attribution collapsed until the store \
+             recovers"
+        );
+    }
+}
+
+/// The once-per-window throttle on the overflow-coalescing warning: counts coalesced cells and
+/// releases the count at most once per [`COALESCE_WARN_WINDOW`].
+#[derive(Default)]
+pub struct CoalesceWarn(std::sync::Mutex<(Option<std::time::Instant>, u64)>);
+
+/// How long the overflow-coalescing warning stays quiet after it fires.
+pub const COALESCE_WARN_WINDOW: std::time::Duration = std::time::Duration::from_secs(60);
+
+impl CoalesceWarn {
+    /// Record one coalesced cell at `now`. Returns the number of cells coalesced since the last
+    /// emitted line when a new window has opened (the first coalesce always opens one), else `None`.
+    fn note(&self, now: std::time::Instant) -> Option<u64> {
+        let mut g = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        g.1 += 1;
+        match g.0 {
+            Some(last) if now.saturating_duration_since(last) < COALESCE_WARN_WINDOW => None,
+            _ => {
+                g.0 = Some(now);
+                Some(std::mem::take(&mut g.1))
+            }
+        }
+    }
 }
 
 /// THE WRITE-BEHIND METERING ACCUMULATOR, sharded [`GOV_SHARDS`] ways exactly like the `budget` map
@@ -1608,6 +1724,7 @@ pub fn accrue_pending(
 /// never split.
 pub struct PendingMetering {
     shards: Box<[std::sync::Mutex<HashMap<MeterKey, MeterCounts>>]>,
+    coalesce_warn: CoalesceWarn,
 }
 
 impl Default for PendingMetering {
@@ -1622,6 +1739,7 @@ impl PendingMetering {
         shards.resize_with(GOV_SHARDS, || std::sync::Mutex::new(HashMap::new()));
         Self {
             shards: shards.into_boxed_slice(),
+            coalesce_warn: CoalesceWarn::default(),
         }
     }
 
@@ -1640,7 +1758,13 @@ impl PendingMetering {
             .shard_for(&key.0)
             .lock()
             .unwrap_or_else(|e| e.into_inner());
-        accrue_pending(&mut map, key, add, MAX_PENDING_METERING_PER_SHARD);
+        accrue_pending(
+            &mut map,
+            key,
+            add,
+            MAX_PENDING_METERING_PER_SHARD,
+            &self.coalesce_warn,
+        );
     }
 
     /// DRAIN every shard, returning all pending cells. Each shard is emptied under its own lock; a
@@ -1765,8 +1889,8 @@ pub fn spawn_budget_flusher(
                     let guard = flush_gate.clone().lock_owned().await;
                     let gov = gov.clone();
                     let _ = tokio::task::spawn_blocking(move || {
-                        gov.flush_budgets();
-                        gov.flush_metering();
+                        gov.flush_budgets_final();
+                        gov.flush_metering_final();
                         drop(guard);
                     })
                     .await;

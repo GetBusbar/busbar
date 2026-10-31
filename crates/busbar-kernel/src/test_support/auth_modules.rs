@@ -141,14 +141,6 @@ impl busbar_contract::auth_calls::AuthAxis for Around {
     ) -> Result<Option<busbar_contract::auth_calls::OutboundServing>, String> {
         self.0.serving(style, settings)
     }
-    fn serving_presenting(
-        &self,
-        style: &str,
-        settings: &serde_json::Value,
-        endpoint_basic: Option<&[u8]>,
-    ) -> Result<Option<busbar_contract::auth_calls::OutboundServing>, String> {
-        self.0.serving_presenting(style, settings, endpoint_basic)
-    }
     fn check_outbound(
         &self,
         style: &str,

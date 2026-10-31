@@ -89,3 +89,41 @@ fn a_declared_store_secret_reaches_open_as_a_secret_never_in_its_settings() {
         "the declared secret is lent to `open` as its one secret"
     );
 }
+
+mod synchronous {
+    use busbar_contract::abi::mechanism::call::AbiStr;
+    const REFS: &[AbiStr] = &[super::abi_str("password")];
+    busbar_contract::store_door!(super::MemoryStore, "synchronous", "0", 64, secret_refs: REFS);
+}
+
+/// The SyncStore blanket must forward the same separated secrets as a direct StoreSlots backend.
+#[test]
+fn a_synchronous_store_receives_and_checks_its_declared_secret() {
+    for (password, accepted) in [("hunter2", true), ("wrong", false)] {
+        let d = Arc::new(Dispatcher::new(DispatchConfig::default()));
+        let p = load_linked::<Store>(
+            &LinkedRow::of(synchronous::door).unwrap(),
+            Bind {
+                instance: Arc::from("synchronous-secret"),
+                max_inflight_cap: 64,
+                sink: Arc::new(NoSink),
+                dispatcher: d.adopter(),
+                conns: crate::dispatch::ConnTable::NoNeeds,
+            },
+        )
+        .unwrap();
+        let settings = serde_json::json!({"test_require_secret":true, "password":password});
+        let opened = LoadedStore::open(p, d, &serde_json::to_vec(&settings).unwrap(), mint);
+        assert_eq!(
+            opened.is_ok(),
+            accepted,
+            "the real synchronous door checks its lent secret"
+        );
+        if let Err(error) = opened {
+            assert!(
+                !error.to_string().contains(password),
+                "refusal must not expose the credential"
+            );
+        }
+    }
+}

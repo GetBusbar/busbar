@@ -26,6 +26,7 @@
 //! fixed buffer; a store's failure text is moved into the ring, never copied; and the ring is
 //! sized once, at `open`.
 
+use std::any::Any;
 use std::collections::VecDeque;
 use std::fmt::Write as _;
 use std::marker::PhantomData;
@@ -40,11 +41,11 @@ use crate::abi::mechanism::call::{
     AbiStr, Blob, Diag, InHead, OutHead, Outcome, BLOB_JSON, BLOB_OCTETS, BLOB_SECRET, MAX_TEXT,
     SEVERITY_WARN,
 };
-use crate::abi::mechanism::lifecycle::{OpenIn, OpenOut};
+use crate::abi::mechanism::ticket::Ticket;
 use crate::abi::sdk::conn::Host;
 use crate::abi::sdk::door::abi_str;
-use crate::abi::sdk::life::{Held, Life, Refreshed, Refusal};
-use crate::abi::sdk::{open_failed, HostBuf, Instance, Lent, Out, SafeSlot};
+use crate::abi::sdk::life::{Held, Life, Opening, Refreshed, Refusal};
+use crate::abi::sdk::{HostBuf, Instance, Lent, Out, SafeSlot};
 use crate::abi::store::{
     AddUsageBatchIn, AppendPlaneRecordIn, BlobIn, CountOut, GetPlaneRecordIn, HostBytesOut,
     HostListOut, IdIn, IdReasonIn, KeyWithCredentialIn, KindBeforeIn, KindIdIn, LeasedBlobOut,
@@ -265,13 +266,58 @@ impl<B: StoreSlots> Life for Served<B> {
         B::validate(settings).map_err(Refusal::failed)
     }
 
-    /// Never reached through the door: the store's `open` is [`Open`], which runs the store's
-    /// connect step on `open`'s ticket and may pend on it. A generic open has neither, so it
-    /// refuses rather than count a store opened that never connected.
-    fn open(_: &[u8], _: &[&[u8]], _: u64) -> Result<Self, Refusal> {
-        Err(Refusal::failed(
-            "a store opens through its door's own open, which runs its connect step",
-        ))
+    /// A store opens with the host tables ([`Life::open_on`]); with none it opens over none.
+    fn open(settings: &[u8], secrets: &[&[u8]], generation: u64) -> Result<Self, Refusal> {
+        Self::open_on(settings, secrets, generation, None)
+    }
+
+    /// The store opens on its settings and the host tables `open` was handed.
+    fn open_on(
+        settings: &[u8],
+        secrets: &[&[u8]],
+        _: u64,
+        host: Option<&Host>,
+    ) -> Result<Self, Refusal> {
+        B::open_with_secrets(settings, secrets, host.copied())
+            .map(Self::new)
+            .map_err(Refusal::failed)
+    }
+
+    /// The store's connect step ([`StoreSlots::connect`]) as the open's second step: it runs on
+    /// `open`'s ticket and may pend on the connector exactly as an op does (a PENDING needs a
+    /// ticket, and on wake 0 a connector service in flight, else FAULT). Its one connection closes
+    /// when the step answers (`Parked`'s drop).
+    fn opening(
+        &self,
+        host: Option<&Host>,
+        ticket: Ticket,
+        parked: Option<Box<dyn Any + Send + Sync>>,
+    ) -> Opening {
+        let parked = match parked.map(|p| p.downcast::<Parked>()) {
+            None => None,
+            Some(Ok(p)) => Some(*p),
+            Some(Err(_)) => return Opening::Fault,
+        };
+        let mut cx = Op::enter(ticket, host, parked, None);
+        match self.store.connect(&mut cx) {
+            Step::Ready(answer) => {
+                drop(cx.into_parked());
+                match answer {
+                    Ok(()) => Opening::Ready,
+                    Err(e) => Opening::Failed(Refusal::failed(e)),
+                }
+            }
+            Step::Pending { wake_at_ns } => {
+                if !cx.can_pend() || (wake_at_ns == 0 && !cx.made_a_service()) {
+                    drop(cx.into_parked());
+                    return Opening::Fault;
+                }
+                Opening::Pending {
+                    wake_at_ns,
+                    parked: Box::new(cx.into_parked()),
+                }
+            }
+        }
     }
 
     /// REFUSED, naming the restart: the host never refreshes a store (`abi::mechanism::lifecycle`,
@@ -329,8 +375,7 @@ heads!(
     CountOut,
     HostBytesOut,
     HostListOut,
-    VerdictOut,
-    OpenOut
+    VerdictOut
 );
 impl Head for OutHead {
     fn head(&mut self) -> &mut OutHead {
@@ -683,96 +728,6 @@ macro_rules! slot {
             }
         }
     };
-}
-
-/// `open`: the store opens on its settings, then runs its connect step
-/// ([`StoreSlots::connect`]), which may pend on `open`'s ticket. A PENDING open installs the
-/// instance NOW — carrying the opened store and parking the step's context on the ticket — and the
-/// trampoline RETAINS that box across the pend; the open's RESUME resolves it on a non-NULL
-/// instance. The half-open state lives in plugin-owned per-instance memory, never a contract
-/// static: the contract is stateless, a pure shape that links into the host and every dropped-in
-/// plugin alike, so a static in it would be a second static the moment a plugin is dropped in.
-#[derive(Debug)]
-pub struct Open<B>(PhantomData<B>);
-impl<B: StoreSlots> SafeSlot for Open<B> {
-    type In = OpenIn;
-    type Out = OpenOut;
-    type State = Held<Served<B>>;
-    fn call(
-        instance: Instance<'_, Held<Served<B>>>,
-        input: Lent<'_, OpenIn>,
-        mut out: Out<'_, OpenOut>,
-    ) -> Outcome {
-        let host = input.host().map(|h| Host::of(&h));
-        let ticket = instance.ticket();
-        // THE RESUME of a pended open: the retained instance box carries the opened store, and
-        // what its connect step parked is read back on this ticket. A RESUME with no instance or
-        // nothing parked is FAULT — an open never runs afresh on its RESUME.
-        if instance.resuming() {
-            let Some(held) = instance.get() else {
-                return Outcome::Fault;
-            };
-            let Some(parked) = instance.resume_value::<Parked>() else {
-                return Outcome::Fault;
-            };
-            let mut cx = Op::enter(ticket, host.as_ref(), Some(parked), None);
-            return match held.life().store().connect(&mut cx) {
-                Step::Ready(Ok(())) => {
-                    drop(cx.into_parked());
-                    Outcome::Ready
-                }
-                Step::Ready(Err(e)) => {
-                    drop(cx.into_parked());
-                    open_failed(input, &mut out, |o| &o.err_len, &e)
-                }
-                Step::Pending { wake_at_ns } => {
-                    if !cx.can_pend() || (wake_at_ns == 0 && !cx.made_a_service()) {
-                        drop(cx.into_parked());
-                        return Outcome::Fault;
-                    }
-                    out.raw().head.wake_at_ns = wake_at_ns;
-                    // The box exists (the host kept it across the last pend), so the step's
-                    // context parks on it as any other op's does.
-                    instance.park(cx.into_parked());
-                    Outcome::Pending
-                }
-            };
-        }
-        // A FRESH open: open the store on its settings, then run its connect step.
-        let secrets: Vec<&[u8]> = input.secrets().iter().map(Lent::<Blob>::bytes).collect();
-        let store = match B::open_with_secrets(input.field(|i| &i.settings).bytes(), &secrets, host)
-        {
-            Ok(store) => store,
-            // No instance exists to hold the reason: it goes into the host's lent reason buffer.
-            Err(e) => return open_failed(input, &mut out, |o| &o.err_len, &e),
-        };
-        let mut cx = Op::enter(ticket, host.as_ref(), None, None);
-        match store.connect(&mut cx) {
-            Step::Ready(Ok(())) => {
-                // The step's connection closes with its op (`Parked`'s drop).
-                drop(cx.into_parked());
-                instance.open(Held::new(Served::new(store), host));
-                Outcome::Ready
-            }
-            Step::Ready(Err(e)) => {
-                drop(cx.into_parked());
-                open_failed(input, &mut out, |o| &o.err_len, &e)
-            }
-            Step::Pending { wake_at_ns } => {
-                // As an op: PENDING needs a ticket, and on 0 a connector service in flight.
-                if !cx.can_pend() || (wake_at_ns == 0 && !cx.made_a_service()) {
-                    drop(cx.into_parked());
-                    return Outcome::Fault;
-                }
-                out.raw().head.wake_at_ns = wake_at_ns;
-                // Install the instance NOW, carrying the opened store, and park the step's context
-                // on this ticket: the trampoline retains the box across the PENDING, and the
-                // RESUME finds both on a non-NULL instance.
-                instance.open_parking(Held::new(Served::new(store), host), cx.into_parked());
-                Outcome::Pending
-            }
-        }
-    }
 }
 
 // ── the 1.5.5 op set ─────────────────────────────────────────────────────────────────────────
@@ -1202,17 +1157,7 @@ macro_rules! store_door {
                 secret_refs_len: $refs_len,
                 ..$crate::abi::sdk::door::statement($name, $version, $max_inflight)
             },
-            lifecycle: {
-                validate: $crate::abi::sdk::Safe<$crate::abi::sdk::life::Validate<$crate::abi::sdk::store::door::Served<$store>>>,
-                open: $crate::abi::sdk::Safe<$crate::abi::sdk::store::door::Open<$store>>,
-                refresh: $crate::abi::sdk::Safe<$crate::abi::sdk::life::Refresh<$crate::abi::sdk::store::door::Served<$store>>>,
-                retire: $crate::abi::sdk::Safe<$crate::abi::sdk::life::Retire<$crate::abi::sdk::store::door::Served<$store>>>,
-                tick: $crate::abi::sdk::Safe<$crate::abi::sdk::life::Tick<$crate::abi::sdk::store::door::Served<$store>>>,
-                drive: $crate::abi::sdk::Safe<$crate::abi::sdk::life::Drive<$crate::abi::sdk::store::door::Served<$store>>>,
-                cancel: $crate::abi::sdk::Safe<$crate::abi::sdk::life::Cancel<$crate::abi::sdk::store::door::Served<$store>>>,
-                release: $crate::abi::sdk::Safe<$crate::abi::sdk::life::Release<$crate::abi::sdk::store::door::Served<$store>>>,
-                close: $crate::abi::sdk::Safe<$crate::abi::sdk::life::Close<$crate::abi::sdk::store::door::Served<$store>>>,
-            },
+            lifecycle: life($crate::abi::sdk::store::door::Served<$store>),
             kind_ops: {
                 put_key: $crate::abi::sdk::Safe<$crate::abi::sdk::store::door::PutKey<$store>>,
                 get_key: $crate::abi::sdk::Safe<$crate::abi::sdk::store::door::GetKey<$store>>,

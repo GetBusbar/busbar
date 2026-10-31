@@ -183,58 +183,6 @@ pub fn neutral_fallback_plane() -> &'static crate::plane_driver::registry::Plane
     &NEUTRAL_FALLBACK_PLANE
 }
 
-pub fn build_once(
-    cfg: crate::config::RootCfg,
-    prior: Option<&crate::state::App>,
-) -> Result<crate::state::App, String> {
-    build_once_under(
-        cfg,
-        prior,
-        &(std::sync::Arc::new(crate::appbuild::AcceptAll)
-            as std::sync::Arc<dyn crate::appbuild::RootRules>),
-    )
-}
-
-/// [`build_once`] judged by `rules` (a composition root's, or a test's double), which the kept
-/// build's commit is raised to as a shipped build's is.
-pub fn build_once_under(
-    cfg: crate::config::RootCfg,
-    prior: Option<&crate::state::App>,
-    rules: &std::sync::Arc<dyn crate::appbuild::RootRules>,
-) -> Result<crate::state::App, String> {
-    // The build installs `cfg.limits` process-wide and KEEPS them (below), so it is a writer of the
-    // slot `LIMITS_TEST_LOCK` serializes: without the lock, a build in a sibling test lands mid-way
-    // through a test that holds it (e.g. the root listener's total-deadline test, which installs a
-    // 2 KiB cap and reads it live for seconds) and swaps the value it is asserting on. Spun on
-    // `try_lock`, not `blocking_lock`, because callers run inside a tokio runtime as often as not.
-    let _limits_lock = loop {
-        if let Ok(guard) = crate::config::limits::LIMITS_TEST_LOCK.try_lock() {
-            break guard;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(5));
-    };
-    // Test-only direct call: there is no outer admin transaction / persist step here, so firing any
-    // resolved governance-credential rotation immediately is correct
-    // and keeps this helper's callers (which assert on rotation taking effect) unchanged.
-    let (app, gov_rotate, limits) = crate::build_app_from_config(
-        cfg,
-        crate::config::PluginsCfg::default(),
-        None,
-        std::collections::HashSet::new(),
-        std::collections::HashSet::new(),
-        (None, None),
-        prior,
-        rules,
-    )?;
-    // Same reasoning for the limits: no persist step follows, so this build IS the live generation
-    // and its limits stay installed — the behaviour every caller of this helper has always had.
-    limits.keep();
-    if let Some(rotate) = gov_rotate {
-        rotate();
-    }
-    Ok(app)
-}
-
 /// A CLOSED single-module auth chain (the given module), for integration tests that must build an
 /// mcp-server App (`mcp:` refuses an open data-plane chain). Built in-crate so the caller names no
 /// `AuthChainEntry` field.

@@ -31,10 +31,29 @@ use crate::record::{
 /// The tag every journalled audit record opens with.
 pub const JOURNAL_TAG: &str = "audit.v4";
 
+/// A text field longer than the body's length prefix can say (more than `u32::MAX` bytes).
+///
+/// The body is REFUSED whole rather than cut: a field cut to fit — possibly inside a UTF-8
+/// sequence — makes a journalled record that either fails to decode at boot or decodes to a record
+/// that no longer hashes to its own digest, and nothing would have said so when it was written.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FieldTooLong;
+
+impl std::fmt::Display for FieldTooLong {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("an audit record field is longer than the journal body's length prefix can say")
+    }
+}
+
+impl std::error::Error for FieldTooLong {}
+
 /// The journal body of one sealed record.
-#[must_use]
-pub fn journal_body(record: &AuditRecord) -> Vec<u8> {
-    let mut w = Writer::default();
+///
+/// # Errors
+///
+/// A text field does not fit the body's length prefix ([`FieldTooLong`]); nothing is written.
+pub fn journal_body(record: &AuditRecord) -> Result<Vec<u8>, FieldTooLong> {
+    let mut w = Writer::new();
     w.text(JOURNAL_TAG);
     w.text(record.recipe.name());
     if let crate::recipe::Recipe::V2 { currency } = &record.recipe {
@@ -94,7 +113,7 @@ pub fn journal_body(record: &AuditRecord) -> Vec<u8> {
         w.num(child.get());
     }
     w.opt_text(record.correlation_hash.as_deref());
-    w.0
+    w.finish()
 }
 
 /// Read a journal body back into the record it keeps.
@@ -400,18 +419,51 @@ fn abort_of(tag: &str) -> Option<Abort> {
     (abort_tag(abort) == tag).then_some(abort)
 }
 
-#[derive(Default)]
-struct Writer(Vec<u8>);
+/// The body writer. A text longer than `limit` (the length prefix's own bound, `u32::MAX`, outside
+/// this module's tests) is never cut to fit: it marks the body refused, and [`Writer::finish`] says
+/// so.
+pub(crate) struct Writer {
+    out: Vec<u8>,
+    limit: usize,
+    too_long: bool,
+}
 
 impl Writer {
-    fn text(&mut self, s: &str) {
-        let len = u32::try_from(s.len()).unwrap_or(u32::MAX);
-        self.0.extend_from_slice(&len.to_be_bytes());
-        self.0.extend_from_slice(&s.as_bytes()[..len as usize]);
+    fn new() -> Self {
+        Writer::within(u32::MAX as usize)
     }
 
-    fn num(&mut self, n: u64) {
-        self.0.extend_from_slice(&n.to_be_bytes());
+    pub(crate) fn within(limit: usize) -> Self {
+        Writer {
+            out: Vec::new(),
+            limit,
+            too_long: false,
+        }
+    }
+
+    pub(crate) fn text(&mut self, s: &str) {
+        match u32::try_from(s.len())
+            .ok()
+            .filter(|_| s.len() <= self.limit)
+        {
+            Some(len) => {
+                self.out.extend_from_slice(&len.to_be_bytes());
+                self.out.extend_from_slice(s.as_bytes());
+            }
+            None => self.too_long = true,
+        }
+    }
+
+    pub(crate) fn num(&mut self, n: u64) {
+        self.out.extend_from_slice(&n.to_be_bytes());
+    }
+
+    /// The body, or [`FieldTooLong`] when any text did not fit.
+    pub(crate) fn finish(self) -> Result<Vec<u8>, FieldTooLong> {
+        if self.too_long {
+            return Err(FieldTooLong);
+        }
+        Ok(self.out)
     }
 
     fn opt_text(&mut self, s: Option<&str>) {

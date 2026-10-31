@@ -2,7 +2,8 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE STORE KIND: `abi/store/`. Every op whose `out` states something beyond the mechanism's head
-//! is checked by its validator in `abi/store/check.rs`:
+//! is checked by its validator in `abi/store/check.rs`, through the contract's one call per answer,
+//! `store::check_answer`:
 //!
 //! * the request-path results written into host buffers (`record_get`/`get_plane_record`'s bytes,
 //!   `list_plane_records` and `record_scan`'s lists), each of which has a short-buffer path;
@@ -19,17 +20,16 @@
 //! under a READY answer's lease.
 //!
 //! The ops whose `out` is a bare `OutHead` are answered by the head only and checked by the
-//! mechanism (the table's list on `abi::store::OPS`), and answer `Ok` here: `put_key`,
+//! mechanism (the table's list on `abi::store::OPS`), and `check_answer` passes them: `put_key`,
 //! `delete_key`, `put_usage`, `put_credential`, `put_key_with_credential`, `revoke_credential`,
 //! `add_denylist`, `upsert_plane_record`, `append_plane_record`, `delete_plane_record`,
 //! `record_put`, `add_usage_batch`, `add_metering_batch`, and every lifecycle slot but `cancel`.
 
 use busbar_contract::abi::mechanism::call::Outcome;
-use busbar_contract::abi::mechanism::check::{reported, Fault};
+use busbar_contract::abi::mechanism::check::Fault;
 use busbar_contract::abi::mechanism::door::Statement;
-use busbar_contract::abi::mechanism::lifecycle::{slot as life, CancelOut, LIFECYCLE_SLOTS};
+use busbar_contract::abi::mechanism::lifecycle::LIFECYCLE_SLOTS;
 use busbar_contract::abi::mechanism::KindCode;
-use busbar_contract::abi::store::check::{self as sc, LIST_ITEMS_HARD_MAX};
 use busbar_contract::abi::store::{
     self, slot, AddUsageBatchIn, AppendPlaneRecordIn, BlobIn, CountOut, GetPlaneRecordIn,
     HostBytesOut, HostListOut, IdIn, IdReasonIn, KeyWithCredentialIn, KindBeforeIn, KindIdIn,
@@ -76,73 +76,6 @@ unsafe impl OutFrame for CountOut {}
 unsafe impl OutFrame for HostBytesOut {}
 unsafe impl OutFrame for HostListOut {}
 unsafe impl OutFrame for VerdictOut {}
-
-/// `n` as `u64` (a `usize` always fits).
-fn u(n: usize) -> u64 {
-    n as u64
-}
-
-/// `list_plane_records`: blobs the plugin reported into the host's [`store::HostBlobs`].
-fn list_plane_records(a: &Answer) -> Result<(), Fault> {
-    let host = &a.input::<ListPlaneRecordsIn>()?.out;
-    let out = a.out::<HostListOut>()?;
-    // SAFETY: `host.items` is the host's own array of `items_cap` blobs; `reported` refuses an
-    // `items_written` above that cap before any slice exists.
-    let items = unsafe {
-        reported(
-            host.items.cast_const(),
-            out.items_written,
-            u(host.items_cap),
-            "list_plane_records.items",
-        )
-    }?;
-    sc::check_list_plane_records(a.outcome, out, host, items)
-}
-
-/// `record_scan`: entries the plugin reported into the host's [`store::HostRecords`].
-fn record_scan(a: &Answer) -> Result<(), Fault> {
-    let input = a.input::<RecordScanIn>()?;
-    let host = &input.out;
-    let out = a.out::<HostListOut>()?;
-    // SAFETY: `host.items` is the host's own array of `items_cap` entries; `reported` refuses an
-    // `items_written` above that cap before any slice exists.
-    let entries = unsafe {
-        reported(
-            host.items.cast_const(),
-            out.items_written,
-            u(host.items_cap),
-            "record_scan.entries",
-        )
-    }?;
-    sc::check_record_scan(a.outcome, out, host, entries, input.limit)
-}
-
-/// An off-path list of records under a lease. Only a READY answer holds a lease, so only it is
-/// read; the plugin's count is capped at [`LIST_ITEMS_HARD_MAX`] before any slice exists.
-fn leased_list(a: &Answer, field: &'static str) -> Result<(), Fault> {
-    let out = a.out::<LeasedListOut>()?;
-    // This gate guards the slice, not the check: `items` is plugin memory live only under a
-    // READY answer's lease. Any other outcome is checked with no items.
-    if a.outcome != Outcome::Ready {
-        return sc::check_leased_list(a.outcome, out, &[]);
-    }
-    // SAFETY: on READY `items` is plugin memory held under `head.lease` until `release`; the
-    // count is capped and a NULL pointer with a count refused before the slice is built.
-    let items = unsafe { reported(out.items, u(out.items_len), LIST_ITEMS_HARD_MAX, field) }?;
-    sc::check_leased_list(a.outcome, out, items)
-}
-
-/// An off-path list of strings under a lease, as [`leased_list`].
-fn leased_strs(a: &Answer, field: &'static str) -> Result<(), Fault> {
-    let out = a.out::<LeasedStrListOut>()?;
-    // Guards the slice only, as `leased_list`.
-    if a.outcome != Outcome::Ready {
-        return sc::check_leased_strs(a.outcome, out, &[]);
-    }
-    // SAFETY: as `leased_list`.
-    let items = unsafe { reported(out.items, u(out.items_len), LIST_ITEMS_HARD_MAX, field) }?;
-    sc::check_leased_strs(a.outcome, out, items)
-}
 
 /// What a store states in its Statement ([`store::StoreTail`] and the `MARK_EPHEMERAL` mark), read
 /// once at bind: the instance's [`Kind::context`].
@@ -209,55 +142,11 @@ impl Kind for Store {
     }
 
     fn check(a: &Answer) -> Result<(), Fault> {
-        match a.slot {
-            // Request path, host buffers, each with a short-buffer path.
-            slot::RECORD_GET => {
-                let cap = u(a.input::<RecordGetIn>()?.value.cap);
-                sc::check_record_get(a.outcome, a.out::<HostBytesOut>()?, cap)
-            }
-            slot::GET_PLANE_RECORD => {
-                let cap = u(a.input::<GetPlaneRecordIn>()?.body.cap);
-                sc::check_get_plane_record(a.outcome, a.out::<HostBytesOut>()?, cap)
-            }
-            slot::LIST_PLANE_RECORDS => list_plane_records(a),
-            slot::RECORD_SCAN => record_scan(a),
-            // Off path, under a lease.
-            slot::GET_KEY | slot::GET_USAGE => {
-                sc::check_leased_blob(a.outcome, a.out::<LeasedBlobOut>()?)
-            }
-            slot::LIST_KEYS => leased_list(a, "list_keys.items"),
-            slot::LIST_KEYS_SINCE => leased_list(a, "list_keys_since.items"),
-            slot::LIST_METERING => leased_list(a, "list_metering.items"),
-            slot::LIST_CREDENTIALS => leased_list(a, "list_credentials.items"),
-            slot::LIST_CREDENTIALS_SINCE => leased_list(a, "list_credentials_since.items"),
-            slot::LIST_AUDIT => leased_list(a, "list_audit.items"),
-            slot::LIST_AUDIT_TAIL => leased_list(a, "list_audit_tail.items"),
-            slot::LIST_DENYLIST => leased_strs(a, "list_denylist.items"),
-            slot::LIST_PLANE_RECORD_PARENTS => leased_strs(a, "list_plane_record_parents.items"),
-            // Verdicts, the cancel disposition.
-            slot::REDEEM_PLANE_TOKEN | slot::PLANE_TOKEN_LIVE => {
-                sc::check_verdict(a.outcome, a.out::<VerdictOut>()?)
-            }
-            life::CANCEL => sc::check_cancel(a.outcome, a.out::<CancelOut>()?),
-            // A purge's rows removed.
-            slot::PURGE_PLANE_RECORDS_BEFORE => sc::check_count(a.outcome, a.out::<CountOut>()?),
-            // Answered by the head only: the `out` is a bare `OutHead`, checked by the mechanism.
-            slot::PUT_KEY
-            | slot::DELETE_KEY
-            | slot::PUT_USAGE
-            | slot::PUT_CREDENTIAL
-            | slot::PUT_KEY_WITH_CREDENTIAL
-            | slot::REVOKE_CREDENTIAL
-            | slot::ADD_DENYLIST
-            | slot::UPSERT_PLANE_RECORD
-            | slot::APPEND_PLANE_RECORD
-            | slot::DELETE_PLANE_RECORD
-            | slot::RECORD_PUT
-            | slot::ADD_USAGE_BATCH
-            | slot::ADD_METERING_BATCH => Ok(()),
-            // The other lifecycle slots.
-            _ => Ok(()),
-        }
+        let (input, in_size, out, out_size) = a.frames();
+        // SAFETY: `Answer::new`'s contract: the op's live host-owned frames, unwritten while the
+        // answer lives; every buffer the `in` lends is the host's own, of its stated capacity, and
+        // a READY answer's leased list is plugin memory held under its lease until `release`.
+        unsafe { store::check_answer(a.slot, a.outcome, input, in_size, out, out_size, &()) }
     }
 
     fn short(a: &Answer) -> bool {
