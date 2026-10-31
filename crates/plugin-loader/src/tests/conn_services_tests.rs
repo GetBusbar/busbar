@@ -2267,6 +2267,70 @@ fn a_replayed_read_reply_writes_its_piece_and_bytes_again() {
     assert_ne!(gone, h, "a forgotten ticket's read is not replayed");
 }
 
+/// One raw `READ` of `stream` into `buf` under handle `seq`.
+fn raw_read(p: &Plugin<TestKind>, seq: u32, stream: u64, buf: &mut [u8]) -> ServiceOut {
+    let i = IoIn {
+        head: head_of::<IoIn>(service::READ, seq),
+        stream,
+        buf: buf.as_mut_ptr(),
+        len: buf.len(),
+    };
+    call(p, CONN_SLOTS.read, &i)
+}
+
+/// RED (THE DESIGN §11.12, "on resume the plugin re-issues the SAME handle and receives the stored
+/// result"): a raw `READ` wrote the caller's memory, so a replayed handle writes the same bytes
+/// again into the buffer the replay lends, never a kept count over memory nothing touched. A store
+/// op answering short re-runs on its ticket with its kept answers: a reply read in more than one
+/// raw `READ` was otherwise parsed from the reused buffer's stale last chunk
+/// (busbar-store-valkey's `list_plane_records`, "invalid RESP reply: unknown reply type"). A replay
+/// buffer below the kept piece is the short-buffer rule's: FAILED, the full size needed, nothing
+/// written, and the kept answer still redeemable. The far end is read once.
+#[test]
+fn a_replayed_raw_read_writes_its_bytes_again() {
+    let table = Arc::new(Scripted::default());
+    table.script.lock().unwrap().extend([
+        (piece(PieceKind::Body, None, None, 6), b"*2\r\n$3".to_vec()),
+        (piece(PieceKind::Body, None, None, 5), b"\r\nabc".to_vec()),
+    ]);
+    let p = bound_over(&table);
+    let stream = opened_stream(&p, 0).value;
+    let mut buf = [0_u8; 16];
+    let first = raw_read(&p, 1, stream, &mut buf);
+    assert!(ready(&first) && first.len == 6);
+    let second = raw_read(&p, 2, stream, &mut buf);
+    assert!(ready(&second) && second.len == 5);
+    // The re-run reuses the buffer, its last chunk still in it.
+    let r1 = raw_read(&p, 1, stream, &mut buf);
+    assert!(ready(&r1) && r1.len == 6);
+    assert_eq!(&buf[..6], b"*2\r\n$3", "the replayed first read's bytes");
+    let r2 = raw_read(&p, 2, stream, &mut buf);
+    assert!(ready(&r2) && r2.len == 5);
+    assert_eq!(&buf[..5], b"\r\nabc", "the replayed second read's bytes");
+    assert!(
+        table.script.lock().unwrap().is_empty(),
+        "every read reached the far end once"
+    );
+    let mut small = [0xEE_u8; 4];
+    let short = raw_read(&p, 1, stream, &mut small);
+    assert_eq!(
+        (short.outcome, short.needed_bytes, short.len),
+        (RawOutcome::of(Outcome::Failed), 6, 0),
+        "a replay buffer below the kept piece is a short answer"
+    );
+    assert_eq!(small, [0xEE; 4], "a short answer writes nothing");
+    let mut again = [0_u8; 6];
+    let r1 = raw_read(&p, 1, stream, &mut again);
+    assert!(
+        ready(&r1) && r1.len == 6,
+        "the kept answer is still redeemable"
+    );
+    assert_eq!(&again, b"*2\r\n$3");
+    super::forget(p.instance(), T);
+    let gone = raw_read(&p, 1, stream, &mut buf);
+    assert!(!ready(&gone), "a forgotten ticket's read is not replayed");
+}
+
 /// RED (audit row 159, connector HIGH 5: "a replaced instance's member programs keep running"):
 /// an instance that is let go (closed, or replaced by a reload) is forgotten on the host's
 /// connection table under its own id, once, so the table drops its needs and kills its member
