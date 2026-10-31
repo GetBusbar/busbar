@@ -21,7 +21,7 @@ use crate::abi::mechanism::lifecycle::{CancelIn, CancelOut, OpenIn, OpenOut, Val
 use crate::abi::mechanism::ticket::{HostCtx, HostTables, Ticket};
 use crate::abi::sdk::conn::ConnFailure;
 use crate::abi::sdk::door::Entry;
-use crate::abi::sdk::exchange::Request;
+use crate::abi::sdk::exchange::{OpFailure, Request};
 use crate::abi::sdk::{life, Safe};
 use crate::hooks::BudgetBucketState as K;
 use crate::signal::Signal;
@@ -1266,6 +1266,311 @@ fn a_hook_reads_the_session_and_the_1_5_5_projection_does_not_carry_it() {
     let frame = DecideFrame::first(DecideView::build(&request(true, true), &[], &ctx));
     let input = frame.input();
     assert_eq!(Decoded::of(lend(&input)).session, None);
+}
+
+// ── the one short-buffer re-call (H5) ───────────────────────────────────────────────────────────
+
+/// How often [`Asks`] ran its `decide` / `transform`: each run is one POST to the far end.
+static ASKED: AtomicU32 = AtomicU32::new(0);
+
+/// A hook that asks the far end on every run (counted in [`ASKED`]) and answers more than the
+/// first frame's buffers hold.
+struct Asks;
+impl Hook for Asks {
+    fn decide(&self, _: &Decoded<'_>, _: &Op<'_>) -> Poll<Verdict> {
+        ASKED.fetch_add(1, Ordering::SeqCst);
+        Poll::Ready(Verdict::Prefer(vec![3, 2, 1, 0]))
+    }
+    fn transform(&self, _: &Decoded<'_>, _: &Op<'_>) -> Poll<RewriteVerdict> {
+        ASKED.fetch_add(1, Ordering::SeqCst);
+        Poll::Ready(RewriteVerdict::Rewrite(
+            br#"{"messages":[{"role":"user","content":"a longer rewrite"}]}"#.to_vec(),
+        ))
+    }
+}
+struct OpenAsks;
+impl HookOpen for OpenAsks {
+    fn open(_: &str) -> Result<Box<dyn Hook>, String> {
+        Ok(Box::new(Asks))
+    }
+}
+
+/// RED (hook ABI defect 5): a `decide` / `transform` whose verdict does not fit the host's buffers
+/// answers the one short FAILED; the host re-calls the op ONCE on the same ticket with grown
+/// buffers. That re-call answers the verdict the first run lowered, without running the hook again:
+/// a hook that POSTs (hook-webrequest) sends one request per op, never a second. A different ticket
+/// (a later op on the slot, a recycled ticket) runs the hook afresh.
+#[test]
+fn red_the_short_buffer_re_call_answers_the_first_verdict_without_running_the_hook_again() {
+    let p = opened_with::<OpenAsks>(&zeroed());
+    let frame = frame_with(caps(1, 4));
+    let mut input = frame.input();
+    input.head.ticket = TICKET;
+    let mut out: DecideOut = zeroed();
+    assert_eq!(
+        call::<Decide<OpenAsks>>(p, slot::DECIDE, &input, &mut out),
+        Outcome::Failed
+    );
+    assert_eq!((out.order_needed, out.order_written), (4, 0));
+    let grown = frame.regrown_decide(&out);
+    let mut again = grown.input();
+    again.head.ticket = TICKET;
+    let mut out2: DecideOut = zeroed();
+    assert_eq!(
+        call::<Decide<OpenAsks>>(p, slot::DECIDE, &again, &mut out2),
+        Outcome::Ready
+    );
+    assert_eq!(grown.order(out2.order_written), vec![3, 2, 1, 0]);
+    assert_eq!(
+        ASKED.load(Ordering::SeqCst),
+        1,
+        "decide ran again on the re-call"
+    );
+
+    let mut t: TransformOut = zeroed();
+    assert_eq!(
+        call::<Transform<OpenAsks>>(p, slot::TRANSFORM, &input, &mut t),
+        Outcome::Failed
+    );
+    let grown = frame.regrown_transform(&t);
+    let mut again = grown.input();
+    again.head.ticket = TICKET;
+    let mut t2: TransformOut = zeroed();
+    assert_eq!(
+        call::<Transform<OpenAsks>>(p, slot::TRANSFORM, &again, &mut t2),
+        Outcome::Ready
+    );
+    assert_eq!(
+        ASKED.load(Ordering::SeqCst),
+        2,
+        "transform ran again on the re-call"
+    );
+
+    // A short answer on one ticket is never another ticket's: a later ticket on the same slot
+    // runs the hook.
+    let mut out: DecideOut = zeroed();
+    assert_eq!(
+        call::<Decide<OpenAsks>>(p, slot::DECIDE, &input, &mut out),
+        Outcome::Failed
+    );
+    let regrown = frame.regrown_decide(&out);
+    let mut later = regrown.input();
+    later.head.ticket = Ticket {
+        generation: TICKET.generation + 1,
+        ..TICKET
+    };
+    let mut out2: DecideOut = zeroed();
+    assert_eq!(
+        call::<Decide<OpenAsks>>(p, slot::DECIDE, &later, &mut out2),
+        Outcome::Ready
+    );
+    assert_eq!(ASKED.load(Ordering::SeqCst), 4);
+    closed::<OpenAsks>(p);
+}
+
+// ── configure says why (H3) ─────────────────────────────────────────────────────────────────────
+
+/// A hook that refuses any pushed settings naming `"bad"`, saying why.
+struct Picky;
+impl Hook for Picky {
+    fn configure(
+        &self,
+        settings: &serde_json::Map<String, serde_json::Value>,
+        _: u64,
+    ) -> Result<(), String> {
+        if settings.contains_key("bad") {
+            return Err("settings.bad is not a setting this hook reads".to_owned());
+        }
+        Ok(())
+    }
+}
+struct OpenPickyConfigure;
+impl HookOpen for OpenPickyConfigure {
+    fn open(_: &str) -> Result<Box<dyn Hook>, String> {
+        Ok(Box::new(Picky))
+    }
+}
+
+/// `configure` over `raw` at `version` on `p`: its outcome, the version it acked and its text.
+fn configured<P: HookOpen>(p: *mut c_void, raw: &[u8], version: u64) -> (Outcome, u64, String) {
+    let mut input: crate::abi::hook::ConfigureIn = zeroed();
+    input.version = version;
+    input.settings = Blob {
+        ptr: raw.as_ptr(),
+        len: raw.len(),
+        fmt: BLOB_JSON,
+        flags: 0,
+    };
+    let mut out: crate::abi::hook::ConfigureOut = zeroed();
+    let o = call::<Configure<P>>(p, slot::CONFIGURE, &input, &mut out);
+    let text = if o == Outcome::Ready {
+        String::new()
+    } else {
+        error_text(&out.head)
+    };
+    (o, out.acked_version, text)
+}
+
+/// RED (hook ABI defect 3): a hook that will not take pushed settings says WHY, and the operator
+/// reads its words, not only that the version was not acknowledged.
+#[test]
+fn red_a_configure_refusal_states_the_hooks_reason() {
+    let p = opened_with::<OpenPickyConfigure>(&zeroed());
+    assert_eq!(
+        configured::<OpenPickyConfigure>(p, br#"{"bad": 1}"#, 7),
+        (
+            Outcome::Failed,
+            0,
+            "settings.bad is not a setting this hook reads".to_owned()
+        )
+    );
+    assert_eq!(
+        configured::<OpenPickyConfigure>(p, br#"{"good": 1}"#, 8),
+        (Outcome::Ready, 8, String::new())
+    );
+    closed::<OpenPickyConfigure>(p);
+}
+
+// ── open is handed its secrets and generation (H6) ──────────────────────────────────────────────
+
+/// One opening [`OpenSecrets`] was handed: its settings, secrets and generation.
+type Handed = (String, Vec<Vec<u8>>, u64);
+
+/// What [`OpenSecrets`] was handed, in order.
+static OPENED_SECRETS: std::sync::Mutex<Vec<Handed>> = std::sync::Mutex::new(Vec::new());
+
+struct OpenSecrets;
+impl HookOpen for OpenSecrets {
+    fn open(_: &str) -> Result<Box<dyn Hook>, String> {
+        Err("opens through open_with".to_owned())
+    }
+    fn open_with(opening: &Opening<'_>) -> Result<Box<dyn Hook>, String> {
+        OPENED_SECRETS.lock().unwrap().push((
+            opening.settings.to_owned(),
+            opening.secrets.iter().map(|s| s.to_vec()).collect(),
+            opening.generation,
+        ));
+        Ok(Box::new(Forward))
+    }
+}
+
+/// RED (hook ABI defect 6): `open` and `refresh` hand the hook the secrets the host resolved for
+/// it and the generation, not its settings alone.
+#[test]
+fn red_open_and_refresh_hand_the_hook_its_secrets_and_generation() {
+    use crate::abi::mechanism::lifecycle::slot::REFRESH;
+    use crate::abi::mechanism::lifecycle::RefreshIn;
+    let (one, two) = (b"s3cret".as_slice(), b"t0ken".as_slice());
+    let lent = [
+        Blob {
+            ptr: one.as_ptr(),
+            len: one.len(),
+            fmt: crate::abi::mechanism::call::BLOB_SECRET,
+            flags: 0,
+        },
+        Blob {
+            ptr: two.as_ptr(),
+            len: two.len(),
+            fmt: crate::abi::mechanism::call::BLOB_SECRET,
+            flags: 0,
+        },
+    ];
+    let raw = br#"{"k": 1}"#;
+    let mut input: OpenIn = zeroed();
+    input.settings = Blob {
+        ptr: raw.as_ptr(),
+        len: raw.len(),
+        fmt: BLOB_JSON,
+        flags: 0,
+    };
+    input.secrets = lent.as_ptr();
+    input.secrets_len = lent.len();
+    input.generation = 3;
+    let p = opened_with::<OpenSecrets>(&input);
+
+    let mut r: RefreshIn = zeroed();
+    r.settings = input.settings;
+    r.secrets = lent[1..].as_ptr();
+    r.secrets_len = 1;
+    r.generation = 4;
+    let mut out: OutHead = zeroed();
+    assert_eq!(
+        call::<life::Refresh<HookLife<OpenSecrets>>>(p, REFRESH, &r, &mut out),
+        Outcome::Ready
+    );
+    assert_eq!(
+        *OPENED_SECRETS.lock().unwrap(),
+        vec![
+            (
+                r#"{"k": 1}"#.to_owned(),
+                vec![one.to_vec(), two.to_vec()],
+                3
+            ),
+            (r#"{"k": 1}"#.to_owned(), vec![two.to_vec()], 4),
+        ]
+    );
+    closed::<OpenSecrets>(p);
+}
+
+// ── a request the hook cannot build says why (H11) ──────────────────────────────────────────────
+
+/// A hook whose request cannot be built: the builder's text is its failure, told apart from the
+/// exchange's own.
+struct Unsendable;
+impl Hook for Unsendable {
+    fn decide(&self, _: &Decoded<'_>, op: &Op<'_>) -> Poll<Verdict> {
+        op.exchange(0, Some("http://far.example"), || {
+            Err("the projection does not serialise".to_owned())
+        })
+        .map(|r| match r {
+            Ok(_) => Verdict::Abstain,
+            Err(OpFailure::Unbuilt(why)) => Verdict::Failed(format!("unbuilt: {why}")),
+            Err(OpFailure::Conn(e)) => Verdict::Failed(format!("exchange: {e}")),
+        })
+    }
+}
+struct OpenUnsendable;
+impl HookOpen for OpenUnsendable {
+    fn open(_: &str) -> Result<Box<dyn Hook>, String> {
+        Ok(Box::new(Unsendable))
+    }
+}
+
+/// RED (hook ABI defect 11): `Op::exchange`'s request builder returns its own text when it cannot
+/// build the request; the op answers it as the builder's, nothing sent, with no side channel.
+#[test]
+fn red_a_request_the_builder_refuses_answers_the_builders_text() {
+    let tables = HostTables {
+        size: std::mem::size_of::<HostTables>() as u32,
+        _reserved: 0,
+        ctx: HostCtx::NONE,
+        wake: None,
+        conns: &PENDING_SLOTS,
+        services: std::ptr::null(),
+        io: std::ptr::null(),
+    };
+    let mut open: OpenIn = zeroed();
+    open.host = &tables;
+    let p = opened_with::<OpenUnsendable>(&open);
+    let frame = frame_with(caps(4, 64));
+    let mut input = frame.input();
+    input.head.ticket = TICKET;
+    let before = ESTABLISHED.load(Ordering::SeqCst);
+    let mut out: DecideOut = zeroed();
+    assert_eq!(
+        call::<Decide<OpenUnsendable>>(p, slot::DECIDE, &input, &mut out),
+        Outcome::Failed
+    );
+    assert_eq!(
+        error_text(&out.head),
+        "unbuilt: the projection does not serialise"
+    );
+    assert_eq!(
+        ESTABLISHED.load(Ordering::SeqCst),
+        before,
+        "nothing was sent"
+    );
+    closed::<OpenUnsendable>(p);
 }
 
 // ── a scripted far end drives a PENDING decide to its answer (E11) ──────────────────────────────

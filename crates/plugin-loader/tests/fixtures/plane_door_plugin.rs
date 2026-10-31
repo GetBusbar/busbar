@@ -447,7 +447,22 @@ slot!(Start, GenIn, OutHead, |_, _, _out| { Outcome::Ready });
 
 // `project`: the body, its length as a signal and, when the host lends a turns buffer, one `user`
 // turn of the body.
-slot!(Project, ProjectIn, ProjectOut, |_, input, out| {
+pub const PROJECT_ENTITLEMENT_TARGET: &[u8] = b"/__project_entitlement";
+
+slot!(Project, ProjectIn, ProjectOut, |instance, input, out| {
+    if input.field(|i| &i.target).bytes() == PROJECT_ENTITLEMENT_TARGET {
+        let Some(services) = instance.get().and_then(|p| p.services) else {
+            return Outcome::Fault;
+        };
+        let handle = CompletionHandle {
+            ticket: input.head.ticket,
+            seq: 0,
+            ..CompletionHandle::ZERO
+        };
+        if services.entitled(handle, "door:project-scope") != Ok(true) {
+            return Outcome::Refused;
+        }
+    }
     let body = input.field(|i| &i.body).bytes();
     let (mut signals, mut arena, mut turns) =
         (input.signals_buf(), input.arena_buf(), input.messages_buf());

@@ -502,11 +502,11 @@ async fn the_served_audit_body_is_byte_identical_with_and_without_the_root() {
 struct AnApplyingStore;
 
 #[cfg(feature = "root-admin")]
-impl busbar_contract::verb_store::Store for AnApplyingStore {
+impl busbar_kernel_seams::verb_store::Store for AnApplyingStore {
     fn chain_break(
         &self,
         _admin: &busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
-    ) -> Result<(), busbar_contract::verb_store::StoreError> {
+    ) -> Result<(), busbar_kernel_seams::verb_store::StoreError> {
         Ok(())
     }
 
@@ -514,7 +514,7 @@ impl busbar_contract::verb_store::Store for AnApplyingStore {
         &self,
         _admin: &busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
         _backup_ref: &str,
-    ) -> Result<(), busbar_contract::verb_store::StoreError> {
+    ) -> Result<(), busbar_kernel_seams::verb_store::StoreError> {
         Ok(())
     }
 }
@@ -664,9 +664,11 @@ async fn a_booted_nodes_recovery_verbs_reach_its_configured_store_through_the_bo
             // operator's rows on these same three paths.
             let door: crate::root::units_admin::AdminDoorFn =
                 Arc::new(|_: &crate::root::units_admin::AdminRequest| {
-                    busbar_kernel::auth::AdminDoor::Identified(
-                        busbar_contract::auth::Principal::from_id("row-113-recovery-operator"),
-                        busbar_contract::authz::Grants::of(busbar_contract::authz::Scope::Full),
+                    busbar_kernel::auth::AdminVerdict::from(
+                        busbar_kernel::auth::AdminDoor::Identified(
+                            busbar_contract::auth::Principal::from_id("row-113-recovery-operator"),
+                            busbar_contract::authz::Grants::of(busbar_contract::authz::Scope::Full),
+                        ),
                     )
                 });
             crate::root::kernel::ProductionUnits::admin_over_book(dispatch, door, &book)

@@ -17,11 +17,15 @@
 //! the host's values for that kind's ABI version, or the load is refused.
 //!
 //! WHICH KINDS THE HOST REFRESHES. The host calls `refresh` on an `auth` and a `plane` instance,
-//! on a configuration apply. A `store`, `secret`, `hook`, `export` or `transport` instance is
-//! never refreshed: a changed configuration reaches it through a fresh instance (a reload that
-//! replaces it, or a restart), opened over the new settings. Its `refresh` slot must still be
-//! present (every slot is), and the SDK's default answers it; nothing a plugin of those kinds
-//! does in `refresh` reaches an operator.
+//! on a configuration apply. A `store`, `secret`, `hook` or `transport` instance is never
+//! refreshed: a changed configuration reaches it through a fresh instance (a reload that replaces
+//! it, or a restart), opened over the new settings. An `export` instance is RESTART-TO-APPLY: it
+//! is opened once, at boot, and a configuration apply neither refreshes nor replaces it — the apply
+//! is validated and stored, the running instance keeps the settings, streams and fields it was
+//! opened with, and the change applies at the next restart (the apply names only a new route path
+//! awaiting the restart). Every kind's `refresh` slot must still be present (every slot is), and
+//! the SDK's default (`abi::sdk::life::Life::refresh`) answers it REFUSED; nothing a plugin of
+//! those kinds does in `refresh` reaches an operator.
 //!
 //! READY, THE ONE OPTIONAL LIFECYCLE OP (ARCHITECT 2026-10-02, "discovery at boot"). It is not a
 //! table slot: it rides the door's append-only tail ([`super::door::Door::ready`]), so no kind's

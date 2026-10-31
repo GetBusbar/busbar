@@ -21,8 +21,9 @@ use busbar_contract::abi::mechanism::call::{Blob, Outcome as AbiOutcome, BLOB_OC
 use busbar_contract::abi::mechanism::lifecycle::{OpenIn, OpenOut};
 use busbar_contract::abi::plane::{PlaneOpenIn, PlaneOpenOut, UnitCount};
 use busbar_contract::abi::transport::STATUS_SUCCESS;
-use busbar_contract::caps::{Canary, Outcome, Pass, ReasonCode, Route, StepName};
+use busbar_contract::caps::{Outcome, Pass, ReasonCode, Route, StepName};
 use busbar_contract::hooks::{BudgetBucketState, RoutingPolicy};
+use busbar_kernel::canary::Canary;
 use busbar_kernel::hooks::{RequestedSignals, ResolvedPolicy};
 use busbar_kernel::plane_driver::{
     refusal_status, Arrival, BoundHooks, BufferCaps, CallerEnd, CallerFacts, CallerKey, CancelBill,
