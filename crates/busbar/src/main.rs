@@ -1310,6 +1310,9 @@ async fn run(
         std::process::exit(code);
     }
 
+    // Resolve the data transport before either listener binds or reports readiness.
+    let framer = data_framer(&listen);
+
     // SERVE (one topology; see `main()`). On unix the DATA plane runs on N pinned
     // `current_thread` runtimes — one SO_REUSEPORT listener per worker, kernel fanning connections
     // across them with no task migration — while the ADMIN plane and every singleton background
@@ -1377,7 +1380,7 @@ async fn run(
             tls_secret_resolver.clone(),
             &shutdown_tx,
             worker_shutdown_rx,
-            data_framer(&listen),
+            framer,
         );
         tracing::debug!(
             listen = %admin_listen,
@@ -1422,7 +1425,7 @@ async fn run(
                 recv_shutdown(shutdown_tx.subscribe()),
                 None,
                 true,
-                data_framer(&listen),
+                Some(framer),
             ),
             serve_listener(
                 admin_listener,
@@ -1466,26 +1469,22 @@ async fn bind_listener(addr: &str) -> tokio::net::TcpListener {
 
 /// THE DATA LISTENER'S FRAMER, found by facts on the process's one connector
 /// (`root::listener::framed::data_framer`): the framer serving the listener's scheme whose tail
-/// states it accepts. `None` = the build serves none: the data listener `listen` is served by the
-/// kernel's own HTTP loop (the core-only build's path), and the boot says so in one warning naming
-/// the listener.
-fn data_framer(listen: &str) -> Option<root::listener::framed::DataFramer> {
+/// states it accepts. A missing transport is a startup error naming the configured listener.
+fn data_framer(listen: &str) -> root::listener::framed::DataFramer {
     let framer = root::listener::framed::data_framer(Arc::new(|scheme: &str| {
         root::connector::the().framer_for(scheme)
-    }));
-    match &framer {
-        Some(f) => tracing::debug!(
-            framer = %f.door().facts().name,
-            "data door served through its framer's accept side"
-        ),
-        None => {
-            tracing::warn!(
-                listen = %listen,
-                "data listener served by the kernel's own HTTP loop: no transport the build \
-                 serves accepts `http`"
-            );
-        }
-    }
+    }))
+    .unwrap_or_else(|| {
+        die(format!(
+            "cannot serve data listener '{listen}': no loaded transport plugin provides an \
+         accepting framer for '{}'; load a transport plugin that accepts this listener's scheme",
+            root::listener::framed::DATA_SCHEME,
+        ))
+    });
+    tracing::debug!(
+        framer = %framer.door().facts().name,
+        "data door served through its framer's accept side"
+    );
     framer
 }
 
@@ -1522,9 +1521,8 @@ fn serve_thread_per_core(
     secret_resolver: Arc<busbar_kernel::config::secret::SecretResolver>,
     shutdown_tx: &tokio::sync::broadcast::Sender<()>,
     worker_shutdown: tokio::sync::watch::Receiver<bool>,
-    // The data listener's framer, whose accept side serves each connection (`None` = the build
-    // serves no framer that accepts the listener's scheme).
-    framer: Option<root::listener::framed::DataFramer>,
+    // The data listener's required framer, whose accept side serves each connection.
+    framer: root::listener::framed::DataFramer,
 ) -> Vec<std::thread::JoinHandle<()>> {
     // Distinct cores to pin the n workers to, when the platform exposes them. Fewer ids than
     // workers (or none) just means the tail runs unpinned — advisory, never a boot failure.
@@ -1632,7 +1630,7 @@ fn serve_thread_per_core(
                         // worker: only worker 0 logs it at INFO; every other worker's identical fact
                         // logs at DEBUG (the per-worker detail an operator can still opt into).
                         i == 0,
-                        framer,
+                        Some(framer),
                     )
                     .await;
                     // Connections are drained; give this worker's detached work its bounded
@@ -1650,10 +1648,8 @@ fn serve_thread_per_core(
     handles
 }
 
-/// Serve one listener (data OR admin plane) to graceful shutdown. Picks plain-HTTP vs native TLS/mTLS
-/// from `tls_cfg` exactly as the single-listener path always has: `None` ⇒ plain HTTP over the shared
-/// slow-loris-hardened hyper loop; `Some` ⇒ terminate TLS (mTLS when `client_ca_file` is set), with
-/// cert/key/CA loaded and validated up front so a bad path/parse `die`s at startup, not per request.
+/// Serve one listener to graceful shutdown: the data transport's accepting framer, or the admin
+/// root's HTTP service. Connection security is prepared before either starts serving.
 /// `label` names the plane in log lines and error messages. Any serve error `die`s the process.
 #[allow(clippy::too_many_arguments)] // one more than the default threshold for `log_at_info`, the
                                      // once-per-listener-not-once-per-worker fix (see its own doc); grouping the existing seven into a
@@ -1674,24 +1670,17 @@ async fn serve_listener(
     // listen address — only the first call logs at INFO (matching 1.5.5's once-per-listener line),
     // the rest log the identical fact at DEBUG.
     log_at_info: bool,
-    // The data listener's framer, whose accept side serves each connection; `None` for the admin
-    // listener, and for a build that serves no framer accepting the data listener's scheme.
+    // The data listener's required framer; `None` selects the admin listener's own service.
     framer: Option<root::listener::framed::DataFramer>,
 ) {
-    match tls_cfg {
+    let security = match tls_cfg {
         None => {
             if log_at_info {
                 tracing::info!(listen = %label, "busbar listening");
             } else {
                 tracing::debug!(listen = %label, "busbar listening");
             }
-            if let Err(e) = root::listener::serve_admitted_framed(
-                listener, router, None, shutdown, balancer, framer,
-            )
-            .await
-            {
-                die(format!("server error on '{label}': {e}"));
-            }
+            None
         }
         Some(tls) => {
             // blocking-ffi-lint: allow — BOOT, once per listener, before that listener accepts.
@@ -1701,9 +1690,8 @@ async fn serve_listener(
             // is not yet serving anything. It also completes before `listener::serve_admitted`
             // below is reached, so no connection on this listener can be waiting on it.
             //
-            // The built-in axum/hyper listener below always declares itself TLS-capable
-            // (`transport_capable = true`); `prepare` still fails closed rather than silently
-            // downgrading to plaintext if the material cannot be resolved/parsed (DECISIONS #40).
+            // Connection security wraps the accepted bytes before the framer or admin service;
+            // `prepare` fails closed if the material cannot be resolved/parsed (DECISIONS #40).
             // Printed as `FailClosed` renders it — it already carries the label (see above).
             let security =
                 busbar_core_connector::tls::prepare(label, Some(&tls), &secret_resolver, true)
@@ -1714,19 +1702,27 @@ async fn serve_listener(
             } else {
                 tracing::debug!(listen = %label, mtls, "busbar listening (TLS)");
             }
-            if let Err(e) = root::listener::serve_admitted_framed(
+            Some(security)
+        }
+    };
+    let result = match framer {
+        Some(framer) => {
+            root::listener::serve_admitted_framed(
                 listener,
                 router,
-                Some(security),
+                security,
                 shutdown,
                 balancer,
-                framer,
+                Some(framer),
             )
             .await
-            {
-                die(format!("server error on '{label}': {e}"));
-            }
         }
+        None => {
+            root::listener::serve_admitted(listener, router, security, shutdown, balancer).await
+        }
+    };
+    if let Err(e) = result {
+        die(format!("server error on '{label}': {e}"));
     }
 }
 

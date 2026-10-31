@@ -17,6 +17,33 @@ use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
 use super::{data_framer, DataFramer, DATA_LINE, DATA_SCHEME};
 
+async fn anonymous_policy() -> tokio::sync::MutexGuard<'static, ()> {
+    use busbar_contract::abi::auth::AuthPoints;
+    use busbar_contract::abi::transport::route::{METHOD_ANY, PATH_CONTAINS};
+    use busbar_kernel::guest::{Claimant, GuestList, Line, LineAuth, Route};
+
+    let publishing = crate::root::PUBLISHING.lock().await;
+    let guests = GuestList::seal(vec![Line {
+        route: Route {
+            methods: METHOD_ANY,
+            path_form: PATH_CONTAINS,
+            path: "/".into(),
+            fields: Vec::new(),
+            rung: 0,
+        },
+        claimant: Claimant::Plane("listener-fixture".into()),
+        dialect: 0,
+        auth: LineAuth::None,
+        upgrade: None,
+        offered: AuthPoints(0),
+    }])
+    .unwrap();
+    crate::root::inbound::stage(guests, Vec::new());
+    let app = busbar_kernel::test_support::TestApp::new().build();
+    assert!(crate::root::inbound::publish(&app).is_some());
+    publishing
+}
+
 #[tokio::test]
 async fn reset_before_any_head_releases_the_old_app_but_body_end_keeps_its_loan() {
     use crate::root::doors::{bind_on, Dispatched};
@@ -198,6 +225,7 @@ async fn answer(s: &mut tokio::net::TcpStream) -> String {
 /// then the body, its length stated as the hyper loop stated it.
 #[tokio::test]
 async fn the_data_listener_is_served_through_its_framers_accept_side() {
+    let _publishing = anonymous_policy().await;
     let door = Arc::new(H1Accept::new(true));
     let framer = found(Arc::clone(&door)).expect("an accepting framer is found by its facts");
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -347,6 +375,7 @@ async fn the_admin_listener_still_serves_through_its_explicit_root_path() {
 /// the first-byte bound (30 s, the hyper loop's header read bound) passes with no byte, even though its framer states no deadline.
 #[tokio::test(start_paused = true)]
 async fn a_silent_connection_is_closed_at_the_first_byte_bound() {
+    let _publishing = anonymous_policy().await;
     let door = Arc::new(H1Accept::new(true));
     let framer = found(door).expect("found");
     let (_client, server) = tokio::io::duplex(1024);
@@ -360,6 +389,7 @@ async fn a_silent_connection_is_closed_at_the_first_byte_bound() {
 
 #[tokio::test]
 async fn a_parked_response_head_keeps_its_body_until_the_head_resumes() {
+    let _publishing = anonymous_policy().await;
     let door = Arc::new(busbar_test_kit::root_door_fixtures::pending_h1_accept::parked_head());
     let entry: Arc<dyn FramerDoor> = door.clone();
     let framer = data_framer(Arc::new(move |scheme: &str| {
@@ -422,6 +452,7 @@ async fn a_parked_response_head_keeps_its_body_until_the_head_resumes() {
 
 #[tokio::test]
 async fn a_final_body_emit_remains_alive_through_graceful_drain() {
+    let _publishing = anonymous_policy().await;
     use std::future::Future as _;
     use std::pin::Pin;
     use std::task::{Context, Poll};
@@ -540,6 +571,7 @@ async fn a_final_body_emit_remains_alive_through_graceful_drain() {
 
 #[tokio::test]
 async fn a_parked_stream_does_not_hold_an_independent_stream_behind_its_body() {
+    let _publishing = anonymous_policy().await;
     use std::pin::Pin;
     use std::task::{Context, Poll};
 
@@ -658,6 +690,7 @@ async fn a_parked_stream_does_not_hold_an_independent_stream_behind_its_body() {
 
 #[tokio::test]
 async fn a_session_waits_for_its_parked_message_before_emitting_the_next() {
+    let _publishing = anonymous_policy().await;
     use busbar_kernel::plane_routes::{FramedSession, SessionOut, SessionPipe};
 
     let door =

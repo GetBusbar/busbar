@@ -418,13 +418,13 @@ pub async fn serve_admitted(
     accept_loop(admits, shutdown, balancer, Served::new(router, security)).await
 }
 
-/// [`serve_admitted`] with every connection FRAMED by `framer` where one is given (the data
+/// [`serve_admitted`] with every connection FRAMED by the required `framer` (the data
 /// listener's framer's accept side, [`framed`]): the same accept, placement, connection security
 /// and drain, each connection's bytes served through the framer instead of the hyper loop.
 ///
 /// # Errors
 ///
-/// None today; the signature matches [`serve`]'s.
+/// A missing accepting transport framer is refused before accepting any connection.
 pub async fn serve_admitted_framed(
     admits: impl Admits,
     router: Router,
@@ -433,8 +433,14 @@ pub async fn serve_admitted_framed(
     balancer: Option<ConnBalancer>,
     framer: Option<framed::DataFramer>,
 ) -> io::Result<()> {
+    let framer = framer.ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "the data listener requires an accepting transport framer",
+        )
+    })?;
     let mut served = Served::new(router, security);
-    served.framer = framer;
+    served.framer = Some(framer);
     accept_loop(admits, shutdown, balancer, served).await
 }
 
