@@ -757,13 +757,15 @@ impl Table {
     }
 }
 
+type StreamGrants = HashMap<(u64, u64, u64), (u64, Arc<Table>)>;
+
 /// THE INBOUND HANDLE'S KERNEL SIDE: the tables, the unit table, and what the root injected.
 pub struct Inbound {
     tables: RwLock<HashMap<(u64, u64, u64), Arc<Table>>>,
     /// Host-registered framing leg and its policy loan until Ready.
     framing_listeners: Mutex<HashMap<(u64, u64), FramingListener>>,
     /// Host-granted request policy by (owner, framing, stream).
-    stream_grants: Mutex<HashMap<(u64, u64, u64), (u64, Arc<Table>)>>,
+    stream_grants: Mutex<StreamGrants>,
     units: Mutex<HashMap<u64, UnitState>>,
     adoptions: Mutex<HashMap<(u64, u64), PendingAdoption>>,
     /// The connection each framing's calls named, by (owner, framing).
