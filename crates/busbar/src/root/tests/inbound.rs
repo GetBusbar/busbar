@@ -274,3 +274,6 @@ fn the_roots_line_ids_and_the_kernels_rule_are_one_space() {
     assert!(!kin::is_line_id(binding));
     assert_ne!(binding & kin::BINDING_BIT, 0);
 }
+
+#[path = "inbound_close.rs"]
+mod close_tests;
