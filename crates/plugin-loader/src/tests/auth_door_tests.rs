@@ -1316,7 +1316,7 @@ mod reasons {
     use busbar_contract::abi::auth::{
         AuthPoints, AuthTail, BeginLoginIn, BeginLoginOut, CompleteLoginIn, FieldsIn, FieldsOut,
         IdentifyOut, OpenOutboundIn, OpenOutboundOut, OutboundReadyIn, OutboundReadyOut, VerifyIn,
-        DECISION_STOP, LOGIN_OUTAGE, VERDICT_REJECT,
+        DECISION_STOP, VERDICT_REJECT,
     };
     use busbar_contract::abi::mechanism::call::Outcome;
     use busbar_contract::abi::sdk::auth_door::{
@@ -1370,12 +1370,16 @@ mod reasons {
         type State = Held<Verifier<Says>>;
         fn call(
             _: Instance<'_, Held<Verifier<Says>>>,
-            _: Lent<'_, CompleteLoginIn>,
+            input: Lent<'_, CompleteLoginIn>,
             mut out: Out<'_, IdentifyOut>,
         ) -> Outcome {
-            out.set(|o| &o.verdict, LOGIN_OUTAGE);
+            let outcome = busbar_contract::abi::sdk::auth_kit::login_outage(
+                Some(120),
+                input.out_buf(),
+                &mut out,
+            );
             out.error(OUTAGE);
-            Outcome::Ready
+            outcome
         }
     }
 
@@ -1431,7 +1435,13 @@ fn red_a_rejects_and_an_outages_reason_reach_the_instances_log() {
         );
         std::thread::sleep(Duration::from_millis(10));
     };
-    assert_eq!(outcome, busbar_contract::auth::LoginOutcome::Outage);
+    assert_eq!(
+        outcome,
+        busbar_contract::auth::LoginOutcome::Outage {
+            retry_after_secs: Some(120),
+        },
+        "the outage preserves its delay as well as its operator reason",
+    );
 
     let path = log_config().path_for("auth.says", busbar_contract::abi::mechanism::KindCode::Auth);
     let mut text = String::new();
@@ -1452,4 +1462,47 @@ fn red_a_rejects_and_an_outages_reason_reach_the_instances_log() {
         "the outage's reason is not in the instance's log {}: {text:?}",
         path.display()
     );
+}
+
+/// A LOGIN_OUTAGE's delay (owner-signed 2026-10-30, OWNER-QUEUE.md item "IdP errors") is read from
+/// the reply's extensions only where they lie wholly inside the identity buffer the host lent: the
+/// one memory the host still holds after the call. The same bytes anywhere else, an entry that
+/// runs past the buffer's end, or no extensions at all read as no delay (the host's own 5 s).
+#[test]
+fn a_login_outages_retry_after_is_read_only_from_the_hosts_identity_buffer() {
+    use busbar_contract::abi::auth::retry_after_extensions;
+    use busbar_contract::abi::mechanism::call::{Blob, BLOB_OCTETS};
+    const CAP: usize = 64;
+    let held = super::Held::new(&VerifyRequest::default(), None, CAP, 1, 0);
+    let entry = retry_after_extensions(120);
+    // SAFETY: `held.buf` is `CAP` writable bytes this test owns; nothing else reads them now.
+    unsafe { std::ptr::copy_nonoverlapping(entry.as_ptr(), held.buf.add(8), entry.len()) };
+    let inside = Blob {
+        ptr: held.buf.wrapping_add(8).cast_const(),
+        len: entry.len(),
+        fmt: BLOB_OCTETS,
+        flags: 0,
+    };
+    assert_eq!(held.retry_after(inside), Some(120));
+    let elsewhere = Blob {
+        ptr: entry.as_ptr(),
+        ..inside
+    };
+    assert_eq!(held.retry_after(elsewhere), None);
+    let past_the_end = Blob {
+        ptr: held.buf.wrapping_add(CAP - 4).cast_const(),
+        ..inside
+    };
+    assert_eq!(held.retry_after(past_the_end), None);
+    let before_the_start = Blob {
+        ptr: held.buf.wrapping_sub(1).cast_const(),
+        ..inside
+    };
+    assert_eq!(held.retry_after(before_the_start), None);
+    let huge = Blob {
+        len: usize::MAX,
+        ..inside
+    };
+    assert_eq!(held.retry_after(huge), None);
+    assert_eq!(held.retry_after(Blob::ABSENT), None);
 }

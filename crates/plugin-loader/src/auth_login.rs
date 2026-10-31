@@ -353,7 +353,10 @@ fn completed(
                 1,
                 "sign-in outage: the identity provider was not reached",
             );
-            LoginOutcome::Outage
+            // Read the IdP delay only from the host-owned identity buffer.
+            LoginOutcome::Outage {
+                retry_after_secs: held.id.retry_after(out.head.extensions),
+            }
         }
         LOGIN_SECURITY_CHECK_FAILED => {
             super::declined(plugin, out, 1, "sign-in refused: the security check failed");
