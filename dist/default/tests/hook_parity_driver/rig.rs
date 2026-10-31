@@ -346,12 +346,15 @@ impl MoneySeam for Book {
 // ── the hooks ────────────────────────────────────────────────────────────────────────────────────
 
 /// What the hooks may know of the caller: its key by principal, its group, nothing else; a hook
-/// handed the prompt leaves its access amendment on the kernel's node journal.
+/// handed the prompt leaves its access amendment on `journal`, the rig's node journal, as a node's
+/// host leaves it on its own.
 #[derive(Default)]
 pub struct Callers {
     pub keys: HashMap<String, CallerKey>,
     /// `principal -> the groups it is in` (self and ancestors).
     pub groups: HashMap<String, Vec<String>>,
+    /// The node amendment journal the rig's hook reads are recorded on ([`Rig::amendments`]).
+    pub journal: Arc<busbar_kernel::audit::amend::NodeAmendments>,
 }
 
 impl CallerFacts for Callers {
@@ -372,6 +375,15 @@ impl CallerFacts for Callers {
     }
     fn budget(&self, _: &str) -> Vec<BudgetBucketState> {
         Vec::new()
+    }
+    fn hook_read(&self, hook: &str, principal: Option<&str>, dialect: &str, identity: bool) {
+        busbar_kernel::test_support::record_hook_read(
+            &self.journal,
+            hook,
+            principal,
+            dialect,
+            identity,
+        );
     }
 }
 
@@ -566,6 +578,8 @@ pub struct Rig {
     fallback: Option<Pool>,
     /// The plane, shared with its instance (a `Plugin` is `!Clone`).
     _plugin: Arc<Plugin<Plane>>,
+    /// The node amendment journal its hooks' reads are recorded on.
+    amendments: Arc<busbar_kernel::audit::amend::NodeAmendments>,
 }
 
 impl Rig {
@@ -601,14 +615,21 @@ impl Rig {
             Arc::new(busbar_kernel::host_services::KernelServices::new()),
             ("pools", &serde_yaml::Value::Null),
         )
-        .expect("the plane instance is admitted")
-        .with_hooks(Arc::new(hooks.bound(primary.name, dialects)));
+        .expect("the plane instance is admitted");
+        let amendments = Arc::clone(&hooks.callers.journal);
+        let driver = driver.with_hooks(Arc::new(hooks.bound(primary.name, dialects)));
         Rig {
             driver,
             primary,
             fallback,
             _plugin: plugin,
+            amendments,
         }
+    }
+
+    /// The node amendment journal this rig's hooks' reads are recorded on.
+    pub fn amendments(&self) -> Arc<busbar_kernel::audit::amend::NodeAmendments> {
+        Arc::clone(&self.amendments)
     }
 
     /// One unit: `body` posted to `target` with `fields`, the kernel steps `steps`.

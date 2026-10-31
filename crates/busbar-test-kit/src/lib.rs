@@ -36,6 +36,8 @@ pub mod https_conns;
 /// writes `unsafe`, kept here so the `forbid(unsafe_code)` root holds no such expansion.
 #[allow(unsafe_code)] // TEST ONLY: plugin_door! fixtures the composition root's tests drive
 pub mod root_door_fixtures;
+/// The host-services test double: a test overrides only the services it serves.
+pub mod services_double;
 /// The facts the test connection tables stand in for, read from data (`stand_in.json`).
 pub mod stand_in;
 /// The stream connection table over real local sockets.

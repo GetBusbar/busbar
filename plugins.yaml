@@ -328,7 +328,7 @@ plugins:
     ci_service: "wiremock"
     busbar_checkout: true
     macos_test: "cargo test --workspace --locked --lib --test conformance"
-    declares: "busbar-auth-github/declares.json"
+    declares: "auth-github/declares.json"
     former_names: [busbar-auth-github-plugin]
   - repo: busbar-auth-ldap
     kind: auth

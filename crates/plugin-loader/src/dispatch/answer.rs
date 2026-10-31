@@ -77,6 +77,12 @@ impl<'a> Answer<'a> {
         self.context.and_then(|c| c.downcast_ref::<T>())
     }
 
+    /// The op's raw `(in, in_size, out, out_size)`, for a kind's contract `check_answer`, whose
+    /// safety contract [`Answer::new`]'s is.
+    pub(crate) fn frames(&self) -> (*const InHead, usize, *const OutHead, usize) {
+        (self.input, self.in_size, self.out, self.out_size)
+    }
+
     /// The op's `in` as the kind's struct `T`.
     ///
     /// # Errors
