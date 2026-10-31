@@ -11,6 +11,7 @@
 //!     "unknown":   <resolve settings naming a secret it does not hold: FAILED, NOT_FOUND>,
 //!     "malformed": <resolve settings that are not a reference: FAILED, INVALID>
 //!                  | [<one such>, ...],
+//!     "bad_references": [<more malformed resolve settings: FAILED, INVALID>, ...],
 //!     "empty":     <OPTIONAL: resolve settings naming a secret whose value is empty: FAILED,
 //!                  INVALID, never READY with no material>,
 //!     "check":     <OPTIONAL, for a plugin that serves `check`: { "accepted": [<reference
@@ -20,8 +21,9 @@
 //!
 //! `malformed` may be one input (the original key) or a list; every entry is judged INVALID, and
 //! the suite adds `{"name": 5}` (a reference whose settings are the wrong shape) to the list. A
-//! refresh over `bad_settings[0]` is refused and leaves the instance serving its last settings: a
-//! resolve after it still answers the known material.
+//! refresh over `bad_settings[0]` is recorded; if refused, it leaves the instance serving its last
+//! settings: a resolve after a refused refresh still answers the known material. `bad_references` is
+//! optional and adds separately labelled malformed references.
 //!
 //! Every step is one ticket-less crossing of the secret table, but those the HOST answers without
 //! one (`Instance::refuse`): a resolve before `open`, a second `open`, a resolve after `close`
@@ -39,7 +41,7 @@ use busbar_contract::redacted::Secret as Held;
 
 use super::{
     answer, asis, called, closed, crossings, dispatcher, facts, input, input_text, json, listed,
-    load, open, opened, output, refresh, refused_settings, release, tick, Fold, Leg, Script,
+    load, open, opened, output, refresh, refreshed, refused_settings, release, Fold, Leg, Script,
     Subject, Want,
 };
 use crate::dispatch::kinds::secret::Secret;
@@ -200,6 +202,16 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
                 .collect::<Vec<_>>(),
         )
     });
+    // Optional: absent (or null), no more malformed references are resolved.
+    let bad_references: Vec<Vec<u8>> = match &k["bad_references"] {
+        serde_json::Value::Null => Vec::new(),
+        v => v
+            .as_array()
+            .unwrap_or_else(|| panic!("conformance.json: secret.bad_references must be an array"))
+            .iter()
+            .map(text)
+            .collect(),
+    };
 
     let d = dispatcher();
     let p = load::<Secret>(s, leg, s.bind(&d, "secret")).expect("the secret door loads");
@@ -249,26 +261,20 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     if let Some(empty) = &empty {
         r.line("resolve empty", 1, || resolve(&p, &d, empty, &material));
     }
+    for (i, b) in bad_references.iter().enumerate() {
+        r.line(&format!("resolve bad reference #{i}"), 1, || {
+            resolve(&p, &d, b, &material)
+        });
+    }
     // No lease was granted: a release of one is the plugin's refusal.
     r.line("release", 1, || called(&release(&p, 1)));
-    r.line("tick", 1, || {
-        let (c, next) = tick(&p, 1);
-        format!("{} next={next}", called(&c))
-    });
-    // A refresh over settings `validate` refuses is refused, naming why, and the instance keeps
-    // serving its last settings.
-    r.judged(
-        "refresh bad",
-        1,
-        Want::Starts("Failed lease=false "),
-        || called(&refresh(&p, &bad[0])),
-    );
-    r.line("resolve after refused refresh", 1, || {
+    // A refresh over the bad settings, then a resolve BEFORE the good refresh: a refused refresh
+    // keeps the instance as it was, so the known name still resolves ([`contract`]).
+    r.line("refresh bad", 1, || called(&refresh(&p, &bad[0])));
+    r.line("resolve after a refused refresh", 1, || {
         resolve(&p, &d, &known, &material)
     });
-    r.judged("refresh", 1, Want::Starts("Ready "), || {
-        called(&refresh(&p, &settings))
-    });
+    refreshed(&mut r, &p, None, &settings, &asis);
     r.line("resolve after refresh", 1, || {
         resolve(&p, &d, &known, &material)
     });
@@ -284,10 +290,15 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
 /// THE KIND'S CONTRACT over the fold, so two equal folds of failures prove nothing: a known name
 /// is READY with its material, flagged secret and written into the host's buffer under no lease; a
 /// buffer too small is the short-buffer answer naming the value's length; an unknown one is
-/// NOT_FOUND, every malformed one and an empty value INVALID, none leased; no lease is held to
-/// release; a refused `validate` names why; an instance opens once; a refused `refresh` leaves it
-/// serving the known material; a closed instance serves nothing. `validate`, `open`, `refresh`
-/// (both), `check` and `close` are judged where they run ([`super::opened`], [`Script::judged`]).
+/// NOT_FOUND, a malformed one (`malformed` and every `bad_references` entry) INVALID, none leased;
+/// no lease is held to release; every refused `validate` names why; an instance opens once; a
+/// closed instance serves nothing. A `refresh` over the bad settings is recorded, not judged: a
+/// plugin whose settings carry nothing it reads may accept them; but when it REFUSES them, it kept
+/// the instance as it was, so the resolve after it is the known material. `validate`, `open`,
+/// `refresh` and `close` answering READY are the shared steps' ([`super::opened`],
+/// [`super::refreshed`]).
+/// Every malformed-list entry and optional empty value is INVALID; optional `check`
+/// steps are judged as they run.
 fn contract(fold: &Fold) {
     let at = |label: &str| answer(fold, label);
     let known = format!(
@@ -297,13 +308,20 @@ fn contract(fold: &Fold) {
     for label in [
         "resolve known",
         "resolve known again",
-        "resolve after refused refresh",
         "resolve after refresh",
     ] {
         assert!(
             at(label).starts_with("Ready lease=false ") && at(label).ends_with(&known),
             "{label}: {}",
             at(label)
+        );
+    }
+    if at("refresh bad").starts_with("Failed ") {
+        let after = at("resolve after a refused refresh");
+        assert!(
+            after.starts_with("Ready lease=false ") && after.ends_with(&known),
+            "a refused refresh keeps the instance as it was, so the known name still resolves: \
+             resolve after a refused refresh: {after}"
         );
     }
     let short = format!(
@@ -316,6 +334,10 @@ fn contract(fold: &Fold) {
         "a value over the host's buffer is the short-buffer answer: {}",
         at("resolve short")
     );
+    assert!(
+        fold.iter().any(|s| s.label == "resolve malformed"),
+        "resolve malformed must be judged",
+    );
     let malformed = (0..)
         .map(malformed_label)
         .take_while(|l| fold.iter().any(|s| &s.label == l));
@@ -325,6 +347,11 @@ fn contract(fold: &Fold) {
     if fold.iter().any(|s| s.label == "resolve empty") {
         failing.push(("resolve empty".into(), secret::ERROR_KIND_INVALID));
     }
+    failing.extend(
+        fold.iter()
+            .filter(|s| s.label.starts_with("resolve bad reference #"))
+            .map(|s| (s.label.clone(), secret::ERROR_KIND_INVALID)),
+    );
     for (label, kind) in &failing {
         let label = label.as_str();
         let tail = format!("kind={kind} material=none secret_flag=false in_host_buffer=false");
@@ -334,11 +361,20 @@ fn contract(fold: &Fold) {
             at(label)
         );
     }
-    let refused = at("validate bad #0");
-    assert!(
-        refused.starts_with("Failed lease=false ") && refused.len() > "Failed lease=false ".len(),
-        "a refused validate names why: {refused}"
-    );
+    // Every bad setting's `validate` (the refusal loop's `validate bad #i`; #0 at least).
+    let _ = at("validate bad #0");
+    for s in fold
+        .iter()
+        .filter(|s| s.label.starts_with("validate bad #"))
+    {
+        let refused = s.answer.as_str();
+        assert!(
+            refused.starts_with("Failed lease=false ")
+                && refused.len() > "Failed lease=false ".len(),
+            "a refused validate names why: {}: {refused}",
+            s.label
+        );
+    }
     assert!(
         at("open again").starts_with("Refused "),
         "one open per instance: {}",
@@ -382,3 +418,7 @@ mod tests {
         assert_eq!(malformed_label(2), "resolve malformed #2");
     }
 }
+
+#[cfg(all(test, loader_self_tests))]
+#[path = "../tests/conformance_secret_contract_tests.rs"]
+mod contract_tests;
