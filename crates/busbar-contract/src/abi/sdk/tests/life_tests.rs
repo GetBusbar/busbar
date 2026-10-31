@@ -67,6 +67,29 @@ impl Life for Echo {
         Ok(Echo(secrets.first().map_or(settings, |s| *s).to_vec()))
     }
 
+    fn opening(
+        &self,
+        _: Option<&Host>,
+        _: Ticket,
+        parked: Option<Box<dyn std::any::Any + Send + Sync>>,
+    ) -> Opening {
+        if self.0 != b"pending-owned-failure" && self.0 != b"pending-owned-refusal" {
+            return Opening::Ready;
+        }
+        if parked.is_none() {
+            return Opening::Pending {
+                wake_at_ns: 1,
+                parked: Box::new(()),
+            };
+        }
+        let text = String::from_utf8(self.0.clone()).unwrap();
+        Opening::Failed(if self.0 == b"pending-owned-refusal" {
+            Refusal::refused(text)
+        } else {
+            Refusal::failed(text)
+        })
+    }
+
     fn refresh(&self, settings: &[u8], _: &[&[u8]], _: u64) -> Result<Refreshed, Refusal> {
         match settings {
             b"count" => Ok(Refreshed {
@@ -939,4 +962,52 @@ fn an_open_and_a_refresh_carry_what_the_instance_raises() {
     assert_eq!(o, Outcome::Ready);
     assert!(raised(&out.head).is_empty());
     assert_eq!(close(out.instance), Outcome::Ready);
+}
+
+#[test]
+fn a_resumed_open_failure_keeps_its_owned_reason_in_the_hosts_buffer() {
+    for (settings, outcome) in [
+        (&b"pending-owned-failure"[..], Outcome::Failed),
+        (&b"pending-owned-refusal"[..], Outcome::Refused),
+    ] {
+        let mut buffer = [0_u8; 64];
+        let mut input: OpenIn = zeroed();
+        input.head = in_head::<OpenIn>(slot::OPEN);
+        input.head.ticket = Ticket {
+            slot: 71,
+            generation: 1,
+        };
+        input.settings = blob(settings);
+        input.err_buf = buffer.as_mut_ptr();
+        input.err_cap = buffer.len();
+        let mut out: OpenOut = zeroed();
+        out.head = out_head::<OpenOut>();
+        assert_eq!(
+            call(table().head.open, ptr::null_mut(), &input, &mut out),
+            Outcome::Pending
+        );
+        let partial = out.instance;
+        assert!(
+            !partial.is_null(),
+            "the pending open retains its partial instance"
+        );
+        input.head.flags = FLAG_RESUME;
+        out = zeroed();
+        out.head = out_head::<OpenOut>();
+        assert_eq!(call(table().head.open, partial, &input, &mut out), outcome);
+        assert!(
+            out.instance.is_null(),
+            "the failed partial instance was freed"
+        );
+        // Check buffer ownership before reading any plugin-supplied pointer. An error in a
+        // freed instance's kept ring must fail this assertion without dereferencing that ring.
+        assert_eq!(
+            out.err_len,
+            settings.len(),
+            "the resumed failure writes the host's buffer"
+        );
+        assert_eq!(out.head.error.ptr, buffer.as_ptr());
+        assert_eq!(&buffer[..out.err_len], settings);
+        assert_eq!(text(out.head.error).as_bytes(), settings);
+    }
 }
