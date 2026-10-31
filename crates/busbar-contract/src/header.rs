@@ -47,12 +47,6 @@ pub fn is_header_name_token(name: &[u8]) -> bool {
         })
 }
 
-/// The `Authorization` value for a bearer credential: the one place the scheme word and the
-/// credential are joined.
-pub fn token_value(key: &str) -> String {
-    format!("Bearer {key}")
-}
-
 #[cfg(test)]
 #[path = "tests/header_tests.rs"]
 mod tests;
