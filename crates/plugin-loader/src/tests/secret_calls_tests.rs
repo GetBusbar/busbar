@@ -27,6 +27,9 @@ use crate::hook_door_conformance_tests::hook_door_plugin;
 use secret_fixture::door::door;
 use secret_fixture::NAME;
 
+#[path = "secret_shared_close_tests.rs"]
+mod shared_close;
+
 /// The material the hit's variable holds.
 const MATERIAL: &str = "s3cr3t-secret-calls";
 /// The variable the hit names (set) and the one the miss names (never set).
