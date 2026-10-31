@@ -1359,3 +1359,188 @@ fn a_raw_exchange_dropped_while_it_pends_closes_its_stream() {
         "the host still holds the dropped exchange's stream"
     );
 }
+
+fn debug_renderings(value: &impl std::fmt::Debug) -> [String; 6] {
+    [
+        format!("{value:?}"),
+        format!("{value:#?}"),
+        format!("{value:x?}"),
+        format!("{value:#x?}"),
+        format!("{value:X?}"),
+        format!("{value:#X?}"),
+    ]
+}
+
+fn debug_contains_canary(rendered: &str, canary: &str) -> bool {
+    let compact = |s: &str| s.chars().filter(|c| !c.is_whitespace()).collect::<String>();
+    let rendered = compact(rendered);
+    rendered.contains(canary)
+        || [
+            format!("{:?}", canary.as_bytes()),
+            format!("{:x?}", canary.as_bytes()),
+            format!("{:X?}", canary.as_bytes()),
+        ]
+        .iter()
+        .any(|bytes| rendered.contains(compact(bytes).trim_matches(['[', ']'])))
+}
+
+fn debug_hides(value: &impl std::fmt::Debug, canaries: &[&str]) {
+    for rendered in debug_renderings(value) {
+        for canary in canaries {
+            assert!(
+                !debug_contains_canary(&rendered, canary),
+                "Debug exposed the payload canary {canary}"
+            );
+        }
+    }
+}
+
+#[test]
+fn debug_canaries_detect_plain_text_and_byte_lists_including_pretty_hex() {
+    let canary = "A21-CREDENTIAL-6fae";
+    for rendered in debug_renderings(&canary.as_bytes().to_vec()) {
+        assert!(debug_contains_canary(&rendered, canary));
+    }
+    assert!(debug_contains_canary(canary, canary));
+}
+
+const DEBUG_REQUEST_CANARIES: [&str; 5] = [
+    "A21-METHOD-5f0a",
+    "A21-TARGET-0fae",
+    "A21-FIELD-NAME-cb21",
+    "A21-FIELD-VALUE-51dd",
+    "A21-BODY-3b20",
+];
+
+fn debug_request() -> Request {
+    let [method, target, name, value, body] = DEBUG_REQUEST_CANARIES;
+    Request {
+        method: method.as_bytes().to_vec(),
+        target: target.as_bytes().to_vec(),
+        fields: vec![(name.as_bytes().to_vec(), value.as_bytes().to_vec())],
+        body: body.as_bytes().to_vec(),
+        timeout_ms: 1500,
+    }
+}
+
+#[test]
+fn request_response_and_ack_debug_hide_every_payload_field() {
+    debug_hides(&debug_request(), &DEBUG_REQUEST_CANARIES);
+    let response = ExchangeResponse {
+        status: 401,
+        reason: Some(b"A21-REASON-3c2e".to_vec()),
+        fields: vec![(b"A21-REPLY-NAME-cb21".to_vec(), b"A21-COOKIE-62fa".to_vec())],
+        body: b"A21-REPLY-BODY-2b1e".to_vec(),
+    };
+    debug_hides(
+        &response,
+        &[
+            "A21-REASON-3c2e",
+            "A21-REPLY-NAME-cb21",
+            "A21-COOKIE-62fa",
+            "A21-REPLY-BODY-2b1e",
+        ],
+    );
+    debug_hides(
+        &Ack {
+            code: 500,
+            reason: b"A21-ACK-REASON-f81d".to_vec(),
+        },
+        &["A21-ACK-REASON-f81d"],
+    );
+}
+
+#[test]
+fn framed_and_raw_exchange_debug_hide_sending_and_pending_reply_buffers() {
+    let mut framed = Exchange::request(debug_request()).expect("a framed request");
+    let Sending::Framed { head, body, .. } = &framed.sending else {
+        panic!("the actual request must be framed");
+    };
+    assert!(head
+        .windows(DEBUG_REQUEST_CANARIES[3].len())
+        .any(|w| w == DEBUG_REQUEST_CANARIES[3].as_bytes()));
+    assert_eq!(body.as_slice(), DEBUG_REQUEST_CANARIES[4].as_bytes());
+    debug_hides(&framed.sending, &DEBUG_REQUEST_CANARIES);
+    let read = b"A21-PENDING-READ-18cf";
+    framed.buf[..read.len()].copy_from_slice(read);
+    apply(
+        &mut framed,
+        ReplyPiece {
+            kind: REPLY_BODY,
+            ..ReplyPiece::default()
+        },
+        read.len(),
+        true,
+    )
+    .unwrap();
+    framed.reply.reason = Some(b"A21-PENDING-REASON-2f00".to_vec());
+    framed.reply.fields = vec![(
+        b"authorization".to_vec(),
+        b"A21-PENDING-FIELD-9c01".to_vec(),
+    )];
+    assert_eq!(framed.reply.body.as_slice(), read);
+    debug_hides(&framed, &DEBUG_REQUEST_CANARIES);
+    debug_hides(
+        &framed,
+        &[
+            "A21-PENDING-READ-18cf",
+            "A21-PENDING-REASON-2f00",
+            "A21-PENDING-FIELD-9c01",
+        ],
+    );
+
+    let raw = Exchange::send(b"A21-RAW-WIRE-8af1".to_vec());
+    debug_hides(&raw.sending, &["A21-RAW-WIRE-8af1"]);
+    debug_hides(&raw, &["A21-RAW-WIRE-8af1"]);
+}
+
+#[test]
+fn sealed_exchange_debug_never_reveals_the_encoded_header_or_body() {
+    use crate::abi::sdk::cred::{Cred, FormBody};
+    let header = Cred::captured(Zeroizing::new(b"A21-SEALED-HEADER-731f".to_vec()));
+    let body = Cred::captured(Zeroizing::new(b"A21-SEALED-BODY-a81c".to_vec()));
+    let encoded = FormBody::new()
+        .sealed("client_secret", &body)
+        .encoded()
+        .unwrap();
+    let ex = Exchange::request_with(
+        post(),
+        vec![(0, b"authorization".to_vec(), header.bearer())],
+        Some(encoded),
+    )
+    .expect("the sealed request frames");
+    let Sending::Framed { head, body, .. } = &ex.sending else {
+        panic!("the actual sealed request must be framed");
+    };
+    assert!(head
+        .windows(b"A21-SEALED-HEADER-731f".len())
+        .any(|w| w == b"A21-SEALED-HEADER-731f"));
+    assert!(body
+        .windows(b"A21-SEALED-BODY-a81c".len())
+        .any(|w| w == b"A21-SEALED-BODY-a81c"));
+    let canaries = ["A21-SEALED-HEADER-731f", "A21-SEALED-BODY-a81c"];
+    debug_hides(&ex.sending, &canaries);
+    debug_hides(&ex, &canaries);
+}
+
+#[test]
+fn exchange_value_debug_retains_length_and_status_information() {
+    let mut request = debug_request();
+    let before = format!("{request:?}");
+    request.body.push(b'x');
+    assert_ne!(format!("{request:?}"), before);
+    let mut response = ExchangeResponse {
+        status: 200,
+        ..ExchangeResponse::default()
+    };
+    let before = format!("{response:?}");
+    response.status = 403;
+    assert_ne!(format!("{response:?}"), before);
+    let mut ack = Ack {
+        code: 200,
+        ..Ack::default()
+    };
+    let before = format!("{ack:?}");
+    ack.code = 500;
+    assert_ne!(format!("{ack:?}"), before);
+}

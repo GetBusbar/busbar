@@ -333,7 +333,7 @@ extern "C" fn sealed_request(_: HostCtx, input: *const c_void, out: *mut Service
             .lock()
             .unwrap()
             .push(std::slice::from_raw_parts(input.buf, input.len).to_vec());
-        (*out).len = input.len;
+        (*out).len = input.len as u64;
     }
     RawOutcome::of(Outcome::Ready)
 }
