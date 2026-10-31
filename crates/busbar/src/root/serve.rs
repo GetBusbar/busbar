@@ -8,8 +8,8 @@
 //! THE HOST SERVICES ARRIVE LATE, BY DESIGN. The one dispatcher is built as the process's first act,
 //! before any configuration is read (the one-dispatcher boot), while the kernel's services are
 //! built from the loaded configuration (the destination guard `dest.judge` asks, among others). So the
-//! dispatcher is handed a [`LateServices`]: it answers every service REFUSED, as a dispatcher with
-//! no services does, until the composition installs the kernel's services, once, after the
+//! dispatcher serves the slot of a [`LateServices`]: every service answers REFUSED, as a dispatcher
+//! with no services does, until the composition installs the kernel's services, once, after the
 //! configuration loads and before any plugin is bound. No plugin crosses before then in a booted
 //! process, so none sees the refusal.
 
@@ -46,6 +46,7 @@ use crate::root::boot::DoorPlane;
 use crate::root::door_steps::{door_facts, DoorFacts, DoorPools};
 use crate::root::loader::dispatch::kinds::plane::OwnedSnapshot;
 use crate::root::loader::dispatch::plane_calls::PlaneInstance;
+use crate::root::loader::dispatch::services::ServicesSlot;
 // The data routes drive their units on the node: what only they name.
 use crate::root::door_steps::{egress_pool, DoorCaller, DoorSteps};
 use crate::root::loader::dispatch::{in_head, out_head, Dispatcher, Frame};
@@ -86,12 +87,11 @@ pub fn compose(
     late: &LateServices,
     credentials: crate::root::credentials::AppCredentials,
 ) {
-    let kernel = Arc::new(kernel_services(dest));
-    let services = crate::root::credentials::CredentialServices::new(
-        Arc::clone(&kernel) as Arc<dyn HostServices>,
-        Arc::new(credentials),
-    );
-    if late.install_kernel(kernel, Arc::new(services)).is_err() {
+    let kernel = Arc::new(kernel_services(dest).with_credentials(Arc::new(credentials)));
+    if late
+        .install_kernel(Arc::clone(&kernel), kernel as Arc<dyn HostServices>)
+        .is_err()
+    {
         tracing::debug!("the kernel's host services were already installed");
     }
 }
@@ -200,13 +200,13 @@ pub fn demotion_owner(planes: &[&PlaneDeclaration]) -> Option<&'static str> {
     }
 }
 
-/// The kernel's host services, installed once after the configuration loads (see the module doc).
+/// The kernel's host services, installed once after the configuration loads (see the module doc),
+/// into the slot the dispatcher serves from: a plugin's call reaches them with no forwarder between.
 pub struct LateServices {
-    installed: OnceLock<Arc<dyn HostServices>>,
+    /// The dispatcher's: the installed services, or `NotInstalled` before the install.
+    slot: Arc<ServicesSlot>,
     /// The kernel's own services, when those are what was composed ([`Self::install_kernel`]).
     kernel: OnceLock<Arc<KernelServices>>,
-    /// The clock before the install: the kernel's own, judging no destination.
-    clock: KernelServices,
 }
 
 /// Why [`LateServices::install`] would not take a second set of services.
@@ -221,16 +221,25 @@ impl LateServices {
     #[must_use]
     pub fn new() -> Arc<Self> {
         Arc::new(LateServices {
-            installed: OnceLock::new(),
+            slot: ServicesSlot::late(Arc::new(NotInstalled(KernelServices::new()))),
             kernel: OnceLock::new(),
-            clock: KernelServices::new(),
         })
+    }
+
+    /// The slot the dispatcher serves from ([`crate::root::dispatch::build`]).
+    #[must_use]
+    pub fn slot(&self) -> Arc<ServicesSlot> {
+        Arc::clone(&self.slot)
     }
 
     /// Install the kernel's services. Once per process: a second install is refused and changes
     /// nothing, so a reload can never swap the services a running instance reaches.
     pub fn install(&self, services: Arc<dyn HostServices>) -> Result<(), AlreadyInstalled> {
-        self.installed.set(services).map_err(|_| AlreadyInstalled)
+        if self.slot.install(services) {
+            Ok(())
+        } else {
+            Err(AlreadyInstalled)
+        }
     }
 
     /// Install `services` (the kernel's own, wrapped by the root's), as [`Self::install`] does, and
@@ -254,288 +263,154 @@ impl LateServices {
     /// Whether the kernel's services are installed.
     #[must_use]
     pub fn is_installed(&self) -> bool {
-        self.installed.get().is_some()
+        self.slot.is_installed()
     }
 
-    /// The installed services, or the refusal every service answers before the install.
-    fn served(&self) -> Result<&dyn HostServices, Stored> {
-        self.installed
-            .get()
-            .map(|s| &**s)
-            .ok_or_else(|| Stored::refused(NOT_INSTALLED))
+    /// What the dispatcher serves now: the installed services, or `NotInstalled`.
+    #[cfg(test)]
+    pub(crate) fn served(&self) -> Arc<dyn HostServices> {
+        Arc::clone(self.slot.get().expect("a late slot always serves"))
     }
 }
 
-impl HostServices for LateServices {
-    /// The kernel's clock once installed. `clock.now` has no refusal to answer, so before the
-    /// install it is the kernel's own clock with no egress class, started with this value.
+/// What every service answers before the kernel's are installed: REFUSED, [`NOT_INSTALLED`].
+/// `clock.now` has no refusal to answer, so it is the kernel's own clock with no egress class,
+/// started with these services.
+struct NotInstalled(KernelServices);
+
+fn not_installed() -> Stored {
+    Stored::refused(NOT_INSTALLED)
+}
+
+impl HostServices for NotInstalled {
     fn now(&self) -> Reading {
-        match self.installed.get() {
-            Some(s) => s.now(),
-            None => self.clock.now(),
-        }
+        self.0.now()
     }
 
-    // Every other service is the installed services' answer, or REFUSED before the install.
-    fn dest_judge(&self, dest: &str, class: u32, flags: u32, later: Option<Later>) -> Ran {
-        match self.served() {
-            Ok(s) => s.dest_judge(dest, class, flags, later),
-            Err(r) => Ran::Now(r),
-        }
+    fn dest_judge(&self, _: &str, _: u32, _: u32, _: Option<Later>) -> Ran {
+        Ran::Now(not_installed())
     }
 
-    fn records_get(&self, caller: &Caller, kind: &str, key: &[u8], later: Later) -> Ran {
-        match self.served() {
-            Ok(s) => s.records_get(caller, kind, key, later),
-            Err(r) => Ran::Now(r),
-        }
+    fn records_get(&self, _: &Caller, _: &str, _: &[u8], _: Later) -> Ran {
+        Ran::Now(not_installed())
     }
 
-    fn records_list(&self, caller: &Caller, list: RecordsList, later: Later) -> Ran {
-        match self.served() {
-            Ok(s) => s.records_list(caller, list, later),
-            Err(r) => Ran::Now(r),
-        }
+    fn records_list(&self, _: &Caller, _: RecordsList, _: Later) -> Ran {
+        Ran::Now(not_installed())
     }
 
-    fn records_claim(
-        &self,
-        caller: &Caller,
-        kind: &str,
-        key: &[u8],
-        ttl_ms: u64,
-        later: Later,
-    ) -> Ran {
-        match self.served() {
-            Ok(s) => s.records_claim(caller, kind, key, ttl_ms, later),
-            Err(r) => Ran::Now(r),
-        }
+    fn records_claim(&self, _: &Caller, _: &str, _: &[u8], _: u64, _: Later) -> Ran {
+        Ran::Now(not_installed())
     }
 
-    fn sign(&self, caller: &Caller, data: &[u8]) -> Stored {
-        match self.served() {
-            Ok(s) => s.sign(caller, data),
-            Err(r) => r,
-        }
+    fn sign(&self, _: &Caller, _: &[u8]) -> Stored {
+        not_installed()
     }
 
-    fn trust_sight(&self, caller: &Caller, counterparty: &str, hash: &str, later: Later) -> Ran {
-        match self.served() {
-            Ok(s) => s.trust_sight(caller, counterparty, hash, later),
-            Err(r) => Ran::Now(r),
-        }
+    fn trust_sight(&self, _: &Caller, _: &str, _: &str, _: Later) -> Ran {
+        Ran::Now(not_installed())
     }
 
-    fn trust_unreached(&self, caller: &Caller, counterparty: &str) -> Stored {
-        match self.served() {
-            Ok(s) => s.trust_unreached(caller, counterparty),
-            Err(r) => r,
-        }
+    fn trust_unreached(&self, _: &Caller, _: &str) -> Stored {
+        not_installed()
     }
 
     fn trust_decide(
         &self,
-        caller: &Caller,
-        key: busbar_contract::services::TrustKeyRef<'_>,
-        expected: Option<&str>,
-        approve: bool,
+        _: &Caller,
+        _: busbar_contract::services::TrustKeyRef<'_>,
+        _: Option<&str>,
+        _: bool,
     ) -> Stored {
-        match self.served() {
-            Ok(s) => s.trust_decide(caller, key, expected, approve),
-            Err(r) => r,
-        }
+        not_installed()
     }
 
-    fn trust_state(&self, caller: &Caller, counterparty: &str) -> Stored {
-        match self.served() {
-            Ok(s) => s.trust_state(caller, counterparty),
-            Err(r) => r,
-        }
+    fn trust_state(&self, _: &Caller, _: &str) -> Stored {
+        not_installed()
     }
 
-    fn trust_sight_item(
-        &self,
-        caller: &Caller,
-        counterparty: &str,
-        item: &str,
-        digest: &str,
-    ) -> Stored {
-        match self.served() {
-            Ok(s) => s.trust_sight_item(caller, counterparty, item, digest),
-            Err(r) => r,
-        }
+    fn trust_sight_item(&self, _: &Caller, _: &str, _: &str, _: &str) -> Stored {
+        not_installed()
     }
 
-    fn trust_serves(
-        &self,
-        caller: &Caller,
-        counterparty: &str,
-        item: Option<&str>,
-        digest: Option<&str>,
-    ) -> Stored {
-        match self.served() {
-            Ok(s) => s.trust_serves(caller, counterparty, item, digest),
-            Err(r) => r,
-        }
+    fn trust_serves(&self, _: &Caller, _: &str, _: Option<&str>, _: Option<&str>) -> Stored {
+        not_installed()
     }
 
-    fn trust_due(&self, caller: &Caller) -> Stored {
-        match self.served() {
-            Ok(s) => s.trust_due(caller),
-            Err(r) => r,
-        }
+    fn trust_due(&self, _: &Caller) -> Stored {
+        not_installed()
     }
 
-    fn trust_verify(&self, caller: &Caller, cp: &str, payload: &[u8], sigs: &[u8]) -> Stored {
-        match self.served() {
-            Ok(s) => s.trust_verify(caller, cp, payload, sigs),
-            Err(r) => r,
-        }
+    fn trust_verify(&self, _: &Caller, _: &str, _: &[u8], _: &[u8]) -> Stored {
+        not_installed()
     }
 
-    fn entitlement_check(&self, caller: &Caller, unit: Option<u64>, target: &str) -> Stored {
-        match self.served() {
-            Ok(s) => s.entitlement_check(caller, unit, target),
-            Err(r) => r,
-        }
+    fn entitlement_check(&self, _: &Caller, _: Option<u64>, _: &str) -> Stored {
+        not_installed()
     }
 
-    fn random_fill(&self, len: u64) -> Stored {
-        match self.served() {
-            Ok(s) => s.random_fill(len),
-            Err(r) => r,
-        }
+    fn random_fill(&self, _: u64) -> Stored {
+        not_installed()
     }
 
-    fn session_emit(&self, caller: &Caller, session: u64, bytes: &[u8]) -> Stored {
-        match self.served() {
-            Ok(s) => s.session_emit(caller, session, bytes),
-            Err(r) => r,
-        }
+    fn session_emit(&self, _: &Caller, _: u64, _: &[u8]) -> Stored {
+        not_installed()
     }
 
-    fn ticket_mint(
-        &self,
-        caller: &Caller,
-        unit: Option<u64>,
-        ttl_secs: u64,
-        record: &[u8],
-    ) -> Stored {
-        match self.served() {
-            Ok(s) => s.ticket_mint(caller, unit, ttl_secs, record),
-            Err(r) => r,
-        }
+    fn ticket_mint(&self, _: &Caller, _: Option<u64>, _: u64, _: &[u8]) -> Stored {
+        not_installed()
     }
 
-    fn ticket_take(&self, caller: &Caller, unit: Option<u64>) -> Stored {
-        match self.served() {
-            Ok(s) => s.ticket_take(caller, unit),
-            Err(r) => r,
-        }
+    fn ticket_take(&self, _: &Caller, _: Option<u64>) -> Stored {
+        not_installed()
     }
 
-    fn records_secret(&self, kind: &str, id: &str, later: Later) -> Ran {
-        match self.served() {
-            Ok(s) => s.records_secret(kind, id, later),
-            Err(r) => Ran::Now(r),
-        }
+    fn records_secret(&self, _: &str, _: &str, _: Later) -> Ran {
+        Ran::Now(not_installed())
     }
 
-    fn unit_nest(&self, caller: &Caller, unit: Option<u64>, ask: NestAsk, later: Later) -> Ran {
-        match self.served() {
-            Ok(s) => s.unit_nest(caller, unit, ask, later),
-            Err(r) => Ran::Now(r),
-        }
+    fn unit_nest(&self, _: &Caller, _: Option<u64>, _: NestAsk, _: Later) -> Ran {
+        Ran::Now(not_installed())
     }
 
-    fn work_open(
-        &self,
-        caller: &Caller,
-        unit: Option<u64>,
-        kind: &str,
-        record: &[u8],
-        later: Later,
-    ) -> Ran {
-        match self.served() {
-            Ok(s) => s.work_open(caller, unit, kind, record, later),
-            Err(r) => Ran::Now(r),
-        }
+    fn work_open(&self, _: &Caller, _: Option<u64>, _: &str, _: &[u8], _: Later) -> Ran {
+        Ran::Now(not_installed())
     }
 
-    fn work_find(&self, caller: &Caller, unit: Option<u64>, reference: &[u8], later: Later) -> Ran {
-        match self.served() {
-            Ok(s) => s.work_find(caller, unit, reference, later),
-            Err(r) => Ran::Now(r),
-        }
+    fn work_find(&self, _: &Caller, _: Option<u64>, _: &[u8], _: Later) -> Ran {
+        Ran::Now(not_installed())
     }
 
-    fn work_settle(
-        &self,
-        caller: &Caller,
-        unit: Option<u64>,
-        handle: u64,
-        record: &[u8],
-        later: Later,
-    ) -> Ran {
-        match self.served() {
-            Ok(s) => s.work_settle(caller, unit, handle, record, later),
-            Err(r) => Ran::Now(r),
-        }
+    fn work_settle(&self, _: &Caller, _: Option<u64>, _: u64, _: &[u8], _: Later) -> Ran {
+        Ran::Now(not_installed())
     }
 
-    fn work_resume(&self, caller: &Caller, unit: Option<u64>, handle: u64, later: Later) -> Ran {
-        match self.served() {
-            Ok(s) => s.work_resume(caller, unit, handle, later),
-            Err(r) => Ran::Now(r),
-        }
+    fn work_resume(&self, _: &Caller, _: Option<u64>, _: u64, _: Later) -> Ran {
+        Ran::Now(not_installed())
     }
 
-    fn disk_append(&self, dest: &DiskDest, bytes: Vec<u8>, later: Later) -> Ran {
-        match self.served() {
-            Ok(s) => s.disk_append(dest, bytes, later),
-            Err(r) => Ran::Now(r),
-        }
+    fn disk_append(&self, _: &DiskDest, _: Vec<u8>, _: Later) -> Ran {
+        Ran::Now(not_installed())
     }
 
-    fn verify_lookup(&self, caller: &Caller, key: &[u8], later: Later) -> Ran {
-        match self.served() {
-            Ok(s) => s.verify_lookup(caller, key, later),
-            Err(r) => Ran::Now(r),
-        }
+    fn verify_lookup(&self, _: &Caller, _: &[u8], _: Later) -> Ran {
+        Ran::Now(not_installed())
     }
 
-    fn verify_store(&self, caller: &Caller, key: &[u8], entry: &[u8], ttl_ms: u64) -> Stored {
-        match self.served() {
-            Ok(s) => s.verify_store(caller, key, entry, ttl_ms),
-            Err(r) => r,
-        }
+    fn verify_store(&self, _: &Caller, _: &[u8], _: &[u8], _: u64) -> Stored {
+        not_installed()
     }
 
-    fn content_scan(
-        &self,
-        caller: &Caller,
-        unit: Option<u64>,
-        content: &[u8],
-        later: Later,
-    ) -> Ran {
-        match self.served() {
-            Ok(s) => s.content_scan(caller, unit, content, later),
-            Err(r) => Ran::Now(r),
-        }
+    fn content_scan(&self, _: &Caller, _: Option<u64>, _: &[u8], _: Later) -> Ran {
+        Ran::Now(not_installed())
     }
 
-    fn hook_call(&self, caller: &Caller, unit: Option<u64>, ask: HookAsk, later: Later) -> Ran {
-        match self.served() {
-            Ok(s) => s.hook_call(caller, unit, ask, later),
-            Err(r) => Ran::Now(r),
-        }
+    fn hook_call(&self, _: &Caller, _: Option<u64>, _: HookAsk, _: Later) -> Ran {
+        Ran::Now(not_installed())
     }
 
-    fn snapshot_read(&self, caller: &Caller, scope: u32) -> busbar_contract::services::Snapshot {
-        match self.served() {
-            Ok(s) => s.snapshot_read(caller, scope),
-            Err(r) => busbar_contract::services::Snapshot::Refused(r.error),
-        }
+    fn snapshot_read(&self, _: &Caller, _: u32) -> busbar_contract::services::Snapshot {
+        busbar_contract::services::Snapshot::Refused(NOT_INSTALLED)
     }
 }
 

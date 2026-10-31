@@ -843,7 +843,7 @@ members = ["."]
 
 [workspace.dependencies]
 # THE LLM PLANE, pinned from its own repo like every other plane.
-busbar-plane-llm = { git = "https://github.com/GetBusbar/busbar-plane-llm", rev = "6ffc74ffd43223580b09e70ed60bc0561329d674" }
+busbar-plane-llm = { git = "https://github.com/GetBusbar/busbar-plane-llm", rev = "6ec3d3bec91b539f2131eb66743d3db6e80042d2" }
 # ── External plugin crates: ONE pin each (ONE HOME PER FACT); members use `workspace = true` ──
 busbar-auth-admin-tokens = { git = "https://github.com/GetBusbar/busbar-auth-admin-tokens", rev = "ea92a077b0b43038196261fc78b5cd26569def07" }
 busbar-auth-admin-tokens-plugin = { git = "https://github.com/GetBusbar/busbar-auth-admin-tokens", rev = "ea92a077b0b43038196261fc78b5cd26569def07" }
@@ -936,8 +936,9 @@ busbar-transport-webrtc = { git = "https://github.com/GetBusbar/busbar-transport
 # with `secret_refs: ["token"]` (busbar-store-memory #44): the undeclared-reference refusal reads only
 # the Statement (G14: each plugin declares its secret fields), a declared path refuses a literal,
 # wildcard or exact (item 7b), and `token` is the key a 1.5.5 memory-store config held a reference at
-# (oracle BOOT-W15).
-busbar-store-memory = { git = "https://github.com/GetBusbar/busbar-store-memory", rev = "5927d5e43343227c4fa331a61d33ced623be7687" }
+# (oracle BOOT-W15). d7a62c4 is 5927d5e plus the upsert-by-id fix (492c728, busbar-store-memory fj#44):
+# a parented upserted plane record is keyed on its own id, so get/delete by (kind, id) reach it.
+busbar-store-memory = { git = "https://github.com/GetBusbar/busbar-store-memory", rev = "d7a62c43e9340899792025ed1ecea3d5fafc463d" }
 # THE MCP PLANE (kind: plane), pulled at a pinned rev: the logic crate the root links as the mcp plane's
 # door row (`plane-mcp-door`, `busbar_plane_mcp::door`, its crate's one public item) and installs in
 # every build's tests. The pin is the plane repo's dev head, so what its conformance suite judges is
