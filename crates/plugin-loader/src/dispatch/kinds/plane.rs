@@ -1401,8 +1401,8 @@ impl Kind for Plane {
         Box::new(PlaneCancel::new())
     }
 
-    /// THE REQUEST LOOKUP: the unit an `arrive`, an `on_piece` or a `refusal` serves, the kernel-
-    /// minted key its `in` carries (`ArriveIn::unit`, `OnPieceIn::unit`, `RefusalIn::unit`), so a
+    /// THE REQUEST LOOKUP: the unit an `arrive`, `on_piece`, `project` or `refusal` serves, the kernel-
+    /// minted key its `in` carries, so a
     /// host service the plane calls inside the crossing (`entitlement.check`) answers for that
     /// unit's principal. `0` is no unit (a refusal before any unit arrived); every other op serves
     /// none.
@@ -1424,6 +1424,7 @@ impl Kind for Plane {
             match s {
                 slot::ARRIVE => read::<ArriveIn>(input, in_size).map(|i| i.unit),
                 slot::ON_PIECE => read::<OnPieceIn>(input, in_size).map(|i| i.unit),
+                slot::PROJECT => read::<ProjectIn>(input, in_size).map(|i| i.unit),
                 slot::REFUSAL => read::<RefusalIn>(input, in_size).map(|i| i.unit),
                 _ => None,
             }

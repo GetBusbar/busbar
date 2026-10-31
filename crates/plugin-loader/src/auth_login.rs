@@ -36,8 +36,9 @@ use busbar_contract::auth_calls::{LoginCall, LoginCallback, LoginSettled, Verify
 
 use super::{blob, grown, identify_out, lend, lend_opt, zero, Held, Shared};
 use crate::dispatch::call::{Answering, Pending, Ticketed};
+use crate::dispatch::kinds::auth::Auth;
 use crate::dispatch::lifecycle::release;
-use crate::dispatch::{in_head, now_ns, out_head, Done, Frame, InFrame, OutFrame};
+use crate::dispatch::{in_head, now_ns, out_head, Done, Frame, InFrame, OutFrame, Plugin};
 
 /// A submitted `begin_login`'s deadline.
 pub const BEGIN_LOGIN_DEADLINE: Duration = Duration::from_secs(10);
@@ -323,8 +324,15 @@ impl Drop for CompleteHeld {
     }
 }
 
-/// What a completed `complete_login` answered.
-fn completed(outcome: Outcome, out: &IdentifyOut, held: &CompleteHeld) -> LoginOutcome {
+/// What a completed `complete_login` answered. A verdict that is not an identity has its reason
+/// (the answer's error text: the check that failed, or what the identity provider answered to an
+/// outage) written to the instance's own log and the host log, never to the browser.
+fn completed(
+    outcome: Outcome,
+    out: &IdentifyOut,
+    held: &CompleteHeld,
+    plugin: &Plugin<Auth>,
+) -> LoginOutcome {
     if outcome != Outcome::Ready {
         return LoginOutcome::Reject;
     }
@@ -338,12 +346,26 @@ fn completed(outcome: Outcome, out: &IdentifyOut, held: &CompleteHeld) -> LoginO
                 ttl_secs: id.ttl_secs,
             })
         }
-        // The IdP's delay, read only from the host's own identity buffer (`EXT_RETRY_AFTER`).
-        LOGIN_OUTAGE => LoginOutcome::Outage {
-            retry_after_secs: held.id.retry_after(out.head.extensions),
-        },
-        LOGIN_SECURITY_CHECK_FAILED => LoginOutcome::SecurityCheckFailed,
-        LOGIN_BAD_CREDENTIAL => LoginOutcome::Reject,
+        LOGIN_OUTAGE => {
+            super::declined(
+                plugin,
+                out,
+                1,
+                "sign-in outage: the identity provider was not reached",
+            );
+            // Read the IdP delay only from the host-owned identity buffer.
+            LoginOutcome::Outage {
+                retry_after_secs: held.id.retry_after(out.head.extensions),
+            }
+        }
+        LOGIN_SECURITY_CHECK_FAILED => {
+            super::declined(plugin, out, 1, "sign-in refused: the security check failed");
+            LoginOutcome::SecurityCheckFailed
+        }
+        LOGIN_BAD_CREDENTIAL => {
+            super::declined(plugin, out, 0, "sign-in rejected the credential");
+            LoginOutcome::Reject
+        }
         _ => LoginOutcome::Reject,
     }
 }
@@ -419,7 +441,7 @@ impl Answering<CompleteLoginIn, IdentifyOut> for Complete {
             return Some(LoginOutcome::Reject);
         }
         Some(match out {
-            Some(o) => completed(done.outcome, &o, &self.held),
+            Some(o) => completed(done.outcome, &o, &self.held, &self.shared.plugin),
             None => LoginOutcome::Reject,
         })
     }

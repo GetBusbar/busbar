@@ -790,6 +790,54 @@ async fn a_trial_keeps_the_settings_the_hook_acknowledged() {
     assert!(!instance.quarantined());
 }
 
+/// RED (the refusal prefix, H13): a hook's `configure` refusal is its own bare words, and the
+/// HOST names the hook in front of them, as it does for `open` (`plugin '<name>' open failed:`), so
+/// a plugin never spells its own name into its refusals.
+#[tokio::test]
+async fn a_configure_refusal_is_named_by_the_host() {
+    use super::HookInstance;
+    use crate::dispatch::{ConnTable, NoSink};
+    use busbar_contract::hook_calls::HookCalls;
+    let axis = rows(
+        hook_door_plugin::configurable::door,
+        "hook_door",
+        Way::Linked,
+    );
+    let c = axis
+        .find(hook_door_plugin::CONFIGURABLE_NAME)
+        .expect("the linked row")
+        .clone();
+    let dispatcher = Arc::clone(&axis.dispatcher);
+    let bind = {
+        let (c, dispatcher) = (c.clone(), Arc::clone(&dispatcher));
+        move || {
+            HookRows::bind(
+                &c,
+                &dispatcher,
+                "hooks.tuned",
+                Arc::new(NoSink),
+                ConnTable::NoNeeds,
+            )
+        }
+    };
+    let instance = HookInstance::open(
+        bind().expect("the hook binds"),
+        Arc::clone(&dispatcher),
+        br#"{"reject_over_messages": 3}"#,
+        bind,
+    )
+    .expect("the hook opens");
+    assert_eq!(
+        instance
+            .configure("tuned", r#"{"reject_over_messages": "x"}"#, 2, BUDGET)
+            .await,
+        Err(format!(
+            "hook '{}': settings: `reject_over_messages` must be a number",
+            hook_door_plugin::CONFIGURABLE_NAME
+        ))
+    );
+}
+
 /// THE SETTINGS NEVER PRINT. An opened instance keeps the settings bytes it was opened over (a
 /// resolved bag) to re-open a fresh instance on a quarantine trial; its `Debug` names the instance
 /// and nothing else, so `{:?}` in a log line, a `tracing` field or a panic cannot carry them.

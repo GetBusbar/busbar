@@ -427,10 +427,10 @@ fn a_plane_life_plane_sees_the_owned_sections_at_refresh_and_a_malformed_one_is_
 macro_rules! answers {
     ($name:ident, $in:ty, $out:ty, $outcome:expr) => {
         struct $name;
-        impl crate::abi::sdk::door::Slot for $name {
+        impl crate::abi::sdk::door::RawSlot for $name {
             type In = $in;
             type Out = $out;
-            fn call(_: *mut c_void, _: &$in, _: &mut $out) -> Outcome {
+            unsafe fn call(_: *mut c_void, _: &$in, _: &mut $out) -> Outcome {
                 $outcome
             }
         }

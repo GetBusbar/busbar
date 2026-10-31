@@ -8,8 +8,9 @@
 mod common;
 
 use busbar_contract::caps::{
-    Canary, HoldCellState, OriginKind, PostingFlags, ReasonCode, StepName, UnitKey,
+    HoldCellState, OriginKind, PostingFlags, ReasonCode, StepName, UnitKey,
 };
+use busbar_kernel::canary::Canary;
 use busbar_kernel::inflight::{arrival_hold, Enter, InFlight};
 use busbar_kernel::slice::{bucket_all, ConcurrencyGauge};
 use busbar_kernel::teller::{Evidence, Kernel};

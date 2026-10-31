@@ -218,7 +218,7 @@ fn route_and_meter_consume_the_destinations_verify_sealed() {
         audited_seen: Mutex::new(Vec::new()),
     };
     let gauge = ConcurrencyGauge::new();
-    let canary = busbar_contract::caps::Canary::new();
+    let canary = crate::canary::Canary::new();
     let leases = LeaseCell::new();
     let meter = AccrualMeter::new();
     let cell = busbar_contract::caps::HoldCell::new(Hold::open(&kernel.admit_token(), principal()));

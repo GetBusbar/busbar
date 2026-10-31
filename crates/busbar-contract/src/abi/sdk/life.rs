@@ -130,6 +130,16 @@ impl Refusal {
     }
 }
 
+impl std::fmt::Display for Refusal {
+    /// Its text; a refusal saying nothing reads as its outcome.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.text {
+            Some(text) => f.write_str(text),
+            None => write!(f, "{:?}", self.outcome),
+        }
+    }
+}
+
 /// A settings blob's bytes as the JSON object they must be; empty is `{}`.
 ///
 /// # Errors
@@ -298,16 +308,22 @@ impl Leases {
     /// was not (a host bug). Only the SDK's `release` slot calls it: a body that released a lease
     /// the host is still copying would free memory under it.
     pub(crate) fn release(&self, lease: u64) -> Outcome {
+        let mut retired = Vec::new();
         let mut held = self.lock();
-        let mut freed = false;
         while let Some(key) = held
             .range((lease, 0)..=(lease, u32::MAX))
             .next()
             .map(|(k, _)| *k)
         {
-            held.remove(&key);
-            freed = true;
+            // Reserve before detaching: unwinding must unlock before dropping any kept storage.
+            retired.reserve(1);
+            if let Some(part) = held.remove(&key) {
+                retired.push(part);
+            }
         }
+        let freed = !retired.is_empty();
+        drop(held);
+        drop(retired);
         if freed {
             Outcome::Ready
         } else {

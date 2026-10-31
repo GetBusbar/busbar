@@ -402,11 +402,28 @@ fn deliver_one(
     }
 }
 
-/// START every opened sink — at the moment the host starts its PUSH sinks: each states its
-/// admission (whether it takes deliveries this run, its in-flight bound, its gate's name), or none
-/// and is fed at the host's default admission. Set exactly once, here: nothing is delivered before.
-pub fn start() {
-    sinks().for_each(start_one);
+/// START every opened sink — at the moment the host starts its PUSH sinks, where 1.5.5 configured
+/// its exporters: each is readied ([`ExportCalls::start`], so what it says of its own target is
+/// said here, once), then states its admission (whether it takes deliveries this run, its
+/// in-flight bound, its gate's name), or none and is fed at the host's default admission. Set
+/// exactly once, here: nothing is delivered before.
+///
+/// # Errors
+/// Every sink whose start was refused, under its instance: a refused start refuses the boot.
+pub fn start() -> Result<(), String> {
+    let mut errors = Vec::new();
+    for s in sinks() {
+        if let Err(e) = s.sink.start() {
+            errors.push(format!("export.{}: {e}", s.name));
+            continue;
+        }
+        start_one(s);
+    }
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors.join("\n  - "))
+    }
 }
 
 /// Start one sink: the admission it states, or the host's default when it states none.

@@ -670,6 +670,22 @@ impl<'a, T: AbiOut> Out<'a, T> {
         outcome
     }
 
+    /// Name WHY a READY answer declined, in the head's error text, for the host's log of the
+    /// instance and never the client: an auth `verify` REJECT, or a `complete_login` that is not
+    /// an identity (`abi::auth`, [`IdentifyOut`](crate::abi::auth::IdentifyOut)). Kept as
+    /// [`Out::fail`] keeps a failure's text; the outcome is the caller's to answer. Never secret
+    /// material.
+    pub fn reason(&mut self, text: impl Into<Cow<'static, str>>) {
+        let error = match text.into() {
+            Cow::Borrowed(s) => AbiStr {
+                ptr: s.as_ptr(),
+                len: s.len(),
+            },
+            Cow::Owned(s) => self.owned_text(s),
+        };
+        self.head().error = error;
+    }
+
     /// Where an owned failure text lives: the instance, else the host's lent reason buffer, else
     /// nowhere (the fixed text).
     fn owned_text(&mut self, text: String) -> AbiStr {

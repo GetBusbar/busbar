@@ -15,7 +15,7 @@ use busbar_contract::abi::mechanism::lifecycle::{
     TickOut, ValidateIn, LIFECYCLE_SLOTS,
 };
 use busbar_contract::abi::mechanism::KindCode;
-use busbar_contract::abi::sdk::door::{KindOps, KindSlot, Slot};
+use busbar_contract::abi::sdk::door::{KindOps, KindSlot, RawSlot};
 
 /// The table: the lifecycle and one kind op, `echo` (`GenIn` -> `TickOut`).
 #[repr(C)]
@@ -41,20 +41,20 @@ unsafe impl KindSlot<{ LIFECYCLE_SLOTS }> for OneKindOp {
 const PANIC_GEN: u64 = 13;
 
 struct Open;
-impl Slot for Open {
+impl RawSlot for Open {
     type In = OpenIn;
     type Out = OpenOut;
-    fn call(_: *mut c_void, input: &OpenIn, _: &mut OpenOut) -> Outcome {
+    unsafe fn call(_: *mut c_void, input: &OpenIn, _: &mut OpenOut) -> Outcome {
         assert_ne!(input.generation, PANIC_GEN, "the dropped-in open panics");
         Outcome::Ready
     }
 }
 
 struct Echo;
-impl Slot for Echo {
+impl RawSlot for Echo {
     type In = GenIn;
     type Out = TickOut;
-    fn call(_: *mut c_void, input: &GenIn, out: &mut TickOut) -> Outcome {
+    unsafe fn call(_: *mut c_void, input: &GenIn, out: &mut TickOut) -> Outcome {
         assert_ne!(input.generation, PANIC_GEN, "the dropped-in kind op panics");
         out.next_tick_ns = input.generation;
         Outcome::Ready
@@ -64,10 +64,10 @@ impl Slot for Echo {
 macro_rules! ready {
     ($name:ident, $in:ty, $out:ty) => {
         struct $name;
-        impl Slot for $name {
+        impl RawSlot for $name {
             type In = $in;
             type Out = $out;
-            fn call(_: *mut c_void, _: &$in, _: &mut $out) -> Outcome {
+            unsafe fn call(_: *mut c_void, _: &$in, _: &mut $out) -> Outcome {
                 Outcome::Ready
             }
         }
@@ -75,10 +75,10 @@ macro_rules! ready {
 }
 
 struct Validate;
-impl Slot for Validate {
+impl RawSlot for Validate {
     type In = ValidateIn;
     type Out = OutHead;
-    fn call(_: *mut c_void, input: &ValidateIn, _: &mut OutHead) -> Outcome {
+    unsafe fn call(_: *mut c_void, input: &ValidateIn, _: &mut OutHead) -> Outcome {
         if input.settings.len == 13 {
             panic!("the dropped-in slot panics");
         }
@@ -87,10 +87,10 @@ impl Slot for Validate {
 }
 
 struct Cancel;
-impl Slot for Cancel {
+impl RawSlot for Cancel {
     type In = CancelIn;
     type Out = CancelOut;
-    fn call(_: *mut c_void, _: &CancelIn, out: &mut CancelOut) -> Outcome {
+    unsafe fn call(_: *mut c_void, _: &CancelIn, out: &mut CancelOut) -> Outcome {
         out.disposition = 7;
         Outcome::Failed
     }

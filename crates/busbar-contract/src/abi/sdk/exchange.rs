@@ -803,6 +803,32 @@ impl<T: Send + Sync + 'static> Parks for Instance<'_, T> {
     }
 }
 
+/// Why an [`Op::exchange`] answered without a reply.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OpFailure {
+    /// The op's request builder could not build the request, in its own words: nothing was sent.
+    Unbuilt(String),
+    /// The exchange failed (or the request it framed was refused), as the connector said.
+    Conn(ConnFailure),
+}
+
+impl std::fmt::Display for OpFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Unbuilt(why) => f.write_str(why),
+            Self::Conn(e) => e.fmt(f),
+        }
+    }
+}
+
+impl std::error::Error for OpFailure {}
+
+impl From<ConnFailure> for OpFailure {
+    fn from(e: ConnFailure) -> Self {
+        Self::Conn(e)
+    }
+}
+
 /// ONE OP'S EXCHANGE ON ITS TICKET (THE DESIGN, the plugin ABI: every call is Ready or
 /// Pending(wake); the replay rule of `abi::sdk::conn`), for a kind SDK whose author answers
 /// [`Poll`]: [`Op::exchange`] resumes the exchange the op's last PENDING entry parked, or starts
@@ -847,14 +873,14 @@ impl<'a> Op<'a> {
     }
 
     /// [`exchange`] over the declared framed need `need` to `target`: `request` is built only on
-    /// the op's first entry (its refusal answers at once, nothing sent). PENDING until it
-    /// completes.
+    /// the op's first entry; when it cannot be built, its text answers at once
+    /// ([`OpFailure::Unbuilt`]), nothing sent. PENDING until it completes.
     pub fn exchange(
         &self,
         need: u32,
         target: Option<&str>,
-        request: impl FnOnce() -> Result<Request, ConnFailure>,
-    ) -> Answer<ExchangeResponse> {
+        request: impl FnOnce() -> Result<Request, String>,
+    ) -> Poll<Result<ExchangeResponse, OpFailure>> {
         self.exchange_sealed(need, target, || request().map(|r| (r, Vec::new())))
     }
 
@@ -863,8 +889,8 @@ impl<'a> Op<'a> {
         &self,
         need: u32,
         target: Option<&str>,
-        request: impl FnOnce() -> Result<(Request, Vec<SealedField>), ConnFailure>,
-    ) -> Answer<ExchangeResponse> {
+        request: impl FnOnce() -> Result<(Request, Vec<SealedField>), String>,
+    ) -> Poll<Result<ExchangeResponse, OpFailure>> {
         self.exchange_sealed_bounded(need, target, REPLY_MAX, request)
     }
 
@@ -878,8 +904,8 @@ impl<'a> Op<'a> {
         need: u32,
         target: Option<&str>,
         reply_limit: usize,
-        request: impl FnOnce() -> Result<Request, ConnFailure>,
-    ) -> Answer<ExchangeResponse> {
+        request: impl FnOnce() -> Result<Request, String>,
+    ) -> Poll<Result<ExchangeResponse, OpFailure>> {
         self.exchange_sealed_bounded(need, target, reply_limit, || {
             request().map(|r| (r, Vec::new()))
         })
@@ -891,16 +917,19 @@ impl<'a> Op<'a> {
         need: u32,
         target: Option<&str>,
         reply_limit: usize,
-        request: impl FnOnce() -> Result<(Request, Vec<SealedField>), ConnFailure>,
-    ) -> Answer<ExchangeResponse> {
+        request: impl FnOnce() -> Result<(Request, Vec<SealedField>), String>,
+    ) -> Poll<Result<ExchangeResponse, OpFailure>> {
         let Some(host) = self.host else {
-            return Poll::Ready(Err(ConnFailure::Unarmed));
+            return Poll::Ready(Err(ConnFailure::Unarmed.into()));
         };
         let mut state = match self.on.resume() {
             Some(parked) => *parked,
-            None => match request().and_then(|(r, sealed)| Exchange::request_sealed(r, sealed)) {
-                Ok(s) => s.reply_limit(reply_limit),
-                Err(e) => return Poll::Ready(Err(e)),
+            None => match request() {
+                Err(why) => return Poll::Ready(Err(OpFailure::Unbuilt(why))),
+                Ok((r, sealed)) => match Exchange::request_sealed(r, sealed) {
+                    Ok(s) => s.reply_limit(reply_limit),
+                    Err(e) => return Poll::Ready(Err(e.into())),
+                },
             },
         };
         let mut c = host.connector(self.on.ticket());
@@ -910,7 +939,7 @@ impl<'a> Op<'a> {
             // keeps closes its stream then.
             self.on.park(state);
         }
-        answer
+        answer.map(|r| r.map_err(OpFailure::Conn))
     }
 }
 

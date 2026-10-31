@@ -10,11 +10,13 @@
 //!     "known":     { "resolve": <resolve settings>, "material": "<what it resolves to>" },
 //!     "unknown":   <resolve settings naming a secret it does not hold: FAILED, NOT_FOUND>,
 //!     "malformed": <resolve settings that are not a reference: FAILED, INVALID>,
-//!     "bad_references": [<more resolve settings that are not a reference: FAILED, INVALID>, ...] } }
+//!     "bad_references": [<more resolve settings that are not a reference: FAILED, INVALID>, ...],
+//!     "empty":     <resolve settings naming a secret whose value is EMPTY: FAILED, INVALID> } }
 //! ```
 //!
 //! `bad_references` is optional: absent, the script resolves no more malformed references than
-//! `malformed`.
+//! `malformed`. `empty` is optional (a source whose settings cannot hold an empty value, as one
+//! that refuses it at `validate`, has none to name): absent, no empty secret is resolved.
 //!
 //! Every step is one ticket-less crossing of the secret table, but those the HOST answers without
 //! one (`Instance::refuse`): a resolve before `open`, a second `open`, a resolve after `close`
@@ -156,6 +158,11 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
             .map(text)
             .collect(),
     };
+    // Optional: absent (or null), no empty secret is resolved.
+    let empty: Option<Vec<u8>> = match &k["empty"] {
+        serde_json::Value::Null => None,
+        v => Some(text(v)),
+    };
 
     let d = dispatcher();
     let p = load::<Secret>(s, leg, s.bind(&d, "secret")).expect("the secret door loads");
@@ -188,6 +195,9 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
             resolve(&p, &d, b, &material)
         });
     }
+    if let Some(empty) = &empty {
+        r.line("resolve empty", 1, || resolve(&p, &d, empty, &material));
+    }
     // No lease was granted: a release of one is the plugin's refusal.
     r.line("release", 1, || called(&release(&p, 1)));
     // A refresh over the bad settings, then a resolve BEFORE the good refresh: a refused refresh
@@ -212,9 +222,11 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
 /// THE KIND'S CONTRACT over the fold, so two equal folds of failures prove nothing: a known name
 /// is READY with its material, flagged secret and written into the host's buffer under no lease; a
 /// buffer too small is the short-buffer answer naming the value's length; an unknown one is
-/// NOT_FOUND, a malformed one (`malformed` and every `bad_references` entry) INVALID, none leased;
-/// no lease is held to release; every refused `validate` names why; an instance opens once; a
-/// closed instance serves nothing. A `refresh` over the bad settings is recorded, not judged: a
+/// NOT_FOUND, a malformed one (`malformed` and every `bad_references` entry) INVALID, and so is a
+/// name whose value is EMPTY (`empty`, when given: no material is a secret), none leased; no lease
+/// is held to release; every refused `validate` names why; an instance opens once; a resolve
+/// before `open` is the host's REFUSED (or FAULT) carrying nothing; a closed instance serves
+/// nothing. A `refresh` over the bad settings is recorded, not judged: a
 /// plugin whose settings carry nothing it reads may accept them; but when it REFUSES them, it kept
 /// the instance as it was, so the resolve after it is the known material. `validate`, `open`,
 /// `refresh` and `close` answering READY are the shared steps' ([`super::opened`],
@@ -257,7 +269,7 @@ fn contract(fold: &Fold) {
     let bad_references = fold
         .iter()
         .map(|s| s.label.as_str())
-        .filter(|l| l.starts_with("resolve bad reference #"))
+        .filter(|l| l.starts_with("resolve bad reference #") || *l == "resolve empty")
         .map(|l| (l, secret::ERROR_KIND_INVALID));
     for (label, kind) in [
         ("resolve unknown", secret::ERROR_KIND_NOT_FOUND),
@@ -287,6 +299,16 @@ fn contract(fold: &Fold) {
             s.label
         );
     }
+    // Before `open` the HOST answers (`Instance::refuse`: REFUSED; FAULT for a faulted or closed
+    // instance), never the plugin, and nothing is written.
+    let unopened = at("resolve unopened");
+    assert!(
+        (unopened.starts_with("Refused ") || unopened.starts_with("Fault "))
+            && unopened.contains(" material=none ")
+            && unopened.ends_with(" in_host_buffer=false"),
+        "a resolve before open is the host's refusal, carrying nothing: resolve unopened: \
+         {unopened}"
+    );
     assert!(
         at("open again").starts_with("Refused "),
         "one open per instance: {}",

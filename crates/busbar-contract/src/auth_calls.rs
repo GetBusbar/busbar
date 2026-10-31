@@ -201,6 +201,9 @@ pub struct VerifyAnswer {
     pub decision: Decision,
     /// The credential lines and query keys the auth named, whatever its verdict.
     pub strips: Vec<Strip>,
+    /// WHY a [`Verified::Reject`] rejected, in the plugin's words (`abi::auth::IdentifyOut`, THE
+    /// REASON): the operator's log only, never the client's answer. `None` = none given.
+    pub reason: Option<String>,
 }
 
 impl From<Verified> for VerifyAnswer {
@@ -215,6 +218,7 @@ impl From<Verified> for VerifyAnswer {
             verified,
             decision,
             strips: Vec::new(),
+            reason: None,
         }
     }
 }
