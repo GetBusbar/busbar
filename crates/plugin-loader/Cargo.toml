@@ -104,7 +104,7 @@ log = { workspace = true }
 tungstenite = { workspace = true }
 busbar-stub-transport-plugin = { path = "stubs/transport/plugin" }
 busbar-stub-transport = { path = "stubs/transport/logic" }
-busbar-contract = { path = "../busbar-contract", features = ["test-seal", "services-double"] }
+busbar-contract = { path = "../busbar-contract", features = ["test-seal"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }

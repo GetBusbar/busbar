@@ -798,7 +798,7 @@ fn an_upgrade_over_unread_input_is_refused_before_any_handshake() {
 /// the contract's shared double does.
 struct ClockOnly;
 
-impl busbar_contract::services::double::ServicesDouble for ClockOnly {
+impl crate::services_double::ServicesDouble for ClockOnly {
     fn now(&self) -> busbar_contract::services::Reading {
         busbar_contract::services::Reading {
             wall_ns: 0,
@@ -858,7 +858,7 @@ fn a_bound_covers_the_handshake_after_the_dial() {
     });
     let d = Arc::new(Dispatcher::with_services(
         DispatchConfig::default(),
-        Arc::new(ClockOnly),
+        Arc::new(crate::services_double::Double(ClockOnly)),
     ));
     let conns: Arc<dyn busbar_contract::conn::DeclaredConns> =
         Arc::new(TcpConns::new(d.conn_waker()));

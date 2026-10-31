@@ -700,6 +700,80 @@ fn a_reply_at_the_exchanges_limit_passes() {
     assert_eq!(r.answered.expect("at the limit").body.len(), 100);
 }
 
+/// The op's instance, as [`Op`] parks on it: one parked exchange, on [`TICKET`].
+#[derive(Default)]
+struct Parked(std::cell::RefCell<Option<Box<Exchange>>>);
+
+impl Parks for Parked {
+    fn ticket(&self) -> Ticket {
+        TICKET
+    }
+    fn park(&self, exchange: Exchange) {
+        *self.0.borrow_mut() = Some(Box::new(exchange));
+    }
+    fn resume(&self) -> Option<Box<Exchange>> {
+        self.0.borrow_mut().take()
+    }
+}
+
+/// Run [`Op::exchange_bounded`] under `reply` to completion: re-entered from the top while it
+/// pends, as the op's wake re-enters it. What it answered, and how often it built its request.
+fn op_bounded(reply: Vec<Scripted>, limit: usize) -> (Result<ExchangeResponse, ConnFailure>, u32) {
+    *SCRIPT.lock().unwrap() = Some(Script {
+        reply,
+        ..Script::default()
+    });
+    let h = host();
+    let parked = Parked::default();
+    let op = Op {
+        on: &parked,
+        host: Some(&h),
+    };
+    let built = std::cell::Cell::new(0_u32);
+    let mut entries = 0;
+    let answered = loop {
+        entries += 1;
+        assert!(entries < 40, "the op never completed");
+        let answer = op.exchange_bounded(0, None, limit, || {
+            built.set(built.get() + 1);
+            Ok(post())
+        });
+        if let Poll::Ready(r) = answer {
+            break r;
+        }
+    };
+    SCRIPT.lock().unwrap().take();
+    (answered, built.get())
+}
+
+/// RED (a plugin with a documented reply cap below `REPLY_MAX`, secret-vault's 1 MiB): an op's
+/// exchange takes the cap, and a reply past it is refused as it is read, through [`Op`], with the
+/// bound's own text. RED before: `Op` had no way to lower the ceiling (this did not compile).
+#[test]
+fn an_ops_bounded_exchange_refuses_a_reply_over_its_limit() {
+    let _g = SERIAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let (answered, built) = op_bounded(body_reply(60, 41), 100);
+    assert_eq!(
+        answered.expect_err("the reply passes the op's limit"),
+        ConnFailure::Failed(REPLY_OVER_BOUND.to_string())
+    );
+    assert_eq!(built, 1, "the request is built on the first entry only");
+}
+
+/// The limit holds across the op's re-entries: a reply exactly at it passes whole, the resumed
+/// exchange keeping the ceiling it was built with.
+#[test]
+fn an_ops_bounded_exchange_passes_a_reply_at_its_limit() {
+    let _g = SERIAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let (answered, built) = op_bounded(body_reply(60, 40), 100);
+    assert_eq!(answered.expect("at the limit").body.len(), 100);
+    assert_eq!(built, 1);
+}
+
 /// How many times the host ran `op` in `r`.
 fn ran<T>(r: &Run<T>, op: u32) -> usize {
     r.ops.iter().filter(|&&o| o == op).count()

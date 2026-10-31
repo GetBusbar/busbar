@@ -613,6 +613,9 @@ pub struct CoreGovernance {
     /// Where a sealed rate-card amendment is made durable, where a root bound one. `None` refuses
     /// `amend_rate_history` (`Store`): a correction nothing can record is not applied.
     amendments: Option<Arc<AmendmentJournal>>,
+    /// THE NODE'S AMENDMENT JOURNAL (item 404), where a root bound it: what `verify` checks as
+    /// held. `None` is a binding no root gave one, which holds no amendments to check.
+    node_amendments: Option<Arc<busbar_kernel_audit::amend::NodeAmendments>>,
     /// Who submitted this unit's call.
     attribution: AmendAttribution,
     /// The scope the caller was admitted under. `adjust` hands it to the kernel half, which
@@ -655,6 +658,7 @@ impl CoreGovernance {
             request,
             verb,
             amendments: None,
+            node_amendments: None,
             attribution: AmendAttribution {
                 principal: String::new(),
             },
@@ -686,6 +690,16 @@ impl CoreGovernance {
     ) -> Self {
         self.replays = replays;
         self.replay_store = store;
+        self
+    }
+
+    /// Bind the node's amendment journal (`verify`).
+    #[must_use]
+    pub fn noting(
+        mut self,
+        journal: Option<Arc<busbar_kernel_audit::amend::NodeAmendments>>,
+    ) -> Self {
+        self.node_amendments = journal;
         self
     }
 
@@ -783,7 +797,11 @@ impl busbar_core_admin::Governance for CoreGovernance {
         // and rate class — before this seam was reached; none of them is the mounted router's.
         match verb {
             KernelVerb::Verify => {
-                return bound::verify_effect(self.ledger.as_ref(), self.audit.as_deref());
+                return bound::verify_effect(
+                    self.ledger.as_ref(),
+                    self.audit.as_deref(),
+                    self.node_amendments.as_deref(),
+                );
             }
             KernelVerb::PlaneFacts => {
                 return bound::plane_facts_effect(&self.request.path, &*self.planes);
@@ -1892,6 +1910,9 @@ pub struct AdminBinding {
     /// root binds one, and `amend_rate_history` refuses while it is `None` — an amendment is never
     /// applied without its durable record (item 30).
     pub amendments: Option<Arc<AmendmentJournal>>,
+    /// THE NODE'S AMENDMENT JOURNAL (item 404): the one its `App` carries, which `verify` checks as
+    /// held. `None` until a root binds it.
+    pub node_amendments: Option<Arc<busbar_kernel_audit::amend::NodeAmendments>>,
     /// The configured store an `Idempotency-Key` is claimed in, so a retry after a restart or on
     /// another node never runs a write twice (`busbar_core_admin::idempotency::durable`). `None`
     /// until a root binds one: a composition with no store has nowhere to keep a claim, and its keys
@@ -1947,6 +1968,7 @@ impl AdminBinding {
             ledger: Arc::new(UnopenedLedger),
             audit: None,
             amendments: None,
+            node_amendments: None,
             replay_store: None,
             pools: no_pools(),
             adjuster: adjust::no_ledger(),
@@ -1986,6 +2008,16 @@ impl AdminBinding {
     #[must_use]
     pub fn with_amendment_journal(mut self, journal: Arc<AmendmentJournal>) -> Self {
         self.amendments = Some(journal);
+        self
+    }
+
+    /// Bind the node's amendment journal (item 404): the one its `App` carries.
+    #[must_use]
+    pub fn with_node_amendments(
+        mut self,
+        journal: Arc<busbar_kernel_audit::amend::NodeAmendments>,
+    ) -> Self {
+        self.node_amendments = Some(journal);
         self
     }
 }
@@ -2238,6 +2270,7 @@ pub(crate) fn route(
                 principal: actor.clone(),
             },
         )
+        .noting(binding.node_amendments.clone())
         .granted(granted)
         .pooled(Arc::clone(&binding.pools))
         .adjusting(Arc::clone(&binding.adjuster))

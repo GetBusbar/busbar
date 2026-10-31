@@ -449,6 +449,7 @@ dependencies = [
  "busbar-kernel-egress",
  "busbar-kernel-identity",
  "busbar-kernel-ledger",
+ "busbar-kernel-testkit",
  "busbar-kernel-wal",
  "busbar-plane-a2a",
  "busbar-plane-decisions",
@@ -677,6 +678,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "busbar-kernel-testkit"
+version = "1.6.0"
+dependencies = [
+ "busbar-contract",
+ "busbar-kernel",
+]
+
+[[package]]
 name = "busbar-kernel-wal"
 version = "1.6.0"
 dependencies = [
@@ -719,7 +728,7 @@ dependencies = [
 [[package]]
 name = "busbar-plane-llm"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-plane-llm?rev=6ffc74ffd43223580b09e70ed60bc0561329d674#6ffc74ffd43223580b09e70ed60bc0561329d674"
+source = "git+https://github.com/GetBusbar/busbar-plane-llm?rev=6ec3d3bec91b539f2131eb66743d3db6e80042d2#6ec3d3bec91b539f2131eb66743d3db6e80042d2"
 dependencies = [
  "busbar-contract",
  "bytes",
@@ -801,7 +810,7 @@ dependencies = [
 [[package]]
 name = "busbar-store-memory"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-store-memory?rev=5927d5e43343227c4fa331a61d33ced623be7687#5927d5e43343227c4fa331a61d33ced623be7687"
+source = "git+https://github.com/GetBusbar/busbar-store-memory?rev=d7a62c43e9340899792025ed1ecea3d5fafc463d#d7a62c43e9340899792025ed1ecea3d5fafc463d"
 dependencies = [
  "busbar-contract",
  "serde_json",

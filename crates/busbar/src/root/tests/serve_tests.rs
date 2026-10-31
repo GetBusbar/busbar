@@ -9551,7 +9551,7 @@ mod pools_door_money {
         let _one = ONE_PUBLISHER.lock().await;
         let _limits = busbar_kernel::config::limits::LIMITS_TEST_LOCK.lock().await;
         const CAP: usize = 4096;
-        let _cap = busbar_kernel::config::limits::InstallGuard::install(
+        let _cap = busbar_kernel_testkit::limits::InstallGuard::install(
             &busbar_kernel::config::limits::LimitsResolved::with_request_body_max_bytes(CAP),
         );
         let instance = "rehome-money-over-cap";
