@@ -662,6 +662,18 @@ struct Held {
     dialled: Option<dialled::Dialled>,
 }
 
+/// The instant a request's `timeout_ms` (the plugin's own number, unclamped: `RequestPiece` and
+/// `OpenDesc` carry any `u64`) runs out, from `now`. `0` is no bound of its own; so is a bound past
+/// the last instant the platform's clock can hold, never an overflowing add (which panics where
+/// `Instant` is narrow): the op's own deadline, which its dispatcher keeps whatever the connector
+/// does, stays the bound that ends it.
+fn due_at(now: std::time::Instant, timeout_ms: u64) -> Option<std::time::Instant> {
+    if timeout_ms == 0 {
+        return None;
+    }
+    now.checked_add(Duration::from_millis(timeout_ms))
+}
+
 /// THE WHOLE REQUEST'S BOUND (`RequestPiece::timeout_ms`, BUSBAR-1.6.0.md:4890 "timeout clamped to
 /// the deadline class"; the `call` class, :3496-3505): from the open, through the dial, the
 /// judgement, the handshake and the send, until the far end's FIRST piece of its answer. Past it a
@@ -705,13 +717,11 @@ impl Held {
         self.line.lock().expect("line").clone()
     }
 
-    /// Bounded by `timeout_ms` from now until its answer begins; `0` = no bound of its own.
+    /// Bounded by `timeout_ms` from now until its answer begins; `0`, or a bound no instant can
+    /// hold, = no bound of its own ([`due_at`]).
     fn bounded(self, timeout_ms: u64) -> Self {
-        if timeout_ms != 0 {
-            *self.due.lock().expect("due") = Some(Due {
-                at: std::time::Instant::now() + Duration::from_millis(timeout_ms),
-                timer: None,
-            });
+        if let Some(at) = due_at(std::time::Instant::now(), timeout_ms) {
+            *self.due.lock().expect("due") = Some(Due { at, timer: None });
         }
         self
     }
@@ -2496,8 +2506,7 @@ impl Connector {
             .find(|g| g.stream == 0 && !g.fields)
             .map(|g| g.bytes)
             .ok_or(ConnError::Fault)?;
-        let due = (desc.timeout_ms != 0)
-            .then(|| std::time::Instant::now() + Duration::from_millis(desc.timeout_ms));
+        let due = due_at(std::time::Instant::now(), desc.timeout_ms);
         // The exchange body: the description alone, or framed into the opener's form.
         let body = dialled::composed_body(desc.fields, &desc.body, &description)?;
         let held = self.dial_exchange(

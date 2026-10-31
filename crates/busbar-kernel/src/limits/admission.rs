@@ -71,7 +71,8 @@ impl AdmissionGate {
 /// shed happens BEFORE any routing or body work and must stay the cheapest possible response to
 /// produce. Callers depend on these exact bytes (the shed body is part of the gateway's observable
 /// contract), so change it only alongside the tests that pin it. The data-plane auth middleware
-/// answers the same bytes when an auth verifier's `max_inflight` is full (owner ruling Q134).
+/// answers the same bytes when an auth verifier's `max_inflight` is full (owner ruling Q134), and
+/// when a verify answered no verdict (SIGN-auth-kind 2026-10-30).
 ///
 /// PARITY (Q128 p12#6): these are the listener's 1.5.5 default shed bytes, unchanged —
 /// v1.5.5 `crates/busbar/src/limits/admission.rs:73-89` (`inbound_overloaded_response`, same status,
@@ -91,10 +92,15 @@ pub(crate) fn inbound_overloaded_response() -> axum::response::Response {
         .into_response();
     resp.headers_mut().insert(
         axum::http::header::RETRY_AFTER,
-        axum::http::HeaderValue::from_static("1"),
+        axum::http::HeaderValue::from_static(OVERLOADED_RETRY_AFTER),
     );
     resp
 }
+
+/// The `Retry-After` (whole seconds) the at-capacity 503 names: 1.5.5's, and the one value every
+/// 503 the gateway answers for capacity it does not have right now carries — the shed above, an
+/// overloaded auth verifier, and an auth verify that answered no verdict.
+pub(crate) const OVERLOADED_RETRY_AFTER: &str = "1";
 
 /// Lean, hand-rolled `Layer`/`Service` pair for the OUTERMOST inbound-concurrency cap. The cap is
 /// an OOM DEFENSE — a bound on how many requests are concurrently BUFFERED AND PROCESSED — and an

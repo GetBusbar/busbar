@@ -19,9 +19,10 @@ use busbar_contract::abi::host::io::DIR_WRITE;
 use busbar_contract::abi::mechanism::call::Outcome;
 use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::abi::transport::{
-    FramePiece, FrameSpan, FramerOut, FramerSink, HeadSlots, DEST_PROGRAM, EMIT_TEXT, PIECE_END,
-    PIECE_END_OF_FRAME, PIECE_FIELDS, PIECE_HAS_DECLARED_LEN, PIECE_TEXT, PIECE_WRITABLE,
-    READ_END_OF_FRAME, YIELD_ENDED, YIELD_HAS_DEADLINE, YIELD_MORE, YIELD_STREAM_FULL,
+    FramePiece, FrameSpan, FramerOut, FramerSink, HeadSlots, DEST_PROGRAM, DEST_RETIRED, EMIT_TEXT,
+    PIECE_END, PIECE_END_OF_FRAME, PIECE_FIELDS, PIECE_HAS_DECLARED_LEN, PIECE_TEXT,
+    PIECE_WRITABLE, READ_END_OF_FRAME, YIELD_ENDED, YIELD_HAS_DEADLINE, YIELD_MORE,
+    YIELD_STREAM_FULL,
 };
 use busbar_contract::io_host::{IoHost, IoRefusal, Spawn};
 use futures::task::AtomicWaker;
@@ -128,6 +129,8 @@ pub struct TestDoor {
     pub begun_fields: Mutex<Vec<OpeningFields>>,
     /// The supervision key every `dial` crossing carried (`DialIn::supervision_key`), in order.
     pub dialled_keys: Mutex<Vec<u64>>,
+    /// The supervision keys a [`DEST_RETIRED`] `dial` told it to forget, in order.
+    pub retired_keys: Mutex<Vec<u64>>,
     /// The supervision keys whose `dial` it REFUSES, as a carrier's supervisor refuses a member's
     /// program it holds down.
     pub held_keys: Mutex<HashSet<u64>>,
@@ -187,6 +190,7 @@ impl TestDoor {
             refused_statuses: Mutex::new(Vec::new()),
             begun_fields: Mutex::new(Vec::new()),
             dialled_keys: Mutex::new(Vec::new()),
+            retired_keys: Mutex::new(Vec::new()),
             held_keys: Mutex::new(HashSet::new()),
             locate_caps: Mutex::new(Vec::new()),
             handed: Mutex::new(Vec::new()),
@@ -763,9 +767,14 @@ impl TestDoor {
                 ),
             ),
             Carry::Dial(i, o) => {
-                self.dialled_keys.lock().unwrap().push(i.supervision_key);
                 // SAFETY: the connector's destination, live for the call.
                 let d = unsafe { &*i.dest };
+                if d.kind == DEST_RETIRED {
+                    self.retired_keys.lock().unwrap().push(i.supervision_key);
+                    self.carried.lock().unwrap().push("dial");
+                    return io_crossed(Ok(()), |()| o.conn = 0);
+                }
+                self.dialled_keys.lock().unwrap().push(i.supervision_key);
                 let held = self.held_keys.lock().unwrap().contains(&i.supervision_key);
                 let r = if held {
                     Err(IoRefusal::Refused(

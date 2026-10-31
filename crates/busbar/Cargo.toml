@@ -35,6 +35,7 @@ busbar-kernel-wal = { path = "../busbar-kernel-wal" }
 busbar-kernel-audit = { path = "../busbar-kernel-audit" }
 serde_json = { workspace = true }
 hex = { workspace = true }
+serde = { workspace = true }
 getrandom = { workspace = true }
 arc-swap = { workspace = true }
 tower = { workspace = true, optional = true }

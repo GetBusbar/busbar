@@ -840,7 +840,9 @@ impl Connection {
             early: Vec::new(),
             flushed: 0,
             read_end: false,
-            open_deadline: Some(Instant::now() + dial.open_timeout),
+            // A plugin's `timeout_ms` past what the clock can hold is no open bound of its own:
+            // the op's deadline ends it (`due_at`).
+            open_deadline: Instant::now().checked_add(dial.open_timeout),
             framer_deadline: None,
             sleep: None,
             _slot: None,

@@ -6,22 +6,15 @@
 //! A shipped build's holder and dater ride the root's install record
 //! ([`crate::preflight::RootInstall::rate_apply`] and [`crate::preflight::RootInstall::rate_epoch`]);
 //! a test build's record is the stand-in, which carries neither. A test binary that has to hear a
-//! rate apply, or date an accrual, hands its own in here, and the kernel's rate seam
-//! ([`crate::rate_apply`]) reads it in front of the record's. The first hand-in stands, as the
-//! root's one install does.
-//!
-//! Each hand-in slot carries the test gate on its own declaration as well as through the module's:
-//! the binary-closure scans read a declaration's lines, not the module gate, and a slot no shipped
-//! build has must read as one.
+//! rate apply, or date an accrual, hands its own in here, and the record this binary publishes
+//! ([`super::root`]) carries it. The first hand-in stands, as the root's one install does.
 
 use crate::rate_apply::{RateApply, RateEpoch};
 
 /// The holder a test binary handed in ([`install_rate_apply`]).
-#[cfg(any(test, feature = "test-support"))]
 static APPLY_HANDED_IN: std::sync::OnceLock<&'static dyn RateApply> = std::sync::OnceLock::new();
 
 /// The dater a test binary handed in ([`install_rate_epoch`]).
-#[cfg(any(test, feature = "test-support"))]
 static EPOCH_HANDED_IN: std::sync::OnceLock<&'static dyn RateEpoch> = std::sync::OnceLock::new();
 
 /// THE TEST BINARY'S RATE HOLDER: every rate resolution of this process is staged with and raised
@@ -29,6 +22,7 @@ static EPOCH_HANDED_IN: std::sync::OnceLock<&'static dyn RateEpoch> = std::sync:
 /// stands.
 pub fn install_rate_apply(holder: &'static dyn RateApply) {
     let _ = APPLY_HANDED_IN.set(holder);
+    super::root::publish();
 }
 
 /// THE TEST BINARY'S RATE DATER: every accrual of this process is dated by `holder`, and the
@@ -36,6 +30,7 @@ pub fn install_rate_apply(holder: &'static dyn RateApply) {
 /// own. The first hand-in stands.
 pub fn install_rate_epoch(holder: &'static dyn RateEpoch) {
     let _ = EPOCH_HANDED_IN.set(holder);
+    super::root::publish();
 }
 
 /// The holder a test binary handed in, if one did.

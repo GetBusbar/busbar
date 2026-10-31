@@ -171,6 +171,8 @@ pub mod datagram;
 pub mod fields;
 pub mod route;
 
+pub use check::check_answer;
+
 /// A guest-list line an accepting transport is lent ([`BeginIn::lines`]).
 pub use route::LineEntry;
 
@@ -599,6 +601,15 @@ pub const SETTING_TEXT: u32 = 3;
 pub const DEST_AUTHORITY: u32 = 0;
 /// [`Destination::kind`]: a program the carrier runs.
 pub const DEST_PROGRAM: u32 = 1;
+/// [`Destination::kind`]: NOTHING TO OPEN, the KEY-RETIRED SIGNAL (T5). The member whose
+/// [`DialIn::supervision_key`] the dial carries is retired (its registration gone, or its program
+/// changed by a re-declaration) and is never dialled again: a carrier that supervises what it runs
+/// forgets that key's supervision and answers READY (`conn` `0`, no connection); any other carrier
+/// may refuse it, and the host reads nothing from the answer. The host admits nothing for it, so
+/// no `io.*` call it makes reaches anything. The host sends it once per retired member, after the
+/// member's last program connection was shut, and never under a host lock. The rest of the
+/// destination is empty.
+pub const DEST_RETIRED: u32 = 2;
 
 /// [`FramePiece::flags`]: the piece completes its frame.
 pub const PIECE_END_OF_FRAME: u16 = 1;
@@ -970,7 +981,7 @@ impl TransportTail {
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct Destination {
-    /// [`DEST_AUTHORITY`] | [`DEST_PROGRAM`].
+    /// [`DEST_AUTHORITY`] | [`DEST_PROGRAM`] | [`DEST_RETIRED`].
     pub kind: u32,
     /// Alignment padding.
     pub _reserved: u32,
@@ -1211,6 +1222,12 @@ pub struct ListenOut {
     /// The head.
     pub head: OutHead,
     /// The listener token.
+    ///
+    /// A RETIRED LISTENER (no op of its own): the listening handle the carrier's `listen` made
+    /// through the host's I/O is the host's, and the host closes it when it retires the listener
+    /// (its need retired, its generation replaced), so the address stops accepting at once. The
+    /// token then names a handle no longer held: an `accept` on it is FAILED, and the carrier
+    /// forgets the token there or at its instance's close.
     pub listener: u64,
     /// Bytes of `addr_buf` written (no short path: at most `addr_cap`).
     pub addr_written: u64,

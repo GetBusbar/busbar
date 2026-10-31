@@ -511,6 +511,146 @@ pub const MODE_PASSTHROUGH: u32 = 2;
 /// none; a style that asks no per-call scope never reads it.
 pub const EXT_SCOPE: &str = "scope";
 
+/// `complete_login`'s REPLY EXTENSIONS KEY: on a [`LOGIN_OUTAGE`], the IdP's `Retry-After`.
+/// Its value is the delay in whole seconds, ASCII decimal (owner-signed 2026-10-30, OWNER-QUEUE.md
+/// item "IdP errors": a 5xx, 429 or timeout from the IdP's token or userinfo endpoint answers 503
+/// and carries the IdP's `Retry-After`). It rides `IdentifyOut::head.extensions`, and the blob
+/// points INTO THE HOST'S IDENTITY BUFFER ([`CompleteLoginIn::out_buf`]): the one memory the host
+/// still holds once the call returns, so an entry anywhere else is not read. The host sends it as
+/// `Retry-After` clamped to [1, 3600]; absent, unreadable or on any other verdict it is not used,
+/// and the host's own delay stands. A plugin reads the IdP's header with [`retry_after_secs`]; the
+/// SDK writes the answer with `abi::sdk::auth_kit::login_outage`.
+pub const EXT_RETRY_AFTER: &str = "retry_after";
+
+/// The delay an IdP's `Retry-After` header value asks for, in whole seconds from `now_unix` (Unix
+/// seconds): delta-seconds as written (past `u64`, `u64::MAX`), or an HTTP-date, in any of the
+/// three forms RFC 9110 §5.6.7 has a recipient accept, as the seconds from `now_unix` to it (`0`
+/// when already past) (RFC 9110 §10.2.3). Surrounding ASCII whitespace is passed over; anything
+/// else is `None`.
+#[must_use]
+pub fn retry_after_secs(header_value: &[u8], now_unix: u64) -> Option<u64> {
+    let v = header_value.trim_ascii();
+    if v.is_empty() {
+        return None;
+    }
+    if v.iter().all(u8::is_ascii_digit) {
+        return Some(v.iter().fold(0u64, |n, d| {
+            n.saturating_mul(10).saturating_add(u64::from(d - b'0'))
+        }));
+    }
+    let at = http_date_unix(std::str::from_utf8(v).ok()?)?;
+    Some(u64::try_from(at).map_or(0, |at| at.saturating_sub(now_unix)))
+}
+
+/// An HTTP-date (IMF-fixdate, RFC 850 or asctime; RFC 9110 §5.6.7) as Unix seconds.
+fn http_date_unix(v: &str) -> Option<i64> {
+    const DAYS: [&str; 7] = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+    const LONG_DAYS: [&str; 7] = [
+        "Monday",
+        "Tuesday",
+        "Wednesday",
+        "Thursday",
+        "Friday",
+        "Saturday",
+        "Sunday",
+    ];
+    const MONTHS: [&str; 12] = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+    // Exactly `n` ASCII digits.
+    let digits = |s: &str, n: usize| -> Option<u32> {
+        if s.len() == n && s.bytes().all(|b| b.is_ascii_digit()) {
+            s.parse().ok()
+        } else {
+            None
+        }
+    };
+    let month = |s: &str| {
+        MONTHS
+            .iter()
+            .position(|m| *m == s)
+            .and_then(|i| u32::try_from(i + 1).ok())
+    };
+    let time = |s: &str| -> Option<(u32, u32, u32)> {
+        let mut p = s.split(':');
+        let t = (
+            digits(p.next()?, 2)?,
+            digits(p.next()?, 2)?,
+            digits(p.next()?, 2)?,
+        );
+        p.next().is_none().then_some(t)
+    };
+    let tokens: Vec<&str> = v.split_ascii_whitespace().collect();
+    let (year, mon, day, (h, m, s)) = match *tokens.as_slice() {
+        // IMF-fixdate: `Sun, 06 Nov 1994 08:49:37 GMT`.
+        [wd, d, mo, y, t, "GMT"] if DAYS.iter().any(|n| wd.strip_suffix(',') == Some(*n)) => (
+            i64::from(digits(y, 4)?),
+            month(mo)?,
+            digits(d, 2)?,
+            time(t)?,
+        ),
+        // RFC 850: `Sunday, 06-Nov-94 08:49:37 GMT`.
+        [wd, date, t, "GMT"] if LONG_DAYS.iter().any(|n| wd.strip_suffix(',') == Some(*n)) => {
+            let mut p = date.split('-');
+            let (d, mo, y) = (p.next()?, p.next()?, p.next()?);
+            if p.next().is_some() {
+                return None;
+            }
+            let y = i64::from(digits(y, 2)?);
+            (
+                if y < 70 { 2000 + y } else { 1900 + y },
+                month(mo)?,
+                digits(d, 2)?,
+                time(t)?,
+            )
+        }
+        // asctime: `Sun Nov  6 08:49:37 1994`.
+        [wd, mo, d, t, y] if DAYS.contains(&wd) => (
+            i64::from(digits(y, 4)?),
+            month(mo)?,
+            digits(d, 1).or_else(|| digits(d, 2))?,
+            time(t)?,
+        ),
+        _ => return None,
+    };
+    let leap = (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;
+    let month_days = match mon {
+        2 if leap => 29,
+        2 => 28,
+        4 | 6 | 9 | 11 => 30,
+        _ => 31,
+    };
+    if !(1..=month_days).contains(&day) || h > 23 || m > 59 || s > 60 {
+        return None;
+    }
+    // Days from the civil date (H. Hinnant's `days_from_civil`), March-based years.
+    let y = if mon <= 2 { year - 1 } else { year };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let mp = i64::from((mon + 9) % 12);
+    let doy = (153 * mp + 2) / 5 + i64::from(day) - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146_097 + doe - 719_468;
+    Some(days * 86_400 + i64::from(h) * 3600 + i64::from(m) * 60 + i64::from(s))
+}
+
+/// The reply extensions that state `secs` under [`EXT_RETRY_AFTER`], as ASCII decimal.
+#[must_use]
+pub fn retry_after_extensions(secs: u64) -> Vec<u8> {
+    crate::abi::mechanism::extensions::encode(&[(EXT_RETRY_AFTER, secs.to_string().as_bytes())])
+}
+
+/// The delay reply `extensions` state under [`EXT_RETRY_AFTER`]: plain ASCII digits that fit a
+/// `u64`; `None` when absent or anything else. Unclamped: the host bounds it.
+#[must_use]
+pub fn retry_after_of(extensions: &[u8]) -> Option<u64> {
+    let v = crate::abi::mechanism::extensions::get(extensions, EXT_RETRY_AFTER)?;
+    if v.is_empty() || !v.iter().all(u8::is_ascii_digit) {
+        return None;
+    }
+    std::str::from_utf8(v).ok()?.parse().ok()
+}
+
 /// THE REQUEST FIELD BY WHICH A PLUGIN STATES ITS PER-CALL SCOPE to the host: a field of this name
 /// in a request bound for the far end (a plane's attempt answer, a request it writes on its own
 /// need) is the host's, never the far end's. The host takes it out of the request before anything is
@@ -648,3 +788,7 @@ super::sdk::door::slot_structs!(
         slot::TARGET => TargetIn, TargetOut;
     }
 );
+
+#[cfg(test)]
+#[path = "../tests/auth_retry_after_tests.rs"]
+mod retry_after_tests;
