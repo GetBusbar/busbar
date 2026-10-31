@@ -161,6 +161,79 @@ mod door {
         }
     }
 
+    #[derive(Default)]
+    struct ProjectScope {
+        seen: std::sync::Mutex<Vec<(String, Option<u64>, String)>>,
+    }
+
+    impl crate::services_double::ServicesDouble for ProjectScope {
+        fn entitlement_check(
+            &self,
+            caller: &busbar_contract::services::Caller,
+            unit: Option<u64>,
+            target: &str,
+        ) -> crate::dispatch::Stored {
+            self.seen
+                .lock()
+                .unwrap()
+                .push((caller.instance.to_string(), unit, target.to_owned()));
+            crate::dispatch::Stored::ready(busbar_contract::abi::host::service::ENTITLED)
+        }
+    }
+
+    #[test]
+    fn project_attributes_host_services_to_its_unit_linked_and_dropped() {
+        use crate::dispatch::{DispatchConfig, Dispatcher};
+        for is_dropped in [false, true] {
+            let provider = Arc::new(crate::services_double::Double(ProjectScope::default()));
+            let dispatcher = Dispatcher::with_services(DispatchConfig::default(), provider.clone());
+            let binding = Bind {
+                dispatcher: dispatcher.adopter(),
+                ..bind()
+            };
+            let p = if is_dropped {
+                let path = crate::both_ways::example_cdylib("plane_door_plugin");
+                let stated = rendering_of(plug::door).unwrap();
+                load_dropped::<Plane>(&path, &stated, binding).unwrap()
+            } else {
+                let row = LinkedRow::of(plug::door).unwrap();
+                load_linked::<Plane>(&row, binding).unwrap()
+            };
+            assert_eq!(
+                p.call(life::OPEN, &mut open_frame(1)).outcome,
+                Outcome::Ready
+            );
+            for unit in [73, 0] {
+                let (mut signals, mut arena) = ([z::<SignalEntry>(); 2], [0_u8; 64]);
+                let mut frame: Frame<ProjectIn, ProjectOut> = Frame::new(z(), z());
+                frame.input.head = in_head();
+                frame.out.head = out_head();
+                frame.input.unit = unit;
+                frame.input.target = text(plug::PROJECT_ENTITLEMENT_TARGET);
+                frame.input.body = octets(b"abc");
+                frame.input.signals_buf = signals.as_mut_ptr();
+                frame.input.signals_cap = signals.len();
+                frame.input.arena_buf = arena.as_mut_ptr();
+                frame.input.arena_cap = arena.len();
+                // The service cannot pend; the synchronous crossing keeps its lent buffers live.
+                assert_eq!(p.call(slot::PROJECT, &mut frame).outcome, Outcome::Ready);
+            }
+            assert_eq!(
+                *provider.0.seen.lock().unwrap(),
+                vec![
+                    ("the-instance".into(), Some(73), "door:project-scope".into()),
+                    ("the-instance".into(), None, "door:project-scope".into()),
+                ],
+                "dropped={is_dropped}"
+            );
+            let mut close: Frame<
+                busbar_contract::abi::mechanism::call::InHead,
+                busbar_contract::abi::mechanism::call::OutHead,
+            > = Frame::new(in_head(), out_head());
+            assert_eq!(p.call(life::CLOSE, &mut close).outcome, Outcome::Ready);
+        }
+    }
+
     fn octets(b: &'static [u8]) -> Blob {
         Blob {
             ptr: b.as_ptr(),
