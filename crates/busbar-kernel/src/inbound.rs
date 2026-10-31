@@ -161,6 +161,8 @@ pub struct Call {
     pub point: u32,
     /// The connection, as the transport names it: checked against its framing's.
     pub conn: u64,
+    /// The request's stream on the connection.
+    pub stream: u64,
     /// THE FRAMING the call was made on: the host's own identity of the connection side (the
     /// ticket of the framer op the call was made inside), never the transport's word. A
     /// connection's `Peer` verdict is held by it, and leaves with it ([`Inbound::framing_ended`]).
@@ -205,6 +207,8 @@ pub struct HandIn {
     pub line: u32,
     /// The connection, as the transport names it.
     pub conn: u64,
+    /// The request's stream on the connection.
+    pub stream: u64,
     /// The framing the hand-in was made on ([`Call::framing`]): a `Peer` line's verdict is its
     /// framing's. `None` for a ticketless hand-in, which no `Peer` verdict reaches.
     pub framing: Option<u64>,
@@ -225,6 +229,12 @@ pub struct Refuse {
     pub cause: u32,
     /// The matched line; [`LINE_NONE`](busbar_contract::abi::host::service::LINE_NONE) for no route.
     pub line: u32,
+    /// The connection carrying the refused request.
+    pub conn: u64,
+    /// The request's stream on the connection.
+    pub stream: u64,
+    /// The host framing making the refusal, absent for a ticketless call.
+    pub framing: Option<u64>,
     /// The request being refused, as the transport decoded it (`UnitRefuseIn::request`): its path
     /// shapes the bytes of a refusal with no unit (no route, a method miss, an over-gate body) as
     /// 1.5.5's router shaped them, by the path's dialect. A unit's own head, when it holds one, is
@@ -846,7 +856,8 @@ impl Inbound {
         let doors = crate::core_routes::CoreRouteTable::default()
             .with_door_refusals(listener.door_refusals.clone());
         let mut tables = self.tables.write().unwrap_or_else(PoisonError::into_inner);
-        tables.insert(
+        let mut retired = Vec::new();
+        let replaced = tables.insert(
             (owner, generation),
             Arc::new(Table {
                 listener,
@@ -854,7 +865,16 @@ impl Inbound {
                 lines_by_id,
             }),
         );
-        tables.retain(|(o, g), _| *o != owner || g.saturating_add(1) >= generation);
+        retired.extend(replaced);
+        tables.retain(|(o, g), table| {
+            let keep = *o != owner || g.saturating_add(1) >= generation;
+            if !keep {
+                retired.push(Arc::clone(table));
+            }
+            keep
+        });
+        drop(tables);
+        drop(retired);
         Ok(())
     }
 

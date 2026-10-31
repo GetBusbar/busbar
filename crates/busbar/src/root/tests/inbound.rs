@@ -221,6 +221,9 @@ fn refused_against(family: &str, cause: u32) -> Vec<String> {
                 cause,
                 line,
                 request: Some(head),
+                conn: 1,
+                stream: 1,
+                framing: None,
             })
             .expect("refused");
         let wrong = differences(&refusal, &name);

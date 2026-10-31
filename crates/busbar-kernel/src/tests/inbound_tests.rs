@@ -266,6 +266,7 @@ impl Kit {
                     unit,
                     point,
                     conn: 1,
+                    stream: 1,
                     framing: 1,
                     head,
                     body,
@@ -297,6 +298,7 @@ impl Kit {
                     unit,
                     point,
                     conn,
+                    stream: 1,
                     framing: conn,
                     head,
                     body: None,
@@ -319,6 +321,7 @@ impl Kit {
                 unit,
                 line: self.line(path),
                 conn,
+                stream: 1,
                 framing: Some(conn),
                 head,
             })
@@ -334,6 +337,7 @@ impl Kit {
                 unit,
                 line: self.line(line_path),
                 conn: 1,
+                stream: 1,
                 framing: Some(1),
                 head,
             })
@@ -349,6 +353,9 @@ impl Kit {
                 cause,
                 line,
                 request: Some(post(target, &[], None)),
+                conn: 1,
+                stream: 1,
+                framing: Some(1),
             })
             .expect("refused")
     }
@@ -815,6 +822,9 @@ fn red_every_refusal_is_the_kernels_and_byte_identical_to_todays_builders() {
                 cause: REFUSE_STOPPED,
                 line: k.line(MESSAGES),
                 request: None,
+                conn: 1,
+                stream: 1,
+                framing: Some(1),
             })
             .map(|r| r.status),
         Err(UNIT_FOREIGN)
@@ -1367,6 +1377,7 @@ fn red_signed_a_body_over_the_gate_is_the_413_before_any_verdict() {
             unit: UnitRef::NONE,
             point: POINT_HEAD_BODY,
             conn: 1,
+            stream: 1,
             framing: 1,
             head: signed_head(),
             body: Some(vec![b'x'; 64]),
@@ -1486,6 +1497,7 @@ fn red_a_call_whose_conn_disagrees_with_its_framing_is_refused() {
                     unit: UnitRef::NONE,
                     point: POINT_HEAD,
                     conn,
+                    stream: 1,
                     framing,
                     head: post(MESSAGES, &[], None),
                     body: None,
@@ -1509,6 +1521,7 @@ fn red_a_call_whose_conn_disagrees_with_its_framing_is_refused() {
             unit: UnitRef::NONE,
             line: k.line(MESSAGES),
             conn: 9,
+            stream: 1,
             framing: Some(40),
             head: post(MESSAGES, &[], None),
         }),
@@ -1517,6 +1530,159 @@ fn red_a_call_whose_conn_disagrees_with_its_framing_is_refused() {
     // Once the framing ends, its connection is no longer held.
     k.inbound.framing_ended(40);
     assert!(call(40, 6).is_ok());
+}
+
+#[test]
+fn a_unit_cannot_be_reused_by_another_connection_for_auth() {
+    let a = Script::new(AuthPoints::HEAD, identity("alice", "k"), Vec::new());
+    let k = kit(&[("a", a)]);
+    let admitted = k
+        .call(
+            MESSAGES,
+            UnitRef::NONE,
+            POINT_HEAD,
+            post(MESSAGES, &[], None),
+        )
+        .expect("first connection authenticated");
+    assert_eq!(admitted.flow, FLOW_CONTINUE);
+    assert_eq!(
+        k.call_on(
+            2,
+            MESSAGES,
+            admitted.unit,
+            POINT_HEAD,
+            post(MESSAGES, &[], None),
+            None,
+        ),
+        Err(UNIT_FOREIGN),
+        "a valid MAC does not transfer a unit to another connection"
+    );
+    assert_eq!(
+        k.hand_in(MESSAGES, MESSAGES, admitted.unit, post(MESSAGES, &[], None))
+            .0,
+        FLOW_CONTINUE,
+        "refused reuse must leave the original unit intact"
+    );
+}
+
+#[test]
+fn a_unit_cannot_be_handed_in_by_another_connection() {
+    let a = Script::new(AuthPoints::HEAD, identity("alice", "k"), Vec::new());
+    let k = kit(&[("a", a)]);
+    let admitted = k
+        .call(
+            MESSAGES,
+            UnitRef::NONE,
+            POINT_HEAD,
+            post(MESSAGES, &[], None),
+        )
+        .expect("first connection authenticated");
+    assert_eq!(admitted.flow, FLOW_CONTINUE);
+    assert_eq!(
+        k.inbound.hand_in(HandIn {
+            owner: OWNER,
+            generation: GEN,
+            auth: k.id(MESSAGES),
+            unit: admitted.unit,
+            line: k.line(MESSAGES),
+            conn: 2,
+            stream: 1,
+            framing: Some(2),
+            head: post(MESSAGES, &[], None),
+        }),
+        Err(UNIT_FOREIGN)
+    );
+    assert_eq!(
+        k.hand_in(MESSAGES, MESSAGES, admitted.unit, post(MESSAGES, &[], None))
+            .0,
+        FLOW_CONTINUE,
+        "refused reuse must leave the original unit intact"
+    );
+}
+
+#[test]
+fn a_unit_cannot_cross_streams_or_framings_at_any_inbound_operation() {
+    for (conn, stream, framing) in [(1, 2, Some(1)), (1, 1, Some(2)), (1, 1, None)] {
+        for operation in ["auth", "hand-in", "refuse"] {
+            if operation == "auth" && framing.is_none() {
+                continue;
+            }
+            let a = Script::new(AuthPoints::HEAD, identity("alice", "k"), Vec::new());
+            let k = kit(&[("a", a)]);
+            let unit = k
+                .call(
+                    MESSAGES,
+                    UnitRef::NONE,
+                    POINT_HEAD,
+                    post(MESSAGES, &[], None),
+                )
+                .expect("original request authenticated")
+                .unit;
+            let head = post(MESSAGES, &[], None);
+            let result = match operation {
+                "auth" => k
+                    .inbound
+                    .auth_call(
+                        Call {
+                            owner: OWNER,
+                            generation: GEN,
+                            auth: k.id(MESSAGES),
+                            unit,
+                            point: POINT_HEAD,
+                            conn,
+                            stream,
+                            framing: framing.expect("auth has a framing"),
+                            head,
+                            body: None,
+                            deadline: None,
+                        },
+                        Box::new(|_| panic!("a refused reuse must answer immediately")),
+                    )
+                    .expect("answered immediately")
+                    .map(|_| ()),
+                "hand-in" => k
+                    .inbound
+                    .hand_in(HandIn {
+                        owner: OWNER,
+                        generation: GEN,
+                        auth: k.id(MESSAGES),
+                        unit,
+                        line: k.line(MESSAGES),
+                        conn,
+                        stream,
+                        framing,
+                        head,
+                    })
+                    .map(|_| ()),
+                "refuse" => k
+                    .inbound
+                    .refuse(Refuse {
+                        owner: OWNER,
+                        generation: GEN,
+                        unit,
+                        cause: REFUSE_STOPPED,
+                        line: k.line(MESSAGES),
+                        conn,
+                        stream,
+                        framing,
+                        request: Some(head),
+                    })
+                    .map(|_| ()),
+                _ => unreachable!(),
+            };
+            assert_eq!(
+                result,
+                Err(UNIT_FOREIGN),
+                "{operation}: {conn}/{stream}/{framing:?}"
+            );
+            assert_eq!(
+                k.hand_in(MESSAGES, MESSAGES, unit, post(MESSAGES, &[], None))
+                    .0,
+                FLOW_CONTINUE,
+                "refused reuse must leave the original request intact"
+            );
+        }
+    }
 }
 
 /// RED (ruling 1: `UnitRefuseIn::request`): a refusal with no unit is shaped by the REQUEST's

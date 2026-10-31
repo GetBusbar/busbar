@@ -134,6 +134,7 @@ impl AuthHandleHost for LoaderSide {
             unit: ask.unit,
             point: ask.point,
             conn: ask.conn,
+            stream: ask.stream,
             head: head_of(ask.request),
             body: ask.body,
             deadline: ask.deadline.map(|d| std::time::Instant::now() + d),
@@ -159,6 +160,7 @@ impl AuthHandleHost for LoaderSide {
             unit: ask.unit,
             line: ask.line,
             conn: ask.conn,
+            stream: ask.stream,
             framing: ask.framing,
             head: head_of(ask.request),
         })
@@ -176,6 +178,9 @@ impl AuthHandleHost for LoaderSide {
                 unit: ask.unit,
                 cause: ask.cause,
                 line: ask.line,
+                conn: ask.conn,
+                stream: ask.stream,
+                framing: ask.framing,
                 request: Some(head_of(ask.request)),
             })
             .map(|r| RefusalBytes {
