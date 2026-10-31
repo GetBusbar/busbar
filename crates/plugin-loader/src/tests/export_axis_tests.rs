@@ -104,7 +104,7 @@ fn the_scrape_sink_answers_the_same_through_either_door() {
         let body = sink.scrape(&families).expect("the sink renders");
         assert_eq!(body, EXPOSITION.as_bytes(), "the recorder's bytes, back");
         assert!(rows
-            .check(module, CHECK_PHASE_INSTANCES, &[("metrics".into(), good)])
+            .check(module, CHECK_PHASE_INSTANCES, &[("metrics".into(), &good)])
             .expect("an export row")
             .is_empty());
         format!("{refused:?} {zero:?} {}", String::from_utf8_lossy(&body))
@@ -201,8 +201,11 @@ fn check_runs_when_the_first_instance_does_not_open() {
             row,
             busbar_contract::abi::export::CHECK_PHASE_LIMITS,
             &[
-                ("metrics".into(), serde_json::json!({ "bogus": 1 })),
-                ("second".into(), serde_json::json!({ "buffer_seconds": 60 })),
+                ("metrics".into(), &serde_json::json!({ "bogus": 1 })),
+                (
+                    "second".into(),
+                    &serde_json::json!({ "buffer_seconds": 60 }),
+                ),
             ],
         )
         .expect("an export row");
@@ -242,11 +245,7 @@ fn an_export_door_stating_ready_is_awaited_when_it_opens_to_deliver() {
         ExportRows::new(&registry, dispatcher()).with_conns(Arc::new(crate::needs_restated::Inert));
     let refused = serde_json::json!({ "ready": "err:the target is refused" });
     let before = READIES.load(Ordering::SeqCst);
-    let _ = rows.check(
-        NAME,
-        CHECK_PHASE_INSTANCES,
-        &[("audit".into(), refused.clone())],
-    );
+    let _ = rows.check(NAME, CHECK_PHASE_INSTANCES, &[("audit".into(), &refused)]);
     assert_eq!(
         READIES.load(Ordering::SeqCst),
         before,

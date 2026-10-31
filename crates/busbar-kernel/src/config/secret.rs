@@ -399,6 +399,11 @@ pub struct ResolvedSettings(serde_json::Value);
 const ALWAYS_AN_OBJECT: &str = "resolved settings are built from a settings map";
 
 impl ResolvedSettings {
+    /// Own a settings map whose temporary strings are wiped when the holder drops.
+    pub(crate) fn from_map(settings: serde_json::Map<String, serde_json::Value>) -> Self {
+        Self(serde_json::Value::Object(settings))
+    }
+
     /// The bag as the one JSON object the plugin is handed (borrowed: the holder keeps it).
     pub fn as_value(&self) -> &serde_json::Value {
         &self.0

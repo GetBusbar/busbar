@@ -327,12 +327,13 @@ pub trait ExportAxis: Send + Sync {
 
     /// The sink's own checks across every configured `instances` of `module`, at `phase`
     /// ([`crate::abi::export::CHECK_PHASE_LIMITS`] | `_INSTANCES`), each line verbatim; `None`
-    /// when `module` is not an export row.
+    /// when `module` is not an export row. Settings are borrowed so their zeroizing owners remain
+    /// alive through the check rather than yielding unguarded plaintext copies.
     fn check(
         &self,
         module: &str,
         phase: u32,
-        instances: &[(String, serde_json::Value)],
+        instances: &[(String, &serde_json::Value)],
     ) -> Option<Vec<String>>;
 
     /// OPEN one instance of `module` with `settings`, under the host's instance `label` (unique per

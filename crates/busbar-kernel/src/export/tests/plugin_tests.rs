@@ -265,7 +265,7 @@ impl ExportAxis for DeclaringAxis {
     fn probe(&self, _: &str, _: &str, _: &Value) -> Option<busbar_contract::export_calls::Probed> {
         None
     }
-    fn check(&self, _: &str, _: u32, _: &[(String, Value)]) -> Option<Vec<String>> {
+    fn check(&self, _: &str, _: u32, _: &[(String, &Value)]) -> Option<Vec<String>> {
         None
     }
     fn open(&self, module: &str, _: &str, _: &Value) -> Result<Arc<dyn ExportCalls>, String> {
@@ -323,8 +323,8 @@ fn a_reference_at_a_reference_capable_url_reaches_the_sink_resolved() {
         "the settings owner must not expose a resolved credential through Debug"
     );
     assert_eq!(
-        handed,
-        serde_json::json!({
+        handed.as_value(),
+        &serde_json::json!({
             "url": "https://siem.example/in",
             "auth_header": { "name": "Authorization", "value": "Bearer t0k" },
             "batch": 10,
@@ -334,8 +334,10 @@ fn a_reference_at_a_reference_capable_url_reaches_the_sink_resolved() {
 
     let literal = settings_of(serde_json::json!({ "url": "https://collector.example/v1/traces" }));
     assert_eq!(
-        sink_settings(&DeclaringAxis, "declaring-sink", &literal).expect("as written"),
-        Value::Object(literal.clone())
+        sink_settings(&DeclaringAxis, "declaring-sink", &literal)
+            .expect("as written")
+            .as_value(),
+        &Value::Object(literal.clone())
     );
 
     // Fail-closed: an unset variable at the url is the error, naming the field.
@@ -349,7 +351,9 @@ fn a_reference_at_a_reference_capable_url_reaches_the_sink_resolved() {
     // the undeclared-reference refusal's to word (`config_validate`), not this resolution's.
     let undeclared = settings_of(serde_json::json!({ "url": { "env": "NEVER_READ" } }));
     assert_eq!(
-        sink_settings(&DeclaringAxis, "silent-sink", &undeclared).expect("as written"),
-        Value::Object(undeclared.clone())
+        sink_settings(&DeclaringAxis, "silent-sink", &undeclared)
+            .expect("as written")
+            .as_value(),
+        &Value::Object(undeclared.clone())
     );
 }

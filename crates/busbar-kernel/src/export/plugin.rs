@@ -22,6 +22,7 @@
 
 use super::projection::{resolve_projection, Projection};
 use super::PayloadCache;
+use crate::config::secret::ResolvedSettings;
 use crate::config::ExportCfg;
 use crate::limits::admission::AdmissionGate;
 use crate::plugin_routes::{PluginHttpDispatch, RouteDecl, RouteKind};
@@ -60,9 +61,10 @@ pub(crate) fn probe(
 ) -> Option<(Option<Vec<ExportStream>>, Vec<String>)> {
     let axis = axis()?;
     let (streams, problems) = match sink_settings(axis, module, settings) {
-        Ok(cfg) => axis.probe(module, name, &cfg)?,
+        Ok(cfg) => axis.probe(module, name, cfg.as_value())?,
         Err(e) => {
-            let (streams, _) = axis.probe(module, name, &Value::Object(settings.clone()))?;
+            let written = ResolvedSettings::from_map(settings.clone());
+            let (streams, _) = axis.probe(module, name, written.as_value())?;
             (streams, vec![format!("export.{name}.settings: {e}")])
         }
     };
@@ -86,11 +88,12 @@ pub(crate) fn sink_settings(
     axis: &dyn ExportAxis,
     module: &str,
     settings: &serde_json::Map<String, Value>,
-) -> Result<Value, String> {
+) -> Result<ResolvedSettings, String> {
     let declared = [axis.secret_refs(module), axis.reference_fields(module)].concat();
-    let tree = Value::Object(settings.clone());
+    let tree = ResolvedSettings::from_map(settings.clone());
     if declared.is_empty()
-        || busbar_contract::secret_fields::undeclared_reference(&tree, &declared).is_some()
+        || busbar_contract::secret_fields::undeclared_reference(tree.as_value(), &declared)
+            .is_some()
     {
         return Ok(tree);
     }
@@ -102,7 +105,6 @@ pub(crate) fn sink_settings(
         &crate::config::secret::SecretResolver::builtins_only(),
         &busbar_contract::config_time::ConfigScope::config_time(),
     )
-    .map(|resolved| resolved.as_value().clone())
 }
 
 /// Stream bytes as the vocabulary's streams (a byte outside it was refused at load).
@@ -138,13 +140,21 @@ pub(crate) fn one_instance(module: &str) -> bool {
 pub(crate) fn check_one_instance(module: &str, instances: &[(String, Value)]) -> Vec<String> {
     axis()
         .and_then(|axis| {
-            let instances: Vec<(String, Value)> = instances
+            let held: Vec<_> = instances
                 .iter()
-                .filter_map(|(name, settings)| match settings {
-                    Value::Object(map) => sink_settings(axis, module, map)
-                        .ok()
-                        .map(|v| (name.clone(), v)),
-                    other => Some((name.clone(), other.clone())),
+                .map(|(_, settings)| {
+                    settings
+                        .as_object()
+                        .map(|map| sink_settings(axis, module, map))
+                })
+                .collect();
+            let instances: Vec<_> = instances
+                .iter()
+                .zip(&held)
+                .filter_map(|((name, settings), resolved)| match resolved {
+                    Some(Ok(value)) => Some((name.clone(), value.as_value())),
+                    Some(Err(_)) => None,
+                    None => Some((name.clone(), settings)),
                 })
                 .collect();
             axis.check(
@@ -176,7 +186,7 @@ pub(crate) fn check(cfg: &ExportCfg, phase: CheckPhase, errors: &mut Vec<String>
         modules.push(module);
         // Each instance as its sink is handed it ([`sink_settings`]); one whose declared reference
         // does not resolve was already refused when the configuration was resolved ([`probe`]).
-        let instances: Vec<(String, Value)> = cfg
+        let held: Vec<(String, ResolvedSettings)> = cfg
             .plugins
             .iter()
             .filter(|q| q.def.module.trim() == module)
@@ -185,6 +195,10 @@ pub(crate) fn check(cfg: &ExportCfg, phase: CheckPhase, errors: &mut Vec<String>
                     .ok()
                     .map(|v| (q.name.clone(), v))
             })
+            .collect();
+        let instances: Vec<_> = held
+            .iter()
+            .map(|(name, settings)| (name.clone(), settings.as_value()))
             .collect();
         errors.extend(axis.check(module, phase, &instances).unwrap_or_default());
     }
@@ -260,7 +274,7 @@ pub fn open(cfg: &ExportCfg) -> Result<(), String> {
                 continue;
             }
         };
-        let opened_sink = axis.open(module, &format!("export.{name}"), &settings);
+        let opened_sink = axis.open(module, &format!("export.{name}"), settings.as_value());
         let Ok(sink) = opened_sink.map_err(|e| errors.push(format!("export.{name}: {e}"))) else {
             continue;
         };

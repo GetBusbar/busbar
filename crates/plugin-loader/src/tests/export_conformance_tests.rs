@@ -1585,15 +1585,14 @@ fn a_sink_starts_and_checks_the_same_through_either_door() {
         WEBHOOK_DOOR,
         webhook_cdylib(),
     );
-    let file_instances = [("tail".to_string(), serde_json::json!({ "path": "/tmp/x" }))];
-    let hook_instances = [(
-        "audit".to_string(),
-        serde_json::json!({
-            "url": "https://collector.example/in",
-            "max_inflight_deliveries": 0,
-            "delivery_timeout_secs": 0,
-        }),
-    )];
+    let file_settings = serde_json::json!({ "path": "/tmp/x" });
+    let file_instances = [("tail".to_string(), &file_settings)];
+    let hook_settings = serde_json::json!({
+        "url": "https://collector.example/in",
+        "max_inflight_deliveries": 0,
+        "delivery_timeout_secs": 0,
+    });
+    let hook_instances = [("audit".to_string(), &hook_settings)];
     let transcripts: Vec<String> = files
         .iter()
         .zip(hooks.iter())

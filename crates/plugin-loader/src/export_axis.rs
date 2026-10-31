@@ -183,7 +183,8 @@ impl<'r> ExportRows<'r> {
         match self.load(row, &label(instance), None) {
             Ok(p) => {
                 let streams = p.context::<ExportFacts>().map(|f| f.streams.clone());
-                let problems = match export_door::validate(&p, settings.to_string().as_bytes()) {
+                let text = zeroize::Zeroizing::new(settings.to_string());
+                let problems = match export_door::validate(&p, text.as_bytes()) {
                     Ok(()) => Vec::new(),
                     Err(text) => refusal_lines(SECTION, instance, &text),
                 };
@@ -241,13 +242,15 @@ impl<'r> ExportRows<'r> {
         &self,
         module: &str,
         phase: u32,
-        instances: &[(String, serde_json::Value)],
+        instances: &[(String, &serde_json::Value)],
     ) -> Option<Vec<String>> {
         let row = self.row(module)?;
-        let listed: Vec<(String, Vec<u8>)> = instances
-            .iter()
-            .map(|(n, s)| (n.clone(), s.to_string().into_bytes()))
-            .collect();
+        let listed: zeroize::Zeroizing<Vec<(String, Vec<u8>)>> = zeroize::Zeroizing::new(
+            instances
+                .iter()
+                .map(|(n, s)| (n.clone(), s.to_string().into_bytes()))
+                .collect(),
+        );
         let none = [(module.to_string(), b"{}".to_vec())];
         let candidates = if listed.is_empty() {
             &none[..]
@@ -289,7 +292,7 @@ impl<'r> ExportRows<'r> {
                 None => format!("no `kind: export` plugin answers to '{module}'"),
             }
         })?;
-        let text = settings.to_string();
+        let text = zeroize::Zeroizing::new(settings.to_string());
         let p = self.load(row, label, Some(settings))?;
         // Held by the instance: its grant goes with it.
         let grant = crate::observe::grant_series(
