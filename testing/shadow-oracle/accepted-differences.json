@@ -5190,6 +5190,50 @@
           "candidate": "POST /v1/realtime/client_secrets HTTP/1.1\r\nauthorization: Bearer oracle-cred-streams-0002\r\ncontent-type: application/json\r\nopenai-safety-identifier: <OWNER>\r\nhost: 127.0.0.1:<PORT>\r\ncontent-length: 101\r\n\r\n{\"expires_after\":{\"anchor\":\"created_at\",\"seconds\":600},\"session\":{\"model\":\"m-cap\",\"type\":\"realtime\"}}"
         }
       ]
+    },
+    {
+      "id": "R10-MINT-VALUE busbar returns its own signed ek_ ticket instead of the provider key",
+      "kind": "improvement",
+      "changelog": null,
+      "changelog_reason": "A 1.6.0-pre dated-baseline streams row; no published 1.5.5 streams cell changes.",
+      "by": "owner (Matthew Jackson), direct owner-signed 2026-10-31 (A. yes)",
+      "signoff": {
+        "who": "owner (Matthew Jackson)",
+        "when": "2026-10-31",
+        "ruling": "OWNER SIGNED 2026-10-31, direct reply A. yes to HANDOFF section 7 question A: streams|mint|client-secrets /steps/0/body/json/value changes from ek_oracle_0001 to the busbar-minted ek_ ticket. See SIGN-ga-session.md owner-signed A/B addendum."
+      },
+      "expires": {
+        "baseline": "1.6.0-pre",
+        "by": "2026-12-31"
+      },
+      "cells": "^streams\\|mint\\|client-secrets$",
+      "expected_cells": 1,
+      "classes": [
+        "body"
+      ],
+      "premise": {
+        "all": [
+          {
+            "cell": "streams|mint|client-secrets",
+            "pointer": "/steps/0/status",
+            "equals": 200
+          },
+          {
+            "cell": "streams|mint|client-secrets",
+            "pointer": "/steps/0/body/json/expires_at_unix",
+            "exists": true
+          }
+        ]
+      },
+      "rationale": "Owner directly signed A on 2026-10-31. R10 terminates media in busbar and mints a ticket instead of relaying a provider key. This transform matches only an entire ek_-prefixed two-segment URL-safe base64 token with a 64-byte Ed25519 signature (86 unpadded characters). It rewrites that one string to ek_oracle_0001, the exact golden value; other strings, status, upstream records, headers and expiry remain compared. The known golden has that token only at /body/json/steps/0/body/json/value. Expiry has its separate request-time+600s acceptance.",
+      "transform": {
+        "candidate": [
+          [
+            "^ek_[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]{86}$",
+            "ek_oracle_0001"
+          ]
+        ]
+      }
     }
   ]
 }
