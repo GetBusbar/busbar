@@ -27,7 +27,7 @@ struct RestoreOnDrop(Option<LimitsResolved>);
 
 impl Drop for RestoreOnDrop {
     fn drop(&mut self) {
-        busbar_kernel::config::limits::set_installed(self.0.take());
+        busbar_kernel::config::limits::swap_installed(self.0.take());
     }
 }
 
@@ -169,7 +169,7 @@ fn uncommitted_guard_restores_the_uninstalled_state_when_nothing_was_installed()
     let _lock = LIMITS_TEST_LOCK.blocking_lock();
     let _restore = RestoreOnDrop(get());
 
-    busbar_kernel::config::limits::set_installed(None);
+    busbar_kernel::config::limits::swap_installed(None);
 
     {
         let _temporary = InstallGuard::install(&distinctive(3_333, 2048, 51));

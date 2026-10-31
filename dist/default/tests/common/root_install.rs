@@ -255,7 +255,7 @@ impl busbar_contract::export_calls::ExportAxis for LoaderExports {
         &self,
         module: &str,
         phase: u32,
-        instances: &[(String, serde_json::Value)],
+        instances: &[(String, &serde_json::Value)],
     ) -> Option<Vec<String>> {
         match sink(module) {
             Some(rows) => rows.check(module, phase, instances),
@@ -329,7 +329,7 @@ pub fn install() {
                 busbar_plugin_loader::dispatch::kinds::auth::declares_chain_module,
             ),
             hook_answers: Some(hook_answers),
-            ..busbar_kernel::preflight::root_rows()
+            ..busbar_kernel::test_support::root::composed()
         });
         busbar_kernel::test_support::install_test_auth_axis(auth_axis);
     });

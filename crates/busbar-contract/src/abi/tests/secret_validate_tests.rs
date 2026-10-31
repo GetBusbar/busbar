@@ -57,10 +57,27 @@ fn red(rule: Rule, field: &'static str) -> Result<(), Fault> {
     Err(Fault { rule, field })
 }
 
-/// A READY answer with a well-formed absent secret passes.
+/// RED (S3): a READY answer that names no material: a secret resolved to nothing is no secret,
+/// and the host would hand an empty credential on (fail-closed: refused, never resolved empty).
 #[test]
-fn ready_with_no_secret_passes() {
-    assert!(check(&base_out(), &[0; 16]).is_ok());
+fn ready_with_no_secret_faults() {
+    assert_eq!(
+        check(&base_out(), &[0; 16]),
+        red(Rule::Missing, "resolve.secret_on_ready")
+    );
+}
+
+/// RED (S12): READY material in the host's buffer that is not flagged secret.
+#[test]
+fn ready_with_material_not_flagged_secret_faults() {
+    let buf = [0u8; 16];
+    let mut out = base_out();
+    out.secret.ptr = buf.as_ptr();
+    out.secret.len = 4;
+    assert_eq!(
+        check(&out, &buf),
+        red(Rule::Missing, "resolve.secret.flags")
+    );
 }
 
 /// A zeroed `out` on PENDING and on REFUSED passes: those outcomes carry no answer.
@@ -258,4 +275,113 @@ fn needed_over_the_hard_max_faults() {
     out.head.outcome = RawOutcome(Outcome::Failed as u8);
     out.needed = HARD_MAX_BYTES + 1;
     assert_eq!(check(&out, &[0; 16]), red(Rule::OverMax, "resolve.needed"));
+}
+
+/// A short answer past the secret buffer bound is refused before allocation.
+#[test]
+fn needed_over_the_secret_cap_faults() {
+    let mut out = base_out();
+    out.head.outcome = RawOutcome(Outcome::Failed as u8);
+    out.needed = crate::abi::secret::MAX_SECRET_BYTES as u64 + 1;
+    assert_eq!(check(&out, &[0; 16]), red(Rule::OverMax, "resolve.needed"));
+}
+
+/// GREEN (S5): a short answer naming exactly the cap passes.
+#[test]
+fn needed_at_the_secret_cap_passes() {
+    let mut out = base_out();
+    out.head.outcome = RawOutcome(Outcome::Failed as u8);
+    out.needed = crate::abi::secret::MAX_SECRET_BYTES as u64;
+    assert_eq!(check(&out, &[0; 16]), Ok(()));
+}
+
+/// THE GENERATED RED TABLE: one RED per (field, rule) `check_resolve`'s declaration states, each
+/// answering exactly its rule and field; the cross-field rules are the hand cases above.
+#[test]
+fn every_declared_field_rule_is_red() {
+    assert_eq!(RESOLVE_RULES.len(), 4);
+    for case in RESOLVE_RULES {
+        let mut out = base_out();
+        (case.red)(&mut out);
+        assert_eq!(
+            check(&out, &[0; 16]),
+            red(case.rule, case.field),
+            "{case:?}"
+        );
+    }
+}
+
+/// THE KIND'S ANSWER CHECK: the frames are read at their structs (a short `in`, then a short
+/// `out`, is FOREIGN), `resolve` is judged against the buffer its `in` lent, and a slot with no
+/// answer check passes.
+#[test]
+fn check_answer_reads_the_frames_then_judges_resolve() {
+    use crate::abi::mechanism::call::InHead;
+    use crate::abi::secret::{check_answer, slot, ResolveIn};
+    let buf = [0u8; 16];
+    // SAFETY: an all-zero `ResolveIn` is a valid value (plain data: integers, NULL pointers).
+    let mut input: ResolveIn = unsafe { std::mem::zeroed() };
+    input.secret_buf = buf.as_ptr().cast_mut();
+    input.secret_cap = BUF_CAP as usize;
+    let mut out = base_out();
+    out.secret = Blob {
+        ptr: buf.as_ptr(),
+        len: 1,
+        fmt: 0,
+        flags: BLOB_SECRET,
+    };
+    let judge = |input: &ResolveIn, out: &ResolveOut, in_size: usize, out_size: usize| {
+        // SAFETY: both frames are live locals of at least the sizes stated.
+        unsafe {
+            check_answer(
+                slot::RESOLVE,
+                Outcome::Ready,
+                (&raw const *input).cast::<InHead>(),
+                in_size,
+                &raw const out.head,
+                out_size,
+                &(),
+            )
+        }
+    };
+    let (is, os) = (
+        std::mem::size_of::<ResolveIn>(),
+        std::mem::size_of::<ResolveOut>(),
+    );
+    assert_eq!(judge(&input, &out, is, os), Ok(()));
+    assert_eq!(
+        judge(&input, &out, is - 1, os - 1),
+        red(Rule::Foreign, "in")
+    );
+    assert_eq!(judge(&input, &out, is, os - 1), red(Rule::Foreign, "out"));
+    out.error_kind = ERROR_KIND_INTERNAL + 1;
+    assert_eq!(
+        judge(&input, &out, is, os),
+        red(Rule::UnknownCode, "resolve.error_kind")
+    );
+    // READY material outside the lent buffer is foreign: the buffer comes from the `in`.
+    out.error_kind = ERROR_KIND_UNSET;
+    out.secret = Blob {
+        ptr: buf[1..].as_ptr(),
+        len: 2,
+        fmt: 0,
+        flags: BLOB_SECRET,
+    };
+    assert_eq!(
+        judge(&input, &out, is, os),
+        red(Rule::Foreign, "resolve.secret_outside_buffer")
+    );
+    // SAFETY: as above.
+    let other = unsafe {
+        check_answer(
+            slot::CHECK,
+            Outcome::Ready,
+            (&raw const input).cast::<InHead>(),
+            0,
+            &raw const out.head,
+            0,
+            &(),
+        )
+    };
+    assert_eq!(other, Ok(()));
 }

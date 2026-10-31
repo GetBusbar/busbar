@@ -43,6 +43,7 @@
 
 pub mod call;
 pub mod check;
+pub mod decl;
 pub mod door;
 pub mod endpoint;
 pub mod extensions;

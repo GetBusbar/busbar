@@ -1076,3 +1076,126 @@ fn a_located_opening_carries_the_framers_lines_and_the_bodys_length_last() {
     );
     assert_eq!(located(&stating, None), None);
 }
+
+/// RED (TSEAL; "the plane never sees credential bytes"): OVER A FRAMER THAT RENDERS SEALED VALUES
+/// (`abi::transport::EXT_SEALED_VALUES`), THE CREDENTIAL NEVER CROSSES TO IT. An opening naming its
+/// credential field sealed (`conn::SEALED_FIELDS_FIELD`, the host's own field) hands the framer
+/// filler of the value's length; the far end, over the host's TLS, reads the real credential where
+/// the framer rendered the filler, and never the host's field. Over a connection the host does not
+/// secure, the open fails and the far end reads no credential byte.
+#[test]
+fn a_sealed_credential_reaches_the_far_end_and_never_the_framer() {
+    use busbar_contract::conn::SEALED_FIELDS_FIELD;
+    const SECRET: &[u8] = b"Bearer sealed-credential-0123456789";
+    crate::tls::install_crypto_provider();
+    let (ca, leaf, key) = localhost_cert();
+    let opening = || {
+        Some((
+            vec![
+                ("authorization".to_owned(), SECRET.to_vec()),
+                ("x-plain".to_owned(), b"visible".to_vec()),
+                (SEALED_FIELDS_FIELD.to_owned(), b"authorization".to_vec()),
+            ],
+            b"BODY".to_vec().into(),
+        ))
+    };
+    let knobs = |secure: bool| Knobs {
+        secure_name: secure.then_some("localhost"),
+        seals: true,
+        render_fields: true,
+        ..Knobs::default()
+    };
+    worker().block_on(async move {
+        let mut server = rustls::ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(
+                vec![leaf.into()],
+                rustls_pki_types::PrivateKeyDer::try_from(key).unwrap(),
+            )
+            .unwrap();
+        server.alpn_protocols = vec![b"http/1.1".to_vec()];
+        let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(server));
+        let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let far = l.local_addr().unwrap().to_string();
+        let read = tokio::spawn(async move {
+            let (s, _) = l.accept().await.unwrap();
+            let mut s = acceptor.accept(s).await.unwrap();
+            let mut got = Vec::new();
+            let mut buf = [0_u8; 512];
+            while !got.ends_with(b"BODY") {
+                match tokio::time::timeout(Duration::from_secs(5), s.read(&mut buf)).await {
+                    Ok(Ok(n)) if n > 0 => got.extend_from_slice(&buf[..n]),
+                    _ => break,
+                }
+            }
+            got
+        });
+        let door = Arc::new(TestDoor::new("sec", &["sec"], &[], knobs(true)));
+        let trust = busbar_contract::transport::trust::EgressTrust {
+            extra_anchors: vec![ca],
+            ..Default::default()
+        };
+        let mut d = dial(&far);
+        d.tls = Some(Arc::new(
+            crate::tls::client::build_client_config(&trust).expect("a usable client config"),
+        ));
+        d.opening = opening();
+        let mut c = Connection::dial(
+            Arc::clone(&door) as Arc<dyn crate::framer::FramerDoor>,
+            &crate::support::via(),
+            d,
+        )
+        .unwrap();
+        let _ = tokio::time::timeout(Duration::from_secs(2), next(&mut c)).await;
+        let got = read.await.unwrap();
+        let contains = |hay: &[u8], needle: &[u8]| hay.windows(needle.len()).any(|w| w == needle);
+        assert!(
+            contains(&got, SECRET),
+            "the far end reads the credential: {}",
+            String::from_utf8_lossy(&got)
+        );
+        assert!(contains(&got, b"x-plain: visible"));
+        assert!(
+            !contains(&got, SEALED_FIELDS_FIELD.as_bytes()),
+            "the host's field is never sent"
+        );
+        let handed = door.handed.lock().unwrap().clone();
+        assert!(!handed.is_empty(), "the framer framed the opening");
+        assert!(
+            !contains(&handed, &SECRET[7..]),
+            "the framer was handed the credential: {}",
+            String::from_utf8_lossy(&handed)
+        );
+
+        // In the clear: refused, and the far end reads no credential byte.
+        let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let far = l.local_addr().unwrap().to_string();
+        let read = tokio::spawn(async move {
+            let (mut s, _) = l.accept().await.unwrap();
+            let mut got = Vec::new();
+            let _ = tokio::time::timeout(Duration::from_secs(2), s.read_to_end(&mut got)).await;
+            got
+        });
+        let door = Arc::new(TestDoor::new("sec", &["sec"], &[], knobs(false)));
+        let mut d = dial(&far);
+        d.opening = opening();
+        let mut c = Connection::dial(
+            Arc::clone(&door) as Arc<dyn crate::framer::FramerDoor>,
+            &crate::support::via(),
+            d,
+        )
+        .unwrap();
+        let failed = tokio::time::timeout(Duration::from_secs(2), next(&mut c)).await;
+        assert!(
+            matches!(failed, Ok(Err(_))),
+            "a sealed value in the clear fails the open: {failed:?}"
+        );
+        drop(c);
+        let got = read.await.unwrap();
+        assert!(
+            !contains(&got, &SECRET[7..]),
+            "nothing of the credential is sent in the clear"
+        );
+        assert!(!contains(&door.handed.lock().unwrap(), &SECRET[7..]));
+    });
+}

@@ -30,26 +30,34 @@ const B64_ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrst
 /// (some upstreams inline audio as base64 in JSON; others return raw bytes), so encode/decode live
 /// with the blob types rather than pulling in a `base64` crate.
 pub fn base64_encode(input: &[u8]) -> String {
-    let mut out = String::with_capacity(input.len().div_ceil(3) * 4);
+    let mut out = Vec::with_capacity(input.len().div_ceil(3) * 4);
+    base64_encode_into(input, &mut out);
+    // The encoder emits only ASCII alphabet bytes and `=`.
+    String::from_utf8(out).expect("base64 output is ASCII")
+}
+
+/// [`base64_encode`], APPENDED to a buffer the caller holds: the same bytes, with no allocation when
+/// `out` already has the capacity.
+pub fn base64_encode_into(input: &[u8], out: &mut Vec<u8>) {
+    out.reserve(input.len().div_ceil(3) * 4);
     for chunk in input.chunks(3) {
         let b0 = chunk[0] as u32;
         let b1 = *chunk.get(1).unwrap_or(&0) as u32;
         let b2 = *chunk.get(2).unwrap_or(&0) as u32;
         let n = (b0 << 16) | (b1 << 8) | b2;
-        out.push(B64_ALPHABET[((n >> 18) & 0x3f) as usize] as char);
-        out.push(B64_ALPHABET[((n >> 12) & 0x3f) as usize] as char);
+        out.push(B64_ALPHABET[((n >> 18) & 0x3f) as usize]);
+        out.push(B64_ALPHABET[((n >> 12) & 0x3f) as usize]);
         out.push(if chunk.len() > 1 {
-            B64_ALPHABET[((n >> 6) & 0x3f) as usize] as char
+            B64_ALPHABET[((n >> 6) & 0x3f) as usize]
         } else {
-            '='
+            b'='
         });
         out.push(if chunk.len() > 2 {
-            B64_ALPHABET[(n & 0x3f) as usize] as char
+            B64_ALPHABET[(n & 0x3f) as usize]
         } else {
-            '='
+            b'='
         });
     }
-    out
 }
 
 /// The REVERSE of [`B64_ALPHABET`]: byte → its 6-bit value, `255` for every byte that is not a

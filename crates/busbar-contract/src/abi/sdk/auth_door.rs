@@ -35,7 +35,8 @@
 //! A `verify` that waits on its own I/O (a key-set fetch, a directory read over a need) writes its
 //! own slots over [`crate::plugin_door!`].
 
-use std::cell::Cell;
+use std::borrow::Cow;
+use std::cell::{Cell, RefCell};
 use std::marker::PhantomData;
 use std::ptr;
 use std::task::Poll;
@@ -48,6 +49,7 @@ use crate::abi::auth::{
 use crate::abi::mechanism::call::{AbiStr, Blob, Outcome, Span, BLOB_ABSENT};
 use crate::abi::mechanism::door::{KindTailHead, MarkWord, Statement, MARK_WORD_CARRIER};
 use crate::abi::mechanism::ticket::{CompletionHandle, Ticket};
+use crate::abi::sdk::auth_outbound::Diags;
 use crate::abi::sdk::conn::Host;
 use crate::abi::sdk::door::{AbiIn, AbiOut};
 use crate::abi::sdk::lent::{HostBuf, Lent};
@@ -159,6 +161,43 @@ impl<'a> VerifyView<'a> {
     }
 }
 
+/// WHY A CREDENTIAL WAS REJECTED, in the plugin's words: the host writes it to the instance's own
+/// log and the host log, never to the client (the client's answer stays the same 401). Operator
+/// text: it never carries secret material (no credential, no signature, no token byte).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Reason(Cow<'static, str>);
+
+impl Reason {
+    /// The reason `text`.
+    #[must_use]
+    pub fn new(text: impl Into<Cow<'static, str>>) -> Self {
+        Self(text.into())
+    }
+
+    /// Its text.
+    #[must_use]
+    pub fn text(&self) -> &str {
+        &self.0
+    }
+
+    /// Its text, owned or `'static`, for the kit's writer.
+    pub(crate) fn into_text(self) -> Cow<'static, str> {
+        self.0
+    }
+}
+
+impl From<&'static str> for Reason {
+    fn from(text: &'static str) -> Self {
+        Self::new(text)
+    }
+}
+
+impl From<String> for Reason {
+    fn from(text: String) -> Self {
+        Self::new(text)
+    }
+}
+
 /// A plugin's verdict on one credential.
 ///
 /// `large_enum_variant`: `Identity` carries the whole identity by value; the verdict is built once
@@ -169,10 +208,24 @@ impl<'a> VerifyView<'a> {
 pub enum Verdict {
     /// Identified.
     Identity(VerifiedIdentity),
-    /// A credential was presented and is invalid.
+    /// A credential was presented and is invalid, the plugin saying nothing of why: the operator's
+    /// log can only say it was rejected. Superseded by [`Verdict::RejectBecause`]
+    /// ([`Verdict::reject`]); kept so a plugin built against the earlier kit still compiles.
     Reject,
     /// Not this plugin's credential.
     Pass,
+    /// A credential was presented and is invalid, for the [`Reason`] it names: the host writes the
+    /// reason to the instance's own log and the host log, never to the client (THE REASON,
+    /// [`IdentifyOut`]).
+    RejectBecause(Reason),
+}
+
+impl Verdict {
+    /// [`Verdict::RejectBecause`], saying `why`.
+    #[must_use]
+    pub fn reject(why: impl Into<Cow<'static, str>>) -> Self {
+        Self::RejectBecause(Reason::new(why))
+    }
 }
 
 /// A plugin's whole answer at one point: the verdict (the kernel's), the decision and the lines to
@@ -185,6 +238,9 @@ pub struct Answer {
     pub strips: Vec<Strip>,
     /// Continue or stop.
     pub decision: Decision,
+    /// The lines to strip that a plugin names as a `const` list ([`strip_field`]), handed after
+    /// [`Answer::strips`]: a verify whose lines are fixed names them here and allocates nothing.
+    pub fixed_strips: &'static [Strip],
 }
 
 impl From<Verdict> for Answer {
@@ -193,13 +249,24 @@ impl From<Verdict> for Answer {
     fn from(verdict: Verdict) -> Self {
         let decision = match verdict {
             Verdict::Identity(_) | Verdict::Pass => Decision::Continue,
-            Verdict::Reject => Decision::Stop,
+            Verdict::Reject | Verdict::RejectBecause(_) => Decision::Stop,
         };
         Self {
             verdict,
             strips: Vec::new(),
             decision,
+            fixed_strips: &[],
         }
+    }
+}
+
+/// The field line `name` to strip, as a `const` ([`Strip::field`] for a name known only at run
+/// time), for [`Answer::fixed_strips`]: `const STRIPS: &[Strip] = &[strip_field("authorization")];`.
+#[must_use]
+pub const fn strip_field(name: &'static str) -> Strip {
+    Strip {
+        name: Cow::Borrowed(name),
+        place: StripPlace::Field,
     }
 }
 
@@ -219,6 +286,7 @@ pub struct VerifyOp {
     services: Option<Services>,
     ticket: Ticket,
     issued: Cell<u32>,
+    diags: RefCell<Diags>,
 }
 
 impl VerifyOp {
@@ -231,7 +299,21 @@ impl VerifyOp {
             services,
             ticket,
             issued: Cell::new(0),
+            diags: RefCell::new(Diags::new()),
         }
+    }
+
+    /// Report the declared diagnostic `id_idx` (its index in the Statement's `diag_ids`) at
+    /// `severity` (`SEVERITY_*`, `abi::mechanism::call`), saying `text`, in this call's reply
+    /// envelope, whatever the call answers: the host writes it to the instance's own log (and, at
+    /// warn or error, the host log). Operator text: never secret material.
+    pub fn diag(&self, id_idx: u32, severity: u8, text: impl Into<Box<str>>) {
+        self.diags.borrow_mut().push(id_idx, severity, text);
+    }
+
+    /// The diagnostics reported so far, taken (the kit writes them into the reply).
+    pub(crate) fn take_diags(&self) -> Diags {
+        std::mem::take(&mut *self.diags.borrow_mut())
     }
 
     /// The call's ticket ([`Ticket::NONE`] for the host's on-the-spot try, which may not pend).
@@ -286,20 +368,50 @@ pub trait VerifyPlugin: Send + Sync + Sized + 'static {
     /// caches nothing.
     const CACHE_FAMILY: Option<u32> = None;
 
-    /// Build the plugin from its settings blob (one JSON document) and its resolved secrets (one
-    /// per Statement `secret_refs` key, in order). `Err` answers `open` FAILED with that text.
+    /// `validate`: whether `settings` (one JSON document) are this plugin's, refused in the words
+    /// and with the outcome boot's `open` would refuse them with, so `busbar --validate` refuses
+    /// what boot refuses (boot runs it before every `open`, too). It is handed NO secrets, so it
+    /// judges the settings alone: a plugin whose `open` needs no secret answers
+    /// [`validate_by_opening`]`::<Self>(settings)`; one whose `open` refuses a missing secret parses
+    /// its settings as `open` does and stops there. The default accepts any settings (a plugin
+    /// built against the earlier kit, whose `open` judges them at boot): it cannot open without the
+    /// secrets, and boot validates before every `open`.
     ///
     /// # Errors
     /// The settings are not this plugin's.
-    fn open(settings: &[u8], secrets: &[&[u8]]) -> Result<Self, &'static str>;
+    fn validate(settings: &[u8]) -> Result<(), Refusal> {
+        let _ = settings;
+        Ok(())
+    }
+
+    /// Build the plugin from its settings blob (one JSON document) and its resolved secrets (one
+    /// per Statement `secret_refs` key, in order), refusing in the plugin's own words and outcome.
+    /// The kit opens through this. The default is [`VerifyPlugin::open`], its text answered FAILED.
+    ///
+    /// # Errors
+    /// The settings or the secrets are not this plugin's.
+    fn open_refusing(settings: &[u8], secrets: &[&[u8]]) -> Result<Self, Refusal> {
+        Self::open(settings, secrets).map_err(Refusal::failed)
+    }
+
+    /// [`VerifyPlugin::open_refusing`] with a fixed text, answered FAILED: the earlier kit's form,
+    /// kept so a plugin built against it still compiles. A plugin implements one of the two; the
+    /// default refuses, saying so.
+    ///
+    /// # Errors
+    /// The settings are not this plugin's.
+    fn open(settings: &[u8], secrets: &[&[u8]]) -> Result<Self, &'static str> {
+        let _ = (settings, secrets);
+        Err(OPENS_NOTHING)
+    }
 
     /// Judge the request at one point: the verdict, the decision and the lines to strip (a bare
     /// [`Verdict`] converts, with no strips and its default decision). A plugin that implements
     /// [`VerifyPlugin::verify_ticketed`] instead leaves this alone: the kit never calls it then, and
-    /// its default fails closed (a reject).
+    /// its default fails closed (a reject, saying so).
     fn verify(&self, request: &VerifyView<'_>) -> Answer {
         let _ = request;
-        Verdict::Reject.into()
+        Verdict::reject("the plugin implements no on-the-spot verify").into()
     }
 
     /// Judge the request at one point, over `op`: the call's ticket and the host services, so the
@@ -315,18 +427,43 @@ pub trait VerifyPlugin: Send + Sync + Sized + 'static {
     }
 
     /// A reload (the admin cache flush is one with unchanged settings): drop the inbound cache and
-    /// answer how many entries it held.
+    /// answer how many entries it held, or refuse the reload in the plugin's own words and outcome
+    /// (the instance keeps serving as it was). The kit reloads through this. The default is
+    /// [`VerifyPlugin::refresh`], which cannot refuse.
+    ///
+    /// # Errors
+    /// The new settings or secrets are not this plugin's.
+    fn reload(&self, settings: &[u8], secrets: &[&[u8]]) -> Result<u64, Refusal> {
+        Ok(self.refresh(settings, secrets))
+    }
+
+    /// [`VerifyPlugin::reload`] that cannot refuse: the earlier kit's form, kept so a plugin built
+    /// against it still compiles. Drop the inbound cache and answer how many entries it held.
     fn refresh(&self, settings: &[u8], secrets: &[&[u8]]) -> u64 {
         let _ = (settings, secrets);
         0
     }
 }
 
+/// [`VerifyPlugin::validate`] for a plugin whose `open` needs no secret: open over `settings` with
+/// none, and drop the instance.
+///
+/// # Errors
+/// [`VerifyPlugin::open`] refuses the settings.
+pub fn validate_by_opening<T: VerifyPlugin>(settings: &[u8]) -> Result<(), Refusal> {
+    T::open_refusing(settings, &[]).map(drop)
+}
+
+/// What [`VerifyPlugin::open`]'s default answers: the plugin implements neither open.
+pub const OPENS_NOTHING: &str =
+    "the auth plugin implements neither `open` nor `open_refusing`: it cannot open";
+
 /// THE AUTH KIND'S [`Life`] over a [`VerifyPlugin`] `T`: the instance state the shared lifecycle
 /// slots (`abi::sdk::life`) serve, a [`Held`] of it. Each per-kind value is stated here:
 ///
-/// * `validate` answers READY: the settings are judged by `open`;
-/// * `open` and `refresh` are [`VerifyPlugin::open`] and [`VerifyPlugin::refresh`]; the entries
+/// * `validate`, `open` and `refresh` are [`VerifyPlugin::validate`],
+///   [`VerifyPlugin::open_refusing`] and [`VerifyPlugin::reload`] (`--validate` refuses what boot
+///   refuses); the entries
 ///   `refresh` dropped are reported under [`VerifyPlugin::CACHE_FAMILY`], when the plugin states
 ///   it;
 /// * `drive` answers REFUSED (the plugin holds no driver ticket), and `cancel` answers
@@ -354,18 +491,16 @@ impl<T: VerifyPlugin> Life for Verifier<T> {
     const CANCEL: u32 = crate::abi::auth::CANCEL_ABANDONED;
     const DRIVE: Outcome = Outcome::Refused;
 
-    fn validate(_: &[u8]) -> Result<(), Refusal> {
-        Ok(())
+    fn validate(settings: &[u8]) -> Result<(), Refusal> {
+        T::validate(settings)
     }
 
     fn open(settings: &[u8], secrets: &[&[u8]], _: u64) -> Result<Self, Refusal> {
-        T::open(settings, secrets)
-            .map(Verifier)
-            .map_err(Refusal::failed)
+        T::open_refusing(settings, secrets).map(Verifier)
     }
 
     fn refresh(&self, settings: &[u8], secrets: &[&[u8]], _: u64) -> Result<Refreshed, Refusal> {
-        let dropped = self.0.refresh(settings, secrets);
+        let dropped = self.0.reload(settings, secrets)?;
         Ok(Refreshed {
             counted: T::CACHE_FAMILY.map(|family| Counted {
                 family,
@@ -416,27 +551,43 @@ pub(crate) fn verify_answer<T: VerifyPlugin>(
     plugin: &T,
     op: &VerifyOp,
     input: Lent<'_, VerifyIn>,
-    out: Out<'_, IdentifyOut>,
+    mut out: Out<'_, IdentifyOut>,
 ) -> Outcome {
-    let answer = match plugin.verify_ticketed(&VerifyView { input }, op) {
+    let judged = plugin.verify_ticketed(&VerifyView { input }, op);
+    op.take_diags().write(&mut out);
+    let answer = match judged {
         Poll::Ready(answer) => answer,
         // On the spot the call cannot pend: REFUSED there, and the host submits it on a ticket.
-        Poll::Pending if op.ticket().is_none() => return Outcome::Refused,
+        Poll::Pending if op.ticket().is_none() => {
+            return out.fail(Refusal::refused(
+                "verify waits on a host service: it is answered on a ticket, not on the spot",
+            ))
+        }
         // Nothing written: a PENDING `verify` names no `needed_*` and no verdict.
         Poll::Pending => return Outcome::Pending,
     };
-    let (id, verdict) = match &answer.verdict {
+    let Answer {
+        verdict,
+        strips,
+        decision,
+        fixed_strips,
+    } = answer;
+    let (id, verdict) = match verdict {
         Verdict::Identity(id) => (Some(id), VERDICT_IDENTITY),
         Verdict::Reject => (None, VERDICT_REJECT),
+        Verdict::RejectBecause(why) => {
+            out.reason(why.into_text());
+            (None, VERDICT_REJECT)
+        }
         Verdict::Pass => (None, VERDICT_PASS),
     };
-    let decision = match answer.decision {
+    let decision = match decision {
         Decision::Continue => DECISION_CONTINUE,
         Decision::Stop => DECISION_STOP,
     };
     write(
-        id,
-        Some((answer.strips.as_slice(), input.strip(), decision)),
+        id.as_ref(),
+        Some(([strips.as_slice(), fixed_strips], input.strip(), decision)),
         input.field(|i| &i.out_buf),
         out,
         verdict,
@@ -457,11 +608,14 @@ pub fn write_identity(
     write(Some(id), None, buf, out, verdict)
 }
 
+/// A verify's strips as it writes them: [`Answer::strips`], then [`Answer::fixed_strips`].
+type Strips<'a> = [&'a [Strip]; 2];
+
 /// Write the identity `id` (if any) and, for `verify`, the strip names into the host's strip array
 /// and the decision, under `verdict`; or the SHORT FAILED when any of them does not fit.
 fn write(
     id: Option<&VerifiedIdentity>,
-    strip: Option<(&[Strip], HostBuf<'_, StripName>, u32)>,
+    strip: Option<(Strips<'_>, HostBuf<'_, StripName>, u32)>,
     buf: Lent<'_, IdentityBuf>,
     mut out: Out<'_, IdentifyOut>,
     verdict: u32,
@@ -470,8 +624,9 @@ fn write(
     let mut groups: HostBuf<'_, Span> = buf.groups();
     let (strips, mut strip_buf, decision) = match strip {
         Some((strips, host, decision)) => (strips, Some(host), decision),
-        None => (&[][..], None, 0),
+        None => ([&[][..]; 2], None, 0),
     };
+    let strip_count = strips[0].len() + strips[1].len();
     // The FULL sizes first: a short answer writes nothing into the host's buffers.
     let texts = id.map_or([None; 8], |id| {
         [
@@ -490,10 +645,14 @@ fn write(
     let id_groups: &[String] = id.map_or(&[][..], |id| id.groups.as_slice());
     let need_bytes = texts.iter().flatten().map(|t| t.len()).sum::<usize>()
         + id_groups.iter().map(String::len).sum::<usize>()
-        + strips.iter().map(|s| s.name.len()).sum::<usize>();
+        + strips
+            .into_iter()
+            .flatten()
+            .map(|s| s.name.len())
+            .sum::<usize>();
     let need_groups = id_groups.len();
     let strip_cap = strip_buf.as_ref().map_or(0, |h| h.cap());
-    if need_bytes > bytes.cap() || need_groups > groups.cap() || strips.len() > strip_cap {
+    if need_bytes > bytes.cap() || need_groups > groups.cap() || strip_count > strip_cap {
         out.set(|o| &o.needed_bytes, need_bytes as u64);
         out.set(
             |o| &o.needed_groups,
@@ -501,7 +660,7 @@ fn write(
         );
         out.set(
             |o| &o.needed_strip,
-            u32::try_from(strips.len()).unwrap_or(u32::MAX),
+            u32::try_from(strip_count).unwrap_or(u32::MAX),
         );
         return Outcome::Failed;
     }
@@ -521,7 +680,7 @@ fn write(
         }
     };
     if let Some(host) = strip_buf.as_mut() {
-        for s in strips {
+        for s in strips.into_iter().flatten() {
             let name = span(Some(&*s.name));
             host.push(StripName {
                 name,
@@ -582,16 +741,20 @@ fn write(
     Outcome::Ready
 }
 
-/// An auth op this kit's plugin does not serve (it states only `CAP_INBOUND`): REFUSED, never
-/// called.
+/// What an auth op a plugin does not serve answers REFUSED with.
+pub(crate) const NOT_SERVED: &str =
+    "this auth plugin does not serve the op: its auth tail does not state the capability";
+
+/// An auth op this kit's plugin does not serve (it states only `CAP_INBOUND`): REFUSED, saying so,
+/// never called.
 #[derive(Debug)]
 pub struct NotServed<T, I, O>(PhantomData<(T, I, O)>);
 impl<T: VerifyPlugin, I: AbiIn, O: AbiOut> SafeSlot for NotServed<T, I, O> {
     type In = I;
     type Out = O;
     type State = Held<Verifier<T>>;
-    fn call(_: Instance<'_, Held<Verifier<T>>>, _: Lent<'_, I>, _: Out<'_, O>) -> Outcome {
-        Outcome::Refused
+    fn call(_: Instance<'_, Held<Verifier<T>>>, _: Lent<'_, I>, mut out: Out<'_, O>) -> Outcome {
+        out.fail(Refusal::refused(NOT_SERVED))
     }
 }
 

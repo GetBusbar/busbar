@@ -2807,3 +2807,47 @@ fn built_ins(defs: &crate::config::ExportDefs) -> crate::config::ExportDefs {
         .map(|(k, v)| (k.clone(), v.clone()))
         .collect()
 }
+
+/// The terraform-provider-busbar acceptance boot config (a 1.5.2-shaped config: the retired
+/// `admin_insecure:` waiver plus an INLINE `auth.admin_auth` operator-credential entry). Boot refuses
+/// it with the `--migrate-config` breadcrumb, exactly as 1.5.5 did; the migrator must then turn it
+/// into a config that boot-parses, keeps the admin waiver, and keeps the operator credential.
+#[test]
+fn golden_migrate_terraform_acceptance_admin_insecure_inline_admin_auth() {
+    crate::test_support::register_neutral_test_plane();
+    let raw = r#"admin_listen: "0.0.0.0:8081"
+admin_insecure: true
+models:
+  test-model:
+    provider: anthropic
+    max_concurrent: 1
+    max_requests: -1
+providers:
+  anthropic:
+    api_key: { env: "ANTHROPIC_API_KEY" }
+auth:
+  chain: [keys]
+  admin_auth:
+    - admin-tokens: { token: { env: "BUSBAR_ADMIN_TOKEN" } }
+"#;
+    assert_loud_fail_with_breadcrumb(raw, "admin_insecure");
+
+    let (out, doc) = migrate_golden(raw);
+    assert_eq!(
+        dig(&doc, &["admin_require_mtls"]).and_then(|v| v.as_bool()),
+        Some(false),
+        "the admin waiver survives, inverted; changes {:?}",
+        out.changes
+    );
+    assert_eq!(
+        dig(&doc, &["auth", "admin_auth"])
+            .and_then(|v| v.as_sequence())
+            .map(|s| s.len()),
+        Some(1),
+        "the admin chain keeps its one entry: {doc:?}"
+    );
+    assert!(
+        dig(&doc, &["identity-providers", "admin-tokens", "token"]).is_some(),
+        "the operator credential is lifted into identity-providers: {doc:?}"
+    );
+}

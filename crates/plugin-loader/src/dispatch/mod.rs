@@ -139,6 +139,15 @@ pub trait Kind: Send + Sync + 'static {
         false
     }
 
+    /// Whether `slot` is a kind op the door's `statement` makes OPTIONAL: what it states makes the
+    /// op one the host never calls (the export kind's `scrape` with no `metrics` stream, its
+    /// `serve` with no route, its `deliver` with no stream but `metrics`). Left NULL, it is the
+    /// host's absent op, as [`Kind::optional_slot`]'s are.
+    fn optional_by_statement(slot: u32, statement: &Statement) -> bool {
+        let _ = (slot, statement);
+        false
+    }
+
     /// The instance's CONTEXT for its checks, built once from the Statement at bind (the plane's
     /// tail bounds); `None` = the kind's checks need none. An `Err` refuses the load.
     ///

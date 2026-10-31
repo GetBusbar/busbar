@@ -334,6 +334,12 @@ pub struct App {
     /// would be an instance with no sink — a quarantine that stopped being written down because
     /// somebody edited an unrelated section of config. See [`crate::trust::demotion`].
     pub demotion_record: Arc<crate::trust::demotion::DemotionRecord>,
+    /// THE NODE'S AMENDMENT JOURNAL (item 404): every hook or export content access this node seals,
+    /// and the sink that makes them durable. The SAME instance on every generation — the one the
+    /// node's governance owns ([`crate::governance::GovState::amendments`]), carried across every
+    /// config apply — and an instance, never a process static, so two nodes never share one. Its
+    /// durable sink is bound on it once at boot, as the demotion record's is.
+    pub amendments: Arc<crate::audit::amend::NodeAmendments>,
     /// PLANE DISPATCH for this config generation: which plane an inbound path belongs to, and — for
     /// an audience-bound plane — what a token presented there must carry and where a refused caller
     /// is told to go. Consulted by the auth middleware on every request, which is why it is a

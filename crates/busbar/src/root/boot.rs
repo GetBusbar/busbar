@@ -98,7 +98,8 @@ pub fn registry_rows(
     i: RegistryIn<'_>,
     note: &mut dyn FnMut(BuildNote<'_>),
 ) -> Result<Arc<dyn PluginRows>, String> {
-    let linked = i.linked.iter().map(linked_row).collect();
+    let mut linked: Vec<_> = i.linked.iter().map(linked_row).collect();
+    linked.extend(linked_exports(crate::LINKED.export_doors)?);
     let registry = registry(linked, i.plugins, i.data_dir, &mut |n| match n {
         Note::FloorUnreadable(detail) => note(BuildNote::FloorUnreadable(detail)),
         Note::Off => note(BuildNote::Off),
@@ -143,13 +144,17 @@ pub fn linked_row(row: &LinkedRow) -> LinkedPlugin {
 /// rows double), and what the one-version rule compares an upload against.
 #[must_use]
 pub fn linked_registry() -> PluginRegistry {
-    let linked = busbar_kernel::preflight::linked_rows()
+    let mut linked: Vec<_> = busbar_kernel::preflight::linked_rows()
         .iter()
         .map(linked_row)
         .collect();
+    linked.extend(
+        linked_exports(crate::LINKED.export_doors)
+            .expect("the build's linked export declarations must be valid"),
+    );
     PluginRegistry::empty()
         .link(linked)
-        .unwrap_or_else(|_| PluginRegistry::empty())
+        .expect("the build's linked plugin declarations must not conflict")
 }
 
 /// `row`, answering also to the former names the root migration table declares for its alias
@@ -932,10 +937,6 @@ pub fn compose_book(
         Some(&crate::root::kernel::ROOT_CARD),
     )
     .map_err(|e| format!("the boot journal could not be opened: {e}"))?;
-    // The node amendment journal is rebuilt from the chain before anything can seal onto it, so
-    // every recorded content access survives the restart — off the disk, or off the chain the store
-    // kept. A chain that will not read back refuses the boot here as it would have at the build.
-    durability.restore_amendments()?;
     // A corrupt journal segment was already logged and counted when the journal was built; this
     // puts the durable record of it on the chain. A failed append is logged, never a refusal to boot.
     if let Err(lost) =
@@ -1034,8 +1035,17 @@ pub fn book(
         lane.hold_lease(lease);
     }
     let node = taken.id;
+    // THE RATE-CARD HISTORY IS KEPT IN THE STORE (MONEY-DESIGN section 3a): the book's rebuild loads it
+    // from `busbar.card.v1` under this node's durable id, re-puts a pending entry from the data
+    // directory's spool, and migrates every chain's journalled cards into it.
+    super::kernel::ROOT_CARD.keep_in_store(calls.clone(), node, data_dir.clone());
     let token = super::kernel::new_kernel().durability_token();
-    let durability = compose_book(lane, data_dir, node, now, &token)?;
+    let mut durability = compose_book(lane, data_dir, node, now, &token)?;
+    // The node amendment journal — the one the boot generation carries — is rebuilt from the chain
+    // before anything can seal onto it, so every recorded content access survives the restart: off
+    // the disk, or off the chain the store kept. A chain that will not read back refuses the boot
+    // here as it would have at the build.
+    durability.restore_amendments(&app.amendments, &token)?;
     // WHAT THE DISASTER-RECOVERY VERBS LEFT (row 187): the chain's operator breaks, read as
     // deliberate.
     super::durability::report_operator_breaks(&durability);
@@ -1059,7 +1069,7 @@ pub fn book(
     }
     let durability = Arc::new(std::sync::Mutex::new(durability));
     // Every amendment sealed from here on goes on the book it was rebuilt from.
-    super::durability::bind_amendments(&durability);
+    super::durability::bind_amendments(&durability, &app.amendments);
     // The disaster-recovery verbs reach this book's journal and the store it is shipped to: one
     // store behind the node, not one per seam (row 113, ruling (B); row 187).
     let verb_store = super::durability::node_verb_store(

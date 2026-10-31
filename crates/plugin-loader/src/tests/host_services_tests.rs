@@ -55,7 +55,7 @@ impl Provider {
 
 /// Every service but `trust.sight`, which the contract's shared double refuses as unserved
 /// ([`UNIMPLEMENTED`]), as the loader refuses a slot with no service.
-impl busbar_contract::services::double::ServicesDouble for Provider {
+impl crate::services_double::ServicesDouble for Provider {
     fn now(&self) -> Reading {
         Reading {
             wall_ns: 1_700_000_000_000_000_000,
@@ -408,7 +408,7 @@ const LISTED: [(&[u8], &[u8]); 2] = [(b"p/1", b"a"), (b"p/2", b"b")];
 /// The route half: records every wake.
 struct Route {
     store: Arc<ServiceStore>,
-    provider: Arc<Provider>,
+    provider: Arc<crate::services_double::Double<Provider>>,
     wakes: Mutex<Vec<Ticket>>,
     /// The kernel's side of the auth handle, when a test installs one.
     auth: std::sync::OnceLock<Arc<dyn crate::dispatch::auth_handle::AuthHandleHost>>,
@@ -419,10 +419,10 @@ impl WakeRoute for Route {
         self.wakes.lock().unwrap().push(t);
     }
 
-    fn services(&self) -> Option<Served> {
+    fn services(&self) -> Option<Served<'_>> {
         Some(Served {
-            store: Arc::clone(&self.store),
-            provider: self.provider.clone(),
+            store: &self.store,
+            provider: &*self.provider,
         })
     }
 
@@ -3486,7 +3486,7 @@ fn red_an_auth_call_carries_its_ops_deadline() {
 #[test]
 fn red_n_refusals_keep_nothing_per_connection() {
     let (d, _side) = served_double();
-    for conn in (1..=8).chain(std::iter::repeat(3).take(8)) {
+    for conn in (1..=8).chain(std::iter::repeat_n(3, 8)) {
         let mut refusal = RefusalAnswer {
             size: 0,
             status: 0,
@@ -3566,4 +3566,83 @@ fn red_retiring_a_connection_sides_ticket_ends_its_framing() {
     let held = crate::dispatch::auth_handle::framing_of(live.ticket());
     drop(live);
     assert_eq!(side.ended.lock().unwrap().last(), Some(&held));
+}
+
+/// RED (R3, the data listener served through its framer's accept side): `unit.hand_in` on a line
+/// the host lent as `none` mints the request's unit and answers continue (no verdict is needed
+/// and nothing is named to strip); a minted ref the host never lent as `none` is still not served,
+/// and a `none` line lent to another owner does not verify for this one.
+#[test]
+fn a_hand_in_on_a_lent_none_line_mints_its_unit_and_continues() {
+    let d = double();
+    let lent = crate::dispatch::auth_handle::lend_none_line(owner(&d), 0x6e6f_6e65)
+        .expect("the host lends the line");
+    let hand_in = |auth: AuthRef| {
+        let mut slot = answer_slot();
+        let i = UnitHandInIn {
+            head: head(op::UNIT_HAND_IN, Ticket::NONE, 0, size_of::<UnitHandInIn>()),
+            auth,
+            unit: UnitRef::NONE,
+            line: 1,
+            _reserved: 0,
+            conn: 1,
+            stream: 1,
+            request: get_view(),
+            answer: &mut slot,
+        };
+        let mut o = blank();
+        let f = HOST_SLOTS.unit_hand_in.unwrap();
+        let ret = f(d.ctx, std::ptr::from_ref(&i).cast(), &mut o);
+        (ret.outcome(), o, slot)
+    };
+    let (outcome, o, slot) = hand_in(lent);
+    assert_eq!(outcome, Outcome::Ready, "{}", error(&o));
+    assert_eq!(slot.flow, svc::FLOW_CONTINUE);
+    assert_eq!(slot.size as usize, size_of::<AuthAnswer>());
+    assert!(!slot.unit.is_none(), "the request's unit is minted here");
+    let (_, _, again) = hand_in(lent);
+    assert_ne!(again.unit, slot.unit, "each request its own unit");
+
+    let other = mint_auth_ref(owner(&d), generation(), 0x006f_7468_6572).expect("minted");
+    let (outcome, o, _) = hand_in(other);
+    assert_eq!(outcome, Outcome::Refused);
+    assert_eq!(error(&o), AUTH_HANDLE_NOT_SERVED);
+
+    let foreign = crate::dispatch::auth_handle::lend_none_line(owner(&d) + 1, 0x6e6f_6e65)
+        .expect("lent to another owner");
+    let (outcome, o, _) = hand_in(foreign);
+    assert_eq!(outcome, Outcome::Refused);
+    assert_eq!(error(&o), REF_NOT_MINTED);
+}
+
+#[test]
+fn a_lent_none_line_admits_before_delegating_to_an_installed_auth_host() {
+    let (d, side) = served_double();
+    let auth = crate::dispatch::auth_handle::lend_none_line(owner(&d), 0x6e6f_6e65_0001)
+        .expect("the host lends the line");
+    let mut slot = answer_slot();
+    let i = UnitHandInIn {
+        head: head(op::UNIT_HAND_IN, Ticket::NONE, 0, size_of::<UnitHandInIn>()),
+        auth,
+        unit: UnitRef::NONE,
+        line: 1,
+        _reserved: 0,
+        conn: 1,
+        stream: 1,
+        request: get_view(),
+        answer: &mut slot,
+    };
+    let mut out = blank();
+    let result = HOST_SLOTS.unit_hand_in.unwrap()(d.ctx, std::ptr::from_ref(&i).cast(), &mut out);
+    assert_eq!(result.outcome(), Outcome::Ready, "{}", error(&out));
+    assert_eq!(
+        slot.flow,
+        svc::FLOW_CONTINUE,
+        "the data listener's none line still admits"
+    );
+    assert!(!slot.unit.is_none());
+    assert!(
+        side.hands.lock().unwrap().is_empty(),
+        "the installed auth host must not stop an open line"
+    );
 }

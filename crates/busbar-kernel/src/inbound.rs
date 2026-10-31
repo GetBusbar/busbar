@@ -1446,7 +1446,7 @@ impl Inbound {
                 "request body exceeds the maximum allowed size",
             ),
             REFUSE_STOPPED | REFUSE_CHECK_FAILED if overloaded => {
-                crate::auth::verifier_overloaded_response()
+                crate::auth::verifier_unavailable_response()
             }
             REFUSE_STOPPED | REFUSE_CHECK_FAILED => {
                 let method = head

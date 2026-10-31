@@ -78,6 +78,8 @@ for t in spec["targets"]:
         # the armv8.0 baseline, i.e. WITHOUT the +lse floor the default arm64 artifact raises.
         print("SPEC_TRIPLE=%s" % shlex.quote(t.get("triple", t["target"])))
         print("SPEC_BASELINE=%s" % shlex.quote(str(t.get("baseline", False)).lower()))
+        # `glibc_max` (W17): the newest glibc a linux-gnu artifact may require. Empty elsewhere.
+        print("SPEC_GLIBC_MAX=%s" % shlex.quote(str(t.get("glibc_max", ""))))
         break
 else:
     sys.exit("release-build.sh: target %r is not declared in .github/release-targets.json. Add it "
@@ -110,6 +112,26 @@ echo "[release-build] target=$TARGET triple=$SPEC_TRIPLE pgo=$SPEC_PGO baseline=
 # parameter flipped, exactly like `pgo` does.
 if [ "$SPEC_BASELINE" = "true" ]; then
   export BUSBAR_ARM64_BASELINE=1
+fi
+
+# ── THE GLIBC FLOOR, ASSERTED BEFORE ANYTHING IS COMPILED (W17) ─────────────────────────────────
+# A linux-gnu binary requires the newest GLIBC_x.y symbol version of the glibc it was LINKED
+# against, so the build host's glibc is the users' floor. ubuntu-24.04 links GLIBC_2.39, which
+# refuses to start on RHEL 8, Debian 11 or Ubuntu 22.04, with no build error and no warning. The
+# linux-gnu rows therefore build inside the pinned baseline image (release-targets.json
+# `linux_build_image`, via scripts/release/in-baseline.sh), and this refuses any other host. The
+# output half is the `runtime_deps` row of .github/artifact-contract.json, which reads the shipped
+# bytes' version needs.
+if [ -n "$SPEC_GLIBC_MAX" ]; then
+  HOST_GLIBC="$(getconf GNU_LIBC_VERSION 2>/dev/null | awk '{print $2}')"
+  [ -n "$HOST_GLIBC" ] || { echo "[release-build] $TARGET declares glibc_max $SPEC_GLIBC_MAX but this host has no glibc (getconf GNU_LIBC_VERSION). Build it through scripts/release/in-baseline.sh." >&2; exit 1; }
+  if [ "$(printf '%s\n%s\n' "$HOST_GLIBC" "$SPEC_GLIBC_MAX" | sort -V | tail -1)" != "$SPEC_GLIBC_MAX" ]; then
+    echo "[release-build] REFUSED: this host's glibc is $HOST_GLIBC, newer than $TARGET's glibc_max $SPEC_GLIBC_MAX." >&2
+    echo "[release-build] The binary would require GLIBC_$HOST_GLIBC-era symbols and not start on the baseline distros." >&2
+    echo "[release-build] Build it inside the pinned baseline: scripts/release/in-baseline.sh scripts/release-build.sh $TARGET ..." >&2
+    exit 1
+  fi
+  echo "[release-build] glibc floor: host $HOST_GLIBC <= glibc_max $SPEC_GLIBC_MAX"
 fi
 
 mkdir -p "$EVIDENCE_DIR" "$OUT_DIR"
@@ -171,7 +193,16 @@ else
       aarch64-*-linux-*) LSE_FLAG="-Ctarget-feature=+lse" ;;
     esac
   fi
-  RUSTFLAGS="${EMIT_RELOCS}${LSE_FLAG:+ $LSE_FLAG}" cargo build --release --locked --manifest-path dist/default/Cargo.toml --bin busbar --target-dir target --target "$SPEC_TRIPLE"
+  # The C-runtime linkage (W17), the same derivation as pgo-build.sh's CRT_FLAG: the MSVC build
+  # links the CRT statically so the binary needs no Visual C++ Redistributable. This must be in
+  # RUSTFLAGS here: an explicit RUSTFLAGS makes cargo ignore .cargo/config.toml's
+  # target.<triple>.rustflags, which carries the same flag for every other build. `runtime_deps`
+  # asserts the result on the bytes (no C runtime DLL among the imports).
+  CRT_FLAG=""
+  case "$SPEC_TRIPLE" in
+    *-windows-msvc) CRT_FLAG="-Ctarget-feature=+crt-static" ;;
+  esac
+  RUSTFLAGS="${EMIT_RELOCS}${LSE_FLAG:+ $LSE_FLAG}${CRT_FLAG:+ $CRT_FLAG}" cargo build --release --locked --manifest-path dist/default/Cargo.toml --bin busbar --target-dir target --target "$SPEC_TRIPLE"
   BIN="target/${SPEC_TRIPLE}/release/${SPEC_EXE}"
 fi
 [ -f "$BIN" ] || { echo "[release-build] the build produced no binary at $BIN" >&2; exit 1; }

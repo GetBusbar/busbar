@@ -45,13 +45,22 @@ static REFRESH_GATE: (std::sync::Mutex<(bool, bool)>, std::sync::Condvar) = (
 static FLUSHES: AtomicU64 = AtomicU64::new(0);
 
 impl VerifyPlugin for Judge {
+    fn validate(settings: &[u8]) -> Result<(), busbar_contract::abi::sdk::life::Refusal> {
+        busbar_contract::abi::sdk::auth_door::validate_by_opening::<Self>(settings)
+    }
+
     const CACHE_FAMILY: Option<u32> = Some(0);
 
-    fn open(settings: &[u8], _: &[&[u8]]) -> Result<Self, &'static str> {
+    fn open_refusing(
+        settings: &[u8],
+        _: &[&[u8]],
+    ) -> Result<Self, busbar_contract::abi::sdk::life::Refusal> {
         match settings {
             b"\"ok\"" => Ok(Judge { wedge: false }),
             b"\"wedge\"" => Ok(Judge { wedge: true }),
-            _ => Err("settings: not this plugin's"),
+            _ => Err(busbar_contract::abi::sdk::life::Refusal::failed(
+                "settings: not this plugin's",
+            )),
         }
     }
 
@@ -73,7 +82,7 @@ impl VerifyPlugin for Judge {
                 groups: (0..300).map(|i| format!("g{i}")).collect(),
                 ..VerifiedIdentity::default()
             }),
-            Some(b"bad") => Verdict::Reject,
+            Some(b"bad") => Verdict::reject("the judge rejects `bad`"),
             Some(b"log") => {
                 tracing::warn!(target: "judge", "the judge logged a verify");
                 Verdict::Pass
@@ -92,7 +101,7 @@ impl VerifyPlugin for Judge {
                     ..VerifiedIdentity::default()
                 })
             }
-            Some(b"body") => Verdict::Reject,
+            Some(b"body") => Verdict::reject("not the signed body"),
             _ => Verdict::Pass,
         };
         Answer {
@@ -101,7 +110,11 @@ impl VerifyPlugin for Judge {
         }
     }
 
-    fn refresh(&self, _: &[u8], _: &[&[u8]]) -> u64 {
+    fn reload(
+        &self,
+        _: &[u8],
+        _: &[&[u8]],
+    ) -> Result<u64, busbar_contract::abi::sdk::life::Refusal> {
         if self.wedge {
             let (lock, cv) = &REFRESH_GATE;
             let mut g = lock.lock().unwrap();
@@ -112,7 +125,7 @@ impl VerifyPlugin for Judge {
             }
         }
         FLUSHES.fetch_add(1, Ordering::Relaxed);
-        3
+        Ok(3)
     }
 }
 
@@ -204,12 +217,20 @@ fn answered(verified: Verified) -> VerifyAnswer {
     }
 }
 
+/// The judge's reject of `bad`, with the reason it names (the operator's, never the client's).
+fn rejected() -> VerifyAnswer {
+    VerifyAnswer {
+        reason: Some("the judge rejects `bad`".into()),
+        ..answered(Verified::Reject)
+    }
+}
+
 /// The script: every verdict, on the query and on the field line.
 fn script() -> Vec<(VerifyRequest, VerifyAnswer)> {
     vec![
         (request(Some("good"), None), alice()),
         (request(None, Some("good")), alice()),
-        (request(Some("bad"), None), answered(Verified::Reject)),
+        (request(Some("bad"), None), rejected()),
         (request(Some("other"), None), answered(Verified::Pass)),
         (request(None, None), answered(Verified::Pass)),
     ]
@@ -237,7 +258,7 @@ fn lent(credential: &str) -> VerifyRequest {
 async fn a_lent_credential_is_judged_and_a_wrong_one_refused() {
     let a = opened("judge-a");
     for (credential, want) in [
-        ("bad", answered(Verified::Reject)),
+        ("bad", rejected()),
         ("good", alice()),
         ("other", answered(Verified::Pass)),
     ] {
@@ -345,10 +366,7 @@ fn two_instances_of_one_plugin_are_two_callers() {
     let (a, b) = (open("admin-a"), open("admin-b"));
     assert_eq!((a.label(), b.label()), ("admin-a", "admin-b"));
     assert_eq!(a.verify_now(&request(Some("good"), None)), Some(alice()));
-    assert_eq!(
-        b.verify_now(&request(Some("bad"), None)),
-        Some(answered(Verified::Reject))
-    );
+    assert_eq!(b.verify_now(&request(Some("bad"), None)), Some(rejected()));
 }
 
 /// THE DECISION AND THE STRIPS reach the host whatever the verdict: CONTINUE for an identity or a
@@ -447,13 +465,27 @@ async fn a_verify_past_max_inflight_is_overloaded_and_never_queued() {
 struct Keyed;
 
 impl VerifyPlugin for Keyed {
-    fn open(settings: &[u8], secrets: &[&[u8]]) -> Result<Self, &'static str> {
-        let doc: serde_json::Value = serde_json::from_slice(settings).map_err(|_| "not json")?;
+    fn validate(settings: &[u8]) -> Result<(), busbar_contract::abi::sdk::life::Refusal> {
+        // Its `open` needs its credential: the settings are judged alone.
+        serde_json::from_slice::<serde_json::Value>(settings)
+            .map(drop)
+            .map_err(|_| busbar_contract::abi::sdk::life::Refusal::failed("not json"))
+    }
+    fn open_refusing(
+        settings: &[u8],
+        secrets: &[&[u8]],
+    ) -> Result<Self, busbar_contract::abi::sdk::life::Refusal> {
+        let doc: serde_json::Value = serde_json::from_slice(settings)
+            .map_err(|_| busbar_contract::abi::sdk::life::Refusal::failed("not json"))?;
         if doc.get("token").is_some() {
-            return Err("the secret travelled in the settings");
+            return Err(busbar_contract::abi::sdk::life::Refusal::failed(
+                "the secret travelled in the settings",
+            ));
         }
         if secrets != [b"s3cret".as_slice()] {
-            return Err("no service credential");
+            return Err(busbar_contract::abi::sdk::life::Refusal::failed(
+                "no service credential",
+            ));
         }
         Ok(Keyed)
     }
@@ -734,7 +766,8 @@ fn a_networked_auth_door_opened_to_serve_declares_its_need_on_the_hosts_table() 
 
 /// RED (THE DESIGN §11.13 M1): one refresh at a time, never waited for. A refresh wedged in its
 /// plugin holds no other caller behind the instance's lifecycle lock: a second refresh is
-/// answered at once, naming the one in flight.
+/// answered at once, naming the one in flight, and a verify, on the spot and submitted, is still
+/// judged.
 #[test]
 fn a_wedged_refresh_holds_no_other_caller() {
     let a = rows()
@@ -759,6 +792,22 @@ fn a_wedged_refresh_holds_no_other_caller() {
         });
     }
     let second = done.recv_timeout(Duration::from_secs(5));
+    let (judged_tx, judged) = std::sync::mpsc::channel();
+    {
+        let a = Arc::clone(&a);
+        std::thread::spawn(move || {
+            let now = a.verify_now(&request(Some("good"), None));
+            let mut submitted = a.verify(request(Some("bad"), None));
+            let since = std::time::Instant::now();
+            let mut settled = submitted.settled();
+            while settled.is_none() && since.elapsed() < Duration::from_secs(5) {
+                std::thread::sleep(Duration::from_millis(2));
+                settled = submitted.settled();
+            }
+            let _ = judged_tx.send((now, settled));
+        });
+    }
+    let judged = judged.recv_timeout(Duration::from_secs(10));
     {
         let (lock, cv) = &REFRESH_GATE;
         lock.lock().unwrap().1 = true;
@@ -768,6 +817,12 @@ fn a_wedged_refresh_holds_no_other_caller() {
     assert_eq!(
         second,
         Err("auth instance `judge-wedge`: a refresh is already in flight".to_string())
+    );
+    let judged = judged.expect("a refresh wedged in its plugin held a verify behind it");
+    assert_eq!(
+        judged,
+        (Some(alice()), Some(rejected())),
+        "a verify is judged on the spot and submitted while a refresh is wedged"
     );
     let _ = wedged.join().unwrap();
 }
@@ -826,7 +881,9 @@ mod outbound {
         ) -> Poll<FieldsAnswer> {
             let bindings = self.bindings.lock().unwrap();
             let Some(credential) = bindings.get(&r.handle()) else {
-                return Poll::Ready(FieldsAnswer::Refused);
+                return Poll::Ready(FieldsAnswer::RefusedBecause(
+                    "no binding holds the handle".into(),
+                ));
             };
             let mut value = b"Bearer ".to_vec();
             value.extend_from_slice(credential);
@@ -983,7 +1040,14 @@ mod ticketed {
     pub(super) struct Proves;
 
     impl VerifyPlugin for Proves {
-        fn open(_: &[u8], _: &[&[u8]]) -> Result<Self, &'static str> {
+        fn validate(settings: &[u8]) -> Result<(), busbar_contract::abi::sdk::life::Refusal> {
+            busbar_contract::abi::sdk::auth_door::validate_by_opening::<Self>(settings)
+        }
+
+        fn open_refusing(
+            _: &[u8],
+            _: &[&[u8]],
+        ) -> Result<Self, busbar_contract::abi::sdk::life::Refusal> {
             Ok(Proves)
         }
 
@@ -998,7 +1062,9 @@ mod ticketed {
             let held = match op.records_secret(KIND, id) {
                 Poll::Pending => return Poll::Pending,
                 Poll::Ready(Ok(held)) => held,
-                Poll::Ready(Err(_)) => return Poll::Ready(Verdict::Reject.into()),
+                Poll::Ready(Err(_)) => {
+                    return Poll::Ready(Verdict::reject("the secret could not be read").into())
+                }
             };
             // The whole check runs over whatever came back (the dummy for an unknown id); the
             // live verdict is read last.
@@ -1010,7 +1076,7 @@ mod ticketed {
                 })
                 .into()
             } else {
-                Verdict::Reject.into()
+                Verdict::reject("the proof is not the held secret").into()
             })
         }
     }
@@ -1035,7 +1101,7 @@ mod ticketed {
         served: AtomicU64,
     }
 
-    impl busbar_contract::services::double::ServicesDouble for SlowSecrets {
+    impl crate::services_double::ServicesDouble for SlowSecrets {
         fn records_secret(&self, kind: &str, id: &str, done: Later) -> Ran {
             assert_eq!(kind, KIND, "the host serves only the declared kind");
             self.served.fetch_add(1, Ordering::SeqCst);
@@ -1061,7 +1127,7 @@ mod ticketed {
         }
     }
 
-    fn opened(double: Arc<SlowSecrets>) -> Arc<dyn AuthCalls> {
+    fn opened(double: Arc<crate::services_double::Double<SlowSecrets>>) -> Arc<dyn AuthCalls> {
         let registry = PluginRegistry::empty()
             .link(vec![LinkedPlugin::auth_door("proves", door::door)])
             .expect("the linked door registers");
@@ -1095,7 +1161,7 @@ mod ticketed {
     /// secret could not be read at all.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_ticketed_verify_pends_on_records_secret_and_resumes_ready() {
-        let double = Arc::new(SlowSecrets::default());
+        let double = Arc::new(crate::services_double::Double(SlowSecrets::default()));
         let a = opened(double.clone());
         let request = lent("AKID:open-sesame");
         assert_eq!(
@@ -1125,7 +1191,7 @@ mod ticketed {
     /// error, never a short cut.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn an_unknown_id_pends_and_resumes_on_the_same_path_and_is_rejected() {
-        let double = Arc::new(SlowSecrets::default());
+        let double = Arc::new(crate::services_double::Double(SlowSecrets::default()));
         let a = opened(double.clone());
         let request = lent("NOBODY:dummy-secret-0000");
         assert_eq!(
@@ -1146,7 +1212,7 @@ mod ticketed {
     /// host services: the judge answers on the spot and submitted, reading no service.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_sync_verify_plugin_still_answers_on_the_spot_and_submitted() {
-        let double = Arc::new(SlowSecrets::default());
+        let double = Arc::new(crate::services_double::Double(SlowSecrets::default()));
         let registry = PluginRegistry::empty()
             .link(vec![LinkedPlugin::auth_door("judge", super::judge::door)])
             .expect("the linked door registers");
@@ -1263,4 +1329,203 @@ fn an_auth_instance_holds_its_secrets_in_zeroising_buffers() {
         "the kept secrets print: {shown}"
     );
     assert!(a.refresh().is_ok(), "refresh is still lent the kept secret");
+}
+
+// ── open160 A1 / AQ2: a reject's and a sign-in outage's reason reach the operator ───────────────
+
+/// A door that says WHY: its `verify` rejects every credential naming the reason in the answer's
+/// error text, and its `complete_login` answers an outage naming the IdP's status the same way.
+mod reasons {
+    use busbar_contract::abi::auth::{
+        AuthPoints, AuthTail, BeginLoginIn, BeginLoginOut, CompleteLoginIn, FieldsIn, FieldsOut,
+        IdentifyOut, OpenOutboundIn, OpenOutboundOut, OutboundReadyIn, OutboundReadyOut, VerifyIn,
+        DECISION_STOP, VERDICT_REJECT,
+    };
+    use busbar_contract::abi::mechanism::call::Outcome;
+    use busbar_contract::abi::sdk::auth_door::{
+        verify_tail, with_tail, NotServed, Verifier, VerifyPlugin,
+    };
+    use busbar_contract::abi::sdk::door::statement;
+    use busbar_contract::abi::sdk::life::Held;
+    use busbar_contract::abi::sdk::{Instance, Lent, Out, Safe, SafeSlot};
+
+    /// What the reject says.
+    pub(super) const REJECTED: &str = "the signature timestamp is 400 s old (window 300 s)";
+    /// What the outage says.
+    pub(super) const OUTAGE: &str = "the IdP token endpoint answered 503";
+
+    pub(super) struct Says;
+
+    impl VerifyPlugin for Says {
+        fn validate(settings: &[u8]) -> Result<(), busbar_contract::abi::sdk::life::Refusal> {
+            busbar_contract::abi::sdk::auth_door::validate_by_opening::<Self>(settings)
+        }
+
+        fn open_refusing(
+            _: &[u8],
+            _: &[&[u8]],
+        ) -> Result<Self, busbar_contract::abi::sdk::life::Refusal> {
+            Ok(Says)
+        }
+    }
+
+    pub(super) struct RejectSaying;
+    impl SafeSlot for RejectSaying {
+        type In = VerifyIn;
+        type Out = IdentifyOut;
+        type State = Held<Verifier<Says>>;
+        fn call(
+            _: Instance<'_, Held<Verifier<Says>>>,
+            _: Lent<'_, VerifyIn>,
+            mut out: Out<'_, IdentifyOut>,
+        ) -> Outcome {
+            out.set(|o| &o.verdict, VERDICT_REJECT);
+            out.set(|o| &o.decision, DECISION_STOP);
+            out.error(REJECTED);
+            Outcome::Ready
+        }
+    }
+
+    pub(super) struct OutageSaying;
+    impl SafeSlot for OutageSaying {
+        type In = CompleteLoginIn;
+        type Out = IdentifyOut;
+        type State = Held<Verifier<Says>>;
+        fn call(
+            _: Instance<'_, Held<Verifier<Says>>>,
+            input: Lent<'_, CompleteLoginIn>,
+            mut out: Out<'_, IdentifyOut>,
+        ) -> Outcome {
+            let outcome = busbar_contract::abi::sdk::auth_kit::login_outage(
+                Some(120),
+                input.out_buf(),
+                &mut out,
+            );
+            out.error(OUTAGE);
+            outcome
+        }
+    }
+
+    const TAIL: &AuthTail = &verify_tail(0, AuthPoints::HEAD);
+
+    busbar_contract::plugin_door! {
+        ops: busbar_contract::abi::auth::Ops,
+        statement: with_tail(statement("says", "1.0.0", 8), TAIL),
+        lifecycle: life(Verifier<Says>),
+        kind_ops: {
+            verify: Safe<RejectSaying>,
+            begin_login: Safe<NotServed<Says, BeginLoginIn, BeginLoginOut>>,
+            complete_login: Safe<OutageSaying>,
+            open_outbound: Safe<NotServed<Says, OpenOutboundIn, OpenOutboundOut>>,
+            outbound_ready: Safe<NotServed<Says, OutboundReadyIn, OutboundReadyOut>>,
+            fields: Safe<NotServed<Says, FieldsIn, FieldsOut>>,
+        },
+    }
+}
+
+/// RED (open160 A1, HIGH; AQ2): a `verify` REJECT and a `complete_login` OUTAGE carried no reason
+/// the host read, so the operator's log could not say why a credential was rejected, nor what the
+/// IdP answered during a sign-in outage. The host now reads the reason the answer names and writes
+/// it to the instance's own plugin log (never to the client: the verdict is the same 401).
+#[test]
+fn red_a_rejects_and_an_outages_reason_reach_the_instances_log() {
+    let registry = PluginRegistry::empty()
+        .link(vec![LinkedPlugin::auth_door("says", reasons::door)])
+        .expect("the linked door registers");
+    let a = AuthRows::new(Arc::new(registry), dispatcher())
+        .with_logs(log_config)
+        .open("says", "auth.says", &serde_json::json!("ok"))
+        .expect("the linked door opens");
+    let answer = a
+        .verify_now(&request(Some("anything"), None))
+        .expect("a verdict on the spot");
+    assert_eq!(answer.verified, Verified::Reject);
+    assert_eq!(answer.decision, Decision::Stop);
+    assert_eq!(answer.reason.as_deref(), Some(reasons::REJECTED));
+
+    let mut call = a.complete_login(busbar_contract::auth_calls::LoginCallback {
+        state: "s".into(),
+        ..Default::default()
+    });
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let outcome = loop {
+        if let Some(o) = call.settled() {
+            break o;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "complete_login never answered"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    assert_eq!(
+        outcome,
+        busbar_contract::auth::LoginOutcome::Outage {
+            retry_after_secs: Some(120),
+        },
+        "the outage preserves its delay as well as its operator reason",
+    );
+
+    let path = log_config().path_for("auth.says", busbar_contract::abi::mechanism::KindCode::Auth);
+    let mut text = String::new();
+    while std::time::Instant::now() < deadline {
+        text = std::fs::read_to_string(&path).unwrap_or_default();
+        if text.contains(reasons::REJECTED) && text.contains(reasons::OUTAGE) {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(
+        text.contains(reasons::REJECTED),
+        "the reject's reason is not in the instance's log {}: {text:?}",
+        path.display()
+    );
+    assert!(
+        text.contains(reasons::OUTAGE),
+        "the outage's reason is not in the instance's log {}: {text:?}",
+        path.display()
+    );
+}
+
+/// A LOGIN_OUTAGE's delay (owner-signed 2026-10-30, OWNER-QUEUE.md item "IdP errors") is read from
+/// the reply's extensions only where they lie wholly inside the identity buffer the host lent: the
+/// one memory the host still holds after the call. The same bytes anywhere else, an entry that
+/// runs past the buffer's end, or no extensions at all read as no delay (the host's own 5 s).
+#[test]
+fn a_login_outages_retry_after_is_read_only_from_the_hosts_identity_buffer() {
+    use busbar_contract::abi::auth::retry_after_extensions;
+    use busbar_contract::abi::mechanism::call::{Blob, BLOB_OCTETS};
+    const CAP: usize = 64;
+    let held = super::Held::new(&VerifyRequest::default(), None, CAP, 1, 0);
+    let entry = retry_after_extensions(120);
+    // SAFETY: `held.buf` is `CAP` writable bytes this test owns; nothing else reads them now.
+    unsafe { std::ptr::copy_nonoverlapping(entry.as_ptr(), held.buf.add(8), entry.len()) };
+    let inside = Blob {
+        ptr: held.buf.wrapping_add(8).cast_const(),
+        len: entry.len(),
+        fmt: BLOB_OCTETS,
+        flags: 0,
+    };
+    assert_eq!(held.retry_after(inside), Some(120));
+    let elsewhere = Blob {
+        ptr: entry.as_ptr(),
+        ..inside
+    };
+    assert_eq!(held.retry_after(elsewhere), None);
+    let past_the_end = Blob {
+        ptr: held.buf.wrapping_add(CAP - 4).cast_const(),
+        ..inside
+    };
+    assert_eq!(held.retry_after(past_the_end), None);
+    let before_the_start = Blob {
+        ptr: held.buf.wrapping_sub(1).cast_const(),
+        ..inside
+    };
+    assert_eq!(held.retry_after(before_the_start), None);
+    let huge = Blob {
+        len: usize::MAX,
+        ..inside
+    };
+    assert_eq!(held.retry_after(huge), None);
+    assert_eq!(held.retry_after(Blob::ABSENT), None);
 }

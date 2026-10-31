@@ -232,3 +232,40 @@ fn correction_cut_names_a_boundary_inside_a_row() {
     assert_eq!(cut(5_200, Some(6_300)), Some(6_300));
     assert_eq!(cut(5_200, Some(6_000)), None);
 }
+
+/// **AN ENTRY IS NAMED BY ITS KEY'S ID.** The id is the first 12 bytes of SHA-256 of the key, spelled
+/// as 24 hex characters; the pseudo-model prefix is that spelling and `U+001F`; `entry_at` answers
+/// the covering entry's id and card, and `card_of` finds the card again from the id alone.
+#[test]
+fn entries_are_named_by_the_id_of_their_key() {
+    use crate::cost::{EntryId, EntryKey};
+    let key = EntryKey::new(0x0102_0304_0506_0708, [9; 8], 3);
+    assert_eq!(key.t_ms(), 0x0102_0304_0506_0708);
+    assert_eq!(EntryKey::parse_hex(&key.hex()), Some(key));
+    let id = key.id();
+    assert_eq!(id.hex().len(), 24);
+    assert_eq!(EntryId::parse_hex(&id.hex()), Some(id));
+    let prefix = id.pseudo_prefix();
+    assert_eq!(prefix.len(), 25);
+    assert_eq!(
+        EntryId::split_pseudo(&format!("{prefix}gpt-4o")),
+        Some((id, "gpt-4o"))
+    );
+    assert_eq!(EntryId::split_pseudo(&prefix), Some((id, "")));
+    assert_eq!(EntryId::split_pseudo("gpt-4o"), None);
+
+    let history = overlapping_history();
+    let keys: Vec<_> = history.entries().iter().map(|e| e.key()).collect();
+    assert!(
+        keys.windows(2).all(|w| w[0] < w[1]),
+        "key order is append order"
+    );
+    let (at_120, card) = history.entry_at(120).expect("covered");
+    assert_eq!(at_120, history.entries()[2].id());
+    assert_eq!(card, &card_at(3.0));
+    assert_eq!(
+        history.card_of(&history.entries()[0].id()),
+        Some(&card_at(1.0))
+    );
+    assert_eq!(history.card_of(&EntryKey::new(1, [0; 8], 0).id()), None);
+}

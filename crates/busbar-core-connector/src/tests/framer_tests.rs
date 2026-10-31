@@ -534,6 +534,7 @@ fn one_stream_pending_auth_parks_only_that_stream_and_resumes_with_one_auth_call
 /// the auth answers.
 struct MuxDoor {
     facts: DoorFacts,
+    yield_writable: bool,
     host: Arc<AuthHost>,
     next: std::sync::atomic::AtomicU32,
     held: std::sync::Mutex<HashMap<Ticket, Vec<u8>>>,
@@ -544,6 +545,7 @@ struct MuxDoor {
 impl MuxDoor {
     fn new() -> Self {
         Self {
+            yield_writable: false,
             facts: DoorFacts {
                 name: "mux".into(),
                 claims: vec!["mux"],
@@ -607,7 +609,12 @@ impl FramerDoor for MuxDoor {
                 return pending;
             }
             let held = self.held.lock().unwrap().remove(&t).unwrap_or_default();
-            crate::support::pieces_on_lanes(&i.sink, o, &held);
+            if self.yield_writable {
+                assert_eq!(held, b"1");
+                crate::support::writable_on_lane(&i.sink, o, 1);
+            } else {
+                crate::support::pieces_on_lanes(&i.sink, o, &held);
+            }
             return ready;
         }
         self.host.new_op(t);
@@ -812,6 +819,41 @@ fn an_encode_answered_yield_more_faults_and_is_never_sent_truncated() {
     );
 }
 
+/// An INTERIM head (a `1xx` the framer flags interim) is never the answer's head: the final head
+/// that follows it is the one field block handed up as the head.
+#[test]
+fn an_interim_head_is_never_handed_up_as_the_final_head() {
+    let door = Arc::new(TestDoor::new(
+        "messages",
+        &["messages"],
+        &[],
+        Knobs {
+            messages: Some(1),
+            ..Knobs::default()
+        },
+    ));
+    let (mut f, _) = Framing::begin(door, SIDE_DIAL, "t", &Established::plain_for_test()).unwrap();
+    let y = f.ingest(b"ihx", false).unwrap();
+    let heads: Vec<Option<u32>> = y
+        .pieces
+        .iter()
+        .filter(|p| p.fields)
+        .map(|p| p.status_code)
+        .collect();
+    assert_eq!(
+        heads,
+        vec![Some(200)],
+        "only the final head is the head: {y:?}"
+    );
+    assert_eq!(y.pieces.len(), 2, "the head, then the message");
+    let interim: Vec<Option<u32>> = y.interim.iter().map(|p| p.status_code).collect();
+    assert_eq!(
+        interim,
+        vec![Some(103)],
+        "the interim head is kept apart, not lost"
+    );
+}
+
 /// A `PIECE_WRITABLE` piece is the framer telling the host a stream may be emitted on again, never
 /// a frame: it is never handed up as a piece (relayed, it reached a reader as an empty body piece,
 /// ahead of the head on a dialled stream). The messages around it are handed up as they came.
@@ -887,4 +929,173 @@ fn a_short_locate_within_the_hosts_bound_is_asked_again_with_room() {
         caps[1] >= 300,
         "the second ask has the room named: {caps:?}"
     );
+}
+
+#[test]
+fn an_adopted_framing_keeps_pending_emits_on_their_own_tickets() {
+    let door = Arc::new(PendingDoor::new(TestDoor::identity("bytes"), 1));
+    let (mut framing, _) = Framing::adopt(
+        door.clone(),
+        SIDE_ACCEPT,
+        b"",
+        &Established::plain_for_test(),
+    )
+    .expect("the upgrade is adopted");
+    let first = framing
+        .emit(1, b"first", true, false)
+        .expect("the emit parks");
+    assert!(
+        first.wire.is_empty(),
+        "the pending message is not emitted before its host answers"
+    );
+    assert!(
+        framing.parked() && framing.holds(1),
+        "an adopted framing retains its pending stream"
+    );
+    assert!(framing.poll_parked(&mut noop_cx()).is_pending());
+    assert_eq!(
+        framing.emit(3, b"second", true, false).unwrap().wire,
+        b"second"
+    );
+    door.host.complete(9);
+    let std::task::Poll::Ready(Ok(done)) = framing.poll_parked(&mut noop_cx()) else {
+        panic!("the adopted framing resumes after the host answers");
+    };
+    assert_eq!(done.wire, b"first");
+    assert!(!framing.parked());
+    assert_eq!(
+        door.host.calls(),
+        1,
+        "the host service runs once across resume"
+    );
+    let calls = door.on.lock().unwrap();
+    let emits: Vec<_> = calls.iter().filter(|(op, _, _)| *op == "emit").collect();
+    assert!(emits.len() >= 3);
+    let held = emits[0].1;
+    assert!(!emits[0].2);
+    assert!(emits
+        .iter()
+        .filter(|(_, _, resume)| *resume)
+        .all(|(_, ticket, _)| *ticket == held));
+}
+
+#[test]
+fn a_pending_adoption_resumes_on_its_ticket_without_replaying_leftover_bytes() {
+    let mut door = PendingDoor::new(TestDoor::identity("bytes"), 99);
+    door.pend_adopt = true;
+    let door = Arc::new(door);
+    let (mut framing, first) = Framing::adopt(
+        door.clone(),
+        SIDE_ACCEPT,
+        b"leftover",
+        &Established::plain_for_test(),
+    )
+    .expect("the adoption parks");
+    assert_eq!(first, Yielded::default());
+    assert!(framing.begin_parked() && framing.holds(1) && framing.holds(3));
+    assert!(framing.emit(3, b"too soon", true, false).is_err());
+    assert!(framing.poll_parked(&mut noop_cx()).is_pending());
+    door.host.complete(9);
+    let std::task::Poll::Ready(Ok(done)) = framing.poll_parked(&mut noop_cx()) else {
+        panic!("adoption resumes after its host answers");
+    };
+    assert_eq!(
+        done.pieces
+            .iter()
+            .flat_map(|p| p.bytes.iter().copied())
+            .collect::<Vec<_>>(),
+        b"leftover"
+    );
+    assert!(!framing.begin_parked() && !framing.parked());
+    assert_ne!(framing.token(), 0);
+    assert_eq!(
+        door.inner.count("adopt"),
+        1,
+        "the underlying adoption runs once"
+    );
+    assert_eq!(door.host.calls(), 1);
+    let calls = door.on.lock().unwrap();
+    let adopts: Vec<_> = calls.iter().filter(|(op, _, _)| *op == "adopt").collect();
+    assert!(adopts.len() >= 3);
+    let ticket = adopts[0].1;
+    assert!(!adopts[0].2);
+    assert!(adopts[1..]
+        .iter()
+        .all(|(_, t, resume)| *t == ticket && *resume));
+}
+
+#[test]
+fn a_resumed_emit_preserves_its_stream_full_answer() {
+    let door = Arc::new(PendingDoor::new(
+        TestDoor::new(
+            "bytes",
+            &["bytes"],
+            &[],
+            Knobs {
+                full_at: Some(1),
+                ..Knobs::default()
+            },
+        ),
+        1,
+    ));
+    let (mut framing, _) = Framing::begin_ticketed(
+        door.clone(),
+        SIDE_ACCEPT,
+        "",
+        &Established::plain_for_test(),
+        &[],
+    )
+    .unwrap();
+    assert_eq!(
+        framing.emit(1, b"held", true, false).unwrap(),
+        Yielded::default()
+    );
+    assert!(framing.holds(1));
+    assert!(framing.poll_parked(&mut noop_cx()).is_pending());
+    door.host.complete(1);
+    let yielded = match framing.poll_parked(&mut noop_cx()) {
+        std::task::Poll::Ready(Ok(y)) => y,
+        other => panic!("the parked emit must complete: {other:?}"),
+    };
+    assert_eq!(yielded.wire, b"held", "the original bytes are emitted once");
+    assert_eq!(
+        yielded.flow,
+        [super::StreamFlow::Full(1)],
+        "the resumed stream must remain blocked at its high-water mark"
+    );
+    assert!(!framing.parked());
+    assert_eq!(door.host.calls(), 1);
+}
+
+#[test]
+fn a_resumed_ingest_preserves_its_stream_writable_signal() {
+    let mut door = MuxDoor::new();
+    door.yield_writable = true;
+    let door = Arc::new(door);
+    let (mut framing, _) = Framing::begin_ticketed(
+        door.clone(),
+        SIDE_ACCEPT,
+        "",
+        &Established::plain_for_test(),
+        &[],
+    )
+    .unwrap();
+    assert_eq!(framing.ingest(b"1", false).unwrap(), Yielded::default());
+    assert!(framing.poll_parked(&mut noop_cx()).is_pending());
+    door.host.complete(1);
+    let yielded = match framing.poll_parked(&mut noop_cx()) {
+        std::task::Poll::Ready(Ok(y)) => y,
+        other => panic!("the parked ingest must complete: {other:?}"),
+    };
+    assert_eq!(
+        yielded.flow,
+        [super::StreamFlow::Writable(1)],
+        "a resumed readiness signal must reach the caller"
+    );
+    assert!(
+        yielded.pieces.is_empty(),
+        "readiness must never become a payload frame"
+    );
+    assert!(!framing.parked());
+    assert_eq!(door.host.calls(), 1);
 }

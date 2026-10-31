@@ -202,23 +202,36 @@ impl Issue {
 /// not name its op: a [`Completer`] carries its op's epoch, and a completion whose epoch is not the
 /// ticket's current one is DROPPED, never stored under the next op's same-numbered handle and
 /// never a wake for it (THE DESIGN §11.11 H2, §11.12).
+/// Held in [`SHARDS`] maps by the worker a ticket's slot names, so calls on different workers'
+/// tickets never wait on one another's lock.
 #[derive(Debug, Default)]
 pub struct ServiceStore {
-    inner: Mutex<HashMap<Ticket, Held>>,
+    shards: [Mutex<HashMap<Ticket, Held>>; SHARDS],
     /// The last epoch minted.
     epochs: AtomicU64,
     /// The driver tickets' held exchanges, by handle (`super::held`).
     pub(crate) held: super::held::Held,
 }
 
+/// How many maps a [`ServiceStore`] is split into: a worker's tickets all land in one.
+const SHARDS: usize = 16;
+
 impl ServiceStore {
-    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<Ticket, Held>> {
-        self.inner.lock().unwrap_or_else(|e| e.into_inner())
+    /// The map worker `worker`'s tickets live in, locked.
+    fn shard(&self, worker: u32) -> std::sync::MutexGuard<'_, HashMap<Ticket, Held>> {
+        self.shards[worker as usize % SHARDS]
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// The map `ticket` lives in, locked.
+    fn lock(&self, ticket: Ticket) -> std::sync::MutexGuard<'_, HashMap<Ticket, Held>> {
+        self.shard(decode(ticket.slot).0)
     }
 
     /// Store a pended service's result; `false` when the handle is not running under `epoch`.
     fn complete(&self, h: CompletionHandle, issue: Issue, epoch: u64, stored: Stored) -> bool {
-        let mut map = self.lock();
+        let mut map = self.lock(h.ticket);
         match map
             .get_mut(&h.ticket)
             .filter(|held| held.epoch == epoch)
@@ -235,14 +248,14 @@ impl ServiceStore {
     /// Forget every result under `ticket` (it was recycled, a driver ticket's tick started, or a
     /// new op started on it), ending its epoch; how many there were.
     pub(crate) fn forget(&self, ticket: Ticket) -> usize {
-        self.lock()
+        self.lock(ticket)
             .remove(&ticket)
             .map_or(0, |held| held.entries.len())
     }
 
     /// Forget every result of worker `worker` (it was replaced).
     pub(crate) fn forget_worker(&self, worker: u32) {
-        self.lock().retain(|t, _| decode(t.slot).0 != worker);
+        self.shard(worker).retain(|t, _| decode(t.slot).0 != worker);
     }
 
     /// TEST ONLY: a READY result kept under `ticket`'s handle `seq`, as a service an op on the
@@ -250,7 +263,7 @@ impl ServiceStore {
     #[cfg(test)]
     pub(crate) fn keep(&self, ticket: Ticket, seq: u32) {
         let epoch = self.epochs.fetch_add(1, Ordering::Relaxed) + 1;
-        self.lock()
+        self.lock(ticket)
             .entry(ticket)
             .or_insert_with(|| Held {
                 epoch,
@@ -272,7 +285,14 @@ impl ServiceStore {
     /// How many results the store holds.
     #[cfg(test)]
     pub(crate) fn held(&self) -> usize {
-        self.lock().values().map(|held| held.entries.len()).sum()
+        (0..SHARDS as u32)
+            .map(|w| {
+                self.shard(w)
+                    .values()
+                    .map(|held| held.entries.len())
+                    .sum::<usize>()
+            })
+            .sum()
     }
 }
 
@@ -309,11 +329,60 @@ impl Completer {
     }
 }
 
-/// What a dispatcher serves its instances from.
-#[derive(Clone)]
-pub(crate) struct Served {
-    pub(crate) store: Arc<ServiceStore>,
-    pub(crate) provider: Arc<dyn HostServices>,
+/// THE HOST SERVICES A DISPATCHER SERVES, TAKEN LATE: a host may build its dispatcher before the
+/// services it serves exist (busbar: before the configuration loads), so the dispatcher reads them
+/// from this slot, which the host installs them into once they exist. Once: a second install is
+/// refused and changes nothing, so a reload can never swap the services a running instance
+/// reaches. Until then `pre` answers; with none, every service answers REFUSED. Read lock-free on
+/// every call, which reaches the installed services themselves.
+#[derive(Default)]
+pub struct ServicesSlot {
+    installed: std::sync::OnceLock<Arc<dyn HostServices>>,
+    pre: Option<Arc<dyn HostServices>>,
+}
+
+impl ServicesSlot {
+    /// Nothing installed yet: `pre` answers until the install.
+    #[must_use]
+    pub fn late(pre: Arc<dyn HostServices>) -> Arc<Self> {
+        Arc::new(Self {
+            installed: std::sync::OnceLock::new(),
+            pre: Some(pre),
+        })
+    }
+
+    /// `services`, installed now.
+    #[must_use]
+    pub fn of(services: Arc<dyn HostServices>) -> Arc<Self> {
+        Arc::new(Self {
+            installed: std::sync::OnceLock::from(services),
+            pre: None,
+        })
+    }
+
+    /// Install `services`; `false`, and nothing changed, when some already are.
+    pub fn install(&self, services: Arc<dyn HostServices>) -> bool {
+        self.installed.set(services).is_ok()
+    }
+
+    /// Whether services are installed.
+    #[must_use]
+    pub fn is_installed(&self) -> bool {
+        self.installed.get().is_some()
+    }
+
+    /// What the slot serves now: the installed services, else `pre`; `None` when neither.
+    #[must_use]
+    pub fn get(&self) -> Option<&Arc<dyn HostServices>> {
+        self.installed.get().or(self.pre.as_ref())
+    }
+}
+
+/// What a dispatcher serves its instances from, borrowed from it for one call.
+#[derive(Clone, Copy)]
+pub(crate) struct Served<'a> {
+    pub(crate) store: &'a Arc<ServiceStore>,
+    pub(crate) provider: &'a dyn HostServices,
 }
 
 // ── the answer ─────────────────────────────────────────────────────────────────────────────────
@@ -516,50 +585,67 @@ fn serve_kept(
     put: impl FnOnce(&Stored) -> Result<Answered, Answered>,
     body: impl FnOnce(Option<Completer>) -> Ran,
 ) -> Answered {
-    // The epoch of the op on the ticket: the one its first result minted, or a fresh one; `None`
-    // when the handle is bound to another service or request.
+    // The epoch of the op on the ticket: the one its first result minted, or a fresh one. A handle
+    // already used is redeemed under this one lock; one bound to another service or request is
+    // `None`; a fresh one is noted running, so a completion has an entry to land in.
     let issue = Issue::of(route, h.seq);
-    let Some((epoch, fresh)) = ({
-        let mut map = store.lock();
+    let fresh = {
+        let mut map = store.lock(h.ticket);
         let held = map.entry(h.ticket).or_insert_with(|| Held {
             epoch: store.epochs.fetch_add(1, Ordering::Relaxed) + 1,
             entries: HashMap::new(),
         });
         let epoch = held.epoch;
         match held.entries.entry(issue) {
-            std::collections::hash_map::Entry::Occupied(o) => {
-                (o.get().0 == bound).then_some((epoch, false))
+            std::collections::hash_map::Entry::Occupied(mut o) if o.get().0 == bound => {
+                // SAFETY: the caller's contract.
+                return unsafe { redeem(&mut o.get_mut().1, into) };
             }
+            std::collections::hash_map::Entry::Occupied(_) => None,
             std::collections::hash_map::Entry::Vacant(v) => {
                 v.insert((bound, Entry::Running));
-                Some((epoch, true))
+                Some(epoch)
             }
         }
-    }) else {
+    };
+    let Some(epoch) = fresh else {
         return rebound(route);
     };
-    if fresh {
-        let completer = Completer {
-            store: Arc::downgrade(store),
-            waking: route.clone(),
-            handle: h,
-            epoch,
-        };
-        match body(Some(completer)) {
-            Ran::Now(stored) => {
-                store.complete(h, issue, epoch, stored);
-            }
-            Ran::Later => {}
-        }
-    }
-    let mut map = store.lock();
-    match map
+    let completer = Completer {
+        store: Arc::downgrade(store),
+        waking: route.clone(),
+        handle: h,
+        epoch,
+    };
+    let ran = body(Some(completer));
+    // What it ran to is stored and redeemed under one lock.
+    let mut map = store.lock(h.ticket);
+    let Some((_, e)) = map
         .get_mut(&h.ticket)
         .filter(|held| held.epoch == epoch)
         .and_then(|held| held.entries.get_mut(&issue))
-    {
-        Some((_, Entry::Running)) => Answered::bare(Outcome::Pending, ""),
-        Some((_, Entry::Done { stored, shorts })) => {
+    else {
+        // Forgotten under the call: its ticket was recycled.
+        return Answered::fault();
+    };
+    if let Ran::Now(stored) = ran {
+        if matches!(e, Entry::Running) {
+            *e = Entry::Done { stored, shorts: 0 };
+        }
+    }
+    // SAFETY: the caller's contract.
+    unsafe { redeem(e, into) }
+}
+
+/// A handle's stored result, written into the caller's buffers: PENDING while it runs; a short
+/// answer counted, and a second one on the handle FAULT.
+///
+/// # Safety
+/// As [`deliver`].
+unsafe fn redeem(e: &mut Entry, into: Option<&ServiceBufs>) -> Answered {
+    match e {
+        Entry::Running => Answered::bare(Outcome::Pending, ""),
+        Entry::Done { stored, shorts } => {
             if *shorts >= 2 {
                 return Answered::bare(Outcome::Fault, SECOND_SHORT);
             }
@@ -575,8 +661,6 @@ fn serve_kept(
                 }
             }
         }
-        // Forgotten under the call: its ticket was recycled.
-        None => Answered::fault(),
     }
 }
 
@@ -636,14 +720,6 @@ pub static HOST_SLOTS: HostSlots = HostSlots {
     ticket_take: Some(ticket_take),
 };
 
-/// The dispatcher an instance's context routes to, and what it serves.
-fn served(ctx: HostCtx) -> Option<(Served, Waking)> {
-    let wake = super::handle::resolve(ctx)?;
-    let waking = Waking::of(wake)?;
-    let served = waking.route.upgrade()?.services()?;
-    Some((served, waking))
-}
-
 /// A NEW OP starts on `ticket` (an inline ticket's op that is not a resume): the results the
 /// ticket's earlier op stored are forgotten, ending their epoch, so the new op's handles (counted
 /// from 0 again) never read them and a late completion of the old op stores into nothing. A
@@ -655,17 +731,12 @@ fn served(ctx: HostCtx) -> Option<(Served, Waking)> {
 /// service on the plane's thread), where resolving the framer's context would read as "another
 /// instance's handle inside a crossing" and quarantine the plane, which no plugin forged.
 pub(crate) fn new_op(wake: &'static super::ticket::InstanceWake, ticket: Ticket) {
-    let served = Waking::of(wake)
-        .and_then(|w| w.route.upgrade())
-        .and_then(|route| route.services());
-    if let Some(served) = served {
+    let Some(route) = Waking::of(wake).and_then(|w| w.route.upgrade()) else {
+        return;
+    };
+    if let Some(served) = route.services() {
         served.store.forget(ticket);
     }
-}
-
-/// The caller an instance's context names; `None` before bind stated one.
-fn caller(ctx: HostCtx) -> Option<Caller> {
-    super::handle::resolve(ctx)?.caller.get().cloned()
 }
 
 /// A checked range of the caller's, copied: `None` for NULL with a length, or a length over the
@@ -696,19 +767,30 @@ fn later_of(completer: Option<Completer>) -> Option<Later> {
 }
 
 /// ONE SLOT'S FRAME: the `in` and `out` are there, the head is this service's and covers its `in`,
-/// a may-pend service has a ticket, then `body`. A panic answers FAULT; the
-/// `out` is written as far as the caller stated it, and one stated below the first is REFUSED.
+/// a may-pend service has a ticket, then `body` with what the dispatcher the context routes to
+/// serves (borrowed for the call) and the instance's route, the context resolved once. A panic
+/// answers FAULT; the `out` is written as far as the caller stated it, and one stated below the
+/// first is REFUSED.
 fn slot(
     ctx: HostCtx,
     input: *const c_void,
     out: *mut ServiceOut,
     service: u32,
     in_size: usize,
-    body: impl FnOnce(Served, Waking, ServiceHead) -> Answered,
+    body: impl FnOnce(Served<'_>, Waking, ServiceHead) -> Answered,
 ) -> RawOutcome {
-    framed(input, out, service, in_size, |head| match served(ctx) {
-        Some((served, route)) => body(served, route, head),
-        None => Answered::bare(Outcome::Refused, "no host services are bound"),
+    framed(input, out, service, in_size, |head| {
+        let unbound = || Answered::bare(Outcome::Refused, "no host services are bound");
+        let Some(waking) = super::handle::resolve(ctx).and_then(Waking::of) else {
+            return unbound();
+        };
+        let Some(route) = waking.route.upgrade() else {
+            return unbound();
+        };
+        match route.services() {
+            Some(served) => body(served, waking, head),
+            None => unbound(),
+        }
     })
 }
 
@@ -757,84 +839,92 @@ fn framed(
     unsafe { write_out(out, &a, lent) }
 }
 
-extern "C" fn clock_now(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
-    slot(
-        ctx,
-        input,
-        out,
-        op::CLOCK_NOW,
-        size_of::<ClockNowIn>(),
-        |served, _, _| {
-            // SAFETY: the head covered a `ClockNowIn`.
-            let i = unsafe { input.cast::<ClockNowIn>().read_unaligned() };
-            if i.reading.is_null() {
-                return Answered::fault();
-            }
-            let r = served.provider.now();
-            // SAFETY: the caller's reading slot, checked non-NULL.
-            unsafe {
-                i.reading.write_unaligned(ClockReading {
-                    size: size_of::<ClockReading>() as u32,
-                    _reserved: 0,
-                    wall_ns: r.wall_ns,
-                    mono_ns: r.mono_ns,
-                });
-            }
-            Answered::bare(Outcome::Ready, "")
-        },
-    )
+/// ONE HOST-SERVICE THUNK (THE DESIGN §11.12): the `extern "C"` fn of a slot, over the frame
+/// `$frame` (this module's `slot` or `scoped`, or the connector table's `slot`) with the closure
+/// parameters the frame passes, then `i`: the service's `In`, read whole once the head has covered
+/// it. `body` is the service.
+#[rustfmt::skip]
+macro_rules! service {
+    ($name:ident, $frame:ident, $op:expr, $in:ty, |$a:pat_param, $b:pat_param, $c:pat_param, $i:ident| $body:block) => {
+        extern "C" fn $name(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
+            $frame(ctx, input, out, $op, size_of::<$in>(), |$a, $b, $c| {
+                // SAFETY: the head covered the service's `In`.
+                let $i = unsafe { input.cast::<$in>().read_unaligned() };
+                $body
+            })
+        }
+    };
+    ($name:ident, $frame:ident, $op:expr, $in:ty, |$a:pat_param, $b:pat_param, $c:pat_param, $d:pat_param, $i:ident| $body:block) => {
+        extern "C" fn $name(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
+            $frame(ctx, input, out, $op, size_of::<$in>(), |$a, $b, $c, $d| {
+                // SAFETY: the head covered the service's `In`.
+                let $i = unsafe { input.cast::<$in>().read_unaligned() };
+                $body
+            })
+        }
+    };
+}
+pub(super) use service;
+
+service! {
+    clock_now, slot, op::CLOCK_NOW, ClockNowIn, |served, _, _, i| {
+        if i.reading.is_null() {
+            return Answered::fault();
+        }
+        let r = served.provider.now();
+        // SAFETY: the caller's reading slot, checked non-NULL.
+        unsafe {
+            i.reading.write_unaligned(ClockReading {
+                size: size_of::<ClockReading>() as u32,
+                _reserved: 0,
+                wall_ns: r.wall_ns,
+                mono_ns: r.mono_ns,
+            });
+        }
+        Answered::bare(Outcome::Ready, "")
+    }
 }
 
-extern "C" fn dest_judge(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
-    slot(
-        ctx,
-        input,
-        out,
-        op::DEST_JUDGE,
-        size_of::<DestJudgeIn>(),
-        |served, route, head| {
-            // SAFETY: the head covered a `DestJudgeIn`.
-            let i = unsafe { input.cast::<DestJudgeIn>().read_unaligned() };
-            if check::text(i.dest, "dest_judge.dest").is_err()
-                || check::bits(
-                    u64::from(i.flags),
-                    u64::from(svc::DEST_RESOLVE | svc::DEST_REFUSE_PRIVATE | svc::DEST_EXPLAIN),
-                    "dest_judge.flags",
-                )
-                .is_err()
-                || check_bufs(&i.into).is_err()
-            {
-                return Answered::fault();
-            }
-            // SAFETY: a checked range of the caller's, live for the call, its length capped before
-            // the slice is formed; copied before any pend.
-            let Some(dest) = (unsafe { super::validate::lent_str(i.dest) }) else {
-                return Answered::fault();
-            };
-            let dest = String::from_utf8_lossy(dest).into_owned();
-            let provider = Arc::clone(&served.provider);
-            // SAFETY: `into` checked above; the caller's buffers, where the judged addresses go.
-            unsafe {
-                let req = Fp::of(&[
-                    dest.as_bytes(),
-                    &i.egress_class.to_le_bytes(),
-                    &i.flags.to_le_bytes(),
-                ]);
-                serve(
-                    &served.store,
-                    &route,
-                    &head,
-                    req,
-                    Some(&i.into),
-                    |completer| {
-                        let later =
-                            completer.map(|c| -> Later { Box::new(move |s| c.complete(s)) });
-                        provider.dest_judge(&dest, i.egress_class, i.flags, later)
-                    },
-                )
-            }
-        },
-    )
+service! {
+    dest_judge, slot, op::DEST_JUDGE, DestJudgeIn, |served, route, head, i| {
+        if check::text(i.dest, "dest_judge.dest").is_err()
+            || check::bits(
+                u64::from(i.flags),
+                u64::from(svc::DEST_RESOLVE | svc::DEST_REFUSE_PRIVATE | svc::DEST_EXPLAIN),
+                "dest_judge.flags",
+            )
+            .is_err()
+            || check_bufs(&i.into).is_err()
+        {
+            return Answered::fault();
+        }
+        // SAFETY: a checked range of the caller's, live for the call, its length capped before
+        // the slice is formed; copied before any pend.
+        let Some(dest) = (unsafe { super::validate::lent_str(i.dest) }) else {
+            return Answered::fault();
+        };
+        let dest = String::from_utf8_lossy(dest).into_owned();
+        let provider = served.provider;
+        // SAFETY: `into` checked above; the caller's buffers, where the judged addresses go.
+        unsafe {
+            let req = Fp::of(&[
+                dest.as_bytes(),
+                &i.egress_class.to_le_bytes(),
+                &i.flags.to_le_bytes(),
+            ]);
+            serve(
+                served.store,
+                &route,
+                &head,
+                req,
+                Some(&i.into),
+                |completer| {
+                    let later = completer.map(|c| -> Later { Box::new(move |s| c.complete(s)) });
+                    provider.dest_judge(&dest, i.egress_class, i.flags, later)
+                },
+            )
+        }
+    }
 }
 
 /// A caller-scoped slot's frame: [`slot`], then the instance's [`Caller`] or REFUSED.
@@ -844,7 +934,7 @@ fn scoped(
     out: *mut ServiceOut,
     service: u32,
     in_size: usize,
-    body: impl FnOnce(Served, Waking, ServiceHead, Caller) -> Answered,
+    body: impl FnOnce(Served<'_>, Waking, ServiceHead, &Caller) -> Answered,
 ) -> RawOutcome {
     slot(
         ctx,
@@ -852,7 +942,7 @@ fn scoped(
         out,
         service,
         in_size,
-        |served, route, head| match caller(ctx) {
+        |served, route, head| match route.supplier.and_then(|w| w.caller.get()) {
             Some(c) => body(served, route, head, c),
             None => Answered::bare(Outcome::Refused, NO_CALLER),
         },
@@ -865,7 +955,7 @@ fn scoped(
 /// # Safety
 /// As [`deliver`].
 unsafe fn pended(
-    served: &Served,
+    served: &Served<'_>,
     route: &Waking,
     head: &ServiceHead,
     req: u64,
@@ -875,7 +965,7 @@ unsafe fn pended(
     // SAFETY: the caller's contract.
     unsafe {
         serve(
-            &served.store,
+            served.store,
             route,
             head,
             req,
@@ -888,90 +978,69 @@ unsafe fn pended(
     }
 }
 
-extern "C" fn records_get(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
-    scoped(
-        ctx,
-        input,
-        out,
-        op::RECORDS_GET,
-        size_of::<RecordsGetIn>(),
-        |served, route, head, caller| {
-            // SAFETY: the head covered a `RecordsGetIn`.
-            let i = unsafe { input.cast::<RecordsGetIn>().read_unaligned() };
-            let (Some(kind), Some(key)) = (
-                text_of(i.kind, "records_get.kind"),
-                bytes_of(i.key, "records_get.key"),
-            ) else {
-                return Answered::fault();
-            };
-            if check_bufs(&i.into).is_err() {
-                return Answered::fault();
-            }
-            let provider = Arc::clone(&served.provider);
-            // SAFETY: `into` checked above; the caller's buffers.
-            unsafe {
-                let req = Fp::of(&[kind.as_bytes(), &key]);
-                pended(&served, &route, &head, req, Some(&i.into), |later| {
-                    provider.records_get(&caller, &kind, &key, later)
-                })
-            }
-        },
-    )
+service! {
+    records_get, scoped, op::RECORDS_GET, RecordsGetIn, |served, route, head, caller, i| {
+        let (Some(kind), Some(key)) = (
+            text_of(i.kind, "records_get.kind"),
+            bytes_of(i.key, "records_get.key"),
+        ) else {
+            return Answered::fault();
+        };
+        if check_bufs(&i.into).is_err() {
+            return Answered::fault();
+        }
+        let provider = served.provider;
+        // SAFETY: `into` checked above; the caller's buffers.
+        unsafe {
+            let req = Fp::of(&[kind.as_bytes(), &key]);
+            pended(&served, &route, &head, req, Some(&i.into), |later| {
+                provider.records_get(caller, &kind, &key, later)
+            })
+        }
+    }
 }
 
-/// The credential kinds an instance's context declares it reads; none before bind stated them.
-fn credential_kinds(ctx: HostCtx) -> &'static [String] {
-    let Some(wake) = super::handle::resolve(ctx) else {
+/// The credential kinds the calling instance (`route`'s supplier) declares it reads; none before
+/// bind stated them.
+fn credential_kinds(route: &Waking) -> &'static [String] {
+    let Some(wake) = route.supplier else {
         return &[];
     };
     wake.credential_kinds.get().map_or(&[], Vec::as_slice)
 }
 
-extern "C" fn records_secret(
-    ctx: HostCtx,
-    input: *const c_void,
-    out: *mut ServiceOut,
-) -> RawOutcome {
-    slot(
-        ctx,
-        input,
-        out,
-        op::RECORDS_SECRET,
-        size_of::<RecordsSecretIn>(),
-        |served, route, head| {
-            // SAFETY: the head covered a `RecordsSecretIn`.
-            let i = unsafe { input.cast::<RecordsSecretIn>().read_unaligned() };
-            let (Some(kind), Some(id)) = (
-                text_of(i.kind, "records_secret.kind"),
-                text_of(i.id, "records_secret.id"),
-            ) else {
-                return Answered::fault();
-            };
-            if check_bufs(&i.into).is_err() {
-                return Answered::fault();
-            }
-            // THE DECLARED NEED: the caller's Statement names the kinds it reads; every other kind,
-            // and every caller that names none (any non-auth instance), is refused before the
-            // kernel reads anything.
-            if !credential_kinds(ctx).contains(&kind) {
-                return Answered::bare(Outcome::Refused, UNDECLARED_KIND);
-            }
-            let provider = Arc::clone(&served.provider);
-            // SAFETY: `into` checked above; the caller's buffers.
-            unsafe {
-                let req = Fp::of(&[kind.as_bytes(), id.as_bytes()]);
-                pended(&served, &route, &head, req, Some(&i.into), |later| {
-                    provider.records_secret(&kind, &id, later)
-                })
-            }
-        },
-    )
+service! {
+    records_secret, slot, op::RECORDS_SECRET, RecordsSecretIn, |served, route, head, i| {
+        let (Some(kind), Some(id)) = (
+            text_of(i.kind, "records_secret.kind"),
+            text_of(i.id, "records_secret.id"),
+        ) else {
+            return Answered::fault();
+        };
+        if check_bufs(&i.into).is_err() {
+            return Answered::fault();
+        }
+        // THE DECLARED NEED: the caller's Statement names the kinds it reads; every other kind,
+        // and every caller that names none (any non-auth instance), is refused before the
+        // kernel reads anything.
+        if !credential_kinds(&route).contains(&kind) {
+            return Answered::bare(Outcome::Refused, UNDECLARED_KIND);
+        }
+        let provider = served.provider;
+        // SAFETY: `into` checked above; the caller's buffers.
+        unsafe {
+            let req = Fp::of(&[kind.as_bytes(), id.as_bytes()]);
+            pended(&served, &route, &head, req, Some(&i.into), |later| {
+                provider.records_secret(&kind, &id, later)
+            })
+        }
+    }
 }
 
-/// The destination the calling instance's `key` is bound to; `None` when it was granted no such
-/// key, or its settings leave it unset.
-fn destination(ctx: HostCtx, key: &str) -> Option<busbar_contract::services::DiskDest> {
-    let wake = super::handle::resolve(ctx)?;
+/// The destination the calling instance's (`route`'s supplier's) `key` is bound to; `None` when it
+/// was granted no such key, or its settings leave it unset.
+fn destination(route: &Waking, key: &str) -> Option<busbar_contract::services::DiskDest> {
+    let wake = route.supplier?;
     if !wake.destinations.get()?.iter().any(|k| k == key) {
         return None;
     }
@@ -982,447 +1051,340 @@ fn destination(ctx: HostCtx, key: &str) -> Option<busbar_contract::services::Dis
     bound.iter().find(|d| d.key == key).cloned()
 }
 
-/// `disk.append` (THE DESIGN §11.11 R4, §11.12): the caller's destination KEY is mapped to the
-/// file the host bound for it (granted from its manifest, bound from its settings at open), and
-/// the bytes go to the kernel's bounded disk lane, which pends the call until the append is done.
-/// On READY and FAILED the result slot gets what the lane reported: the rotation before the append,
-/// and on READY the whole of the bytes. A key the caller was not granted (or one its settings left
-/// unbound) is never opened: it answers FAILED at the [`svc::DISK_OPEN_FAILED`] step, in the host's
-/// words ([`NO_DESTINATION`]), before anything is written, so the sink reports it as the one line it
-/// reports a file it could not open with, as 1.5.5's file sink did (its BUSBAR-7074).
-extern "C" fn disk_append(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
-    slot(
-        ctx,
-        input,
-        out,
-        op::DISK_APPEND,
-        size_of::<DiskAppendIn>(),
-        |served, route, head| {
-            // SAFETY: the head covered a `DiskAppendIn`.
-            let i = unsafe { input.cast::<DiskAppendIn>().read_unaligned() };
-            if check_disk_append_in(&i).is_err() {
-                return Answered::fault();
-            }
-            let (Some(key), Some(bytes)) = (
-                text_of(i.dest_key, "disk_append.dest_key"),
-                blob_of(i.bytes, "disk_append.bytes"),
-            ) else {
-                return Answered::fault();
-            };
-            let Some(dest) = destination(ctx, &key) else {
-                // SAFETY: the caller's result slot, checked non-NULL by `check_disk_append_in`.
-                unsafe {
-                    i.result.write_unaligned(DiskWritten {
-                        size: size_of::<DiskWritten>() as u32,
-                        rotated: 0,
-                        faults: 0,
-                        _reserved: [0; 2],
-                        written: 0,
-                    });
-                }
-                let mut a = Answered::bare(Outcome::Failed, NO_DESTINATION);
-                a.value = svc::DISK_OPEN_FAILED;
-                return a;
-            };
-            let whole = bytes.len() as u64;
-            let req = Fp::of(&[key.as_bytes(), &bytes]);
-            let provider = Arc::clone(&served.provider);
-            // SAFETY: no buffer: the result is the `DiskWritten` slot, written below.
-            let mut a = unsafe {
-                pended(&served, &route, &head, req, None, |later| {
-                    provider.disk_append(&dest, bytes, later)
-                })
-            };
-            if matches!(a.outcome, Outcome::Ready | Outcome::Failed) {
-                let report = DiskReport::of(&Stored {
-                    outcome: a.outcome,
-                    value: a.value,
-                    bytes: Vec::new(),
-                    spans: Vec::new(),
-                    error: a.error,
-                });
-                let written = DiskWritten {
+// `disk.append` (THE DESIGN §11.11 R4, §11.12): the caller's destination KEY is mapped to the
+// file the host bound for it (granted from its manifest, bound from its settings at open), and
+// the bytes go to the kernel's bounded disk lane, which pends the call until the append is done.
+// On READY and FAILED the result slot gets what the lane reported: the rotation before the append,
+// and on READY the whole of the bytes. A key the caller was not granted (or one its settings left
+// unbound) is never opened: it answers FAILED at the [`svc::DISK_OPEN_FAILED`] step, in the host's
+// words ([`NO_DESTINATION`]), before anything is written, so the sink reports it as the one line it
+// reports a file it could not open with, as 1.5.5's file sink did (its BUSBAR-7074).
+service! {
+    disk_append, slot, op::DISK_APPEND, DiskAppendIn, |served, route, head, i| {
+        if check_disk_append_in(&i).is_err() {
+            return Answered::fault();
+        }
+        let (Some(key), Some(bytes)) = (
+            text_of(i.dest_key, "disk_append.dest_key"),
+            blob_of(i.bytes, "disk_append.bytes"),
+        ) else {
+            return Answered::fault();
+        };
+        let Some(dest) = destination(&route, &key) else {
+            // SAFETY: the caller's result slot, checked non-NULL by `check_disk_append_in`.
+            unsafe {
+                i.result.write_unaligned(DiskWritten {
                     size: size_of::<DiskWritten>() as u32,
-                    rotated: u8::from(report.rotated),
-                    faults: report.faults,
+                    rotated: 0,
+                    faults: 0,
                     _reserved: [0; 2],
-                    written: if a.outcome == Outcome::Ready {
-                        whole
-                    } else {
-                        0
-                    },
-                };
-                // SAFETY: the caller's result slot, checked non-NULL by `check_disk_append_in`.
-                unsafe { i.result.write_unaligned(written) };
-                a.value = if a.outcome == Outcome::Ready {
-                    0
+                    written: 0,
+                });
+            }
+            let mut a = Answered::bare(Outcome::Failed, NO_DESTINATION);
+            a.value = svc::DISK_OPEN_FAILED;
+            return a;
+        };
+        let whole = bytes.len() as u64;
+        let req = Fp::of(&[key.as_bytes(), &bytes]);
+        let provider = served.provider;
+        // SAFETY: no buffer: the result is the `DiskWritten` slot, written below.
+        let mut a = unsafe {
+            pended(&served, &route, &head, req, None, |later| {
+                provider.disk_append(&dest, bytes, later)
+            })
+        };
+        if matches!(a.outcome, Outcome::Ready | Outcome::Failed) {
+            let report = DiskReport::of(&Stored {
+                outcome: a.outcome,
+                value: a.value,
+                bytes: Vec::new(),
+                spans: Vec::new(),
+                error: a.error,
+            });
+            let written = DiskWritten {
+                size: size_of::<DiskWritten>() as u32,
+                rotated: u8::from(report.rotated),
+                faults: report.faults,
+                _reserved: [0; 2],
+                written: if a.outcome == Outcome::Ready {
+                    whole
                 } else {
-                    report.step
+                    0
+                },
+            };
+            // SAFETY: the caller's result slot, checked non-NULL by `check_disk_append_in`.
+            unsafe { i.result.write_unaligned(written) };
+            a.value = if a.outcome == Outcome::Ready {
+                0
+            } else {
+                report.step
+            };
+        }
+        a
+    }
+}
+
+service! {
+    records_list, scoped, op::RECORDS_LIST, RecordsListIn, |served, route, head, caller, i| {
+        let (Some(kind), Some(prefix), Some(after)) = (
+            text_of(i.kind, "records_list.kind"),
+            bytes_of(i.prefix, "records_list.prefix"),
+            bytes_of(i.after, "records_list.after"),
+        ) else {
+            return Answered::fault();
+        };
+        if check_bufs(&i.into).is_err() {
+            return Answered::fault();
+        }
+        let req = Fp::of(&[
+            kind.as_bytes(),
+            &prefix,
+            &[u8::from(!i.after.ptr.is_null())],
+            &after,
+            &i.limit.to_le_bytes(),
+        ]);
+        let list = RecordsList {
+            kind,
+            prefix,
+            after: (!i.after.ptr.is_null()).then_some(after),
+            limit: i.limit,
+        };
+        let provider = served.provider;
+        // SAFETY: `into` checked above; the caller's buffers.
+        unsafe {
+            pended(&served, &route, &head, req, Some(&i.into), |later| {
+                provider.records_list(caller, list, later)
+            })
+        }
+    }
+}
+
+service! {
+    records_claim, scoped, op::RECORDS_CLAIM, RecordsClaimIn, |served, route, head, caller, i| {
+        let (Some(kind), Some(key)) = (
+            text_of(i.kind, "records_claim.kind"),
+            bytes_of(i.key, "records_claim.key"),
+        ) else {
+            return Answered::fault();
+        };
+        if check_records_claim_in(&i).is_err() {
+            return Answered::bare(Outcome::Refused, NO_TTL);
+        }
+        let provider = served.provider;
+        // SAFETY: no buffer is named.
+        unsafe {
+            let req = Fp::of(&[kind.as_bytes(), &key, &i.ttl_ms.to_le_bytes()]);
+            pended(&served, &route, &head, req, None, |later| {
+                provider.records_claim(caller, &kind, &key, i.ttl_ms, later)
+            })
+        }
+    }
+}
+
+service! {
+    sign, scoped, op::SIGN, SignIn, |served, route, head, caller, i| {
+        let Some(data) = blob_of(i.data, "sign.data") else {
+            return Answered::fault();
+        };
+        if check_bufs(&i.into).is_err() {
+            return Answered::fault();
+        }
+        let provider = served.provider;
+        // SAFETY: `into` checked above; the caller's buffers.
+        unsafe {
+            serve(
+                served.store,
+                &route,
+                &head,
+                Fp::of(&[&data]),
+                Some(&i.into),
+                |_| Ran::Now(provider.sign(caller, &data)),
+            )
+        }
+    }
+}
+
+service! {
+    trust_sight, scoped, op::TRUST_SIGHT, TrustSightIn, |served, route, head, caller, i| {
+        let Some(counterparty) = text_of(i.counterparty, "trust_sight.counterparty") else {
+            return Answered::fault();
+        };
+        let provider = served.provider;
+        match i.outcome {
+            svc::TRUST_REACHED => {}
+            // Unreached: the last verdict, nothing sighted (the hash is unread).
+            svc::TRUST_UNREACHABLE => {
+                // SAFETY: no buffer is named.
+                return unsafe {
+                    let req = Fp::of(&[&i.outcome.to_le_bytes(), counterparty.as_bytes()]);
+                    pended(&served, &route, &head, req, None, |_| {
+                        Ran::Now(provider.trust_unreached(caller, &counterparty))
+                    })
                 };
             }
-            a
-        },
-    )
-}
-
-extern "C" fn records_list(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
-    scoped(
-        ctx,
-        input,
-        out,
-        op::RECORDS_LIST,
-        size_of::<RecordsListIn>(),
-        |served, route, head, caller| {
-            // SAFETY: the head covered a `RecordsListIn`.
-            let i = unsafe { input.cast::<RecordsListIn>().read_unaligned() };
-            let (Some(kind), Some(prefix), Some(after)) = (
-                text_of(i.kind, "records_list.kind"),
-                bytes_of(i.prefix, "records_list.prefix"),
-                bytes_of(i.after, "records_list.after"),
-            ) else {
-                return Answered::fault();
-            };
-            if check_bufs(&i.into).is_err() {
-                return Answered::fault();
-            }
+            _ => return Answered::fault(),
+        }
+        let Some(hash) = text_of(i.catalogue_hash, "trust_sight.catalogue_hash") else {
+            return Answered::fault();
+        };
+        // SAFETY: no buffer is named.
+        unsafe {
             let req = Fp::of(&[
-                kind.as_bytes(),
-                &prefix,
-                &[u8::from(!i.after.ptr.is_null())],
-                &after,
-                &i.limit.to_le_bytes(),
-            ]);
-            let list = RecordsList {
-                kind,
-                prefix,
-                after: (!i.after.ptr.is_null()).then_some(after),
-                limit: i.limit,
-            };
-            let provider = Arc::clone(&served.provider);
-            // SAFETY: `into` checked above; the caller's buffers.
-            unsafe {
-                pended(&served, &route, &head, req, Some(&i.into), |later| {
-                    provider.records_list(&caller, list, later)
-                })
-            }
-        },
-    )
-}
-
-extern "C" fn records_claim(
-    ctx: HostCtx,
-    input: *const c_void,
-    out: *mut ServiceOut,
-) -> RawOutcome {
-    scoped(
-        ctx,
-        input,
-        out,
-        op::RECORDS_CLAIM,
-        size_of::<RecordsClaimIn>(),
-        |served, route, head, caller| {
-            // SAFETY: the head covered a `RecordsClaimIn`.
-            let i = unsafe { input.cast::<RecordsClaimIn>().read_unaligned() };
-            let (Some(kind), Some(key)) = (
-                text_of(i.kind, "records_claim.kind"),
-                bytes_of(i.key, "records_claim.key"),
-            ) else {
-                return Answered::fault();
-            };
-            if check_records_claim_in(&i).is_err() {
-                return Answered::bare(Outcome::Refused, NO_TTL);
-            }
-            let provider = Arc::clone(&served.provider);
-            // SAFETY: no buffer is named.
-            unsafe {
-                let req = Fp::of(&[kind.as_bytes(), &key, &i.ttl_ms.to_le_bytes()]);
-                pended(&served, &route, &head, req, None, |later| {
-                    provider.records_claim(&caller, &kind, &key, i.ttl_ms, later)
-                })
-            }
-        },
-    )
-}
-
-extern "C" fn sign(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
-    scoped(
-        ctx,
-        input,
-        out,
-        op::SIGN,
-        size_of::<SignIn>(),
-        |served, route, head, caller| {
-            // SAFETY: the head covered a `SignIn`.
-            let i = unsafe { input.cast::<SignIn>().read_unaligned() };
-            let Some(data) = blob_of(i.data, "sign.data") else {
-                return Answered::fault();
-            };
-            if check_bufs(&i.into).is_err() {
-                return Answered::fault();
-            }
-            let provider = Arc::clone(&served.provider);
-            // SAFETY: `into` checked above; the caller's buffers.
-            unsafe {
-                serve(
-                    &served.store,
-                    &route,
-                    &head,
-                    Fp::of(&[&data]),
-                    Some(&i.into),
-                    |_| Ran::Now(provider.sign(&caller, &data)),
-                )
-            }
-        },
-    )
-}
-
-extern "C" fn trust_sight(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
-    scoped(
-        ctx,
-        input,
-        out,
-        op::TRUST_SIGHT,
-        size_of::<TrustSightIn>(),
-        |served, route, head, caller| {
-            // SAFETY: the head covered a `TrustSightIn`.
-            let i = unsafe { input.cast::<TrustSightIn>().read_unaligned() };
-            let Some(counterparty) = text_of(i.counterparty, "trust_sight.counterparty") else {
-                return Answered::fault();
-            };
-            let provider = Arc::clone(&served.provider);
-            match i.outcome {
-                svc::TRUST_REACHED => {}
-                // Unreached: the last verdict, nothing sighted (the hash is unread).
-                svc::TRUST_UNREACHABLE => {
-                    // SAFETY: no buffer is named.
-                    return unsafe {
-                        let req = Fp::of(&[&i.outcome.to_le_bytes(), counterparty.as_bytes()]);
-                        pended(&served, &route, &head, req, None, |_| {
-                            Ran::Now(provider.trust_unreached(&caller, &counterparty))
-                        })
-                    };
-                }
-                _ => return Answered::fault(),
-            }
-            let Some(hash) = text_of(i.catalogue_hash, "trust_sight.catalogue_hash") else {
-                return Answered::fault();
-            };
-            // SAFETY: no buffer is named.
-            unsafe {
-                let req = Fp::of(&[
-                    &i.outcome.to_le_bytes(),
-                    counterparty.as_bytes(),
-                    hash.as_bytes(),
-                ]);
-                pended(&served, &route, &head, req, None, |later| {
-                    provider.trust_sight(&caller, &counterparty, &hash, later)
-                })
-            }
-        },
-    )
-}
-
-extern "C" fn trust_sight_item(
-    ctx: HostCtx,
-    input: *const c_void,
-    out: *mut ServiceOut,
-) -> RawOutcome {
-    scoped(
-        ctx,
-        input,
-        out,
-        op::TRUST_SIGHT_ITEM,
-        size_of::<TrustSightItemIn>(),
-        |served, route, head, caller| {
-            // SAFETY: the head covered a `TrustSightItemIn`.
-            let i = unsafe { input.cast::<TrustSightItemIn>().read_unaligned() };
-            let (Some(counterparty), Some(item), Some(digest)) = (
-                text_of(i.counterparty, "trust_sight_item.counterparty"),
-                text_of(i.item, "trust_sight_item.item"),
-                text_of(i.digest, "trust_sight_item.digest"),
-            ) else {
-                return Answered::fault();
-            };
-            let provider = Arc::clone(&served.provider);
-            // SAFETY: no buffer is named.
-            unsafe {
-                let req = Fp::of(&[counterparty.as_bytes(), item.as_bytes(), digest.as_bytes()]);
-                serve(&served.store, &route, &head, req, None, |_| {
-                    Ran::Now(provider.trust_sight_item(&caller, &counterparty, &item, &digest))
-                })
-            }
-        },
-    )
-}
-
-extern "C" fn trust_serves(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
-    scoped(
-        ctx,
-        input,
-        out,
-        op::TRUST_SERVES,
-        size_of::<TrustServesIn>(),
-        |served, route, head, caller| {
-            // SAFETY: the head covered a `TrustServesIn`.
-            let i = unsafe { input.cast::<TrustServesIn>().read_unaligned() };
-            let (Some(counterparty), Some(item), Some(digest)) = (
-                text_of(i.counterparty, "trust_serves.counterparty"),
-                text_of(i.item, "trust_serves.item"),
-                text_of(i.digest, "trust_serves.digest"),
-            ) else {
-                return Answered::fault();
-            };
-            let req = Fp::of(&[counterparty.as_bytes(), item.as_bytes(), digest.as_bytes()]);
-            let some = |s: String| (!s.is_empty()).then_some(s);
-            let (item, digest) = (some(item), some(digest));
-            let provider = Arc::clone(&served.provider);
-            // SAFETY: no buffer is named.
-            unsafe {
-                serve(&served.store, &route, &head, req, None, |_| {
-                    Ran::Now(provider.trust_serves(
-                        &caller,
-                        &counterparty,
-                        item.as_deref(),
-                        digest.as_deref(),
-                    ))
-                })
-            }
-        },
-    )
-}
-
-extern "C" fn trust_decide(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
-    scoped(
-        ctx,
-        input,
-        out,
-        op::TRUST_DECIDE,
-        size_of::<TrustDecideIn>(),
-        |served, route, head, caller| {
-            // SAFETY: the head covered a `TrustDecideIn`.
-            let i = unsafe { input.cast::<TrustDecideIn>().read_unaligned() };
-            let approve = match i.decision {
-                svc::TRUST_DECIDE_APPROVE => true,
-                svc::TRUST_DECIDE_REVOKE => false,
-                _ => return Answered::fault(),
-            };
-            let (Some(counterparty), Some(item), Some(expected)) = (
-                text_of(i.counterparty, "trust_decide.counterparty"),
-                text_of(i.item, "trust_decide.item"),
-                text_of(i.expected, "trust_decide.expected"),
-            ) else {
-                return Answered::fault();
-            };
-            let req = Fp::of(&[
-                &[u8::from(approve)],
+                &i.outcome.to_le_bytes(),
                 counterparty.as_bytes(),
-                item.as_bytes(),
-                expected.as_bytes(),
+                hash.as_bytes(),
             ]);
-            let some = |s: String| (!s.is_empty()).then_some(s);
-            let (item, expected) = (some(item), some(expected));
-            let provider = Arc::clone(&served.provider);
-            // SAFETY: no buffer is named.
-            unsafe {
-                serve(&served.store, &route, &head, req, None, |_| {
-                    let key = busbar_contract::services::TrustKeyRef {
-                        counterparty: &counterparty,
-                        item: item.as_deref(),
-                    };
-                    Ran::Now(provider.trust_decide(&caller, key, expected.as_deref(), approve))
-                })
-            }
-        },
-    )
+            pended(&served, &route, &head, req, None, |later| {
+                provider.trust_sight(caller, &counterparty, &hash, later)
+            })
+        }
+    }
 }
 
-extern "C" fn trust_state(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
-    scoped(
-        ctx,
-        input,
-        out,
-        op::TRUST_STATE,
-        size_of::<TrustStateIn>(),
-        |served, route, head, caller| {
-            // SAFETY: the head covered a `TrustStateIn`.
-            let i = unsafe { input.cast::<TrustStateIn>().read_unaligned() };
-            if check_bufs(&i.into).is_err() {
-                return Answered::fault();
-            }
-            let Some(counterparty) = text_of(i.counterparty, "trust_state.counterparty") else {
-                return Answered::fault();
-            };
-            let provider = Arc::clone(&served.provider);
-            // SAFETY: `into` checked above; the caller's buffers.
-            unsafe {
-                let req = Fp::of(&[counterparty.as_bytes()]);
-                serve(&served.store, &route, &head, req, Some(&i.into), |_| {
-                    Ran::Now(provider.trust_state(&caller, &counterparty))
-                })
-            }
-        },
-    )
+service! {
+    trust_sight_item, scoped, op::TRUST_SIGHT_ITEM, TrustSightItemIn, |served, route, head, caller, i| {
+        let (Some(counterparty), Some(item), Some(digest)) = (
+            text_of(i.counterparty, "trust_sight_item.counterparty"),
+            text_of(i.item, "trust_sight_item.item"),
+            text_of(i.digest, "trust_sight_item.digest"),
+        ) else {
+            return Answered::fault();
+        };
+        let provider = served.provider;
+        // SAFETY: no buffer is named.
+        unsafe {
+            let req = Fp::of(&[counterparty.as_bytes(), item.as_bytes(), digest.as_bytes()]);
+            serve(served.store, &route, &head, req, None, |_| {
+                Ran::Now(provider.trust_sight_item(caller, &counterparty, &item, &digest))
+            })
+        }
+    }
 }
 
-extern "C" fn trust_due(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
-    scoped(
-        ctx,
-        input,
-        out,
-        op::TRUST_DUE,
-        size_of::<TrustDueIn>(),
-        |served, route, head, caller| {
-            // SAFETY: the head covered a `TrustDueIn`.
-            let i = unsafe { input.cast::<TrustDueIn>().read_unaligned() };
-            if check_bufs(&i.into).is_err() {
-                return Answered::fault();
-            }
-            let provider = Arc::clone(&served.provider);
-            // SAFETY: `into` checked above; the caller's buffers.
-            unsafe {
-                serve(
-                    &served.store,
-                    &route,
-                    &head,
-                    Fp::of(&[]),
-                    Some(&i.into),
-                    |_| Ran::Now(provider.trust_due(&caller)),
-                )
-            }
-        },
-    )
+service! {
+    trust_serves, scoped, op::TRUST_SERVES, TrustServesIn, |served, route, head, caller, i| {
+        let (Some(counterparty), Some(item), Some(digest)) = (
+            text_of(i.counterparty, "trust_serves.counterparty"),
+            text_of(i.item, "trust_serves.item"),
+            text_of(i.digest, "trust_serves.digest"),
+        ) else {
+            return Answered::fault();
+        };
+        let req = Fp::of(&[counterparty.as_bytes(), item.as_bytes(), digest.as_bytes()]);
+        let some = |s: String| (!s.is_empty()).then_some(s);
+        let (item, digest) = (some(item), some(digest));
+        let provider = served.provider;
+        // SAFETY: no buffer is named.
+        unsafe {
+            serve(served.store, &route, &head, req, None, |_| {
+                Ran::Now(provider.trust_serves(
+                    caller,
+                    &counterparty,
+                    item.as_deref(),
+                    digest.as_deref(),
+                ))
+            })
+        }
+    }
 }
 
-extern "C" fn trust_verify(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
-    scoped(
-        ctx,
-        input,
-        out,
-        op::TRUST_VERIFY,
-        size_of::<TrustVerifyIn>(),
-        |served, route, head, caller| {
-            // SAFETY: the head covered a `TrustVerifyIn`.
-            let i = unsafe { input.cast::<TrustVerifyIn>().read_unaligned() };
-            let (Some(counterparty), Some(payload), Some(signatures)) = (
-                text_of(i.counterparty, "trust_verify.counterparty"),
-                blob_of(i.payload, "trust_verify.payload"),
-                blob_of(i.signatures, "trust_verify.signatures"),
-            ) else {
-                return Answered::fault();
-            };
-            if check_bufs(&i.into).is_err() {
-                return Answered::fault();
-            }
-            let provider = Arc::clone(&served.provider);
-            // SAFETY: `into` checked above; the caller's buffers.
-            unsafe {
-                let req = Fp::of(&[counterparty.as_bytes(), &payload, &signatures]);
-                serve(&served.store, &route, &head, req, Some(&i.into), |_| {
-                    Ran::Now(provider.trust_verify(&caller, &counterparty, &payload, &signatures))
-                })
-            }
-        },
-    )
+service! {
+    trust_decide, scoped, op::TRUST_DECIDE, TrustDecideIn, |served, route, head, caller, i| {
+        let approve = match i.decision {
+            svc::TRUST_DECIDE_APPROVE => true,
+            svc::TRUST_DECIDE_REVOKE => false,
+            _ => return Answered::fault(),
+        };
+        let (Some(counterparty), Some(item), Some(expected)) = (
+            text_of(i.counterparty, "trust_decide.counterparty"),
+            text_of(i.item, "trust_decide.item"),
+            text_of(i.expected, "trust_decide.expected"),
+        ) else {
+            return Answered::fault();
+        };
+        let req = Fp::of(&[
+            &[u8::from(approve)],
+            counterparty.as_bytes(),
+            item.as_bytes(),
+            expected.as_bytes(),
+        ]);
+        let some = |s: String| (!s.is_empty()).then_some(s);
+        let (item, expected) = (some(item), some(expected));
+        let provider = served.provider;
+        // SAFETY: no buffer is named.
+        unsafe {
+            serve(served.store, &route, &head, req, None, |_| {
+                let key = busbar_contract::services::TrustKeyRef {
+                    counterparty: &counterparty,
+                    item: item.as_deref(),
+                };
+                Ran::Now(provider.trust_decide(caller, key, expected.as_deref(), approve))
+            })
+        }
+    }
+}
+
+service! {
+    trust_state, scoped, op::TRUST_STATE, TrustStateIn, |served, route, head, caller, i| {
+        if check_bufs(&i.into).is_err() {
+            return Answered::fault();
+        }
+        let Some(counterparty) = text_of(i.counterparty, "trust_state.counterparty") else {
+            return Answered::fault();
+        };
+        let provider = served.provider;
+        // SAFETY: `into` checked above; the caller's buffers.
+        unsafe {
+            let req = Fp::of(&[counterparty.as_bytes()]);
+            serve(served.store, &route, &head, req, Some(&i.into), |_| {
+                Ran::Now(provider.trust_state(caller, &counterparty))
+            })
+        }
+    }
+}
+
+service! {
+    trust_due, scoped, op::TRUST_DUE, TrustDueIn, |served, route, head, caller, i| {
+        if check_bufs(&i.into).is_err() {
+            return Answered::fault();
+        }
+        let provider = served.provider;
+        // SAFETY: `into` checked above; the caller's buffers.
+        unsafe {
+            serve(
+                served.store,
+                &route,
+                &head,
+                Fp::of(&[]),
+                Some(&i.into),
+                |_| Ran::Now(provider.trust_due(caller)),
+            )
+        }
+    }
+}
+
+service! {
+    trust_verify, scoped, op::TRUST_VERIFY, TrustVerifyIn, |served, route, head, caller, i| {
+        let (Some(counterparty), Some(payload), Some(signatures)) = (
+            text_of(i.counterparty, "trust_verify.counterparty"),
+            blob_of(i.payload, "trust_verify.payload"),
+            blob_of(i.signatures, "trust_verify.signatures"),
+        ) else {
+            return Answered::fault();
+        };
+        if check_bufs(&i.into).is_err() {
+            return Answered::fault();
+        }
+        let provider = served.provider;
+        // SAFETY: `into` checked above; the caller's buffers.
+        unsafe {
+            let req = Fp::of(&[counterparty.as_bytes(), &payload, &signatures]);
+            serve(served.store, &route, &head, req, Some(&i.into), |_| {
+                Ran::Now(provider.trust_verify(caller, &counterparty, &payload, &signatures))
+            })
+        }
+    }
 }
 
 thread_local! {
@@ -1510,62 +1472,40 @@ fn op_remaining() -> Option<std::time::Duration> {
         .map(|d| std::time::Duration::from_nanos(d.saturating_sub(super::now_ns())))
 }
 
-extern "C" fn entitlement_check(
-    ctx: HostCtx,
-    input: *const c_void,
-    out: *mut ServiceOut,
-) -> RawOutcome {
-    scoped(
-        ctx,
-        input,
-        out,
-        op::ENTITLEMENT_CHECK,
-        size_of::<EntitlementCheckIn>(),
-        |served, route, head, caller| {
-            // SAFETY: the head covered an `EntitlementCheckIn`.
-            let i = unsafe { input.cast::<EntitlementCheckIn>().read_unaligned() };
-            let Some(target) = text_of(i.target, "entitlement_check.target") else {
-                return Answered::fault();
-            };
-            let unit = serving_unit();
-            let provider = Arc::clone(&served.provider);
-            // SAFETY: no buffer is named.
-            unsafe {
-                let req = Fp::of(&[target.as_bytes()]);
-                serve(&served.store, &route, &head, req, None, |_| {
-                    Ran::Now(provider.entitlement_check(&caller, unit, &target))
-                })
-            }
-        },
-    )
+service! {
+    entitlement_check, scoped, op::ENTITLEMENT_CHECK, EntitlementCheckIn, |served, route, head, caller, i| {
+        let Some(target) = text_of(i.target, "entitlement_check.target") else {
+            return Answered::fault();
+        };
+        let unit = serving_unit();
+        let provider = served.provider;
+        // SAFETY: no buffer is named.
+        unsafe {
+            let req = Fp::of(&[target.as_bytes()]);
+            serve(served.store, &route, &head, req, None, |_| {
+                Ran::Now(provider.entitlement_check(caller, unit, &target))
+            })
+        }
+    }
 }
 
-extern "C" fn session_emit(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
-    scoped(
-        ctx,
-        input,
-        out,
-        op::SESSION_EMIT,
-        size_of::<SessionEmitIn>(),
-        |served, route, head, caller| {
-            // SAFETY: the head covered a `SessionEmitIn`.
-            let i = unsafe { input.cast::<SessionEmitIn>().read_unaligned() };
-            let Some(bytes) = blob_of(i.bytes, "session_emit.bytes") else {
-                return Answered::fault();
-            };
-            if svc::check_session_emit_in(&i).is_err() {
-                return Answered::bare(Outcome::Refused, EMIT_NOTHING);
-            }
-            let provider = Arc::clone(&served.provider);
-            // SAFETY: no buffer is named.
-            unsafe {
-                let req = Fp::of(&[&i.session.to_le_bytes(), &bytes]);
-                serve(&served.store, &route, &head, req, None, |_| {
-                    Ran::Now(provider.session_emit(&caller, i.session, &bytes))
-                })
-            }
-        },
-    )
+service! {
+    session_emit, scoped, op::SESSION_EMIT, SessionEmitIn, |served, route, head, caller, i| {
+        let Some(bytes) = blob_of(i.bytes, "session_emit.bytes") else {
+            return Answered::fault();
+        };
+        if svc::check_session_emit_in(&i).is_err() {
+            return Answered::bare(Outcome::Refused, EMIT_NOTHING);
+        }
+        let provider = served.provider;
+        // SAFETY: no buffer is named.
+        unsafe {
+            let req = Fp::of(&[&i.session.to_le_bytes(), &bytes]);
+            serve(served.store, &route, &head, req, None, |_| {
+                Ran::Now(provider.session_emit(caller, i.session, &bytes))
+            })
+        }
+    }
 }
 
 // ── the host auth handle ──────────────────────────────────────────────────────────────────────
@@ -1895,6 +1835,20 @@ extern "C" fn unit_hand_in(ctx: HostCtx, input: *const c_void, out: *mut Service
             if i.request.scheme == svc::SCHEME_UNDECLARED {
                 return Answered::bare(Outcome::Refused, svc::SCHEME_UNDECLARED_REFUSED);
             }
+            if super::auth_handle::is_none_line(owner, i.auth.id) {
+                let Some(unit) = super::auth_handle::mint_none_unit(owner, i.line) else {
+                    return Answered::bare(Outcome::Failed, super::auth_handle::REF_NO_KEY);
+                };
+                // SAFETY: the checked caller-owned answer slot is live for this call.
+                unsafe {
+                    i.answer.write_unaligned(svc::AuthAnswer {
+                        size: size_of::<svc::AuthAnswer>() as u32,
+                        flow: svc::FLOW_CONTINUE,
+                        unit,
+                    });
+                }
+                return Answered::ready(0, 0);
+            }
             let Some(host) = host else {
                 return Answered::bare(Outcome::Refused, AUTH_HANDLE_NOT_SERVED);
             };
@@ -2035,256 +1989,184 @@ extern "C" fn unit_refuse(ctx: HostCtx, input: *const c_void, out: *mut ServiceO
 /// `session.emit`'s refusal of a write that names no session or no bytes.
 const EMIT_NOTHING: &str = "session.emit names an open session and something to write";
 
-extern "C" fn ticket_mint(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
-    scoped(
-        ctx,
-        input,
-        out,
-        op::TICKET_MINT,
-        size_of::<TicketMintIn>(),
-        |served, route, head, caller| {
-            // SAFETY: the head covered a `TicketMintIn`.
-            let i = unsafe { input.cast::<TicketMintIn>().read_unaligned() };
-            let Some(record) = blob_of(i.record, "ticket_mint.record") else {
-                return Answered::fault();
-            };
-            if check_bufs(&i.into).is_err() {
-                return Answered::fault();
-            }
-            if svc::check_ticket_mint_in(&i).is_err() {
-                return Answered::bare(Outcome::Refused, MINT_OUT_OF_RANGE);
-            }
-            let unit = serving_unit();
-            let provider = Arc::clone(&served.provider);
-            // SAFETY: `into` checked above; the caller's buffers.
-            unsafe {
-                let req = Fp::of(&[&i.ttl_secs.to_le_bytes(), &record]);
-                serve(&served.store, &route, &head, req, Some(&i.into), |_| {
-                    Ran::Now(provider.ticket_mint(&caller, unit, i.ttl_secs, &record))
-                })
-            }
-        },
-    )
+service! {
+    ticket_mint, scoped, op::TICKET_MINT, TicketMintIn, |served, route, head, caller, i| {
+        let Some(record) = blob_of(i.record, "ticket_mint.record") else {
+            return Answered::fault();
+        };
+        if check_bufs(&i.into).is_err() {
+            return Answered::fault();
+        }
+        if svc::check_ticket_mint_in(&i).is_err() {
+            return Answered::bare(Outcome::Refused, MINT_OUT_OF_RANGE);
+        }
+        let unit = serving_unit();
+        let provider = served.provider;
+        // SAFETY: `into` checked above; the caller's buffers.
+        unsafe {
+            let req = Fp::of(&[&i.ttl_secs.to_le_bytes(), &record]);
+            serve(served.store, &route, &head, req, Some(&i.into), |_| {
+                Ran::Now(provider.ticket_mint(caller, unit, i.ttl_secs, &record))
+            })
+        }
+    }
 }
 
 /// `ticket.mint`'s refusal of an `in` with no lifetime or a record over the cap.
 const MINT_OUT_OF_RANGE: &str =
     "ticket.mint asks a lifetime of at least one second and a record within the cap";
 
-extern "C" fn ticket_take(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
-    scoped(
-        ctx,
-        input,
-        out,
-        op::TICKET_TAKE,
-        size_of::<TicketTakeIn>(),
-        |served, route, head, caller| {
-            // SAFETY: the head covered a `TicketTakeIn`.
-            let i = unsafe { input.cast::<TicketTakeIn>().read_unaligned() };
-            if check_bufs(&i.into).is_err() {
-                return Answered::fault();
-            }
-            let unit = serving_unit();
-            let provider = Arc::clone(&served.provider);
-            // SAFETY: `into` checked above; the caller's buffers.
-            unsafe {
-                serve(
-                    &served.store,
-                    &route,
-                    &head,
-                    Fp::of(&[]),
-                    Some(&i.into),
-                    |_| Ran::Now(provider.ticket_take(&caller, unit)),
-                )
-            }
-        },
-    )
+service! {
+    ticket_take, scoped, op::TICKET_TAKE, TicketTakeIn, |served, route, head, caller, i| {
+        if check_bufs(&i.into).is_err() {
+            return Answered::fault();
+        }
+        let unit = serving_unit();
+        let provider = served.provider;
+        // SAFETY: `into` checked above; the caller's buffers.
+        unsafe {
+            serve(
+                served.store,
+                &route,
+                &head,
+                Fp::of(&[]),
+                Some(&i.into),
+                |_| Ran::Now(provider.ticket_take(caller, unit)),
+            )
+        }
+    }
 }
 
-extern "C" fn random_fill(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
-    slot(
-        ctx,
-        input,
-        out,
-        op::RANDOM_FILL,
-        size_of::<RandomFillIn>(),
-        |served, route, head| {
-            // SAFETY: the head covered a `RandomFillIn`.
-            let i = unsafe { input.cast::<RandomFillIn>().read_unaligned() };
-            if check_bufs(&i.into).is_err() {
-                return Answered::fault();
-            }
-            if check_random_fill_in(&i).is_err() {
-                return Answered::bare(Outcome::Refused, FILL_OUT_OF_RANGE);
-            }
-            let provider = Arc::clone(&served.provider);
-            // SAFETY: `into` checked above; the caller's buffers.
-            unsafe {
-                let req = Fp::of(&[&i.len.to_le_bytes()]);
-                serve(&served.store, &route, &head, req, Some(&i.into), |_| {
-                    Ran::Now(provider.random_fill(i.len))
-                })
-            }
-        },
-    )
+service! {
+    random_fill, slot, op::RANDOM_FILL, RandomFillIn, |served, route, head, i| {
+        if check_bufs(&i.into).is_err() {
+            return Answered::fault();
+        }
+        if check_random_fill_in(&i).is_err() {
+            return Answered::bare(Outcome::Refused, FILL_OUT_OF_RANGE);
+        }
+        let provider = served.provider;
+        // SAFETY: `into` checked above; the caller's buffers.
+        unsafe {
+            let req = Fp::of(&[&i.len.to_le_bytes()]);
+            serve(served.store, &route, &head, req, Some(&i.into), |_| {
+                Ran::Now(provider.random_fill(i.len))
+            })
+        }
+    }
 }
 
-extern "C" fn unit_nest(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
-    scoped(
-        ctx,
-        input,
-        out,
-        op::UNIT_NEST,
-        size_of::<UnitNestIn>(),
-        |served, route, head, caller| {
-            // SAFETY: the head covered a `UnitNestIn`.
-            let i = unsafe { input.cast::<UnitNestIn>().read_unaligned() };
-            let (Some(verb), Some(target), Some(body)) = (
-                text_of(i.verb, "unit_nest.verb"),
-                text_of(i.target, "unit_nest.target"),
-                blob_of(i.body, "unit_nest.body"),
-            ) else {
-                return Answered::fault();
-            };
-            if check_bufs(&i.into).is_err() {
-                return Answered::fault();
-            }
-            let unit = serving_unit();
-            let provider = Arc::clone(&served.provider);
-            let req = Fp::of(&[verb.as_bytes(), target.as_bytes(), &body]);
-            let ask = NestAsk { verb, target, body };
-            // SAFETY: `into` checked above; the caller's buffers, where the whole reply goes.
-            unsafe {
-                pended(&served, &route, &head, req, Some(&i.into), |later| {
-                    provider.unit_nest(&caller, unit, ask, later)
-                })
-            }
-        },
-    )
+service! {
+    unit_nest, scoped, op::UNIT_NEST, UnitNestIn, |served, route, head, caller, i| {
+        let (Some(verb), Some(target), Some(body)) = (
+            text_of(i.verb, "unit_nest.verb"),
+            text_of(i.target, "unit_nest.target"),
+            blob_of(i.body, "unit_nest.body"),
+        ) else {
+            return Answered::fault();
+        };
+        if check_bufs(&i.into).is_err() {
+            return Answered::fault();
+        }
+        let unit = serving_unit();
+        let provider = served.provider;
+        let req = Fp::of(&[verb.as_bytes(), target.as_bytes(), &body]);
+        let ask = NestAsk { verb, target, body };
+        // SAFETY: `into` checked above; the caller's buffers, where the whole reply goes.
+        unsafe {
+            pended(&served, &route, &head, req, Some(&i.into), |later| {
+                provider.unit_nest(caller, unit, ask, later)
+            })
+        }
+    }
 }
 
 /// The refusal of a `work.open` or `work.settle` record past `MAX_WORK_RECORD`, before anything is
 /// opened or settled.
 pub const WORK_RECORD_TOO_LONG: &str = "the work record is longer than MAX_WORK_RECORD";
 
-extern "C" fn work_open(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
-    scoped(
-        ctx,
-        input,
-        out,
-        op::WORK_OPEN,
-        size_of::<WorkOpenIn>(),
-        |served, route, head, caller| {
-            // SAFETY: the head covered a `WorkOpenIn`.
-            let i = unsafe { input.cast::<WorkOpenIn>().read_unaligned() };
-            let (Some(kind), Some(record)) = (
-                text_of(i.kind, "work_open.kind"),
-                blob_of(i.record, "work_open.record"),
-            ) else {
-                return Answered::fault();
-            };
-            if check_bufs(&i.into).is_err() {
-                return Answered::fault();
-            }
-            if check_work_record(&i.record).is_err() {
-                return Answered::bare(Outcome::Refused, WORK_RECORD_TOO_LONG);
-            }
-            let unit = serving_unit();
-            let provider = Arc::clone(&served.provider);
-            // SAFETY: `into` checked above; the caller's buffers.
-            unsafe {
-                let req = Fp::of(&[kind.as_bytes(), &record]);
-                pended(&served, &route, &head, req, Some(&i.into), |later| {
-                    provider.work_open(&caller, unit, &kind, &record, later)
-                })
-            }
-        },
-    )
+service! {
+    work_open, scoped, op::WORK_OPEN, WorkOpenIn, |served, route, head, caller, i| {
+        let (Some(kind), Some(record)) = (
+            text_of(i.kind, "work_open.kind"),
+            blob_of(i.record, "work_open.record"),
+        ) else {
+            return Answered::fault();
+        };
+        if check_bufs(&i.into).is_err() {
+            return Answered::fault();
+        }
+        if check_work_record(&i.record).is_err() {
+            return Answered::bare(Outcome::Refused, WORK_RECORD_TOO_LONG);
+        }
+        let unit = serving_unit();
+        let provider = served.provider;
+        // SAFETY: `into` checked above; the caller's buffers.
+        unsafe {
+            let req = Fp::of(&[kind.as_bytes(), &record]);
+            pended(&served, &route, &head, req, Some(&i.into), |later| {
+                provider.work_open(caller, unit, &kind, &record, later)
+            })
+        }
+    }
 }
 
-extern "C" fn work_find(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
-    scoped(
-        ctx,
-        input,
-        out,
-        op::WORK_FIND,
-        size_of::<WorkFindIn>(),
-        |served, route, head, caller| {
-            // SAFETY: the head covered a `WorkFindIn`.
-            let i = unsafe { input.cast::<WorkFindIn>().read_unaligned() };
-            let Some(reference) = bytes_of(i.reference, "work_find.reference") else {
-                return Answered::fault();
-            };
-            if check_bufs(&i.into).is_err() {
-                return Answered::fault();
-            }
-            let unit = serving_unit();
-            let provider = Arc::clone(&served.provider);
-            // SAFETY: `into` checked above; the caller's buffers.
-            unsafe {
-                let req = Fp::of(&[&reference]);
-                pended(&served, &route, &head, req, Some(&i.into), |later| {
-                    provider.work_find(&caller, unit, &reference, later)
-                })
-            }
-        },
-    )
+service! {
+    work_find, scoped, op::WORK_FIND, WorkFindIn, |served, route, head, caller, i| {
+        let Some(reference) = bytes_of(i.reference, "work_find.reference") else {
+            return Answered::fault();
+        };
+        if check_bufs(&i.into).is_err() {
+            return Answered::fault();
+        }
+        let unit = serving_unit();
+        let provider = served.provider;
+        // SAFETY: `into` checked above; the caller's buffers.
+        unsafe {
+            let req = Fp::of(&[&reference]);
+            pended(&served, &route, &head, req, Some(&i.into), |later| {
+                provider.work_find(caller, unit, &reference, later)
+            })
+        }
+    }
 }
 
-extern "C" fn work_settle(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
-    scoped(
-        ctx,
-        input,
-        out,
-        op::WORK_SETTLE,
-        size_of::<WorkSettleIn>(),
-        |served, route, head, caller| {
-            // SAFETY: the head covered a `WorkSettleIn`.
-            let i = unsafe { input.cast::<WorkSettleIn>().read_unaligned() };
-            let Some(record) = blob_of(i.record, "work_settle.record") else {
-                return Answered::fault();
-            };
-            if check_work_record(&i.record).is_err() {
-                return Answered::bare(Outcome::Refused, WORK_RECORD_TOO_LONG);
-            }
-            // The unit this crossing serves: the kernel judges the settle against it.
-            let unit = serving_unit();
-            let provider = Arc::clone(&served.provider);
-            // SAFETY: no buffer is named.
-            unsafe {
-                let req = Fp::of(&[&i.handle.to_le_bytes(), &record]);
-                pended(&served, &route, &head, req, None, |later| {
-                    provider.work_settle(&caller, unit, i.handle, &record, later)
-                })
-            }
-        },
-    )
+service! {
+    work_settle, scoped, op::WORK_SETTLE, WorkSettleIn, |served, route, head, caller, i| {
+        let Some(record) = blob_of(i.record, "work_settle.record") else {
+            return Answered::fault();
+        };
+        if check_work_record(&i.record).is_err() {
+            return Answered::bare(Outcome::Refused, WORK_RECORD_TOO_LONG);
+        }
+        // The unit this crossing serves: the kernel judges the settle against it.
+        let unit = serving_unit();
+        let provider = served.provider;
+        // SAFETY: no buffer is named.
+        unsafe {
+            let req = Fp::of(&[&i.handle.to_le_bytes(), &record]);
+            pended(&served, &route, &head, req, None, |later| {
+                provider.work_settle(caller, unit, i.handle, &record, later)
+            })
+        }
+    }
 }
 
-extern "C" fn work_resume(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
-    scoped(
-        ctx,
-        input,
-        out,
-        op::WORK_RESUME,
-        size_of::<WorkResumeIn>(),
-        |served, route, head, caller| {
-            // SAFETY: the head covered a `WorkResumeIn`.
-            let i = unsafe { input.cast::<WorkResumeIn>().read_unaligned() };
-            if check_bufs(&i.into).is_err() {
-                return Answered::fault();
-            }
-            let unit = serving_unit();
-            let provider = Arc::clone(&served.provider);
-            // SAFETY: `into` checked above; the caller's buffers.
-            unsafe {
-                let req = Fp::of(&[&i.handle.to_le_bytes()]);
-                pended(&served, &route, &head, req, Some(&i.into), |later| {
-                    provider.work_resume(&caller, unit, i.handle, later)
-                })
-            }
-        },
-    )
+service! {
+    work_resume, scoped, op::WORK_RESUME, WorkResumeIn, |served, route, head, caller, i| {
+        if check_bufs(&i.into).is_err() {
+            return Answered::fault();
+        }
+        let unit = serving_unit();
+        let provider = served.provider;
+        // SAFETY: `into` checked above; the caller's buffers.
+        unsafe {
+            let req = Fp::of(&[&i.handle.to_le_bytes()]);
+            pended(&served, &route, &head, req, Some(&i.into), |later| {
+                provider.work_resume(caller, unit, i.handle, later)
+            })
+        }
+    }
 }
 
 /// The refusal of a `verify.lookup` or `verify.store` with an empty key, before the cache is read.
@@ -2298,99 +2180,68 @@ pub const HOOK_GATE_RESUMED: &str = "a gate is never resumed";
 /// The refusal of a `hook.call` with no prompt view.
 pub const HOOK_NO_PROMPT: &str = "a hook call states its prompt view";
 
-extern "C" fn verify_lookup(
-    ctx: HostCtx,
-    input: *const c_void,
-    out: *mut ServiceOut,
-) -> RawOutcome {
-    scoped(
-        ctx,
-        input,
-        out,
-        op::VERIFY_LOOKUP,
-        size_of::<VerifyLookupIn>(),
-        |served, route, head, caller| {
-            // SAFETY: the head covered a `VerifyLookupIn`.
-            let i = unsafe { input.cast::<VerifyLookupIn>().read_unaligned() };
-            let Some(key) = bytes_of(i.key, "verify_lookup.key") else {
-                return Answered::fault();
-            };
-            if check_bufs(&i.into).is_err() {
-                return Answered::fault();
-            }
-            if key.is_empty() {
-                return Answered::bare(Outcome::Refused, NO_VERIFY_KEY);
-            }
-            let provider = Arc::clone(&served.provider);
-            // SAFETY: `into` checked above; the caller's buffers, where the entry goes.
-            unsafe {
-                let req = Fp::of(&[&key]);
-                pended(&served, &route, &head, req, Some(&i.into), |later| {
-                    provider.verify_lookup(&caller, &key, later)
-                })
-            }
-        },
-    )
+service! {
+    verify_lookup, scoped, op::VERIFY_LOOKUP, VerifyLookupIn, |served, route, head, caller, i| {
+        let Some(key) = bytes_of(i.key, "verify_lookup.key") else {
+            return Answered::fault();
+        };
+        if check_bufs(&i.into).is_err() {
+            return Answered::fault();
+        }
+        if key.is_empty() {
+            return Answered::bare(Outcome::Refused, NO_VERIFY_KEY);
+        }
+        let provider = served.provider;
+        // SAFETY: `into` checked above; the caller's buffers, where the entry goes.
+        unsafe {
+            let req = Fp::of(&[&key]);
+            pended(&served, &route, &head, req, Some(&i.into), |later| {
+                provider.verify_lookup(caller, &key, later)
+            })
+        }
+    }
 }
 
-extern "C" fn verify_store(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
-    scoped(
-        ctx,
-        input,
-        out,
-        op::VERIFY_STORE,
-        size_of::<VerifyStoreIn>(),
-        |served, route, head, caller| {
-            // SAFETY: the head covered a `VerifyStoreIn`.
-            let i = unsafe { input.cast::<VerifyStoreIn>().read_unaligned() };
-            let (Some(key), Some(entry)) = (
-                bytes_of(i.key, "verify_store.key"),
-                blob_of(i.entry, "verify_store.entry"),
-            ) else {
-                return Answered::fault();
-            };
-            if key.is_empty() {
-                return Answered::bare(Outcome::Refused, NO_VERIFY_KEY);
-            }
-            let provider = Arc::clone(&served.provider);
-            // SAFETY: no buffer is named.
-            unsafe {
-                let req = Fp::of(&[&key, &entry, &i.ttl_ms.to_le_bytes()]);
-                serve(&served.store, &route, &head, req, None, |_| {
-                    Ran::Now(provider.verify_store(&caller, &key, &entry, i.ttl_ms))
-                })
-            }
-        },
-    )
+service! {
+    verify_store, scoped, op::VERIFY_STORE, VerifyStoreIn, |served, route, head, caller, i| {
+        let (Some(key), Some(entry)) = (
+            bytes_of(i.key, "verify_store.key"),
+            blob_of(i.entry, "verify_store.entry"),
+        ) else {
+            return Answered::fault();
+        };
+        if key.is_empty() {
+            return Answered::bare(Outcome::Refused, NO_VERIFY_KEY);
+        }
+        let provider = served.provider;
+        // SAFETY: no buffer is named.
+        unsafe {
+            let req = Fp::of(&[&key, &entry, &i.ttl_ms.to_le_bytes()]);
+            serve(served.store, &route, &head, req, None, |_| {
+                Ran::Now(provider.verify_store(caller, &key, &entry, i.ttl_ms))
+            })
+        }
+    }
 }
 
-extern "C" fn content_scan(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
-    scoped(
-        ctx,
-        input,
-        out,
-        op::CONTENT_SCAN,
-        size_of::<ContentScanIn>(),
-        |served, route, head, caller| {
-            // SAFETY: the head covered a `ContentScanIn`.
-            let i = unsafe { input.cast::<ContentScanIn>().read_unaligned() };
-            let Some(content) = blob_of(i.content, "content_scan.content") else {
-                return Answered::fault();
-            };
-            if check_bufs(&i.into).is_err() {
-                return Answered::fault();
-            }
-            let unit = serving_unit();
-            let provider = Arc::clone(&served.provider);
-            // SAFETY: `into` checked above; the caller's buffers, where rewritten content goes.
-            unsafe {
-                let req = Fp::of(&[&content]);
-                pended(&served, &route, &head, req, Some(&i.into), |later| {
-                    provider.content_scan(&caller, unit, &content, later)
-                })
-            }
-        },
-    )
+service! {
+    content_scan, scoped, op::CONTENT_SCAN, ContentScanIn, |served, route, head, caller, i| {
+        let Some(content) = blob_of(i.content, "content_scan.content") else {
+            return Answered::fault();
+        };
+        if check_bufs(&i.into).is_err() {
+            return Answered::fault();
+        }
+        let unit = serving_unit();
+        let provider = served.provider;
+        // SAFETY: `into` checked above; the caller's buffers, where rewritten content goes.
+        unsafe {
+            let req = Fp::of(&[&content]);
+            pended(&served, &route, &head, req, Some(&i.into), |later| {
+                provider.content_scan(caller, unit, &content, later)
+            })
+        }
+    }
 }
 
 /// A prompt view, copied: the system text and the `(role, text)` messages.
@@ -2423,59 +2274,50 @@ unsafe fn prompt_of(prompt: *const busbar_contract::abi::hook::PromptView) -> Op
     Some((system, messages))
 }
 
-extern "C" fn hook_call(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
-    scoped(
-        ctx,
-        input,
-        out,
-        op::HOOK_CALL,
-        size_of::<HookCallIn>(),
-        |served, route, head, caller| {
-            // SAFETY: the head covered a `HookCallIn`.
-            let i = unsafe { input.cast::<HookCallIn>().read_unaligned() };
-            if check_bufs(&i.into).is_err() {
-                return Answered::fault();
-            }
-            if let Err(f) = check_hook_call_in(&i) {
-                return Answered::bare(
-                    Outcome::Refused,
-                    match f.rule {
-                        check::Rule::UnknownCode => HOOK_UNKNOWN_STAGE,
-                        check::Rule::OverMax => HOOK_FROM_PAST_CAP,
-                        check::Rule::Contradiction => HOOK_GATE_RESUMED,
-                        _ => HOOK_NO_PROMPT,
-                    },
-                );
-            }
-            // SAFETY: checked non-NULL above; the caller's view, live for the call; copied before
-            // any pend.
-            let Some((system, messages)) = (unsafe { prompt_of(i.prompt) }) else {
-                return Answered::fault();
-            };
-            let mut req = Fp::EMPTY
-                .with(&i.stage.to_le_bytes())
-                .with(&i.from.to_le_bytes())
-                .with(&[u8::from(system.is_some())])
-                .with(system.as_deref().unwrap_or_default().as_bytes());
-            for (role, text) in &messages {
-                req = req.with(role.as_bytes()).with(text.as_bytes());
-            }
-            let ask = HookAsk {
-                stage: i.stage,
-                from: i.from,
-                system,
-                messages,
-            };
-            let unit = serving_unit();
-            let provider = Arc::clone(&served.provider);
-            // SAFETY: `into` checked above; the caller's buffers, where the reply goes.
-            unsafe {
-                pended(&served, &route, &head, req.0, Some(&i.into), |later| {
-                    provider.hook_call(&caller, unit, ask, later)
-                })
-            }
-        },
-    )
+service! {
+    hook_call, scoped, op::HOOK_CALL, HookCallIn, |served, route, head, caller, i| {
+        if check_bufs(&i.into).is_err() {
+            return Answered::fault();
+        }
+        if let Err(f) = check_hook_call_in(&i) {
+            return Answered::bare(
+                Outcome::Refused,
+                match f.rule {
+                    check::Rule::UnknownCode => HOOK_UNKNOWN_STAGE,
+                    check::Rule::OverMax => HOOK_FROM_PAST_CAP,
+                    check::Rule::Contradiction => HOOK_GATE_RESUMED,
+                    _ => HOOK_NO_PROMPT,
+                },
+            );
+        }
+        // SAFETY: checked non-NULL above; the caller's view, live for the call; copied before
+        // any pend.
+        let Some((system, messages)) = (unsafe { prompt_of(i.prompt) }) else {
+            return Answered::fault();
+        };
+        let mut req = Fp::EMPTY
+            .with(&i.stage.to_le_bytes())
+            .with(&i.from.to_le_bytes())
+            .with(&[u8::from(system.is_some())])
+            .with(system.as_deref().unwrap_or_default().as_bytes());
+        for (role, text) in &messages {
+            req = req.with(role.as_bytes()).with(text.as_bytes());
+        }
+        let ask = HookAsk {
+            stage: i.stage,
+            from: i.from,
+            system,
+            messages,
+        };
+        let unit = serving_unit();
+        let provider = served.provider;
+        // SAFETY: `into` checked above; the caller's buffers, where the reply goes.
+        unsafe {
+            pended(&served, &route, &head, req.0, Some(&i.into), |later| {
+                provider.hook_call(caller, unit, ask, later)
+            })
+        }
+    }
 }
 
 /// THE HOST'S VERDICT on the calling instance's declared need: what the host's one connection
@@ -2508,47 +2350,34 @@ extern "C" fn need_admit(ctx: HostCtx, input: *const c_void, out: *mut ServiceOu
 #[path = "../tests/host_services_tests.rs"]
 mod tests;
 
-extern "C" fn snapshot_read(
-    ctx: HostCtx,
-    input: *const c_void,
-    out: *mut ServiceOut,
-) -> RawOutcome {
-    scoped(
-        ctx,
-        input,
-        out,
-        op::SNAPSHOT_READ,
-        size_of::<SnapshotReadIn>(),
-        |served, _, _, caller| {
-            // SAFETY: the head covered a `SnapshotReadIn`.
-            let i = unsafe { input.cast::<SnapshotReadIn>().read_unaligned() };
-            if check_bufs(&i.into).is_err() {
-                return Answered::fault();
-            }
-            if svc::check_snapshot_read_in(&i).is_err() {
-                return Answered::fault();
-            }
-            match served.provider.snapshot_read(&caller, i.scope) {
-                Snapshot::Families(families) => {
-                    let needed = super::snapshot::size_of_layout(&families);
-                    if needed > i.into.cap {
-                        return Answered {
-                            needed_bytes: needed as u64,
-                            ..Answered::bare(Outcome::Failed, SHORT)
-                        };
-                    }
-                    // SAFETY: `into` was checked above (a capacity never behind NULL, the
-                    // alignment the layout needs), and the layout fits its capacity.
-                    let used = unsafe { super::snapshot::lay_out(&families, i.into.buf) };
-                    Answered {
-                        value: families.len() as u64,
-                        len: used as u64,
-                        ..Answered::bare(Outcome::Ready, "")
-                    }
+service! {
+    snapshot_read, scoped, op::SNAPSHOT_READ, SnapshotReadIn, |served, _, _, caller, i| {
+        if check_bufs(&i.into).is_err() {
+            return Answered::fault();
+        }
+        if svc::check_snapshot_read_in(&i).is_err() {
+            return Answered::fault();
+        }
+        match served.provider.snapshot_read(caller, i.scope) {
+            Snapshot::Families(families) => {
+                let needed = super::snapshot::size_of_layout(&families);
+                if needed > i.into.cap {
+                    return Answered {
+                        needed_bytes: needed as u64,
+                        ..Answered::bare(Outcome::Failed, SHORT)
+                    };
                 }
-                Snapshot::NotReady => Answered::bare(Outcome::Failed, SNAPSHOT_NOT_READY),
-                Snapshot::Refused(why) => Answered::bare(Outcome::Refused, why),
+                // SAFETY: `into` was checked above (a capacity never behind NULL, the
+                // alignment the layout needs), and the layout fits its capacity.
+                let used = unsafe { super::snapshot::lay_out(&families, i.into.buf) };
+                Answered {
+                    value: families.len() as u64,
+                    len: used as u64,
+                    ..Answered::bare(Outcome::Ready, "")
+                }
             }
-        },
-    )
+            Snapshot::NotReady => Answered::bare(Outcome::Failed, SNAPSHOT_NOT_READY),
+            Snapshot::Refused(why) => Answered::bare(Outcome::Refused, why),
+        }
+    }
 }

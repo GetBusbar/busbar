@@ -625,6 +625,7 @@ fn held_credentials(k: &serde_json::Value, section: &str) -> Vec<HeldCredential>
 struct CredentialHost {
     held: Vec<HeldCredential>,
     reads: AtomicU64,
+    clock: Option<Arc<outbound::Clock>>,
 }
 
 impl CredentialHost {
@@ -632,6 +633,15 @@ impl CredentialHost {
         Arc::new(Self {
             held,
             reads: AtomicU64::new(0),
+            clock: None,
+        })
+    }
+
+    fn clocked(clock: Arc<outbound::Clock>) -> Arc<Self> {
+        Arc::new(Self {
+            held: Vec::new(),
+            reads: AtomicU64::new(0),
+            clock: Some(clock),
         })
     }
 
@@ -647,6 +657,9 @@ fn unserved() -> Ran {
 
 impl HostServices for CredentialHost {
     fn now(&self) -> Reading {
+        if let Some(clock) = &self.clock {
+            return clock.reading();
+        }
         let wall = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| d.as_nanos() as u64);
@@ -677,6 +690,36 @@ impl HostServices for CredentialHost {
         Stored::refused(UNSERVED)
     }
     fn trust_verify(&self, _: &Caller, _: &str, _: &[u8], _: &[u8]) -> Stored {
+        Stored::refused(UNSERVED)
+    }
+    fn trust_unreached(&self, _: &Caller, _: &str) -> Stored {
+        Stored::refused(UNSERVED)
+    }
+    fn trust_sight_item(&self, _: &Caller, _: &str, _: &str, _: &str) -> Stored {
+        Stored::refused(UNSERVED)
+    }
+    fn trust_decide(
+        &self,
+        _: &Caller,
+        _: busbar_contract::services::TrustKeyRef<'_>,
+        _: Option<&str>,
+        _: bool,
+    ) -> Stored {
+        Stored::refused(UNSERVED)
+    }
+    fn trust_state(&self, _: &Caller, _: &str) -> Stored {
+        Stored::refused(UNSERVED)
+    }
+    fn session_emit(&self, _: &Caller, _: u64, _: &[u8]) -> Stored {
+        Stored::refused(UNSERVED)
+    }
+    fn ticket_mint(&self, _: &Caller, _: Option<u64>, _: u64, _: &[u8]) -> Stored {
+        Stored::refused(UNSERVED)
+    }
+    fn ticket_take(&self, _: &Caller, _: Option<u64>) -> Stored {
+        Stored::refused(UNSERVED)
+    }
+    fn trust_serves(&self, _: &Caller, _: &str, _: Option<&str>, _: Option<&str>) -> Stored {
         Stored::refused(UNSERVED)
     }
     fn entitlement_check(&self, _: &Caller, _: Option<u64>, _: &str) -> Stored {
@@ -719,6 +762,9 @@ impl HostServices for CredentialHost {
         Snapshot::Refused(UNSERVED)
     }
     fn records_secret(&self, kind: &str, id: &str, _: Later) -> Ran {
+        if self.clock.is_some() {
+            return unserved();
+        }
         self.reads.fetch_add(1, Ordering::SeqCst);
         let (secret, live) = self
             .held

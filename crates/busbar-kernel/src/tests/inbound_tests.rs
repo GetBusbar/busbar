@@ -562,7 +562,7 @@ fn red_the_chain_rule_holds_in_list_order() {
     let refusal = k.refuse(REFUSE_STOPPED, k.line(MESSAGES), ans.unit, MESSAGES);
     assert_eq!(
         refusal,
-        Refusal::of(crate::auth::verifier_overloaded_response())
+        Refusal::of(crate::auth::verifier_unavailable_response())
     );
     assert_eq!(refusal.status, 503);
 }
@@ -1013,14 +1013,18 @@ fn signing_gov() -> Arc<crate::governance::GovState> {
         &[7u8; 32],
         crate::governance::signing::DEFAULT_KID,
     );
-    Arc::new(
+    let gov = Arc::new(
         crate::governance::GovState::new_with_signer(
             Arc::new(crate::governance::MemoryStore::new()),
             Some("admintok".to_string()),
             Some(signer),
         )
         .expect("a governance"),
-    )
+    );
+    gov.set_at_rest_keys(Some(crate::governance::at_rest::AtRestKeys::new(
+        &[9; 32], None,
+    )));
+    gov
 }
 
 /// A signed key minted on `gov` at `now`, standing until `exp`: (its id, its token).

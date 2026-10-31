@@ -5,9 +5,9 @@
 //!
 //! Every rendering in this crate is hand-written, and each is written for a reader who has nothing
 //! else: the operator looking at a refused admission, the transport author reading a log line while
-//! an accrual is being turned away, the proof battery printing a canary that did not balance. A
-//! rendering that quietly produced nothing would leave each of them with an empty string where the
-//! only evidence was, and every one of them was reachable without a test naming it.
+//! an accrual is being turned away. A rendering that quietly produced nothing would leave each of
+//! them with an empty string where the only evidence was, and every one of them was reachable
+//! without a test naming it. The canary's rendering is the kernel's and is read back there.
 //!
 //! A rendering that needs a minted hold to read — the hold's own, with its principal and figures —
 //! is read back in the kernel's file of the same name.
@@ -66,32 +66,6 @@ fn every_refusal_the_cell_can_give_says_which_one_it_was() {
         CELL_ERRORS.len(),
         "two cell errors render as one sentence"
     );
-}
-
-#[test]
-fn a_broken_canary_prints_all_four_counts_and_says_which_side_is_short() {
-    // The canary's whole value is arithmetic nobody can reconstruct from a boolean. Its rendering is
-    // the evidence: four numbers, in the shape the invariant is stated in.
-    let canary = Canary::new();
-    for _ in 0..5 {
-        canary.draft_accepted();
-    }
-    canary.hold_opened();
-    canary.hold_opened();
-    canary.accrual_taken();
-    canary.settled();
-
-    let broken = canary.balanced().expect_err("five drafts, three openings");
-    let printed = broken.to_string();
-    assert!(printed.contains("canary broken"), "{printed}");
-    assert!(printed.contains("5 drafts"), "{printed}");
-    assert!(printed.contains("2 holds"), "{printed}");
-    assert!(printed.contains("1 accruals"), "{printed}");
-    assert!(printed.contains("1 settlements"), "{printed}");
-
-    let as_error: &dyn std::error::Error = &broken;
-    assert_eq!(as_error.to_string(), printed);
-    assert_eq!(broken, canary.counts(), "the break IS the counts");
 }
 
 #[test]

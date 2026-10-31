@@ -132,3 +132,19 @@ fn reference_fields_read_from_the_statement_extensions() {
         );
     }
 }
+
+/// THE FULL SPAN RECORDS a door states under `span_records` (status row 173): a JSON boolean;
+/// absent takes none; anything else is malformed.
+#[test]
+fn span_records_read_from_the_statement_extensions() {
+    use super::{span_records, EXT_DECLARES, EXT_SPAN_RECORDS};
+    assert_eq!(EXT_SPAN_RECORDS, "span_records");
+    let stated = |v: &[u8]| span_records(&encode(&[(EXT_DECLARES, b"{}"), (EXT_SPAN_RECORDS, v)]));
+    assert_eq!(stated(b"true"), Ok(true));
+    assert_eq!(stated(b"false"), Ok(false));
+    assert_eq!(span_records(&encode(&[(EXT_DECLARES, b"{}")])), Ok(false));
+    assert_eq!(span_records(&[]), Ok(false));
+    for bad in [&b"1"[..], br#""true""#, b"not json"] {
+        assert!(stated(bad).is_err(), "{}", String::from_utf8_lossy(bad));
+    }
+}
