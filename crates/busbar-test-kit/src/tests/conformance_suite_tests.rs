@@ -1883,6 +1883,39 @@ mod canary_tests {
         assert!(spellings(PW).contains(&b"CANARY-pg-7c1e%2F9%2B".to_vec()));
     }
 
+    /// RED (kind-secret K8): a SECRET subject whose inputs name no `credentials` fails the
+    /// canary, naming why. Before, the canary returned at once, so a token-bearing secret plugin
+    /// with no plant list passed it vacuously (nothing silent). The subject is the loader's own
+    /// test door, restated as a secret door: the refusal comes before any fold.
+    #[test]
+    #[should_panic(expected = "names no `credentials`")]
+    fn red_a_secret_subject_with_no_credentials_fails_the_canary() {
+        use std::sync::atomic::{AtomicPtr, Ordering};
+
+        use busbar_contract::abi::mechanism::door::{Door, DoorParts};
+        use busbar_contract::abi::mechanism::KindCode;
+
+        static SECRET_DOOR: AtomicPtr<Door> = AtomicPtr::new(std::ptr::null_mut());
+        extern "C" fn secret_door() -> *const Door {
+            if SECRET_DOOR.load(Ordering::SeqCst).is_null() {
+                // SAFETY: the test door and its Statement are `'static`.
+                let real: Door = unsafe { *crate::dispatch_test_plugin::busbar_plugin_door() };
+                // SAFETY: the test door's own parts, its kind number restated; nothing calls it.
+                let door = Box::into_raw(Box::new(unsafe {
+                    Door::__from_parts(DoorParts {
+                        kind: KindCode::Secret as u32,
+                        ..real.parts()
+                    })
+                }));
+                SECRET_DOOR.store(door, Ordering::SeqCst);
+            }
+            SECRET_DOOR.load(Ordering::SeqCst)
+        }
+        let s = crate::conformance::Subject::of_raw(secret_door, "unused", "{}");
+        assert_eq!(s.kind(), KindCode::Secret);
+        crate::conformance::canary(&s);
+    }
+
     #[test]
     fn a_clean_fold_passes() {
         assert_eq!(

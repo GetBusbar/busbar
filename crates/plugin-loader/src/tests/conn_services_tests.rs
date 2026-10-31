@@ -55,6 +55,9 @@ struct Recording {
     held: Mutex<Vec<(InstanceId, usize)>>,
     /// Every instance the table was told is gone ([`DeclaredConns::forget`]), in order.
     forgotten: Mutex<Vec<InstanceId>>,
+    /// The table refuses every CONFIG-FREE need (no `target_from`, no `trust_from`): the one the
+    /// loader declares at bind.
+    refuse_config_free: bool,
 }
 
 /// One member-program declaration as it reached the table.
@@ -95,6 +98,9 @@ impl DeclaredConns for Recording {
         ));
         if (!spec.target_from.is_empty() && target.is_none())
             || (!spec.trust_from.is_empty() && trust.is_none())
+            || (self.refuse_config_free
+                && spec.target_from.is_empty()
+                && spec.trust_from.is_empty())
         {
             return Err(ConnError::Refused);
         }
@@ -434,6 +440,54 @@ fn a_need_over_an_unserved_scheme_refuses_the_load_naming_plugin_and_scheme() {
 
     let served = Arc::new(Recording::default());
     assert!(bind_over(Box::leak(Box::new(NEEDS)), &served).is_ok());
+}
+
+/// RED (kind-secret K17): a CONFIG-FREE need (no `target_from`, no `trust_from`) is declared at
+/// bind, and a table that REFUSES it refuses the load, naming the plugin and the need, with what
+/// the instance declared forgotten. Before: the answer was discarded (`let _ = table.declare(..)`)
+/// and the instance bound with a need it could never open. The same need on a table that carries
+/// it binds.
+#[test]
+fn a_config_free_need_the_table_refuses_refuses_the_load_naming_plugin_and_need() {
+    const CONFIG_FREE: [Need; 1] = [Need {
+        target_from: NONE,
+        ..NEEDS[0]
+    }];
+    let refusing = Arc::new(Recording {
+        refuse_config_free: true,
+        ..Recording::default()
+    });
+    let Err(refusal) = bind_over(Box::leak(Box::new(CONFIG_FREE)), &refusing) else {
+        panic!("a config-free need the table refuses must refuse the load");
+    };
+    // SAFETY: the test door and its Statement are `'static`.
+    let real: Door = unsafe { *plug::busbar_plugin_door() };
+    let st: Statement = unsafe { *real.statement() };
+    let plugin = String::from_utf8_lossy(
+        crate::dispatch::plugin::str_bytes(st.name).expect("the test door is named"),
+    )
+    .into_owned();
+    let text = refusal.to_string();
+    assert!(
+        text.contains(plugin.as_str())
+            && text.contains("need 0")
+            && text.contains("`sock`")
+            && text.contains("refused"),
+        "the refusal names the plugin, the need and why: {text}"
+    );
+    assert_eq!(
+        refusing.declared.lock().unwrap().len(),
+        1,
+        "the need reached the table"
+    );
+    assert_eq!(
+        refusing.forgotten.lock().unwrap().len(),
+        1,
+        "what the refused instance declared is forgotten"
+    );
+
+    let carrying = Arc::new(Recording::default());
+    assert!(bind_over(Box::leak(Box::new(CONFIG_FREE)), &carrying).is_ok());
 }
 
 /// RED (spec Part 0: core refuses at boot; Part 2 #50; ARCHITECT ruling 2026-10-02): an INBOUND need
