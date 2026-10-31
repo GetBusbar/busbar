@@ -86,6 +86,24 @@ mod fixture {
     }
 }
 
+struct FixtureResolver;
+impl busbar_contract::secret::SecretResolve for FixtureResolver {
+    fn resolve(
+        &self,
+        _: &busbar_contract::secret_ref::SecretRef,
+    ) -> Result<busbar_contract::redacted::Secret<Vec<u8>>, String> {
+        Ok(busbar_contract::redacted::Secret::new(b"fixture".to_vec()))
+    }
+    fn resolve_string(
+        &self,
+        _: &busbar_contract::secret_ref::SecretRef,
+    ) -> Result<busbar_contract::redacted::Secret<String>, String> {
+        Ok(busbar_contract::redacted::Secret::new(
+            "fixture".to_string(),
+        ))
+    }
+}
+
 fn hooked_app() -> Arc<busbar_kernel::state::App> {
     let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
     let axis = Arc::new(HookRows::new(&[fixture::door], None, dispatcher).unwrap());
@@ -95,18 +113,14 @@ fn hooked_app() -> Arc<busbar_kernel::state::App> {
             &["uncached"],
         )
         .into_rows();
-    let env = busbar_kernel::hooks::HookEnv::with_axis(
-        registry,
-        axis,
-        Arc::new(busbar_kernel::config::secret::SecretResolver::builtins_only()),
-    );
+    let env = busbar_kernel::hooks::HookEnv::with_axis(registry, axis, Arc::new(FixtureResolver));
     let cfg = serde_json::from_value(serde_json::json!({
         "kind": "gate", "module": NAME,
         "settings": { "uncached": { "env": "INBOUND_CLOSE_UNUSED" } }
     }))
     .unwrap();
-    // A declared reference-capable setting bypasses the global resolution cache without reading
-    // a secret. The generation's App must own the last actual HookInstance reference.
+    // The reference shape bypasses the global resolution cache. An explicit in-memory resolver
+    // supplies fixture bytes, so no environment or file is read. The App owns the final hook.
     let app = TestApp::new()
         .hook_env(env)
         .hook("retiring-close", cfg)
