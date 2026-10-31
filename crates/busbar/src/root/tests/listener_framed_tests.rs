@@ -307,3 +307,121 @@ async fn a_final_body_emit_remains_alive_through_graceful_drain() {
         "the final emit completed exactly once"
     );
 }
+
+#[tokio::test]
+async fn a_parked_stream_does_not_hold_an_independent_stream_behind_its_body() {
+    use std::pin::Pin;
+    use std::task::{Context, Poll};
+
+    struct FirstBody {
+        bytes: Option<bytes::Bytes>,
+        produced: Option<tokio::sync::oneshot::Sender<()>>,
+    }
+
+    impl http_body::Body for FirstBody {
+        type Data = bytes::Bytes;
+        type Error = std::convert::Infallible;
+
+        fn poll_frame(
+            self: Pin<&mut Self>,
+            _: &mut Context<'_>,
+        ) -> Poll<Option<Result<http_body::Frame<Self::Data>, Self::Error>>> {
+            let this = self.get_mut();
+            if let Some(produced) = this.produced.take() {
+                let _ = produced.send(());
+            }
+            Poll::Ready(
+                this.bytes
+                    .take()
+                    .map(|bytes| Ok(http_body::Frame::data(bytes))),
+            )
+        }
+    }
+
+    let door = Arc::new(busbar_test_kit::root_door_fixtures::pending_mux_accept::Mux::default());
+    let entry: Arc<dyn FramerDoor> = door.clone();
+    let framer = data_framer(Arc::new(move |scheme: &str| {
+        (scheme == DATA_SCHEME).then(|| Arc::clone(&entry))
+    }))
+    .expect("the multiplexing accepting fixture is found");
+    let (mut client, server) = tokio::io::duplex(4096);
+    let (stop, stopped) = tokio::sync::watch::channel(false);
+    let (produced, first_body) = tokio::sync::oneshot::channel();
+    let produced = Arc::new(std::sync::Mutex::new(Some(produced)));
+    let router = Router::new()
+        .route(
+            "/first",
+            axum::routing::get(move || {
+                let produced = produced.lock().unwrap().take();
+                async move {
+                    axum::response::Response::new(axum::body::Body::new(FirstBody {
+                        bytes: Some(bytes::Bytes::from_static(b"first")),
+                        produced,
+                    }))
+                }
+            }),
+        )
+        .route("/second", axum::routing::get(|| async { "second" }));
+    let served = tokio::spawn(super::serve(
+        server,
+        framer,
+        router,
+        false,
+        Duration::from_secs(30),
+        stopped,
+    ));
+    client.write_all(b"1").await.unwrap();
+    tokio::time::timeout(Duration::from_secs(10), door.wait_for_head())
+        .await
+        .expect("stream one's response head parks");
+    tokio::time::timeout(Duration::from_secs(10), first_body)
+        .await
+        .expect("the first body is produced")
+        .unwrap();
+    // This current-thread task resumes after the producer yields at its data acknowledgement:
+    // stream one's data is queued before opening stream three. No wall-clock sleep orders them.
+    client.write_all(b"3").await.unwrap();
+    let independent = tokio::time::timeout(Duration::from_secs(10), door.wait_for_second()).await;
+    let before_release = door.emitted();
+    door.release();
+    drop(client);
+    stop.send(true).unwrap();
+    tokio::time::timeout(Duration::from_secs(10), served)
+        .await
+        .expect("both streams drain after release")
+        .expect("the serving task joins");
+    assert!(
+        independent.is_ok(),
+        "a parked stream held its independent sibling behind its body"
+    );
+    assert!(
+        before_release.iter().all(|emit| emit.stream == 3),
+        "stream one stays parked"
+    );
+    assert_eq!(
+        before_release
+            .iter()
+            .filter(|emit| emit.status == 0)
+            .flat_map(|emit| emit.bytes.iter().copied())
+            .collect::<Vec<_>>(),
+        b"second",
+    );
+    let all = door.emitted();
+    let first: Vec<_> = all.iter().filter(|emit| emit.stream == 1).collect();
+    assert_eq!(first.iter().filter(|emit| emit.status != 0).count(), 1);
+    assert_eq!(
+        first
+            .iter()
+            .filter(|emit| emit.status == 0)
+            .flat_map(|emit| emit.bytes.iter().copied())
+            .collect::<Vec<_>>(),
+        b"first"
+    );
+    assert_eq!(
+        first
+            .iter()
+            .filter(|emit| emit.status == 0 && emit.end)
+            .count(),
+        1
+    );
+}
