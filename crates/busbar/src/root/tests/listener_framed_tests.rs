@@ -128,145 +128,9 @@ async fn a_silent_connection_is_closed_at_the_first_byte_bound() {
         .expect("a connection that sends nothing is closed at the bound");
 }
 
-#[derive(Default)]
-struct HeadGate {
-    released: std::sync::atomic::AtomicBool,
-    waker: std::sync::Mutex<Option<std::task::Waker>>,
-}
-
-impl HeadGate {
-    fn release(&self) {
-        self.released
-            .store(true, std::sync::atomic::Ordering::SeqCst);
-        if let Some(waker) = self.waker.lock().unwrap().take() {
-            waker.wake();
-        }
-    }
-}
-
-struct HeadTicket {
-    ticket: busbar_contract::abi::mechanism::ticket::Ticket,
-    gate: Arc<HeadGate>,
-}
-
-impl busbar_core_connector::carrier::Side for HeadTicket {
-    fn ticket(&self) -> busbar_contract::abi::mechanism::ticket::Ticket {
-        self.ticket
-    }
-
-    fn register(&self, waker: &std::task::Waker) {
-        *self.gate.waker.lock().unwrap() = Some(waker.clone());
-    }
-}
-
-struct HeldHead {
-    bytes: Vec<u8>,
-    status: u32,
-    end: u32,
-}
-
-struct ParkedHeadDoor {
-    inner: H1Accept,
-    gate: Arc<HeadGate>,
-    entered: tokio::sync::Notify,
-    held: std::sync::Mutex<Option<HeldHead>>,
-    next: std::sync::atomic::AtomicU32,
-}
-
-impl ParkedHeadDoor {
-    fn new() -> Self {
-        Self {
-            inner: H1Accept::new(true),
-            gate: Arc::new(HeadGate::default()),
-            entered: tokio::sync::Notify::new(),
-            held: std::sync::Mutex::new(None),
-            next: std::sync::atomic::AtomicU32::new(1),
-        }
-    }
-}
-
-impl FramerDoor for ParkedHeadDoor {
-    fn facts(&self) -> &busbar_core_connector::framer::DoorFacts {
-        self.inner.facts()
-    }
-
-    fn accepts(&self) -> bool {
-        self.inner.accepts()
-    }
-
-    fn instance(&self) -> Option<u64> {
-        self.inner.instance()
-    }
-
-    fn cross(
-        &self,
-        call: busbar_core_connector::framer::Call<'_>,
-    ) -> busbar_core_connector::framer::Crossed {
-        self.inner.cross(call)
-    }
-
-    fn framing_side(&self) -> Option<Box<dyn busbar_core_connector::carrier::Side>> {
-        Some(Box::new(HeadTicket {
-            ticket: busbar_contract::abi::mechanism::ticket::Ticket {
-                slot: self.next.fetch_add(1, std::sync::atomic::Ordering::SeqCst),
-                generation: 1,
-            },
-            gate: Arc::clone(&self.gate),
-        }))
-    }
-
-    fn cross_on(
-        &self,
-        _side: &dyn busbar_core_connector::carrier::Side,
-        resume: bool,
-        call: busbar_core_connector::framer::Call<'_>,
-    ) -> busbar_core_connector::framer::Crossed {
-        use busbar_contract::abi::mechanism::call::Outcome;
-        use busbar_core_connector::framer::{Call, Crossed};
-        match call {
-            Call::Emit(input, output) if input.status != 0 || resume => {
-                if !resume {
-                    // SAFETY: the host lends these input bytes for this crossing only. Retain an
-                    // owned copy, never its pointer or sink, while the head is parked.
-                    let bytes = if input.len == 0 {
-                        Vec::new()
-                    } else {
-                        unsafe { std::slice::from_raw_parts(input.bytes, input.len) }.to_vec()
-                    };
-                    *self.held.lock().unwrap() = Some(HeldHead {
-                        bytes,
-                        status: input.status,
-                        end: input.end_of_frame,
-                    });
-                    self.entered.notify_one();
-                }
-                if !self.gate.released.load(std::sync::atomic::Ordering::SeqCst) {
-                    return Crossed {
-                        outcome: Outcome::Pending,
-                        error: None,
-                    };
-                }
-                let held = self
-                    .held
-                    .lock()
-                    .unwrap()
-                    .take()
-                    .expect("the pending head is owned");
-                let mut replay = *input;
-                replay.bytes = held.bytes.as_ptr();
-                replay.len = held.bytes.len();
-                replay.status = held.status;
-                replay.end_of_frame = held.end;
-                self.inner.cross(Call::Emit(&mut replay, output))
-            }
-            other => self.inner.cross(other),
-        }
-    }
-}
-
 #[tokio::test]
 async fn a_parked_response_head_keeps_its_body_until_the_head_resumes() {
-    let door = Arc::new(ParkedHeadDoor::new());
+    let door = Arc::new(busbar_test_kit::root_door_fixtures::pending_h1_accept::parked_head());
     let entry: Arc<dyn FramerDoor> = door.clone();
     let framer = data_framer(Arc::new(move |scheme: &str| {
         (scheme == DATA_SCHEME).then(|| Arc::clone(&entry))
@@ -287,7 +151,7 @@ async fn a_parked_response_head_keeps_its_body_until_the_head_resumes() {
         .write_all(b"GET /hello HTTP/1.1\r\nhost: t\r\n\r\n")
         .await
         .unwrap();
-    tokio::time::timeout(Duration::from_secs(10), door.entered.notified())
+    tokio::time::timeout(Duration::from_secs(10), door.wait_for_head())
         .await
         .expect("the response head is parked");
     assert!(
@@ -296,7 +160,7 @@ async fn a_parked_response_head_keeps_its_body_until_the_head_resumes() {
             .is_err(),
         "a parked response head must not let its following body fail the connection"
     );
-    door.gate.release();
+    door.release();
     let got = tokio::time::timeout(Duration::from_secs(10), async {
         let mut got = Vec::new();
         let mut buf = [0; 4096];
@@ -317,7 +181,7 @@ async fn a_parked_response_head_keeps_its_body_until_the_head_resumes() {
     assert!(got.starts_with("HTTP/1.1 200 OK\r\n"), "{got:?}");
     assert!(got.contains("content-length: 2\r\n"), "{got:?}");
     assert!(got.ends_with("\r\n\r\nhi"), "{got:?}");
-    assert_eq!(*door.inner.statuses.lock().unwrap(), vec![200]);
+    assert_eq!(door.statuses(), vec![200]);
     drop(client);
     stop.send(true).unwrap();
     tokio::time::timeout(Duration::from_secs(10), served)

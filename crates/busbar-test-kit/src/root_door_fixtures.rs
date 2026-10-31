@@ -764,3 +764,163 @@ pub mod h1_accept {
         }
     }
 }
+
+/// Controlled pending response-head behavior over the accepting HTTP fixture.
+pub mod pending_h1_accept {
+    use super::h1_accept::H1Accept;
+    use busbar_core_connector::framer::FramerDoor;
+    use std::sync::Arc;
+
+    #[derive(Default)]
+    struct HeadGate {
+        released: std::sync::atomic::AtomicBool,
+        waker: std::sync::Mutex<Option<std::task::Waker>>,
+    }
+
+    impl HeadGate {
+        fn release(&self) {
+            self.released
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            if let Some(waker) = self.waker.lock().unwrap().take() {
+                waker.wake();
+            }
+        }
+    }
+
+    struct HeadTicket {
+        ticket: busbar_contract::abi::mechanism::ticket::Ticket,
+        gate: Arc<HeadGate>,
+    }
+
+    impl busbar_core_connector::carrier::Side for HeadTicket {
+        fn ticket(&self) -> busbar_contract::abi::mechanism::ticket::Ticket {
+            self.ticket
+        }
+
+        fn register(&self, waker: &std::task::Waker) {
+            *self.gate.waker.lock().unwrap() = Some(waker.clone());
+        }
+    }
+
+    struct HeldHead {
+        bytes: Vec<u8>,
+        status: u32,
+        end: u32,
+    }
+
+    /// A single-request HTTP fixture with a one-shot gate holding its response head until release.
+    pub struct ParkedHeadDoor {
+        inner: H1Accept,
+        gate: Arc<HeadGate>,
+        entered: tokio::sync::Notify,
+        held: std::sync::Mutex<Option<HeldHead>>,
+        next: std::sync::atomic::AtomicU32,
+    }
+
+    /// A fresh fixture with its response-head gate closed.
+    pub fn parked_head() -> ParkedHeadDoor {
+        ParkedHeadDoor {
+            inner: H1Accept::new(true),
+            gate: Arc::new(HeadGate::default()),
+            entered: tokio::sync::Notify::new(),
+            held: std::sync::Mutex::new(None),
+            next: std::sync::atomic::AtomicU32::new(1),
+        }
+    }
+
+    impl ParkedHeadDoor {
+        /// Wait until the response-head crossing has copied its input and parked.
+        pub async fn wait_for_head(&self) {
+            self.entered.notified().await;
+        }
+
+        /// Release the copied head and wake its registered connection task.
+        pub fn release(&self) {
+            self.gate.release();
+        }
+
+        /// Every response status the underlying accepting fixture emitted.
+        pub fn statuses(&self) -> Vec<u32> {
+            self.inner.statuses.lock().unwrap().clone()
+        }
+    }
+
+    impl FramerDoor for ParkedHeadDoor {
+        fn facts(&self) -> &busbar_core_connector::framer::DoorFacts {
+            self.inner.facts()
+        }
+
+        fn accepts(&self) -> bool {
+            self.inner.accepts()
+        }
+
+        fn instance(&self) -> Option<u64> {
+            self.inner.instance()
+        }
+
+        fn cross(
+            &self,
+            call: busbar_core_connector::framer::Call<'_>,
+        ) -> busbar_core_connector::framer::Crossed {
+            self.inner.cross(call)
+        }
+
+        fn framing_side(&self) -> Option<Box<dyn busbar_core_connector::carrier::Side>> {
+            Some(Box::new(HeadTicket {
+                ticket: busbar_contract::abi::mechanism::ticket::Ticket {
+                    slot: self.next.fetch_add(1, std::sync::atomic::Ordering::SeqCst),
+                    generation: 1,
+                },
+                gate: Arc::clone(&self.gate),
+            }))
+        }
+
+        fn cross_on(
+            &self,
+            _side: &dyn busbar_core_connector::carrier::Side,
+            resume: bool,
+            call: busbar_core_connector::framer::Call<'_>,
+        ) -> busbar_core_connector::framer::Crossed {
+            use busbar_contract::abi::mechanism::call::Outcome;
+            use busbar_core_connector::framer::{Call, Crossed};
+            match call {
+                Call::Emit(input, output) if input.status != 0 || resume => {
+                    if !resume {
+                        // SAFETY: the host lends these input bytes for this crossing only. Retain an
+                        // owned copy, never its pointer or sink, while the head is parked.
+                        let bytes = if input.len == 0 {
+                            Vec::new()
+                        } else {
+                            unsafe { std::slice::from_raw_parts(input.bytes, input.len) }.to_vec()
+                        };
+                        *self.held.lock().unwrap() = Some(HeldHead {
+                            bytes,
+                            status: input.status,
+                            end: input.end_of_frame,
+                        });
+                        self.entered.notify_one();
+                    }
+                    if !self.gate.released.load(std::sync::atomic::Ordering::SeqCst) {
+                        return Crossed {
+                            outcome: Outcome::Pending,
+                            error: None,
+                        };
+                    }
+                    let held = self
+                        .held
+                        .lock()
+                        .unwrap()
+                        .take()
+                        .expect("the pending head is owned");
+                    let mut replay = *input;
+                    replay.bytes = held.bytes.as_ptr();
+                    replay.len = held.bytes.len();
+                    replay.status = held.status;
+                    replay.end_of_frame = held.end;
+                    self.inner.cross(Call::Emit(&mut replay, output))
+                }
+                other => self.inner.cross(other),
+            }
+        }
+    }
+}
