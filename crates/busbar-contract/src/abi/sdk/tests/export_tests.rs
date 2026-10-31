@@ -60,14 +60,27 @@ impl Life for Probe {
     }
 }
 
-/// `deliver`: READY, nothing kept.
+/// What [`Deliver`] notes in its reply's envelope.
+const DELIVERED: &str = "delivered one batch";
+
+/// `deliver`: READY, nothing kept; it notes [`DELIVERED`] and counts one in its envelope.
 struct Deliver;
 
 impl SafeSlot for Deliver {
     type In = DeliverIn;
     type Out = crate::abi::mechanism::call::OutHead;
     type State = Held<Probe>;
-    fn call(_: Instance<'_, Held<Probe>>, _: Lent<'_, DeliverIn>, _: Out<'_, OutHead>) -> Outcome {
+    fn call(
+        _: Instance<'_, Held<Probe>>,
+        _: Lent<'_, DeliverIn>,
+        mut out: Out<'_, OutHead>,
+    ) -> Outcome {
+        out.diag(
+            crate::abi::mechanism::call::DIAG_LOG,
+            crate::abi::mechanism::call::SEVERITY_INFO,
+            DELIVERED,
+        );
+        out.metric(0, crate::abi::mechanism::call::METRIC_ADD, 1.0);
         Outcome::Ready
     }
 }
@@ -280,4 +293,40 @@ fn the_tail_and_the_alias_state_what_they_are_given() {
     assert_eq!(a.from.len, "probe-sink".len());
     assert!(a.to.ptr.is_null() && a.to.len == 0);
     assert_eq!(view().name(), "probe-sink");
+}
+
+/// RED (the shared test kit, E11): what a reply's envelope carried (its diagnostics and metrics) is
+/// copied onto the [`reply::Called`] before the envelope's pointers are cleared, so a plugin's test
+/// reads the records its op reported. Before, the copy dropped them.
+#[test]
+fn a_called_op_keeps_a_copy_of_its_envelope() {
+    let view = view();
+    let instance = opened(&view);
+    let deliver = view.op::<Ops>(|t| &t.deliver).expect("deliver");
+    let c = reply::call_in(
+        deliver,
+        Some(&instance),
+        &TestIn::<DeliverIn>::new().set(|i| &i.head.op, crate::abi::export::slot::DELIVER),
+        zeroed::<OutHead>(),
+    );
+    assert_eq!(c.outcome, Outcome::Ready);
+    assert_eq!(
+        c.envelope.diags,
+        vec![reply::DiagCopy {
+            id_idx: crate::abi::mechanism::call::DIAG_LOG,
+            severity: crate::abi::mechanism::call::SEVERITY_INFO,
+            text: DELIVERED.to_owned(),
+        }]
+    );
+    assert_eq!(
+        c.envelope.metrics,
+        vec![reply::MetricCopy {
+            family_idx: 0,
+            kind: crate::abi::mechanism::call::METRIC_ADD,
+            value: 1.0,
+            label_vals: Vec::new(),
+        }]
+    );
+    assert!(c.out.envelope.diags.is_null(), "the out keeps no pointer");
+    close(&view, instance);
 }

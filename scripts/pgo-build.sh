@@ -160,6 +160,15 @@ else
     *)                 LSE_FLAG="" ;;
   esac
 fi
+# C-RUNTIME LINKAGE (W17): the MSVC build links the CRT statically (+crt-static), so a Windows
+# binary needs no Visual C++ Redistributable. Carried here because this script sets RUSTFLAGS, and an
+# explicit RUSTFLAGS makes cargo ignore .cargo/config.toml's target.<triple>.rustflags, which holds
+# the same flag for every other build. Joins both phases, like LSE_FLAG. Windows declares pgo:false
+# today, so this is parity with release-build.sh's non-PGO arm rather than a live branch.
+case "$EFFECTIVE_TRIPLE" in
+  *-windows-msvc) CRT_FLAG="-Ctarget-feature=+crt-static" ;;
+  *)              CRT_FLAG="" ;;
+esac
 # THE deterministic output path (see fail-closed rule above).
 OUT="target/pgo/${TARGET_SEG}release/busbar"
 # Positive-proof marker: written only after a verified PGO build; the workflow gates on it.
@@ -206,7 +215,7 @@ rm -rf "$PROF_DIR"; mkdir -p "$PROF_DIR"
 # must be gathered on the same ISA variant the optimized build targets, or the profile is a
 # statement about a different binary.
 # shellcheck disable=SC2086  # TARGET_FLAG is deliberately unquoted (see its definition)
-RUSTFLAGS="-Cprofile-generate=$PROF_DIR${LSE_FLAG:+ $LSE_FLAG}" \
+RUSTFLAGS="-Cprofile-generate=$PROF_DIR${LSE_FLAG:+ $LSE_FLAG}${CRT_FLAG:+ $CRT_FLAG}" \
   cargo build --release --locked --manifest-path dist/default/Cargo.toml --bin busbar $TARGET_FLAG --target-dir target/pgo-gen \
   || pgo_fail "instrumented build failed"
 INSTRUMENTED="target/pgo-gen/${TARGET_SEG}release/busbar"
@@ -587,7 +596,7 @@ MERGED_SIZE="$(wc -c < "$MERGED" | tr -d ' ')"
 # definition near the top of this file. $LSE_FLAG (arm64 default only; see its definition) joins
 # here exactly as it joined the instrumented build, and BOLT's emit-relocs path is unchanged by it.
 # shellcheck disable=SC2086  # TARGET_FLAG is deliberately unquoted (see its definition)
-RUSTFLAGS="-Cprofile-use=$MERGED${EMIT_RELOCS:+ $EMIT_RELOCS}${LSE_FLAG:+ $LSE_FLAG}" \
+RUSTFLAGS="-Cprofile-use=$MERGED${EMIT_RELOCS:+ $EMIT_RELOCS}${LSE_FLAG:+ $LSE_FLAG}${CRT_FLAG:+ $CRT_FLAG}" \
   cargo build --release --locked --manifest-path dist/default/Cargo.toml --bin busbar $TARGET_FLAG --target-dir target/pgo \
   || pgo_fail "optimized (-Cprofile-use) build failed"
 [ -x "$OUT" ] || pgo_fail "optimized binary missing at $OUT"

@@ -117,6 +117,10 @@ signed by the owner (spec: `docs/design/BUSBAR-1.6.0.md`).
 - **A store refuses a different record at an already-used task-event sequence as a fork**, where the
   published store plugin overwrote it (spec lines 1200-1202, Q79-fork-refusal, "signed as an accepted
   difference").
+- **`allow_unsigned` no longer admits a plugin signed by a retired release key.**
+  1.6.0 Changed: a first-party plugin signed by a retired busbar release key is refused (`retired_key`) even under `plugins.trust.allow_unsigned`, with a message naming the key and saying allow_unsigned does not admit it; an unsigned plugin under `allow_unsigned` still loads as unverified.
+  A retired key is a revocation, not a missing signature; naming the key under
+  `plugins.trust.publishers` remains the one explicit opt-in (owner-signed 2026-10-30).
 - **The LDAP auth plugin differs from 1.5.5 in three ways:** a malformed reply or a hostless URL
   fails closed instead of panicking, an overrunning nested length fails fast, and inbound replies are
   capped at 16 MiB (spec lines 863-865, signed 2026-09-28).
@@ -667,6 +671,14 @@ and the `at` field on the hook view is joined by `fires_at`, which carries the r
   The body is the gateway's at-capacity answer, the one `limits.max_inbound_concurrent` sheds
   with. A bad credential is still answered `401`, and the admin API keeps 1.5.5's answer. **Migration:** a
   client that retries a `503` after its `Retry-After` needs no change.
+- 1.6.0 Breaking: when an inbound auth plugin's `verify` answers no verdict (it failed, for example an OIDC plugin whose key set is unavailable, faulted, or timed out), the request is refused with `503` and `Retry-After: 1` instead of 1.5.5's `401`.
+  This applies on the data plane, on `POST /auth/token` and on the admin API (where the body is the
+  admin envelope's `unavailable` code). A rejected credential is still answered `401`, and the
+  operator log names the provider that answered no verdict, never the credential. The lead signed
+  this on 2026-10-30 under owner delegation (SIGN-auth-kind), extending the owner-signed rule that an
+  IdP outage answers `503`, never `401`. **Migration:** a client that retries a `503` after its
+  `Retry-After` needs no change. A client that treated a `401` from a failing IdP as "discard the
+  token" now keeps a valid token through the outage.
 - 1.6.0 Breaking: the destination guard now also judges an A2A peer's fetches, a streaming upstream and a duplex or WebSocket dial, so a private, loopback or cloud-metadata destination there is refused unless the configuration allows it, as a private provider host is.
   **Migration:** name an internal peer or upstream in `advanced.allow_destinations` (an A2A
   registration may also set its own `allow_private: true`), as a provider on an internal DNS name

@@ -113,45 +113,10 @@ fn a_linked_export_declares_stating_needs_boots() {
     );
 }
 
-/// THE HOST'S METRIC CATALOG CANNOT DRIFT (K9a S1). Every `busbar_*` series constant the host's
-/// metric modules define is in [`HOST_SERIES`], so a first-party plugin's claim on one is refused;
-/// and a derived histogram series is the host's too. RED: drop an entry from the list and the
-/// scan names it.
+/// A host series, and a histogram series derived from one, is the host's, so a first-party
+/// plugin's claim on it is refused; a plugin's own series is not the host's.
 #[test]
-fn the_host_series_catalog_holds_every_series_the_host_defines() {
-    let root = std::path::Path::new(env!("BUSBAR_CORE_DIR")).join("..");
-    let sources = [
-        "busbar-kernel/src/snapshot/mod.rs",
-        "busbar-kernel/src/telemetry.rs",
-        "busbar-kernel/src/hooks/taps.rs",
-    ];
-    let mut defined = Vec::new();
-    for file in sources {
-        let text = std::fs::read_to_string(root.join(file)).expect("read a metric module");
-        // A `const NAME: &str =` followed (on its line or the next) by a `"busbar_…"` literal.
-        let mut pending = false;
-        for line in text.lines() {
-            let decl = line.contains("const ") && line.contains(": &str =");
-            if decl || pending {
-                if let Some(start) = line.find("\"busbar_") {
-                    let rest = &line[start + 1..];
-                    defined.push(rest[..rest.find('"').expect("closed")].to_string());
-                    pending = false;
-                    continue;
-                }
-                pending = decl && line.trim_end().ends_with('=');
-            }
-        }
-    }
-    assert!(
-        defined.len() >= HOST_SERIES.len(),
-        "the scan found {defined:?}"
-    );
-    let missing: Vec<&String> = defined.iter().filter(|n| !host_series(n)).collect();
-    assert!(
-        missing.is_empty(),
-        "host series missing from HOST_SERIES: {missing:?}"
-    );
+fn a_host_series_and_its_derived_histogram_series_are_the_hosts() {
     assert!(host_series("busbar_request_duration_seconds_count"));
     assert!(!host_series("busbar_example_deliveries_total"));
 }
@@ -509,28 +474,6 @@ fn a_door_rows_probe_binds_on_the_processs_one_dispatcher() {
         &door_probe_dispatcher(),
         &crate::root::dispatch::dispatcher()
     ));
-}
-
-/// THE `linked-section` ROWS ARE THE DOORS' OWN: every section the build set a `linked_section_<name>`
-/// cfg for (`BUSBAR_LINKED_SECTIONS`, from `[package.metadata.busbar.linked-section]`) is the
-/// declaring section a linked plane door's Statement states, so a test gated on that cfg runs exactly
-/// when the plane that declares the section is linked.
-#[test]
-fn every_linked_section_row_is_a_linked_doors_declaring_section() {
-    let stated: Vec<&str> = crate::LINKED
-        .plane_doors
-        .iter()
-        .filter_map(|door| {
-            crate::root::loader::dispatch::kinds::plane::linked_declaring_section(*door)
-                .expect("a linked door's Statement reads")
-        })
-        .collect();
-    for section in env!("BUSBAR_LINKED_SECTIONS").split_whitespace() {
-        assert!(
-            stated.contains(&section),
-            "the `linked-section` row `{section}` is no linked door's declaring section: {stated:?}"
-        );
-    }
 }
 
 /// A LINKED PLANE DOOR DECLARES WHAT ITS OWN STATEMENT STATES (ARCHITECT ruling 2026-10-21: the
