@@ -711,33 +711,7 @@ impl AuthBinding {
     }
 }
 
-/// ONE LINE OF A LISTENER'S GUEST LIST, owned, as the connector lends it to an accepting framer's
-/// `begin` ([`BeginIn::lines`], one [`LineEntry`] each; THE DESIGN §6, "Auth points and guest
-/// lists", items 3 and 4): the line's id, the points its auth needs, its auth handle (minted for
-/// the identity of the transport instance the listener is bound to, at the published generation),
-/// the body bound at the body point, and its route in the contract's one vocabulary
-/// ([`busbar_contract::abi::transport::route`]).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct GuestLine {
-    /// The line's id, as the kernel numbers it.
-    pub line: u32,
-    /// The auth points its auth needs (`POINT_*`); `0` for a line whose auth is `none`.
-    pub points: u32,
-    /// Its auth handle, owner-scoped to the listener's transport.
-    pub auth: busbar_contract::abi::host::service::AuthRef,
-    /// The body bound at the body point; `0` without that point.
-    pub body_limit: u64,
-    /// `METHOD_*` bits.
-    pub methods: u32,
-    /// `PATH_*`.
-    pub path_form: u32,
-    /// The path, in its form's spelling.
-    pub path: String,
-    /// Its field predicates: `(FIELD_*, lower-case name, value)`.
-    pub fields: Vec<(u32, String, Vec<u8>)>,
-    /// The claimant's own order among its own lines.
-    pub rung: u32,
-}
+pub use busbar_contract::abi::transport::guest_policy::GuestLine;
 
 /// A LISTENER'S GUEST LIST, in the kernel's match order, as the connector lends it to a framing
 /// accepted on the listener. Held by the framing for its life; its `begin` crossing is handed it
