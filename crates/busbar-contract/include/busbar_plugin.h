@@ -558,6 +558,7 @@ extern "C" {
 #define BB_TRANSPORT_SETTING_TEXT UINT32_C(3) /* [`SettingDecl::kind`]: text. */
 #define BB_TRANSPORT_DEST_AUTHORITY UINT32_C(0) /* [`Destination::kind`]: an authority. */
 #define BB_TRANSPORT_DEST_PROGRAM UINT32_C(1) /* [`Destination::kind`]: a program the carrier runs. */
+#define BB_TRANSPORT_DEST_RETIRED UINT32_C(2) /* [`Destination::kind`]: NOTHING TO OPEN, the KEY-RETIRED SIGNAL (T5). The member whose */
 #define BB_TRANSPORT_PIECE_END_OF_FRAME UINT16_C(1) /* [`FramePiece::flags`]: the piece completes its frame. */
 #define BB_TRANSPORT_PIECE_HAS_CODE UINT16_C(2) /* [`FramePiece::flags`]: `code` is present. */
 #define BB_TRANSPORT_PIECE_HAS_RETRY_AFTER UINT16_C(4) /* [`FramePiece::flags`]: `retry_after_secs` is present. */
