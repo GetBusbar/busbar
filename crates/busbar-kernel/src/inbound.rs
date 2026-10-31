@@ -501,6 +501,8 @@ pub(crate) struct AdmittedRequest {
     table: Arc<Table>,
     pub(crate) admitted: Option<Admitted>,
     pub(crate) credential: Option<Secret<String>>,
+    /// The admitted identity came from the signed pre-step, before ticket or chain priority.
+    pub(crate) signed: bool,
     pub(crate) original: Head,
     pub(crate) strips: Vec<Strip>,
     replay: Option<Arc<ReplayAdmission>>,
@@ -688,6 +690,9 @@ struct UnitState {
     admitted: Option<Admitted>,
     /// The verified credential, zeroised when the unit leaves the table (its drop).
     credential: Option<Secret<String>>,
+    signed: bool,
+    /// A selected signed reader still needs its body; no hand-in may use a peer identity yet.
+    signed_pending: bool,
     /// The governance key the `keys` arm resolved, held until the verdict is fixed.
     resolved: Option<Arc<crate::governance::VirtualKey>>,
 }
@@ -730,6 +735,8 @@ impl UnitState {
             strips: Vec::new(),
             admitted: None,
             credential: None,
+            signed: false,
+            signed_pending: false,
             resolved: None,
         }
     }
@@ -1724,6 +1731,7 @@ impl Inbound {
                 table: Arc::clone(&unit.table),
                 admitted: unit.admitted.clone(),
                 credential: unit.credential.clone(),
+                signed: unit.signed,
                 original: unit.head.as_ref().unwrap_or(handed).clone(),
                 strips: unit.strips.clone(),
                 replay: unit.replay.clone(),
@@ -2154,6 +2162,7 @@ impl Inbound {
             .collect();
         // The `keys` arm answers at the line's last per-request point: with the body when a
         // host-held credential's verifier needs it, else at the head.
+        let points = *points;
         let keys_point = if points.has(AuthPoint::HeadBody) {
             AuthPoint::HeadBody
         } else {
@@ -2171,7 +2180,12 @@ impl Inbound {
             });
             // Match the final gate's ticket priority using the registered route declaration.
             // This establishes identity only; final admission still redeems once and rechecks it.
-            if first_request && !peer && table.listener.app.auth.keys_in_chain {
+            let unfinished = me
+                .with_state(target, |u| {
+                    first_request || u.signed_pending || u.fixed().is_none()
+                })
+                .ok_or(UNIT_FOREIGN)?;
+            if unfinished && !peer && table.listener.app.auth.keys_in_chain {
                 let connection_denied = me
                     .with_state(target, |u| {
                         u.answers.iter().any(|answer| {
@@ -2195,12 +2209,76 @@ impl Inbound {
                     .planes
                     .admission_for(&head.target)
                     .is_none()
-                    && (table.listener.signed_ingress)(&table.listener.app, &head.target))
-                .then(|| table.listener.app.auth.signed_reader(&header_map(&head)))
+                    && (table.doors.signed_ingress(&head.target)
+                        || (table.listener.signed_ingress)(&table.listener.app, &head.target)))
+                .then(|| {
+                    table
+                        .listener
+                        .app
+                        .auth
+                        .signed_reader(&header_map(original.as_ref().unwrap_or(&head)))
+                })
                 .flatten();
-                if let (Some(prefix), Some(token), Some(keys), None) =
-                    (prefix, token, keys, signed_reader)
-                {
+                if let (Some(keys), Some((provider, calls, kinds))) = (keys, signed_reader) {
+                    if !connection_denied {
+                        me.with_state(target, |u| u.signed_pending = true)
+                            .ok_or(UNIT_FOREIGN)?;
+                        if deadline.is_some_and(|d| std::time::Instant::now() >= d)
+                            || !points.has(AuthPoint::HeadBody)
+                        {
+                            me.preflight_keys(target, keys.index)?;
+                            me.record(target, keys.index, &keys.provider, Judging::Nothing, &table);
+                            return me.answer(target, unit, peer);
+                        }
+                        if point != AuthPoint::HeadBody {
+                            return me.answer(target, unit, peer);
+                        }
+                        let req = verify_request(
+                            original.as_ref().unwrap_or(&head),
+                            AuthPoint::HeadBody,
+                            conn,
+                            unit.id,
+                            Some(body.as_ref().map_or(&[], |b| b.as_slice())),
+                            None,
+                        );
+                        let mut verifying = calls.verify(req);
+                        let answer = until_deadline(deadline, &mut verifying).await;
+                        let faulted = verifying.faulted();
+                        match answer {
+                            Some(answer)
+                                if !faulted && matches!(&answer.verified, Verified::Pass) =>
+                            {
+                                me.with_state(target, |u| {
+                                    u.signed_pending = false;
+                                    for strip in answer.strips {
+                                        if !u.strips.contains(&strip) {
+                                            u.strips.push(strip);
+                                        }
+                                    }
+                                })
+                                .ok_or(UNIT_FOREIGN)?;
+                            }
+                            answer => {
+                                me.preflight_keys(target, keys.index)?;
+                                let judging = match answer {
+                                    Some(answer) => Judging::Keys(
+                                        original.as_ref().unwrap_or(&head),
+                                        Some(SignedAnswer {
+                                            faulted,
+                                            answer,
+                                            kinds,
+                                            provider,
+                                        }),
+                                    ),
+                                    None => Judging::Nothing,
+                                };
+                                me.record(target, keys.index, &keys.provider, judging, &table);
+                                return me.answer(target, unit, peer);
+                            }
+                        }
+                    }
+                }
+                if let (Some(prefix), Some(token), Some(keys)) = (prefix, token, keys) {
                     if token.starts_with(prefix) && !connection_denied {
                         let key = (!deadline.is_some_and(|d| std::time::Instant::now() >= d))
                             .then(|| {
@@ -2226,6 +2304,8 @@ impl Inbound {
                                     std::mem::take(&mut u.replays),
                                     u.replay.take(),
                                 );
+                                u.signed = false;
+                                u.signed_pending = false;
                                 u.answers.fill(Some(Judged::Pass));
                                 u.answers[keys.index] = Some(if key.is_some() {
                                     Judged::Identity
@@ -2280,54 +2360,11 @@ impl Inbound {
                         if point != keys_point {
                             continue;
                         }
-                        // THE SIGNED-REQUEST PRE-STEP (1.5.5's gate): on a dialect that signs, a
-                        // request carrying a host-held credential verifier's lines is verified by
-                        // it over the whole body, before the token path.
-                        let app = &table.listener.app;
-                        let reader = (app.planes.admission_for(&head.target).is_none()
-                            && (table.listener.signed_ingress)(app, &head.target))
-                        .then(|| app.auth.signed_reader(&header_map(&head)))
-                        .flatten();
-                        let signed = match reader {
-                            None => None,
-                            Some((provider, calls, kinds)) => {
-                                let unit_id = match target {
-                                    Target::Unit(u) => u,
-                                    Target::Peer(_) => 0,
-                                };
-                                let req = verify_request(
-                                    &head,
-                                    AuthPoint::HeadBody,
-                                    conn,
-                                    unit_id,
-                                    Some(body.as_ref().map_or(&[], |b| b.as_slice())),
-                                    None,
-                                );
-                                let mut verifying = calls.verify(req);
-                                let Some(answer) = until_deadline(deadline, &mut verifying).await
-                                else {
-                                    me.record(
-                                        target,
-                                        p.index,
-                                        &p.provider,
-                                        Judging::Nothing,
-                                        &table,
-                                    );
-                                    break;
-                                };
-                                Some(SignedAnswer {
-                                    faulted: verifying.faulted(),
-                                    answer,
-                                    kinds,
-                                    provider,
-                                })
-                            }
-                        };
                         me.record(
                             target,
                             p.index,
                             &p.provider,
-                            Judging::Keys(original.as_ref().unwrap_or(&head), signed),
+                            Judging::Keys(original.as_ref().unwrap_or(&head), None),
                             &table,
                         );
                         continue;
@@ -2366,19 +2403,46 @@ impl Inbound {
                 };
                 me.record(target, p.index, &p.provider, judging, &table);
             }
-            let (flow, strips) = me
-                .with_state(target, |u| {
-                    let flow = match u.fixed_at(peer) {
-                        Some(Fixed::Denied | Fixed::Overloaded) => FLOW_STOP,
-                        Some(Fixed::Admitted(_)) | None => FLOW_CONTINUE,
-                    };
-                    (flow, u.strips.clone())
-                })
-                .ok_or(UNIT_FOREIGN)?;
-            // The Peer rule: a peer answer names nothing.
-            let strips = if peer { Vec::new() } else { strips };
-            Ok(Answer { flow, unit, strips })
+            me.answer(target, unit, peer)
         })
+    }
+
+    fn answer(&self, target: Target, unit: UnitRef, peer: bool) -> Result<Answer, &'static str> {
+        self.with_state(target, |u| Answer {
+            flow: match u.fixed_at(peer) {
+                Some(Fixed::Denied | Fixed::Overloaded) => FLOW_STOP,
+                Some(Fixed::Admitted(_)) | None => FLOW_CONTINUE,
+            },
+            unit,
+            strips: if peer { Vec::new() } else { u.strips.clone() },
+        })
+        .ok_or(UNIT_FOREIGN)
+    }
+
+    // A decisive signed pre-step precedes plugin positions. Retire prior peer identity custody
+    // outside the lock, then let record() keep the resolved key and replay claim in the usual way.
+    fn preflight_keys(&self, target: Target, index: usize) -> Result<(), &'static str> {
+        let retired = self
+            .with_state(target, |u| {
+                let retired = (
+                    u.admitted.take(),
+                    u.credential.take(),
+                    u.resolved.take(),
+                    std::mem::take(&mut u.identities),
+                    std::mem::take(&mut u.replays),
+                    u.replay.take(),
+                );
+                u.answers.fill(Some(Judged::Pass));
+                u.answers[index] = None;
+                u.identities = vec![None; u.answers.len()];
+                u.replays = vec![None; u.answers.len()];
+                u.signed = false;
+                u.signed_pending = false;
+                retired
+            })
+            .ok_or(UNIT_FOREIGN)?;
+        drop(retired);
+        Ok(())
     }
 
     /// Record position `index`'s answer on `target` FIRST-HAND: its verdict by the data-plane chain
@@ -2395,6 +2459,8 @@ impl Inbound {
     ) {
         let gov = table.listener.app.governance.as_deref();
         let now = crate::store::now();
+        let signed_identity = matches!(&judging, Judging::Keys(_, Some(signed))
+            if !signed.faulted && matches!(&signed.answer.verified, Verified::Identity(_)));
         let replay_provider = match &judging {
             Judging::Keys(_, Some(signed)) => signed.provider.as_str(),
             _ => provider,
@@ -2431,6 +2497,9 @@ impl Inbound {
             })
         });
         self.with_state(target, |u| {
+            if signed_identity && judged == Judged::Identity {
+                u.signed = true;
+            }
             for s in strips {
                 if !u.strips.contains(&s) {
                     u.strips.push(s);
@@ -2552,7 +2621,7 @@ impl Inbound {
         let Some(u) = units.get(&unit.id) else {
             return false;
         };
-        if u.line != h.line || u.generation != h.generation {
+        if u.line != h.line || u.generation != h.generation || u.signed_pending {
             return false;
         }
         if let Some(original) = &u.head {

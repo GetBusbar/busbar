@@ -175,6 +175,7 @@ pub mod datagram;
 pub mod fields;
 pub mod guest_policy;
 pub mod route;
+pub mod sensitive_fields;
 
 pub use check::check_answer;
 

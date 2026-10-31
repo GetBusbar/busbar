@@ -606,6 +606,7 @@ extern "C" {
 #define BB_TRANSPORT_PATH_CONTAINS UINT32_C(5) /* The path contains the route's path. */
 #define BB_TRANSPORT_FIELD_PRESENT UINT32_C(1) /* The field line is present, whatever its value. */
 #define BB_TRANSPORT_FIELD_VALUE_PREFIX UINT32_C(2) /* The field line is present and its value starts with the predicate's value. */
+#define BB_TRANSPORT_EXT_SENSITIVE_FIELDS "fields.sensitive" /* An opening Emit input's credential field names; never a wire field. */
 
 /* hconn */
 #define BB_HCONN_DIRECTION_INBOUND UINT32_C(1) /* [`Need::direction`]: the plugin is reached (it listens). */

@@ -37,6 +37,7 @@ use std::time::{Duration, Instant};
 use busbar_contract::abi::host::conn::connector::{
     CAUSE_CONNECT, CAUSE_DEADLINE, CAUSE_EXCHANGE, CAUSE_FRAMER, CAUSE_SECURITY,
 };
+use busbar_contract::abi::transport::sensitive_fields::SensitiveFields;
 use busbar_contract::abi::transport::{CLOSE_NORMAL, FAULT_NONE, SIDE_ACCEPT, SIDE_DIAL};
 use busbar_contract::conn::{Bytes, ConnCause};
 
@@ -202,6 +203,8 @@ pub struct Connection {
     inbox: VecDeque<Got>,
     /// The first message, sent once the framing begins.
     opening: Option<Opening>,
+    /// The initial opening's credential names, retained while Begin is parked.
+    opening_sensitive: SensitiveFields,
     /// Its head words.
     head_words: HeadWords,
     /// Writes held back, in order: those the caller made before the framing began, and those on a
@@ -271,6 +274,7 @@ struct Early {
     end: bool,
     text: bool,
     body_len: Option<u64>,
+    sensitive: SensitiveFields,
 }
 
 impl Early {
@@ -281,6 +285,7 @@ impl Early {
             end,
             text,
             body_len: None,
+            sensitive: SensitiveFields::default(),
         }
     }
 }
@@ -861,6 +866,7 @@ impl Connection {
             agreed: 0,
             full: std::collections::HashSet::new(),
             seals: crate::seal::Seals::default(),
+            opening_sensitive: SensitiveFields::default(),
         })
     }
 }
@@ -924,6 +930,7 @@ impl Connection {
             agreed: 0,
             full: std::collections::HashSet::new(),
             seals: crate::seal::Seals::default(),
+            opening_sensitive: SensitiveFields::default(),
             security_error: None,
             key_pin: None,
             presented: Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -1088,6 +1095,7 @@ impl Connection {
             agreed: 0,
             full: std::collections::HashSet::new(),
             seals: crate::seal::Seals::default(),
+            opening_sensitive: SensitiveFields::default(),
         };
         if conn.tls.is_none() {
             conn.begin()?;
@@ -1195,18 +1203,19 @@ impl Connection {
             _ => {}
         }
         let mut opening = opening;
-        self.seal(&mut opening)?;
+        let sensitive = self.seal(&mut opening)?;
         let body_len = self.opening_body_len(opening.as_ref());
         let Some(message) = self.encode_opening(opening, head_words)? else {
             return Ok(());
         };
         match self.phase {
             Phase::Open => {
-                self.put_opening(stream, &message, true, false, body_len)?;
+                self.put_opening_marked(stream, &message, true, false, body_len, sensitive)?;
                 self.sealed_sent(stream)?;
             }
             _ => self.early.push(Early {
                 body_len,
+                sensitive,
                 ..Early::of(stream, &message, true, false)
             }),
         }
@@ -1272,6 +1281,25 @@ impl Connection {
         text: bool,
         body_len: Option<u64>,
     ) -> Result<(), Failure> {
+        self.put_opening_marked(
+            stream,
+            bytes,
+            end,
+            text,
+            body_len,
+            SensitiveFields::default(),
+        )
+    }
+
+    fn put_opening_marked(
+        &mut self,
+        stream: u64,
+        bytes: &[u8],
+        end: bool,
+        text: bool,
+        body_len: Option<u64>,
+        sensitive: SensitiveFields,
+    ) -> Result<(), Failure> {
         // A PENDING ANSWER PARKS ONLY ITS OWN STREAM: a write on a stream an op parked on its
         // ticket holds (or one whose earlier writes still wait) waits, in order, for that op to
         // complete; every other stream's write goes now.
@@ -1279,6 +1307,7 @@ impl Connection {
             if framing.holds(stream) || self.early.iter().any(|e| e.stream == stream) {
                 self.early.push(Early {
                     body_len,
+                    sensitive,
                     ..Early::of(stream, bytes, end, text)
                 });
                 return Ok(());
@@ -1286,7 +1315,7 @@ impl Connection {
         }
         if let Some(framing) = self.framing.as_mut() {
             let y = framing
-                .emit_opening(stream, bytes, end, text, body_len)
+                .emit_opening_sensitive(stream, bytes, end, text, body_len, &sensitive)
                 .map_err(failed)?;
             return self.absorb(y);
         }
@@ -1926,7 +1955,7 @@ impl Connection {
     /// again, and so does every later write on that stream.
     fn put_early(&mut self) -> Result<(), Failure> {
         for e in std::mem::take(&mut self.early) {
-            self.put_opening(e.stream, &e.bytes, e.end, e.text, e.body_len)?;
+            self.put_opening_marked(e.stream, &e.bytes, e.end, e.text, e.body_len, e.sensitive)?;
         }
         Ok(())
     }
@@ -1944,7 +1973,7 @@ impl Connection {
         let mut opening = self.opening.take();
         let sealed = self.seal(&mut opening);
         self.opening = opening;
-        sealed?;
+        self.opening_sensitive = sealed?;
         // A dial hands its opening head fields to the framing's begin too, for a wire that carries
         // them on the connection's opening.
         let opening: &[(String, Vec<u8>)] = match &self.opening {
@@ -1983,6 +2012,7 @@ impl Connection {
         let opening = self.opening.take();
         let words = std::mem::take(&mut self.head_words);
         let body_len = self.opening_body_len(opening.as_ref());
+        let sensitive = std::mem::take(&mut self.opening_sensitive);
         // A wire whose envelope renders nothing of an opening (its fields rode the framing's
         // begin) sends no opening message.
         if let Some(message) = self
@@ -1993,7 +2023,14 @@ impl Connection {
             // Held where they are, a write on the exchange stream would queue the opening after
             // itself (a stream with writes waiting takes every later write behind them).
             let held = std::mem::take(&mut self.early);
-            let sent = self.put_opening(EXCHANGE_STREAM, &message, true, false, body_len);
+            let sent = self.put_opening_marked(
+                EXCHANGE_STREAM,
+                &message,
+                true,
+                false,
+                body_len,
+                sensitive,
+            );
             let sealed = sent.and_then(|()| self.sealed_sent(EXCHANGE_STREAM));
             self.early.extend(held);
             sealed?;
@@ -2006,12 +2043,18 @@ impl Connection {
 
     /// SEAL `opening` (TSEAL, [`crate::seal`]): its sealed-fields field taken out; over a framer
     /// that renders sealed values, each sealed value swapped for filler, held here to splice.
-    fn seal(&mut self, opening: &mut Option<Opening>) -> Result<(), Failure> {
+    fn seal(&mut self, opening: &mut Option<Opening>) -> Result<SensitiveFields, Failure> {
         let sealing = self.door.as_ref().is_some_and(|d| d.seals_values());
         let secured = self.tls.is_some();
+        let names = opening.as_mut().map_or_else(Vec::new, |(fields, _)| {
+            crate::seal::take_sealed_names(fields)
+        });
+        let sensitive =
+            SensitiveFields::new(names.clone()).map_err(|error| Failure::Refused(error.into()))?;
         self.seals
-            .seal(opening, sealing, secured)
-            .map_err(|e| Failure::Refused(e.to_owned()))
+            .seal_names(opening, &names, sealing, secured)
+            .map_err(|e| Failure::Refused(e.to_owned()))?;
+        Ok(sensitive)
     }
 
     /// AN OPENING'S SEALED VALUES ARE ALL SPLICED once it was emitted on `stream`: a filler the

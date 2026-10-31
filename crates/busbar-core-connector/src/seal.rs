@@ -86,6 +86,7 @@ impl Seals {
     ///
     /// [`SEALED_IN_CLEAR`] for a sealed value on a connection the host does not secure; a failed
     /// random source.
+    #[cfg(test)]
     pub(crate) fn seal(
         &mut self,
         opening: &mut Option<Opening>,
@@ -96,6 +97,20 @@ impl Seals {
             return Ok(());
         };
         let names = take_sealed_names(fields);
+        self.seal_names(opening, &names, sealing, secured)
+    }
+
+    /// Seal the named fields after the connector retained their header classification.
+    pub(crate) fn seal_names(
+        &mut self,
+        opening: &mut Option<Opening>,
+        names: &[String],
+        sealing: bool,
+        secured: bool,
+    ) -> Result<(), &'static str> {
+        let Some((fields, _)) = opening.as_mut() else {
+            return Ok(());
+        };
         if names.is_empty() || !sealing {
             return Ok(());
         }

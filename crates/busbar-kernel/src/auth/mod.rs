@@ -2773,7 +2773,10 @@ pub(crate) async fn auth_middleware(
     // The verified identity's replay claim, UNWON until the gate's last deny decision is made.
     let mut pending: Option<PendingClaim> = None;
     let signed = match reader {
-        None => None,
+        None => inbound
+            .as_ref()
+            .filter(|admission| admission.inner.signed)
+            .map(|admission| admission.verdict()),
         Some(reader) => {
             // BODY INTEGRITY: the verifier re-hashes the bytes received and confirms they match the
             // signed payload hash. Buffer the body HERE, then reconstruct the request from the SAME

@@ -18,10 +18,11 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 
-use busbar_contract::abi::mechanism::call::{AbiStr, Field, Outcome, Span};
+use busbar_contract::abi::mechanism::call::{AbiStr, Blob, Field, Outcome, Span, BLOB_OCTETS};
 use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::abi::sdk::door::{blank_in, blank_out};
 use busbar_contract::abi::transport::route::{FieldPredicate, RouteMatch};
+use busbar_contract::abi::transport::sensitive_fields::SensitiveFields;
 use busbar_contract::abi::transport::LineEntry;
 use busbar_contract::abi::transport::{check::check_final_status, StatusRow, CLOSE_NORMAL};
 use busbar_contract::abi::transport::{
@@ -848,6 +849,13 @@ impl GuestLines {
 /// on an accepting side (`check::check_lines`).
 pub const LINES_ON_DIAL: &str = "a dialled framing is lent no guest list";
 
+#[derive(Default)]
+struct EmitHead {
+    body_len: Option<u64>,
+    status: u32,
+    extensions: Vec<u8>,
+}
+
 /// A TICKETED FRAMER OP, as the framing issues it (and re-issues it on a resume): `begin`,
 /// `adopt`, `ingest` or `emit`, its bytes borrowed while it crosses and owned once it parks.
 #[derive(Debug)]
@@ -879,6 +887,8 @@ enum Ticketed<'a> {
         body_len: Option<u64>,
         /// An accepted stream's answer status, on the emit that carries its head; `0` otherwise.
         status: u32,
+        /// Name-only classification of this request head, retained across resumes and drains.
+        extensions: Vec<u8>,
     },
 }
 
@@ -919,6 +929,7 @@ impl Ticketed<'_> {
                 text,
                 body_len,
                 status,
+                extensions,
                 ..
             } => Ticketed::Emit {
                 stream,
@@ -927,6 +938,7 @@ impl Ticketed<'_> {
                 text,
                 body_len,
                 status,
+                extensions,
             },
         }
     }
@@ -1742,10 +1754,19 @@ impl Framing {
                 text,
                 body_len,
                 status,
+                extensions,
             } => {
                 let mut i: EmitIn = blank_in();
                 i.framing = self.token;
                 i.stream = *stream;
+                if !extensions.is_empty() {
+                    i.head.extensions = Blob {
+                        ptr: extensions.as_ptr(),
+                        len: extensions.len(),
+                        fmt: BLOB_OCTETS,
+                        flags: 0,
+                    };
+                }
                 if fresh {
                     i.bytes = bytes.as_ptr();
                     i.len = bytes.len();
@@ -2122,7 +2143,46 @@ impl Framing {
         text: bool,
         body_len: Option<u64>,
     ) -> Result<Yielded, Refused> {
-        self.emit_op(stream, bytes, end_of_frame, text, body_len, 0)
+        self.emit_op(
+            stream,
+            bytes,
+            end_of_frame,
+            text,
+            EmitHead {
+                body_len,
+                ..EmitHead::default()
+            },
+        )
+    }
+
+    /// Emit an opening with the host's credential-name classification, outside its wire bytes.
+    ///
+    /// # Errors
+    /// Invalid metadata, a held stream, or the framer's refusal.
+    pub fn emit_opening_sensitive(
+        &mut self,
+        stream: u64,
+        bytes: &[u8],
+        end_of_frame: bool,
+        text: bool,
+        body_len: Option<u64>,
+        sensitive: &SensitiveFields,
+    ) -> Result<Yielded, Refused> {
+        let extensions = sensitive.extensions().map_err(|error| Refused {
+            outcome: Outcome::Refused,
+            error: error.into(),
+        })?;
+        self.emit_op(
+            stream,
+            bytes,
+            end_of_frame,
+            text,
+            EmitHead {
+                body_len,
+                extensions,
+                ..EmitHead::default()
+            },
+        )
     }
 
     /// `emit` of an ACCEPTED stream's ANSWER HEAD (`bytes`, a field block,
@@ -2141,7 +2201,16 @@ impl Framing {
         end_of_frame: bool,
         status: u32,
     ) -> Result<Yielded, Refused> {
-        self.emit_op(stream, bytes, end_of_frame, false, None, status)
+        self.emit_op(
+            stream,
+            bytes,
+            end_of_frame,
+            false,
+            EmitHead {
+                status,
+                ..EmitHead::default()
+            },
+        )
     }
 
     /// The one `emit` op every emit is.
@@ -2151,8 +2220,7 @@ impl Framing {
         bytes: &[u8],
         end_of_frame: bool,
         text: bool,
-        body_len: Option<u64>,
-        status: u32,
+        head: EmitHead,
     ) -> Result<Yielded, Refused> {
         self.idle(Some(stream))?;
         let op = Ticketed::Emit {
@@ -2160,8 +2228,9 @@ impl Framing {
             bytes: std::borrow::Cow::Borrowed(bytes),
             end_of_frame,
             text,
-            body_len,
-            status,
+            body_len: head.body_len,
+            status: head.status,
+            extensions: head.extensions,
         };
         let ticket = self.take_ticket()?;
         Ok(self
