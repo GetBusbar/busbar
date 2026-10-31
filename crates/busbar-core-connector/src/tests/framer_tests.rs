@@ -923,3 +923,51 @@ fn a_short_locate_within_the_hosts_bound_is_asked_again_with_room() {
         "the second ask has the room named: {caps:?}"
     );
 }
+
+#[test]
+fn an_adopted_framing_keeps_pending_emits_on_their_own_tickets() {
+    let door = Arc::new(PendingDoor::new(TestDoor::identity("bytes"), 1));
+    let (mut framing, _) = Framing::adopt(
+        door.clone(),
+        SIDE_ACCEPT,
+        b"",
+        &Established::plain_for_test(),
+    )
+    .expect("the upgrade is adopted");
+    let first = framing
+        .emit(1, b"first", true, false)
+        .expect("the emit parks");
+    assert!(
+        first.wire.is_empty(),
+        "the pending message is not emitted before its host answers"
+    );
+    assert!(
+        framing.parked() && framing.holds(1),
+        "an adopted framing retains its pending stream"
+    );
+    assert!(framing.poll_parked(&mut noop_cx()).is_pending());
+    assert_eq!(
+        framing.emit(3, b"second", true, false).unwrap().wire,
+        b"second"
+    );
+    door.host.complete(9);
+    let std::task::Poll::Ready(Ok(done)) = framing.poll_parked(&mut noop_cx()) else {
+        panic!("the adopted framing resumes after the host answers");
+    };
+    assert_eq!(done.wire, b"first");
+    assert!(!framing.parked());
+    assert_eq!(
+        door.host.calls(),
+        1,
+        "the host service runs once across resume"
+    );
+    let calls = door.on.lock().unwrap();
+    let emits: Vec<_> = calls.iter().filter(|(op, _, _)| *op == "emit").collect();
+    assert!(emits.len() >= 3);
+    let held = emits[0].1;
+    assert!(!emits[0].2);
+    assert!(emits
+        .iter()
+        .filter(|(_, _, resume)| *resume)
+        .all(|(_, ticket, _)| *ticket == held));
+}
