@@ -65,7 +65,7 @@ pub const MAX_INFLIGHT: u32 = 8;
 
 /// The instance: the most messages a request may carry before it is rejected, how long its
 /// `decide` sleeps first, and the session whose requests it rejects, if any.
-pub struct Gate(AtomicU64, u64, Option<Vec<u8>>);
+pub struct Gate(AtomicU64, u64, Option<Vec<u8>>, bool);
 
 impl Life for Gate {
     const CANCEL: u32 = cancel::ABORTED;
@@ -95,7 +95,11 @@ impl Gate {
             .get("reject_session")
             .and_then(serde_json::Value::as_str)
             .map(|s| s.as_bytes().to_vec());
-        Ok(Gate(AtomicU64::new(over), sleep_ms, session))
+        let controlled = settings
+            .get("hold_for_cap_test")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
+        Ok(Gate(AtomicU64::new(over), sleep_ms, session, controlled))
     }
 
     fn over(settings: &serde_json::Map<String, serde_json::Value>) -> Result<u64, Refusal> {
@@ -103,6 +107,35 @@ impl Gate {
             .get("reject_over_messages")
             .and_then(serde_json::Value::as_u64)
             .ok_or_else(|| Refusal::failed("settings: `reject_over_messages` must be a number"))
+    }
+}
+
+static CAP_CROSSINGS: std::sync::Mutex<(bool, u32)> = std::sync::Mutex::new((false, 0));
+static CAP_RELEASE: std::sync::Condvar = std::sync::Condvar::new();
+
+pub struct BlockedCalls;
+
+impl Default for BlockedCalls {
+    fn default() -> Self {
+        *CAP_CROSSINGS.lock().unwrap() = (false, 0);
+        Self
+    }
+}
+
+impl BlockedCalls {
+    pub fn entered(&self) -> u32 {
+        CAP_CROSSINGS.lock().unwrap().1
+    }
+
+    pub fn release(&self) {
+        CAP_CROSSINGS.lock().unwrap().0 = true;
+        CAP_RELEASE.notify_all();
+    }
+}
+
+impl Drop for BlockedCalls {
+    fn drop(&mut self) {
+        self.release();
     }
 }
 
@@ -123,7 +156,13 @@ impl SafeSlot for Decide {
             return Outcome::Refused;
         };
         let gate = held.life();
-        if gate.1 > 0 {
+        if gate.3 {
+            let mut state = CAP_CROSSINGS.lock().unwrap();
+            state.1 += 1;
+            while !state.0 {
+                state = CAP_RELEASE.wait(state).unwrap();
+            }
+        } else if gate.1 > 0 {
             std::thread::sleep(std::time::Duration::from_millis(gate.1));
         }
         let session = input.field(|i| &i.request).field(|r| &r.session).bytes();
