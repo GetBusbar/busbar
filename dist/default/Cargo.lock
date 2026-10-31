@@ -805,11 +805,10 @@ dependencies = [
 [[package]]
 name = "busbar-store-memory"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-store-memory?rev=d7a62c43e9340899792025ed1ecea3d5fafc463d#d7a62c43e9340899792025ed1ecea3d5fafc463d"
+source = "git+https://github.com/GetBusbar/busbar-store-memory?rev=dc1170bdb08073741b0ad2455085a3623106ca2e#dc1170bdb08073741b0ad2455085a3623106ca2e"
 dependencies = [
  "busbar-contract",
  "serde_json",
- "sha2",
 ]
 
 [[package]]
