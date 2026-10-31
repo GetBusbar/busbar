@@ -621,10 +621,17 @@ fn an_open_whose_settings_ca_the_table_refuses_fails_naming_it() {
         },
     );
     let c = p.call(slot::OPEN, &mut f);
-    assert_eq!(c.outcome, Outcome::Failed, "a refused trust anchor fails the open");
+    assert_eq!(
+        c.outcome,
+        Outcome::Failed,
+        "a refused trust anchor fails the open"
+    );
     let text = c.open_failure("trusting");
     assert!(text.contains("settings.ca"), "{text}");
-    assert!(!text.contains(NOT_A_PEM), "the value is never repeated: {text}");
+    assert!(
+        !text.contains(NOT_A_PEM),
+        "the value is never repeated: {text}"
+    );
 
     let good = bound(Box::leak(Box::new(TRUSTING)), &table);
     assert_eq!(open_with(&good, br#"{"ca":"PEM-A"}"#), Outcome::Ready);

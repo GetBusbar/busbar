@@ -11,10 +11,12 @@
 //! the example `cdylib` `secret_broken_door` behind one `export_door!` line (the DROPPED door).
 #![allow(dead_code)]
 
-use busbar_contract::abi::mechanism::call::Outcome;
+use busbar_contract::abi::mechanism::call::{OutHead, Outcome};
 use busbar_contract::abi::sdk::life::{Held, Life, Refreshed, Refusal};
 use busbar_contract::abi::sdk::{Instance, Lent, Out, SafeSlot};
-use busbar_contract::abi::secret::{cancel, ResolveIn, ResolveOut, ERROR_KIND_NOT_FOUND};
+use busbar_contract::abi::secret::{
+    cancel, CheckIn, ResolveIn, ResolveOut, ERROR_KIND_NOT_FOUND,
+};
 
 /// The broken door's Statement name.
 pub const BROKEN_NAME: &str = "both-ways-secret-broken";
@@ -59,5 +61,47 @@ pub mod broken {
         statement: busbar_contract::abi::sdk::door::statement(super::BROKEN_NAME, "1.6.0", 8),
         lifecycle: life(super::Nothing),
         kind_ops: { resolve: busbar_contract::abi::sdk::Safe<super::ResolveBroken> },
+    }
+}
+
+/// The checking door's Statement name.
+pub const CHECKING_NAME: &str = "secret-checking";
+
+/// What the checking door's `check` refuses: a reference whose `path` is not absolute.
+pub const NOT_ABSOLUTE: &str = "settings.path: must name an absolute path";
+
+/// `check`: READY for a reference whose `path` starts with `/`, else FAILED with
+/// [`NOT_ABSOLUTE`]. Pure: it reads nothing but the settings it is handed, and no instance.
+pub struct CheckPath;
+
+impl SafeSlot for CheckPath {
+    type In = CheckIn;
+    type Out = OutHead;
+    type State = Held<Nothing>;
+
+    fn call(
+        _: Instance<'_, Held<Nothing>>,
+        input: Lent<'_, CheckIn>,
+        mut out: Out<'_, OutHead>,
+    ) -> Outcome {
+        let settings: serde_json::Value =
+            serde_json::from_slice(input.field(|i| &i.settings).bytes()).unwrap_or_default();
+        match settings["path"].as_str() {
+            Some(p) if p.starts_with('/') => Outcome::Ready,
+            _ => out.fail(Refusal::failed(NOT_ABSOLUTE)),
+        }
+    }
+}
+
+/// A secret plugin that serves `check` (its `resolve` is the broken one: never called here).
+pub mod checking {
+    busbar_contract::plugin_door! {
+        ops: busbar_contract::abi::secret::Ops,
+        statement: busbar_contract::abi::sdk::door::statement(super::CHECKING_NAME, "1.6.0", 8),
+        lifecycle: life(super::Nothing),
+        kind_ops: {
+            resolve: busbar_contract::abi::sdk::Safe<super::ResolveBroken>,
+            check: busbar_contract::abi::sdk::Safe<super::CheckPath>,
+        },
     }
 }
