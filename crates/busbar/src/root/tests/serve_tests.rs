@@ -11643,9 +11643,19 @@ async fn a_key_row_whose_expires_at_is_in_the_past_is_refused_on_the_data_plane(
         refused, 401,
         "the keys chain is a real gate on this app: a bad token is refused"
     );
+    let refusal = |body: &[u8]| {
+        let mut value: serde_json::Value = serde_json::from_slice(body).expect("a JSON refusal");
+        let request_id = value
+            .as_object_mut()
+            .expect("a refusal object")
+            .remove("request_id")
+            .expect("the per-request identifier");
+        assert!(request_id.as_str().is_some_and(|id| !id.is_empty()));
+        value
+    };
     assert_eq!(
-        String::from_utf8_lossy(&expired_body),
-        String::from_utf8_lossy(&refused_body),
+        refusal(&expired_body),
+        refusal(&refused_body),
         "an expired key row is refused with the same body as any bad credential"
     );
     assert_eq!(
