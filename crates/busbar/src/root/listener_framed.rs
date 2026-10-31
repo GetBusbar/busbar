@@ -65,6 +65,11 @@ const READ_CHUNK: usize = 16 * 1024;
 /// the socket to drain.
 const WRITE_ROOM: usize = 256 * 1024;
 
+/// THE FIRST-BYTE BOUND: a connection that sends no byte within it is closed, unanswered, as the
+/// hyper loop's HTTP/1 header read bound (30 s) closed one. An accepting framer states no deadline
+/// at `begin`, so the bound is the listener's.
+pub const FIRST_BYTE_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// The status an answer that switches protocols carries.
 const SWITCHING_PROTOCOLS: u16 = 101;
 
@@ -367,6 +372,7 @@ pub(super) async fn serve<I>(
         agreed: 0,
         stopping: *stop.borrow(),
         failed: false,
+        first_byte: Some(Box::pin(tokio::time::sleep(FIRST_BYTE_BOUND))),
     };
     conn.absorb(y);
     loop {
@@ -410,6 +416,8 @@ struct Conn<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> {
     stopping: bool,
     /// The framing or the socket failed: the connection is over.
     failed: bool,
+    /// The first-byte bound ([`FIRST_BYTE_BOUND`]), until the far end sends a byte.
+    first_byte: Option<Pin<Box<tokio::time::Sleep>>>,
 }
 
 /// What applying one op came to.
@@ -453,6 +461,14 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
                 moved |= self.read(cx);
             }
             moved |= self.timer(cx);
+            if let Some(bound) = self.first_byte.as_mut() {
+                if std::future::Future::poll(bound.as_mut(), cx).is_ready() {
+                    tracing::debug!("data door: no byte arrived within the first-byte bound");
+                    self.first_byte = None;
+                    self.failed = true;
+                    continue;
+                }
+            }
             let idle = self.tasks.is_empty() && self.pending.is_empty() && self.session.is_none();
             if self.failed || (idle && (self.ended || self.read_done || self.stopping)) {
                 return self.close(cx);
@@ -553,6 +569,9 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
             Poll::Ready(Ok(())) => {
                 let n = rb.filled().len();
                 let end = n == 0;
+                if n > 0 {
+                    self.first_byte = None;
+                }
                 self.read_done = end;
                 let Some(framing) = self.framing.as_mut() else {
                     return false;
