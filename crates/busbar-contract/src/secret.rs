@@ -235,6 +235,18 @@ pub trait SecretAxis: Send + Sync {
     /// `secrets:` block and no plugins directory).
     fn linked(&self, module: &str) -> bool;
 
+    /// JUDGE one reference to `module` at config time, before anything resolves: its plugin's
+    /// `check` (`abi::secret::Ops::check`) over the reference's `settings`, with no instance and no
+    /// I/O. `Ok` when the plugin accepts it, serves no `check`, or no plugin answers `module` (its
+    /// existence is the registry's to judge); else the plugin's reasons, one per line, which the
+    /// host renders after the reference's config path.
+    ///
+    /// # Errors
+    /// The plugin's reasons.
+    fn check(&self, _module: &str, _settings: &serde_json::Value) -> Result<(), Vec<String>> {
+        Ok(())
+    }
+
     /// The process's ONE instance of the linked plugin `module` names, opened on first use with no
     /// settings (a linked source takes no module-level configuration).
     ///

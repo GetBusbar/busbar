@@ -2325,7 +2325,7 @@ pub mod deal;
 /// forgetting one impossible rather than merely discouraged. Its own module because the guard is a
 /// cohesive unit (the walk, the exhaustive destructures, and the type inventory the coverage test
 /// checks the source against) and because `mod.rs` is at the structure-lint size ceiling.
-mod secret_refs;
+pub(crate) mod secret_refs;
 mod undeclared_secret_refs;
 #[cfg(test)]
 pub(crate) use secret_refs::registry_refusal;

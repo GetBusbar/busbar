@@ -31,7 +31,7 @@ use busbar_contract::abi::mechanism::door::DoorFn;
 use busbar_contract::abi::mechanism::lifecycle::slot as life;
 use busbar_contract::abi::mechanism::KindCode;
 use busbar_contract::abi::secret::{
-    slot, ResolveIn, ResolveOut, ERROR_KIND_DENIED, ERROR_KIND_INTERNAL, ERROR_KIND_UNAVAILABLE,
+    slot, CheckIn, ResolveIn, ResolveOut, ERROR_KIND_DENIED, ERROR_KIND_INTERNAL, ERROR_KIND_UNAVAILABLE,
     ERROR_KIND_UNSET, FIRST_SECRET_CAP, MAX_SECRET_BYTES,
 };
 use busbar_contract::config_time::{ConfigScope, RESOLVE_OFF_CONFIG_TIME};
@@ -158,6 +158,48 @@ fn regrown(out: &ResolveOut) -> usize {
     usize::try_from(out.needed)
         .unwrap_or(FIRST_SECRET_CAP)
         .min(MAX_SECRET_BYTES)
+}
+
+/// The reason buffer the host lends a `check`, in bytes.
+const CHECK_REASON_CAP: usize = 4096;
+
+/// `check` one reference's `settings` (JSON bytes) on `plugin`, ticket-less and with no instance
+/// (`abi::secret::Ops::check`): `Ok` when READY, or REFUSED (a plugin that serves no `check`
+/// passes every reference); else the plugin's reasons, one per line, as it wrote them.
+///
+/// # Errors
+/// The plugin's reasons, or what it answered instead of a judgement.
+pub fn check(plugin: &Plugin<Secret>, settings: &[u8]) -> Result<(), Vec<String>> {
+    let mut reason = vec![0_u8; CHECK_REASON_CAP];
+    let mut f = Frame::new(
+        CheckIn {
+            head: in_head(),
+            settings: blob(settings, BLOB_JSON, 0),
+            err_buf: reason.as_mut_ptr(),
+            err_cap: reason.len(),
+        },
+        out_head(),
+    );
+    let c = plugin.call(slot::CHECK, &mut f);
+    let name = plugin.name();
+    match c.outcome {
+        Outcome::Ready | Outcome::Refused => Ok(()),
+        Outcome::Failed => {
+            let text = c.error.as_deref().unwrap_or_default();
+            if busbar_contract::abi::mechanism::lifecycle::check_validate_refusal(text).is_err() {
+                return Err(vec![format!(
+                    "secret module '{name}' refused the reference without saying why"
+                )]);
+            }
+            Err(String::from_utf8_lossy(text)
+                .split('\n')
+                .map(str::to_string)
+                .collect())
+        }
+        o => Err(vec![format!(
+            "secret module '{name}' answered {o:?} to check the reference"
+        )]),
+    }
 }
 
 fn refused(error_kind: u32, text: String) -> SecretRefused {
@@ -427,6 +469,8 @@ pub struct SecretRows {
     /// The host's one disk lane, where a source that declares a disk need resolves at config time.
     /// `None` = no lane is wired (such a source refuses every resolve).
     disk_run: Option<DiskRun>,
+    /// Each plugin bound (never opened) to `check` references, by Statement name.
+    checkers: Mutex<std::collections::HashMap<String, Arc<Plugin<Secret>>>>,
 }
 
 impl std::fmt::Debug for SecretRows {
@@ -458,6 +502,7 @@ impl SecretRows {
             dropped: RwLock::new(Vec::new()),
             shared: OpenOnce::new(),
             disk_run: None,
+            checkers: Mutex::default(),
         }
     }
 
@@ -685,6 +730,29 @@ impl SecretAxis for SecretRows {
 
     fn answers(&self, module: &str) -> bool {
         self.find(module).is_some()
+    }
+
+    fn check(&self, module: &str, settings: &serde_json::Value) -> Result<(), Vec<String>> {
+        let Some(c) = self.find(module) else {
+            // No row answers it: whether the module exists is the registry's to say.
+            return Ok(());
+        };
+        let plugin = {
+            let mut checkers = self.checkers.lock().unwrap_or_else(PoisonError::into_inner);
+            match checkers.get(&c.name) {
+                Some(p) => Arc::clone(p),
+                None => {
+                    // Loaded once per plugin to judge references, never opened.
+                    let p = Arc::new(
+                        self.load(&c, &format!("{}.check", Self::label(module)))
+                            .map_err(|e| vec![e])?,
+                    );
+                    checkers.insert(c.name.clone(), Arc::clone(&p));
+                    p
+                }
+            }
+        };
+        check(&plugin, settings.to_string().as_bytes())
     }
 
     fn linked(&self, module: &str) -> bool {

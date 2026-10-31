@@ -1137,7 +1137,12 @@ impl Instance {
         out: *mut OutHead,
         out_size: u32,
     ) -> Crossed {
-        let needs_instance = !matches!(s, slot::VALIDATE | slot::OPEN);
+        // The secret kind's `check` judges a reference at config time with NO instance, as
+        // `validate` judges settings: it crosses whether or not the plugin was opened, and the
+        // plugin is handed NULL for its instance (`abi::secret::Ops::check`).
+        let instance_free =
+            self.kind == KindCode::Secret && s == busbar_contract::abi::secret::slot::CHECK;
+        let needs_instance = !matches!(s, slot::VALIDATE | slot::OPEN) && !instance_free;
         // A half-open box is crossed only by the `cancel` of its pended `open` and its `close`.
         let crossable =
             self.is_open() || (matches!(s, slot::CANCEL | slot::CLOSE) && self.half_open());
@@ -1151,7 +1156,11 @@ impl Instance {
             head.host = self.ctx();
             (
                 head.ticket,
-                self.ptr.load(Ordering::Acquire),
+                if instance_free {
+                    std::ptr::null_mut()
+                } else {
+                    self.ptr.load(Ordering::Acquire)
+                },
                 head.flags & busbar_contract::abi::mechanism::call::FLAG_RESUME != 0,
             )
         };
