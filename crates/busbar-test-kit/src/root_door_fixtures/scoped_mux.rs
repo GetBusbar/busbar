@@ -24,7 +24,7 @@ busbar_contract::own_seal!(Own);
 
 /// The local token, intentionally reused by different host connections.
 pub const TOKEN: u64 = 41;
-const CLAIM_NAMES: &[AbiStr] = &[abi_str("scoped-mux")];
+const CLAIM_NAMES: &[AbiStr] = &[abi_str("http")];
 const CLAIMS: &[t::Claim] = &[t::Claim {
     session: 1,
     session_bound: 1,

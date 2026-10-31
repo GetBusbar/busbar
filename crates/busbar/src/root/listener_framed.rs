@@ -123,7 +123,7 @@ impl DataFramer {
 
     /// The listener's guest list, lent at each accept: its one `none` line, its ref minted at the
     /// generation published now. `None` when the host's key cannot be drawn.
-    fn guests(&self) -> Option<Arc<GuestLines>> {
+    pub(super) fn guests(&self) -> Option<Arc<GuestLines>> {
         let auth =
             crate::root::loader::dispatch::auth_handle::lend_none_line(self.owner, DATA_LINE_REF)?;
         Some(Arc::new(GuestLines::new(vec![GuestLine {

@@ -128,6 +128,10 @@ mod doors_refresh;
 #[path = "tests/scoped_framing.rs"]
 mod scoped_framing_tests;
 
+#[cfg(test)]
+#[path = "tests/inbound_reload.rs"]
+mod inbound_reload_tests;
+
 // The crate's one plugin fixture (`tests/test_plugins.rs`), shared with the default distribution's
 // integration tests: how a unit test packs a plugin, drops it in and reads what the boot's scan
 // makes of it.
