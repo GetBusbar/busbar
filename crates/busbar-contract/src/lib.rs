@@ -71,6 +71,7 @@ pub mod dest;
 pub mod diagnostic;
 pub mod duration;
 pub mod export_calls;
+pub mod framing_scope;
 pub mod grammar;
 pub mod header;
 pub mod hook_calls;

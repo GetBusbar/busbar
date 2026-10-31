@@ -8,6 +8,9 @@
 //! Moved verbatim from `crates/busbar/src/root/tests/doors_refresh.rs` (the held-down carrier)
 //! and `crates/busbar/src/root/tests/linked_door_root.rs` (the door-root crates in miniature).
 
+#[path = "root_door_fixtures/scoped_mux.rs"]
+pub mod scoped_mux;
+
 /// The carrier under test: a member's program it holds down once it ended, until its `refresh`.
 pub mod held_down {
     use std::marker::PhantomData;

@@ -124,6 +124,10 @@ pub(crate) static PUBLISHING: tokio::sync::Mutex<()> = tokio::sync::Mutex::const
 #[path = "tests/doors_refresh.rs"]
 mod doors_refresh;
 
+#[cfg(test)]
+#[path = "tests/scoped_framing.rs"]
+mod scoped_framing_tests;
+
 // The crate's one plugin fixture (`tests/test_plugins.rs`), shared with the default distribution's
 // integration tests: how a unit test packs a plugin, drops it in and reads what the boot's scan
 // makes of it.

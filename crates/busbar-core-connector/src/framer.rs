@@ -745,13 +745,26 @@ pub struct GuestLine {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct GuestLines {
     lines: Vec<GuestLine>,
+    listener: u64,
 }
 
 impl GuestLines {
     /// The list, in match order.
     #[must_use]
     pub fn new(lines: Vec<GuestLine>) -> Self {
-        Self { lines }
+        Self { lines, listener: 0 }
+    }
+
+    /// A list associated with its host listener registration.
+    #[must_use]
+    pub fn registered(listener: u64, lines: Vec<GuestLine>) -> Self {
+        Self { lines, listener }
+    }
+
+    /// The host listener registration associated with this list.
+    #[must_use]
+    pub fn listener(&self) -> u64 {
+        self.listener
     }
 
     /// Its lines, in match order.
