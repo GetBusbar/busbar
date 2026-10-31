@@ -109,3 +109,24 @@ fn an_auth_field_never_prints_its_value_marked_or_not() {
         assert!(shown.contains("authorization"), "{shown}");
     }
 }
+
+/// RED (open160 A2): a login hop's form and header values (a bearer token, a client credential)
+/// and a token response's body (the tokens) were plain `String`s, left in freed memory when the
+/// login dropped them. Each wipes on drop.
+#[test]
+fn red_every_login_credential_is_held_in_a_wiping_buffer() {
+    fn wipes<T: zeroize::ZeroizeOnDrop>(_: &T) {}
+    let hop = LoginHop {
+        method: "POST".into(),
+        url: "https://idp.example/token".into(),
+        form: vec![("client_id".into(), "form-value".into())],
+        secret_form_field: None,
+        headers: vec![("authorization".into(), "Bearer t".into())],
+    };
+    wipes(&hop);
+    let response = LoginHttpResponse {
+        status: 200,
+        body: "{}".into(),
+    };
+    wipes(&response);
+}
