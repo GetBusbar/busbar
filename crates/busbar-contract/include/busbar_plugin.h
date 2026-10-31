@@ -173,7 +173,7 @@ extern "C" {
 #define BB_SECRET_ERROR_KIND_INVALID UINT32_C(4) /* [`ResolveOut::error_kind`]: the settings blob itself is malformed, or the value is not a */
 #define BB_SECRET_ERROR_KIND_INTERNAL UINT32_C(5) /* [`ResolveOut::error_kind`]: an internal fault in the plugin, not classified above. */
 #define BB_SECRET_FIRST_SECRET_CAP ((size_t)4096) /* The host's first secret buffer, in bytes: an API key or a token fits; a larger value (a PEM */
-#define BB_SECRET_MAX_SECRET_BYTES ((size_t)0x100000) /* THE LARGEST SECRET a `resolve` may answer, in bytes (1 MiB): the most a short answer may name in */
+#define BB_SECRET_MAX_SECRET_BYTES ((size_t)0x1000000) /* The largest secret a resolve may answer, using the shared host-buffer bound. */
 #define BB_SECRET_CANCEL_ABORTED UINT32_C(0) /* The pending `resolve` was aborted; no lease was granted. */
 
 /* auth */

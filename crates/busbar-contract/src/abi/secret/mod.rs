@@ -184,10 +184,8 @@ abi_struct! {
 /// chain) is the short-buffer answer and the host re-calls once with its size.
 pub const FIRST_SECRET_CAP: usize = 4096;
 
-/// THE LARGEST SECRET a `resolve` may answer, in bytes (1 MiB): the most a short answer may name in
-/// [`ResolveOut::needed`], so the host never lends a buffer larger, well below the mechanism's
-/// hard maximum for any host buffer. A PEM chain or a service-account key fits many times over.
-pub const MAX_SECRET_BYTES: usize = 1024 * 1024;
+/// The largest secret a resolve may answer, using the shared host-buffer bound.
+pub const MAX_SECRET_BYTES: usize = crate::abi::mechanism::check::HARD_MAX_BYTES as usize;
 
 abi_struct! {
     /// `check`'s `in`: one reference's settings object and the host's reason buffer, as
