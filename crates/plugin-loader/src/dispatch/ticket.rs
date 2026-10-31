@@ -62,7 +62,7 @@ pub(crate) trait WakeRoute: Send + Sync {
     /// The store a service's results are kept under, whether or not this route serves the host
     /// services (the auth handle's slots run on it without them).
     fn service_store(&self) -> Option<std::sync::Arc<super::services::ServiceStore>> {
-        self.services().map(|s| Arc::clone(s.store))
+        self.services().map(|s| std::sync::Arc::clone(s.store))
     }
 
     /// The kernel's side of the host auth handle this route's instances are served from; `None` =
