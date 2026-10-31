@@ -272,6 +272,7 @@ dependencies = [
  "busbar-kernel-egress",
  "busbar-kernel-identity",
  "busbar-kernel-ledger",
+ "busbar-kernel-seams",
  "busbar-kernel-wal",
  "busbar-plugin-loader",
  "bytes",
@@ -283,6 +284,7 @@ dependencies = [
  "hyper-util",
  "idna_adapter",
  "metrics",
+ "serde",
  "serde_json",
  "serde_yaml_ng",
  "socket2",
@@ -336,6 +338,7 @@ dependencies = [
  "busbar-contract",
  "busbar-kernel",
  "busbar-kernel-egress",
+ "busbar-kernel-seams",
  "flate2",
  "http-body-util",
  "reqwest",
@@ -422,6 +425,7 @@ dependencies = [
  "busbar-kernel-egress",
  "busbar-kernel-identity",
  "busbar-kernel-ledger",
+ "busbar-kernel-seams",
  "busbar-kernel-wal",
  "bytes",
  "crc32fast",
@@ -505,6 +509,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "busbar-kernel-seams"
+version = "1.6.0"
+dependencies = [
+ "busbar-contract",
+]
+
+[[package]]
 name = "busbar-kernel-testkit"
 version = "1.6.0"
 dependencies = [
@@ -525,8 +536,10 @@ dependencies = [
 name = "busbar-plugin-loader"
 version = "1.5.0"
 dependencies = [
+ "arc-swap",
  "base64 0.22.1",
  "busbar-contract",
+ "busbar-kernel-seams",
  "busbar-stub-auth-verify",
  "busbar-stub-auth-verify-plugin",
  "busbar-stub-export",

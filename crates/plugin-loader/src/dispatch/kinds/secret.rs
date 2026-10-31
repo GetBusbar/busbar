@@ -10,7 +10,7 @@
 use busbar_contract::abi::mechanism::call::Outcome;
 use busbar_contract::abi::mechanism::check::Fault;
 use busbar_contract::abi::mechanism::KindCode;
-use busbar_contract::abi::secret::{self, slot, ResolveIn, ResolveOut};
+use busbar_contract::abi::secret::{self, slot, CheckIn, ResolveIn, ResolveOut};
 
 use crate::dispatch::{lifecycle_name, Answer, InFrame, Kind, OutFrame};
 
@@ -20,6 +20,7 @@ pub struct Secret;
 
 // SAFETY: `#[repr(C)]` in `abi/secret/`, each leading with its head; host buffers only.
 unsafe impl InFrame for ResolveIn {}
+unsafe impl InFrame for CheckIn {}
 unsafe impl OutFrame for ResolveOut {}
 
 impl Kind for Secret {

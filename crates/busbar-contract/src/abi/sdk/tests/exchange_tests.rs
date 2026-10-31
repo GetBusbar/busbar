@@ -718,7 +718,10 @@ impl Parks for Parked {
 
 /// Run [`Op::exchange_bounded`] under `reply` to completion: re-entered from the top while it
 /// pends, as the op's wake re-enters it. What it answered, and how often it built its request.
-fn op_bounded(reply: Vec<Scripted>, limit: usize) -> (Result<ExchangeResponse, ConnFailure>, u32) {
+fn op_bounded(
+    reply: Vec<Scripted>,
+    limit: usize,
+) -> (Result<ExchangeResponse, super::OpFailure>, u32) {
     *SCRIPT.lock().unwrap() = Some(Script {
         reply,
         ..Script::default()
@@ -757,7 +760,7 @@ fn an_ops_bounded_exchange_refuses_a_reply_over_its_limit() {
     let (answered, built) = op_bounded(body_reply(60, 41), 100);
     assert_eq!(
         answered.expect_err("the reply passes the op's limit"),
-        ConnFailure::Failed(REPLY_OVER_BOUND.to_string())
+        super::OpFailure::Conn(ConnFailure::Failed(REPLY_OVER_BOUND.to_string()))
     );
     assert_eq!(built, 1, "the request is built on the first entry only");
 }
@@ -1315,6 +1318,32 @@ fn a_head_only_exchange_is_judged_on_the_head_and_never_reads_the_body() {
         observed.runs.values().all(|&n| n == 1),
         "{:?}",
         observed.runs
+    );
+}
+
+/// [`Op::exchange_bounded`] run to completion under `reply`, its reply capped at `limit` bytes.
+fn op_run(reply: Vec<Scripted>, limit: usize) -> Result<ExchangeResponse, super::OpFailure> {
+    op_bounded(reply, limit).0
+}
+
+/// RED (SV-F): an op's exchange takes the reply limit, so a source can cap a reply (a vault read
+/// at 1 MiB) without buffering up to `REPLY_MAX`: past it the reply is refused as one past
+/// `REPLY_MAX` is; at it, it passes whole.
+#[test]
+fn an_ops_exchange_takes_its_reply_limit() {
+    let _g = SERIAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    assert_eq!(
+        op_run(body_reply(60, 41), 100).expect_err("the reply passes the limit"),
+        super::OpFailure::Conn(ConnFailure::Failed(REPLY_OVER_BOUND.to_string()))
+    );
+    assert_eq!(
+        op_run(body_reply(60, 40), 100)
+            .expect("at the limit")
+            .body
+            .len(),
+        100
     );
 }
 

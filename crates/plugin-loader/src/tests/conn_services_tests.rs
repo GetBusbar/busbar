@@ -55,6 +55,9 @@ struct Recording {
     held: Mutex<Vec<(InstanceId, usize)>>,
     /// Every instance the table was told is gone ([`DeclaredConns::forget`]), in order.
     forgotten: Mutex<Vec<InstanceId>>,
+    /// The table refuses every CONFIG-FREE need (no `target_from`, no `trust_from`): the one the
+    /// loader declares at bind.
+    refuse_config_free: bool,
 }
 
 /// One member-program declaration as it reached the table.
@@ -97,6 +100,9 @@ impl DeclaredConns for Recording {
         // no trust anchor (here: anything not spelled `PEM…`).
         if (!spec.target_from.is_empty() && target.is_none())
             || (!spec.trust_from.is_empty() && trust.is_none())
+            || (self.refuse_config_free
+                && spec.target_from.is_empty()
+                && spec.trust_from.is_empty())
             || trust.is_some_and(|t| !t.starts_with("PEM"))
         {
             return Err(ConnError::Refused);
@@ -439,6 +445,54 @@ fn a_need_over_an_unserved_scheme_refuses_the_load_naming_plugin_and_scheme() {
     assert!(bind_over(Box::leak(Box::new(NEEDS)), &served).is_ok());
 }
 
+/// RED (kind-secret K17): a CONFIG-FREE need (no `target_from`, no `trust_from`) is declared at
+/// bind, and a table that REFUSES it refuses the load, naming the plugin and the need, with what
+/// the instance declared forgotten. Before: the answer was discarded (`let _ = table.declare(..)`)
+/// and the instance bound with a need it could never open. The same need on a table that carries
+/// it binds.
+#[test]
+fn a_config_free_need_the_table_refuses_refuses_the_load_naming_plugin_and_need() {
+    const CONFIG_FREE: [Need; 1] = [Need {
+        target_from: NONE,
+        ..NEEDS[0]
+    }];
+    let refusing = Arc::new(Recording {
+        refuse_config_free: true,
+        ..Recording::default()
+    });
+    let Err(refusal) = bind_over(Box::leak(Box::new(CONFIG_FREE)), &refusing) else {
+        panic!("a config-free need the table refuses must refuse the load");
+    };
+    // SAFETY: the test door and its Statement are `'static`.
+    let real: Door = unsafe { *plug::busbar_plugin_door() };
+    let st: Statement = unsafe { *real.statement() };
+    let plugin = String::from_utf8_lossy(
+        crate::dispatch::plugin::str_bytes(st.name).expect("the test door is named"),
+    )
+    .into_owned();
+    let text = refusal.to_string();
+    assert!(
+        text.contains(plugin.as_str())
+            && text.contains("need 0")
+            && text.contains("`sock`")
+            && text.contains("refused"),
+        "the refusal names the plugin, the need and why: {text}"
+    );
+    assert_eq!(
+        refusing.declared.lock().unwrap().len(),
+        1,
+        "the need reached the table"
+    );
+    assert_eq!(
+        refusing.forgotten.lock().unwrap().len(),
+        1,
+        "what the refused instance declared is forgotten"
+    );
+
+    let carrying = Arc::new(Recording::default());
+    assert!(bind_over(Box::leak(Box::new(CONFIG_FREE)), &carrying).is_ok());
+}
+
 /// RED (spec Part 0: core refuses at boot; Part 2 #50; ARCHITECT ruling 2026-10-02): an INBOUND need
 /// over a scheme no loaded transport serves refuses the load the same way, naming the plugin and the
 /// scheme; the same inbound need over a served scheme binds.
@@ -594,6 +648,50 @@ fn a_trust_from_need_is_declared_with_its_settings_ca_at_open_and_every_refresh(
     );
 }
 
+/// A trust anchor [`Recording`] refuses, as the connector refuses a PEM that is no trust anchor.
+const NOT_A_PEM: &str = "NOT-A-PEM";
+
+/// RED (S7): an `open` whose settings name a trust anchor the table refuses FAILS, naming the
+/// setting, before the plugin is entered: the operator learns of a bad CA at open, not at the
+/// first call that dials. An anchor the table takes opens as before.
+#[test]
+fn an_open_whose_settings_ca_the_table_refuses_fails_naming_it() {
+    let table = Arc::new(Recording::default());
+    let p = bound(Box::leak(Box::new(TRUSTING)), &table);
+    let mut f = Frame::new(
+        OpenIn {
+            head: in_head(),
+            host: std::ptr::null(),
+            settings: settings(br#"{"ca":"NOT-A-PEM"}"#),
+            secrets: std::ptr::null(),
+            secrets_len: 0,
+            generation: 1,
+            err_buf: std::ptr::null_mut(),
+            err_cap: 0,
+        },
+        OpenOut {
+            head: out_head(),
+            instance: std::ptr::null_mut(),
+            err_len: 0,
+        },
+    );
+    let c = p.call(slot::OPEN, &mut f);
+    assert_eq!(
+        c.outcome,
+        Outcome::Failed,
+        "a refused trust anchor fails the open"
+    );
+    let text = c.open_failure("trusting");
+    assert!(text.contains("settings.ca"), "{text}");
+    assert!(
+        !text.contains(NOT_A_PEM),
+        "the value is never repeated: {text}"
+    );
+
+    let good = bound(Box::leak(Box::new(TRUSTING)), &table);
+    assert_eq!(open_with(&good, br#"{"ca":"PEM-A"}"#), Outcome::Ready);
+}
+
 /// A need whose trust anchors come from the OWNED namespace: `owned.agent_push.ca`.
 const OWNED_TRUSTING: [Need; 1] = [Need {
     target_from: NONE,
@@ -693,7 +791,7 @@ fn recycling_one_instances_ticket_never_replays_anothers_establish() {
     assert_eq!(two_stream.outcome, RawOutcome::of(Outcome::Ready));
     assert_eq!((opens(&one_table), opens(&two_table)), (1, 1));
 
-    forget(one.instance(), first);
+    drop(forget(one.instance(), first));
     let replayed = establish_on(&two, 0, "127.0.0.1:9", first);
     assert_eq!(
         (replayed.outcome, replayed.value),
@@ -872,6 +970,8 @@ struct Scripted {
     parked: Mutex<Vec<(InstanceId, u64)>>,
     /// Armed, a close parks here until released: a transport door wedged in its close.
     close_gate: Gate,
+    /// Every dial is still connecting when its establish asks: `landed` answers PENDING.
+    landing: bool,
 }
 
 /// A door double's park: armed, the next caller notes it entered and waits for the release (at
@@ -960,6 +1060,14 @@ impl DeclaredConns for Scripted {
 
     fn cause(&self, _: InstanceId, _: ConnId) -> Option<ConnCause> {
         self.failing.as_ref().map(|(_, c)| c.clone())
+    }
+
+    fn landed(&self, caller: InstanceId, conn: ConnId, _: u64) -> Result<(), ConnError> {
+        self.slab.get(caller, conn)?;
+        if self.landing {
+            return Err(ConnError::Pending);
+        }
+        Ok(())
     }
 
     fn auth_of(
@@ -1481,7 +1589,7 @@ fn a_replayed_handle_never_runs_its_service_twice() {
         "the replay answers the stored result, not a second head"
     );
     assert_eq!(replayed.len, h.len);
-    super::forget(q.instance(), T);
+    drop(super::forget(q.instance(), T));
     let fresh = request(&q, 1, stream, &head_piece(), HEAD_BYTES);
     assert_eq!(
         fresh.outcome,
@@ -1731,6 +1839,57 @@ fn facts_expose_the_peer_certificate_hash() {
         ..ConnFacts::default()
     });
     assert_eq!(read(2), (1, Some("ab".repeat(32))), "secured");
+}
+
+/// RED (THE DESIGN §11.12, "on resume the plugin re-issues the SAME handle and receives the stored
+/// result"): `FACTS` wrote the caller's `StreamFacts`, so a replayed handle writes the same facts
+/// again into the `facts` the replay lends, never a kept READY over memory nothing touched. A store
+/// op answering short re-runs on its ticket with its kept answers. The facts are the ones the first
+/// run was answered, not the stream's now (it was upgraded, or closed, later in that run), and their
+/// strings stay readable for the replay after the stream closed.
+#[test]
+fn a_replayed_facts_writes_the_same_facts_again() {
+    use busbar_contract::abi::host::conn::connector::{FactsIn, StreamFacts, StreamIn};
+    let table = Arc::new(Scripted::default());
+    let p = bound_over(&table);
+    let stream = opened_stream(&p, 0).value;
+    let ask = |seq: u32| {
+        // SAFETY: an all-zero `StreamFacts` is a valid value the slot overwrites.
+        let mut f: StreamFacts = unsafe { std::mem::zeroed() };
+        let i = FactsIn {
+            head: head_of::<FactsIn>(service::FACTS, seq),
+            stream,
+            facts: &mut f,
+        };
+        let out = call(&p, CONN_SLOTS.facts, &i);
+        let text = |s: AbiStr| {
+            (!s.ptr.is_null()).then(|| {
+                // SAFETY: the host holds the facts' strings for the caller.
+                String::from_utf8(unsafe { std::slice::from_raw_parts(s.ptr, s.len) }.to_vec())
+                    .unwrap()
+            })
+        };
+        (ready(&out), f.secure, text(f.peer_cert_hash))
+    };
+    *table.facts.lock().unwrap() = Some(ConnFacts {
+        peer_cert: Some(busbar_contract::transport::wire::CertFacts {
+            subject: String::new(),
+            issuer: String::new(),
+            fingerprint: "ab".repeat(32),
+        }),
+        ..ConnFacts::default()
+    });
+    let secured = (true, 1, Some("ab".repeat(32)));
+    assert_eq!(ask(1), secured, "the first run's facts");
+    // The stream's facts move on after the first run asked.
+    *table.facts.lock().unwrap() = Some(ConnFacts::default());
+    assert_eq!(ask(1), secured, "the replayed facts");
+    let c = StreamIn {
+        head: head_of::<StreamIn>(service::CLOSE, 2),
+        stream,
+    };
+    assert!(ready(&call(&p, CONN_SLOTS.close, &c)));
+    assert_eq!(ask(1), secured, "the replayed facts, the stream closed");
 }
 
 /// Q-L16-4: `UpgradeIn::flags`' verify-off reaches the table; an `in` from before the flags
@@ -2264,10 +2423,74 @@ fn a_replayed_read_reply_writes_its_piece_and_bytes_again() {
         table.script.lock().unwrap().is_empty(),
         "every piece was read from the far end once"
     );
-    super::forget(p.instance(), T);
+    drop(super::forget(p.instance(), T));
     let mut fresh = [0_u8; 64];
     let (_, gone) = read_reply(&p, 1, stream, &mut fresh);
     assert_ne!(gone, h, "a forgotten ticket's read is not replayed");
+}
+
+/// One raw `READ` of `stream` into `buf` under handle `seq`.
+fn raw_read(p: &Plugin<TestKind>, seq: u32, stream: u64, buf: &mut [u8]) -> ServiceOut {
+    let i = IoIn {
+        head: head_of::<IoIn>(service::READ, seq),
+        stream,
+        buf: buf.as_mut_ptr(),
+        len: buf.len(),
+    };
+    call(p, CONN_SLOTS.read, &i)
+}
+
+/// RED (THE DESIGN §11.12, "on resume the plugin re-issues the SAME handle and receives the stored
+/// result"): a raw `READ` wrote the caller's memory, so a replayed handle writes the same bytes
+/// again into the buffer the replay lends, never a kept count over memory nothing touched. A store
+/// op answering short re-runs on its ticket with its kept answers: a reply read in more than one
+/// raw `READ` was otherwise parsed from the reused buffer's stale last chunk
+/// (busbar-store-valkey's `list_plane_records`, "invalid RESP reply: unknown reply type"). A replay
+/// buffer below the kept piece is the short-buffer rule's: FAILED, the full size needed, nothing
+/// written, and the kept answer still redeemable. The far end is read once.
+#[test]
+fn a_replayed_raw_read_writes_its_bytes_again() {
+    let table = Arc::new(Scripted::default());
+    table.script.lock().unwrap().extend([
+        (piece(PieceKind::Body, None, None, 6), b"*2\r\n$3".to_vec()),
+        (piece(PieceKind::Body, None, None, 5), b"\r\nabc".to_vec()),
+    ]);
+    let p = bound_over(&table);
+    let stream = opened_stream(&p, 0).value;
+    let mut buf = [0_u8; 16];
+    let first = raw_read(&p, 1, stream, &mut buf);
+    assert!(ready(&first) && first.len == 6);
+    let second = raw_read(&p, 2, stream, &mut buf);
+    assert!(ready(&second) && second.len == 5);
+    // The re-run reuses the buffer, its last chunk still in it.
+    let r1 = raw_read(&p, 1, stream, &mut buf);
+    assert!(ready(&r1) && r1.len == 6);
+    assert_eq!(&buf[..6], b"*2\r\n$3", "the replayed first read's bytes");
+    let r2 = raw_read(&p, 2, stream, &mut buf);
+    assert!(ready(&r2) && r2.len == 5);
+    assert_eq!(&buf[..5], b"\r\nabc", "the replayed second read's bytes");
+    assert!(
+        table.script.lock().unwrap().is_empty(),
+        "every read reached the far end once"
+    );
+    let mut small = [0xEE_u8; 4];
+    let short = raw_read(&p, 1, stream, &mut small);
+    assert_eq!(
+        (short.outcome, short.needed_bytes, short.len),
+        (RawOutcome::of(Outcome::Failed), 6, 0),
+        "a replay buffer below the kept piece is a short answer"
+    );
+    assert_eq!(small, [0xEE; 4], "a short answer writes nothing");
+    let mut again = [0_u8; 6];
+    let r1 = raw_read(&p, 1, stream, &mut again);
+    assert!(
+        ready(&r1) && r1.len == 6,
+        "the kept answer is still redeemable"
+    );
+    assert_eq!(&again, b"*2\r\n$3");
+    drop(super::forget(p.instance(), T));
+    let gone = raw_read(&p, 1, stream, &mut buf);
+    assert!(!ready(&gone), "a forgotten ticket's read is not replayed");
 }
 
 /// RED (audit row 159, connector HIGH 5: "a replaced instance's member programs keep running"):
@@ -2708,6 +2931,57 @@ fn red_an_instances_last_drop_on_a_worker_closes_with_no_worker_lock_held() {
     d.recycle(t);
 }
 
+/// RED (THE DESIGN §11.13 M1, "No plugin code (`dlclose` included) runs under a host lock"): a raw
+/// `ESTABLISH` that answered PENDING leaves its dial in flight on the ticket; the recycle that ends
+/// the ticket closes that dial, and the close reaches a transport door. The door double parks in
+/// its close: while it is parked, a ticket is still minted on that worker, because the worker's
+/// state lock is not held across the close.
+#[test]
+fn red_a_dial_left_in_flight_is_closed_with_no_worker_lock_held() {
+    let table = Arc::new(Scripted {
+        landing: true,
+        ..Scripted::default()
+    });
+    let d = crate::dispatch::Dispatcher::new(crate::dispatch::DispatchConfig::default());
+    let p = bound_over_by(&table, d.adopter());
+    assert_eq!(open_with(&p, b"{}"), Outcome::Ready);
+    let driver = d.driver(&p, 0).expect("a driver ticket");
+    let pending = establish_on(&p, 0, "127.0.0.1:9", driver);
+    assert_eq!(
+        pending.outcome,
+        RawOutcome::of(Outcome::Pending),
+        "the dial is still connecting"
+    );
+    assert_eq!(table.opened.lock().unwrap().len(), 1, "one dial in flight");
+    table.close_gate.armed.store(true, AtomicOrdering::SeqCst);
+    d.recycle(driver);
+    let parked = table
+        .close_gate
+        .entered_within(std::time::Duration::from_secs(10));
+    let minted = std::thread::scope(|s| {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let d = &d;
+        s.spawn(move || {
+            let _ = tx.send(d.mint(0));
+        });
+        let minted = rx.recv_timeout(std::time::Duration::from_secs(5));
+        // Released whatever happened, so the scope's join never waits on the parked close.
+        table
+            .close_gate
+            .released
+            .store(true, AtomicOrdering::SeqCst);
+        minted
+    });
+    assert!(parked, "the dial left in flight was never closed");
+    let minted = minted.expect(
+        "a mint on the worker blocked while a transport close ran: the dial left in flight was \
+         closed under the worker's state lock",
+    );
+    let t = minted.expect("a ticket");
+    d.recycle(t);
+    drop(p);
+}
+
 /// A caller's `out` lent in 96 bytes, stating `size`: every byte past the size field is `0xAA`, so
 /// a write past what the caller stated shows.
 #[repr(C, align(8))]
@@ -2972,7 +3246,7 @@ fn a_need_refused_by_the_table_is_audited_in_its_word() {
     let label = "bind-audit-trust-refused";
     let table = Arc::new(Recording::default());
     let p = bound_labelled(Box::leak(Box::new(TRUSTING)), &table, label);
-    assert_eq!(open_with(&p, br#"{"ca":"junk"}"#), Outcome::Ready);
+    assert_eq!(open_with(&p, br#"{"ca":"junk"}"#), Outcome::Failed);
     assert_eq!(
         refused_for(label),
         vec![format!(
@@ -3012,7 +3286,8 @@ fn an_unwritten_settings_trust_is_refused_but_not_audited() {
         .map(|(.., trust)| trust.clone())
         .collect();
     assert_eq!(trusts, vec![None, None]);
-    // A junk anchor is a refusal, audited.
+    // The table refuses and audits the need. Refresh still returns the existing plugin's
+    // outcome; it does not become a new OPEN or make that refused need available.
     assert_eq!(refresh_with(&p, br#"{"ca":"junk"}"#), Outcome::Ready);
     assert_eq!(
         refused_for(label),

@@ -1587,20 +1587,20 @@ pub(crate) fn compose_planes_over(
         let dialects = egress
             .map(|e| crate::root::door_steps::dialect_facts(&walked, e.reach.providers))
             .unwrap_or_default();
-        let snapshot = open(
+        let opened = open(
             plugin,
             settings_path(&served_facts),
             &settings,
             public_url,
             &owned,
             &dialects,
-        )
-        .map_err(|e| format!("{instance}: {e}"))?;
+        );
         // ITS OWNED TRUST ANCHORS, judged by the one rule a config apply is judged by too (the
         // root's rules, [`crate::root::door_steps::Rules`], before the build): an anchor the
         // operator wrote that is no trust anchor refuses the boot, naming the key.
         crate::root::door_steps::owned_anchors_refusal(&served_facts.need_trust, sections)
             .map_err(|e| format!("{instance}: {e}"))?;
+        let snapshot = opened.map_err(|e| format!("{instance}: {e}"))?;
         let section = &walked;
         let calls = Arc::new(PlaneInstance::new(
             plugin.clone(),
@@ -2206,7 +2206,7 @@ fn open(
     );
     let (called, snapshot) = plugin.open(&mut frame);
     if called.outcome != AbiOutcome::Ready {
-        return Err(format!("it did not open: {:?}", called.outcome));
+        return Err(called.open_failure(plugin.name()));
     }
     snapshot.ok_or_else(|| "its snapshot did not pass the host's checks".to_string())
 }

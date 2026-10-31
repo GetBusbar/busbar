@@ -37,6 +37,12 @@ pub fn the() -> &'static Arc<Connector> {
     ONE.get_or_init(|| Arc::new(Connector::new()))
 }
 
+/// The connector already installed by boot, without reserving its slot during configuration.
+/// Secret sources with no network needs can resolve before that installation.
+pub fn installed() -> Option<&'static Arc<Connector>> {
+    ONE.get()
+}
+
 /// THE IDENTITY THE COMPOSITION ROOT'S OWN NEEDS ARE DECLARED UNDER on the one connector: the
 /// authorization server's (`busbar-core-oauth2`, a compiled-in cleanliness crate, not a plugin
 /// instance). The loader numbers every plugin instance by its handle's id, minted from 1 up

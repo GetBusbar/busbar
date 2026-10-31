@@ -702,36 +702,6 @@ pub fn rendered_cli_help(rendering: &[u8]) -> Result<Option<String>, String> {
     Ok((!help.is_empty()).then_some(help))
 }
 
-/// A linked plane door's DECLARING section, read off its Statement through the one load (the
-/// section the `linked-section` manifest row names for it; the root's tests hold the two together).
-/// `None`: the door declares no section.
-///
-/// # Errors
-///
-/// The door will not load or its Statement breaks the section rules.
-pub fn linked_declaring_section(
-    door: busbar_contract::abi::mechanism::door::DoorFn,
-) -> Result<Option<&'static str>, String> {
-    let (door, _) = crate::dispatch::load::read_door(
-        crate::dispatch::load::enter_door(crate::dispatch::load::raw(door)),
-        Some(KindCode::Plane),
-    )
-    .map_err(|e| format!("{e:?}"))?;
-    let st = crate::dispatch::load::statement(&door).map_err(|e| format!("{e:?}"))?;
-    let sections = if st.sections_len == 0 {
-        &[][..]
-    } else {
-        // SAFETY: a non-NULL `sections` holds `sections_len` `'static` entries.
-        unsafe { std::slice::from_raw_parts(st.sections, st.sections_len) }
-    };
-    check_sections(sections)
-        .map_err(|f| format!("the plane's sections break {:?} at {}", f.rule, f.field))?;
-    Ok(sections
-        .iter()
-        .find(|s| s.flags & SECTION_DECLARING != 0)
-        .map(|s| kept(s.name)))
-}
-
 /// EVERYTHING A LINKED PLANE DOOR STATES (its Statement's name and its tail's facts, as a bind
 /// copies them out), read WITHOUT binding it: reading a linked row's static declaration, its kind
 /// tail included, is reading, not loading (Law 7; ARCHITECT ruling 2026-10-20). Reads the door's
@@ -1401,8 +1371,8 @@ impl Kind for Plane {
         Box::new(PlaneCancel::new())
     }
 
-    /// THE REQUEST LOOKUP: the unit an `arrive`, an `on_piece` or a `refusal` serves, the kernel-
-    /// minted key its `in` carries (`ArriveIn::unit`, `OnPieceIn::unit`, `RefusalIn::unit`), so a
+    /// THE REQUEST LOOKUP: the unit an `arrive`, `on_piece`, `project` or `refusal` serves, the kernel-
+    /// minted key its `in` carries, so a
     /// host service the plane calls inside the crossing (`entitlement.check`) answers for that
     /// unit's principal. `0` is no unit (a refusal before any unit arrived); every other op serves
     /// none.
@@ -1424,6 +1394,7 @@ impl Kind for Plane {
             match s {
                 slot::ARRIVE => read::<ArriveIn>(input, in_size).map(|i| i.unit),
                 slot::ON_PIECE => read::<OnPieceIn>(input, in_size).map(|i| i.unit),
+                slot::PROJECT => read::<ProjectIn>(input, in_size).map(|i| i.unit),
                 slot::REFUSAL => read::<RefusalIn>(input, in_size).map(|i| i.unit),
                 _ => None,
             }

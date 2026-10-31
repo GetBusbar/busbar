@@ -195,3 +195,50 @@ pub fn verify_unit_ref(
     }
     Ok(r.id)
 }
+
+/// THE LINES WHOSE AUTH IS `none`, lent by the host to an accepting transport: `(owner, id)` of
+/// each ref [`lend_none_line`] minted. `unit.hand_in` on such a line needs no verdict (the
+/// contract, [`busbar_contract::abi::host::service::UnitHandInIn`] item (b)), so the host mints the
+/// request's unit there and answers continue.
+static NONE_LINES: std::sync::Mutex<Vec<(u64, u64)>> = std::sync::Mutex::new(Vec::new());
+
+/// Units minted for requests on a `none` line, numbered from 1.
+static NONE_UNITS: AtomicU64 = AtomicU64::new(0);
+
+/// LEND A `none` LINE to `owner` (the instance identity of the accepting transport): its ref `id`
+/// minted at the published generation, and the line recorded as one whose auth is `none`. `None`
+/// for `id == 0` or when the host's key cannot be drawn.
+#[must_use]
+pub fn lend_none_line(owner: u64, id: u64) -> Option<AuthRef> {
+    let r = mint_auth_ref(owner, generation(), id)?;
+    let mut lines = NONE_LINES
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if !lines.contains(&(owner, id)) {
+        lines.push((owner, id));
+    }
+    Some(r)
+}
+
+/// Whether line ref `id` was lent to `owner` as a `none` line ([`lend_none_line`]).
+#[must_use]
+pub fn is_none_line(owner: u64, id: u64) -> bool {
+    NONE_LINES
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .contains(&(owner, id))
+}
+
+/// THE UNIT OF A REQUEST HANDED IN ON A `none` LINE: a fresh unit id, tagged for `owner` and
+/// `line` at the published generation under a secret of its own. `None` when the key cannot be
+/// drawn.
+#[must_use]
+pub fn mint_none_unit(owner: u64, line: u32) -> Option<UnitRef> {
+    let unit = NONE_UNITS.fetch_add(1, Ordering::Relaxed) + 1;
+    let key = key().ok()?;
+    let secret = [
+        siphash24(key, &[DOMAIN_UNIT_REF, owner, unit, 1]),
+        siphash24(key, &[DOMAIN_UNIT_REF, owner, unit, 2]),
+    ];
+    mint_unit_ref(secret, generation(), owner, line, unit)
+}

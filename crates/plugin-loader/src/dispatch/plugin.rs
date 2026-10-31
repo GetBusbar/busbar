@@ -48,7 +48,7 @@ use busbar_contract::abi::mechanism::call::{
 };
 use busbar_contract::abi::mechanism::door::{FAMILY_COUNTER, FAMILY_GAUGE, FAMILY_HISTOGRAM};
 use busbar_contract::abi::mechanism::lifecycle::{
-    slot, OpenIn, OpenOut, ReadyIn, RefreshIn, ValidateIn,
+    slot, OpenIn, OpenOut, ReadyIn, RefreshIn, ReleaseIn, ValidateIn,
 };
 use busbar_contract::abi::mechanism::rendering::ReadNeed;
 use busbar_contract::abi::mechanism::ticket::{HostCtx, HostTables, Ticket};
@@ -302,6 +302,9 @@ pub(crate) struct Crossed {
     pub(crate) disposition: Option<u32>,
     /// The record writes that `cancel` carried (a plane's, SEAM-L(r)).
     pub(crate) cancel_writes: Vec<busbar_contract::plane_calls::CancelWrite>,
+    /// A lease the plugin named on an answer that hands none to the caller (any outcome but READY
+    /// or PENDING, a FAULT the host judged included): released by the host as the crossing ends.
+    pub(crate) unread: u64,
 }
 
 impl Crossed {
@@ -314,6 +317,15 @@ impl Crossed {
             short: false,
             disposition: None,
             cancel_writes: Vec::new(),
+            unread: 0,
+        }
+    }
+
+    /// This answer, with `lease` (what the plugin named in its head) left for the host to release.
+    fn unread(self, lease: u64) -> Self {
+        Self {
+            unread: lease,
+            ..self
         }
     }
 }
@@ -772,18 +784,22 @@ impl Instance {
     /// Declare each need whose `target_from` or `trust_from` names a config path, with what that
     /// path resolves to in `settings` (the settings `open` or `refresh` hands the plugin), before
     /// the plugin sees them: the target it is pinned to, and the operator CA PEM its connections
-    /// trust on top of the public roots. A path that resolves to nothing is declared without its
-    /// value, which the table refuses; a refresh re-declares, so a changed value moves the pin or
+    /// trust on top of the public roots. A `target_from` that resolves to nothing is declared without
+    /// its value, which the table refuses; a `trust_from` that does (`settings.` or `owned.`) is
+    /// optional, declared without it, and the table takes it as the public roots alone; a refresh re-declares, so a changed value moves the pin or
     /// the trust; a `trust_from` naming a settings path that resolves to nothing is refused by the
     /// table but not audited (an optional anchor the operator did not write). A `trust_from` in the OWNED namespace (`owned.<section>.<key>`,
     /// [`busbar_contract::section::owned_path`]) resolves against `owned` alone (a plane's other
     /// owned sections, the JSON object its `open` carries in `PlaneOpenIn::owned` and its `refresh`
     /// under `abi::plane::EXT_OWNED`), never against `settings`; absent there, the need is declared
     /// without it, which the table takes as "the public roots alone".
-    fn declare_targeted(&self, settings: Blob, owned: Option<&[u8]>) {
-        let Some((instance, table)) = self.wake.conn.get() else {
-            return;
-        };
+    ///
+    /// Answers the operator's text for the first need whose trust anchor the settings name and the
+    /// table refused (a CA that is no trust anchor): an `open` fails with it rather than serve
+    /// connections that can never verify. Every refusal is audited either way.
+    fn declare_targeted(&self, settings: Blob, owned: Option<&[u8]>) -> Option<String> {
+        let (instance, table) = self.wake.conn.get()?;
+        let mut trust_refused = None;
         let bytes: &[u8] = if settings.ptr.is_null() {
             &[]
         } else {
@@ -858,10 +874,19 @@ impl Instance {
                         crate::observe::conn_reason(e)
                     }
                 });
+            if let (Err(reason), Some(_), None) = (answer, &trust, &trust_refused) {
+                // The value is the operator's CA; the text names where it is, never what it is.
+                trust_refused = Some(format!(
+                    "{}: the host refused the CA certificate it names for need {i} ({reason}); \
+                     it must be PEM that parses into a trust anchor",
+                    need.trust_from
+                ));
+            }
             if unresolved || !trust_unwritten {
                 self.need_refused(id, answer);
             }
         }
+        trust_refused
     }
 
     /// AUDITED ON THE PLUGIN'S BEHALF: the table's refusal of `need`, declared at `open` or
@@ -996,6 +1021,10 @@ impl Instance {
         std::mem::take(&mut *self.open_reason.lock().unwrap_or_else(|e| e.into_inner()))
     }
 
+    fn instance_free(&self, s: u32) -> bool {
+        self.kind == KindCode::Secret && s == busbar_contract::abi::secret::slot::CHECK
+    }
+
     /// What the host answers WITHOUT calling the plugin, if anything: a faulted instance, a slot
     /// the table does not have, an instance-less call before `open` answered READY (a half-open
     /// box admits only its `close`, once its `open` is over: the lifecycle exclusion), a second
@@ -1013,6 +1042,11 @@ impl Instance {
         }
         if s >= self.slot_count() {
             return Some(Outcome::Refused);
+        }
+        if self.instance_free(s) {
+            let fits = in_size >= size_of::<busbar_contract::abi::secret::CheckIn>()
+                && out_size >= size_of::<OutHead>();
+            return (!fits).then_some(Outcome::Refused);
         }
         let open = self.is_open();
         let half_open = self.half_open();
@@ -1073,7 +1107,49 @@ impl Instance {
         if s == slot::OPEN && ended && self.half_open() && !self.faulted.load(Ordering::Acquire) {
             self.close_half_open();
         }
-        crossed
+        if crossed.unread != 0 && s != slot::RELEASE {
+            self.release_unread(crossed.unread);
+        }
+        Crossed {
+            unread: 0,
+            ..crossed
+        }
+    }
+
+    /// RELEASE A LEASE NO CALLER WAS HANDED (export ABI defect 6): the plugin named `lease` on an
+    /// answer that was not READY, so no caller reads under it and none releases it; the host does,
+    /// ticket-less, once the crossing that named it is over. An instance no longer open (or
+    /// faulted) is not crossed again: what it held goes with it.
+    fn release_unread(&self, lease: u64) {
+        if !self.is_open() || self.faulted.load(Ordering::Acquire) {
+            return;
+        }
+        let mut input = ReleaseIn {
+            head: InHead {
+                size: size_of::<ReleaseIn>() as u32,
+                ..super::in_head()
+            },
+            lease,
+        };
+        let mut out = super::out_head();
+        // SAFETY: the host's own `release` frame (`ReleaseIn` leads with its head, the `out` is
+        // the head), live and unaliased for the call.
+        let released = unsafe {
+            self.cross(
+                slot::RELEASE,
+                (&raw mut input).cast::<InHead>(),
+                &raw mut out,
+                size_of::<OutHead>() as u32,
+            )
+        };
+        if released.outcome != Outcome::Ready {
+            tracing::warn!(
+                plugin = %self.name,
+                kind = ?self.kind,
+                outcome = ?released.outcome,
+                "the release of a lease named on an answer that was not READY did not answer READY"
+            );
+        }
     }
 
     /// `cancel` of the op on `ticket` (deadline class `class`, serving `unit`), which the host
@@ -1137,7 +1213,11 @@ impl Instance {
         out: *mut OutHead,
         out_size: u32,
     ) -> Crossed {
-        let needs_instance = !matches!(s, slot::VALIDATE | slot::OPEN);
+        // The secret kind's `check` judges a reference at config time with NO instance, as
+        // `validate` judges settings: it crosses whether or not the plugin was opened, and the
+        // plugin is handed NULL for its instance (`abi::secret::Ops::check`).
+        let instance_free = self.instance_free(s);
+        let needs_instance = !matches!(s, slot::VALIDATE | slot::OPEN) && !instance_free;
         // A half-open box is crossed only by the `cancel` of its pended `open` and its `close`.
         let crossable =
             self.is_open() || (matches!(s, slot::CANCEL | slot::CLOSE) && self.half_open());
@@ -1151,7 +1231,11 @@ impl Instance {
             head.host = self.ctx();
             (
                 head.ticket,
-                self.ptr.load(Ordering::Acquire),
+                if instance_free {
+                    std::ptr::null_mut()
+                } else {
+                    self.ptr.load(Ordering::Acquire)
+                },
                 head.flags & busbar_contract::abi::mechanism::call::FLAG_RESUME != 0,
             )
         };
@@ -1166,6 +1250,8 @@ impl Instance {
                 v.err_cap = buf.len();
             }
         }
+        // A trust anchor the open's settings name that the connection table refused.
+        let mut trust_refused = None;
         if s == slot::OPEN {
             // Every `open`, of every kind, is lent the host's reason buffer: a failed open has no
             // instance to hold its reason. The same buffer is re-lent on a resume.
@@ -1186,7 +1272,7 @@ impl Instance {
             let owned = (self.kind == KindCode::Plane
                 && unsafe { (*input).size } as usize >= size_of::<PlaneOpenIn>())
             .then(|| unsafe { blob_bytes((*input.cast::<PlaneOpenIn>()).owned) });
-            self.declare_targeted(settings, owned);
+            trust_refused = self.declare_targeted(settings, owned);
             self.bind_destinations(settings);
         }
         if s == slot::READY {
@@ -1205,7 +1291,8 @@ impl Instance {
             // SAFETY: the host's own extensions blob, live for the crossing it is handed to.
             let owned = unsafe { blob_bytes(extensions) };
             let owned = busbar_contract::abi::mechanism::extensions::get(owned, EXT_OWNED);
-            self.declare_targeted(settings, owned);
+            // A refresh's refusals are audited; the instance it refreshes stays open.
+            let _ = self.declare_targeted(settings, owned);
             self.bind_destinations(settings);
         }
         // THE HOST ZEROES THE WHOLE `out` BEFORE EVERY CALL, RESUME included (FAULT = 0, every
@@ -1214,6 +1301,15 @@ impl Instance {
         unsafe {
             std::ptr::write_bytes(out.cast::<u8>(), 0, out_size as usize);
             (*out).size = out_size;
+        }
+        // A FRESH `open` whose settings name a CA the table refused fails here, with the reason,
+        // before the plugin is entered: no instance is published to serve connections that can
+        // never verify, and the operator learns it at open, not at the first dial.
+        if let Some(reason) = trust_refused.filter(|_| !resumed) {
+            return Crossed {
+                error: Some(reason.into_bytes()),
+                ..Crossed::host(Outcome::Failed)
+            };
         }
         let op = match (s, self.ready) {
             (slot::READY, Some(ready)) => ready,
@@ -1289,7 +1385,7 @@ impl Instance {
         let head = unsafe { *out };
         let outcome = judge(raw, &head, ticket, out_size);
         if outcome == Outcome::Fault {
-            return Crossed::host(Outcome::Fault);
+            return Crossed::host(Outcome::Fault).unread(head.lease);
         }
         // SAFETY: the op's own host `in`/`out`; the host wrote `in.size` itself.
         let answer = unsafe {
@@ -1314,7 +1410,7 @@ impl Instance {
                     field = f.field,
                     "a plugin answer broke its kind's rule; the op answers FAULT"
                 );
-                return Crossed::host(Outcome::Fault);
+                return Crossed::host(Outcome::Fault).unread(head.lease);
             }
         }
         let short = outcome == Outcome::Failed && (self.short)(&answer);
@@ -1325,7 +1421,7 @@ impl Instance {
             let mut buf = self.take_open_reason();
             if len > buf.len() {
                 // A reason longer than the buffer lent is a malformed answer.
-                return Crossed::host(Outcome::Fault);
+                return Crossed::host(Outcome::Fault).unread(head.lease);
             }
             buf.truncate(len);
             Some(buf).filter(|b| !b.is_empty())
@@ -1353,7 +1449,7 @@ impl Instance {
                     field = f.field,
                     "a validate refusal broke the refusal rule; the op answers FAULT"
                 );
-                return Crossed::host(Outcome::Fault);
+                return Crossed::host(Outcome::Fault).unread(head.lease);
             }
         }
         // An open that FAILED or was REFUSED (fresh, or on its RESUME) gets no instance: the
@@ -1367,7 +1463,7 @@ impl Instance {
             // SAFETY: `refuse` checked the frame holds an `OpenOut`.
             let inst = unsafe { (*out.cast::<OpenOut>()).instance };
             if inst.is_null() {
-                return Crossed::host(Outcome::Fault);
+                return Crossed::host(Outcome::Fault).unread(head.lease);
             }
             open_ended.ptr = None;
             self.ptr.store(inst, Ordering::Release);
@@ -1376,10 +1472,14 @@ impl Instance {
                 self.opened.store(true, Ordering::Release);
             }
         }
+        // THE LEASE ON ANY OUTCOME (export ABI defect 6): only a READY (or PENDING) answer hands
+        // its lease to the caller; a lease another outcome names is the host's to release.
+        let handed = matches!(outcome, Outcome::Ready | Outcome::Pending);
         Crossed {
             outcome,
             error,
-            lease: head.lease,
+            lease: if handed { head.lease } else { 0 },
+            unread: if handed { 0 } else { head.lease },
             wake_at_ns: if outcome == Outcome::Pending {
                 head.wake_at_ns
             } else {
@@ -1728,9 +1828,21 @@ impl<K: Kind> Plugin<K> {
                             continue;
                         }
                         let id = NeedId(u32::try_from(i).unwrap_or(u32::MAX));
-                        // The answer is the connection table's to keep (`need.admit` reads it);
-                        // its scheme was matched above.
-                        let _ = table.declare(instance, id, need, None, None);
+                        // A CONFIG-FREE NEED THE TABLE REFUSES REFUSES THE LOAD (fail closed,
+                        // naming the plugin and the need): nothing the instance's settings say
+                        // can change the answer later, so binding it would serve a plugin whose
+                        // need can never open. What it declared so far is forgotten with it.
+                        if let Err(e) = table.declare(instance, id, need, None, None) {
+                            table.forget(instance);
+                            return Err(LoadError::NeedRefused {
+                                plugin: str_bytes(st.name)
+                                    .map(|n| String::from_utf8_lossy(n).into_owned())
+                                    .unwrap_or_default(),
+                                need: id.0,
+                                transport: need.transport.clone(),
+                                reason: crate::observe::conn_reason(e),
+                            });
+                        }
                     }
                     declared_needs = needs.into_boxed_slice();
                     let _ = wake.conn.set((instance, Arc::clone(table)));
@@ -1868,6 +1980,18 @@ impl<K: Kind> Plugin<K> {
     /// The Statement's name.
     pub fn name(&self) -> &str {
         self.inner.name()
+    }
+
+    /// Write `text` at `severity` (`0` info, `1` warn, `2` error) into this instance's own log
+    /// (its envelope sink, as a log record): what the HOST read from an answer on the instance's
+    /// behalf, such as an auth reject's reason (`abi::auth::IdentifyOut`). Never secret material.
+    pub(crate) fn note(&self, severity: u8, text: &str) {
+        self.inner.sink.diag(Diagnostic {
+            id: DIAG_LOG,
+            name: &[],
+            severity,
+            text: text.as_bytes(),
+        });
     }
 
     /// The settings keys its Statement names as secret references, in the Statement's order.

@@ -1627,7 +1627,11 @@ mod hook_orders {
             step("validate", "Ready lease=false", 1, 1),
             step("validate bad #0", "Failed lease=false why", 1, 1),
             step("open", "Ready lease=false", 1, 1),
-            step("open bad", "Failed lease=false why", 1, 1),
+            step("open bad #0", "Failed lease=false why", 1, 1),
+            step("configure", "Ready lease=false | acked=2", 1, 1),
+            step("notify", "Ready lease=false", 1, 1),
+            step("status", "Ready lease=true | json={}", 1, 1),
+            step("describe", "Ready lease=true | json={}", 1, 1),
             step("tick", "Ready next=0", 1, 1),
             step("refresh", "Ready lease=false", 1, 1),
             step("refresh bad", "Failed lease=false why", 1, 1),
@@ -1671,6 +1675,74 @@ mod hook_orders {
             "an undeclared hook is held to the re-call"
         );
         contract(&passing(&[abstain], true), &expect, true).expect("an undeclared hook re-calls");
+    }
+
+    /// The passing fold with step `label` answering `answer` (added when it has no such step).
+    fn with_step(label: &str, answer: &str) -> Vec<super::Step> {
+        let mut f = passing(&[], true);
+        match f.iter_mut().find(|s| s.label == label) {
+            Some(s) => s.answer = answer.to_string(),
+            None => f.push(step(label, answer, 1, 1)),
+        }
+        f
+    }
+
+    /// RED (hook ABI defect 1, its follow-up): EVERY bad setting the inputs name is judged, not only
+    /// the first: each `validate bad #i` must be FAILED naming why, and each `open bad #i` FAILED.
+    #[test]
+    fn red_every_bad_setting_is_judged() {
+        contract(&passing(&[], true), &[], true).expect("the passing fold");
+        for (label, answer) in [
+            ("validate bad #1", "Ready lease=false"),
+            ("validate bad #1", "Failed lease=false"),
+            ("open bad #1", "Ready lease=false"),
+        ] {
+            assert!(
+                contract(&with_step(label, answer), &[], true).is_err(),
+                "{label} answering {answer:?} passed"
+            );
+        }
+    }
+
+    /// RED (hook ABI defect 9): the hook script walks `configure`, `notify`, `status` and
+    /// `describe`, and the contract judges them: `configure` READY acknowledges the pushed version
+    /// and a refusal names why; `status` and `describe` READY carry JSON; none of the four FAULTs;
+    /// a scripted `configure` the inputs say must be refused is FAILED naming why.
+    #[test]
+    fn red_the_hook_contract_judges_configure_notify_status_and_describe() {
+        for (label, answer) in [
+            ("configure", "Ready lease=false | acked=1"),
+            ("configure", "Failed lease=false | acked=0"),
+            ("configure", "Fault lease=false | acked=0"),
+            ("notify", "Fault lease=false"),
+            ("status", "Ready lease=true | json=invalid"),
+            ("status", "Fault lease=false | json=none"),
+            ("describe", "Ready lease=true | json=invalid"),
+            ("configure refused", "Ready lease=false | acked=3"),
+            ("configure refused", "Failed lease=false | acked=0"),
+        ] {
+            assert!(
+                contract(&with_step(label, answer), &[], true).is_err(),
+                "{label} answering {answer:?} passed"
+            );
+        }
+        for (label, answer) in [
+            ("configure", "Refused lease=false | acked=0"),
+            ("configure", "Failed lease=false not a setting | acked=0"),
+            ("notify", "Refused lease=false"),
+            ("status", "Refused lease=false | json=none"),
+            (
+                "configure refused",
+                "Failed lease=false not a setting | acked=0",
+            ),
+        ] {
+            contract(&with_step(label, answer), &[], true)
+                .unwrap_or_else(|e| panic!("{label} answering {answer:?}: {e}"));
+        }
+        let mut missing = passing(&[], true);
+        missing.retain(|s| s.label != "describe");
+        let e = contract(&missing, &[], true).expect_err("a fold with no describe step");
+        assert!(e.contains("'describe'"), "{e}");
     }
 
     /// The whole fold over the fixtures, linked: a hook declaring no orders that abstains passes;
@@ -1881,6 +1953,39 @@ mod canary_tests {
             assert!(!at.contains("CANARY"));
         }
         assert!(spellings(PW).contains(&b"CANARY-pg-7c1e%2F9%2B".to_vec()));
+    }
+
+    /// RED (kind-secret K8): a SECRET subject whose inputs name no `credentials` fails the
+    /// canary, naming why. Before, the canary returned at once, so a token-bearing secret plugin
+    /// with no plant list passed it vacuously (nothing silent). The subject is the loader's own
+    /// test door, restated as a secret door: the refusal comes before any fold.
+    #[test]
+    #[should_panic(expected = "names no `credentials`")]
+    fn red_a_secret_subject_with_no_credentials_fails_the_canary() {
+        use std::sync::atomic::{AtomicPtr, Ordering};
+
+        use busbar_contract::abi::mechanism::door::{Door, DoorParts};
+        use busbar_contract::abi::mechanism::KindCode;
+
+        static SECRET_DOOR: AtomicPtr<Door> = AtomicPtr::new(std::ptr::null_mut());
+        extern "C" fn secret_door() -> *const Door {
+            if SECRET_DOOR.load(Ordering::SeqCst).is_null() {
+                // SAFETY: the test door and its Statement are `'static`.
+                let real: Door = unsafe { *crate::dispatch_test_plugin::busbar_plugin_door() };
+                // SAFETY: the test door's own parts, its kind number restated; nothing calls it.
+                let door = Box::into_raw(Box::new(unsafe {
+                    Door::__from_parts(DoorParts {
+                        kind: KindCode::Secret as u32,
+                        ..real.parts()
+                    })
+                }));
+                SECRET_DOOR.store(door, Ordering::SeqCst);
+            }
+            SECRET_DOOR.load(Ordering::SeqCst)
+        }
+        let s = crate::conformance::Subject::of_raw(secret_door, "unused", "{}");
+        assert_eq!(s.kind(), KindCode::Secret);
+        crate::conformance::canary(&s);
     }
 
     #[test]

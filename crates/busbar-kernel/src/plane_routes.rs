@@ -280,6 +280,32 @@ pub struct SessionPipe {
     pub to_caller: tokio::sync::mpsc::Receiver<SessionOut>,
 }
 
+/// WHERE A FRAMED CONNECTION TAKES AN ADMITTED SESSION'S PIPE: a request the data listener serves
+/// through its framer's accept side carries one (a request extension). The session route leaves
+/// the admitted pipe here and answers `101`; the listener then hands the connection to the framer
+/// that claims the upgrade, which answers the upgrade itself, and carries the pipe over it.
+#[derive(Debug, Clone, Default)]
+pub struct FramedSession(Arc<std::sync::Mutex<Option<SessionPipe>>>);
+
+impl FramedSession {
+    /// Leave `pipe` for the connection.
+    pub fn put(&self, pipe: SessionPipe) {
+        *self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(pipe);
+    }
+
+    /// The pipe left here, once.
+    #[must_use]
+    pub fn take(&self) -> Option<SessionPipe> {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+    }
+}
+
 /// What a session route's handler answers, before any upgrade: refused with a finished response (no
 /// socket ever binds), or admitted with the pipe the upgraded socket is bridged onto.
 pub enum SessionAnswer {

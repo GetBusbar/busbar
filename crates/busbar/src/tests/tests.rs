@@ -287,6 +287,7 @@ async fn serve_listener_actually_serves_real_http_traffic() {
         recv_shutdown(shutdown_rx),
         None,
         true,
+        None,
     ));
 
     let resp = reqwest::Client::new()

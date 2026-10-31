@@ -25,7 +25,7 @@ use crate::abi::plane::{
     PlaneCancelIn, PlaneCancelOut, PlaneDriveIn, PlaneDriveOut, PlaneOpenIn, PlaneOpenOut,
     PlaneRefreshOut, PlaneSnapshot, ServeIn, ServeOut,
 };
-use crate::abi::sdk::door::Slot;
+use crate::abi::sdk::door::RawSlot;
 use crate::abi::sdk::lent::Lent;
 use crate::abi::sdk::life::{settings_object, Refusal};
 use crate::abi::sdk::out::Out;
@@ -247,10 +247,10 @@ plane_slot!(
 #[derive(Debug)]
 pub struct Inert;
 
-impl Slot for Inert {
+impl RawSlot for Inert {
     type In = GenIn;
     type Out = OutHead;
-    fn call(_: *mut c_void, _: &GenIn, _: &mut OutHead) -> Outcome {
+    unsafe fn call(_: *mut c_void, _: &GenIn, _: &mut OutHead) -> Outcome {
         Outcome::Ready
     }
 }
@@ -260,10 +260,10 @@ impl Slot for Inert {
 #[derive(Debug)]
 pub struct NoServe;
 
-impl Slot for NoServe {
+impl RawSlot for NoServe {
     type In = ServeIn;
     type Out = ServeOut;
-    fn call(_: *mut c_void, _: &ServeIn, _: &mut ServeOut) -> Outcome {
+    unsafe fn call(_: *mut c_void, _: &ServeIn, _: &mut ServeOut) -> Outcome {
         Outcome::Refused
     }
 }

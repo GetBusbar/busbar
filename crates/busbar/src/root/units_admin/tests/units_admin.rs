@@ -401,7 +401,7 @@ fn the_formerly_irreducible_verbs_are_authorized_by_the_grant_alone() {
 /// what the root's steps do with it.
 #[cfg(feature = "root-admin")]
 fn a_door_answering(door: busbar_kernel::auth::AdminDoor) -> AdminDoorFn {
-    Arc::new(move |_: &AdminRequest| door.clone())
+    Arc::new(move |_: &AdminRequest| busbar_kernel::auth::AdminVerdict::from(door.clone()))
 }
 
 /// The verdict for a principal holding `named` verbs BY NAME and no rung whole: its matrix reaches
@@ -1368,25 +1368,25 @@ fn each_recovery_verb_reaches_the_store_and_a_refusing_store_is_the_answer() {
     #[derive(Debug, Default)]
     struct RecordingStore(Mutex<Vec<String>>);
 
-    impl busbar_contract::verb_store::Store for RecordingStore {
+    impl busbar_kernel_seams::verb_store::Store for RecordingStore {
         fn chain_break(
             &self,
             _admin: &busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
-        ) -> Result<(), busbar_contract::verb_store::StoreError> {
+        ) -> Result<(), busbar_kernel_seams::verb_store::StoreError> {
             self.0.lock().unwrap().push("chain_break".to_string());
-            Err(busbar_contract::verb_store::StoreError::Failed)
+            Err(busbar_kernel_seams::verb_store::StoreError::Failed)
         }
 
         fn store_restore(
             &self,
             _admin: &busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
             backup_ref: &str,
-        ) -> Result<(), busbar_contract::verb_store::StoreError> {
+        ) -> Result<(), busbar_kernel_seams::verb_store::StoreError> {
             self.0
                 .lock()
                 .unwrap()
                 .push(format!("store_restore:{backup_ref}"));
-            Err(busbar_contract::verb_store::StoreError::Failed)
+            Err(busbar_kernel_seams::verb_store::StoreError::Failed)
         }
     }
 
@@ -1422,7 +1422,10 @@ fn each_recovery_verb_reaches_the_store_and_a_refusing_store_is_the_answer() {
 
         let outcome = route(
             &binding,
-            Some(Arc::clone(&store) as Arc<dyn busbar_contract::verb_store::Store + Send + Sync>),
+            Some(Arc::clone(&store)
+                as Arc<
+                    dyn busbar_kernel_seams::verb_store::Store + Send + Sync,
+                >),
             &admin,
             &mut walk,
         );
@@ -2206,7 +2209,7 @@ fn a_view_never_reaches_the_dispatch_and_answers_a_read_only_grant() {
                 *verb,
                 a_ledger_request("/api/v1/admin/ledger/totals"),
             ),
-            None::<Arc<dyn busbar_contract::verb_store::Store + Send + Sync>>,
+            None::<Arc<dyn busbar_kernel_seams::verb_store::Store + Send + Sync>>,
             CONFIG_CLASS_RULES,
             Arc::new(busbar_core_admin::rate::MutationLimiter::new()),
         );
@@ -2238,7 +2241,7 @@ fn a_view_never_reaches_the_dispatch_and_answers_a_read_only_grant() {
             KernelVerb::Adjust,
             a_ledger_request("/api/v1/admin/adjust"),
         ),
-        None::<Arc<dyn busbar_contract::verb_store::Store + Send + Sync>>,
+        None::<Arc<dyn busbar_kernel_seams::verb_store::Store + Send + Sync>>,
         CONFIG_CLASS_RULES,
         Arc::new(busbar_core_admin::rate::MutationLimiter::new()),
     );
@@ -2781,6 +2784,11 @@ fn replayed_amendments(durability: &crate::root::durability::Durability) -> Vec<
         .collect()
 }
 
+/// The second a correction arrives in, in these tests: after the one-day window every correction
+/// body names closes, because an amend must END before it arrives (MONEY-DESIGN section 3a "Amends").
+#[cfg(test)]
+const ARRIVED: u64 = 86_406;
+
 /// A well-formed correction body: a back-dated amendment of the `gpt`/`input` rate over a bounded
 /// window. No signer and no signature (#77(9)).
 #[cfg(test)]
@@ -2811,14 +2819,14 @@ fn amend_rate_history_appends_a_signed_back_dated_correction_and_rewrites_nothin
     assert_eq!(before_seq, busbar_kernel_ledger::cost::HistorySeq(0));
 
     // The correction applies, arriving at second 6 (→ 6000 ms).
-    let answer =
-        amend_through_a_journal(&history, &a_correction_body(), 6).expect("the correction applies");
+    let answer = amend_through_a_journal(&history, &a_correction_body(), ARRIVED)
+        .expect("the correction applies");
     assert_eq!(answer.status, 200);
     let doc: serde_json::Value = serde_json::from_slice(&answer.body).expect("the answer is JSON");
     assert_eq!(doc["history_seq"], 1);
     assert_eq!(doc["effective_from"], 0);
     assert_eq!(doc["effective_until"], 86_400_000);
-    assert_eq!(doc["amended_at"], 6_000);
+    assert_eq!(doc["amended_at"], ARRIVED * 1_000);
     assert!(
         doc.get("operator_fingerprint").is_none(),
         "the answer names no signer: {doc}"
@@ -2899,7 +2907,7 @@ fn amend_rate_history_refuses_a_correction_that_names_a_currency() {
             "rates": [ { "lane": "gpt", "class": "input", "micro_per_unit": 1.0 } ],
             "reason": "vendor corrected the March price sheet",
         }));
-        let err = amend_through_a_journal(&history, &body, 6)
+        let err = amend_through_a_journal(&history, &body, ARRIVED)
             .expect_err("a correction naming a currency must be refused");
         assert!(
             matches!(err, busbar_core_admin::GovernanceError::Validation),
@@ -2915,7 +2923,7 @@ fn amend_rate_history_refuses_a_correction_that_names_a_currency() {
     // THE CONTROL: the same body WITHOUT the key applies. Without this arm a rule that refused
     // every correction would satisfy the assertions above.
     let history = a_seeded_history();
-    amend_through_a_journal(&history, &a_correction_body(), 6)
+    amend_through_a_journal(&history, &a_correction_body(), ARRIVED)
         .expect("the same correction with no `currency` key applies");
     assert_eq!(history.len(), 2);
 }
@@ -2972,7 +2980,7 @@ fn amend_rate_history_refuses_a_negative_fee_and_appends_nothing() {
             "rates": [ { "lane": "gpt", "class": "input", "micro_per_unit": 1.0 } ],
             "reason": "vendor corrected the March price sheet",
         }));
-        let err = amend_through_a_journal(&history, &body, 6)
+        let err = amend_through_a_journal(&history, &body, ARRIVED)
             .expect_err("a correction carrying a negative fee must be refused");
         assert!(
             matches!(err, busbar_core_admin::GovernanceError::Validation),
@@ -2992,7 +3000,7 @@ fn amend_rate_history_refuses_a_negative_fee_and_appends_nothing() {
             "rates": [ { "lane": "gpt", "class": "input", "micro_per_unit": 1.0 } ],
             "reason": "vendor corrected the March price sheet",
         }));
-        amend_through_a_journal(&history, &body, 6).expect("a non-negative fee applies");
+        amend_through_a_journal(&history, &body, ARRIVED).expect("a non-negative fee applies");
         assert_eq!(history.len(), 2);
         let pinned = history.pin().expect("pinned");
         let view = pinned.view();
@@ -3089,7 +3097,8 @@ fn a_correction_of_one_cell_keeps_every_other_price_and_the_fee() {
     let claude_input = configured(&history, "claude", "input");
     let plane_b_input = configured(&history, "plane-b\u{1f}search", "input");
 
-    amend_through_a_journal(&history, &a_correction_body(), 6).expect("the correction applies");
+    amend_through_a_journal(&history, &a_correction_body(), ARRIVED)
+        .expect("the correction applies");
 
     // THE NAMED CELL MOVES: 1,000 units at 1 micro-unit (1,000 nano-units) plus the fee of 3 minor
     // units (30,000,000 nano-units).
@@ -3129,7 +3138,7 @@ fn a_fee_or_plane_correction_moves_only_what_it_names() {
         "rates": [ { "lane": "plane-b\u{1f}search", "class": "input", "micro_per_unit": 9.0 } ],
         "reason": "vendor corrected the March price sheet",
     }));
-    amend_through_a_journal(&history, &body, 6).expect("the correction applies");
+    amend_through_a_journal(&history, &body, ARRIVED).expect("the correction applies");
     assert_eq!(
         priced_at(&history, "gpt", "output", 1_000, 1, 5_000),
         Ok(8_000_000 + 70_000_000),
@@ -3171,7 +3180,7 @@ fn a_correction_across_a_card_boundary_or_onto_an_absent_plane_is_refused() {
     let history = a_full_card_history();
     history.apply(a_card_at(4.0, 0), 6_000);
     let before = history.len();
-    let refused = amend_through_a_journal(&history, &a_correction_body(), 7);
+    let refused = amend_through_a_journal(&history, &a_correction_body(), ARRIVED + 1);
     assert!(
         matches!(refused, Err(busbar_core_admin::GovernanceError::Validation)),
         "{refused:?}"
@@ -3189,7 +3198,7 @@ fn a_correction_across_a_card_boundary_or_onto_an_absent_plane_is_refused() {
         "rates": [ { "lane": "plane-c\u{1f}hop", "class": "bytes", "micro_per_unit": 1.0 } ],
         "reason": "vendor corrected the March price sheet",
     }));
-    let refused = amend_through_a_journal(&history, &body, 6);
+    let refused = amend_through_a_journal(&history, &body, ARRIVED);
     assert!(
         matches!(refused, Err(busbar_core_admin::GovernanceError::Validation)),
         "{refused:?}"
@@ -3269,17 +3278,13 @@ fn a_correction_that_would_cut_inside_a_stored_row_is_refused() {
 }
 
 /// THE CONTROLS FOR #32: a correction whose boundaries every row already splits at applies — whole
-/// UTC days, an open end, and the instant a config apply started a new price era (every unit from it
-/// on accrued under that era). A window that opens after the arrival is not a correction at all:
-/// [`a_future_dated_correction_is_refused_and_appends_nothing`].
+/// UTC days ending before it arrived, and the instant a config apply started a new price era (every
+/// unit from it on accrued under that era). A window that opens after the arrival is not a correction
+/// at all: [`a_future_dated_correction_is_refused_and_appends_nothing`].
 #[test]
 fn a_correction_on_row_boundaries_applies() {
     let arrival = 2 * DAY_MS + 10 * HOUR_MS;
-    for (from, until) in [
-        (DAY_MS, Some(2 * DAY_MS)),
-        (DAY_MS, None),
-        (0, Some(3 * DAY_MS)),
-    ] {
+    for (from, until) in [(DAY_MS, Some(2 * DAY_MS)), (0, Some(2 * DAY_MS))] {
         let history = a_seeded_history();
         let (result, records) = amend_at(&history, &a_window_correction(from, until), arrival);
         assert!(
@@ -3301,6 +3306,32 @@ fn a_correction_on_row_boundaries_applies() {
         result.is_ok(),
         "a correction from the instant a config apply opened an era cuts no row: {result:?}"
     );
+}
+
+/// **AN AMEND IS BOUNDED AND ENDS BEFORE IT ARRIVES** (MONEY-DESIGN section 3a "Amends"): an open-ended
+/// amend is a card change, which goes through `PUT /config/settings`, and a window still open at the
+/// arrival would price instants nothing has posted yet. Both are refused and append nothing. RED on
+/// the base, which checked only `effective_from` and applied both.
+#[test]
+fn an_open_ended_amend_or_one_ending_after_its_arrival_is_refused() {
+    let arrival = 2 * DAY_MS + 10 * HOUR_MS;
+    for (from, until) in [
+        (DAY_MS, None),
+        (0, Some(3 * DAY_MS)),
+        (DAY_MS, Some(arrival + 1)),
+    ] {
+        let history = a_seeded_history();
+        let (result, records) = amend_at(&history, &a_window_correction(from, until), arrival);
+        assert!(
+            matches!(result, Err(busbar_core_admin::GovernanceError::Validation)),
+            "[{from}, {until:?}) arriving at {arrival} must be refused: {result:?}"
+        );
+        assert_eq!(
+            (history.len(), records),
+            (1, 0),
+            "nothing appended or recorded"
+        );
+    }
 }
 
 /// **A CORRECTION IS BACK-DATED OR IT IS REFUSED** (#79: a correction is "an entry whose
@@ -3361,12 +3392,12 @@ fn a_replayed_signed_correction_is_refused_and_appends_nothing() {
             &an_attribution(),
         )
     };
-    apply(&first, 6).expect("the first correction applies");
-    apply(&a_priced_correction(9, serde_json::json!(3.0)), 7)
+    apply(&first, ARRIVED).expect("the first correction applies");
+    apply(&a_priced_correction(9, serde_json::json!(3.0)), ARRIVED + 1)
         .expect("a later correction of the same window applies");
     assert_eq!(history.len(), 3);
 
-    let replayed = apply(&first, 8);
+    let replayed = apply(&first, ARRIVED + 2);
     assert!(
         matches!(replayed, Err(busbar_core_admin::GovernanceError::Conflict)),
         "the first correction's signed bytes, sent again, must be refused: {replayed:?}"
@@ -3455,7 +3486,7 @@ fn a_sealed_amendment_survives_a_restart_with_its_figures() {
             &history,
             Some(&a_journal_over(&book)),
             &a_priced_correction(5, serde_json::json!(1.5)),
-            6,
+            ARRIVED,
             &an_attribution(),
         )
         .expect("the correction applies");
@@ -3468,7 +3499,7 @@ fn a_sealed_amendment_survives_a_restart_with_its_figures() {
     let record = &records[0];
     assert_eq!(record.effective_from, 0);
     assert_eq!(record.effective_until, Some(86_400_000));
-    assert_eq!(record.amended_at_ms, 6_000);
+    assert_eq!(record.amended_at_ms, ARRIVED * 1_000);
     assert_eq!(record.sealed_fee, 5);
     assert_eq!(
         record.rates,
@@ -3511,7 +3542,7 @@ fn a_correction_rate_is_sealed_as_an_exact_integer_or_refused() {
             &a_seeded_history(),
             Some(&a_journal_over(&book)),
             &a_priced_correction(0, micro.clone()),
-            6,
+            ARRIVED,
             &an_attribution(),
         )
         .unwrap_or_else(|e| panic!("{micro} is exactly {nanos} nano-units: {e:?}"));
@@ -3537,7 +3568,7 @@ fn a_correction_rate_is_sealed_as_an_exact_integer_or_refused() {
             &history,
             Some(&a_journal_over(&book)),
             &a_priced_correction(0, micro.clone()),
-            6,
+            ARRIVED,
             &an_attribution(),
         );
         assert!(
@@ -3570,7 +3601,7 @@ fn a_thousand_later_amendments_do_not_erase_the_first() {
             &history,
             Some(&journal),
             &a_priced_correction(7, serde_json::json!(2.0)),
-            6,
+            ARRIVED,
             &an_attribution(),
         )
         .expect("the first correction applies");
@@ -3581,7 +3612,7 @@ fn a_thousand_later_amendments_do_not_erase_the_first() {
                 &history,
                 Some(&journal),
                 &a_priced_correction(fee, serde_json::json!(1.0)),
-                7,
+                ARRIVED + 1,
                 &an_attribution(),
             )
             .expect("a later correction applies");
@@ -3598,7 +3629,7 @@ fn a_thousand_later_amendments_do_not_erase_the_first() {
         records[0].rates,
         vec![("gpt".to_string(), "input".to_string(), Some(2_000))]
     );
-    assert_eq!(records[0].amended_at_ms, 6_000);
+    assert_eq!(records[0].amended_at_ms, ARRIVED * 1_000);
 }
 
 /// **NO DURABLE RECORD, NO AMENDMENT.** With no journal bound the correction is refused (`Store`)
@@ -3606,8 +3637,14 @@ fn a_thousand_later_amendments_do_not_erase_the_first() {
 #[test]
 fn an_amendment_with_no_journal_bound_is_refused_and_appends_nothing() {
     let history = a_seeded_history();
-    let err = amend_rate_history_effect(&history, None, &a_correction_body(), 6, &an_attribution())
-        .expect_err("no journal, no amendment");
+    let err = amend_rate_history_effect(
+        &history,
+        None,
+        &a_correction_body(),
+        ARRIVED,
+        &an_attribution(),
+    )
+    .expect_err("no journal, no amendment");
     assert!(matches!(err, busbar_core_admin::GovernanceError::Store));
     assert_eq!(history.len(), 1);
 
@@ -3617,7 +3654,7 @@ fn an_amendment_with_no_journal_bound_is_refused_and_appends_nothing() {
         &history,
         Some(&a_journal_over(&book)),
         &a_correction_body(),
-        6,
+        ARRIVED,
         &an_attribution(),
     )
     .expect("with a journal the correction applies");
@@ -3635,7 +3672,7 @@ fn a_refused_amendment_leaves_no_record() {
         &history,
         Some(&a_journal_over(&book)),
         &a_priced_correction(-5, serde_json::json!(1.0)),
-        6,
+        ARRIVED,
         &an_attribution(),
     )
     .expect_err("refused");
@@ -3660,7 +3697,7 @@ fn amend_rate_history_refuses_a_correction_that_names_no_reason_window_or_price(
     for case in cases {
         let history = a_seeded_history();
         let body = serde_json::to_vec(case).expect("serialises");
-        let err = amend_through_a_journal(&history, &body, 6)
+        let err = amend_through_a_journal(&history, &body, ARRIVED)
             .expect_err("a malformed correction must be refused");
         assert!(
             matches!(err, busbar_core_admin::GovernanceError::Validation),
@@ -3675,7 +3712,7 @@ fn amend_rate_history_refuses_a_correction_that_names_no_reason_window_or_price(
     // A body that is not JSON at all is also a validation refusal.
     let history = a_seeded_history();
     assert!(matches!(
-        amend_through_a_journal(&history, b"not json", 6),
+        amend_through_a_journal(&history, b"not json", ARRIVED),
         Err(busbar_core_admin::GovernanceError::Validation)
     ));
     assert_eq!(history.len(), 1);
@@ -3686,7 +3723,7 @@ fn amend_rate_history_refuses_a_correction_that_names_no_reason_window_or_price(
 #[test]
 fn amend_rate_history_refuses_when_there_is_no_history_to_amend() {
     let empty = crate::root::kernel::RootHistory::default();
-    let err = amend_through_a_journal(&empty, &a_correction_body(), 6)
+    let err = amend_through_a_journal(&empty, &a_correction_body(), ARRIVED)
         .expect_err("an empty history cannot be amended");
     assert!(matches!(err, busbar_core_admin::GovernanceError::NotFound));
     assert_eq!(empty.len(), 0);
@@ -3707,7 +3744,7 @@ fn amend_rate_history_applies_a_correction_that_carries_no_signature() {
     let doc: serde_json::Value = serde_json::from_slice(&body).expect("the body is JSON");
     assert!(doc.get("signature").is_none() && doc.get("operator_fingerprint").is_none());
     let answer =
-        amend_through_a_journal(&history, &body, 6).expect("an unsigned correction applies");
+        amend_through_a_journal(&history, &body, ARRIVED).expect("an unsigned correction applies");
     assert_eq!(answer.status, 200);
     let doc: serde_json::Value = serde_json::from_slice(&answer.body).expect("JSON");
     assert!(
@@ -3727,7 +3764,7 @@ fn amend_rate_history_ignores_a_signature_a_body_still_carries() {
         serde_json::from_slice(&a_correction_body()).expect("the body is JSON");
     doc["operator_fingerprint"] = serde_json::json!("a-fingerprint-nothing-checks");
     doc["signature"] = serde_json::json!("00".repeat(64));
-    let answer = amend_through_a_journal(&history, &a_body(doc), 6)
+    let answer = amend_through_a_journal(&history, &a_body(doc), ARRIVED)
         .expect("a body carrying a stale signature still applies");
     let doc: serde_json::Value = serde_json::from_slice(&answer.body).expect("JSON");
     assert!(
@@ -3876,7 +3913,7 @@ fn a_correction_on_a_node_with_no_data_dir_is_kept_by_the_store_and_survives_a_r
             &a_seeded_history(),
             Some(&a_journal_over(&book)),
             &a_priced_correction(5, serde_json::json!(1.5)),
-            6,
+            ARRIVED,
             &an_attribution(),
         )
         .expect("the correction applies");
@@ -3906,7 +3943,7 @@ fn a_correction_the_store_refuses_answers_503_with_the_reason() {
         &a_seeded_history(),
         Some(&a_journal_over(&book)),
         &a_priced_correction(5, serde_json::json!(1.5)),
-        6,
+        ARRIVED,
         &an_attribution(),
     )
     .expect("an answer, not an error");
@@ -3922,7 +3959,7 @@ fn a_correction_the_store_refuses_answers_503_with_the_reason() {
         &a_seeded_history(),
         Some(&a_journal_over(&book)),
         &a_priced_correction(6, serde_json::json!(2)),
-        7,
+        ARRIVED + 1,
         &an_attribution(),
     )
     .expect("an answer");
@@ -4046,7 +4083,7 @@ fn a_correction_the_journal_retained_is_in_force_and_answered_not_yet_kept() {
         &history,
         Some(&a_journal_over(&book)),
         &a_priced_correction(5, serde_json::json!(1.5)),
-        6,
+        ARRIVED,
         &an_attribution(),
     )
     .expect("a correction the journal chained is answered, never refused as unrecorded");
@@ -4072,7 +4109,7 @@ fn a_correction_the_journal_retained_is_in_force_and_answered_not_yet_kept() {
                 &history,
                 Some(&a_journal_over(&book)),
                 &a_priced_correction(5, serde_json::json!(1.5)),
-                7,
+                ARRIVED + 1,
                 &an_attribution(),
             ),
             Err(busbar_core_admin::GovernanceError::Conflict)

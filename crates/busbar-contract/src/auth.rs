@@ -11,6 +11,8 @@
 //! compare it feeds ([`crate::redacted::sha256_hex`]), once the owner ruled the
 //! `sha2 -> cpufeatures -> libc` edge tree-wide (2026-09-22).
 
+use zeroize::Zeroize;
+
 use crate::redacted::Secret;
 
 /// The authenticated PRINCIPAL — who the caller IS, established at the auth stage and keyed to by
@@ -274,6 +276,31 @@ impl std::fmt::Debug for LoginHttpResponse {
     }
 }
 
+// THE LOGIN HOP AND ITS RESPONSE WIPE ON DROP (open160 A2): a hop's form and header values (a
+// bearer token, a client credential) and a token response's body (the tokens) are overwritten with
+// zeroes when the value is dropped, wherever it was built. The fields stay `String` so a plugin
+// built against the earlier contract still compiles; `CompleteLogin`'s code and PKCE verifier stay
+// as they are for the same reason (a plugin builds it with `..Default::default()`, which a `Drop`
+// type refuses), and its token response wipes through this.
+
+impl Drop for LoginHop {
+    fn drop(&mut self) {
+        for (_, value) in self.form.iter_mut().chain(self.headers.iter_mut()) {
+            value.zeroize();
+        }
+    }
+}
+
+impl zeroize::ZeroizeOnDrop for LoginHop {}
+
+impl Drop for LoginHttpResponse {
+    fn drop(&mut self) {
+        self.body.zeroize();
+    }
+}
+
+impl zeroize::ZeroizeOnDrop for LoginHttpResponse {}
+
 /// The verdict of one login step (begin or complete). `Authorize` = redirect the browser here;
 /// `Exchange` = the core must run this hop then call complete_login again with the response;
 /// `Identify` = identity established; `Reject` = fail closed; `Outage` = the identity provider
@@ -290,7 +317,12 @@ pub enum LoginOutcome {
     Reject,
     /// The identity provider could not be reached: nothing was verified, and the credential was
     /// not declined either.
-    Outage,
+    Outage {
+        /// The delay the IdP's `Retry-After` asked for, in whole seconds, as the plugin stated it
+        /// (`abi::auth::EXT_RETRY_AFTER`); `None` = none stated. Unclamped: the host bounds it
+        /// before it answers (owner-signed 2026-10-30, OWNER-QUEUE.md item "IdP errors").
+        retry_after_secs: Option<u64>,
+    },
     /// The identity provider answered, and its answer failed the login's security check (its
     /// identity token's nonce is not the login's): no identity is trusted.
     SecurityCheckFailed,

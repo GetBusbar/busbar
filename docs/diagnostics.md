@@ -1438,15 +1438,15 @@ busbar resolved the in-memory (ephemeral) store while a STATEFUL plane is config
 **What to do:** Configure a durable store plugin so plane task state survives a restart. No action is needed if losing in-flight task state on restart is acceptable for this deployment.
 
 <a id="webhook-exporter-disabled"></a>
-### BUSBAR-7070 — Webhook log exporter disabled (invalid configuration)
+### BUSBAR-7070 — Webhook log exporter disabled (its target was refused)
 
 - **Severity:** actionable
 - **Since:** 1.6.0
 - **Slug:** `webhook-exporter-disabled`
 
-A request-log webhook exporter could not be built from its configuration and has been disabled, so its request logs are NOT delivered. This is a config problem surfaced at boot, not a transient delivery failure.
+The host refused the webhook exporter's target URL when the exporter opened, so the exporter is disabled and its request logs are NOT delivered. This is a configuration problem surfaced at open, not a transient delivery failure.
 
-**What to do:** Fix the named webhook exporter's configuration (URL, auth header, or projection) and restart to re-enable delivery.
+**What to do:** Fix the named webhook exporter's `url` (a destination the host's egress policy admits) and reload the configuration; the reload re-enables delivery.
 
 <a id="webhook-delivery-non-2xx"></a>
 ### BUSBAR-7071 — Webhook log delivery returned non-2xx (log dropped)
@@ -1457,7 +1457,7 @@ A request-log webhook exporter could not be built from its configuration and has
 
 A request-log webhook delivery got a non-2xx response from the sink, so that one log line was dropped (deliveries are fire-and-forget and never retried). It is warned on every dropped line, as 1.5.5 warned it: an unhealthy sink is the operator's to fix.
 
-**What to do:** If logs are being lost, check the webhook sink's health and the delivery counters. `busbar_webhook_logs_dropped_total` tracks the volume.
+**What to do:** If logs are being lost, check the webhook sink's health: each dropped line is its own warn line. `busbar_webhook_logs_dropped_total` counts only lines shed by the in-flight bound, not failed deliveries.
 
 <a id="webhook-delivery-transport-error"></a>
 ### BUSBAR-7072 — Webhook log delivery transport error (log dropped)
@@ -1468,7 +1468,7 @@ A request-log webhook delivery got a non-2xx response from the sink, so that one
 
 A request-log webhook delivery failed with a transport error (connection/timeout/DNS), so that one log line was dropped. Deliveries are fire-and-forget and never retried. It is warned on every dropped line, as 1.5.5 warned it: an unreachable sink is the operator's to fix.
 
-**What to do:** If logs are being lost, check the webhook sink's reachability and the delivery counters. `busbar_webhook_logs_dropped_total` tracks the volume.
+**What to do:** If logs are being lost, check the webhook sink's reachability: each dropped line is its own warn line. `busbar_webhook_logs_dropped_total` counts only lines shed by the in-flight bound, not failed deliveries.
 
 <a id="file-log-append-failed"></a>
 ### BUSBAR-7073 — Request-log file append failed (log dropped)
@@ -1788,6 +1788,72 @@ A plane's Statement declares a record kind that the kernel keeps its own records
 `POST /api/v1/admin/plane-record-write` named a record kind the kernel keeps its own records under (`audit`, `usage_residual`, `demotion`, `trust_decision` or `ticket`). A plane may declare one of these (plane-mcp declares `demotion`), but the rows under it are the kernel's own, for example its durable demotion record of a quarantined upstream, and no write made in a plane's name may alter them. busbar answers `403 forbidden` naming the kind, writes nothing, and seals the refusal on the administrative audit ring as `rejected`.
 
 **What to do:** Do not write kernel records through the plane record verb. To lift a quarantine, approve the counterparty with `POST /api/v1/admin/trust/approve`, which clears its durable demotion. Write a plane's own records under a kind that is not the kernel's.
+
+<a id="webhook-batch-dropped-on-reload"></a>
+### BUSBAR-7109 — Webhook log batch cut short by a settings reload (logs dropped)
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `webhook-batch-dropped-on-reload`
+
+A request-log webhook delivery was in flight when the exporter's settings were reloaded. The line in flight finished on the settings it started under; the batch's remaining lines were dropped rather than sent with the old settings' credentials to the new target, or with the new ones on a batch begun elsewhere. Warned once per cut batch, with the count dropped.
+
+**What to do:** Expected around a reload of the named webhook exporter; if it recurs without reloads, check what is reloading the configuration.
+
+<a id="otlp-exporter-disabled"></a>
+### BUSBAR-7140 — OTLP trace exporter disabled (target refused)
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `otlp-exporter-disabled`
+
+The host refused the OTLP exporter's first export to the configured collector (its egress class does not allow the target, or no connector is armed), so trace export to it is disabled and no spans are delivered.
+
+**What to do:** Fix the exporter's `url` so the host's egress policy admits the collector, then restart or reload to re-enable export.
+
+<a id="otlp-export-non-2xx"></a>
+### BUSBAR-7141 — OTLP collector answered non-2xx (batch dropped)
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `otlp-export-non-2xx`
+
+The collector answered an OTLP export with a non-2xx status, so that batch of spans was dropped (exports are not retried).
+
+**What to do:** Check the collector's health and that the configured `url` path and credentials are accepted; the line names the status.
+
+<a id="otlp-export-transport-failure"></a>
+### BUSBAR-7142 — OTLP export failed in transport (batch dropped)
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `otlp-export-transport-failure`
+
+An OTLP export did not reach the collector (connection, timeout, DNS or TLS failure), so that batch of spans was dropped (exports are not retried).
+
+**What to do:** Check the collector's reachability from the busbar host and the configured `url`; the line names the error.
+
+<a id="otlp-collector-partial-rejection"></a>
+### BUSBAR-7143 — OTLP collector rejected part of a batch
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `otlp-collector-partial-rejection`
+
+The collector accepted an OTLP export but its partial_success reply rejected some spans, which are lost.
+
+**What to do:** Read the collector's message on the line (the rejected count and reason) and fix what it rejects, such as span age or attributes.
+
+<a id="otlp-record-skipped"></a>
+### BUSBAR-7144 — OTLP exporter skipped a trace record
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `otlp-record-skipped`
+
+A line of the traces stream was not exported because it is not JSON or carries no span identity (trace and span ids), so that span is missing from the collector.
+
+**What to do:** Check what writes the traces stream; every record must be a JSON object with trace and span ids.
 
 ## 8xxx — Governance & cost
 

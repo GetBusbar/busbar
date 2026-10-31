@@ -13,10 +13,11 @@ mod common;
 use std::sync::Arc;
 
 use busbar_contract::caps::{
-    Admit, Admittance, Approve, Arrival, Audit, Authenticate, Canary, Consumption, Decode, Dial,
-    Encode, Grant, HoldAccrual, HoldCell, HoldCellState, Meter, Outcome, Pass, PostingFlags,
-    PrincipalId, ReasonCode, Refusal, Route, SeatVerdict, StepName, VerifiedDestination, Verify,
+    Admit, Admittance, Approve, Arrival, Audit, Authenticate, Consumption, Decode, Dial, Encode,
+    Grant, HoldAccrual, HoldCell, HoldCellState, Meter, Outcome, Pass, PostingFlags, PrincipalId,
+    ReasonCode, Refusal, Route, SeatVerdict, StepName, VerifiedDestination, Verify,
 };
+use busbar_kernel::canary::Canary;
 use busbar_kernel::slice::{ConcurrencyGauge, GroupLeaseSlip, LeaseCell};
 use busbar_kernel::teller::{exit, run_unit, AccrualMeter, Ended, Evidence, Kernel, Run, UnitCtx};
 

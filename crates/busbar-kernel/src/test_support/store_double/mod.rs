@@ -601,6 +601,34 @@ impl Store for MemoryStore {
         Ok(())
     }
 
+    fn rewrap_credential(
+        &self,
+        expected: &CredentialSecret,
+        replacement: &str,
+    ) -> StoreResult<bool> {
+        let keys = self.keys_read();
+        let mut creds = self.creds();
+        if !keys
+            .get(&expected.meta.key_id)
+            .is_some_and(|key| key.deleted_at.is_none())
+            || expected.meta.revoked_at.is_some()
+            || expected.meta.secret_form != busbar_contract::records::SecretForm::Recoverable
+            || expected.secret == replacement
+        {
+            return Ok(false);
+        }
+        let Some(current) = creds.get_mut(&expected.meta.id) else {
+            return Ok(false);
+        };
+        if &*current != expected {
+            return Ok(false);
+        }
+        zeroize::Zeroize::zeroize(&mut current.secret);
+        current.secret = replacement.to_owned();
+        current.meta.revision = self.next_revision();
+        Ok(true)
+    }
+
     fn put_key_with_credential(
         &self,
         key: &VirtualKey,
