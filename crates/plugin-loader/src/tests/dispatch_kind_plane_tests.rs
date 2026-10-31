@@ -32,6 +32,30 @@ fn z<T>() -> T {
     unsafe { zeroed() }
 }
 
+#[test]
+fn projection_unit_requires_a_whole_frame_and_a_nonzero_unit() {
+    let mut input: ProjectIn = z();
+    input.unit = 73;
+    let pointer = std::ptr::from_ref(&input).cast();
+    assert_eq!(
+        Plane::unit_of(slot::PROJECT, pointer, size_of::<ProjectIn>()),
+        Some(73)
+    );
+    assert_eq!(
+        Plane::unit_of(slot::PROJECT, pointer, size_of::<ProjectIn>() - 1),
+        None
+    );
+    input.unit = 0;
+    assert_eq!(
+        Plane::unit_of(
+            slot::PROJECT,
+            std::ptr::from_ref(&input).cast(),
+            size_of::<ProjectIn>()
+        ),
+        None
+    );
+}
+
 fn f(rule: Rule, field: &'static str) -> Result<(), Fault> {
     Err(fault(rule, field))
 }
