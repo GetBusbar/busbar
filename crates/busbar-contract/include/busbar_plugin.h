@@ -622,6 +622,7 @@ extern "C" {
 #define BB_HCONN_SERVICE_WRITE_REQUEST UINT32_C(13) /* Write one piece of a request on a FRAMED stream, with its descriptor: the framer builds its */
 #define BB_HCONN_SERVICES UINT32_C(14) /* How many services [`ConnectorSlots`] holds. */
 #define BB_HCONN_WITHIN_SEPARATOR "," /* The separator between the addresses of [`EstablishIn::within`]. */
+#define BB_HCONN_WITHIN_REQUEST_FIELD "busbar-dial-within" /* THE REQUEST FIELD BY WHICH A PLUGIN PINS A REQUEST'S DIAL (SEC-8F1), the request-path twin of */
 #define BB_HCONN_CAUSE_NONE UINT64_C(0) /* `ServiceOut::value` of a connector service answering FAILED or REFUSED: no cause named. */
 #define BB_HCONN_CAUSE_CONNECT UINT64_C(1) /* `ServiceOut::value` on a failure: the socket's open failed; `error` is the socket's error. */
 #define BB_HCONN_CAUSE_SECURITY UINT64_C(2) /* `ServiceOut::value` on a failure: connection security failed; `error` is its own error. */

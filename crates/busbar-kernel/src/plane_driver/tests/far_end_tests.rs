@@ -73,6 +73,8 @@ type Lines = Vec<(Vec<u8>, Vec<u8>)>;
 struct Table {
     scripts: HashMap<&'static str, Script>,
     opened: Mutex<Vec<Opened>>,
+    /// The address set every open was pinned to (`OpenDesc::within`).
+    withins: Mutex<Vec<Vec<std::net::IpAddr>>>,
     words: Mutex<Vec<Words>>,
     live: Mutex<HashMap<u64, VecDeque<Piece>>>,
     bytes: Mutex<HashMap<u64, VecDeque<Vec<u8>>>>,
@@ -131,6 +133,7 @@ impl Conns for Table {
             .and_then(|r| r.split('/').next())
             .unwrap_or_default()
             .to_string();
+        self.withins.lock().unwrap().push(d.within.to_vec());
         self.opened.lock().unwrap().push((
             d.target.to_string(),
             d.fields
@@ -3363,4 +3366,53 @@ async fn a_framer_that_states_its_length_has_the_bodys_length_last_in_the_head()
     );
     let head: Vec<String> = names(2).into_iter().map(|(n, _)| n).collect();
     assert_eq!(head, ["authorization", "content-type", "accept", "host"]);
+}
+
+/// RED (SEC-8F1): THE PLANE'S PIN RIDES ITS REQUEST (`abi::host::conn::connector::WITHIN_REQUEST_FIELD`).
+/// A far request carrying the address set its plane's `dest.judge` admitted is dialled pinned to
+/// exactly it, and the field is the host's: it never reaches the wire. One whose set names an entry
+/// that is not an IP literal is sent nowhere. RED arm: a request stating none is dialled unpinned.
+#[tokio::test]
+async fn a_far_request_is_dialled_within_the_address_set_its_plane_judged() {
+    use busbar_contract::abi::host::conn::connector::WITHIN_REQUEST_FIELD;
+    let r = rig(
+        &[("a.test", Script::Answer(200, None, vec![b"ok"]))],
+        OnExhausted::Status503,
+        None,
+    );
+    let t = token();
+    let pinned: Vec<std::net::IpAddr> = vec![
+        "203.0.113.7".parse().unwrap(),
+        "2001:db8::1".parse().unwrap(),
+    ];
+    for stated in [Some(&b"203.0.113.7, 2001:db8::1"[..]), None] {
+        let far = r.egress.unit(route());
+        let _ = far.member(&t, 1).await;
+        let mut req = request();
+        if let Some(v) = stated {
+            req.fields
+                .push((WITHIN_REQUEST_FIELD.as_bytes().to_vec(), v.to_vec()));
+        }
+        assert!(far.send(&t, req).await);
+        let _ = drain(&far, &t).await;
+    }
+    assert_eq!(
+        *r.table.withins.lock().unwrap(),
+        vec![pinned, Vec::new()],
+        "the stated set pins the dial; none states no pin"
+    );
+    for (_, head, _, _) in r.table.opened.lock().unwrap().iter() {
+        assert!(
+            head.iter()
+                .all(|(n, _)| !n.eq_ignore_ascii_case(WITHIN_REQUEST_FIELD)),
+            "the host's field never reaches the wire: {head:?}"
+        );
+    }
+    let far = r.egress.unit(route());
+    let _ = far.member(&t, 1).await;
+    let mut req = request();
+    req.fields
+        .push((WITHIN_REQUEST_FIELD.as_bytes().to_vec(), b"a.test".to_vec()));
+    assert!(!far.send(&t, req).await, "an unreadable pin sends nothing");
+    assert_eq!(r.table.opened.lock().unwrap().len(), 2, "nothing dialled");
 }
