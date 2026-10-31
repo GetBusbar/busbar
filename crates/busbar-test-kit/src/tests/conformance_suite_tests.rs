@@ -1731,7 +1731,10 @@ mod hook_orders {
             ("configure", "Failed lease=false not a setting | acked=0"),
             ("notify", "Refused lease=false"),
             ("status", "Refused lease=false | json=none"),
-            ("configure refused", "Failed lease=false not a setting | acked=0"),
+            (
+                "configure refused",
+                "Failed lease=false not a setting | acked=0",
+            ),
         ] {
             contract(&with_step(label, answer), &[], true)
                 .unwrap_or_else(|e| panic!("{label} answering {answer:?}: {e}"));
