@@ -1269,12 +1269,18 @@ impl EgressFarEnd<'_> {
         // THE PLANE'S WAIVER of its member's binding for this request
         // (`abi::auth::NO_MEMBER_AUTH_FIELD`): the host's own field, taken out here too.
         let mut waived = false;
+        // THE PLANE'S PIN (`abi::host::conn::connector::WITHIN_REQUEST_FIELD`, SEC-8F1): the address
+        // set its own destination judgement admitted, the host's field too; the last stated stands.
+        let mut pin = None;
         request.fields.retain(|(name, value)| {
             if busbar_contract::abi::auth::is_scope_field(name) {
                 scope.get_or_insert_with(|| value.clone());
                 false
             } else if busbar_contract::abi::auth::is_no_member_auth_field(name) {
                 waived = true;
+                false
+            } else if busbar_contract::abi::host::conn::connector::is_within_field(name) {
+                pin = Some(value.clone());
                 false
             } else {
                 true
@@ -1349,6 +1355,15 @@ impl EgressFarEnd<'_> {
             }
             return false;
         }
+        // A pin no address reads from sends nothing: it could only have narrowed the dial.
+        let Some(within) = pin.as_deref().map_or(Some(Vec::new()), |v| {
+            busbar_contract::abi::host::conn::connector::within_of(v)
+        }) else {
+            let mut w = self.lock();
+            self.settle(&mut w);
+            w.unsent = Some(RefusalCode::UnsentOpenRefused);
+            return false;
+        };
         let url = join(&base_url, &request.target);
         // THE FRAMER'S OWN HEAD for this target (THE DESIGN section 6, step 5): each of its lines
         // the request does not carry is part of the head the auth signs and goes out after the
@@ -1477,7 +1492,7 @@ impl EgressFarEnd<'_> {
                 timeout_ms: cap_ms,
                 method: &request.verb,
                 head_target: path.as_bytes(),
-                within: &[],
+                within: &within,
                 // The registration the member route reaches: what the host sealed for it alone
                 // (its private reach) applies to this dial.
                 member: &route.provider,
