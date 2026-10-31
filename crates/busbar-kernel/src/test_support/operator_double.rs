@@ -103,7 +103,7 @@ impl VerifyPlugin for OperatorDouble {
         busbar_contract::abi::sdk::auth_door::validate_by_opening::<Self>(settings)
     }
 
-    fn open(settings: &[u8], _secrets: &[&[u8]]) -> Result<Self, Refusal> {
+    fn open_refusing(settings: &[u8], _secrets: &[&[u8]]) -> Result<Self, Refusal> {
         const NOT_A_DIGEST: &str = "the operator double's settings are the token's SHA-256 digest";
         let text: String =
             serde_json::from_slice(settings).map_err(|_| Refusal::failed(NOT_A_DIGEST))?;
@@ -225,7 +225,8 @@ impl OperatorCalls {
         });
         let (verified, reason) = match verdict {
             Verdict::Identity(id) => (Verified::Identity(id), None),
-            Verdict::Reject(why) => (Verified::Reject, Some(why.text().to_string())),
+            Verdict::Reject => (Verified::Reject, None),
+            Verdict::RejectBecause(why) => (Verified::Reject, Some(why.text().to_string())),
             Verdict::Pass => (Verified::Pass, None),
         };
         VerifyAnswer {

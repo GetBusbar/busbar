@@ -382,12 +382,19 @@ pub enum FieldsAnswer {
     /// The fields the writer holds are the answer; none = no auth header (the upstream answers
     /// 401, as 1.5.5 did before the first mint).
     Ready,
-    /// The handle refuses the request (a passthrough on a style that does not pass the caller's
-    /// credential, or a handle this generation does not hold), saying why.
-    Refused(Cow<'static, str>),
+    /// The handle refuses the request, saying nothing of why: superseded by
+    /// [`FieldsAnswer::RefusedBecause`], kept so a plugin built against the earlier kit still
+    /// compiles; the kit answers it REFUSED with [`REFUSED_UNSAID`].
+    Refused,
     /// The call could not answer: the attempt fails, with this text.
     Failed(Cow<'static, str>),
+    /// The handle refuses the request (a passthrough on a style that does not pass the caller's
+    /// credential, or a handle this generation does not hold), saying why.
+    RefusedBecause(Cow<'static, str>),
 }
+
+/// What a [`FieldsAnswer::Refused`] that named no reason answers REFUSED with.
+pub const REFUSED_UNSAID: &str = "the auth plugin refused the request's fields and gave no reason";
 
 /// Why `open_outbound` did not bind: one or more lines (a `credential: ...` line names a refusal
 /// of the credential itself, as the `--validate` dry run reads it), answered FAILED with the lines
@@ -662,7 +669,7 @@ impl<T: VerifyPlugin + OutboundPlugin> Life for Both<T> {
     ) -> Result<Refreshed, Refusal> {
         // The outbound side judges the new settings first: a refused reload flushes nothing.
         OutboundPlugin::refresh(&self.0, settings, secrets, generation)?;
-        let dropped = VerifyPlugin::refresh(&self.0, settings, secrets)?;
+        let dropped = VerifyPlugin::reload(&self.0, settings, secrets)?;
         Ok(Refreshed {
             counted: <T as VerifyPlugin>::CACHE_FAMILY.map(|family| Counted {
                 family,
@@ -777,7 +784,8 @@ impl<T: OutboundPlugin, L: HoldsOutbound<T>> SafeSlot for FieldsSlot<T, L> {
             )),
             Poll::Pending => Outcome::Pending,
             Poll::Ready(FieldsAnswer::Ready) => writer.write(&mut out),
-            Poll::Ready(FieldsAnswer::Refused(why)) => out.fail(Refusal::refused(why)),
+            Poll::Ready(FieldsAnswer::Refused) => out.fail(Refusal::refused(REFUSED_UNSAID)),
+            Poll::Ready(FieldsAnswer::RefusedBecause(why)) => out.fail(Refusal::refused(why)),
             Poll::Ready(FieldsAnswer::Failed(why)) => out.fail(Refusal::failed(why)),
         }
     }

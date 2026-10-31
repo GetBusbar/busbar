@@ -46,7 +46,7 @@ mod plugin {
         }
         const CACHE_FAMILY: Option<u32> = Some(0);
 
-        fn open(settings: &[u8], secrets: &[&[u8]]) -> Result<Self, Refusal> {
+        fn open_refusing(settings: &[u8], secrets: &[&[u8]]) -> Result<Self, Refusal> {
             if settings != b"\"ok\"" || secrets != [b"s3cret".as_slice()] {
                 return Err(Refusal::failed("settings: not this plugin's"));
             }
@@ -106,7 +106,7 @@ mod plugin {
             std::task::Poll::Ready(self.verify(r))
         }
 
-        fn refresh(&self, settings: &[u8], _: &[&[u8]]) -> Result<u64, Refusal> {
+        fn reload(&self, settings: &[u8], _: &[&[u8]]) -> Result<u64, Refusal> {
             if settings == b"\"rotate-later\"" {
                 return Err(Refusal::refused(format!(
                     "settings: a rotation needs a reopen ({} bytes)",

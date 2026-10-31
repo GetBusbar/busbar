@@ -53,7 +53,10 @@ impl busbar_contract::abi::sdk::auth_door::VerifyPlugin for StatedLogin {
         busbar_contract::abi::sdk::auth_door::validate_by_opening::<Self>(settings)
     }
 
-    fn open(_: &[u8], _: &[&[u8]]) -> Result<Self, busbar_contract::abi::sdk::life::Refusal> {
+    fn open_refusing(
+        _: &[u8],
+        _: &[&[u8]],
+    ) -> Result<Self, busbar_contract::abi::sdk::life::Refusal> {
         Ok(StatedLogin)
     }
     fn verify(

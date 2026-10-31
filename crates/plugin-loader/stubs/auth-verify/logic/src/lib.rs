@@ -182,7 +182,7 @@ impl VerifyPlugin for AdminTokens {
         busbar_contract::abi::sdk::auth_door::validate_by_opening::<Self>(settings)
     }
 
-    fn open(settings: &[u8], _secrets: &[&[u8]]) -> Result<Self, Refusal> {
+    fn open_refusing(settings: &[u8], _secrets: &[&[u8]]) -> Result<Self, Refusal> {
         Ok(Self {
             configured_hash: digest_of(settings).map_err(Refusal::failed)?,
         })

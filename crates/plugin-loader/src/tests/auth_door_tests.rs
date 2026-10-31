@@ -51,7 +51,7 @@ impl VerifyPlugin for Judge {
 
     const CACHE_FAMILY: Option<u32> = Some(0);
 
-    fn open(
+    fn open_refusing(
         settings: &[u8],
         _: &[&[u8]],
     ) -> Result<Self, busbar_contract::abi::sdk::life::Refusal> {
@@ -110,7 +110,7 @@ impl VerifyPlugin for Judge {
         }
     }
 
-    fn refresh(
+    fn reload(
         &self,
         _: &[u8],
         _: &[&[u8]],
@@ -471,7 +471,7 @@ impl VerifyPlugin for Keyed {
             .map(drop)
             .map_err(|_| busbar_contract::abi::sdk::life::Refusal::failed("not json"))
     }
-    fn open(
+    fn open_refusing(
         settings: &[u8],
         secrets: &[&[u8]],
     ) -> Result<Self, busbar_contract::abi::sdk::life::Refusal> {
@@ -858,7 +858,9 @@ mod outbound {
         ) -> Poll<FieldsAnswer> {
             let bindings = self.bindings.lock().unwrap();
             let Some(credential) = bindings.get(&r.handle()) else {
-                return Poll::Ready(FieldsAnswer::Refused("no binding holds the handle".into()));
+                return Poll::Ready(FieldsAnswer::RefusedBecause(
+                    "no binding holds the handle".into(),
+                ));
             };
             let mut value = b"Bearer ".to_vec();
             value.extend_from_slice(credential);
@@ -1019,7 +1021,10 @@ mod ticketed {
             busbar_contract::abi::sdk::auth_door::validate_by_opening::<Self>(settings)
         }
 
-        fn open(_: &[u8], _: &[&[u8]]) -> Result<Self, busbar_contract::abi::sdk::life::Refusal> {
+        fn open_refusing(
+            _: &[u8],
+            _: &[&[u8]],
+        ) -> Result<Self, busbar_contract::abi::sdk::life::Refusal> {
             Ok(Proves)
         }
 
@@ -1333,7 +1338,10 @@ mod reasons {
             busbar_contract::abi::sdk::auth_door::validate_by_opening::<Self>(settings)
         }
 
-        fn open(_: &[u8], _: &[&[u8]]) -> Result<Self, busbar_contract::abi::sdk::life::Refusal> {
+        fn open_refusing(
+            _: &[u8],
+            _: &[&[u8]],
+        ) -> Result<Self, busbar_contract::abi::sdk::life::Refusal> {
             Ok(Says)
         }
     }

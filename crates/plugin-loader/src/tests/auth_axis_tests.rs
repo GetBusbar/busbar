@@ -41,7 +41,7 @@ impl busbar_contract::abi::sdk::auth_door::VerifyPlugin for Fixture {
         busbar_contract::abi::sdk::auth_door::validate_by_opening::<Self>(settings)
     }
 
-    fn open(
+    fn open_refusing(
         _settings: &[u8],
         _secrets: &[&[u8]],
     ) -> Result<Self, busbar_contract::abi::sdk::life::Refusal> {

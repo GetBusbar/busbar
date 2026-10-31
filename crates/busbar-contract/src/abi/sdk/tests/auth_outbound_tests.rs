@@ -107,7 +107,9 @@ impl OutboundPlugin for Echo {
     ) -> Poll<FieldsAnswer> {
         let bindings = self.bindings.lock().unwrap();
         let Some(b) = bindings.get(&r.handle()) else {
-            return Poll::Ready(FieldsAnswer::Refused("no binding holds the handle".into()));
+            return Poll::Ready(FieldsAnswer::RefusedBecause(
+                "no binding holds the handle".into(),
+            ));
         };
         let Some(credential) = b.credential.as_deref() else {
             return Poll::Ready(FieldsAnswer::Ready);
@@ -660,7 +662,7 @@ impl VerifyPlugin for Sig {
         crate::abi::sdk::auth_door::validate_by_opening::<Self>(settings)
     }
 
-    fn open(_: &[u8], _: &[&[u8]]) -> Result<Self, Refusal> {
+    fn open_refusing(_: &[u8], _: &[&[u8]]) -> Result<Self, Refusal> {
         Ok(Sig)
     }
     fn verify(&self, r: &VerifyView<'_>) -> Answer {

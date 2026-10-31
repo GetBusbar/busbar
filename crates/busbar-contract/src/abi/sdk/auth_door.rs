@@ -208,17 +208,23 @@ impl From<String> for Reason {
 pub enum Verdict {
     /// Identified.
     Identity(VerifiedIdentity),
-    /// A credential was presented and is invalid, for the [`Reason`] it names.
-    Reject(Reason),
+    /// A credential was presented and is invalid, the plugin saying nothing of why: the operator's
+    /// log can only say it was rejected. Superseded by [`Verdict::RejectBecause`]
+    /// ([`Verdict::reject`]); kept so a plugin built against the earlier kit still compiles.
+    Reject,
     /// Not this plugin's credential.
     Pass,
+    /// A credential was presented and is invalid, for the [`Reason`] it names: the host writes the
+    /// reason to the instance's own log and the host log, never to the client (THE REASON,
+    /// [`IdentifyOut`]).
+    RejectBecause(Reason),
 }
 
 impl Verdict {
-    /// [`Verdict::Reject`], saying `why`.
+    /// [`Verdict::RejectBecause`], saying `why`.
     #[must_use]
     pub fn reject(why: impl Into<Cow<'static, str>>) -> Self {
-        Self::Reject(Reason::new(why))
+        Self::RejectBecause(Reason::new(why))
     }
 }
 
@@ -240,7 +246,7 @@ impl From<Verdict> for Answer {
     fn from(verdict: Verdict) -> Self {
         let decision = match verdict {
             Verdict::Identity(_) | Verdict::Pass => Decision::Continue,
-            Verdict::Reject(_) => Decision::Stop,
+            Verdict::Reject | Verdict::RejectBecause(_) => Decision::Stop,
         };
         Self {
             verdict,
@@ -353,21 +359,37 @@ pub trait VerifyPlugin: Send + Sync + Sized + 'static {
     /// what boot refuses (boot runs it before every `open`, too). It is handed NO secrets, so it
     /// judges the settings alone: a plugin whose `open` needs no secret answers
     /// [`validate_by_opening`]`::<Self>(settings)`; one whose `open` refuses a missing secret parses
-    /// its settings as `open` does and stops there. No default: a default that opened without the
-    /// secrets would refuse every secret-holding plugin at boot, and one that accepted everything
-    /// would let `--validate` pass what boot refuses.
+    /// its settings as `open` does and stops there. The default accepts any settings (a plugin
+    /// built against the earlier kit, whose `open` judges them at boot): it cannot open without the
+    /// secrets, and boot validates before every `open`.
     ///
     /// # Errors
     /// The settings are not this plugin's.
-    fn validate(settings: &[u8]) -> Result<(), Refusal>;
+    fn validate(settings: &[u8]) -> Result<(), Refusal> {
+        let _ = settings;
+        Ok(())
+    }
 
     /// Build the plugin from its settings blob (one JSON document) and its resolved secrets (one
-    /// per Statement `secret_refs` key, in order). `Err` answers `open` with the refusal's outcome
-    /// and its words ([`Refusal::failed`] for settings that are not the plugin's).
+    /// per Statement `secret_refs` key, in order), refusing in the plugin's own words and outcome.
+    /// The kit opens through this. The default is [`VerifyPlugin::open`], its text answered FAILED.
     ///
     /// # Errors
     /// The settings or the secrets are not this plugin's.
-    fn open(settings: &[u8], secrets: &[&[u8]]) -> Result<Self, Refusal>;
+    fn open_refusing(settings: &[u8], secrets: &[&[u8]]) -> Result<Self, Refusal> {
+        Self::open(settings, secrets).map_err(Refusal::failed)
+    }
+
+    /// [`VerifyPlugin::open_refusing`] with a fixed text, answered FAILED: the earlier kit's form,
+    /// kept so a plugin built against it still compiles. A plugin implements one of the two; the
+    /// default refuses, saying so.
+    ///
+    /// # Errors
+    /// The settings are not this plugin's.
+    fn open(settings: &[u8], secrets: &[&[u8]]) -> Result<Self, &'static str> {
+        let _ = (settings, secrets);
+        Err(OPENS_NOTHING)
+    }
 
     /// Judge the request at one point: the verdict, the decision and the lines to strip (a bare
     /// [`Verdict`] converts, with no strips and its default decision). A plugin that implements
@@ -391,14 +413,21 @@ pub trait VerifyPlugin: Send + Sync + Sized + 'static {
     }
 
     /// A reload (the admin cache flush is one with unchanged settings): drop the inbound cache and
-    /// answer how many entries it held. `Err` refuses the reload with its outcome and words, and
-    /// the instance keeps serving as it was.
+    /// answer how many entries it held, or refuse the reload in the plugin's own words and outcome
+    /// (the instance keeps serving as it was). The kit reloads through this. The default is
+    /// [`VerifyPlugin::refresh`], which cannot refuse.
     ///
     /// # Errors
     /// The new settings or secrets are not this plugin's.
-    fn refresh(&self, settings: &[u8], secrets: &[&[u8]]) -> Result<u64, Refusal> {
+    fn reload(&self, settings: &[u8], secrets: &[&[u8]]) -> Result<u64, Refusal> {
+        Ok(self.refresh(settings, secrets))
+    }
+
+    /// [`VerifyPlugin::reload`] that cannot refuse: the earlier kit's form, kept so a plugin built
+    /// against it still compiles. Drop the inbound cache and answer how many entries it held.
+    fn refresh(&self, settings: &[u8], secrets: &[&[u8]]) -> u64 {
         let _ = (settings, secrets);
-        Ok(0)
+        0
     }
 }
 
@@ -408,14 +437,19 @@ pub trait VerifyPlugin: Send + Sync + Sized + 'static {
 /// # Errors
 /// [`VerifyPlugin::open`] refuses the settings.
 pub fn validate_by_opening<T: VerifyPlugin>(settings: &[u8]) -> Result<(), Refusal> {
-    T::open(settings, &[]).map(drop)
+    T::open_refusing(settings, &[]).map(drop)
 }
+
+/// What [`VerifyPlugin::open`]'s default answers: the plugin implements neither open.
+pub const OPENS_NOTHING: &str =
+    "the auth plugin implements neither `open` nor `open_refusing`: it cannot open";
 
 /// THE AUTH KIND'S [`Life`] over a [`VerifyPlugin`] `T`: the instance state the shared lifecycle
 /// slots (`abi::sdk::life`) serve, a [`Held`] of it. Each per-kind value is stated here:
 ///
-/// * `validate`, `open` and `refresh` are [`VerifyPlugin::validate`], [`VerifyPlugin::open`] and
-///   [`VerifyPlugin::refresh`] (`--validate` refuses what boot refuses); the entries
+/// * `validate`, `open` and `refresh` are [`VerifyPlugin::validate`],
+///   [`VerifyPlugin::open_refusing`] and [`VerifyPlugin::reload`] (`--validate` refuses what boot
+///   refuses); the entries
 ///   `refresh` dropped are reported under [`VerifyPlugin::CACHE_FAMILY`], when the plugin states
 ///   it;
 /// * `drive` answers REFUSED (the plugin holds no driver ticket), and `cancel` answers
@@ -448,11 +482,11 @@ impl<T: VerifyPlugin> Life for Verifier<T> {
     }
 
     fn open(settings: &[u8], secrets: &[&[u8]], _: u64) -> Result<Self, Refusal> {
-        T::open(settings, secrets).map(Verifier)
+        T::open_refusing(settings, secrets).map(Verifier)
     }
 
     fn refresh(&self, settings: &[u8], secrets: &[&[u8]], _: u64) -> Result<Refreshed, Refusal> {
-        let dropped = self.0.refresh(settings, secrets)?;
+        let dropped = self.0.reload(settings, secrets)?;
         Ok(Refreshed {
             counted: T::CACHE_FAMILY.map(|family| Counted {
                 family,
@@ -525,7 +559,8 @@ pub(crate) fn verify_answer<T: VerifyPlugin>(
     } = answer;
     let (id, verdict) = match verdict {
         Verdict::Identity(id) => (Some(id), VERDICT_IDENTITY),
-        Verdict::Reject(why) => {
+        Verdict::Reject => (None, VERDICT_REJECT),
+        Verdict::RejectBecause(why) => {
             out.reason(why.into_text());
             (None, VERDICT_REJECT)
         }
