@@ -2431,6 +2431,227 @@ fn revoke_holds_refresh_lock_across_its_store_writes() {
     assert!(gov.is_revoked("bob"), "revoke() still completed its work");
 }
 
+/// A store that WEDGES one call — the first `put_key` of a row in group `wedge_put_group`, or the
+/// first `list_keys` once `wedge_list` is armed — until the test releases it. `list_keys` reads its
+/// snapshot BEFORE it parks, so a reload parked there returns state older than anything written
+/// while it was parked. The R8 doubles (§11.13 M1): a plugin call that does not come back must not
+/// hold up callers that do not share its serialization key. All other methods delegate to a
+/// `MemoryStore`.
+struct WedgeStore {
+    inner: MemoryStore,
+    wedge_put_group: std::sync::Mutex<Option<String>>,
+    wedge_list: std::sync::atomic::AtomicBool,
+    entered: std::sync::mpsc::SyncSender<()>,
+    release: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
+}
+
+impl WedgeStore {
+    fn new() -> (
+        Arc<Self>,
+        std::sync::mpsc::Receiver<()>,
+        std::sync::mpsc::Sender<()>,
+    ) {
+        let (entered, entered_rx) = std::sync::mpsc::sync_channel(1);
+        let (release_tx, release) = std::sync::mpsc::channel();
+        let store = Arc::new(WedgeStore {
+            inner: MemoryStore::new(),
+            wedge_put_group: std::sync::Mutex::new(None),
+            wedge_list: std::sync::atomic::AtomicBool::new(false),
+            entered,
+            release: std::sync::Mutex::new(release),
+        });
+        (store, entered_rx, release_tx)
+    }
+
+    /// Park here until released; the timeout only keeps a failing test from hanging the binary.
+    fn park(&self) {
+        let _ = self.entered.send(());
+        let _ = self
+            .release
+            .lock()
+            .unwrap()
+            .recv_timeout(std::time::Duration::from_secs(30));
+    }
+}
+
+impl RecordStore for WedgeStore {
+    fn put_key(&self, key: &VirtualKey) -> RecordStoreResult<()> {
+        let wedge = {
+            let mut want = self.wedge_put_group.lock().unwrap();
+            let hit = want.is_some() && want.as_deref() == key.group.as_deref();
+            if hit {
+                *want = None;
+            }
+            hit
+        };
+        if wedge {
+            self.park();
+        }
+        self.inner.put_key(key)
+    }
+    fn get_key(&self, id: &str) -> RecordStoreResult<Option<VirtualKey>> {
+        self.inner.get_key(id)
+    }
+    fn list_keys(&self) -> RecordStoreResult<Vec<VirtualKey>> {
+        let snapshot = self.inner.list_keys();
+        if self
+            .wedge_list
+            .swap(false, std::sync::atomic::Ordering::SeqCst)
+        {
+            self.park();
+        }
+        snapshot
+    }
+    fn delete_key(&self, id: &str) -> RecordStoreResult<()> {
+        self.inner.delete_key(id)
+    }
+    fn get_usage(&self, bucket_id: &str, window_start: u64) -> RecordStoreResult<UsageLedger> {
+        self.inner.get_usage(bucket_id, window_start)
+    }
+    fn put_usage(
+        &self,
+        bucket_id: &str,
+        window_start: u64,
+        ledger: &UsageLedger,
+    ) -> RecordStoreResult<()> {
+        self.inner.put_usage(bucket_id, window_start, ledger)
+    }
+    fn add_metering(&self, delta: &MeteringDelta) -> RecordStoreResult<()> {
+        self.inner.add_metering(delta)
+    }
+    fn list_metering(&self, bucket: u64) -> RecordStoreResult<Vec<MeteringRow>> {
+        self.inner.list_metering(bucket)
+    }
+    fn add_denylist(&self, sub: &str, reason: &str) -> RecordStoreResult<()> {
+        self.inner.add_denylist(sub, reason)
+    }
+    fn list_denylist(&self) -> RecordStoreResult<Vec<String>> {
+        self.inner.list_denylist()
+    }
+}
+
+/// R8 (§11.13 M1): one subject's self-serve mint parked in its store write holds only THAT
+/// subject's serialization. Another subject's login mints at once, and the parked one still lands.
+#[test]
+fn a_self_serve_mint_for_another_subject_is_not_held_behind_one_parked_in_the_store() {
+    let (store, entered, release) = WedgeStore::new();
+    *store.wedge_put_group.lock().unwrap() = Some(format!("{SELF_KEY_GROUP_PREFIX}oidc:alice"));
+    let gov = Arc::new(
+        GovState::new_with_signer(store.clone(), None, Some(self_serve_signer())).unwrap(),
+    );
+    let now = 1_700_000_000u64;
+    let (done_tx, done) = std::sync::mpsc::channel();
+    std::thread::scope(|s| {
+        let parked = s.spawn(|| gov.issue_self("oidc:alice", "corp", None, now + 3600, now));
+        entered
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("alice's mint reached the store");
+        s.spawn(|| {
+            let _ = done_tx.send(gov.issue_self("oidc:bob", "corp", None, now + 3600, now));
+        });
+        let bob = done.recv_timeout(std::time::Duration::from_secs(5));
+        release.send(()).unwrap();
+        parked
+            .join()
+            .unwrap()
+            .expect("alice's mint lands once released");
+        bob.expect("bob's mint waited on alice's, which was parked in the store")
+            .expect("bob's mint");
+    });
+    assert!(self_binding_for(&gov, "oidc:alice").is_some());
+    assert!(self_binding_for(&gov, "oidc:bob").is_some());
+}
+
+/// R8 (§11.13 M1): a cache reload parked in the store's `list_keys` does not hold up a revoke, and
+/// the reload's snapshot, read before the revoke wrote, never reverts the revoke in the cache.
+#[test]
+fn a_revoke_is_not_held_behind_a_reload_parked_in_the_store_and_the_reload_does_not_revert_it() {
+    let (store, entered, release) = WedgeStore::new();
+    let gov = Arc::new(
+        GovState::new_with_signer(store.clone(), None, Some(self_serve_signer())).unwrap(),
+    );
+    let (key, _) = gov
+        .create_key(
+            NewKeySpec {
+                name: "k".to_string(),
+                ..Default::default()
+            },
+            0,
+        )
+        .unwrap();
+    assert!(gov.lookup_by_sub(&key.id).unwrap().enabled);
+    store
+        .wedge_list
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let (done_tx, done) = std::sync::mpsc::channel();
+    std::thread::scope(|s| {
+        let parked = s.spawn(|| gov.refresh());
+        entered
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("the reload reached the store");
+        s.spawn(|| {
+            let _ = done_tx.send(gov.revoke(&key.id, "test"));
+        });
+        let revoked = done.recv_timeout(std::time::Duration::from_secs(5));
+        release.send(()).unwrap();
+        parked.join().unwrap().expect("the reload completes");
+        revoked
+            .expect("the revoke waited on a reload parked in the store")
+            .expect("revoke");
+    });
+    assert!(gov.is_revoked(&key.id));
+    assert!(
+        !gov.lookup_by_sub(&key.id).unwrap().enabled,
+        "a reload whose snapshot predates the revoke must not swap the key back to enabled"
+    );
+}
+
+/// R8 (§11.13 M1): a revoke parked in its store writes does not hold up a cache reload, and once
+/// the revoke lands the cache shows the key disabled.
+#[test]
+fn a_reload_is_not_held_behind_a_revoke_parked_in_the_store() {
+    let (entered_tx, entered) = std::sync::mpsc::sync_channel::<()>(1);
+    let (release, release_rx) = std::sync::mpsc::channel::<()>();
+    let store = Arc::new(BlockingDenylistStore {
+        inner: MemoryStore::new(),
+        entered: entered_tx,
+        release: std::sync::Mutex::new(release_rx),
+    });
+    let gov = Arc::new(
+        GovState::new_with_signer(store.clone(), None, Some(self_serve_signer())).unwrap(),
+    );
+    let (key, _) = gov
+        .create_key(
+            NewKeySpec {
+                name: "k".to_string(),
+                ..Default::default()
+            },
+            0,
+        )
+        .unwrap();
+    let (done_tx, done) = std::sync::mpsc::channel();
+    std::thread::scope(|s| {
+        let parked = s.spawn(|| gov.revoke(&key.id, "test"));
+        entered
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("the revoke reached the store");
+        s.spawn(|| {
+            let _ = done_tx.send(gov.refresh());
+        });
+        let reloaded = done.recv_timeout(std::time::Duration::from_secs(5));
+        release.send(()).unwrap();
+        parked
+            .join()
+            .unwrap()
+            .expect("the revoke lands once released");
+        reloaded
+            .expect("the reload waited on a revoke parked in the store")
+            .expect("reload");
+    });
+    assert!(gov.is_revoked(&key.id));
+    assert!(!gov.lookup_by_sub(&key.id).unwrap().enabled);
+}
+
 // ─── Budget-group CHAIN enforcement (1.5.0 cost model) ───────────────────────────────────────────
 
 /// CHAIN ENFORCEMENT, AND semantics: a key inside bob -> growth must pass EVERY bucket. With the

@@ -7223,6 +7223,76 @@ async fn test_cancelled_patch_keeps_gate_held_for_full_store_mutation() {
     handle.abort();
 }
 
+/// R8 (§11.13 M1): a PATCH parked in its store write holds only ITS key's existence
+/// serialization. A DELETE of a DIFFERENT key completes while the PATCH is parked, and the PATCH
+/// still lands once released.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_delete_of_another_key_is_not_held_behind_a_patch_parked_in_the_store() {
+    busbar_kernel::snapshot::init();
+    let (entered_tx, entered_rx) = std::sync::mpsc::sync_channel::<()>(1);
+    let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+    let store = Arc::new(BarrierStore {
+        inner: MemoryStore::new(),
+        armed: std::sync::atomic::AtomicBool::new(false),
+        entered: entered_tx,
+        release: std::sync::Mutex::new(release_rx),
+    });
+    let gov = gov_with_signer(store.clone(), Some("admintok".to_string()));
+    let mint = |name: &str| {
+        gov.create_key(
+            NewKeySpec {
+                name: name.to_string(),
+                ..Default::default()
+            },
+            0,
+        )
+        .unwrap()
+        .0
+    };
+    let (parked_key, other_key) = (mint("parked"), mint("other"));
+    let (addr, handle) = serve_with_gov(gov).await;
+    let url = |id: &str| format!("http://{addr}/api/v1/admin/keys/{id}");
+
+    store.armed.store(true, std::sync::atomic::Ordering::SeqCst);
+    let patch_url = url(&parked_key.id);
+    let patch_task = tokio::spawn(async move {
+        reqwest::Client::new()
+            .patch(&patch_url)
+            .header("x-admin-token", "admintok")
+            .json(&serde_json::json!({"enabled": false}))
+            .send()
+            .await
+            .unwrap()
+            .status()
+            .as_u16()
+    });
+    tokio::task::spawn_blocking(move || {
+        entered_rx.recv_timeout(std::time::Duration::from_secs(10))
+    })
+    .await
+    .unwrap()
+    .expect("the PATCH reached the instrumented put_key");
+
+    let delete = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        reqwest::Client::new()
+            .delete(url(&other_key.id))
+            .header("x-admin-token", "admintok")
+            .send(),
+    )
+    .await;
+    release_tx.send(()).unwrap();
+    let patch_status = patch_task.await.unwrap();
+    let delete_status = delete
+        .expect("a DELETE of another key waited on a PATCH parked in the store")
+        .unwrap()
+        .status()
+        .as_u16();
+    assert_eq!(delete_status, 204);
+    assert_eq!(patch_status, 200);
+    handle.abort();
+}
+
 // ── plugin admin endpoints, end-to-end over the live router ───────────────────────────────────────
 //
 // They pack, scan and sign REAL plugin tarballs, which only the composition root's admission judges
