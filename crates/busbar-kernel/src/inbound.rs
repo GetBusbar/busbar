@@ -1117,7 +1117,14 @@ impl Inbound {
             stream: call.stream,
             framing: Some(call.framing),
         };
-        let table = self.request_table(call.owner, call.generation, binding, call.unit)?;
+        // Peer calls cannot continue a request unit. Resolve their listener policy first;
+        // the Peer rule below rejects any supplied unit before an auth can run.
+        let policy_unit = if AuthPoint::from_bit(call.point) == Some(AuthPoint::Peer) {
+            UnitRef::NONE
+        } else {
+            call.unit
+        };
+        let table = self.request_table(call.owner, call.generation, binding, policy_unit)?;
         let line_ix = table.line_of(call.auth).ok_or(NO_LINE)?;
         let line = table
             .listener
