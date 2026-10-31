@@ -2807,3 +2807,34 @@ fn built_ins(defs: &crate::config::ExportDefs) -> crate::config::ExportDefs {
         .map(|(k, v)| (k.clone(), v.clone()))
         .collect()
 }
+
+/// A chain that already names `keys` (no `tokens` rewrite) with no `auth.signing_key` still needs
+/// one to `--validate`: the migrator must say so in the header, never leave it silent.
+#[test]
+fn a_keys_chain_without_a_signing_key_gets_the_signing_key_todo() {
+    let raw = "listen: 0.0.0.0:8080\nauth:\n  chain: [keys]\n";
+    let out = migrate_config(raw).expect("migrates");
+    assert!(
+        out.todos
+            .iter()
+            .any(|t| t.starts_with("auth.signing_key: required")
+                && t.contains("--generate-signing-key")),
+        "{:?}",
+        out.todos
+    );
+    assert!(
+        out.yaml
+            .contains("# TODO(migrate): auth.signing_key: required"),
+        "{}",
+        out.yaml
+    );
+
+    // With a signing key present there is nothing to say.
+    let with = "listen: 0.0.0.0:8080\nauth:\n  chain: [keys]\n  signing_key: { env: K }\n";
+    let out = migrate_config(with).expect("migrates");
+    assert!(
+        !out.todos.iter().any(|t| t.starts_with("auth.signing_key")),
+        "{:?}",
+        out.todos
+    );
+}
