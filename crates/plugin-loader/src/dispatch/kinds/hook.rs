@@ -35,7 +35,7 @@ pub const NO_TAIL: &str =
 ///
 /// A hook Statement with NO kind tail is refused ([`NO_TAIL`], ARCHITECT Q-SO8): every 1.6.0 hook
 /// states its class and grants (`abi::sdk::hook::tail`); none is assumed for it.
-fn facts(st: &Statement) -> Result<HookFacts, String> {
+pub(crate) fn facts(st: &Statement) -> Result<HookFacts, String> {
     let name = owned(st.name).ok_or("a hook's name is over-long")?;
     let p = st.kind_tail;
     if p.is_null() {
