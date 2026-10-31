@@ -133,6 +133,8 @@ pub struct Dispatched {
     facts: DoorFacts,
     /// Its tail states `FACT_ACCEPTS`.
     accepts: bool,
+    /// Its Statement states it renders sealed values (TSEAL, `abi::transport::EXT_SEALED_VALUES`).
+    seals: bool,
     on: Arc<Dispatcher>,
 }
 
@@ -330,7 +332,13 @@ impl Dispatched {
         LIVE.lock()
             .unwrap_or_else(PoisonError::into_inner)
             .push(Arc::downgrade(&live));
-        Ok(Self { live, facts, accepts, on })
+        Ok(Self {
+            live,
+            facts,
+            accepts,
+            seals: stated.seals,
+            on,
+        })
     }
 
     /// REFRESH this instance with the deployment's applied `settings`: what [`refresh_live`] does
@@ -405,6 +413,10 @@ impl FramerDoor for Dispatched {
 
     fn instance(&self) -> Option<u64> {
         Some(self.live.plugin.instance().0)
+    }
+
+    fn seals_values(&self) -> bool {
+        self.seals
     }
 
     fn side(&self) -> Option<Box<dyn Side>> {

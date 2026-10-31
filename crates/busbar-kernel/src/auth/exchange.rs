@@ -74,7 +74,7 @@ pub(crate) async fn exchange(
             return refusal(ExchangeError::Unauthorized)
         }
     };
-    let judged = AuthMiddleware::judge_chain_on_request_path(
+    let (judged, _, claim) = AuthMiddleware::judge_chain_on_request_path_naming(
         &app.auth,
         candidate,
         crate::auth::ChainHead::of(&req),
@@ -130,6 +130,13 @@ pub(crate) async fn exchange(
             "governance is disabled: cannot mint keys".to_string(),
         ));
     };
+    // The replay claim is the exchange's LAST decision, before it mints: an exchange refused above
+    // claims nothing, and a claim lost is the refusal a denied chain answers.
+    if let Some(claim) = claim {
+        if !claim.win().await {
+            return refusal(ExchangeError::Unauthorized);
+        }
+    }
     // The provisioner auto-creates the `user:<sub>` leaf under `team` on first exchange (limits from
     // the team's `child_default`) so the minted key is immediately usable, not a 429 MissingGroup.
     let provisioner = Arc::new(HandleProvisioner::new(handle.clone(), principal.id.clone()));

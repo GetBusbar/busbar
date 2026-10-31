@@ -401,7 +401,7 @@ fn the_formerly_irreducible_verbs_are_authorized_by_the_grant_alone() {
 /// what the root's steps do with it.
 #[cfg(feature = "root-admin")]
 fn a_door_answering(door: busbar_kernel::auth::AdminDoor) -> AdminDoorFn {
-    Arc::new(move |_: &AdminRequest| door.clone())
+    Arc::new(move |_: &AdminRequest| busbar_kernel::auth::AdminVerdict::from(door.clone()))
 }
 
 /// The verdict for a principal holding `named` verbs BY NAME and no rung whole: its matrix reaches
