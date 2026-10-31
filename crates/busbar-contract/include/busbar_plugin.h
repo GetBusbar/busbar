@@ -522,6 +522,7 @@ extern "C" {
 #define BB_TRANSPORT_FACT_DETACHES UINT32_C(16) /* [`TransportTail::facts`]: the transport detaches a live connection for a hand-off. */
 #define BB_TRANSPORT_FACT_ADOPTS UINT32_C(32) /* [`TransportTail::facts`]: the transport adopts a connection handed to it. */
 #define BB_TRANSPORT_EXT_OFFERED_POINTS "offered-points" /* THE OFFERED-POINTS RECORD: the key under which a transport's Statement `extensions` states */
+#define BB_TRANSPORT_EXT_SEALED_VALUES "sealed-values" /* THE SEALED-VALUES RECORD (TSEAL): the key under which a FRAMER's Statement `extensions` states */
 #define BB_TRANSPORT_SIDE_ACCEPT UINT32_C(0) /* `side`: the accepting end. */
 #define BB_TRANSPORT_SIDE_DIAL UINT32_C(1) /* `side`: the dialing end. */
 #define BB_TRANSPORT_SIDE_ACCEPT_STREAM UINT32_C(2) /* `side`: the accepting end of ONE STREAM whose connection and head the host's own framer carries */
