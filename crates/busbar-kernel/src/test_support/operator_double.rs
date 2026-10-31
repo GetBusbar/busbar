@@ -191,7 +191,7 @@ pub(crate) fn is_door(candidate: busbar_contract::abi::mechanism::door::DoorFn) 
 
 /// THE DOUBLE IN PROCESS: one instance opened over `settings` (the operator token's digest, as a
 /// JSON string), answering on the auth port with no crossing. `open` is the double's own
-/// [`VerifyPlugin::open`], its refusal in the loader's words for a door that refused its open
+/// [`VerifyPlugin::open_refusing`], its refusal in the loader's words for a door that refused its open
 /// (`auth plugin '<module>': <the plugin's text>`, `crates/plugin-loader/src/auth_axis.rs`).
 ///
 /// # Errors
@@ -201,7 +201,7 @@ pub(crate) fn open_in_process(
     settings: &serde_json::Value,
 ) -> Result<std::sync::Arc<dyn AuthCalls>, String> {
     let text = settings.to_string();
-    <OperatorDouble as VerifyPlugin>::open(text.as_bytes(), &[])
+    <OperatorDouble as VerifyPlugin>::open_refusing(text.as_bytes(), &[])
         .map(|double| std::sync::Arc::new(OperatorCalls(double)) as std::sync::Arc<dyn AuthCalls>)
         .map_err(|e| format!("auth plugin '{module}': {e}"))
 }
