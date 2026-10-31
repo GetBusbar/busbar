@@ -107,7 +107,7 @@ impl OutboundPlugin for Echo {
     ) -> Poll<FieldsAnswer> {
         let bindings = self.bindings.lock().unwrap();
         let Some(b) = bindings.get(&r.handle()) else {
-            return Poll::Ready(FieldsAnswer::Refused);
+            return Poll::Ready(FieldsAnswer::Refused("no binding holds the handle".into()));
         };
         let Some(credential) = b.credential.as_deref() else {
             return Poll::Ready(FieldsAnswer::Ready);
@@ -656,7 +656,11 @@ fn a_stray_field_flag_is_fault() {
 struct Sig;
 
 impl VerifyPlugin for Sig {
-    fn open(_: &[u8], _: &[&[u8]]) -> Result<Self, &'static str> {
+    fn validate(settings: &[u8]) -> Result<(), crate::abi::sdk::life::Refusal> {
+        crate::abi::sdk::auth_door::validate_by_opening::<Self>(settings)
+    }
+
+    fn open(_: &[u8], _: &[&[u8]]) -> Result<Self, Refusal> {
         Ok(Sig)
     }
     fn verify(&self, r: &VerifyView<'_>) -> Answer {

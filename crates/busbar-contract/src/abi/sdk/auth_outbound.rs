@@ -198,6 +198,12 @@ pub struct Diags {
 }
 
 impl Diags {
+    /// None staged.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self { staged: Vec::new() }
+    }
+
     /// Report the diagnostic `id_idx` at `severity`, saying `text`, after those before it.
     pub fn push(&mut self, id_idx: u32, severity: u8, text: impl Into<Box<str>>) {
         self.staged.push((id_idx, severity, text.into()));
@@ -224,7 +230,7 @@ impl Diags {
     }
 
     /// Write them into the reply's envelope, in order.
-    fn write<T: AbiOut>(self, out: &mut Out<'_, T>) {
+    pub(crate) fn write<T: AbiOut>(self, out: &mut Out<'_, T>) {
         for (id_idx, severity, text) in self.staged {
             if !out.diag(id_idx, severity, text) {
                 break;
@@ -377,8 +383,8 @@ pub enum FieldsAnswer {
     /// 401, as 1.5.5 did before the first mint).
     Ready,
     /// The handle refuses the request (a passthrough on a style that does not pass the caller's
-    /// credential, or a handle this generation does not hold).
-    Refused,
+    /// credential, or a handle this generation does not hold), saying why.
+    Refused(Cow<'static, str>),
     /// The call could not answer: the attempt fails, with this text.
     Failed(Cow<'static, str>),
 }
@@ -656,7 +662,7 @@ impl<T: VerifyPlugin + OutboundPlugin> Life for Both<T> {
     ) -> Result<Refreshed, Refusal> {
         // The outbound side judges the new settings first: a refused reload flushes nothing.
         OutboundPlugin::refresh(&self.0, settings, secrets, generation)?;
-        let dropped = VerifyPlugin::refresh(&self.0, settings, secrets);
+        let dropped = VerifyPlugin::refresh(&self.0, settings, secrets)?;
         Ok(Refreshed {
             counted: <T as VerifyPlugin>::CACHE_FAMILY.map(|family| Counted {
                 family,
@@ -693,7 +699,9 @@ impl<T: OutboundPlugin, L: HoldsOutbound<T>> SafeSlot for OpenOutboundSlot<T, L>
         };
         // A style that is not UTF-8 is none the plugin declares.
         let Ok(style) = input.field(|i| &i.style).as_str() else {
-            return Outcome::Refused;
+            return out.fail(Refusal::refused(
+                "open_outbound: the style is not UTF-8, so it is none this plugin declares",
+            ));
         };
         let credential = present(input.field(|i| &i.credential));
         let settings = present(input.field(|i| &i.settings));
@@ -764,10 +772,12 @@ impl<T: OutboundPlugin, L: HoldsOutbound<T>> SafeSlot for FieldsSlot<T, L> {
         match answer {
             // On the spot the call cannot pend (a ticket-less PENDING is FAULT): REFUSED there,
             // and the host submits it on a ticket.
-            Poll::Pending if instance.ticket().is_none() => Outcome::Refused,
+            Poll::Pending if instance.ticket().is_none() => out.fail(Refusal::refused(
+                "fields waits on its exchange: it is answered on a ticket, not on the spot",
+            )),
             Poll::Pending => Outcome::Pending,
             Poll::Ready(FieldsAnswer::Ready) => writer.write(&mut out),
-            Poll::Ready(FieldsAnswer::Refused) => Outcome::Refused,
+            Poll::Ready(FieldsAnswer::Refused(why)) => out.fail(Refusal::refused(why)),
             Poll::Ready(FieldsAnswer::Failed(why)) => out.fail(Refusal::failed(why)),
         }
     }
@@ -887,15 +897,15 @@ impl<T: VerifyPlugin + OutboundPlugin> SafeSlot for VerifyBoth<T> {
 }
 
 /// An auth op this kit's plugin does not serve (its tail does not state the capability): REFUSED,
-/// never called.
+/// saying so, never called.
 #[derive(Debug)]
 pub struct NotServed<L, I, O>(PhantomData<(L, I, O)>);
 impl<L: Life, I: AbiIn, O: AbiOut> SafeSlot for NotServed<L, I, O> {
     type In = I;
     type Out = O;
     type State = Held<L>;
-    fn call(_: Instance<'_, Held<L>>, _: Lent<'_, I>, _: Out<'_, O>) -> Outcome {
-        Outcome::Refused
+    fn call(_: Instance<'_, Held<L>>, _: Lent<'_, I>, mut out: Out<'_, O>) -> Outcome {
+        out.fail(Refusal::refused(crate::abi::sdk::auth_door::NOT_SERVED))
     }
 }
 

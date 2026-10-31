@@ -373,17 +373,28 @@ impl Drop for Held {
 
 /// An answer, read over `held`: the verdict (the kernel's), the decision and the strips (the
 /// transport's). The strips are named whatever the verdict; an answer that is not READY is
-/// [`Verified::Failed`] with the decision to stop.
-fn verdict(outcome: Outcome, out: &IdentifyOut, held: &Held) -> VerifyAnswer {
+/// [`Verified::Failed`] with the decision to stop. A REJECT's reason (the answer's error text) is
+/// written to `plugin`'s own log and the host log, and kept on the answer; never the client's.
+fn verdict(
+    outcome: Outcome,
+    out: &IdentifyOut,
+    held: &Held,
+    plugin: &Plugin<Auth>,
+) -> VerifyAnswer {
     if outcome != Outcome::Ready {
         return Verified::Failed.into();
     }
+    let mut reason = None;
     let verified = match out.verdict {
         VERDICT_IDENTITY => Verified::Identity(held.identity(&out.identity)),
-        VERDICT_REJECT => Verified::Reject,
+        VERDICT_REJECT => {
+            reason = declined(plugin, out, 0, "verify rejected the credential");
+            Verified::Reject
+        }
         _ => Verified::Pass,
     };
     VerifyAnswer {
+        reason,
         verified,
         decision: if out.decision == DECISION_CONTINUE {
             Decision::Continue
@@ -392,6 +403,26 @@ fn verdict(outcome: Outcome, out: &IdentifyOut, held: &Held) -> VerifyAnswer {
         },
         strips: held.strips(out),
     }
+}
+
+/// THE REASON a READY answer that declined names (`abi::auth::IdentifyOut`), read at once (the
+/// text is plugin memory valid until the next op on the ticket): written as `what: <reason>` at
+/// `severity` to `plugin`'s own log and to the host log. `None` when it names none.
+pub(crate) fn declined(
+    plugin: &Plugin<Auth>,
+    out: &IdentifyOut,
+    severity: u8,
+    what: &str,
+) -> Option<String> {
+    let text = crate::dispatch::plugin::copy_str(out.head.error)?;
+    let reason = String::from_utf8_lossy(&text).into_owned();
+    let line = format!("{what}: {reason}");
+    plugin.note(severity, &line);
+    match severity {
+        0 => tracing::info!(plugin = %plugin.name(), "{line}"),
+        _ => tracing::warn!(plugin = %plugin.name(), "{line}"),
+    }
+    Some(reason)
 }
 
 /// The bigger buffers a SHORT answer names (bytes, groups, strip names); `None` when it asks past
@@ -796,9 +827,9 @@ impl AuthCalls for AuthInstance {
                 let bigger = Held::new(request, seal, cap, groups, strips);
                 let mut g = Frame::new(bigger.input(presented), identify_out());
                 let again = plugin.recall(token, slot::VERIFY, &mut g);
-                Some(verdict(again.outcome, &g.out, &bigger))
+                Some(verdict(again.outcome, &g.out, &bigger, plugin))
             }
-            o => Some(verdict(o, &f.out, &held)),
+            o => Some(verdict(o, &f.out, &held, plugin)),
         }
     }
 
@@ -951,7 +982,7 @@ impl Submitted {
             return Some(Verified::Failed.into());
         }
         Some(match out {
-            Some(o) => verdict(done.outcome, &o, &self.held),
+            Some(o) => verdict(done.outcome, &o, &self.held, &self.shared.plugin),
             None => Verified::Failed.into(),
         })
     }

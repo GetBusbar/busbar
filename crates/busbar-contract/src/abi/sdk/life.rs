@@ -129,6 +129,16 @@ impl Refusal {
     }
 }
 
+impl std::fmt::Display for Refusal {
+    /// Its text; a refusal saying nothing reads as its outcome.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.text {
+            Some(text) => f.write_str(text),
+            None => write!(f, "{:?}", self.outcome),
+        }
+    }
+}
+
 /// A settings blob's bytes as the JSON object they must be; empty is `{}`.
 ///
 /// # Errors

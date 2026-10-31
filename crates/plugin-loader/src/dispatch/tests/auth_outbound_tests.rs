@@ -50,7 +50,11 @@ mod plugin {
     pub struct Outbound;
 
     impl VerifyPlugin for Outbound {
-        fn open(_: &[u8], _: &[&[u8]]) -> Result<Self, &'static str> {
+        fn validate(settings: &[u8]) -> Result<(), busbar_contract::abi::sdk::life::Refusal> {
+            busbar_contract::abi::sdk::auth_door::validate_by_opening::<Self>(settings)
+        }
+
+        fn open(_: &[u8], _: &[&[u8]]) -> Result<Self, busbar_contract::abi::sdk::life::Refusal> {
             Ok(Outbound)
         }
         fn verify(&self, _: &VerifyView<'_>) -> Answer {

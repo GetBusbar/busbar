@@ -40,7 +40,8 @@ use busbar_contract::auth::{BeginLogin, FieldKind, LoginForm, LoginOutcome, Prin
 use busbar_contract::auth_calls::{LoginCall, LoginCallback, LoginSettled, VerifyRequest};
 
 use super::{blob, grown, identify_out, lend, lend_opt, zero, Held, Shared};
-use crate::dispatch::{in_head, now_ns, out_head, Done, Frame, Reply};
+use crate::dispatch::kinds::auth::Auth;
+use crate::dispatch::{in_head, now_ns, out_head, Done, Frame, Plugin, Reply};
 
 /// A submitted `begin_login`'s deadline.
 pub const BEGIN_LOGIN_DEADLINE: Duration = Duration::from_secs(10);
@@ -366,8 +367,15 @@ impl Drop for CompleteHeld {
     }
 }
 
-/// What a completed `complete_login` answered.
-fn completed(outcome: Outcome, out: &IdentifyOut, held: &CompleteHeld) -> LoginOutcome {
+/// What a completed `complete_login` answered. A verdict that is not an identity has its reason
+/// (the answer's error text: the check that failed, or what the identity provider answered to an
+/// outage) written to the instance's own log and the host log, never to the browser.
+fn completed(
+    outcome: Outcome,
+    out: &IdentifyOut,
+    held: &CompleteHeld,
+    plugin: &Plugin<Auth>,
+) -> LoginOutcome {
     if outcome != Outcome::Ready {
         return LoginOutcome::Reject;
     }
@@ -381,9 +389,23 @@ fn completed(outcome: Outcome, out: &IdentifyOut, held: &CompleteHeld) -> LoginO
                 ttl_secs: id.ttl_secs,
             })
         }
-        LOGIN_OUTAGE => LoginOutcome::Outage,
-        LOGIN_SECURITY_CHECK_FAILED => LoginOutcome::SecurityCheckFailed,
-        LOGIN_BAD_CREDENTIAL => LoginOutcome::Reject,
+        LOGIN_OUTAGE => {
+            super::declined(
+                plugin,
+                out,
+                1,
+                "sign-in outage: the identity provider was not reached",
+            );
+            LoginOutcome::Outage
+        }
+        LOGIN_SECURITY_CHECK_FAILED => {
+            super::declined(plugin, out, 1, "sign-in refused: the security check failed");
+            LoginOutcome::SecurityCheckFailed
+        }
+        LOGIN_BAD_CREDENTIAL => {
+            super::declined(plugin, out, 0, "sign-in rejected the credential");
+            LoginOutcome::Reject
+        }
         _ => LoginOutcome::Reject,
     }
 }
@@ -474,7 +496,7 @@ impl Complete {
                 continue;
             }
             self.answer = Some(match out {
-                Some(o) => completed(done.outcome, &o, &self.held),
+                Some(o) => completed(done.outcome, &o, &self.held, &self.shared.plugin),
                 None => LoginOutcome::Reject,
             });
         }

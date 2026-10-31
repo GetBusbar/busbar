@@ -37,11 +37,18 @@ mod plugin {
     }
 
     impl VerifyPlugin for Judge {
+        fn validate(settings: &[u8]) -> Result<(), Refusal> {
+            // Its `open` needs its secret: the settings are judged alone.
+            if settings != b"\"ok\"" {
+                return Err(Refusal::failed("settings: not this plugin's"));
+            }
+            Ok(())
+        }
         const CACHE_FAMILY: Option<u32> = Some(0);
 
-        fn open(settings: &[u8], secrets: &[&[u8]]) -> Result<Self, &'static str> {
+        fn open(settings: &[u8], secrets: &[&[u8]]) -> Result<Self, Refusal> {
             if settings != b"\"ok\"" || secrets != [b"s3cret".as_slice()] {
-                return Err("settings: not this plugin's");
+                return Err(Refusal::failed("settings: not this plugin's"));
             }
             Ok(Judge {
                 flushes: std::sync::atomic::AtomicU64::new(0),
@@ -69,8 +76,8 @@ mod plugin {
                         ..VerifiedIdentity::default()
                     })
                 }
-                Some(b"body") => Verdict::Reject,
-                Some(b"bad") => Verdict::Reject,
+                Some(b"body") => Verdict::reject("the body is not the signed one"),
+                Some(b"bad") => Verdict::reject(format!("credential {} is not known", "#7")),
                 // Asks the kernel to admit this identity once per key.
                 Some(b"once") => Verdict::Identity(VerifiedIdentity {
                     subject: "hook".into(),
@@ -88,10 +95,27 @@ mod plugin {
             }
         }
 
-        fn refresh(&self, _: &[u8], _: &[&[u8]]) -> u64 {
+        fn verify_ticketed(&self, r: &VerifyView<'_>, op: &VerifyOp) -> std::task::Poll<Answer> {
+            if r.credential() == Some(&b"noted"[..]) {
+                op.diag(
+                    0,
+                    crate::abi::mechanism::call::SEVERITY_WARN,
+                    "the judge noted a key",
+                );
+            }
+            std::task::Poll::Ready(self.verify(r))
+        }
+
+        fn refresh(&self, settings: &[u8], _: &[&[u8]]) -> Result<u64, Refusal> {
+            if settings == b"\"rotate-later\"" {
+                return Err(Refusal::refused(format!(
+                    "settings: a rotation needs a reopen ({} bytes)",
+                    settings.len()
+                )));
+            }
             self.flushes
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            3
+            Ok(3)
         }
     }
 
@@ -729,5 +753,88 @@ fn red_an_unserved_op_is_refused_saying_why() {
     assert!(
         !out.head.error.ptr.is_null() && out.head.error.len > 0,
         "an unserved op was refused saying nothing"
+    );
+}
+
+/// The text an answer's head names, as the host reads it.
+fn head_text(head: &OutHead) -> String {
+    if head.error.ptr.is_null() {
+        return String::new();
+    }
+    // SAFETY: the answer's error text, `len` bytes kept by the instance or the program.
+    String::from_utf8_lossy(unsafe { std::slice::from_raw_parts(head.error.ptr, head.error.len) })
+        .into_owned()
+}
+
+/// GREEN (open160 A1): a REJECT names its reason in the answer's head, an owned text kept by the
+/// instance; the verdict and the decision are the kind's as before, and the kind's check accepts
+/// the answer. An identity and a pass name none.
+#[test]
+fn a_reject_names_its_reason_and_nothing_else_does() {
+    let (_, opened) = open(b"\"ok\"");
+    let mut host = Host::new(256, 4);
+    let (o, out, input) = verify(opened.instance, Some(b"bad"), None, &mut host);
+    assert_eq!(
+        (o, out.verdict, out.decision),
+        (Outcome::Ready, VERDICT_REJECT, DECISION_STOP)
+    );
+    assert_eq!(head_text(&out.head), "credential #7 is not known");
+    check(o, &out, &input, &host).expect("legal");
+    for credential in [&b"good"[..], b"other"] {
+        let mut host = Host::new(256, 4);
+        let (o, out, _) = verify(opened.instance, Some(credential), None, &mut host);
+        assert_eq!(o, Outcome::Ready);
+        assert_eq!(head_text(&out.head), "", "{credential:?} named a reason");
+    }
+}
+
+/// GREEN (open160 A8): a plugin refuses a reload in its own dynamic words, with its own outcome;
+/// the instance keeps serving.
+#[test]
+fn a_refresh_the_plugin_refuses_answers_its_words() {
+    let (_, opened) = open(b"\"ok\"");
+    let input = RefreshIn {
+        head: head::<RefreshIn>(life::REFRESH),
+        generation: 2,
+        settings: blob(b"\"rotate-later\"", BLOB_JSON, 0),
+        secrets: ptr::null(),
+        secrets_len: 0,
+    };
+    let mut out = out_head(size_of::<OutHead>());
+    assert_eq!(
+        cross(ops().head.refresh, opened.instance, &input, &mut out),
+        Outcome::Refused
+    );
+    assert_eq!(
+        head_text(&out),
+        "settings: a rotation needs a reopen (14 bytes)"
+    );
+    let mut host = Host::new(256, 4);
+    assert_eq!(
+        verify(opened.instance, Some(b"good"), None, &mut host).0,
+        Outcome::Ready
+    );
+}
+
+/// GREEN (open160 A11): a `verify` reports a declared diagnostic through its op, in the reply's
+/// envelope, whatever it answers.
+#[test]
+fn a_verify_reports_its_diagnostic_through_the_op() {
+    let (_, opened) = open(b"\"ok\"");
+    let mut host = Host::new(256, 4);
+    let (o, out, _) = verify(opened.instance, Some(b"noted"), None, &mut host);
+    assert_eq!((o, out.verdict), (Outcome::Ready, VERDICT_PASS));
+    assert_eq!(out.head.envelope.diags_len, 1);
+    // SAFETY: the plugin's entry, valid until its next op on the ticket.
+    let d = unsafe { &*out.head.envelope.diags };
+    // SAFETY: as above, `len` bytes.
+    let text = unsafe { std::slice::from_raw_parts(d.text.ptr, d.text.len) };
+    assert_eq!(
+        (d.id_idx, d.severity, text),
+        (
+            0,
+            crate::abi::mechanism::call::SEVERITY_WARN,
+            &b"the judge noted a key"[..]
+        )
     );
 }

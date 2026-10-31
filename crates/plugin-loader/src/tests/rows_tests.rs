@@ -63,7 +63,11 @@ fn the_store_door_and_the_refusals_are_the_registrys() {
 struct Door;
 
 impl busbar_contract::abi::sdk::auth_door::VerifyPlugin for Door {
-    fn open(_: &[u8], _: &[&[u8]]) -> Result<Self, &'static str> {
+    fn validate(settings: &[u8]) -> Result<(), busbar_contract::abi::sdk::life::Refusal> {
+        busbar_contract::abi::sdk::auth_door::validate_by_opening::<Self>(settings)
+    }
+
+    fn open(_: &[u8], _: &[&[u8]]) -> Result<Self, busbar_contract::abi::sdk::life::Refusal> {
         Ok(Self)
     }
     fn verify(

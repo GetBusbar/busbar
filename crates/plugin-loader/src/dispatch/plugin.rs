@@ -1856,6 +1856,18 @@ impl<K: Kind> Plugin<K> {
         self.inner.name()
     }
 
+    /// Write `text` at `severity` (`0` info, `1` warn, `2` error) into this instance's own log
+    /// (its envelope sink, as a log record): what the HOST read from an answer on the instance's
+    /// behalf, such as an auth reject's reason (`abi::auth::IdentifyOut`). Never secret material.
+    pub(crate) fn note(&self, severity: u8, text: &str) {
+        self.inner.sink.diag(Diagnostic {
+            id: DIAG_LOG,
+            name: &[],
+            severity,
+            text: text.as_bytes(),
+        });
+    }
+
     /// The settings keys its Statement names as secret references, in the Statement's order.
     #[must_use]
     pub fn secret_refs(&self) -> &[String] {

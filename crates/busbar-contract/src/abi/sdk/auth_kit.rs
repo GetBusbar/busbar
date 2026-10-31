@@ -11,6 +11,10 @@
 //!   are kept as serde wrote them.
 //! * [`login_identity`] — a completed login's [`Principal`] written into the host's
 //!   [`IdentityBuf`] as `complete_login`'s identity answer, or the short-buffer answer.
+//! * [`login_declined`] — `complete_login`'s answer that is not an identity (a bad credential, an
+//!   outage, a failed security check), saying why to the operator's log.
+
+use std::borrow::Cow;
 
 use crate::abi::auth::{IdentifyOut, IdentityBuf, IDENTITY_HAS_TTL, LOGIN_IDENTITY, SPAN_ABSENT};
 use crate::abi::mechanism::call::{Outcome, Span, BLOB_ABSENT};
@@ -38,6 +42,23 @@ pub fn json_error(what: &'static str) -> impl FnOnce(serde_json::Error) -> Strin
         let (line, column) = (e.line(), e.column());
         format!("{what}: {class} (line {line}, column {column}; the decoder's text is withheld)")
     }
+}
+
+/// `complete_login`'s answer that is not an identity: `verdict`
+/// ([`LOGIN_BAD_CREDENTIAL`](crate::abi::auth::LOGIN_BAD_CREDENTIAL) |
+/// [`LOGIN_OUTAGE`](crate::abi::auth::LOGIN_OUTAGE) |
+/// [`LOGIN_SECURITY_CHECK_FAILED`](crate::abi::auth::LOGIN_SECURITY_CHECK_FAILED)), READY, naming
+/// `why` ([`Out::reason`]): the host writes it to the instance's own log, never to the browser (an
+/// outage says what the identity provider answered, its status, so the operator can tell an IdP
+/// outage from a misconfiguration). Never secret material.
+pub fn login_declined(
+    verdict: u32,
+    why: impl Into<Cow<'static, str>>,
+    out: &mut Out<'_, IdentifyOut>,
+) -> Outcome {
+    out.set(|o| &o.verdict, verdict);
+    out.reason(why);
+    Outcome::Ready
 }
 
 /// No span: the field is absent.

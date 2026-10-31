@@ -3529,7 +3529,14 @@ fn a_signed_verify_keeps_the_lines_its_auth_named_whatever_its_verdict() {
 struct OtherStyle;
 
 impl busbar_contract::abi::sdk::auth_door::VerifyPlugin for OtherStyle {
-    fn open(_settings: &[u8], _secrets: &[&[u8]]) -> Result<Self, &'static str> {
+    fn validate(settings: &[u8]) -> Result<(), busbar_contract::abi::sdk::life::Refusal> {
+        busbar_contract::abi::sdk::auth_door::validate_by_opening::<Self>(settings)
+    }
+
+    fn open(
+        _settings: &[u8],
+        _secrets: &[&[u8]],
+    ) -> Result<Self, busbar_contract::abi::sdk::life::Refusal> {
         Ok(Self)
     }
 

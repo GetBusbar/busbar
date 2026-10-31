@@ -31,6 +31,7 @@ use busbar_contract::abi::sdk::auth_door::{
     VerifyPlugin, VerifyView,
 };
 use busbar_contract::abi::sdk::door::statement;
+use busbar_contract::abi::sdk::life::Refusal;
 use busbar_contract::auth_calls::{AuthCalls, Verified, VerifyAnswer, VerifyRequest, Verifying};
 use busbar_contract::redacted::{constant_time_eq, sha256_hex};
 
@@ -85,7 +86,7 @@ fn judge(digest: &str, bearer: Option<&str>, header: Option<&str>) -> Verdict {
     }
     let addressed = |c: Option<&str>| c.is_some_and(|c| !jws_shaped(c));
     if addressed(bearer) || addressed(header) {
-        Verdict::Reject
+        Verdict::reject("the presented operator token does not match the configured digest")
     } else {
         Verdict::Pass
     }
@@ -98,12 +99,17 @@ pub struct OperatorDouble {
 }
 
 impl VerifyPlugin for OperatorDouble {
-    fn open(settings: &[u8], _secrets: &[&[u8]]) -> Result<Self, &'static str> {
+    fn validate(settings: &[u8]) -> Result<(), busbar_contract::abi::sdk::life::Refusal> {
+        busbar_contract::abi::sdk::auth_door::validate_by_opening::<Self>(settings)
+    }
+
+    fn open(settings: &[u8], _secrets: &[&[u8]]) -> Result<Self, Refusal> {
         const NOT_A_DIGEST: &str = "the operator double's settings are the token's SHA-256 digest";
-        let text: String = serde_json::from_slice(settings).map_err(|_| NOT_A_DIGEST)?;
+        let text: String =
+            serde_json::from_slice(settings).map_err(|_| Refusal::failed(NOT_A_DIGEST))?;
         let digest = text.trim();
         if digest.len() != 64 || !digest.bytes().all(|b| b.is_ascii_hexdigit()) {
-            return Err(NOT_A_DIGEST);
+            return Err(Refusal::failed(NOT_A_DIGEST));
         }
         Ok(Self {
             digest: digest.to_ascii_lowercase(),
@@ -217,13 +223,14 @@ impl OperatorCalls {
                 .find(|(n, _)| n.eq_ignore_ascii_case(name))
                 .map(|(_, v)| v.expose(&seal).as_slice())
         });
-        let verified = match verdict {
-            Verdict::Identity(id) => Verified::Identity(id),
-            Verdict::Reject => Verified::Reject,
-            Verdict::Pass => Verified::Pass,
+        let (verified, reason) = match verdict {
+            Verdict::Identity(id) => (Verified::Identity(id), None),
+            Verdict::Reject(why) => (Verified::Reject, Some(why.text().to_string())),
+            Verdict::Pass => (Verified::Pass, None),
         };
         VerifyAnswer {
             strips,
+            reason,
             ..VerifyAnswer::from(verified)
         }
     }

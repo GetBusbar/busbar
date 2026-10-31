@@ -624,6 +624,8 @@ pub struct OutHead {
     /// A lease the host hands back to `release`: off-path lists and secrets only; `0` = none.
     pub lease: u64,
     /// For [`Outcome::Failed`]/[`Outcome::Refused`]: the error text; never secret material.
+    /// A kind may give it a READY meaning of its own (the auth kind: a reject's reason,
+    /// `abi::auth::IdentifyOut`), operator text all the same.
     pub error: AbiStr,
     /// The #85 envelope.
     pub envelope: Envelope,

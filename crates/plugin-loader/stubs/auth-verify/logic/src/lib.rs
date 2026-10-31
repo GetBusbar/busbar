@@ -34,6 +34,7 @@ use busbar_contract::abi::sdk::auth_door::{
     VerifyPlugin, VerifyView,
 };
 use busbar_contract::abi::sdk::door::statement;
+use busbar_contract::abi::sdk::life::Refusal;
 use busbar_contract::{constant_time_eq, sha256_hex};
 
 /// The fixed principal id the operator admin token identifies as. The built-in operator credential
@@ -121,8 +122,13 @@ pub fn authenticate_admin_tokens(
         return Verdict::Identity(operator());
     }
     // A credential was presented (at least one carrier is `Some`) and neither matched.
-    Verdict::Reject
+    Verdict::reject(NO_MATCH)
 }
+
+/// Why a presented admin token is rejected: the operator's log only, never the client's answer.
+/// It never echoes what was presented.
+pub const NO_MATCH: &str =
+    "the presented admin token does not match the configured digest (the token is not echoed)";
 
 /// The refusal of settings that are not a digest. It never echoes what it was given.
 pub const NOT_A_DIGEST: &str =
@@ -172,9 +178,13 @@ pub struct AdminTokens {
 }
 
 impl VerifyPlugin for AdminTokens {
-    fn open(settings: &[u8], _secrets: &[&[u8]]) -> Result<Self, &'static str> {
+    fn validate(settings: &[u8]) -> Result<(), busbar_contract::abi::sdk::life::Refusal> {
+        busbar_contract::abi::sdk::auth_door::validate_by_opening::<Self>(settings)
+    }
+
+    fn open(settings: &[u8], _secrets: &[&[u8]]) -> Result<Self, Refusal> {
         Ok(Self {
-            configured_hash: digest_of(settings)?,
+            configured_hash: digest_of(settings).map_err(Refusal::failed)?,
         })
     }
 
