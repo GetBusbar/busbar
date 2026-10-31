@@ -87,6 +87,8 @@ pub struct StoreFacts {
     pub durable_plane: bool,
     /// A different record at a used `seq` is refused as a fork.
     pub fork_refusal: bool,
+    /// Explicit slot-8 envelope CAS capability, read from the Statement extensions.
+    pub credential_rewrap: bool,
 }
 
 /// The store's tail, read from the Statement: a whole [`store::StoreTail`] whose flags are `0` or
@@ -106,6 +108,14 @@ fn store_facts(st: &Statement) -> Result<StoreFacts, String> {
         ephemeral: st.marks & busbar_contract::abi::mechanism::door::MARK_EPHEMERAL != 0,
         durable_plane: flag(t.durable_plane, "durable_plane")?,
         fork_refusal: flag(t.fork_refusal, "fork_refusal")?,
+        credential_rewrap: {
+            // SAFETY: the checked Statement owns its static extension bytes.
+            let bytes = unsafe { crate::dispatch::plugin::blob_bytes(st.extensions) };
+            busbar_contract::abi::mechanism::extensions::get(
+                bytes,
+                busbar_contract::abi::sdk::store::rewrap::INTENT,
+            ) == Some(b"1".as_slice())
+        },
     })
 }
 

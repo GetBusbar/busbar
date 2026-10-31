@@ -25,6 +25,7 @@ pub mod door;
 // The `op_id` dedupe: the state machine and the body a store records.
 pub mod dedupe;
 pub mod fork;
+pub mod rewrap;
 pub mod wire;
 // A record's fields as a backend stores them: scope columns, storable integers, counters.
 pub mod column;
@@ -271,6 +272,20 @@ pub trait StoreSlots: Sized + Send + Sync + 'static {
         cx: &mut Op<'_>,
         secret: &CredentialSecret,
     ) -> Step<RecordStoreResult<()>>;
+
+    /// Update-only envelope CAS, carried by slot 8 with explicit rewrap intent. See
+    /// [`crate::records::RecordStore::rewrap_credential`]. No ordinary PUT fallback is safe.
+    fn rewrap_credential(
+        &self,
+        cx: &mut Op<'_>,
+        expected: &CredentialSecret,
+        replacement: &str,
+    ) -> Step<RecordStoreResult<bool>> {
+        let _ = (cx, expected, replacement);
+        Step::Ready(Err(crate::records::RecordStoreError(
+            "this Store does not support credential rewrap CAS".into(),
+        )))
+    }
 
     /// `put_key_with_credential` (slot 9): both, atomically.
     ///
