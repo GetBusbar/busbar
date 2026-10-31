@@ -115,8 +115,8 @@ static CAP_RELEASE: std::sync::Condvar = std::sync::Condvar::new();
 
 pub struct BlockedCalls;
 
-impl Default for BlockedCalls {
-    fn default() -> Self {
+impl BlockedCalls {
+    pub fn hold() -> Self {
         *CAP_CROSSINGS.lock().unwrap() = (false, 0);
         Self
     }

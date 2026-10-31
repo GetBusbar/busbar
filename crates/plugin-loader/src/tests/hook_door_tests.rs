@@ -486,7 +486,7 @@ async fn the_inflight_cap_saturates_and_fails_on_the_caller_deadline_through_the
             BUDGET,
         )
         .expect("the controlled gate opens");
-    let blocked = hook_door_plugin::BlockedCalls::default();
+    let blocked = hook_door_plugin::BlockedCalls::hold();
     let mut inflight = Vec::with_capacity(MAX_INFLIGHT as usize);
     for _ in 0..MAX_INFLIGHT {
         let wedged = Arc::clone(&wedged);
