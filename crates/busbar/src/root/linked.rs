@@ -505,10 +505,12 @@ fn disk_run(job: Box<dyn FnOnce() + Send>) -> Result<(), String> {
     disk_lane().run(job).map_err(str::to_string)
 }
 
-/// The host's one connection table (`root::connector::the()`), on which a secret plugin that declares
-/// a need is declared and through which it is lent its connector.
+/// The installed connection table. Before boot installs it, only secret plugins with no network
+/// needs may resolve; a configuration lookup must not reserve an inert connector in its place.
 fn conns() -> Option<std::sync::Arc<dyn busbar_contract::conn::DeclaredConns>> {
-    Some(crate::root::connector::the().clone())
+    crate::root::connector::installed().map(|one| {
+        std::sync::Arc::clone(one) as std::sync::Arc<dyn busbar_contract::conn::DeclaredConns>
+    })
 }
 
 /// The secret axis [`register_stores`] installed (an empty one where no root registered).
