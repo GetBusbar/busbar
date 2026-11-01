@@ -638,6 +638,7 @@ impl GovState {
         };
         // Tokens land only on the buckets this request's pool participates in - the same
         // predicate the admission charge used, so accrual mirrors the charge exactly.
+        let (_, pool) = split_plane_lane(pool);
         for bucket in chain.iter().filter(|b| b.applies_to_pool(pool)) {
             self.accrue_bucket(
                 bucket.bucket_id,
