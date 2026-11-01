@@ -103,7 +103,9 @@ fn minimal_cfg() -> RootCfg {
 #[test]
 fn merge_into_deploy() {
     let mut cfg = minimal_cfg();
-    cfg.hooks.insert("base_hook".to_string(), gate());
+    let mut base = gate();
+    base.plugin = "base-module".to_string();
+    cfg.hooks.insert("base_hook".to_string(), base);
     let doc = from_state(
         &HashMap::from([
             ("base_hook".to_string(), gate()), // same name as a base hook → overlay wins
@@ -115,6 +117,7 @@ fn merge_into_deploy() {
     merge_into(&mut cfg, doc);
     assert!(cfg.hooks.contains_key("api_hook"));
     assert!(cfg.hooks.contains_key("base_hook"));
+    assert_eq!(cfg.hooks["base_hook"].plugin, "test-hook", "overlay wins");
     // global_hooks unioned, no duplicate of base_hook.
     assert_eq!(
         cfg.global_hooks

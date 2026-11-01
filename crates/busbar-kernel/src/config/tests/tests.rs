@@ -2631,16 +2631,12 @@ fn test_group_limit_on_exhaust_qualifier() {
 // ── top-level DeployCfg surface ──────────────────────────────────────────────────────────────────
 
 /// The REMOVED top-level blocks are rejected by deny_unknown_fields: `governance:` (split into
-/// store/rate_card/groups/advanced/auth), the `hooks:` registry (inline refs now), `group_map:`
-/// (auth.role_bindings now), and top-level `admin_auth:` (moved under `auth:`).
+/// store/rate_card/groups/advanced/auth), `group_map:` (auth.role_bindings now), and top-level
+/// `admin_auth:` (moved under `auth:`). The top-level named `hooks:` map remains supported.
 #[test]
 fn test_removed_top_level_blocks_rejected() {
     for (block, key) in [
         ("governance:\n  store: memory\n", "governance"),
-        (
-            "hooks:\n  my-gate:\n    kind: gate\n    plugin: p\n",
-            "hooks",
-        ),
         ("group_map:\n  eng:\n    group: eng\n", "group_map"),
         ("admin_auth: [admin-tokens]\n", "admin_auth"),
     ] {
