@@ -313,6 +313,8 @@ pub enum Bind {
 
 /// One media association's DTLS engine and demux.
 pub struct Association {
+    #[cfg(test)]
+    ingest_calls: usize,
     cert: Arc<SessionCert>,
     role: Role,
     keys: stun::Keys,
@@ -366,6 +368,8 @@ impl Association {
         let mut tie_breaker = [0_u8; 8];
         let _ = SystemRandom::new().fill(&mut tie_breaker);
         Association {
+            #[cfg(test)]
+            ingest_calls: 0,
             cert,
             role,
             keys: stun::Keys::new(local, remote),
@@ -394,6 +398,10 @@ impl Association {
     /// One datagram in from `path` (RFC 7983 demux; module docs). [`Verdict::Raw`] tells the caller
     /// to hand the datagram to the framer as it is.
     pub fn ingest(&mut self, path: SocketAddr, datagram: &[u8], now: Instant) -> Verdict {
+        #[cfg(test)]
+        {
+            self.ingest_calls += 1;
+        }
         if self.failed.is_some() {
             return Verdict::Kept;
         }
@@ -441,6 +449,11 @@ impl Association {
             }
             Class::Media | Class::Drop => Verdict::Kept,
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn ingest_calls(&self) -> usize {
+        self.ingest_calls
     }
 
     /// The framer's ICE agent chose `path`: run DTLS on it, now if core has proven the path, or

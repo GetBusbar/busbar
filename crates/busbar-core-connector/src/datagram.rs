@@ -628,7 +628,7 @@ impl DatagramFraming {
             .as_ref()
             .is_some_and(|secure| secure.unadmitted_check(from, bytes));
         if unadmitted && !self.admit_heard(from, now) {
-            return self.settle_step(now);
+            return self.settle_step(now, true);
         }
         let Some(secure) = self.secure.as_mut() else {
             self.credit = None;
@@ -636,12 +636,12 @@ impl DatagramFraming {
         };
         let raw = secure.ingest(from, bytes, now) == Verdict::Raw && secure.knows(from);
         if !raw {
-            return self.settle_step(now);
+            return self.settle_step(now, true);
         }
         let known =
             |address: SocketAddr| secure.knows(address) || secure.bound_path() == Some(address);
         if self.book.number(from, known).is_none() {
-            return self.settle_step(now);
+            return self.settle_step(now, true);
         }
         self.start_step(
             Op::Ingest {
@@ -673,7 +673,7 @@ impl DatagramFraming {
             self.deadline_ns = None;
             self.start_step(Op::Timer, now)
         } else {
-            self.settle_step(now)
+            self.settle_step(now, false)
         }
     }
 
@@ -684,11 +684,27 @@ impl DatagramFraming {
         self.keep_step(continuation, result, true)
     }
 
-    fn settle_step(&mut self, now: Instant) -> Result<LineStep, Refused> {
+    fn settle_step(&mut self, now: Instant, accepted: bool) -> Result<LineStep, Refused> {
         let mut turn = DatagramTurn::settling(self, now);
         let result = turn.next_batch();
         let continuation = turn.pause();
-        self.keep_step(continuation, result, false)
+        match self.keep_step(continuation, result, accepted)? {
+            LineStep::Credit => {
+                // Security already consumed this datagram (or the clock already advanced).
+                // The continuation owns its plaintext/wire; only its next ABI crossing waits
+                // for credit. Publish that pause rather than requeueing the original input.
+                // `accepted` describes this raw input, not an application's held Emit job;
+                // PortAssociations::poll_line resets it for an older queued operation.
+                Ok(LineStep::Batch {
+                    yielded: Yielded {
+                        continuing: true,
+                        ..Yielded::default()
+                    },
+                    accepted,
+                })
+            }
+            step => Ok(step),
+        }
     }
 
     fn keep_step(

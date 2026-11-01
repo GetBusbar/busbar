@@ -48,6 +48,9 @@ mod turn_tests;
 #[path = "datagram_emission_close_tests.rs"]
 mod emission_close_tests;
 
+#[path = "datagram_secure_credit_tests.rs"]
+mod secure_credit_tests;
+
 fn p(s: &str) -> SocketAddr {
     s.parse().expect("addr")
 }
