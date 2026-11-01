@@ -1648,6 +1648,8 @@ pub fn compose_egress(
 /// is swapped in.
 #[derive(Debug)]
 pub struct DoorConfig {
+    /// Candidate-owned physical handlers, constructed by its root rules before publication.
+    pub listener_routes: std::sync::OnceLock<crate::root::serve::PreparedListeners>,
     /// Effective physical listener settings of this candidate, before publication.
     pub listeners: Result<crate::root::boot::ListenerNeeds, String>,
     /// Effective root binds, independent of the boot catalog used by the early projection.
@@ -1672,6 +1674,7 @@ pub fn door_config(cfg: &busbar_kernel::config::RootCfg) -> Arc<dyn std::any::An
         sections.entry(key).or_insert(value);
     }
     Arc::new(DoorConfig {
+        listener_routes: std::sync::OnceLock::new(),
         listeners: crate::root::boot::configured_listener_needs(cfg, &sections),
         root_binds: crate::root::boot::configured_root_binds(cfg),
         data_chain: cfg
@@ -1914,6 +1917,10 @@ impl busbar_kernel::appbuild::RootRules for Rules {
             Some(listeners) => listeners.check(app),
             None => Ok(()),
         }
+    }
+
+    fn mounted_plugin_paths(&self, app: &App) -> Option<std::collections::HashSet<String>> {
+        self.listeners.get()?.mounted_plugin_paths(app)
     }
     fn unloaded_plane_refusal(&self, keys: &[&str]) -> Option<String> {
         unloaded_plane_refusal(

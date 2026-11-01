@@ -70,11 +70,10 @@
 //! spoke, so their requests are labelled by that plane's own receive entry point and marked
 //! [`Counted`] so this layer stands down.
 
-use crate::state::AppHandle;
-use axum::extract::{Request, State};
+use crate::state::CurrentApp;
+use axum::extract::Request;
 use axum::middleware::Next;
 use axum::response::Response;
-use std::sync::Arc;
 use std::time::Instant;
 
 // A MARKER A PLANE'S HANDLER PUTS ON A RESPONSE IT HAS ALREADY LABELLED.
@@ -104,15 +103,8 @@ use std::time::Instant;
 /// labelling from `ingress::finish_inner` — which also owns the non-2xx flat-fee REFUND and so
 /// cannot simply be replaced by this — and double-counting them here would silently double every
 /// number on every existing fallback-plane dashboard.
-pub(crate) async fn observe(
-    State(handle): State<Arc<AppHandle>>,
-    req: Request,
-    next: Next,
-) -> Response {
-    // Refcount-free snapshot (arc-swap Guard): this layer only READS within the request scope,
-    // so it never needs an owned Arc — and an owned clone here was a shared-refcount RMW every
-    // plane request paid across all workers.
-    let app = handle.snapshot();
+pub(crate) async fn observe(CurrentApp(app): CurrentApp, req: Request, next: Next) -> Response {
+    // The admission's captured generation owns both the mounted plane and its instrumentation.
     // The mount table this router was built from decides, so an unmounted plane cannot be counted
     // and a sibling path (`/xs` beside an `/x` mount) cannot be attributed to a plane whose
     // grants are inadmissible everywhere else.

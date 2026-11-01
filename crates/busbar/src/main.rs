@@ -492,22 +492,60 @@ fn main() {
     // shards (and later per-worker state stripes) size themselves to it. A process-topology fact,
     // exactly like the runtimes themselves — set once here, immutable, no config surface.
     busbar_kernel::topology::set_data_workers(worker_threads);
+    let control_work = ControlWork::new();
+    control_work.register();
     #[cfg(unix)]
     {
         tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .expect("failed to build the tokio control runtime")
-            .block_on(run(worker_threads, late_services, catalogue));
+            .block_on(run(worker_threads, late_services, catalogue, control_work));
     }
     #[cfg(not(unix))]
     {
+        let worker_work = control_work.clone();
         tokio::runtime::Builder::new_multi_thread()
             .worker_threads(worker_threads)
+            .on_thread_start(move || worker_work.register())
             .enable_all()
             .build()
             .expect("failed to build the tokio runtime")
-            .block_on(run(worker_threads, late_services, catalogue));
+            .block_on(run(worker_threads, late_services, catalogue, control_work));
+    }
+}
+
+/// The control listener, line carrier and callbacks use the same detached custody as data workers.
+#[derive(Clone)]
+struct ControlWork {
+    detached: Arc<busbar_kernel::detached::DetachedTasks>,
+    shutdown_tx: tokio::sync::watch::Sender<bool>,
+    shutdown_rx: tokio::sync::watch::Receiver<bool>,
+}
+
+impl ControlWork {
+    fn new() -> Self {
+        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+        Self {
+            detached: busbar_kernel::detached::DetachedTasks::new(),
+            shutdown_tx,
+            shutdown_rx,
+        }
+    }
+
+    fn register(&self) {
+        busbar_kernel::detached::set_worker_detached(Arc::clone(&self.detached));
+        busbar_kernel::detached::set_worker_shutdown(self.shutdown_rx.clone());
+    }
+
+    async fn drain(&self) {
+        // EOF on the line carrier also retires accepted work, without requiring another signal.
+        let _ = self.shutdown_tx.send(true);
+        let _ = tokio::time::timeout(
+            busbar_kernel::detached::DETACHED_DRAIN_GRACE,
+            self.detached.drained(),
+        )
+        .await;
     }
 }
 
@@ -515,6 +553,7 @@ async fn run(
     data_workers: usize,
     late_services: std::sync::Arc<root::serve::LateServices>,
     catalogue: busbar_kernel::diagnostics::Catalogue,
+    control_work: ControlWork,
 ) {
     // THE PLUGIN OBSERVABILITY ENVELOPE, before any plugin loads (`root::observe`), resolving a
     // plugin's reported codes against the catalogue folded above.
@@ -771,13 +810,6 @@ async fn run(
         .filter_map(|capture| capture(&cfg))
         .collect();
 
-    // The operator's data chain (`auth.chain`), the auth of every data-listener guest-list line
-    // (THE DESIGN §6), captured for the door planes' lines before `cfg` is consumed.
-    let data_chain: Vec<String> = cfg
-        .auth
-        .as_ref()
-        .map(|a| a.chain.iter().map(|e| e.name.clone()).collect())
-        .unwrap_or_default();
     // The resolved `providers:` (catalog-merged), as the door planes' members reach them (THE
     // DESIGN §6 step 2), captured before `cfg` is consumed.
     let door_providers = root::door_steps::provider_routes(
@@ -896,7 +928,7 @@ async fn run(
     // The kernel's own App (its lane store, its telemetry bank), through its swap handle once it exists (a config apply
     // rebuilds the store), the boot App's until then.
     let door_live_handle: std::sync::Arc<
-        std::sync::OnceLock<std::sync::Arc<busbar_kernel::state::AppHandle>>,
+        std::sync::OnceLock<std::sync::Weak<busbar_kernel::state::AppHandle>>,
     > = std::sync::Arc::default();
     let door_models = root::model_egress::ModelServing {
         pools: door_model_pools,
@@ -947,14 +979,17 @@ async fn run(
             // the boot App's until then.
             let (live, boot) = (
                 std::sync::Arc::clone(&door_live_handle),
-                std::sync::Arc::clone(&app),
+                std::sync::Arc::downgrade(&app),
             );
             std::sync::Arc::new(move || {
-                busbar_kernel::plane_driver::engine_host(
-                    &live
-                        .get()
-                        .map_or_else(|| std::sync::Arc::clone(&boot), |h| h.load()),
-                )
+                let app = match live.get() {
+                    Some(handle) => handle
+                        .upgrade()
+                        .expect("the serving application owner has retired")
+                        .load(),
+                    None => boot.upgrade().expect("the boot application is still owned"),
+                };
+                busbar_kernel::plane_driver::engine_host(&app)
             })
         }),
         &app.serve_tables,
@@ -968,7 +1003,9 @@ async fn run(
         },
     )
     .unwrap_or_else(|e| die(e));
-    listener_plan.share_claim_doors(&mut served);
+    listener_plan
+        .share_claim_doors(&mut served)
+        .unwrap_or_else(|e| die(e));
     root_rules.hold_owned_anchors(&served.need_trust());
     // THE DOOR PLANES THE BOOT LEFT UNOPENED OR NEVER BOUND (their section absent, Law 7): a door
     // plane is bound and opened once, at boot, so an apply that first writes one's section is stored and validated but
@@ -1055,90 +1092,40 @@ async fn run(
     // falls through to the listeners its supervisor did not ask for.
     let mut served = served;
     let line_served = line_flag_passed(std::env::args()).then(|| std::mem::take(&mut served));
-    // Each data-chain auth with the points its opened instance declares (THE DESIGN §6): a line's
-    // point set is their union, and the guest list's seal judges it.
-    let data_chain: Vec<root::serve::ChainAuth> = data_chain
-        .into_iter()
-        .map(|provider| {
-            let points = app.auth.position_points(&provider);
-            (provider, points)
-        })
-        .collect();
-    let mut physical_mounts = Vec::new();
-    for bind in listener_plan.stream_binds() {
-        let mounts = root::serve::data_mounts_with_listeners(
-            served.clone(),
-            &app,
-            &listener_plan,
-            &bind.at,
-            &data_chain,
-            &[],
-            &root::serve::upgrade_carriers(LINKED.transports, dropped_doors),
-            &root::serve::transport_offers(LINKED.transports, dropped_doors),
-        )
-        .unwrap_or_else(|e| die(e));
-        listener_plan.hold_refusals(&bind.at, mounts.2.clone());
-        let plugins = app.plugin_routes.for_listener(
-            &listener_plan
-                .guests(&app, &bind.at)
-                .unwrap_or_else(|e| die(e)),
-        );
-        physical_mounts.push((bind.at.clone(), mounts, plugins));
-    }
-    let (doors, sessions, refusals, refuse_by_path) = root::serve::data_mounts_with_listeners(
-        served,
-        &app,
-        &listener_plan,
-        "listen",
-        &data_chain,
-        &busbar_kernel::base_data_core_lines(&app),
-        &root::serve::upgrade_carriers(LINKED.transports, dropped_doors),
-        &root::serve::transport_offers(LINKED.transports, dropped_doors),
-    )
-    .unwrap_or_else(|e| die(e));
-    let listener_refusals = refusals.clone();
-    listener_plan.hold_refusals("listen", refusals.clone());
-    let plugins = app
-        .plugin_routes
-        .for_listener(&listener_plan.data_guests(&app).unwrap_or_else(|e| die(e)));
-    let (data_router, admin_router, app_handle) =
-        busbar_kernel::build_split_routers_serving_listener(
-            app,
-            &plugins,
-            doors,
-            sessions,
-            refusals,
-            req_body_max,
-            max_inbound,
-            response_headers_cfg.server_timing,
-        );
+    // The completed candidate owns every prepared handler. A physical socket selects that same
+    // candidate for both admission and dispatch, including a route moved onto an existing bind.
+    drop(served);
+    let app_handle = Arc::new(busbar_kernel::state::AppHandle::new(app));
+    let admin_router = busbar_kernel::router::build_admin_router_on(
+        &app_handle,
+        req_body_max,
+        response_headers_cfg.server_timing,
+    );
+    let data_router = listener_plan.router(
+        &app_handle,
+        "listen".into(),
+        req_body_max,
+        max_inbound,
+        response_headers_cfg.server_timing,
+    );
     let mut physical_routers = std::collections::HashMap::new();
-    for (at, (doors, sessions, refusals, refuse_by_path), plugins) in physical_mounts {
-        let router = busbar_kernel::build_data_router_on(
+    for bind in listener_plan.stream_binds() {
+        let router = listener_plan.router(
             &app_handle,
-            &plugins,
-            doors,
-            sessions,
-            refusals,
-            refuse_by_path,
+            bind.at.clone(),
             req_body_max,
             max_inbound,
             response_headers_cfg.server_timing,
         );
-        physical_routers.insert(at, router);
-    }
-    // The kernel-shaped refusals render through the door that owns the path (ARCHITECT ruling
-    // 2026-10-16, 3b B).
-    if let Some(refuse) = refuse_by_path {
-        app_handle.bind_door_refuser(refuse);
+        physical_routers.insert(bind.at.clone(), router);
     }
     credential_handle.set(std::sync::Arc::clone(&app_handle));
-    let _ = door_live_handle.set(std::sync::Arc::clone(&app_handle));
+    let _ = door_live_handle.set(std::sync::Arc::downgrade(&app_handle));
     // THE TICKET PRESS (row 132): `ticket.mint` mints through the live generation's governance,
     // under its mint ceiling, once the swap handle exists.
     if let Some(kernel) = late_services.kernel() {
         kernel.attach_tickets(std::sync::Arc::new(root::serve::LiveTickets(
-            std::sync::Arc::clone(&app_handle),
+            std::sync::Arc::downgrade(&app_handle),
         )));
     }
     // THE INBOUND AUTH HANDLE'S TABLES (THE DESIGN §6, "Auth points and guest lists", steps 4 and
@@ -1146,6 +1133,16 @@ async fn run(
     // A transport calls its line's auth through the host auth handle on the transport doors'
     // dispatcher: the kernel's inbound side serves it.
     let _ = root::inbound::install(root::doors::dispatcher());
+    {
+        let app = app_handle.load();
+        let guests = listener_plan.data_guests(&app).unwrap_or_else(|e| die(e));
+        let refusals = listener_plan
+            .prepared(&app, "listen")
+            .expect("boot prepared the actual root data router")
+            .refusals
+            .clone();
+        root::inbound::stage(guests, refusals);
+    }
     let _ = root::inbound::publish(&app_handle.load());
     app_handle.on_apply(Box::new({
         let plan = Arc::clone(&listener_plan);
@@ -1153,7 +1150,12 @@ async fn run(
             let guests = plan.data_guests(app).expect(
                 "RootRules checked this candidate's physical listener lists before publication",
             );
-            root::inbound::stage(guests, listener_refusals.clone());
+            let refusals = plan
+                .prepared(app, "listen")
+                .expect("RootRules prepared this candidate's actual physical router")
+                .refusals
+                .clone();
+            root::inbound::stage(guests, refusals);
             let _ = root::inbound::publish(app);
         }
     }));
@@ -1300,6 +1302,15 @@ async fn run(
     // crash).
     // ONE signal fans out to BOTH listeners (data + admin) so both planes drain together.
     let (shutdown_tx, _keep_open) = tokio::sync::broadcast::channel::<()>(1);
+    let worker_shutdown_rx = control_work.shutdown_rx.clone();
+    {
+        let rx = shutdown_tx.subscribe();
+        let shutdown_level = control_work.shutdown_tx.clone();
+        tokio::spawn(async move {
+            recv_shutdown(rx).await;
+            let _ = shutdown_level.send(true);
+        });
+    }
     // The line-serve mode's own subscription, taken before the signal task below can send, so a
     // signal that lands while boot finishes still stops the line carrier.
     let line_shutdown = line_served.as_ref().map(|_| shutdown_tx.subscribe());
@@ -1365,6 +1376,7 @@ async fn run(
             stop,
         )
         .await;
+        control_work.drain().await;
         let gov = app_handle.load().governance.clone();
         root::shutdown::tail(gov, &late_services, book.as_ref().map(|b| &b.durability)).await;
         std::process::exit(code);
@@ -1377,14 +1389,6 @@ async fn run(
         &listener_plan,
         "listen",
     );
-    let (worker_shutdown_tx, worker_shutdown_rx) = tokio::sync::watch::channel(false);
-    {
-        let rx = shutdown_tx.subscribe();
-        tokio::spawn(async move {
-            recv_shutdown(rx).await;
-            let _ = worker_shutdown_tx.send(true);
-        });
-    }
     let mut plugin_listeners = Vec::new();
     for bind in listener_plan.stream_binds() {
         let framer = listener_framer(&bind.at, &bind.transport, &listener_plan, &bind.at);
@@ -1535,6 +1539,7 @@ async fn run(
         }
     })
     .await;
+    control_work.drain().await;
     // THE ONE SHUTDOWN TAIL (`root::shutdown::tail`), the same one the line-serve mode runs: the
     // budget/metering write-behind flushed, then the plane records and the journal lane drained.
     let gov = app_handle.load().governance.clone();
@@ -1593,7 +1598,11 @@ fn listener_framer(
 /// One shutdown-broadcast subscription resolved into a plain future. Any receive outcome — a send,
 /// or a closed/lagged channel — means "shut down now", so every arm resolves the future.
 async fn recv_shutdown(mut rx: tokio::sync::broadcast::Receiver<()>) {
-    let _ = rx.recv().await;
+    let level = busbar_kernel::detached::worker_shutdown();
+    tokio::select! {
+        _ = rx.recv() => {},
+        () = busbar_kernel::detached::shutdown_fired(level) => {},
+    }
 }
 
 /// Spawn the DATA plane: `n` OS threads, each advisorily pinned to a distinct core via

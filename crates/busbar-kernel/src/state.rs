@@ -1050,6 +1050,9 @@ where
         if let Some(admission) = parts.extensions.get::<crate::inbound::RequestAdmission>() {
             return Ok(CurrentApp(admission.app()));
         }
+        if let Some(app) = parts.extensions.get::<Arc<App>>() {
+            return Ok(CurrentApp(Arc::clone(app)));
+        }
         // `State` extraction of the handle is Infallible (the handle is always present in state).
         let axum::extract::State(handle) =
             axum::extract::State::<Arc<AppHandle>>::from_request_parts(parts, state).await?;

@@ -86,14 +86,16 @@ fn topology() -> ListenerNeeds {
 fn plan(topology: ListenerNeeds) -> Arc<ListenerPlan> {
     Arc::new(ListenerPlan {
         initial: topology,
+        served: std::sync::OnceLock::new(),
+        upgrades: std::sync::OnceLock::new(),
+        claim_doors: Arc::default(),
         planes: std::sync::OnceLock::new(),
         plane_sections: std::sync::OnceLock::new(),
         plane_keys: std::sync::OnceLock::new(),
         offers: vec![("http", AuthPoints::HEAD)],
         framers: [("http".into(), (1, false))].into(),
         refusals: std::sync::Mutex::default(),
-        nests: std::sync::Mutex::default(),
-        mounted: std::sync::OnceLock::new(),
+        nests: Arc::default(),
         plugin_mounts: std::sync::OnceLock::new(),
     })
 }
@@ -109,6 +111,7 @@ fn app(
         Arc::new(build_route_table(routes).expect("valid endpoint declarations"));
     candidate.config_version = generation;
     candidate.config_projection = Some(Arc::new(crate::root::door_steps::DoorConfig {
+        listener_routes: std::sync::OnceLock::new(),
         root_binds: Ok(topology
             .binds
             .iter()
@@ -235,7 +238,8 @@ fn replacement_without_a_need_does_not_inherit_old_instance_listener_authority()
         vec![route("private", "/exports/private/scrape", RouteAuth::None)],
         1,
     );
-    plan.freeze_mounts(&boot).unwrap();
+    plan.mount_planes(&super::Served::default(), &boot, &[])
+        .unwrap();
     let mut replacement = initial;
     replacement.needs.clear();
     replacement.binds.truncate(2);
@@ -244,10 +248,8 @@ fn replacement_without_a_need_does_not_inherit_old_instance_listener_authority()
         vec![route("private", "/exports/private/scrape", RouteAuth::None)],
         2,
     );
-    assert!(
-        plan.check(&replacement).is_err(),
-        "changing the default physical placement requires a restart"
-    );
+    plan.check(&replacement)
+        .expect("the actual handler can move to the root bind");
     let private = plan
         .guests(&replacement, "export.private.settings.ingress")
         .unwrap();
@@ -263,7 +265,7 @@ fn replacement_without_a_need_does_not_inherit_old_instance_listener_authority()
 }
 
 #[test]
-fn moving_existing_routes_between_bound_listeners_or_admin_refuses_before_publish() {
+fn moving_data_routes_between_bound_listeners_keeps_admin_placement_separate() {
     let initial = topology();
     let plan = plan(initial.clone());
     let boot = app(
@@ -272,7 +274,8 @@ fn moving_existing_routes_between_bound_listeners_or_admin_refuses_before_publis
         1,
     );
     plan.check(&boot).unwrap();
-    plan.freeze_mounts(&boot).unwrap();
+    plan.mount_planes(&super::Served::default(), &boot, &[])
+        .unwrap();
     let mut moved = initial.clone();
     moved.needs[0].at = "listen".into();
     let moved = app(
@@ -280,7 +283,8 @@ fn moving_existing_routes_between_bound_listeners_or_admin_refuses_before_publis
         vec![route("private", "/exports/private/scrape", RouteAuth::Key)],
         2,
     );
-    assert!(plan.check(&moved).is_err());
+    plan.check(&moved)
+        .expect("data routes can move between existing physical listeners");
     let mut admin = initial;
     admin.needs.clear();
     let admin = app(
@@ -664,20 +668,32 @@ fn unopened_dispatch_cannot_replace_a_serving_route_but_new_paths_still_need_res
         vec![route("private", "/exports/private/scrape", RouteAuth::None)],
         1,
     );
-    plan.freeze_mounts(&boot).unwrap();
+    plan.mount_planes(&super::Served::default(), &boot, &[])
+        .unwrap();
     let replacement = app(
         topology.clone(),
         vec![unavailable("/exports/private/scrape")],
         2,
     );
     assert!(plan.check(&replacement).is_err());
-    let new_path = app(topology, vec![unavailable("/exports/private/new")], 2);
+    let mut no_need = topology;
+    no_need.needs.clear();
+    let new_path = app(no_need, vec![unavailable("/exports/private/new")], 2);
     plan.check(&new_path)
         .expect("new unmounted paths retain the existing restart-to-apply behavior");
+    let mounted = plan.mounted_plugin_paths(&new_path).unwrap();
+    assert_eq!(
+        busbar_kernel::plugin_routes::paths_awaiting_restart(
+            &new_path.plugin_routes,
+            &boot.plugin_routes,
+            &mounted,
+        ),
+        vec!["/exports/private/new".to_string()]
+    );
 }
 
 #[test]
-fn renamed_plugin_keeps_a_generic_mount_only_on_its_original_physical_listener() {
+fn renamed_plugin_uses_its_candidate_physical_listener() {
     let initial = topology();
     let plan = plan(initial.clone());
     let declared = |instance: &str| {
@@ -687,7 +703,8 @@ fn renamed_plugin_keeps_a_generic_mount_only_on_its_original_physical_listener()
         route
     };
     let boot = app(initial.clone(), vec![declared("private")], 1);
-    plan.freeze_mounts(&boot).unwrap();
+    plan.mount_planes(&super::Served::default(), &boot, &[])
+        .unwrap();
     let mut renamed = initial;
     renamed.needs[0].instance = "renamed".into();
     let next = app(renamed.clone(), vec![declared("renamed")], 2);
@@ -695,14 +712,12 @@ fn renamed_plugin_keeps_a_generic_mount_only_on_its_original_physical_listener()
         .expect("the same generic route resolves the renamed configuration's current dispatcher");
     renamed.needs[0].at = "listen".into();
     let moved = app(renamed, vec![declared("renamed")], 3);
-    assert!(
-        plan.check(&moved).is_err(),
-        "renaming cannot move a boot-static mount to another listener"
-    );
+    plan.check(&moved)
+        .expect("the renamed candidate can move its actual generic handler");
 }
 
 #[test]
-fn a_new_method_on_a_boot_plugin_path_requires_a_new_router() {
+fn a_new_data_method_on_a_boot_plugin_path_prepares_a_new_router() {
     let initial = topology();
     let plan = plan(initial.clone());
     let boot = app(
@@ -710,9 +725,237 @@ fn a_new_method_on_a_boot_plugin_path_requires_a_new_router() {
         vec![route("private", "/exports/private/scrape", RouteAuth::None)],
         1,
     );
-    plan.freeze_mounts(&boot).unwrap();
+    plan.mount_planes(&super::Served::default(), &boot, &[])
+        .unwrap();
     let mut post = route("private", "/exports/private/scrape", RouteAuth::None);
     post.route.method = RouteMethod::Post;
     let candidate = app(initial, vec![post], 2);
-    assert!(plan.check(&candidate).is_err());
+    plan.check(&candidate)
+        .expect("the candidate constructs its own method router");
+}
+
+const MIGRATION_PATH: &str = "/exports/private/scrape";
+const PRIVATE_LISTENER: &str = "export.private.settings.ingress";
+const TEST_BODY_LIMIT: usize = 1024;
+
+struct LabeledAnswer(&'static str);
+impl PluginHttpDispatch for LabeledAnswer {
+    fn handle_http(&self, _: &EndpointRequest) -> EndpointResponse {
+        EndpointResponse {
+            status: axum::http::StatusCode::OK.as_u16(),
+            headers: Vec::new(),
+            body: self.0.as_bytes().to_vec(),
+        }
+    }
+}
+
+fn labeled_route(label: &'static str) -> RouteDecl {
+    let mut declared = route("private", MIGRATION_PATH, RouteAuth::None);
+    declared.dispatch = Arc::new(LabeledAnswer(label));
+    declared
+}
+
+async fn physical_answer(
+    router: &axum::Router,
+    pinned: Option<Arc<busbar_kernel::state::App>>,
+) -> (axum::http::StatusCode, axum::body::Bytes) {
+    use tower::ServiceExt as _;
+    let mut request = axum::http::Request::builder()
+        .uri(MIGRATION_PATH)
+        .body(axum::body::Body::empty())
+        .unwrap();
+    if let Some(app) = pinned {
+        request.extensions_mut().insert(app);
+    }
+    let response = router.clone().oneshot(request).await.unwrap();
+    let status = response.status();
+    let body = axum::body::to_bytes(response.into_body(), TEST_BODY_LIMIT)
+        .await
+        .unwrap();
+    (status, body)
+}
+
+#[tokio::test]
+async fn actual_handlers_migrate_only_on_publication_and_old_requests_keep_their_partition() {
+    use axum::http::StatusCode;
+    let initial = topology();
+    let plan = plan(initial.clone());
+    let rules = Arc::new(crate::root::door_steps::Rules::default());
+    rules.hold_listeners(plan.clone()).unwrap();
+    let mut boot = app(initial.clone(), vec![labeled_route("boot")], 1);
+    Arc::get_mut(&mut boot).unwrap().root_rules = rules.clone();
+    plan.mount_planes(&super::Served::default(), &boot, &[])
+        .unwrap();
+    let boot_lifetime = Arc::downgrade(&boot);
+    let handle = Arc::new(busbar_kernel::state::AppHandle::new(boot.clone()));
+    let handle_lifetime = Arc::downgrade(&handle);
+    let root = plan.router(&handle, "listen".into(), TEST_BODY_LIMIT, 0, false);
+    let private = plan.router(&handle, PRIVATE_LISTENER.into(), TEST_BODY_LIMIT, 0, false);
+    assert_eq!(
+        physical_answer(&private, None).await,
+        (StatusCode::OK, "boot".into())
+    );
+    assert_eq!(physical_answer(&root, None).await.0, StatusCode::NOT_FOUND);
+
+    let mut moved = initial.clone();
+    moved.needs[0].at = "listen".into();
+    let mut discarded = app(moved.clone(), vec![labeled_route("discarded")], 2);
+    Arc::get_mut(&mut discarded).unwrap().root_rules = rules.clone();
+    plan.check(&discarded).unwrap();
+    let discarded_routes = Arc::downgrade(&plan.prepared(&discarded, "listen").unwrap());
+    let discarded_app = Arc::downgrade(&discarded);
+    drop(discarded);
+    assert!(discarded_app.upgrade().is_none());
+    assert!(
+        discarded_routes.upgrade().is_none(),
+        "unpublished candidate handlers are released"
+    );
+    assert_eq!(physical_answer(&private, None).await.1.as_ref(), b"boot");
+    assert_eq!(physical_answer(&root, None).await.0, StatusCode::NOT_FOUND);
+
+    let mut incompatible = moved.clone();
+    incompatible.needs[0].transport = "missing-accepting-framer".into();
+    let rejected = app(incompatible, vec![labeled_route("rejected")], 2);
+    assert!(plan.check(&rejected).is_err());
+    assert!(plan.prepared(&rejected, "listen").is_none());
+    assert!(Arc::ptr_eq(&handle.load(), &boot));
+    drop(rejected);
+
+    let unmountable = app(
+        initial.clone(),
+        vec![route(
+            "private",
+            "/exports/private/{*tail}/after-tail",
+            RouteAuth::None,
+        )],
+        2,
+    );
+    let unmountable_lifetime = Arc::downgrade(&unmountable);
+    assert!(
+        plan.check(&unmountable).is_err(),
+        "an invalid later partition rolls back the root router prepared before it"
+    );
+    assert!(plan.prepared(&unmountable, "listen").is_none());
+    drop(unmountable);
+    assert!(unmountable_lifetime.upgrade().is_none());
+    assert_eq!(physical_answer(&private, None).await.1.as_ref(), b"boot");
+
+    let mut next = app(moved, vec![labeled_route("published")], 2);
+    Arc::get_mut(&mut next).unwrap().root_rules = rules.clone();
+    plan.check(&next).unwrap();
+    let next_lifetime = Arc::downgrade(&next);
+    handle.swap(next.clone());
+    assert_eq!(
+        physical_answer(&root, None).await,
+        (StatusCode::OK, "published".into())
+    );
+    assert_eq!(
+        physical_answer(&private, None).await.0,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        physical_answer(&private, Some(boot.clone())).await,
+        (StatusCode::OK, "boot".into()),
+        "old admission uses its actual old physical handler"
+    );
+    assert_eq!(
+        physical_answer(&root, Some(boot.clone())).await.0,
+        StatusCode::NOT_FOUND
+    );
+    drop(boot);
+    assert!(
+        boot_lifetime.upgrade().is_none(),
+        "the router cache retains no old App"
+    );
+    drop(next);
+    drop(root);
+    drop(private);
+    drop(handle);
+    assert!(
+        handle_lifetime.upgrade().is_none(),
+        "prepared routers contain no process handle"
+    );
+    assert!(
+        next_lifetime.upgrade().is_none(),
+        "retired generation and prepared state drop together"
+    );
+}
+
+#[tokio::test]
+async fn a_swap_between_route_selection_and_auth_keeps_the_selected_generation() {
+    let mut initial = topology();
+    initial.needs[0].at = "listen".into();
+    let plan = plan(initial.clone());
+    let boot = app(initial.clone(), vec![labeled_route("selected")], 1);
+    plan.mount_planes(&super::Served::default(), &boot, &[])
+        .unwrap();
+    let next = app(initial, vec![labeled_route("later")], 2);
+    plan.check(&next).unwrap();
+    let handle = Arc::new(busbar_kernel::state::AppHandle::new(boot));
+    let swapping = Arc::downgrade(&handle);
+    let router = busbar_kernel::router::serve_listener_generations(
+        handle.clone(),
+        move |selected| {
+            let prepared = plan.prepared(selected, "listen");
+            if selected.config_version == 1 {
+                swapping.upgrade().unwrap().swap(next.clone());
+            }
+            prepared
+        },
+        TEST_BODY_LIMIT,
+        0,
+        false,
+    );
+    assert_eq!(physical_answer(&router, None).await.1.as_ref(), b"selected");
+    assert_eq!(handle.load().config_version, 2);
+    assert_eq!(physical_answer(&router, None).await.1.as_ref(), b"later");
+}
+
+#[tokio::test]
+async fn newly_opened_data_paths_are_physically_served_without_a_restart_report() {
+    use tower::ServiceExt as _;
+    const ADDED_PATH: &str = "/exports/private/added";
+    let initial = topology();
+    let plan = plan(initial.clone());
+    let boot = app(initial.clone(), vec![labeled_route("boot")], 1);
+    plan.mount_planes(&super::Served::default(), &boot, &[])
+        .unwrap();
+    let next = app(
+        initial,
+        vec![
+            labeled_route("current"),
+            route("private", ADDED_PATH, RouteAuth::None),
+        ],
+        2,
+    );
+    plan.check(&next).unwrap();
+    let mounted = plan.mounted_plugin_paths(&next).unwrap();
+    assert!(
+        busbar_kernel::plugin_routes::paths_awaiting_restart(
+            &next.plugin_routes,
+            &boot.plugin_routes,
+            &mounted,
+        )
+        .is_empty(),
+        "the report uses actual candidate mounts"
+    );
+    let handle = Arc::new(busbar_kernel::state::AppHandle::new(next));
+    let router = plan.router(&handle, PRIVATE_LISTENER.into(), TEST_BODY_LIMIT, 0, false);
+    let response = router
+        .oneshot(
+            axum::http::Request::builder()
+                .uri(ADDED_PATH)
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), axum::http::StatusCode::OK);
+    assert_eq!(
+        axum::body::to_bytes(response.into_body(), TEST_BODY_LIMIT)
+            .await
+            .unwrap()
+            .as_ref(),
+        b"served"
+    );
 }

@@ -123,9 +123,10 @@ fn a_late_source_refuses_until_its_handle_is_set() {
     };
     assert_eq!(before, Stored::refused(NOT_READABLE), "not installed yet");
     assert!(!late.is_set());
-    late.set(Arc::new(busbar_kernel::state::AppHandle::new(
+    let handle = Arc::new(busbar_kernel::state::AppHandle::new(
         TestApp::new().governance(gov).build(),
-    )));
+    ));
+    late.set(Arc::clone(&handle));
     assert!(late.is_set());
     let Ran::Now(after) = s.records_secret(&kind, &id, Box::new(|_| {})) else {
         panic!("answered at once");
@@ -133,4 +134,15 @@ fn a_late_source_refuses_until_its_handle_is_set() {
     let span = after.spans[0];
     let bytes = &after.bytes[span.value.offset as usize..][..span.value.len as usize];
     assert_eq!((bytes, after.value), (secret.as_bytes(), SECRET_LIVE));
+    let owner = Arc::downgrade(&handle);
+    drop(handle);
+    assert!(
+        owner.upgrade().is_none(),
+        "the credential source cannot keep its owner alive"
+    );
+    assert!(!late.is_set());
+    assert_eq!(
+        now(s.records_secret(&kind, &id, Box::new(|_| {}))),
+        Stored::refused(NOT_READABLE)
+    );
 }

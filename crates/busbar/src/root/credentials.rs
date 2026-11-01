@@ -13,7 +13,7 @@ use busbar_contract::redacted::Secret;
 use busbar_contract::services::CredentialRead;
 
 /// The App's swap handle, once it exists.
-type Slot = Arc<OnceLock<Arc<busbar_kernel::state::AppHandle>>>;
+type Slot = Arc<OnceLock<std::sync::Weak<busbar_kernel::state::AppHandle>>>;
 
 /// The credential source over the App's swap handle: every read is the current snapshot's. The
 /// handle may be set after the services are installed ([`AppCredentials::late`]): the serve path
@@ -26,7 +26,7 @@ impl AppCredentials {
     #[must_use]
     pub fn new(handle: Arc<busbar_kernel::state::AppHandle>) -> Self {
         let slot = OnceLock::new();
-        let _ = slot.set(handle);
+        let _ = slot.set(Arc::downgrade(&handle));
         Self(Arc::new(slot))
     }
 
@@ -45,23 +45,23 @@ pub struct LateHandle(Slot);
 impl LateHandle {
     /// Set the swap handle the reads go through (the first set stands).
     pub fn set(&self, handle: Arc<busbar_kernel::state::AppHandle>) {
-        let _ = self.0.set(handle);
+        let _ = self.0.set(Arc::downgrade(&handle));
     }
 
     /// Whether it is set.
     #[must_use]
     pub fn is_set(&self) -> bool {
-        self.0.get().is_some()
+        self.0.get().and_then(std::sync::Weak::upgrade).is_some()
     }
 }
 
 impl CredentialRead for AppCredentials {
     fn installed(&self) -> bool {
-        self.0.get().is_some()
+        self.0.get().and_then(std::sync::Weak::upgrade).is_some()
     }
 
     fn read(&self, kind: &str, id: &str) -> (Secret<String>, bool) {
-        let Some(handle) = self.0.get() else {
+        let Some(handle) = self.0.get().and_then(std::sync::Weak::upgrade) else {
             return (Secret::new(String::new()), false);
         };
         let app = handle.snapshot();

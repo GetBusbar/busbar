@@ -1112,6 +1112,7 @@ fn session_custody_routes(g: &mut Governed, pools_plane: bool) -> Arc<super::Dat
     }
     Arc::new(super::DataRoutes {
         served,
+        claim_doors: None,
         post: Arc::clone(&g.post),
         pin: || crate::root::kernel::ROOT_CARD.pin(),
         guests: busbar_kernel::guest::GuestList::seal(lines).expect("fixture guest list"),

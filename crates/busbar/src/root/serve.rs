@@ -99,7 +99,7 @@ pub fn compose(
 /// THE TICKET PRESS behind `ticket.mint` (row 132, the ARCHITECT ticket ruling): each mint reads the
 /// live generation through its swap handle, so a ticket is stamped by the deployment's governance
 /// under the mint ceiling (`auth.policy.max_ttl`) in force when it is minted.
-pub struct LiveTickets(pub Arc<busbar_kernel::state::AppHandle>);
+pub struct LiveTickets(pub std::sync::Weak<busbar_kernel::state::AppHandle>);
 
 impl busbar_kernel::host_services::TicketPress for LiveTickets {
     fn mint(
@@ -111,7 +111,11 @@ impl busbar_kernel::host_services::TicketPress for LiveTickets {
         now: u64,
     ) -> Result<(String, u64), &'static str> {
         use busbar_kernel::governance::TicketRefusal;
-        let app = self.0.load();
+        let app = self
+            .0
+            .upgrade()
+            .ok_or(TicketRefusal::NoSigner.reason())?
+            .load();
         let gov = app
             .governance
             .as_deref()
@@ -831,6 +835,8 @@ impl std::fmt::Debug for ServedPlane {
 /// EVERY DOOR PLANE THIS PROCESS SERVES, composed once after the first app is built.
 #[derive(Debug, Default, Clone)]
 pub struct Served {
+    /// The process's shared nested-unit registry, also lent to the line carrier at boot.
+    nests: Option<NestRoutes>,
     /// In the order the planes were bound.
     pub planes: Vec<ServedPlane>,
     /// The posting site the planes' money steps post an abandoned end to, and the units' facts are
@@ -2254,6 +2260,8 @@ fn open(
 /// switch: a fold adds only its door row (spec K5).
 pub struct DataRoutes {
     served: Served,
+    /// Boot validates handlers before the datagram binds exist; the completed doors are lent once.
+    claim_doors: Option<Arc<OnceLock<serve_datagram::ClaimDoors>>>,
     post: Arc<crate::root::plane_node::NodeEndPost>,
     /// The card history a unit is pinned to at its door: the process's (`ROOT_CARD`).
     pin: fn() -> Option<crate::root::kernel::PinnedHistory>,
@@ -2295,9 +2303,12 @@ pub const NEST_UNREAD: &str = "the nested unit's reply could not be read";
 /// parent's principal and generation, its hold cell accruing against the parent's, its whole reply
 /// buffered and handed back. The kernel never learns what the child is.
 pub struct DoorNests {
-    routes: Vec<std::sync::Weak<DataRoutes>>,
+    routes: NestRoutes,
     runtime: tokio::runtime::Handle,
+    detached: Option<Arc<busbar_kernel::detached::DetachedTasks>>,
 }
+
+type NestRoutes = Arc<Mutex<Vec<std::sync::Weak<DataRoutes>>>>;
 
 impl busbar_kernel::host_services::NestRoute for DoorNests {
     fn nest(
@@ -2305,10 +2316,15 @@ impl busbar_kernel::host_services::NestRoute for DoorNests {
         nest: busbar_kernel::host_services::Nest,
         done: busbar_kernel::host_services::NestDone,
     ) {
-        let Some((routes, bound)) = self
+        let routes: Vec<_> = self
             .routes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .iter()
             .filter_map(std::sync::Weak::upgrade)
+            .collect();
+        let Some((routes, bound)) = routes
+            .into_iter()
             .find_map(|routes| routes.parent_of(&nest).map(|bound| (routes, bound)))
         else {
             done(busbar_kernel::host_services::NestReply::Unserved(
@@ -2322,10 +2338,11 @@ impl busbar_kernel::host_services::NestRoute for DoorNests {
         // runs as a child unit whose parent has exited (BUSBAR-1.6.0.md, `work.*` row note). The
         // child holds the parent's frame and hold cell for its whole run; whether that cell is still
         // live is read at the child's accrual and at its exit, never here.
-        drop(
-            self.runtime
-                .spawn(async move { done(routes.nested(nest, bound).await) }),
-        );
+        let child = async move { done(routes.nested(nest, bound).await) };
+        drop(match &self.detached {
+            Some(detached) => detached.spawn_on(&self.runtime, child),
+            None => self.runtime.spawn(child),
+        });
     }
 }
 
@@ -2504,14 +2521,16 @@ fn listener_method_bits(method: RouteMethod) -> u32 {
 #[derive(Debug)]
 pub struct ListenerPlan {
     initial: crate::root::boot::ListenerNeeds,
+    served: std::sync::OnceLock<Served>,
+    upgrades: std::sync::OnceLock<Vec<String>>,
+    claim_doors: Arc<OnceLock<serve_datagram::ClaimDoors>>,
     planes: std::sync::OnceLock<Vec<ListenerPlaneLine>>,
     plane_sections: std::sync::OnceLock<std::collections::HashMap<String, (&'static str, bool)>>,
     plane_keys: std::sync::OnceLock<std::collections::HashMap<String, String>>,
     offers: Vec<TransportOffer>,
     framers: std::collections::HashMap<String, (u64, bool)>,
     refusals: Mutex<std::collections::HashMap<String, Vec<PlaneRefusalSpec>>>,
-    nests: Mutex<Vec<std::sync::Weak<DataRoutes>>>,
-    mounted: std::sync::OnceLock<Vec<(String, busbar_kernel::guest::GuestList)>>,
+    nests: NestRoutes,
     plugin_mounts: std::sync::OnceLock<Vec<(String, RouteMethod, bool)>>,
 }
 
@@ -2521,6 +2540,10 @@ struct ListenerPlaneLine {
     transport: String,
     root_only: bool,
 }
+
+/// Actual physical routers held by their candidate's root configuration projection.
+pub type PreparedListeners =
+    std::collections::HashMap<String, Arc<busbar_kernel::router::PreparedListener>>;
 
 impl ListenerPlan {
     /// Freeze the physical binds selected at boot.
@@ -2545,14 +2568,16 @@ impl ListenerPlan {
             .collect();
         Self {
             initial,
+            served: std::sync::OnceLock::new(),
+            upgrades: std::sync::OnceLock::new(),
+            claim_doors: Arc::default(),
             planes: std::sync::OnceLock::new(),
             plane_sections: std::sync::OnceLock::new(),
             plane_keys: std::sync::OnceLock::new(),
             offers,
             framers,
             refusals: Mutex::default(),
-            nests: Mutex::default(),
-            mounted: std::sync::OnceLock::new(),
+            nests: Arc::default(),
             plugin_mounts: std::sync::OnceLock::new(),
         }
     }
@@ -2571,7 +2596,8 @@ impl ListenerPlan {
     }
 
     /// Aliases served by one datagram framer share its already-bound claim door.
-    pub fn share_claim_doors(&self, served: &mut Served) {
+    pub fn share_claim_doors(&self, served: &mut Served) -> Result<(), String> {
+        served.nests = Some(Arc::clone(&self.nests));
         for need in &self.initial.needs {
             if !self
                 .framers
@@ -2583,9 +2609,17 @@ impl ListenerPlan {
             if let Some(bind) = self.initial.binds.iter().find(|bind| bind.at == need.at) {
                 if let Some(door) = served.claim_doors.get(&bind.transport) {
                     served.claim_doors.insert(&need.transport, door);
+                } else {
+                    return Err(format!(
+                        "{}: its validated claim door was not bound",
+                        need.instance
+                    ));
                 }
             }
         }
+        self.claim_doors
+            .set(served.claim_doors.clone())
+            .map_err(|_| "physical claim doors were already installed".to_string())
     }
 
     /// The completed candidate's route and admission partition for one physical listener.
@@ -2705,14 +2739,22 @@ impl ListenerPlan {
         self.planes
             .set(lines)
             .map_err(|_| "plane listener routes were already mounted")?;
+        self.served
+            .set(served.clone())
+            .map_err(|_| "plane listener handlers were already mounted")?;
+        self.upgrades
+            .set(
+                upgrades
+                    .iter()
+                    .map(|scheme| (*scheme).to_string())
+                    .collect(),
+            )
+            .map_err(|_| "plane listener upgrades were already mounted")?;
         self.check(app)?;
         self.freeze_mounts(app)
     }
 
     fn freeze_mounts(&self, app: &busbar_kernel::state::App) -> Result<(), String> {
-        self.mounted
-            .set(self.lists(app)?)
-            .map_err(|_| "listener mounts were already frozen")?;
         self.plugin_mounts
             .set(
                 app.plugin_routes
@@ -2767,25 +2809,126 @@ impl ListenerPlan {
     /// Validate the completed application before any persist or swap.
     pub fn check(&self, app: &busbar_kernel::state::App) -> Result<(), String> {
         let lists = self.lists(app)?;
-        self.check_mounts(app, &lists)?;
+        self.check_mounts(app)?;
         for (_, guests) in lists {
             self.auths(app, &guests)?;
         }
+        self.prepare(app)?;
         Ok(())
     }
 
-    fn check_mounts(
+    fn prepare(&self, app: &busbar_kernel::state::App) -> Result<(), String> {
+        let Some(served) = self.served.get() else {
+            return Ok(());
+        };
+        let cfg = self.config(app)?;
+        if cfg.listener_routes.get().is_some() {
+            return Ok(());
+        }
+        let chain: Vec<_> = cfg
+            .data_chain
+            .iter()
+            .map(|name| (name.clone(), app.auth.position_points(name)))
+            .collect();
+        let upgrades: Vec<_> = self
+            .upgrades
+            .get()
+            .into_iter()
+            .flatten()
+            .map(String::as_str)
+            .collect();
+        let mut prepared = PreparedListeners::new();
+        for (at, guests) in self.lists(app)? {
+            let core = if at == "listen" {
+                busbar_kernel::base_data_core_lines(app)
+            } else {
+                Vec::new()
+            };
+            let (doors, sessions, refusals, refuse_by_path) = data_mounts_with_listeners(
+                served.clone(),
+                app,
+                self,
+                &at,
+                &chain,
+                &core,
+                &upgrades,
+                &self.offers,
+            )?;
+            let plugins = app.plugin_routes.for_listener(&guests);
+            let router = busbar_kernel::router::PreparedListener::new(
+                app,
+                &plugins,
+                doors,
+                sessions,
+                refusals,
+                refuse_by_path,
+                at == "listen",
+            )?;
+            prepared.insert(at, Arc::new(router));
+        }
+        // Concurrent checks can prepare the same immutable candidate. The losing construction
+        // drops whole; no serving handle or candidate-owned dispatcher escapes into the plan.
+        let _ = cfg.listener_routes.set(prepared);
+        Ok(())
+    }
+
+    /// The actual handler partition checked with this candidate's listener Needs and auths.
+    pub fn prepared(
         &self,
         app: &busbar_kernel::state::App,
-        lists: &[(String, busbar_kernel::guest::GuestList)],
-    ) -> Result<(), String> {
-        use busbar_kernel::guest::{Claimant, Line, Matched};
-        let same_owner = |a: &Line, b: &Line| match (&a.claimant, &b.claimant) {
-            // Plugin mounts resolve their dispatcher from the admitted App. A config rename
-            // can therefore keep a path on the same physical listener without a stale handler.
-            (Claimant::Need(..), Claimant::Need(..)) => true,
-            _ => a.claimant == b.claimant && a.route.rung == b.route.rung,
-        };
+        at: &str,
+    ) -> Option<Arc<busbar_kernel::router::PreparedListener>> {
+        self.config(app)
+            .ok()?
+            .listener_routes
+            .get()?
+            .get(at)
+            .cloned()
+    }
+
+    /// Data paths constructed for this candidate, beside the process's fixed admin mounts.
+    pub fn mounted_plugin_paths(
+        &self,
+        app: &busbar_kernel::state::App,
+    ) -> Option<std::collections::HashSet<String>> {
+        self.config(app).ok()?.listener_routes.get()?;
+        let mut paths: std::collections::HashSet<_> = self
+            .plugin_mounts
+            .get()?
+            .iter()
+            .filter(|(_, _, admin)| *admin)
+            .map(|(path, _, _)| path.clone())
+            .collect();
+        paths.extend(
+            app.plugin_routes
+                .descriptors()
+                .into_iter()
+                .filter(|route| route.auth != RouteAuth::Admin && route.dispatch_available)
+                .map(|route| route.path.to_string()),
+        );
+        Some(paths)
+    }
+
+    /// The listening socket stays fixed; admitted generations choose their own physical handlers.
+    pub fn router(
+        self: &Arc<Self>,
+        handle: &Arc<busbar_kernel::state::AppHandle>,
+        at: String,
+        body_limit: usize,
+        max_inbound: usize,
+        server_timing: bool,
+    ) -> axum::Router {
+        let plan = Arc::clone(self);
+        busbar_kernel::router::serve_listener_generations(
+            Arc::clone(handle),
+            move |app| plan.prepared(app, &at),
+            body_limit,
+            max_inbound,
+            server_timing,
+        )
+    }
+
+    fn check_mounts(&self, app: &busbar_kernel::state::App) -> Result<(), String> {
         for route in app.plugin_routes.descriptors() {
             if !route.dispatch_available
                 && self
@@ -2801,52 +2944,11 @@ impl ListenerPlan {
                 if mounted.iter().any(|(path, _, _)| path == route.path)
                     && !mounted.iter().any(|(path, method, admin)| {
                         path == route.path
-                            && *method == route.method
                             && *admin == (route.auth == RouteAuth::Admin)
+                            && (!*admin || *method == route.method)
                     })
                 {
-                    return Err(format!("{}: changing a mounted plugin method or physical admin placement requires a restart", route.path));
-                }
-            }
-        }
-        let Some(mounted) = self.mounted.get() else {
-            return Ok(());
-        };
-        for (at, guests) in lists {
-            for line in guests.lines() {
-                let same_route = |old: &Line| {
-                    same_owner(old, line)
-                        && old.route.path == line.route.path
-                        && old.route.path_form == line.route.path_form
-                        && old.route.methods & line.route.methods != 0
-                };
-                let prior: Vec<_> = mounted
-                    .iter()
-                    .filter(|(_, old)| old.lines().iter().any(same_route))
-                    .collect();
-                if !prior.is_empty() && !prior.iter().any(|(old_at, _)| old_at == at) {
-                    return Err(format!(
-                        "{}: moving a mounted route to listener {at} requires a restart",
-                        line.route.path
-                    ));
-                }
-                // A new exact plugin path can otherwise fall through a boot-static plane's
-                // wildcard handler, even after that plane was removed from candidate admission.
-                if matches!(line.claimant, Claimant::Need(..)) {
-                    if let Some((_, old)) = mounted.iter().find(|(old_at, _)| old_at == at) {
-                        for method in METHODS {
-                            if line.route.methods & listener_method_bits(method) == 0 {
-                                continue;
-                            }
-                            if let Matched::Line(previous) =
-                                old.matched(method.as_str(), &line.route.path, &[])
-                            {
-                                if !same_owner(previous, line) {
-                                    return Err(format!("{}: changing a boot-mounted route owner on listener {at} requires a restart", line.route.path));
-                                }
-                            }
-                        }
-                    }
+                    return Err(format!("{}: changing a mounted admin plugin method or physical admin placement requires a restart", route.path));
                 }
             }
         }
@@ -2982,6 +3084,7 @@ impl ListenerPlan {
             if matches!(need.kind, KindCode::Hook | KindCode::Export)
                 && !app.plugin_routes.descriptors().iter().any(|route| {
                     route.source_instance == need.instance
+                        && route.dispatch_available
                         && (!route.persistent || self.initial.needs.contains(need))
                         && route.auth != RouteAuth::Admin
                         && match need.kind {
@@ -3165,7 +3268,7 @@ impl ListenerPlan {
             )?;
         }
         for (rung, route) in (0u32..).zip(app.plugin_routes.descriptors()) {
-            if route.auth == RouteAuth::Admin {
+            if route.auth == RouteAuth::Admin || !route.dispatch_available {
                 continue;
             }
             let kind = match route.kind {
@@ -3274,12 +3377,16 @@ impl ListenerPlan {
                     }),
                 app: Arc::clone(&source.app),
                 door_refusals: plan
-                    .refusals
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .get(&at)
-                    .cloned()
-                    .unwrap_or_default(),
+                    .prepared(&source.app, &at)
+                    .map(|prepared| prepared.refusals.clone())
+                    .unwrap_or_else(|| {
+                        plan.refusals
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .get(&at)
+                            .cloned()
+                            .unwrap_or_default()
+                    }),
                 signed_ingress: if legacy_fallback {
                     source.signed_ingress.clone()
                 } else {
@@ -3772,6 +3879,7 @@ fn door_mounts_planned(
     let kernel = served.planes.first().map(|p| Arc::clone(&p.kernel));
     let routes = Arc::new(DataRoutes {
         served,
+        claim_doors: plan.map(|(plan, _, _)| Arc::clone(&plan.claim_doors)),
         post,
         pin,
         guests,
@@ -3782,16 +3890,16 @@ fn door_mounts_planned(
         frames: Mutex::default(),
     });
     if let Some((plan, _, at)) = plan {
-        let all = {
+        {
             let mut nests = plan
                 .nests
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
+            nests.retain(|routes| routes.strong_count() != 0);
             nests.push(Arc::downgrade(&routes));
-            nests.clone()
-        };
+        }
         if at == "listen" {
-            attach_nest_routes(kernel, all);
+            attach_nest_routes(kernel, Arc::clone(&plan.nests));
         }
     } else {
         attach_nests(kernel, &routes);
@@ -4018,7 +4126,7 @@ fn door_mounts_planned(
     routes_of.extend(public);
     // THE DATA LISTENER'S LIST, staged for the inbound auth handle's tables (`root::inbound`),
     // with the door routes' unit-less refusals a stopped request is answered with.
-    if plan.is_none_or(|(_, _, at)| at == "listen") {
+    if plan.is_none() {
         crate::root::inbound::stage(routes.guests.clone(), refusals.clone());
     }
     Ok(DoorMounts {
@@ -4066,28 +4174,39 @@ pub(crate) fn line_routes(
     let kernel = served.planes.first().map(|p| Arc::clone(&p.kernel));
     let routes = Arc::new(DataRoutes {
         served,
+        claim_doors: None,
         post,
         pin,
         guests,
         of_line,
         frames: Mutex::default(),
     });
-    attach_nests(kernel, &routes);
+    if let Some(nests) = &routes.served.nests {
+        nests
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(Arc::downgrade(&routes));
+        attach_nest_routes(kernel, Arc::clone(nests));
+    } else {
+        attach_nests(kernel, &routes);
+    }
     Ok(routes)
 }
 
 /// THE NESTED-DISPATCH SEAM, attached once to the kernel's services: `unit.nest` runs a child on
 /// `routes`, on the runtime the routes are built on (none outside a runtime).
 fn attach_nests(kernel: Option<Arc<KernelServices>>, routes: &Arc<DataRoutes>) {
-    attach_nest_routes(kernel, vec![Arc::downgrade(routes)]);
+    attach_nest_routes(kernel, Arc::new(Mutex::new(vec![Arc::downgrade(routes)])));
 }
 
-fn attach_nest_routes(
-    kernel: Option<Arc<KernelServices>>,
-    routes: Vec<std::sync::Weak<DataRoutes>>,
-) {
+fn attach_nest_routes(kernel: Option<Arc<KernelServices>>, routes: NestRoutes) {
     if let (Some(kernel), Ok(runtime)) = (kernel, tokio::runtime::Handle::try_current()) {
-        let _attached = kernel.attach_nest(Arc::new(DoorNests { routes, runtime }));
+        let detached = busbar_kernel::detached::worker_detached();
+        let _attached = kernel.attach_nest(Arc::new(DoorNests {
+            routes,
+            runtime,
+            detached,
+        }));
     }
 }
 
@@ -4297,7 +4416,13 @@ impl DataRoutes {
             to: to_tx,
         };
         let (verdict, said) = oneshot::channel();
-        tokio::spawn(self.session(door, caller, arrival, verdict, Attach::switched()));
+        busbar_kernel::detached::spawn_detached(self.session(
+            door,
+            ClosingCaller::new(caller),
+            arrival,
+            verdict,
+            Attach::switched(),
+        ));
         match said.await {
             Ok(Ok(())) => SessionAnswer::Accepted(SessionPipe {
                 from_caller,
@@ -4336,6 +4461,10 @@ impl DataRoutes {
         let live = served.live.current();
         let node = self.post.node();
         let unit = node.mint();
+        let carrier_end = CarrierEnd {
+            unit: unit.get(),
+            ended: attach.ended.take(),
+        };
         let arrived = node.arrived();
         self.frames_lock().insert(unit.get(), Arc::clone(&door.app));
         let _frame = UnitFrame {
@@ -4418,10 +4547,8 @@ impl DataRoutes {
                 status
             }
         };
-        // The carrier's cleanup, once, however the session ended.
-        if let Some(ended) = attach.ended.take() {
-            ended(unit.get());
-        }
+        // Close the carrier before reporting as on ordinary completion, and also on future drop.
+        drop(carrier_end);
         // The session's record carries what it consumed, read before its money closes.
         self.post
             .reported(unit, report_of(&served.money, unit, &live.facts));
@@ -4441,7 +4568,12 @@ impl DataRoutes {
         door: SessionDoor,
         arrival: Arrival,
     ) -> Response {
-        let Some(claim_door) = self.served.claim_doors.get(&carrier) else {
+        let doors = self
+            .claim_doors
+            .as_ref()
+            .and_then(|doors| doors.get())
+            .unwrap_or(&self.served.claim_doors);
+        let Some(claim_door) = doors.get(&carrier) else {
             return stated(
                 (refusal_status(ReasonCode::NoDestination), Vec::new()),
                 Body::empty(),
@@ -4490,7 +4622,13 @@ impl DataRoutes {
             admitted: Some(admitted),
             ended: Some(ended),
         };
-        tokio::spawn(self.session(door, caller, arrival, verdict, attach));
+        busbar_kernel::detached::spawn_detached(self.session(
+            door,
+            ClosingCaller::new(caller),
+            arrival,
+            verdict,
+            attach,
+        ));
         match said.await {
             Ok(Ok(())) => {
                 // THE PLANE'S HEAD, stated on the session's first crossing (ARCHITECT row 132
@@ -5230,6 +5368,20 @@ struct Attach {
 /// What runs once a session's unit is admitted (handed the unit), before the session runs.
 type OnAdmitted = Box<dyn FnOnce(u64) -> Result<(), String> + Send>;
 
+/// The admitted carrier closes on normal completion and when shutdown aborts a stalled future.
+struct CarrierEnd {
+    unit: u64,
+    ended: Option<Box<dyn FnOnce(u64) + Send>>,
+}
+
+impl Drop for CarrierEnd {
+    fn drop(&mut self) {
+        if let Some(ended) = self.ended.take() {
+            ended(self.unit);
+        }
+    }
+}
+
 impl Attach {
     /// An upgraded stream's session: answered `101`, nothing around it.
     fn switched() -> Self {
@@ -5254,11 +5406,63 @@ struct SessionDoor {
     ticket: Option<Vec<u8>>,
 }
 
-/// THE CALLER'S SIDE OF A DUPLEX SESSION over today's hyper upgrade (K6's one `SessionCaller`;
-/// ARCHITECT Q-L5B-SESSION-SERVE 2026-10-03, the `IngressCaller` pattern). Its pieces are the
-/// caller's messages as the core's bridge hands them over; every frame the plane writes toward the
-/// caller is one message, text when the plane said so. The caller's close ends its reads; a write after
-/// the socket went answers `false`.
+/// End the caller leg through the driver's normal close path when its serving worker shuts down.
+/// The watch is captured before spawning, including when the task's first poll follows the signal.
+struct ClosingCaller<C> {
+    inner: C,
+    shutdown: Option<tokio::sync::watch::Receiver<bool>>,
+}
+
+impl<C> ClosingCaller<C> {
+    fn new(inner: C) -> Self {
+        Self {
+            inner,
+            shutdown: busbar_kernel::detached::worker_shutdown(),
+        }
+    }
+}
+
+impl<C: SessionCaller> CallerEnd for ClosingCaller<C> {
+    fn head(&self, status: u32, fields: HeadFields) {
+        self.inner.head(status, fields);
+    }
+
+    async fn write(&self, bytes: &[u8]) -> bool {
+        tokio::select! {
+            biased;
+            () = busbar_kernel::detached::shutdown_fired(self.shutdown.clone()) => false,
+            written = self.inner.write(bytes) => written,
+        }
+    }
+
+    async fn write_text(&self, bytes: &[u8]) -> bool {
+        tokio::select! {
+            biased;
+            () = busbar_kernel::detached::shutdown_fired(self.shutdown.clone()) => false,
+            written = self.inner.write_text(bytes) => written,
+        }
+    }
+
+    async fn write_piece(&self, bytes: &[u8], text: bool, message_end: bool) -> bool {
+        tokio::select! {
+            biased;
+            () = busbar_kernel::detached::shutdown_fired(self.shutdown.clone()) => false,
+            written = self.inner.write_piece(bytes, text, message_end) => written,
+        }
+    }
+}
+
+impl<C: SessionCaller> SessionCaller for ClosingCaller<C> {
+    async fn read(&self) -> Option<Vec<u8>> {
+        tokio::select! {
+            biased;
+            () = busbar_kernel::detached::shutdown_fired(self.shutdown.clone()) => None,
+            piece = self.inner.read() => piece,
+        }
+    }
+}
+
+/// The upgraded caller's pieces and complete text/binary messages over the core bridge.
 struct PipeCaller {
     from: tokio::sync::Mutex<mpsc::Receiver<Vec<u8>>>,
     to: mpsc::Sender<busbar_kernel::plane_routes::SessionOut>,
@@ -5500,7 +5704,7 @@ impl IngressReply {
                     let _ = unit.await;
                     return closed_whole(h, block);
                 }
-                let running = Running(tokio::spawn(unit));
+                let running = Running(busbar_kernel::detached::spawn_detached(unit));
                 return stated(h, Body::new(ReplyBody(body, Some(running), trailers)));
             }
             Ok(None) => unit.await,

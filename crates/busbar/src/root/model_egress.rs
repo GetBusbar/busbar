@@ -36,39 +36,73 @@ use crate::root::adapters;
 /// egress was composed with until then.
 #[derive(Clone)]
 pub struct LiveApp {
-    handle: Arc<std::sync::OnceLock<Arc<busbar_kernel::state::AppHandle>>>,
-    fallback: Arc<busbar_kernel::state::App>,
+    handle: Arc<std::sync::OnceLock<std::sync::Weak<busbar_kernel::state::AppHandle>>>,
+    fallback: AppFallback,
+}
+
+#[derive(Clone)]
+enum AppFallback {
+    Borrowed(std::sync::Weak<busbar_kernel::state::App>),
+    Fixed(Arc<busbar_kernel::state::App>),
+}
+
+impl AppFallback {
+    fn load(&self) -> Option<Arc<busbar_kernel::state::App>> {
+        match self {
+            Self::Borrowed(app) => app.upgrade(),
+            Self::Fixed(app) => Some(Arc::clone(app)),
+        }
+    }
 }
 
 impl LiveApp {
     /// The live App: `handle`'s once it is set, `fallback` until then.
     #[must_use]
     pub fn new(
-        handle: Arc<std::sync::OnceLock<Arc<busbar_kernel::state::AppHandle>>>,
+        handle: Arc<std::sync::OnceLock<std::sync::Weak<busbar_kernel::state::AppHandle>>>,
         fallback: Arc<busbar_kernel::state::App>,
     ) -> Self {
-        LiveApp { handle, fallback }
+        LiveApp {
+            handle,
+            fallback: AppFallback::Borrowed(Arc::downgrade(&fallback)),
+        }
     }
 
     /// One App, never swapped.
     #[must_use]
     pub fn fixed(app: Arc<busbar_kernel::state::App>) -> Self {
-        LiveApp::new(Arc::default(), app)
+        LiveApp {
+            handle: Arc::default(),
+            fallback: AppFallback::Fixed(app),
+        }
     }
 
     /// The live App, owned.
     #[must_use]
     pub fn load(&self) -> Arc<busbar_kernel::state::App> {
-        self.handle
-            .get()
-            .map_or_else(|| Arc::clone(&self.fallback), |h| h.load())
+        self.try_load()
+            .expect("the serving application owner has retired")
+    }
+
+    /// A retired live owner never falls back to an older configuration.
+    #[must_use]
+    pub fn try_load(&self) -> Option<Arc<busbar_kernel::state::App>> {
+        match self.handle.get() {
+            Some(handle) => handle.upgrade().map(|handle| handle.load()),
+            None => self.fallback.load(),
+        }
     }
 
     /// Whether `app` is still the live App: a borrow of the handle's pointer, no refcount.
     fn is_current(&self, app: &Arc<busbar_kernel::state::App>) -> bool {
         match self.handle.get() {
-            Some(h) => Arc::ptr_eq(&h.snapshot(), app),
-            None => Arc::ptr_eq(&self.fallback, app),
+            Some(h) => h
+                .upgrade()
+                .is_some_and(|handle| Arc::ptr_eq(&handle.snapshot(), app)),
+            None => self
+                .fallback
+                .load()
+                .is_some_and(|fallback| Arc::ptr_eq(&fallback, app)),
         }
     }
 }

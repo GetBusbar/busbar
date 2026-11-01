@@ -8,6 +8,86 @@
 use crate::detached::{set_worker_detached, spawn_detached, DetachedTasks};
 use std::time::Duration;
 
+struct CleanupBeforeDrain {
+    tracker: std::sync::Arc<DetachedTasks>,
+    observed: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    _payload: std::sync::Arc<()>,
+}
+
+impl Drop for CleanupBeforeDrain {
+    fn drop(&mut self) {
+        use std::future::Future as _;
+        let mut draining = Box::pin(self.tracker.drained());
+        let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+        assert!(
+            draining.as_mut().poll(&mut context).is_pending(),
+            "accepted custody cleanup must finish before drained can return"
+        );
+        self.observed
+            .store(true, std::sync::atomic::Ordering::Release);
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn captured_runtime_spawn_from_host_thread_reserves_before_first_poll_and_releases_on_abort()
+{
+    use std::future::Future as _;
+    let tracker = DetachedTasks::new();
+    let runtime = tokio::runtime::Handle::current();
+    let payload = std::sync::Arc::new(());
+    let payload_lifetime = std::sync::Arc::downgrade(&payload);
+    let cleaned = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let custody = CleanupBeforeDrain {
+        tracker: tracker.clone(),
+        observed: cleaned.clone(),
+        _payload: payload,
+    };
+    let spawning_tracker = tracker.clone();
+    let task = std::thread::spawn(move || {
+        spawning_tracker.spawn_on(&runtime, async move {
+            let _custody = custody;
+            std::future::pending::<()>().await;
+        })
+    })
+    .join()
+    .expect("the ordinary host thread schedules on the captured reactor");
+    let mut draining = Box::pin(tracker.drained());
+    let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+    assert!(
+        draining.as_mut().poll(&mut context).is_pending(),
+        "custody exists before the current-thread runtime can poll its task"
+    );
+    task.abort();
+    assert!(task.await.unwrap_err().is_cancelled());
+    draining.await;
+    assert!(cleaned.load(std::sync::atomic::Ordering::Acquire));
+    assert!(
+        payload_lifetime.upgrade().is_none(),
+        "unpolled work and its custody both drop"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn captured_runtime_closed_before_spawn_drops_the_work_and_its_reservation() {
+    let tracker = DetachedTasks::new();
+    let payload = std::sync::Arc::new(());
+    let payload_lifetime = std::sync::Arc::downgrade(&payload);
+    let spawning_tracker = tracker.clone();
+    let task = std::thread::spawn(move || {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        let handle = runtime.handle().clone();
+        drop(runtime);
+        spawning_tracker.spawn_on(&handle, async move { drop(payload) })
+    })
+    .join()
+    .unwrap();
+    assert!(task.await.unwrap_err().is_cancelled());
+    tracker.drained().await;
+    assert!(payload_lifetime.upgrade().is_none());
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn drained_waits_for_completion_and_settles_on_abort() {
     let t = DetachedTasks::new();

@@ -2429,12 +2429,8 @@ pub(crate) fn gate_consumed(app: &App, is_admin: bool, dpop_proven: bool) -> Con
 #[allow(clippy::result_large_err)]
 pub(crate) async fn auth_middleware(
     crate::state::CurrentApp(app): crate::state::CurrentApp,
-    // `&'static`, not `Extension<Arc<..>>`: the table is built once at boot alongside the router it
-    // describes and never changes after (config apply swaps the `AppHandle` snapshot, not the
-    // router), so the router leaks it and the layer closure hands the borrow straight in — no
-    // per-request extensions insert, no refcount traffic, nothing to extract. See
-    // `router::apply_common_layers` for the leak and the argument.
-    core_routes: &'static crate::core_routes::CoreRouteTable,
+    // The serving router owns this table, including when a physical listener changes generation.
+    core_routes: &crate::core_routes::CoreRouteTable,
     mut req: Request<Body>,
     next: Next,
 ) -> Result<Response, Response> {
