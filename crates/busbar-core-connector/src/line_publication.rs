@@ -760,7 +760,16 @@ impl Pairing {
                 return;
             }
             let input = current.as_ref().map(|job| &job.across);
-            self.lock().publications.waiting_attachment = false;
+            // The recall this crossing resumes is consumed here, under the same lock that
+            // hands the leg to the sink, never cleared after it. An independent producer can
+            // publish a new continuation while the crossing is outside the lock; that newer
+            // recall stays set for this same actor to drain. A crossing that does not finish
+            // the owed recall (`Credit`) restores what it consumed.
+            let owed = {
+                let mut state = self.lock();
+                state.publications.waiting_attachment = false;
+                std::mem::take(&mut state.publications.recall[index(leg)])
+            };
             let text = current.as_ref().is_some_and(|job| job.text);
             let mut crossing = Crossing {
                 pairing: self,
@@ -780,6 +789,12 @@ impl Pairing {
             }
             match result {
                 Ok(LineStep::Credit) => {
+                    if owed {
+                        let mut state = self.lock();
+                        if !state.closed {
+                            state.publications.recall[index(leg)] = true;
+                        }
+                    }
                     if self.memory.reader_progress(generation).await {
                         continue;
                     }
@@ -790,7 +805,12 @@ impl Pairing {
                     return;
                 }
                 Ok(LineStep::Batch { yielded, accepted }) => {
-                    self.lock().publications.recall[index(leg)] = true;
+                    {
+                        let mut state = self.lock();
+                        if !state.closed {
+                            state.publications.recall[index(leg)] = true;
+                        }
+                    }
                     if accepted {
                         if let Some(job) = current.take() {
                             let mut state = self.lock();
@@ -823,15 +843,28 @@ impl Pairing {
                         return;
                     }
                     if current.as_ref().is_some_and(|job| job.original) {
-                        self.lock()
-                            .publications
-                            .inputs
-                            .push_front(current.take().expect("the held source input"));
+                        let job = current.take().expect("the held source input");
+                        // A close that ran while this batch was published has already drained
+                        // the queues and counted this job's bytes cancelled; requeueing it now
+                        // would strand its custody and admission until the pairing is dropped.
+                        let retired = {
+                            let mut state = self.lock();
+                            if state.closed {
+                                Some(job)
+                            } else {
+                                state.publications.inputs.push_front(job);
+                                None
+                            }
+                        };
+                        if let Some(job) = retired {
+                            self.cancelled(&job);
+                            drop(job);
+                        }
                     }
                 }
-                Ok(LineStep::Complete) => {
-                    self.lock().publications.recall[index(leg)] = false;
-                }
+                // The owed recall was consumed before the crossing; anything newer that was
+                // published meanwhile is still set and is crossed by the next iteration.
+                Ok(LineStep::Complete) => {}
                 Err(error) => {
                     if let Some(job) = current.take() {
                         self.cancelled(&job);
@@ -846,3 +879,7 @@ impl Pairing {
 
 /// An owned scheduling future, captured before it is handed to the reactor.
 pub type PublicationTask = Pin<Box<dyn Future<Output = ()> + Send + 'static>>;
+
+#[cfg(test)]
+#[path = "tests/line_publication_driver_tests.rs"]
+mod driver_tests;
