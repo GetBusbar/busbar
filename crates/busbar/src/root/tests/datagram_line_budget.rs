@@ -231,6 +231,59 @@ async fn configured_ample_actual_pair_preserves_paths_and_same_operation_recalls
 }
 
 #[tokio::test]
+async fn an_idle_upstream_reader_releases_crossing_credit_before_the_callers_next_episode() {
+    // One real crossing reservation plus modest live-frontier storage fits these short finite
+    // trees. Keeping a second worst-case reservation for an empty port would prevent progress.
+    // The oracle below is actual terminal paths and successful publication on this same pair.
+    let actual = ActualPair::new(
+        Some(datagram_output_reservation_bytes() + 4 * FRAME_CAP),
+        2,
+        Terminals::Paths,
+    );
+    for prefix in [b'a', b'b'] {
+        let token = [3, prefix];
+        assert!(
+            tokio::time::timeout(COMPLETION_WAIT, actual.caller.write(&token, false))
+                .await
+                .expect("the other leg can reserve its next real crossing")
+        );
+        let outcome = actual.published().await;
+        assert!(outcome.failure.is_none(), "{outcome:?}");
+        let mut received = actual.upstream_messages();
+        received.sort();
+        assert_eq!(received, expected_paths(3, &[prefix]));
+        assert!(actual.caller_messages().is_empty());
+        // upstream_messages consumed every real reader allocation and reached port Pending.
+        // Repeated idle read/ready probes must leave no producer loan reserving future output.
+        let wake = waker();
+        assert!(!actual.upstream.ready(&wake));
+        assert_eq!(
+            actual.upstream.read(&wake, &mut [0; 8]),
+            Err(ConnError::Pending)
+        );
+        assert!(!actual.pair.closed());
+        assert_eq!(
+            actual
+                .a
+                .emitted()
+                .iter()
+                .filter(|bytes| bytes.as_slice() == token)
+                .count(),
+            1,
+            "each independent accepted source crosses exactly once"
+        );
+    }
+    let outcome = actual.published().await;
+    assert_eq!(outcome.original_bytes, 4);
+    assert_eq!(outcome.original_handed_bytes, 4);
+    assert_eq!(outcome.original_cancelled_bytes, 0);
+    assert_eq!(outcome.accepted_frames, 28);
+    assert_eq!(outcome.handed_frames, 28);
+    assert_eq!(outcome.cancelled_frames, 0);
+    assert_eq!(actual.a.emitted().len() + actual.b.emitted().len(), 30);
+}
+
+#[tokio::test]
 async fn configured_frontier_exhaustion_reports_real_partial_publication_and_isolates_the_pair() {
     let limit = datagram_output_reservation_bytes() + 4 * FRAME_CAP;
     let actual = ActualPair::new(Some(limit), 2, Terminals::Paths);
