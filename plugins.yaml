@@ -1,14 +1,4 @@
-# THE first-party plugin registry — the single source of truth for "what plugins exist".
-#
-# Every system that needs the plugin list derives it from this file rather than carrying its own
-# copy: scripts/plugin-registry-check.sh (the CI gate that keeps the consumers honest),
-# qa-gate.yml's sibling checkouts, scripts/release-check.sh's per-plugin phases, and the release
-# tooling. Found necessary during the 1.5.0 ship: the list was duplicated across at least five
-# places, and the copies had drifted — the "full plugin gate" silently covered 6 of 8 plugins.
-#
-# Adding a plugin = adding ONE entry here. The registry gate then goes RED until every consumer
-# actually covers it (qa-gate checkout present, release-check phase present, release published) —
-# coverage is enforced, not remembered.
+# First-party plugin metadata consumed by busbar-release fleet tooling.
 #
 # Fields:
 #   repo:          GitHub repo under GetBusbar/
@@ -16,45 +6,22 @@
 #                  selects the C ABI; every kind ships as its own repo)
 #   alias:         short config name (busbar-plugin-pack --alias)
 #   crate:         the plugin cdylib's Cargo package name: <repo>-plugin beside the <repo> logic
-#                  crate, or <repo> itself for a single-crate plugin (owner ruling: repo = crate =
-#                  artifact prefix; the registry gate refuses any other name)
+#                  crate, or <repo> itself for a single-crate plugin
 #   version_line:  the semver line current releases live on
 #   service:       real backend container its tests need (mysql|postgres|valkey|vault|none)
-#   release_gate:  required — release-check.sh hard-fails if the sibling checkout is missing
-#                  optional — release-check.sh loud-skips (still red in the registry gate's
-#                  release check; "optional" only softens a LOCAL run without the checkout)
-#   gate:          HOW release-check.sh covers this plugin:
-#                  suite  — the UNIFORM pattern: release-check.sh's registry-driven loop boots the
-#                           entry's `service` container (if any), exports that service's
-#                           BUSBAR_TEST_* env, and runs `cargo test --workspace --release` in the
-#                           sibling checkout. Adding a `gate: suite` plugin needs NO script edit
-#                           unless it introduces a brand-new `service` value.
-#                  binary — a genuinely-special explicit phase driving the plugin through a full
-#                           busbar binary (real HTTP traffic + restart durability). sqlite only.
-#                  smoke  — a genuinely-special explicit phase: pack the cdylib and prove a real
-#                           busbar --validate dlopens it. The hook plugins.
-#                  The registry gate enforces that binary/smoke plugins still have an explicit
-#                  phase touching ../<dir>, and that the suite loop + every `service` a suite
-#                  plugin declares are actually handled in release-check.sh.
+#   release_gate / gate: historical release-check metadata.
 #
 # Optional fields:
 #   checkout_dir:  local sibling/checkout directory name when it differs from `repo`
 #                  (no entry needs it today; kept for the next repo rename)
-#   checkout_ref:  git ref the qa-gate's registry-driven clone loop checks the repo out at.
-#                  DEFAULT: `dev`, NOT the repo's default branch. Every first-party repo runs
-#                  busbar's own branch model (main = release-only, dev = ongoing work), so a
-#                  sibling's `main` is pinned to its last RELEASE and cannot carry the plugin-side
-#                  adaptation to the unreleased core this gate exists to test. qa-gate-run.sh's
-#                  `siblings` documents the five legs that cost. Set this only for a repo that
-#                  departs from that model; it falls back to the default branch when `dev` is absent.
+#   checkout_ref: git ref used by registry consumers [dev].
 #
 # Fleet fields (read by `busbar-release plugin sync` (GetBusbar/busbar-release), the ONE generator: it
 # renders every plugin repo's CI caller, toolchain, lint config, deny.toml, workspace dependency table,
 # LICENSE and README header from this file, its template/ and .github/fleet/deps.toml, and checks the repos
 # against the render). Defaults in brackets:
-#   manifest_name  the signed manifest's `name` (the plugin's identity at load) [repo; the
-#                  registry gate refuses any other value]
-#   asset_prefix   the published tarball's filename prefix [repo; likewise]
+#   manifest_name  the signed manifest's `name` (the plugin's identity at load) [repo]
+#   asset_prefix   the published tarball's filename prefix [repo]
 #   description    the manifest's one-line description (also the README header's)
 #   ci_service     the backend plugin-ci.yml's Linux leg runs against [service]
 #   busbar_checkout  the end-to-end tests build and boot a real busbar from a checkout at the pin [false]
@@ -77,24 +44,18 @@
 #                  1.6.0 `busbar-hook-webrequest` (ARCHITECT ruling: 1.5.5 configs load unchanged).
 #                  Signed into the manifest (busbar-plugin-pack --former-name, plugin-release.yml's
 #                  `former_names` input, the rendered release.yml); a LINKED row answers them too
-#                  through its `former.<alias>` row of the root migration table. `cargo xtask plugin-gates
-#                  former-names` is RED on an entry whose repo shipped a 1.5.5-era release under a
-#                  manifest name (`migration:`'s `name_1_5_5.<repo>` rows) that this list does not carry
+#                  through its `former.<alias>` row of the root migration table.
 #   retired        the `module:` spellings this plugin answered to in an earlier release and no longer
 #                  does [none]. Each is a `retired.<kind>.<word>` row of the root migration table
 #                  (`[package.metadata.busbar.migration]` in dist/default/Cargo.toml), beside the plugin's
 #                  `manifest.<alias>` / `asset.<alias>` rows; boot refuses a retired spelling and
 #                  `busbar --migrate-config` rewrites it to the alias (BUSBAR-1.6.0.md §2)
-#   pending_crate  the repo is registered (it exists, it is rendered and seeded by `busbar-release plugin sync`) but its
-#                  crates have not moved in yet [false]. It stays OUT of plugin-registry-check.sh's
-#                  --list feed, so qa-gate and release-check neither clone nor test it; `busbar-release plugin check`
-#                  skips its crate-shaped checks with that reason (the whole repo while it is empty) and
-#                  goes RED once both crate dirs are in and the flag is stale. Drop it at the move.
+#   pending_crate  registered repository whose crates have not moved in yet [false].
+#                  busbar-release plugin check skips its crate-shaped checks until seeded.
 #   lang           rust | c [rust]. `c`: the plugin is C sources in `<kind>-<name>/`, built from
 #                  busbar_plugin.h alone (decision #84); its CI is plugin-ci.yml's C path (build from the
 #                  header at the pin, `dropped_conformance` through load_dropped, RED arm kept), its
-#                  callers pass `plugin_lang: c`, and it has no Cargo workspace. It stays OUT of the
-#                  --list feed (release-check's suite loop runs `cargo test` in a sibling checkout).
+#                  callers pass `plugin_lang: c`, and it has no Cargo workspace.
 
 # THE FLEET POLICY (`busbar-release plugin check` holds every repo to it; `busbar-release plugin sync` applies it).
 #   busbar_ref  ONE pin for every plugin repo: each repo's `.busbar-ref` is exactly this, every
@@ -109,9 +70,7 @@ fleet:
   name_pattern: "^busbar-(store|secret|auth|hook|export|plane|transport)-[a-z0-9]+(-[a-z0-9]+)*$"
   branches: [dev, qa, main]
 
-# Org repos that MATCH the plugin naming pattern but are deliberately NOT plugins (the reverse
-# check in plugin-registry-check.sh flags any pattern-matching org repo that is neither listed
-# above nor excluded here — so a new plugin repo cannot exist unregistered).
+# Repositories matching plugin naming that are deliberately not plugins.
 excluded_repos:
   - hindsight-hook # design docs only — no crate, no workflows, private
   - busbar-hook-headroom # removed from busbar and the site (owner ruling 2026-09-30) — the repo is kept, not a busbar plugin
@@ -338,7 +297,7 @@ plugins:
     service: none
     release_gate: optional
     gate: suite
-    description: "The AD/LDAP auth module as a droppable busbar plugin: a cdylib exporting the auth C ABI. Drop it in the plugins folder, define it once under identity-providers.<name> (module: ldap, settings: url, bind_dn_template, base_dn, group_attr) and reference that name from auth.chain."
+    description: "The AD/LDAP auth module as a droppable busbar plugin: a cdylib exporting the auth C ABI. Drop it in the plugins folder, define it once under identity-providers.<name> (module: ldap, settings: url, bind_dn_template, base_dn, group_attr) and enable browser_login for that provider."
     ci_service: "openldap"
     busbar_checkout: true
     # macOS runners have no OpenLDAP: the published suite's two arms that log in against the live

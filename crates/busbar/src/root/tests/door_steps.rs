@@ -37,6 +37,59 @@ const SECTION: &str = "a: {}\nb: {}\nhooks: [h]\nupstream_credentials: own\n\
      pools:\n  both:\n    members: [a, {name: b}]";
 
 #[tokio::test]
+async fn routing_recipe_preserves_configured_float_prices_before_ranking() {
+    use busbar_contract::SignalValue;
+    use busbar_kernel::config::RateEntryCfg;
+    use std::collections::BTreeMap;
+    use std::sync::Arc;
+
+    let mut facts = super::door_facts("p", &[], &["input", "output"], &[], "a", Vec::new());
+    facts.route_cost = vec![(0, 0.5), (1, 0.5)];
+    let p = pools("a: {}");
+    let card = BTreeMap::from([(
+        super::plane_lane("p", "a"),
+        RateEntryCfg {
+            input_utok: 0.1,
+            output_utok: 0.2,
+            ..RateEntryCfg::default()
+        },
+    )]);
+    let app = busbar_kernel::test_support::TestApp::new()
+        .cost(busbar_kernel::cost::CostModel::resolve_parts(
+            Some(&card),
+            0,
+            &BTreeMap::new(),
+        ))
+        .build();
+    let steps = super::DoorSteps::new(
+        &facts,
+        &p,
+        Arc::new(|_: &str| None),
+        app,
+        None,
+        super::DoorCaller {
+            principal: busbar_contract::caps::PrincipalId::new("caller"),
+            key: None,
+            open: true,
+            arrived: 0,
+            records: None,
+            depth: 0,
+            credential: None,
+            ticket: None,
+        },
+    );
+    let bag = steps.route_cost(&super::plane_lane("p", "a"));
+    let floats: Vec<_> = bag
+        .iter()
+        .filter_map(|(_, value)| match value {
+            SignalValue::F64(value) => Some(*value),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(floats, vec![0.1, 0.5, 0.2, 0.5]);
+}
+
+#[tokio::test]
 async fn routing_recipe_uses_the_admitted_planes_card_and_keeps_unknown_prices_unknown() {
     use busbar_contract::signal::route_cost::decode;
     use busbar_kernel::config::RateEntryCfg;
@@ -85,12 +138,12 @@ async fn routing_recipe_uses_the_admitted_planes_card_and_keeps_unknown_prices_u
     };
     let old = steps(app(3));
     let new = steps(app(7));
-    for (unit, expected) in [(&old, 3_000), (&new, 7_000), (&old, 3_000)] {
+    for (unit, expected) in [(&old, 3.0), (&new, 7.0), (&old, 3.0)] {
         let bag = unit.route_cost(&super::plane_lane("p", "a"));
         let terms = decode(&bag).unwrap().unwrap();
         assert_eq!(
-            terms.iter().map(|t| t.nanos_per_unit).collect::<Vec<_>>(),
-            vec![Some(expected), Some(0), Some(expected)]
+            terms.iter().map(|t| t.price_per_unit).collect::<Vec<_>>(),
+            vec![Some(expected), Some(0.0), Some(expected)]
         );
         assert_eq!(
             terms.iter().map(|t| t.expected_units).collect::<Vec<_>>(),
@@ -105,7 +158,7 @@ async fn routing_recipe_uses_the_admitted_planes_card_and_keeps_unknown_prices_u
                 .unwrap()
                 .unwrap()
                 .iter()
-                .all(|t| t.nanos_per_unit.is_none()));
+                .all(|t| t.price_per_unit.is_none()));
         }
     }
     let no_card = steps(busbar_kernel::test_support::TestApp::new().build());
@@ -114,7 +167,7 @@ async fn routing_recipe_uses_the_admitted_planes_card_and_keeps_unknown_prices_u
         .unwrap()
         .unwrap()
         .iter()
-        .all(|t| t.nanos_per_unit.is_none()));
+        .all(|t| t.price_per_unit.is_none()));
 }
 
 #[test]

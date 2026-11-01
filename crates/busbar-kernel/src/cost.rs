@@ -289,6 +289,9 @@ pub struct CostModel {
     /// private `HashMap<String, RateNanos>` that this module priced with its own copy of the
     /// arithmetic; every figure is now `busbar_kernel_ledger::cost::Tally` over this card.
     card: busbar_kernel_ledger::cost::RateCard,
+    /// Configured routing prices by opaque lane and class, in micro-units. Routing preserves
+    /// configured floats; the separate integer card remains the authority for billing/knownness.
+    routing_prices: std::sync::Arc<BTreeMap<String, BTreeMap<String, f64>>>,
     groups: Vec<GroupRuntime>,
     group_idx: HashMap<String, usize>,
     /// The ids of every LIVE bucket that still carries at least one windowed cap — the exact set
@@ -347,6 +350,26 @@ impl CostModel {
             capped_bucket_ids: Self::capped_bucket_ids(&groups),
             generation: crate::trust::validate::next_generation(),
             card,
+            routing_prices: std::sync::Arc::new(
+                rate_card
+                    .into_iter()
+                    .flatten()
+                    .map(|(lane, entry)| {
+                        let prices = [
+                            ("input".to_owned(), entry.input_utok),
+                            ("output".to_owned(), entry.output_utok),
+                            ("cache_read".to_owned(), entry.cache_read_utok),
+                            ("cache_write".to_owned(), entry.cache_write_utok),
+                        ]
+                        .into_iter()
+                        .chain(entry.units.iter().map(|(class, price)| {
+                            (class.clone(), price.nanos_per_unit() as f64 / 1_000.0)
+                        }))
+                        .collect();
+                        (lane.clone(), prices)
+                    })
+                    .collect(),
+            ),
             groups,
             group_idx,
         }
@@ -365,6 +388,7 @@ impl CostModel {
             capped_bucket_ids: Self::capped_bucket_ids(&groups),
             generation: crate::trust::validate::next_generation(),
             card: self.card.clone(),
+            routing_prices: std::sync::Arc::clone(&self.routing_prices),
             groups,
             group_idx,
         }
@@ -518,6 +542,7 @@ impl CostModel {
     pub fn flat(price_per_request_cents: i64) -> Self {
         Self {
             card: busbar_kernel_ledger::cost::RateCard::absent(price_per_request_cents),
+            routing_prices: std::sync::Arc::default(),
             groups: Vec::new(),
             group_idx: HashMap::new(),
             capped_bucket_ids: std::collections::HashSet::new(),
@@ -565,6 +590,26 @@ impl CostModel {
     /// The card every figure this model derives is priced against — the one function's own type.
     pub fn card(&self) -> &busbar_kernel_ledger::cost::RateCard {
         &self.card
+    }
+
+    /// The configured routing price for an opaque lane/class, preserving the original float.
+    /// Missing, disabled or unrepresentable card cells remain unknown, including at zero weight.
+    /// This estimate is never used to price a ledger line, fee, cap or admission.
+    pub fn routing_price(&self, lane: &str, class: &str) -> Option<f64> {
+        let pricing = self.card.lane_pricing(lane);
+        if !pricing.card.pricing_enabled()
+            || !matches!(
+                pricing.class_price(class),
+                busbar_kernel_ledger::cost::ClassPrice::Nanos(_)
+            )
+        {
+            return None;
+        }
+        self.routing_prices
+            .get(lane)?
+            .get(class)
+            .copied()
+            .filter(|price| price.is_finite() && *price >= 0.0)
     }
 
     pub fn groups(&self) -> &[GroupRuntime] {

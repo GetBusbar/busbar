@@ -2816,3 +2816,68 @@ fn only_reject_refuses_a_failed_call() {
         &PolicyOnError::First
     ));
 }
+
+#[test]
+fn hook_resolution_reopens_for_a_changed_effective_timeout() {
+    struct BudgetAxis {
+        inner: Arc<dyn busbar_contract::hook_calls::HookAxis>,
+        opened: Arc<std::sync::Mutex<Vec<std::time::Duration>>>,
+    }
+    impl busbar_contract::hook_calls::HookAxis for BudgetAxis {
+        fn probe(
+            &self,
+            module: &str,
+            instance: &str,
+            settings: &serde_json::Value,
+        ) -> Option<busbar_contract::hook_calls::Probed> {
+            self.inner.probe(module, instance, settings)
+        }
+        fn open(
+            &self,
+            module: &str,
+            instance: &str,
+            settings: &serde_json::Value,
+            budget: std::time::Duration,
+        ) -> Result<Arc<dyn busbar_contract::hook_calls::HookCalls>, String> {
+            self.opened.lock().unwrap().push(budget);
+            self.inner.open(module, instance, settings, budget)
+        }
+        fn linked(&self, module: &str) -> bool {
+            self.inner.linked(module)
+        }
+        fn first_party(&self, module: &str) -> bool {
+            self.inner.first_party(module)
+        }
+        fn call_budget(&self) -> std::time::Duration {
+            self.inner.call_budget()
+        }
+    }
+    let mut env = test_env();
+    let opened = Arc::new(std::sync::Mutex::new(Vec::new()));
+    env.axis = Some(Arc::new(BudgetAxis {
+        inner: env.axis.clone().unwrap(),
+        opened: opened.clone(),
+    }));
+    let mut hook = base_gate();
+    hook.timeout_ms = 41;
+    let (first, _) = gate_transport_named("budget", &hook, &env, 0).unwrap();
+    let (same, _) = gate_transport_named("budget", &hook, &env, 0).unwrap();
+    assert!(Arc::ptr_eq(&first, &same));
+    hook.timeout_ms = 84;
+    let (changed, _) = gate_transport_named("budget", &hook, &env, 0).unwrap();
+    assert!(!Arc::ptr_eq(&first, &changed));
+    assert_eq!(
+        *opened.lock().unwrap(),
+        vec![policy_timeout(41), policy_timeout(84)]
+    );
+
+    hook.timeout_ms = 0;
+    let (implicit_default, _) = gate_transport_named("budget", &hook, &env, 0).unwrap();
+    hook.timeout_ms = crate::limits::default_policy_timeout_ms();
+    let (explicit_default, _) = gate_transport_named("budget", &hook, &env, 0).unwrap();
+    assert!(Arc::ptr_eq(&implicit_default, &explicit_default));
+    assert_eq!(
+        *opened.lock().unwrap(),
+        vec![policy_timeout(41), policy_timeout(84), policy_timeout(0)]
+    );
+}

@@ -307,7 +307,7 @@ pub(crate) async fn decide_over(
         let screened: Option<ScreenedContent> = subject
             .incremental
             .as_ref()
-            .filter(|_| readable)
+            .filter(|_| readable && *send_prompt)
             .map(|inc| inc.unscreened(&clearance, &all));
         if screened.as_ref().is_some_and(|s| s.is_empty()) {
             // Nothing new to screen for this hook this turn — it proceeds without a sidecar call.

@@ -2,8 +2,10 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! A version-one marker (`Bool(true)`) followed by class/price/weight triples, all under
-//! [`Signal::CandidateRouteCost`]. Class is `Str`, price is `U64` nano-units per unit or
-//! `Bool(false)` when unknown, and weight is `F64` expected units. No entries means a legacy
+//! [`Signal::CandidateRouteCost`]. Class is `Str`, price is `F64` configured micro-units per unit
+//! (or the original `U64` nano-unit encoding) or `Bool(false)` when unknown, and weight is `F64`
+//! expected units. Floating routing prices preserve configured ordering independently of exact
+//! integer billing. No entries means a legacy
 //! producer; a marker with no terms means an authoritative empty recipe. Duplicate classes
 //! remain separate terms, in the plane's order. No JSON or new C layout crosses the boundary.
 
@@ -18,8 +20,8 @@ mod tests;
 pub struct Term<'a> {
     /// The plane's opaque billable class name.
     pub class: &'a str,
-    /// Nano-units per unit; absent means the card does not price this class and lane.
-    pub nanos_per_unit: Option<u64>,
+    /// Routing micro-units per unit; absent means the card does not price this class and lane.
+    pub price_per_unit: Option<f64>,
     /// The plane's default expected units, finite and nonnegative.
     pub expected_units: f64,
 }
@@ -32,8 +34,8 @@ pub fn append<'a>(bag: &mut SignalBag, terms: impl IntoIterator<Item = Term<'a>>
         bag.push(signal, SignalValue::Str(term.class.to_owned().into()));
         bag.push(
             signal,
-            term.nanos_per_unit
-                .map_or(SignalValue::Bool(false), SignalValue::U64),
+            term.price_per_unit
+                .map_or(SignalValue::Bool(false), SignalValue::F64),
         );
         bag.push(signal, SignalValue::F64(term.expected_units));
     }
@@ -68,8 +70,9 @@ pub fn visit<'a>(
         if class.is_empty() {
             return Err("empty routing-cost class");
         }
-        let nanos_per_unit = match values.next() {
-            Some(SignalValue::U64(price)) => Some(*price),
+        let price_per_unit = match values.next() {
+            Some(SignalValue::U64(price)) => Some(*price as f64 / 1_000.0),
+            Some(SignalValue::F64(price)) if price.is_finite() && *price >= 0.0 => Some(*price),
             Some(SignalValue::Bool(false)) => None,
             _ => return Err("invalid routing-cost price"),
         };
@@ -79,7 +82,7 @@ pub fn visit<'a>(
         };
         visitor(Term {
             class,
-            nanos_per_unit,
+            price_per_unit,
             expected_units,
         });
     }

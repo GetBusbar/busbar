@@ -358,7 +358,7 @@ fn identical_plane_paths_on_distinct_listeners_are_sealed_independently() {
         .unwrap();
     let mut candidate = app(topology, Vec::new(), 1);
     Arc::get_mut(&mut candidate).unwrap().planes =
-        ["left-module", "right-module"].into_iter().fold(
+        Arc::new(["left-module", "right-module"].into_iter().fold(
             busbar_kernel::plane_driver::dispatch::PlaneDispatch::default(),
             |planes, key| {
                 planes.admit(
@@ -369,7 +369,7 @@ fn identical_plane_paths_on_distinct_listeners_are_sealed_independently() {
                     },
                 )
             },
-        );
+        ));
     plan.check(&candidate).unwrap();
     for (at, owner) in [
         ("listen", "left"),

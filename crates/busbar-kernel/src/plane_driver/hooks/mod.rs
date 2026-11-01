@@ -1286,12 +1286,54 @@ mod rewrite_crossing_tests;
 #[path = "tests/section_attach_tests.rs"]
 mod section_attach_tests;
 
+#[cfg(not(test))]
+type ProjectBytes = Vec<u8>;
+#[cfg(test)]
+type ProjectBytes = project_arena_custody_tests::ObservedArena;
+
 /// The buffers one `project` crossing lends.
 struct ProjectBufs {
     signals: Vec<SignalEntry>,
     messages: Vec<MessageView>,
-    arena: Vec<u8>,
+    arena: ProjectArena,
 }
+
+struct ProjectArena(zeroize::Zeroizing<ProjectBytes>);
+
+impl From<Vec<u8>> for ProjectArena {
+    fn from(bytes: Vec<u8>) -> Self {
+        Self(zeroize::Zeroizing::new(bytes.into()))
+    }
+}
+
+impl std::ops::Deref for ProjectArena {
+    type Target = [u8];
+
+    fn deref(&self) -> &[u8] {
+        self.0.as_slice()
+    }
+}
+
+impl std::ops::DerefMut for ProjectArena {
+    fn deref_mut(&mut self) -> &mut [u8] {
+        self.0.as_mut_slice()
+    }
+}
+
+impl ProjectArena {
+    fn grow(&mut self, needed: usize) {
+        if needed <= self.len() {
+            return;
+        }
+        let mut grown = Self::from(vec![0; needed]);
+        grown[..self.len()].copy_from_slice(self);
+        *self = grown;
+    }
+}
+
+#[cfg(test)]
+#[path = "tests/project_arena_custody_tests.rs"]
+mod project_arena_custody_tests;
 
 const SIGNALS_CAP: usize = 16;
 const MESSAGES_CAP: usize = 64;
@@ -1329,7 +1371,7 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
                 };
                 MESSAGES_CAP
             ],
-            arena: vec![0u8; self.driver.config.caps.arena.max(4096)],
+            arena: vec![0u8; self.driver.config.caps.arena.max(4096)].into(),
         };
         let mut input = ProjectIn {
             claim: a.claim,
@@ -1360,11 +1402,10 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
                     (short.messages_needed as usize).max(bufs.messages.len()),
                     bufs.messages[0],
                 );
-                bufs.arena.resize(
+                bufs.arena.grow(
                     usize::try_from(short.arena_needed)
                         .unwrap_or(usize::MAX)
                         .max(bufs.arena.len()),
-                    0,
                 );
                 i.signals_buf = bufs.signals.as_mut_ptr();
                 i.signals_cap = bufs.signals.len();

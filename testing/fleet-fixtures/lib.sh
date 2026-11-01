@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # testing/fleet-fixtures/lib.sh — the shared machinery of the plugin FUNCTIONAL gate.
 #
-# ONE MECHANISM, DELIBERATELY THE SAME AS scripts/release-gate/lib.sh.
+# Probes record results; the verdict reader decides whether the run passed.
 #
 # The release gate proved a design: every check appends exactly one row to a ledger and NEVER
 # controls flow; a single verdict step diffs the ledger against the list of ids that were OWED and

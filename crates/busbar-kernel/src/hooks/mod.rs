@@ -214,7 +214,9 @@ impl HookEnv {
         timeout_ms: u64,
     ) -> Result<Arc<dyn RoutingPolicy>, String> {
         if let Some(opened) = self.route_calls.get(name).filter(|opened| {
-            opened.module == module && opened.resolved.as_value() == settings.as_value()
+            opened.module == module
+                && opened.resolved.as_value() == settings.as_value()
+                && opened.budget == policy_timeout(timeout_ms)
         }) {
             return Ok(crate::plane_driver::hooks::policy::HookPolicy::policy(
                 opened.calls.clone(),
@@ -238,7 +240,10 @@ impl HookEnv {
 
     /// Open route-bearing configured hooks once for this candidate generation. The same calls
     /// back its policy and its HTTP dispatcher; the old App retains its own calls across reload.
-    pub(crate) fn route_decls(
+    ///
+    /// # Errors
+    /// A declared route, settings resolution, or instance open is refused.
+    pub fn route_decls(
         &mut self,
         hooks: &std::collections::HashMap<String, crate::config::HookCfg>,
     ) -> Result<Vec<crate::plugin_routes::RouteDecl>, String> {
@@ -257,7 +262,15 @@ impl HookEnv {
                 continue;
             }
             let budget = policy_timeout(hook.timeout_ms);
-            let opened = axis.open(&hook.plugin, name, resolved.as_value(), budget)?;
+            let opened = match self.route_calls.get(name).filter(|opened| {
+                opened.module == hook.plugin
+                    && opened.resolved.as_value() == resolved.as_value()
+                    && opened.budget == budget
+                    && opened.calls.routes() == routes.as_slice()
+            }) {
+                Some(opened) => opened.calls.clone(),
+                None => axis.open(&hook.plugin, name, resolved.as_value(), budget)?,
+            };
             if opened.routes() != routes.as_slice() {
                 return Err(format!(
                     "hook '{name}' route declarations changed while opening"
@@ -285,6 +298,7 @@ impl HookEnv {
                     module: hook.plugin.clone(),
                     definition: ResolvedSettings::from_map(hook.settings.clone()),
                     resolved,
+                    budget,
                     calls: opened,
                 },
             );
@@ -396,6 +410,7 @@ struct RouteCalls {
     module: String,
     definition: ResolvedSettings,
     resolved: ResolvedSettings,
+    budget: std::time::Duration,
     calls: Arc<dyn busbar_contract::hook_calls::HookCalls>,
 }
 
@@ -969,11 +984,11 @@ fn gate_transport_named(
     env: &HookEnv,
     _settings_version: u64,
 ) -> Option<(Arc<dyn RoutingPolicy>, ResolvedSettings)> {
-    if let Some(opened) = env
-        .route_calls
-        .get(name)
-        .filter(|opened| opened.module == hook.plugin && &*opened.definition == &hook.settings)
-    {
+    if let Some(opened) = env.route_calls.get(name).filter(|opened| {
+        opened.module == hook.plugin
+            && &*opened.definition == &hook.settings
+            && opened.budget == policy_timeout(hook.timeout_ms)
+    }) {
         return Some((
             crate::plane_driver::hooks::policy::HookPolicy::policy(opened.calls.clone(), name),
             opened.resolved.clone(),
@@ -1173,6 +1188,7 @@ mod resolution {
         (std::sync::Arc::as_ptr(&env.registry) as *const u8 as usize).hash(&mut h);
         name.hash(&mut h);
         hook.plugin.hash(&mut h);
+        super::policy_timeout(hook.timeout_ms).hash(&mut h);
         serde_json::Value::Object(hook.settings.clone())
             .to_string()
             .hash(&mut h);

@@ -774,8 +774,6 @@ impl<'s> DoorSteps<'s> {
     /// The plane's recipe priced against this unit's admitted generation, by opaque lane key.
     pub fn route_cost(&self, lane: &str) -> busbar_contract::SignalBag {
         use busbar_contract::signal::route_cost::{append, Term};
-        use busbar_kernel_ledger::cost::ClassPrice;
-        let pricing = self.app.cost.card().lane_pricing(lane);
         let mut bag = busbar_contract::SignalBag::new();
         append(
             &mut bag,
@@ -789,17 +787,10 @@ impl<'s> DoorSteps<'s> {
                         .get(class as usize)
                         .map(String::as_str)
                         .unwrap_or_default();
-                    let nanos_per_unit = if pricing.card.pricing_enabled() {
-                        match pricing.class_price(class) {
-                            ClassPrice::Nanos(price) => Some(price),
-                            ClassPrice::FeeMinor(_) | ClassPrice::Unpriced => None,
-                        }
-                    } else {
-                        None
-                    };
+                    let price_per_unit = self.app.cost.routing_price(lane, class);
                     Term {
                         class,
-                        nanos_per_unit,
+                        price_per_unit,
                         expected_units,
                     }
                 }),

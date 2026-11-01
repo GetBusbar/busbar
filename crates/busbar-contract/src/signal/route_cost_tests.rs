@@ -12,12 +12,12 @@ fn recipes_distinguish_legacy_empty_unknown_and_zero() {
     let terms = [
         Term {
             class: "seconds",
-            nanos_per_unit: None,
+            price_per_unit: None,
             expected_units: 0.0,
         },
         Term {
             class: "seconds",
-            nanos_per_unit: Some(0),
+            price_per_unit: Some(0.0),
             expected_units: 3.5,
         },
     ];
@@ -46,10 +46,50 @@ fn malformed_or_truncated_terms_never_become_legacy() {
             &mut bag,
             [Term {
                 class: "seconds",
-                nanos_per_unit: Some(1),
+                price_per_unit: Some(1.0),
                 expected_units: weight,
             }],
         );
         assert!(decode(&bag).is_err());
+    }
+}
+
+#[test]
+fn routing_prices_preserve_float_bits_and_accept_the_original_nano_encoding() {
+    let signal = Signal::CandidateRouteCost;
+    for (price, expected) in [
+        (SignalValue::F64(0.1), 0.1_f64),
+        (SignalValue::U64(100), 0.1_f64),
+        (SignalValue::F64(0.15), 0.15_f64),
+    ] {
+        let mut bag = SignalBag::new();
+        for value in [
+            SignalValue::Bool(true),
+            SignalValue::Str("class".into()),
+            price,
+            SignalValue::F64(0.5),
+        ] {
+            bag.push(signal, value);
+        }
+        let terms = decode(&bag).unwrap().unwrap();
+        assert_eq!(
+            terms[0].price_per_unit.unwrap().to_bits(),
+            expected.to_bits()
+        );
+    }
+    for price in [-1.0, f64::NAN, f64::INFINITY] {
+        let mut bag = SignalBag::new();
+        append(
+            &mut bag,
+            [Term {
+                class: "class",
+                price_per_unit: Some(price),
+                expected_units: 0.0,
+            }],
+        );
+        assert!(
+            decode(&bag).is_err(),
+            "a zero quantity never repairs an invalid price"
+        );
     }
 }

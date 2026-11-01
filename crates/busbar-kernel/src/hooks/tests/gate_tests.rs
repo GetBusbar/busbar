@@ -1485,3 +1485,103 @@ async fn the_hooks_applied_carry_the_failed_gate_and_every_link_its_walk_asked()
         ]
     );
 }
+
+#[tokio::test]
+async fn incremental_scan_does_not_skip_a_shape_gate_without_content() {
+    use busbar_contract::ir::facts::{IrFacts, NeutralFacts};
+    let store = SessionStore::new(64, None);
+    let facts = NeutralFacts(tool_call().verb());
+    let spy = Arc::new(Spy {
+        reply: RoutingDecision::Reject {
+            status: 403,
+            message: "shape refused".into(),
+        },
+        seen: Mutex::new(None),
+    });
+    let gates = gate(
+        spy.clone(),
+        crate::config::PolicyOnError::Reject,
+        false,
+        false,
+    );
+    let verdict = decide(
+        &gates,
+        &GateSubject {
+            facts: &facts,
+            container: "filesystem",
+            ingress_protocol: "example-protocol",
+            request_id: 1,
+            key: None,
+            session: None,
+            incremental: Some(IncrementalScan {
+                store: &store,
+                session: SessionKey(91),
+                now_ms: 0,
+            }),
+            reads: &no_reads,
+        },
+    )
+    .await;
+    assert!(matches!(verdict, GateVerdict::Reject { status: 403, .. }));
+    let seen = spy.seen.lock().unwrap().clone().expect("shape gate fired");
+    assert!(seen["request"].get("messages").is_none());
+    assert!(seen["request"].get("user").is_none());
+}
+
+#[tokio::test]
+async fn incremental_scan_rechecks_shape_and_identity_with_unchanged_content() {
+    let store = SessionStore::new(64, None);
+    let body = br#"{"tool":"fs_read","arguments":{"path":"/etc/hosts"}}"#;
+    for (max_tokens, stream, end_user, reject) in [
+        (32, false, "first-user", false),
+        (64, true, "second-user", true),
+    ] {
+        let spy = Arc::new(Spy {
+            reply: if reject {
+                RoutingDecision::Reject {
+                    status: 403,
+                    message: "new shape refused".into(),
+                }
+            } else {
+                RoutingDecision::Abstain
+            },
+            seen: Mutex::new(None),
+        });
+        let gates = gate(
+            spy.clone(),
+            crate::config::PolicyOnError::Reject,
+            false,
+            true,
+        );
+        let mut subject = door_on(
+            Some(body),
+            DoorShape {
+                max_tokens: Some(max_tokens),
+                stream,
+                end_user: Some(end_user),
+            },
+        );
+        subject.session = Some(b"same-session");
+        subject.scan = Some(crate::hooks::gate::ScanSubstrate {
+            store: &store,
+            generation: 1,
+            now_ms: 0,
+        });
+        let verdict = decide_door(&gates, &subject, &mut Vec::new()).await;
+        if reject {
+            assert!(matches!(verdict, GateVerdict::Reject { status: 403, .. }));
+        } else {
+            assert!(matches!(verdict, GateVerdict::Proceed));
+        }
+        let seen = spy
+            .seen
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("each shape gate fired");
+        assert_eq!(seen["request"]["max_tokens"], max_tokens);
+        assert_eq!(seen["request"]["stream"], stream);
+        assert_eq!(seen["request"]["user"]["user"], end_user);
+        assert!(seen["request"].get("messages").is_none());
+    }
+}
