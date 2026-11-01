@@ -12,21 +12,44 @@
 //! The claim is released when its guard drops, unwinding included, so a panicking holder frees its
 //! key exactly as a poisoned-and-recovered mutex used to.
 
-use std::collections::BTreeSet;
+use std::collections::BTreeMap;
 use std::sync::{Condvar, Mutex};
 
 /// The keys currently claimed, and the condvar their release is announced on.
 pub struct ClaimSet<K> {
-    held: Mutex<BTreeSet<K>>,
+    held: Mutex<BTreeMap<K, std::thread::ThreadId>>,
     freed: Condvar,
+    #[cfg(test)]
+    observed_waits:
+        Mutex<std::collections::BTreeMap<K, std::sync::Arc<std::sync::atomic::AtomicBool>>>,
 }
 
 impl<K: Ord + Clone> ClaimSet<K> {
     /// An empty set; `const` so a process-wide set can be a plain `static`.
     pub const fn new() -> Self {
         Self {
-            held: Mutex::new(BTreeSet::new()),
+            held: Mutex::new(BTreeMap::new()),
             freed: Condvar::new(),
+            #[cfg(test)]
+            observed_waits: Mutex::new(std::collections::BTreeMap::new()),
+        }
+    }
+
+    /// Observe an actual wait for this key in this set, without changing claim arbitration.
+    #[cfg(test)]
+    pub(crate) fn observe_wait(&self, key: K) -> std::sync::Arc<std::sync::atomic::AtomicBool> {
+        let observed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        self.observed_waits
+            .lock()
+            .unwrap()
+            .insert(key, observed.clone());
+        observed
+    }
+
+    #[cfg(test)]
+    fn record_wait(&self, key: &K) {
+        if let Some(observed) = self.observed_waits.lock().unwrap().get(key) {
+            observed.store(true, std::sync::atomic::Ordering::Release);
         }
     }
 
@@ -34,11 +57,30 @@ impl<K: Ord + Clone> ClaimSet<K> {
     /// (or a plain thread), never on an async worker.
     pub fn claim(&self, key: K) -> Claim<'_, K> {
         let mut held = self.held.lock().unwrap_or_else(|e| e.into_inner());
-        while held.contains(&key) {
+        while held.contains_key(&key) {
+            #[cfg(test)]
+            self.record_wait(&key);
             held = self.freed.wait(held).unwrap_or_else(|e| e.into_inner());
         }
-        held.insert(key.clone());
+        held.insert(key.clone(), std::thread::current().id());
         Claim { set: self, key }
+    }
+
+    /// Wait for another thread at the top level. Refuse a contended nested claim so callbacks
+    /// cannot form a wait cycle with an outer claim. An available unrelated key still succeeds.
+    pub fn claim_checked(&self, key: K) -> Option<Claim<'_, K>> {
+        let owner = std::thread::current().id();
+        let mut held = self.held.lock().unwrap_or_else(|e| e.into_inner());
+        while held.contains_key(&key) {
+            if held.values().any(|current| *current == owner) {
+                return None;
+            }
+            #[cfg(test)]
+            self.record_wait(&key);
+            held = self.freed.wait(held).unwrap_or_else(|e| e.into_inner());
+        }
+        held.insert(key.clone(), owner);
+        Some(Claim { set: self, key })
     }
 }
 

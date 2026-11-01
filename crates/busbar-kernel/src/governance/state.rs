@@ -166,8 +166,7 @@ impl GovState {
             at_rest: RwLock::new(None),
             denylist,
             refresh_order,
-            revoke_claims: claims::ClaimSet::new(),
-            self_mint_claims: claims::ClaimSet::new(),
+            mutation_claims: claims::ClaimSet::new(),
             self_mint_holds: std::sync::atomic::AtomicBool::new(
                 SELF_MINT_HOLDS_ADMIN_AND_PROVIDER_STATE,
             ),
@@ -324,20 +323,26 @@ impl GovState {
         // killed the SigV4 credential (or was never live to begin with) before the cheaper,
         // faster-to-propagate denylist write is attempted.
         //
-        // One revoke of this subject at a time (see `revoke_claims`); no lock is held across the
-        // store writes below (§11.13 M1). The targeted cache patch at the end goes through
+        // One mutation of this key at a time (see `mutation_claims`); no lock is held across the
+        // store writes below (§11.13 M1). Each targeted cache patch goes through
         // `refresh_order`, which is the lost-update guard: a concurrent `refresh()` whose `load()`
         // began before the patch is applied never swaps its snapshot in after it (it reloads), so
         // it cannot revert the just-revoked key's cache entry to enabled.
-        let _claim = self.revoke_claims.claim(sub.to_string());
-        let mut revoked_creds = Vec::new();
+        let _claim = self.claim_key_mutation(sub)?;
         for cred in self.store.list_credentials(sub)? {
             if cred.revoked_at.is_none() {
                 self.store.revoke_credential(&cred.id, reason)?;
-                revoked_creds.push((cred.kind, cred.public_id));
             }
+            // Retire each durable success before the next store call can fail. Include rows
+            // already revoked by an earlier partial attempt whose cache was not reconciled.
+            self.refresh_order.patch(|| {
+                self.caches_write()
+                    .by_credential
+                    .remove(&(cred.kind, cred.public_id));
+            });
         }
         self.store.add_denylist(sub, reason)?;
+        self.refresh_order.patch(|| self.denylist.insert(sub));
         let mut new_key = None;
         if let Some(mut key) = self.store.get_key(sub)? {
             if key.deleted_at.is_none() {
@@ -348,20 +353,13 @@ impl GovState {
                 new_key = Some(Arc::new(key));
             }
         }
-        // TARGETED cache update, not a full `refresh()`: a revoke is a single-key mutation, and
-        // `refresh()`'s `list_keys()` + `list_credentials_since(0)` are full-table scans — the same
-        // discipline `POST /revoke` is held to on the admin-handler side (one `get_key`, never a
-        // table scan). Everything the caches need to reflect is already known from the writes
-        // above: the (possibly) updated key row, and exactly which `(kind, public_id)` pairs were
-        // just revoked.
+        // The credential and denylist patches already reflect their durable writes, including
+        // when a later step fails. Finish with the known key row, without a full-table reload.
         self.refresh_order.patch(|| {
             let mut c = self.caches_write();
             self.denylist.insert(sub);
             if let Some(key) = new_key {
                 c.by_id.insert(sub.to_string(), key);
-            }
-            for (kind, public_id) in &revoked_creds {
-                c.by_credential.remove(&(kind.clone(), public_id.clone()));
             }
         });
         Ok(())
@@ -1460,6 +1458,7 @@ impl GovState {
     /// DEGRADED-BUT-APPLIED ([`REVOCATION_DURABLE_MARKER`]), never as a bare error implying nothing
     /// happened. Same discipline `refresh_self` already applies to its tombstone path.
     pub fn delete_key(&self, id: &str) -> RecordStoreResult<()> {
+        let _claim = self.claim_key_mutation(id)?;
         let _correction = self.correction_claims.claim(id.to_string());
         self.settle_correction_for_delete(id)?;
         let _budget_delete = self.hold_budget_flush_deletion(id);
@@ -1508,9 +1507,29 @@ impl GovState {
     /// just-revoked or just-rotated credential still verifying against a store that no longer agrees)
     /// is closed immediately, even if the rest of the cache stays stale until the next refresh.
     fn evict_key_from_caches(&self, id: &str) {
-        let mut c = self.caches_write();
-        c.by_id.remove(id);
-        c.by_credential.retain(|_, (key, _)| key.id != id);
+        self.refresh_order.patch(|| {
+            let mut c = self.caches_write();
+            c.by_id.remove(id);
+            c.by_credential.retain(|_, (key, _)| key.id != id);
+        });
+    }
+
+    fn patch_key_in_caches(&self, key: Arc<VirtualKey>) {
+        self.refresh_order.patch(|| {
+            let mut c = self.caches_write();
+            for (owner, _) in c.by_credential.values_mut() {
+                if owner.id == key.id {
+                    *owner = key.clone();
+                }
+            }
+            c.by_id.insert(key.id.clone(), key);
+        });
+    }
+
+    fn claim_key_mutation(&self, id: &str) -> RecordStoreResult<claims::Claim<'_, MutationKey>> {
+        self.mutation_claims
+            .claim_checked(MutationKey::Key(id.to_string()))
+            .ok_or_else(|| RecordStoreError("reentrant key mutation refused".into()))
     }
 
     /// Reclaim the in-memory budget CELLS of a group that no longer exists — the group-shaped twin of
@@ -1600,6 +1619,7 @@ impl GovState {
     /// FAIL-CLOSED: rotating a signed-token binding with no signer configured is an error rather
     /// than a silent fallback to the legacy secret.
     pub fn rotate_key(&self, id: &str, exp: u64) -> RecordStoreResult<Option<RotatedCredential>> {
+        let _claim = self.claim_key_mutation(id)?;
         let Some(mut key) = self.store.get_key(id)? else {
             return Ok(None);
         };
@@ -1661,6 +1681,7 @@ impl GovState {
         enabled: Option<bool>,
         group: Option<Option<String>>,
     ) -> RecordStoreResult<Option<VirtualKey>> {
+        let _claim = self.claim_key_mutation(id)?;
         let Some(mut key) = self.store.get_key(id)? else {
             return Ok(None);
         };
@@ -1682,6 +1703,7 @@ impl GovState {
         // update of the existing row (no secret rotation). Refresh the in-memory cache so the change
         // takes effect on the next request.
         self.store.put_key(&key)?;
+        self.patch_key_in_caches(Arc::new(key.clone()));
         self.refresh()?;
         Ok(Some(key))
     }

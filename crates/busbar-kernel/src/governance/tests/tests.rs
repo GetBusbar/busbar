@@ -2397,6 +2397,10 @@ impl RecordStore for BlockingDenylistStore {
 /// `MemoryStore`.
 struct WedgeStore {
     inner: MemoryStore,
+    fail_list: std::sync::atomic::AtomicBool,
+    fail_denylist: std::sync::atomic::AtomicBool,
+    reenter: std::sync::Mutex<Option<Box<dyn FnOnce() -> bool + Send>>>,
+    reentry_refused: std::sync::atomic::AtomicBool,
     wedge_put_group: std::sync::Mutex<Option<String>>,
     wedge_list: std::sync::atomic::AtomicBool,
     entered: std::sync::mpsc::SyncSender<()>,
@@ -2413,6 +2417,10 @@ impl WedgeStore {
         let (release_tx, release) = std::sync::mpsc::channel();
         let store = Arc::new(WedgeStore {
             inner: MemoryStore::new(),
+            fail_list: std::sync::atomic::AtomicBool::new(false),
+            fail_denylist: std::sync::atomic::AtomicBool::new(false),
+            reenter: std::sync::Mutex::new(None),
+            reentry_refused: std::sync::atomic::AtomicBool::new(false),
             wedge_put_group: std::sync::Mutex::new(None),
             wedge_list: std::sync::atomic::AtomicBool::new(false),
             entered,
@@ -2448,9 +2456,16 @@ impl RecordStore for WedgeStore {
         self.inner.put_key(key)
     }
     fn get_key(&self, id: &str) -> RecordStoreResult<Option<VirtualKey>> {
+        let callback = self.reenter.lock().unwrap().take();
+        if let Some(callback) = callback {
+            self.reentry_refused.store(callback(), Ordering::SeqCst);
+        }
         self.inner.get_key(id)
     }
     fn list_keys(&self) -> RecordStoreResult<Vec<VirtualKey>> {
+        if self.fail_list.load(Ordering::SeqCst) {
+            return Err(RecordStoreError("list unavailable".into()));
+        }
         let snapshot = self.inner.list_keys();
         if self
             .wedge_list
@@ -2481,7 +2496,26 @@ impl RecordStore for WedgeStore {
         self.inner.list_metering(bucket)
     }
     fn add_denylist(&self, sub: &str, reason: &str) -> RecordStoreResult<()> {
+        if self.fail_denylist.load(Ordering::SeqCst) {
+            return Err(RecordStoreError("denylist unavailable".into()));
+        }
         self.inner.add_denylist(sub, reason)
+    }
+    fn put_key_with_credential(
+        &self,
+        key: &VirtualKey,
+        secret: &CredentialSecret,
+    ) -> RecordStoreResult<()> {
+        self.inner.put_key_with_credential(key, secret)
+    }
+    fn list_credentials(&self, key: &str) -> RecordStoreResult<Vec<CredentialMeta>> {
+        self.inner.list_credentials(key)
+    }
+    fn list_credentials_since(&self, since: u64) -> RecordStoreResult<Vec<CredentialSecret>> {
+        self.inner.list_credentials_since(since)
+    }
+    fn revoke_credential(&self, id: &str, reason: &str) -> RecordStoreResult<()> {
+        self.inner.revoke_credential(id, reason)
     }
     fn list_denylist(&self) -> RecordStoreResult<Vec<String>> {
         self.inner.list_denylist()
@@ -4250,6 +4284,297 @@ fn refresh_self_tombstones_the_old_binding_on_success() {
     assert!(gov.verify_token(&second_token, now, None).is_some());
     let surviving = self_binding_for(&gov, sub).expect("the new binding exists");
     assert_eq!(surviving.id, second_binding.id);
+}
+
+#[test]
+fn self_refresh_finishes_binding_transfer_before_cache_reconcile() {
+    let store = Arc::new(RefreshBlipStore::new());
+    let gov = GovState::new_with_signer(store.clone(), None, Some(self_serve_signer())).unwrap();
+    let now = 1_700_000_000;
+    let (old, token) = gov
+        .issue_self("transfer", "corp", None, now + 3600, now)
+        .unwrap();
+    store.arm();
+    assert!(gov
+        .refresh_self("transfer", "corp", None, now + 3600, now)
+        .is_err());
+    let live: Vec<_> = store
+        .inner
+        .list_keys()
+        .unwrap()
+        .into_iter()
+        .filter(|k| k.enabled && k.deleted_at.is_none())
+        .collect();
+    assert_eq!(
+        live.len(),
+        1,
+        "a failed cache read must not strand two live bindings"
+    );
+    assert_ne!(live[0].id, old.id);
+    assert!(gov.verify_token(&token, now, None).is_none());
+}
+
+#[test]
+fn default_self_refresh_reconciles_when_the_derived_id_is_reused() {
+    for fail_reconcile in [false, true] {
+        let store = Arc::new(RefreshBlipStore::new());
+        let gov =
+            GovState::new_with_signer(store.clone(), None, Some(self_serve_signer())).unwrap();
+        let now = 1_700_000_000;
+        gov.issue_self("same-id", "corp", None, now + 3600, now)
+            .unwrap();
+        let (epoch_one, _) = gov
+            .refresh_self("same-id", "corp", None, now + 3600, now)
+            .unwrap();
+        let mut rotated = gov
+            .rotate_key(&epoch_one.id, now + 3600)
+            .unwrap()
+            .unwrap()
+            .key;
+        // Fix the random administration generation to a nonnumeric value so the fallback
+        // epoch is deterministic, while retaining the real rotation and refresh paths.
+        rotated.generation_hash = binding_marker(&rotated.id, "admin-rotation");
+        store.inner.put_key(&rotated).unwrap();
+        gov.refresh().unwrap();
+        let prior_token = self_serve_signer().mint(&rotated.id, now + 3600, Some("admin-rotation"));
+        assert!(gov.verify_token(&prior_token, now, None).is_some());
+        if fail_reconcile {
+            store.arm();
+        }
+        let result = gov.refresh_self("same-id", "corp", None, now + 3600, now);
+        if fail_reconcile {
+            assert!(result.is_err());
+        } else {
+            let (binding, token) = result.unwrap();
+            assert_eq!(
+                binding.id, epoch_one.id,
+                "retain the default same-id policy"
+            );
+            assert!(gov.verify_token(&token, now, None).is_some());
+        }
+        assert!(gov.verify_token(&prior_token, now, None).is_none());
+    }
+}
+
+#[test]
+fn key_mutation_refuses_same_thread_same_key_callback_but_allows_another_key() {
+    for same_key in [true, false] {
+        let (store, _, _) = WedgeStore::new();
+        let gov = Arc::new(
+            GovState::new_with_signer(store.clone(), None, Some(self_serve_signer())).unwrap(),
+        );
+        let now = 1_700_000_000;
+        let (first, _) = gov
+            .issue_self("callback-a", "corp", None, now + 3600, now)
+            .unwrap();
+        let (second, _) = gov
+            .issue_self("callback-b", "corp", None, now + 3600, now)
+            .unwrap();
+        let target = if same_key {
+            first.id.clone()
+        } else {
+            second.id.clone()
+        };
+        let weak = Arc::downgrade(&gov);
+        *store.reenter.lock().unwrap() = Some(Box::new(move || {
+            weak.upgrade()
+                .unwrap()
+                .update_key(&target, Some(false), None)
+                .is_err()
+        }));
+        let changed = gov
+            .update_key(&first.id, None, Some(Some("outer".into())))
+            .unwrap()
+            .unwrap();
+        assert_eq!(store.reentry_refused.load(Ordering::SeqCst), same_key);
+        assert!(changed.enabled);
+        assert_eq!(changed.group.as_deref(), Some("outer"));
+        assert_eq!(
+            store.inner.get_key(&second.id).unwrap().unwrap().enabled,
+            same_key
+        );
+    }
+}
+
+#[test]
+fn self_subject_and_admin_key_callbacks_cannot_form_a_claim_cycle() {
+    let (store, _, _) = WedgeStore::new();
+    let gov = Arc::new(
+        GovState::new_with_signer(store.clone(), None, Some(self_serve_signer())).unwrap(),
+    );
+    let now = 1_700_000_000;
+    let (key, _) = gov
+        .issue_self("callback-cycle", "corp", None, now + 3600, now)
+        .unwrap();
+    let (entered_tx, entered) = std::sync::mpsc::channel();
+    let (continue_tx, continue_rx) = std::sync::mpsc::channel();
+    let weak = Arc::downgrade(&gov);
+    *store.reenter.lock().unwrap() = Some(Box::new(move || {
+        entered_tx.send(()).unwrap();
+        // A broken nested wait is released without entering the reverse callback, so the
+        // test can join both workers before asserting instead of stranding the process.
+        if !continue_rx.recv().unwrap() {
+            return false;
+        }
+        weak.upgrade()
+            .unwrap()
+            .issue_self("callback-cycle", "corp", None, now + 3600, now)
+            .is_err()
+    }));
+    std::thread::scope(|scope| {
+        let admin = scope.spawn(|| gov.update_key(&key.id, None, Some(Some("outer".into()))));
+        entered
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
+        let (done_tx, done) = std::sync::mpsc::channel();
+        let login_gov = gov.clone();
+        let login = scope.spawn(move || {
+            done_tx
+                .send(login_gov.issue_self(
+                    "callback-cycle",
+                    "corp",
+                    Some(vec!["narrow".into()]),
+                    now + 3600,
+                    now,
+                ))
+                .unwrap();
+        });
+        let attempt = done.recv_timeout(std::time::Duration::from_secs(5));
+        let completed = attempt.is_ok();
+        continue_tx.send(completed).unwrap();
+        admin.join().unwrap().unwrap();
+        login.join().unwrap();
+        let attempt = attempt.unwrap_or_else(|_| done.recv().unwrap());
+        assert!(
+            completed,
+            "nested contention must refuse instead of waiting on the outer callback"
+        );
+        assert!(attempt.is_err());
+        assert!(store.reentry_refused.load(Ordering::SeqCst));
+    });
+    assert_eq!(
+        store
+            .inner
+            .get_key(&key.id)
+            .unwrap()
+            .unwrap()
+            .group
+            .as_deref(),
+        Some("outer")
+    );
+}
+
+#[test]
+fn self_scope_update_preserves_a_newer_durable_generation() {
+    let store = Arc::new(MemoryStore::new());
+    let first = GovState::new_with_signer(store.clone(), None, Some(self_serve_signer())).unwrap();
+    let now = 1_700_000_000;
+    let (old, old_token) = first
+        .issue_self("stale", "corp", None, now + 3600, now)
+        .unwrap();
+    let second = GovState::new_with_signer(store.clone(), None, Some(self_serve_signer())).unwrap();
+    let rotated = second.rotate_key(&old.id, now + 3600).unwrap().unwrap();
+    let (updated, _) = first
+        .issue_self(
+            "stale",
+            "corp",
+            Some(vec!["narrow".into()]),
+            now + 3600,
+            now,
+        )
+        .unwrap();
+    assert_eq!(updated.generation_hash, rotated.key.generation_hash);
+    assert_eq!(
+        store.get_key(&old.id).unwrap().unwrap().generation_hash,
+        rotated.key.generation_hash
+    );
+    assert!(first.verify_token(&old_token, now, None).is_none());
+    let (_, current_token) = first
+        .issue_self(
+            "stale",
+            "corp",
+            Some(vec!["narrow".into()]),
+            now + 3600,
+            now,
+        )
+        .unwrap();
+    assert!(first.verify_token(&current_token, now, None).is_some());
+    second.update_key(&old.id, Some(false), None).unwrap();
+    assert!(first
+        .issue_self("stale", "corp", None, now + 3600, now)
+        .is_err());
+    assert!(!store.get_key(&old.id).unwrap().unwrap().enabled);
+}
+
+#[test]
+fn durable_disable_is_enforced_when_cache_reconcile_fails() {
+    let store = Arc::new(RefreshBlipStore::new());
+    let gov = GovState::new_with_signer(store.clone(), None, Some(self_serve_signer())).unwrap();
+    let now = 1_700_000_000;
+    let (key, token) = gov
+        .issue_self("disable", "corp", None, now + 3600, now)
+        .unwrap();
+    store.arm();
+    assert!(gov.update_key(&key.id, Some(false), None).is_err());
+    assert!(!store.inner.get_key(&key.id).unwrap().unwrap().enabled);
+    assert!(gov.verify_token(&token, now, None).is_none());
+}
+
+#[test]
+fn deletion_eviction_cannot_be_reversed_by_an_older_reload() {
+    let (store, entered, release) = WedgeStore::new();
+    let gov = Arc::new(
+        GovState::new_with_signer(store.clone(), None, Some(self_serve_signer())).unwrap(),
+    );
+    let now = 1_700_000_000;
+    let (key, token) = gov
+        .issue_self("delete-race", "corp", None, now + 3600, now)
+        .unwrap();
+    store.wedge_list.store(true, Ordering::SeqCst);
+    std::thread::scope(|s| {
+        let reload = s.spawn(|| gov.refresh());
+        entered
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("reload captured old row");
+        store.fail_list.store(true, Ordering::SeqCst);
+        let deleted = gov.delete_key(&key.id);
+        release.send(()).unwrap();
+        let _ = reload.join().unwrap();
+        assert!(
+            deleted.is_err(),
+            "cache reconcile was deliberately unavailable"
+        );
+    });
+    assert!(store
+        .inner
+        .get_key(&key.id)
+        .unwrap()
+        .unwrap()
+        .deleted_at
+        .is_some());
+    assert!(gov.verify_token(&token, now, None).is_none());
+}
+
+#[test]
+fn partial_revoke_immediately_retires_the_durable_credential() {
+    let (store, _, _) = WedgeStore::new();
+    let gov = GovState::new_with_signer(store.clone(), None, Some(self_serve_signer())).unwrap();
+    let (key, _, public_id, _) = gov.create_key_with_aws(NewKeySpec::default(), 1).unwrap();
+    assert!(gov.lookup_credential(&signed_kind(), &public_id).is_some());
+    store.fail_denylist.store(true, Ordering::SeqCst);
+    assert!(gov.revoke(&key.id, "test").is_err());
+    assert!(store
+        .inner
+        .list_credentials(&key.id)
+        .unwrap()
+        .iter()
+        .all(|c| c.revoked_at.is_some()));
+    assert!(gov.lookup_credential(&signed_kind(), &public_id).is_none());
+    assert!(gov.revoke(&key.id, "retry").is_err());
+    assert!(gov.lookup_credential(&signed_kind(), &public_id).is_none());
+    store.fail_denylist.store(false, Ordering::SeqCst);
+    gov.revoke(&key.id, "retry").unwrap();
+    assert!(gov.is_revoked(&key.id));
 }
 
 /// A `Store` that delegates everything to a `MemoryStore` except `list_keys`, which fails EXACTLY

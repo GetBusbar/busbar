@@ -7,6 +7,16 @@
 use super::*;
 
 impl GovState {
+    /// Observe contention on this subject in this governance instance's existing claim set.
+    #[cfg(test)]
+    pub(crate) fn observe_self_mint_wait(
+        &self,
+        user_sub: &str,
+    ) -> std::sync::Arc<std::sync::atomic::AtomicBool> {
+        self.mutation_claims
+            .observe_wait(MutationKey::Subject(user_sub.to_string()))
+    }
+
     // ── SELF-SERVE (token-exchange) deterministic keys — 1.5.2 "Model B" ─────────────────────────
     //
     // A principal that authenticates through the browser/`POST /auth/token` flow gets ONE key,
@@ -46,7 +56,23 @@ impl GovState {
             .cloned()
     }
 
-    /// Whether this subject's self-serve mint must be refused, checked under the subject's `self_mint_claims` claim
+    fn read_self_binding(&self, id: &str, user_sub: &str) -> RecordStoreResult<Arc<VirtualKey>> {
+        let group = format!("{SELF_KEY_GROUP_PREFIX}{user_sub}");
+        let key = self
+            .store
+            .get_key(id)?
+            .filter(|k| {
+                k.enabled && k.deleted_at.is_none() && k.group.as_deref() == Some(group.as_str())
+            })
+            .map(Arc::new)
+            .ok_or_else(|| {
+                RecordStoreError("self-serve binding changed; retry the request".into())
+            })?;
+        self.patch_key_in_caches(key.clone());
+        Ok(key)
+    }
+
+    /// Whether this subject's self-serve mint must be refused, checked under its subject claim
     /// before either door writes anything. The subject's rows are every non-tombstoned row in the
     /// self group `user:<sub>` OR recording `idp_subject == sub`, so an admin group rebind does not
     /// hide a row from the check.
@@ -220,7 +246,6 @@ impl GovState {
             ..Default::default()
         };
         self.store.put_key(&binding)?;
-        self.refresh()?;
         let token = material.signer.mint(&id, exp, Some(&generation));
         Ok((binding, token))
     }
@@ -261,13 +286,18 @@ impl GovState {
             .into());
         };
         // Serialize the check→write against a concurrent issue/refresh for the same sub; other
-        // subjects' mints run beside it (see `self_mint_claims`).
-        let _mint = self.self_mint_claims.claim(user_sub.to_string());
+        // subjects' mints run beside it (see `mutation_claims`).
+        let _mint = self
+            .mutation_claims
+            .claim_checked(MutationKey::Subject(user_sub.to_string()))
+            .ok_or_else(|| RecordStoreError("reentrant self-serve mutation refused".into()))?;
         if let Some(refusal) = self.self_mint_refusal(user_sub, provider) {
             return Err(SelfMintError::Refused(refusal));
         }
         match self.current_self_binding(user_sub) {
             Some(existing) => {
+                let _key = self.claim_key_mutation(&existing.id)?;
+                let existing = self.read_self_binding(&existing.id, user_sub)?;
                 // The grant the caller resolved THIS login (from the possibly-changed binding).
                 let new_scopes = allowed_scopes.clone();
                 // A binding minted before the provider record existed ADOPTS the first provider
@@ -295,6 +325,7 @@ impl GovState {
                     updated.allowed_scopes = new_scopes;
                     updated.idp_provider = Some(provider.to_string());
                     self.store.put_key(&updated)?;
+                    self.patch_key_in_caches(Arc::new(updated.clone()));
                     self.refresh()?;
                     let generation = binding_generation(&updated.generation_hash);
                     let token = material.signer.mint(&updated.id, exp, generation);
@@ -307,15 +338,19 @@ impl GovState {
                     Ok(((*existing).clone(), token))
                 }
             }
-            None => Ok(self.write_self_binding(
-                &material,
-                user_sub,
-                provider,
-                allowed_scopes,
-                0,
-                exp,
-                now,
-            )?),
+            None => {
+                let out = self.write_self_binding(
+                    &material,
+                    user_sub,
+                    provider,
+                    allowed_scopes,
+                    0,
+                    exp,
+                    now,
+                )?;
+                self.refresh()?;
+                Ok(out)
+            }
         }
     }
 
@@ -353,13 +388,22 @@ impl GovState {
             )
             .into());
         };
-        // Serialize against a concurrent issue/refresh for the same sub (see `self_mint_claims`).
-        let _mint = self.self_mint_claims.claim(user_sub.to_string());
+        // Serialize against a concurrent issue/refresh for the same sub (see `mutation_claims`).
+        let _mint = self
+            .mutation_claims
+            .claim_checked(MutationKey::Subject(user_sub.to_string()))
+            .ok_or_else(|| RecordStoreError("reentrant self-serve mutation refused".into()))?;
         if let Some(refusal) = self.self_mint_refusal(user_sub, provider) {
             return Err(SelfMintError::Refused(refusal));
         }
-        let (new_epoch, old_id) = match self.current_self_binding(user_sub) {
+        let existing = self.current_self_binding(user_sub);
+        let _key = existing
+            .as_ref()
+            .map(|key| self.claim_key_mutation(&key.id))
+            .transpose()?;
+        let (new_epoch, old_id) = match existing {
             Some(existing) => {
+                let existing = self.read_self_binding(&existing.id, user_sub)?;
                 let cur = binding_generation(&existing.generation_hash)
                     .and_then(|g| g.parse::<u64>().ok())
                     .unwrap_or(0);
@@ -376,6 +420,7 @@ impl GovState {
             exp,
             now,
         )?;
+        let needs_reconcile = old_id.as_ref().is_none_or(|old| old == &out.0.id);
         if let Some(old) = old_id {
             if old != out.0.id {
                 // Tombstone the prior epoch's binding — its token now fails verify (disabled).
@@ -419,6 +464,7 @@ impl GovState {
                         }
                     }));
                 }
+                self.evict_key_from_caches(&old);
                 if let Err(refresh_err) = self.refresh() {
                     // The STORE already reflects the tombstone (`delete_key` above succeeded) —
                     // only the cache reconcile (a `list_keys`/`list_credentials_since` round-trip)
@@ -444,7 +490,6 @@ impl GovState {
                          binding in the store; evicting the prior binding directly from the cache \
                          so its token stops verifying immediately"
                     );
-                    self.evict_key_from_caches(&old);
                     return Err(SelfMintError::Store(RecordStoreError(format!(
                         "self-serve refresh for '{user_sub}' rotated the store successfully (the \
                          prior binding '{old}' is tombstoned, the new binding '{}' is live) but \
@@ -456,6 +501,10 @@ impl GovState {
                     ))));
                 }
             }
+        }
+        if needs_reconcile {
+            self.evict_key_from_caches(&out.0.id);
+            self.refresh()?;
         }
         Ok(out)
     }

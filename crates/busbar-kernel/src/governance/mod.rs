@@ -905,17 +905,10 @@ pub struct GovState {
     /// [`CacheOrder`] tickets every load and every patch: a load older than the last swap is
     /// dropped, and a load older than the last patch is redone. See [`CacheOrder`].
     refresh_order: Arc<CacheOrder>,
-    /// Serializes `revoke` per subject: two revokes of one key would otherwise each write a fresh
-    /// generation and patch the cache in the opposite order to their store writes.
-    revoke_claims: claims::ClaimSet<String>,
-    /// Serializes the SELF-SERVE mint upsert (`issue_self`/`refresh_self`) PER SUBJECT: each does a
-    /// current-binding CHECK then a write, and without this an issue racing a refresh could strand a
-    /// second enabled binding for the same `user:<sub>` (breaking the one-key-per-sub invariant that
-    /// justifies excluding self-keys from the anti-sprawl cap). A claim, not a lock: no lock is held
-    /// across the store writes, so a mint parked in the store holds up only its own subject's
-    /// logins (§11.13 M1). (The deterministic id already makes two concurrent *issues* idempotent
-    /// by id; this closes the issue/refresh interleaving and non-idempotent stores.)
-    self_mint_claims: claims::ClaimSet<String>,
+    /// Serializes existing-key mutations and self-serve minting per subject. One claim set
+    /// recognizes nested callback contention across both namespaces and refuses wait cycles.
+    /// Its mutex is released before store calls; unrelated keys keep progressing.
+    mutation_claims: claims::ClaimSet<MutationKey>,
     /// Whether the self-serve mint holds an admin's state and the minting provider
     /// ([`SELF_MINT_HOLDS_ADMIN_AND_PROVIDER_STATE`]); set from that const at construction.
     self_mint_holds: std::sync::atomic::AtomicBool,
@@ -939,6 +932,12 @@ pub struct GovState {
     /// material nor a deployment keyset, so a verified principal is never lent the empty reference.
     /// Zeroised on drop and never logged (`GovState` has no `Debug`).
     boot_caller_ref: zeroize::Zeroizing<[u8; 32]>,
+}
+
+#[derive(Clone, Eq, Ord, PartialEq, PartialOrd)]
+enum MutationKey {
+    Key(String),
+    Subject(String),
 }
 
 /// The order of the key caches' writes (see `GovState::refresh_order`). Every reload takes a
@@ -1138,7 +1137,7 @@ impl std::fmt::Display for SelfMintError {
 }
 
 /// THE single async door onto the self-serve mint path (`GovState::issue_self` /
-/// `GovState::refresh_self`). Both mint fns claim the subject in `self_mint_claims` — a blocking
+/// `GovState::refresh_self`). Both mint fns claim the subject in `mutation_claims` — a blocking
 /// wait, NOT an async one — and, still holding the claim, perform SYNCHRONOUS
 /// store I/O (`write_self_binding` -> `store.put_key`, and on refresh `store.delete_key`). A
 /// durable `Store` plugin implements those with real network/disk I/O. Calling either fn directly
