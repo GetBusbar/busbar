@@ -645,6 +645,7 @@ impl CostModel {
     /// - card ABSENT: tokens price at 0, the fee posts — #42's only silent zero;
     /// - card PRESENT, model or hit class unpriced: `Err` — the door BLOCKS and a read FAILS (#42);
     /// - overflow: `Err(Overflow)` — never pinned at `i64::MAX` (item 28).
+    #[cfg(any(test, feature = "test-support"))]
     pub fn derive_spend_cents<'m>(
         &self,
         models: impl Iterator<Item = (&'m str, &'m BTreeMap<String, u64>)>,
@@ -657,6 +658,7 @@ impl CostModel {
     }
 
     /// As [`Self::derive_spend_cents`] but in MICRO-units, for the hook seam / admin projections.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn derive_spend_micros<'m>(
         &self,
         models: impl Iterator<Item = (&'m str, &'m BTreeMap<String, u64>)>,
@@ -670,6 +672,7 @@ impl CostModel {
 
     /// Drive the one function over a bucket view: one row per model (every class it counted, item
     /// 123, at the standard tier — the enforcement book carries no tier), then the bucket's fee row.
+    #[cfg(any(test, feature = "test-support"))]
     fn tally<'m>(
         &self,
         models: impl Iterator<Item = (&'m str, &'m BTreeMap<String, u64>)>,
