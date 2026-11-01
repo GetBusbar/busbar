@@ -383,6 +383,149 @@ async fn a_caller_waits_before_accepting_input_until_actual_upstream_readers_rel
 }
 
 #[tokio::test]
+async fn a_callers_own_unread_output_cannot_keep_its_unaccepted_write_waiting() {
+    const EPISODES: usize = 256;
+    const MESSAGES: usize = 2 * EPISODES;
+    const PAYLOAD_BYTES: usize = MESSAGES * FRAME_CAP;
+    let limit = datagram_output_reservation_bytes() + PAYLOAD_BYTES + 32 * FRAME_CAP;
+    assert!(2 * PAYLOAD_BYTES > limit);
+    let actual = ActualPair::new(
+        Some(limit),
+        2,
+        Terminals::OverlapAndEmpty {
+            payload_bytes: FRAME_CAP,
+            empty_pieces: 0,
+        },
+    );
+    for _ in 0..EPISODES {
+        assert!(
+            tokio::time::timeout(COMPLETION_WAIT, actual.caller.write(&[0], false))
+                .await
+                .expect("each finite seed publishes its two real caller messages")
+        );
+        assert!(actual.published().await.failure.is_none());
+    }
+    let before = actual.published().await;
+    assert_eq!(before.original_bytes, EPISODES as u64);
+    assert_eq!(before.original_handed_bytes, EPISODES as u64);
+    actual.a.consume_without_output();
+    let input = vec![b'i'; PAYLOAD_BYTES];
+    // This input fits with a crossing after retirement, as in the other-leg green twin.
+    // Its own queued output is no independent reader transfer capable of retiring credit.
+    assert!(
+        !tokio::time::timeout(COMPLETION_WAIT, actual.caller.write(&input, false))
+            .await
+            .expect("own unread output causes explicit preaccept failure")
+    );
+    let outcome = actual.published().await;
+    assert_eq!(outcome.failure.as_deref(), Some(LINE_MEMORY_EXHAUSTED));
+    assert_eq!(outcome.original_bytes, before.original_bytes);
+    assert_eq!(outcome.original_handed_bytes, before.original_handed_bytes);
+    assert_eq!(outcome.original_cancelled_bytes, 0);
+    assert_eq!(outcome.original_uncertain_bytes, 0);
+    assert_eq!(outcome.accepted_frames, 0);
+    assert_eq!(actual.a.emitted(), vec![vec![0]; EPISODES]);
+    assert!(actual.b.emitted().is_empty());
+    assert!(actual.pair.closed());
+    // Prior accepted CHANNELs remain real, intact messages after explicit producer failure.
+    for _ in 0..MESSAGES {
+        let message = actual
+            .caller_rx
+            .try_recv()
+            .expect("accepted caller message retained");
+        assert!(message.end);
+        assert_eq!(message.bytes.len(), FRAME_CAP);
+        assert!(message.bytes.iter().all(|byte| *byte == b'x'));
+    }
+    assert!(actual.caller_rx.try_recv().is_err());
+    assert_eq!(actual.a.finishes(), 1);
+    assert_eq!(actual.b.finishes(), 1);
+}
+
+#[tokio::test]
+async fn accepted_feedback_exhausts_instead_of_waiting_for_its_own_queued_reader_chunks() {
+    let limit = datagram_output_reservation_bytes() + 4 * FRAME_CAP;
+    let actual = ActualPair::new(
+        Some(limit),
+        2,
+        Terminals::OverlapAndEmpty {
+            payload_bytes: FRAME_CAP,
+            empty_pieces: 0,
+        },
+    );
+    assert!(
+        tokio::time::timeout(COMPLETION_WAIT, actual.caller.write(&[0], false))
+            .await
+            .expect("finite seed completes before the expanding episode")
+    );
+    assert!(actual.published().await.failure.is_none());
+    // Two old real caller CHANNELs now retain their allocations. No receiver is active.
+    let mut token = vec![b'p'; FRAME_CAP / 4];
+    token[0] = 10;
+    assert!(
+        !tokio::time::timeout(COMPLETION_WAIT, actual.caller.write(&token, false))
+            .await
+            .expect("queued-only reader custody cannot stall accepted feedback forever")
+    );
+    let outcome = actual.published().await;
+    assert_eq!(outcome.failure.as_deref(), Some(LINE_MEMORY_EXHAUSTED));
+    assert_eq!(outcome.original_bytes, 1 + token.len() as u64);
+    assert_eq!(outcome.original_handed_bytes, outcome.original_bytes);
+    assert_eq!(outcome.original_cancelled_bytes, 0);
+    assert_eq!(outcome.original_uncertain_bytes, 0);
+    assert!(outcome.handed_frames > 0);
+    assert!(outcome.cancelled_frames > 0);
+    assert_eq!(
+        outcome.accepted_frames,
+        outcome.handed_frames + outcome.cancelled_frames
+    );
+    assert_eq!(
+        outcome.accepted_bytes,
+        outcome.handed_bytes + outcome.cancelled_bytes
+    );
+    assert_eq!(
+        outcome.uncertain_frames, 0,
+        "credit refusal makes no uncertain crossing"
+    );
+    assert_eq!(outcome.uncertain_bytes, 0);
+    let emitted: Vec<_> = actual
+        .a
+        .emitted()
+        .into_iter()
+        .chain(actual.b.emitted())
+        .filter(|bytes| bytes.as_slice() != [0])
+        .collect();
+    assert_eq!(emitted.len() as u64, 1 + outcome.handed_frames);
+    assert_eq!(outcome.accepted_frames, 2 * emitted.len() as u64);
+    let unique: std::collections::BTreeSet<_> = emitted.iter().collect();
+    assert_eq!(
+        unique.len(),
+        emitted.len(),
+        "no accepted finite-tree node is replayed"
+    );
+    drop(unique);
+    for bytes in emitted {
+        let path_len = bytes.len() - token.len();
+        assert!(path_len < 10, "resource failure precedes terminal leaves");
+        assert_eq!(bytes[0], 10 - path_len as u8);
+        assert_eq!(&bytes[1..token.len()], &token[1..]);
+        assert!(bytes[token.len()..].iter().all(|bit| *bit <= 1));
+    }
+    assert!(actual.pair.closed());
+    for _ in 0..2 {
+        let message = actual
+            .caller_rx
+            .try_recv()
+            .expect("old accepted chunk remains readable");
+        assert_eq!(message.bytes, vec![b'x'; FRAME_CAP]);
+        assert!(message.end);
+    }
+    assert!(actual.caller_rx.try_recv().is_err());
+    assert_eq!(actual.a.finishes(), 1);
+    assert_eq!(actual.b.finishes(), 1);
+}
+
+#[tokio::test]
 async fn configured_frontier_exhaustion_reports_real_partial_publication_and_isolates_the_pair() {
     let limit = datagram_output_reservation_bytes() + 4 * FRAME_CAP;
     let actual = ActualPair::new(Some(limit), 2, Terminals::Paths);
