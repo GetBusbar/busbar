@@ -12,6 +12,7 @@ use std::sync::Arc;
 use crate::both_ways::store_fixture::MemoryStore;
 use crate::store_v3::wrap::{Hooks, Wrapped};
 use busbar_contract::abi::sdk::conn::Host;
+use busbar_contract::abi::sdk::store::{Op, OpRefused, OpResult, Step, StoreSlots};
 use busbar_contract::abi::store::OpId;
 use busbar_contract::records::{RecordStore, UsageDelta};
 use busbar_contract::store_calls::{OpIdMint, StoreCalls};
@@ -62,9 +63,17 @@ macro_rules! boot {
 
 /// The store on database `db`, minting from `mint`.
 fn open(db: &str, mint: OpIdMint) -> LoadedStore {
+    open_door(db, mint, shared::door)
+}
+
+fn open_door(
+    db: &str,
+    mint: OpIdMint,
+    door: busbar_contract::abi::mechanism::door::DoorFn,
+) -> LoadedStore {
     let d = Arc::new(Dispatcher::new(DispatchConfig::default()));
     let p = load_linked::<Store>(
-        &LinkedRow::of(shared::door).expect("the store states its Statement"),
+        &LinkedRow::of(door).expect("the store states its Statement"),
         Bind {
             instance: Arc::from("the-instance"),
             max_inflight_cap: 64,
@@ -140,4 +149,102 @@ fn a_true_replay_is_deduped() {
             s.add_usage_batch(op, &cells).await.expect("its replay");
         });
     assert_eq!(requests(&s), 1, "the same op_id applies once");
+}
+
+fn must_not_mint() -> OpId {
+    panic!("a provided-id batch must never mint a replacement identity")
+}
+
+#[test]
+fn provided_id_batches_replay_across_handles_and_refuse_a_different_body() {
+    const PROVIDED_ID: OpId = OpId([0x71; 16]);
+    let first = open("provided-id-batch", must_not_mint);
+    let cells = [("k", 60, one()), ("group", 60, one())];
+    RecordStore::add_usage_batch_deduped(&first, PROVIDED_ID, &cells).unwrap();
+    let reopened = open("provided-id-batch", must_not_mint);
+    RecordStore::add_usage_batch_deduped(&reopened, PROVIDED_ID, &cells).unwrap();
+    let changed = [
+        (
+            "k",
+            60,
+            UsageDelta {
+                requests: 2,
+                ..one()
+            },
+        ),
+        ("group", 60, one()),
+    ];
+    let error = RecordStore::add_usage_batch_deduped(&reopened, PROVIDED_ID, &changed).unwrap_err();
+    assert!(error
+        .0
+        .contains(busbar_contract::abi::store::DIAG_OPID_CONFLICT));
+    assert_eq!(requests(&reopened), 1);
+    assert_eq!(
+        RecordStore::get_usage(&reopened, "group", 60)
+            .unwrap()
+            .requests,
+        1
+    );
+}
+
+/// Commit once, pend with the computed answer, then lose only its first completion reply.
+struct PendingLostReply;
+impl Hooks for PendingLostReply {
+    fn add_usage_batch(
+        inner: &MemoryStore,
+        cx: &mut Op<'_>,
+        op: OpId,
+        cells: &[(&str, u64, UsageDelta)],
+    ) -> Step<OpResult<()>> {
+        static LOST: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        if let Some(answer) = cx.resume::<OpResult<()>>() {
+            return if !LOST.swap(true, std::sync::atomic::Ordering::AcqRel) {
+                Step::Ready(Err(OpRefused::Failed("lost batch commit reply".into())))
+            } else {
+                Step::Ready(answer)
+            };
+        }
+        let answer = match <MemoryStore as StoreSlots>::add_usage_batch(
+            inner,
+            &mut Op::detached(),
+            op,
+            cells,
+        ) {
+            Step::Ready(answer) => answer,
+            Step::Pending { .. } => panic!("the memory backing answers inline"),
+        };
+        assert!(
+            cx.can_pend(),
+            "the synchronous bridge submits a real ticket"
+        );
+        cx.park(answer);
+        Step::Pending {
+            wake_at_ns: crate::dispatch::now_ns().saturating_add(1),
+        }
+    }
+}
+
+mod pending_lost {
+    busbar_contract::store_door!(
+        super::Wrapped<super::PendingLostReply>,
+        "provided-id-lost-reply",
+        "0",
+        64
+    );
+}
+
+#[test]
+fn provided_id_batch_retains_exact_identity_after_pending_and_unknown_commit() {
+    const PROVIDED_ID: OpId = OpId([0x72; 16]);
+    let store = open_door("provided-id-unknown", must_not_mint, pending_lost::door);
+    let cells = [("k", 60, one())];
+    let error = RecordStore::add_usage_batch_deduped(&store, PROVIDED_ID, &cells).unwrap_err();
+    assert!(error.0.contains("lost batch commit reply"));
+    assert_eq!(requests(&store), 1, "the failed answer followed a commit");
+    RecordStore::add_usage_batch_deduped(&store, PROVIDED_ID, &cells).unwrap();
+    assert_eq!(
+        requests(&store),
+        1,
+        "the caller retained the committed operation identity"
+    );
 }

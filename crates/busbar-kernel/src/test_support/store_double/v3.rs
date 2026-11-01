@@ -355,3 +355,47 @@ impl SyncStore for MemoryStore {
         Ok((was - usage.len()) as u64)
     }
 }
+
+#[cfg(test)]
+mod provided_id_tests {
+    use super::*;
+
+    #[test]
+    fn direct_batches_and_existing_receipts_share_the_exact_identity() {
+        const PROVIDED_ID: OpId = OpId([0x73; 16]);
+        const BUCKET: &str = "provided-id-bucket";
+        let store = MemoryStore::new();
+        let window = now();
+        let delta = UsageDelta {
+            requests: 1,
+            billable_requests: 1,
+            models: Vec::new(),
+        };
+        let cells = [(BUCKET, window, delta)];
+        RecordStore::add_usage_batch_deduped(&store, PROVIDED_ID, &cells).unwrap();
+        <MemoryStore as SyncStore>::add_usage_batch(&store, PROVIDED_ID, &cells).unwrap();
+        assert_eq!(
+            RecordStore::get_usage(&store, BUCKET, window)
+                .unwrap()
+                .requests,
+            1
+        );
+        let changed = [(
+            BUCKET,
+            window,
+            UsageDelta {
+                requests: 2,
+                ..cells[0].2.clone()
+            },
+        )];
+        let error =
+            RecordStore::add_usage_batch_deduped(&store, PROVIDED_ID, &changed).unwrap_err();
+        assert_eq!(error.0, busbar_contract::abi::store::DIAG_OPID_CONFLICT);
+        assert_eq!(
+            RecordStore::get_usage(&store, BUCKET, window)
+                .unwrap()
+                .requests,
+            1
+        );
+    }
+}

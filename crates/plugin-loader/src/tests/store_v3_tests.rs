@@ -65,7 +65,7 @@ mod readiness_cleanup {
 
     struct Tracked;
     impl Hooks for Tracked {
-        fn open(_: &[u8], _: Option<Host>) -> Result<Arc<MemoryStore>, String> {
+        fn open(_: &[u8], _: &[&[u8]], _: Option<Host>) -> Result<Arc<MemoryStore>, String> {
             let store = Arc::new(MemoryStore::new());
             *BACKING.lock().unwrap() = Some(Arc::downgrade(&store));
             Ok(store)

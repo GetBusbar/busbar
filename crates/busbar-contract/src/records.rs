@@ -1242,6 +1242,22 @@ pub trait RecordStore: Send + Sync + 'static {
         self.put_usage(bucket_id, window_start, &cur)
     }
 
+    /// Apply this complete usage batch atomically under the caller's immutable operation identity.
+    /// A replay of the same id and body applies once; a different body under that id refuses.
+    /// After an unknown result, replay this exact id and body. Never replace the identity or
+    /// emulate this method with individual additive writes.
+    ///
+    /// # Errors
+    /// Unsupported by default before effects. An error may leave application unknown.
+    fn add_usage_batch_deduped(
+        &self,
+        op: crate::abi::store::OpId,
+        cells: &[(&str, u64, UsageDelta)],
+    ) -> RecordStoreResult<()> {
+        let _ = (op, cells);
+        Err(RecordStoreError("deduped usage batches unsupported".into()))
+    }
+
     /// Accumulate one completed response's RAW consumption into the per-(key, bucket, model,
     /// provider) metering row (UPSERT/add; +1 request). Metering is observability — best-effort,
     /// never consulted for enforcement.

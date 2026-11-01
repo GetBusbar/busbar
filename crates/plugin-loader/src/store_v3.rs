@@ -1800,6 +1800,33 @@ impl RecordStore for LoadedStore {
         )
     }
 
+    fn add_usage_batch_deduped(
+        &self,
+        op: OpId,
+        cells: &[(&str, u64, UsageDelta)],
+    ) -> RecordStoreResult<()> {
+        self.plain(
+            slot::ADD_USAGE_BATCH,
+            owned_in(|o, head| {
+                let rows = cells
+                    .iter()
+                    .map(|(bucket, window_start, delta)| UsageCell {
+                        bucket: o.text(bucket),
+                        window_start: *window_start,
+                        delta: o.json(to_json(delta)),
+                    })
+                    .collect();
+                let (cells, cells_len) = o.rows(rows);
+                AddUsageBatchIn {
+                    head,
+                    op_id: op,
+                    cells,
+                    cells_len,
+                }
+            }),
+        )
+    }
+
     fn add_metering(&self, delta: &MeteringDelta) -> RecordStoreResult<()> {
         // One row through the batch slot: one op_id, atomic.
         self.plain(

@@ -501,6 +501,22 @@ impl Store for MemoryStore {
         })
     }
 
+    fn add_usage_batch_deduped(
+        &self,
+        op: busbar_contract::abi::store::OpId,
+        cells: &[(&str, u64, UsageDelta)],
+    ) -> StoreResult<()> {
+        self.v3_add_usage_batch(op, cells).map_err(|error| {
+            StoreError(match error {
+                busbar_contract::abi::sdk::store::OpRefused::Conflict => {
+                    busbar_contract::abi::store::DIAG_OPID_CONFLICT.into()
+                }
+                busbar_contract::abi::sdk::store::OpRefused::Failed(reason)
+                | busbar_contract::abi::sdk::store::OpRefused::Refused(reason) => reason,
+            })
+        })
+    }
+
     fn add_usage(&self, bucket_id: &str, window_start: u64, delta: &UsageDelta) -> StoreResult<()> {
         if correction::reserved_bucket(bucket_id) {
             return Err(StoreError("reserved usage correction bucket".into()));
