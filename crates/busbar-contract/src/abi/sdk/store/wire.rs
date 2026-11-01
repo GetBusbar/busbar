@@ -1182,3 +1182,7 @@ mod kept_tests;
 #[cfg(test)]
 #[path = "../tests/store_wire_sealed_tests.rs"]
 mod sealed_tests;
+
+#[cfg(test)]
+#[path = "../tests/store_wire_output_wipe_tests.rs"]
+mod output_wipe_tests;
