@@ -350,18 +350,33 @@ pub fn read_response(value: &Value, sent_id: &Value) -> Result<Reply, NotAnAnswe
 /// number case: JSON has a single number type, so `1` and `1.0` are the same value, and
 /// `serde_json`'s own `Number` equality — which compares the parsed REPRESENTATION — would refuse a
 /// peer that echoed `1` as `1.0`. Refusing a correct answer is as much a correlation failure as
-/// accepting a wrong one, so the comparison is on the numeric value. It is still exact: no
-/// cross-type coercion, and `"1"` never matches `1`.
+/// accepting a wrong one, so the comparison is on the numeric value. Integers never pass through
+/// floating-point rounding: a mixed pair compares the float's exact integral value against the
+/// integer. There is no cross-type coercion, and `"1"` never matches `1`.
 fn same_id(got: &Value, sent: &Value) -> bool {
     match (got, sent) {
         (Value::String(a), Value::String(b)) => a == b,
         (Value::Number(a), Value::Number(b)) => {
             a == b
-                || match (a.as_f64(), b.as_f64()) {
-                    (Some(x), Some(y)) => x == y,
+                || match (a.is_f64(), b.is_f64()) {
+                    (false, true) => integer_matches_float(a, b),
+                    (true, false) => integer_matches_float(b, a),
                     _ => false,
                 }
         }
+        _ => false,
+    }
+}
+
+fn integer_matches_float(integer: &serde_json::Number, float: &serde_json::Number) -> bool {
+    let integer = integer
+        .as_i64()
+        .map(i128::from)
+        .or_else(|| integer.as_u64().map(i128::from));
+    match (integer, float.as_f64()) {
+        // i128 contains the entire i64/u64 ID range. An integral float in that range converts
+        // exactly; outside i128's range the cast saturates to values no i64/u64 ID can equal.
+        (Some(integer), Some(float)) => float.fract() == 0.0 && float as i128 == integer,
         _ => false,
     }
 }

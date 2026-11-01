@@ -262,6 +262,70 @@ fn the_same_number_written_two_ways_correlates_and_a_different_number_still_does
     );
 }
 
+/// Correlation must not round either request's integer ID through a floating-point value.
+#[test]
+fn distinct_large_numeric_ids_do_not_correlate_in_either_direction() {
+    for (left, right) in [
+        ("9007199254740992", "9007199254740993"),
+        ("-9007199254740992", "-9007199254740993"),
+        ("9223372036854775806", "9223372036854775807"),
+        ("18446744073709551614", "18446744073709551615"),
+        ("9007199254740993", "9007199254740992.0"),
+        ("-9007199254740993", "-9007199254740992.0"),
+        ("9223372036854775807", "9223372036854775808.0"),
+        ("18446744073709551615", "18446744073709551616.0"),
+        ("1", "1.5"),
+    ] {
+        for (request, response) in [(left, right), (right, left)] {
+            let request_id: Value = serde_json::from_str(request).unwrap();
+            let response_id: Value = serde_json::from_str(response).unwrap();
+            for payload in [
+                serde_json::json!({ "result": { "other_request": true } }),
+                serde_json::json!({ "error": { "code": -1, "message": "other request" } }),
+            ] {
+                let mut body = payload;
+                body["jsonrpc"] = serde_json::json!("2.0");
+                body["id"] = response_id.clone();
+                assert_eq!(
+                    read_response(&body, &request_id).unwrap_err().kind,
+                    NotAnAnswerKind::Uncorrelated,
+                    "request {request}, response {response}"
+                );
+            }
+        }
+    }
+}
+
+/// Large integers remain valid IDs; exact mixed numeric representations still name one request.
+#[test]
+fn exact_numeric_ids_correlate_without_restricting_the_integer_range() {
+    for (left, right) in [
+        ("9007199254740993", "9007199254740993"),
+        ("9223372036854775807", "9223372036854775807"),
+        ("18446744073709551615", "18446744073709551615"),
+        ("1", "1.0"),
+        ("0", "-0.0"),
+        ("-1", "-1.0"),
+        ("9007199254740992", "9007199254740992.0"),
+        ("-9223372036854775808", "-9223372036854775808.0"),
+        ("9223372036854775808", "9223372036854775808.0"),
+        ("1.5", "1.50"),
+    ] {
+        for (request, response) in [(left, right), (right, left)] {
+            let request_id: Value = serde_json::from_str(request).unwrap();
+            let response_id: Value = serde_json::from_str(response).unwrap();
+            let body = serde_json::json!({
+                "jsonrpc": "2.0", "id": response_id, "result": { "matched": true }
+            });
+            assert_eq!(
+                read_response(&body, &request_id).unwrap(),
+                Reply::Result(serde_json::json!({ "matched": true })),
+                "request {request}, response {response}"
+            );
+        }
+    }
+}
+
 /// A correlated body still has to BE a response. These are the arms that say "the peer is broken"
 /// rather than "the peer answered somebody else", and the two are kept apart because an operator
 /// acts on them differently.
