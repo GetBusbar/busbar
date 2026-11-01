@@ -568,11 +568,15 @@ impl Spool {
         };
         let result = (|| {
             file.write_all(&bytes).map_err(step)?;
+            #[cfg(test)]
+            save_test::before(dir, save_test::Step::SyncFile).map_err(step)?;
             file.sync_all().map_err(step)?;
             drop(file);
+            #[cfg(test)]
+            save_test::before(dir, save_test::Step::Rename).map_err(step)?;
             std::fs::rename(&tmp, &path).map_err(step)?;
-            if let Ok(d) = std::fs::File::open(dir) {
-                let _ = d.sync_all();
+            if let Ok(d) = open_spool_directory(dir) {
+                let _ = sync_spool_directory(&d, dir);
             }
             Ok(())
         })();
@@ -586,6 +590,61 @@ impl Spool {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.pending.is_empty()
+    }
+}
+
+fn open_spool_directory(dir: &Path) -> std::io::Result<std::fs::File> {
+    #[cfg(test)]
+    save_test::before(dir, save_test::Step::OpenDirectory)?;
+    std::fs::File::open(dir)
+}
+
+fn sync_spool_directory(file: &std::fs::File, _dir: &Path) -> std::io::Result<()> {
+    #[cfg(test)]
+    save_test::before(_dir, save_test::Step::SyncDirectory)?;
+    file.sync_all()
+}
+
+/// Private, per-directory fault injection; unrelated tests never share a fault or schedule.
+#[cfg(test)]
+pub(super) mod save_test {
+    use super::*;
+    use std::sync::Mutex;
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub(crate) enum Step {
+        SyncFile,
+        Rename,
+        OpenDirectory,
+        SyncDirectory,
+    }
+
+    type Hook = Arc<dyn Fn(Step) -> std::io::Result<()> + Send + Sync>;
+    static HOOKS: Mutex<BTreeMap<PathBuf, Hook>> = Mutex::new(BTreeMap::new());
+
+    pub(crate) struct Guard(PathBuf);
+
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            HOOKS.lock().unwrap().remove(&self.0);
+        }
+    }
+
+    pub(crate) fn install(
+        dir: &Path,
+        hook: impl Fn(Step) -> std::io::Result<()> + Send + Sync + 'static,
+    ) -> Guard {
+        assert!(HOOKS
+            .lock()
+            .unwrap()
+            .insert(dir.to_path_buf(), Arc::new(hook))
+            .is_none());
+        Guard(dir.to_path_buf())
+    }
+
+    pub(super) fn before(dir: &Path, step: Step) -> std::io::Result<()> {
+        let hook = HOOKS.lock().unwrap().get(dir).cloned();
+        hook.map_or(Ok(()), |hook| hook(step))
     }
 }
 
