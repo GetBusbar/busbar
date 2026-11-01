@@ -269,6 +269,15 @@ fn a_jws_assertion_verifies_under_the_keys_public_half() {
         .decode(sig.wire())
         .expect("b64url");
     let pair = ring::signature::RsaKeyPair::from_pkcs8(&der).expect("key");
+    let mut expected = zeroize::Zeroizing::new(vec![0; pair.public().modulus_len()]);
+    pair.sign(
+        &ring::signature::RSA_PKCS1_SHA256,
+        &ring::rand::SystemRandom::new(),
+        input.as_bytes(),
+        &mut expected,
+    )
+    .expect("reference signature");
+    assert_eq!(raw.as_slice(), expected.as_slice());
     use ring::signature::KeyPair as _;
     ring::signature::UnparsedPublicKey::new(
         &ring::signature::RSA_PKCS1_2048_8192_SHA256,
@@ -288,6 +297,120 @@ fn a_jws_assertion_verifies_under_the_keys_public_half() {
     assert!(Cred::captured(zeroize::Zeroizing::new(b"nope".to_vec()))
         .rsa_pkcs8_check()
         .is_err());
+}
+
+#[test]
+fn jws_requires_a_complete_pkcs8_rsa_key_on_validation_and_signing() {
+    use base64::Engine as _;
+    let der = base64::engine::general_purpose::STANDARD
+        .decode(JWS_TEST_KEY_B64)
+        .expect("fixture");
+    let refuses = |bytes: Vec<u8>| {
+        let key = Cred::captured(zeroize::Zeroizing::new(bytes));
+        assert!(key.rsa_pkcs8_check().is_err());
+        assert!(key.jws_rs256(b"header.payload").is_err());
+    };
+    refuses(Vec::new());
+    assert_eq!(&der[22..26], &[4, 0x82, 4, 0xa6]);
+    refuses(der[26..].to_vec());
+    refuses(der[..der.len() - 1].to_vec());
+    let mut trailing = der.clone();
+    trailing.push(0);
+    refuses(trailing);
+    let mut concatenated = der.clone();
+    concatenated.extend_from_slice(&der);
+    refuses(concatenated);
+    let mut v2 = der.clone();
+    assert_eq!(&v2[4..7], &[2, 1, 0]);
+    v2[6] = 1;
+    refuses(v2);
+    let mut bad_crt = der.clone();
+    *bad_crt.last_mut().expect("fixture") ^= 1;
+    refuses(bad_crt);
+    let mut indefinite = vec![0x30, 0x80];
+    indefinite.extend_from_slice(&der[4..]);
+    indefinite.extend_from_slice(&[0, 0]);
+    refuses(indefinite);
+    let mut nonminimal = vec![0x30, 0x83, 0];
+    nonminimal.extend_from_slice(&der[2..]);
+    refuses(nonminimal);
+}
+
+#[test]
+fn jws_rejects_an_inconsistent_private_exponent_before_signing() {
+    use base64::Engine as _;
+    // These offsets identify the fixture's 256-byte d INTEGER. Changing its last
+    // byte retains the encoded size and oddness, but invalidates d * e modulo p-1.
+    const PRIVATE_EXPONENT_HEADER: usize = 299;
+    const PRIVATE_EXPONENT_END: usize = PRIVATE_EXPONENT_HEADER + 4 + 256;
+    let mut der = base64::engine::general_purpose::STANDARD
+        .decode(JWS_TEST_KEY_B64)
+        .expect("fixture");
+    assert_eq!(
+        &der[PRIVATE_EXPONENT_HEADER..PRIVATE_EXPONENT_HEADER + 4],
+        &[0x02, 0x82, 0x01, 0x00]
+    );
+    der[PRIVATE_EXPONENT_END - 1] ^= 2;
+    let key = Cred::captured(zeroize::Zeroizing::new(der));
+    assert!(key.rsa_pkcs8_check().is_err());
+    assert!(key.jws_rs256(b"header.payload").is_err());
+    let body = super::FormBody::new().value(
+        "assertion",
+        super::FormValue::JwsRs256 {
+            key,
+            signing_input: "header.payload".to_owned(),
+        },
+    );
+    assert!(body.encoded().is_err());
+}
+
+#[test]
+fn jws_preserves_pkcs8_algorithm_and_optional_attribute_rules() {
+    use base64::Engine as _;
+    fn sequence(content: &[u8]) -> Vec<u8> {
+        let mut out = vec![0x30, 0x82];
+        out.extend_from_slice(
+            &u16::try_from(content.len())
+                .expect("fixture length")
+                .to_be_bytes(),
+        );
+        out.extend_from_slice(content);
+        out
+    }
+    let der = base64::engine::general_purpose::STANDARD
+        .decode(JWS_TEST_KEY_B64)
+        .expect("fixture");
+    let mut content = der[4..].to_vec();
+    content.extend_from_slice(&[0xa0, 0]);
+    let attributed = Cred::captured(zeroize::Zeroizing::new(sequence(&content)));
+    attributed.rsa_pkcs8_check().expect("optional attributes");
+    let original = Cred::captured(zeroize::Zeroizing::new(der.clone()));
+    assert_eq!(
+        attributed
+            .jws_rs256(b"header.payload")
+            .expect("signs")
+            .wire(),
+        original.jws_rs256(b"header.payload").expect("signs").wire()
+    );
+    content.extend_from_slice(&[0xa0, 0]);
+    let duplicate = Cred::captured(zeroize::Zeroizing::new(sequence(&content)));
+    assert!(duplicate.rsa_pkcs8_check().is_err());
+    assert!(duplicate.jws_rs256(b"header.payload").is_err());
+    let mut missing_null = der[4..].to_vec();
+    assert_eq!(&missing_null[3..5], &[0x30, 13]);
+    assert_eq!(&missing_null[16..18], &[5, 0]);
+    missing_null.drain(16..18);
+    missing_null[4] = 11;
+    let key = Cred::captured(zeroize::Zeroizing::new(sequence(&missing_null)));
+    assert!(key.rsa_pkcs8_check().is_err());
+    assert!(key.jws_rs256(b"header.payload").is_err());
+    let mut inner_trailing = der[4..].to_vec();
+    let private_len = u16::from_be_bytes([inner_trailing[20], inner_trailing[21]]);
+    inner_trailing[20..22].copy_from_slice(&(private_len + 1).to_be_bytes());
+    inner_trailing.push(0);
+    let key = Cred::captured(zeroize::Zeroizing::new(sequence(&inner_trailing)));
+    assert!(key.rsa_pkcs8_check().is_err());
+    assert!(key.jws_rs256(b"header.payload").is_err());
 }
 
 /// SECURE_REQUIRED (CHIP-DESIGN v4.1 change 4): the operator's URL decides. A secure scheme or a
