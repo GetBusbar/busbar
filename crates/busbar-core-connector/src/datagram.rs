@@ -66,7 +66,7 @@ use crate::publication::{Custody, Memory};
 use crate::DialJudge;
 
 /// The routes one framer answer may write.
-const ROUTES_CAP: usize = 64;
+pub(crate) const ROUTES_CAP: usize = 64;
 /// The most far-end addresses one association numbers at once.
 const MAX_PATHS: usize = 64;
 
@@ -318,7 +318,8 @@ impl<'f> DatagramTurn<'f> {
                         .sum::<usize>(),
             );
         }
-        batch.custody.reduce(batch.retained_capacity());
+        let retained = batch.retained_capacity();
+        batch.custody.reduce(retained);
         if done {
             self.recall = None;
             self.recalls = crate::framer::Recalls::default();
@@ -1485,7 +1486,7 @@ pub struct Associations {
 
 #[derive(Debug)]
 struct Emission {
-    order: tokio::sync::Semaphore,
+    order: Arc<tokio::sync::Semaphore>,
     ready: tokio::sync::Notify,
     wake: futures::task::AtomicWaker,
 }
@@ -1493,7 +1494,7 @@ struct Emission {
 impl Default for Emission {
     fn default() -> Self {
         Self {
-            order: tokio::sync::Semaphore::new(1),
+            order: Arc::new(tokio::sync::Semaphore::new(1)),
             ready: tokio::sync::Notify::new(),
             wake: futures::task::AtomicWaker::new(),
         }
@@ -1772,6 +1773,7 @@ impl Drop for Taken<'_> {
             if let Some(emission) = emission {
                 emission.order.close();
                 emission.ready.notify_waiters();
+                emission.wake.wake();
             }
             drop(f);
         }
@@ -1779,6 +1781,28 @@ impl Drop for Taken<'_> {
 }
 
 impl PortAssociations {
+    /// Wait before accepting/copying a busy application write. The returned permit keeps
+    /// source writers ordered while the independent publication actor crosses its producer.
+    pub async fn emission_ready(&self, id: u64) -> Option<tokio::sync::OwnedSemaphorePermit> {
+        let emission = self.lock().emissions.get(&id).cloned()?;
+        let permit = Arc::clone(&emission.order).acquire_owned().await.ok()?;
+        loop {
+            let ready = emission.ready.notified();
+            tokio::pin!(ready);
+            ready.as_mut().enable();
+            {
+                let assocs = self.lock();
+                if assocs.framings.contains_key(&id) {
+                    return Some(permit);
+                }
+                if assocs.out.get(&id).is_none_or(|out| out.closing) {
+                    return None;
+                }
+            }
+            ready.await;
+        }
+    }
+
     /// The serving caller's incremental datagram path. The existing raw busy-ingress queue
     /// remains unchanged; checked LINE/CHANNEL output uses the pairing's publication account.
     pub fn datagram_incremental(
@@ -2437,6 +2461,7 @@ impl PortAssociations {
                 if let Some(emission) = &emission {
                     emission.order.close();
                     emission.ready.notify_waiters();
+                    emission.wake.wake();
                 }
                 drop(taken.framing.take());
                 break;
@@ -2455,6 +2480,7 @@ impl PortAssociations {
         }
         if let Some(emission) = emission {
             emission.ready.notify_waiters();
+            emission.wake.wake();
         }
         std::task::Poll::Ready((emitted.or(Some(true)), answered))
     }

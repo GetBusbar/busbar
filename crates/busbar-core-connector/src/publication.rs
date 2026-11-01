@@ -26,6 +26,9 @@ struct State {
 }
 
 impl Memory {
+    pub(crate) fn reservation_size(bytes: usize) -> Option<usize> {
+        bytes.checked_add(std::mem::size_of::<Lease>() + 2 * std::mem::size_of::<usize>())
+    }
     /// Capture the limit once for this pairing. `None` preserves unlimited custody.
     #[must_use]
     pub fn new(limit: Option<usize>) -> Arc<Self> {
@@ -58,8 +61,7 @@ impl Memory {
     }
 
     pub(crate) fn can_fit(&self, bytes: usize) -> bool {
-        bytes
-            .checked_add(std::mem::size_of::<Lease>() + 2 * std::mem::size_of::<usize>())
+        Self::reservation_size(bytes)
             .is_some_and(|bytes| self.limit.is_none_or(|limit| bytes <= limit))
     }
 
@@ -68,9 +70,7 @@ impl Memory {
         if self.limit.is_none() {
             return Some(Custody::default());
         }
-        let bytes = bytes
-            .checked_add(std::mem::size_of::<Lease>())?
-            .checked_add(2 * std::mem::size_of::<usize>())?;
+        let bytes = Self::reservation_size(bytes)?;
         {
             let mut state = lock(&self.state);
             let used = state.used.checked_add(bytes)?;
@@ -277,6 +277,7 @@ pub struct Messages {
     capacity: usize,
     state: Mutex<MessagesState>,
     ready: tokio::sync::Notify,
+    wake: futures::task::AtomicWaker,
 }
 
 #[derive(Debug, Default)]
@@ -300,6 +301,7 @@ impl Messages {
             capacity,
             state: Mutex::new(MessagesState::default()),
             ready: tokio::sync::Notify::new(),
+            wake: futures::task::AtomicWaker::new(),
         })
     }
 
@@ -324,6 +326,7 @@ impl Messages {
             state.len += 1;
         }
         self.ready.notify_one();
+        self.wake.wake();
         Ok(())
     }
 
@@ -349,6 +352,23 @@ impl Messages {
         }
     }
 
+    /// Register a nonblocking reader. The actual wake runs after the queue lock is released.
+    pub fn poll_recv(&self, cx: &mut std::task::Context<'_>) -> std::task::Poll<Option<Message>> {
+        self.wake.register(cx.waker());
+        let mut state = lock(&self.state);
+        if let Some(node) = state.head.take() {
+            let MessageNode { message, next } = *node;
+            state.head = next;
+            state.len -= 1;
+            return std::task::Poll::Ready(Some(message));
+        }
+        if state.closed {
+            std::task::Poll::Ready(None)
+        } else {
+            std::task::Poll::Pending
+        }
+    }
+
     /// Take an already queued message, for source controls and nonblocking readers.
     ///
     /// # Errors
@@ -365,23 +385,21 @@ impl Messages {
         Ok(message)
     }
 
-    /// Close and retire all unread ownership outside the queue lock.
+    /// Close the producer. Already accepted messages remain readable and charged until the
+    /// reader consumes them or the endpoint itself is destroyed.
     pub fn close(&self) {
-        let mut head = {
-            let mut state = lock(&self.state);
-            state.closed = true;
-            state.len = 0;
-            state.head.take()
-        };
-        while let Some(mut node) = head {
-            head = node.next.take();
-        }
+        lock(&self.state).closed = true;
         self.ready.notify_waiters();
+        self.wake.wake();
     }
 }
 
 impl Drop for Messages {
     fn drop(&mut self) {
-        self.close();
+        let state = self.state.get_mut().unwrap_or_else(PoisonError::into_inner);
+        let mut head = state.head.take();
+        while let Some(mut node) = head {
+            head = node.next.take();
+        }
     }
 }

@@ -249,15 +249,8 @@ impl Pairing {
     /// Borrowed application write: wait before copying when live publication can free credit,
     /// then await the honest output result. Cancellation after acceptance ends the pairing.
     pub async fn send(self: &Arc<Self>, leg: Leg, stream: u64, bytes: &[u8], text: bool) -> bool {
-        let custody = loop {
-            let changed = self.memory.changed.notified();
-            tokio::pin!(changed);
-            changed.as_mut().enable();
-            match self.reserve_input(bytes.len()) {
-                Ok(custody) => break custody,
-                Err(SubmitError::Pending) => changed.await,
-                Err(_) => return false,
-            }
+        let Ok(custody) = self.input_credit(bytes.len()).await else {
+            return false;
         };
         let across = Across {
             stream,
@@ -280,6 +273,21 @@ impl Pairing {
         let outcome = self.published().await;
         accepted.1 = true;
         outcome.failure.is_none() && !self.closed()
+    }
+
+    /// Wait for fresh input credit without copying or accepting its bytes. Cancellation while
+    /// waiting leaves the input with its caller and never ends an unrelated accepted write.
+    pub async fn input_credit(&self, capacity: usize) -> Result<Custody, SubmitError> {
+        loop {
+            let changed = self.memory.changed.notified();
+            tokio::pin!(changed);
+            changed.as_mut().enable();
+            match self.reserve_input(capacity) {
+                Ok(custody) => return Ok(custody),
+                Err(SubmitError::Pending) => changed.await,
+                Err(error) => return Err(error),
+            }
+        }
     }
 
     fn schedule_publication(self: &Arc<Self>, caller: Option<Arc<dyn LegSink>>) {
@@ -434,13 +442,19 @@ impl Pairing {
     }
 
     pub(super) fn publication_failed(&self, failure: String) {
-        let abandoned = {
+        let (abandoned, exhausted) = {
             let mut state = self.lock();
             let publications = &mut state.publications;
+            let exhausted =
+                publications.outcome.failure.is_none() && failure == LINE_MEMORY_EXHAUSTED;
             publications.outcome.failure.get_or_insert(failure);
-            publications.stop()
+            (publications.stop(), exhausted)
         };
         drop(abandoned);
+        if exhausted {
+            tracing::warn!(local = %self.local, reason = "resource_exhausted",
+                "the configured datagram LINE memory limit is exhausted; the affected connection is closed");
+        }
         self.published.notify_waiters();
         self.close();
     }
@@ -531,15 +545,9 @@ impl Pairing {
                 );
                 return;
             }
-            let result = std::future::poll_fn(|cx| {
-                sink.poll_line(
-                    cx,
-                    current.as_ref().map(|job| &job.across),
-                    current.as_ref().is_some_and(|job| job.text),
-                    now,
-                )
-            })
-            .await;
+            let input = current.as_ref().map(|job| &job.across);
+            let text = current.as_ref().is_some_and(|job| job.text);
+            let result = std::future::poll_fn(|cx| sink.poll_line(cx, input, text, now)).await;
             match result {
                 Ok(LineStep::Credit) => {
                     if self.memory.reader_progress().await {
