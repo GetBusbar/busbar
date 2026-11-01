@@ -11,6 +11,247 @@
 
 use super::*;
 
+#[derive(Default)]
+struct RetryRows {
+    records: Mutex<BTreeMap<(String, Vec<u8>), RecordBytes>>,
+    claims: Mutex<BTreeMap<String, u64>>,
+    claim_calls: std::sync::atomic::AtomicUsize,
+    fail_put: std::sync::atomic::AtomicBool,
+}
+
+impl RecordRows for RetryRows {
+    fn record_put(
+        &self,
+        schema: RecordSchemaId,
+        key: &[u8],
+        value: &RecordBytes,
+    ) -> Result<(), busbar_contract::kinds::StoreError> {
+        if self
+            .fail_put
+            .swap(false, std::sync::atomic::Ordering::SeqCst)
+        {
+            return Err(busbar_contract::kinds::StoreError::Unavailable);
+        }
+        let mut records = self.records.lock().unwrap();
+        let key = (schema.as_str().to_string(), key.to_vec());
+        if value.as_slice().is_empty() {
+            records.remove(&key);
+        } else {
+            records.insert(key, RecordBytes::new(value.as_slice().to_vec()).unwrap());
+        }
+        Ok(())
+    }
+
+    fn record_get(
+        &self,
+        schema: RecordSchemaId,
+        key: &[u8],
+    ) -> Result<Option<RecordBytes>, busbar_contract::kinds::StoreError> {
+        Ok(self
+            .records
+            .lock()
+            .unwrap()
+            .get(&(schema.as_str().to_string(), key.to_vec()))
+            .map(|value| RecordBytes::new(value.as_slice().to_vec()).unwrap()))
+    }
+
+    fn record_scan(
+        &self,
+        schema: RecordSchemaId,
+        prefix: &[u8],
+        limit: u32,
+    ) -> Result<Vec<(Vec<u8>, RecordBytes)>, busbar_contract::kinds::StoreError> {
+        Ok(self
+            .records
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|((kind, key), _)| kind == schema.as_str() && key.starts_with(prefix))
+            .take(limit as usize)
+            .map(|((_, key), value)| {
+                (
+                    key.clone(),
+                    RecordBytes::new(value.as_slice().to_vec()).unwrap(),
+                )
+            })
+            .collect())
+    }
+
+    fn claim(
+        &self,
+        _kind: &str,
+        token: &str,
+        expires_at: u64,
+        now: u64,
+    ) -> Result<bool, busbar_contract::kinds::StoreError> {
+        self.claim_calls
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let mut claims = self.claims.lock().unwrap();
+        claims.retain(|_, expires| *expires > now);
+        match claims.entry(token.to_string()) {
+            std::collections::btree_map::Entry::Occupied(_) => Ok(false),
+            std::collections::btree_map::Entry::Vacant(entry) => {
+                entry.insert(expires_at);
+                Ok(true)
+            }
+        }
+    }
+}
+
+#[test]
+fn a_losing_claim_leaves_the_winners_expiry_unchanged() {
+    let rows = RetryRows::default();
+    assert!(rows.claim(CLAIM_KIND, "token", 100, 1).unwrap());
+    assert!(!rows.claim(CLAIM_KIND, "token", 200, 2).unwrap());
+    assert_eq!(rows.claims.lock().unwrap().get("token"), Some(&100));
+    assert!(rows.claim(CLAIM_KIND, "token", 300, 100).unwrap());
+}
+
+/// A failed put must retain its still-live claim so a retry does not lose to itself.
+#[test]
+fn a_failed_put_can_retry_under_its_live_claim() {
+    let rows = RetryRows::default();
+    let book = ChainBook::default();
+    let instance = Arc::from("inst");
+    rows.fail_put
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    assert!(book
+        .append(&rows, &instance, EV, SCOPE, b"event", LP_SCOPED)
+        .is_err());
+    book.append(&rows, &instance, EV, SCOPE, b"event", LP_SCOPED)
+        .unwrap();
+    assert_eq!(
+        rows.claim_calls.load(std::sync::atomic::Ordering::SeqCst),
+        1
+    );
+    assert_eq!(rows.record_scan(EV, b"", u32::MAX).unwrap().len(), 1);
+}
+
+#[test]
+fn a_mismatched_body_sequence_cannot_reposition_before_an_occupied_key() {
+    let rows = RetryRows::default();
+    let book = ChainBook::default();
+    let instance = Arc::from("inst");
+    let (record, _) = sealed();
+    let body = RecordBytes::new(encode(&record).unwrap()).unwrap();
+    rows.record_put(
+        EV,
+        &record_key(&instance, &chain_key(SCOPE.as_bytes(), 9)),
+        &body,
+    )
+    .unwrap();
+    book.append(&rows, &instance, EV, SCOPE, b"after mismatch", LP_SCOPED)
+        .unwrap();
+    let next = rows
+        .record_get(EV, &record_key(&instance, &chain_key(SCOPE.as_bytes(), 10)))
+        .unwrap()
+        .expect("continue beyond the occupied key");
+    let next = decode(SCOPE, next.as_slice(), LP_SCOPED).unwrap();
+    assert_eq!(next.seq(), 10);
+    assert_eq!(next.prev_hash(), record.hash());
+    assert_eq!(rows.record_scan(EV, b"", u32::MAX).unwrap().len(), 2);
+}
+
+#[test]
+fn a_failed_drop_preserves_the_still_live_failed_write_claim() {
+    let rows = RetryRows::default();
+    let book = ChainBook::default();
+    let instance = Arc::from("inst");
+    rows.fail_put
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    assert!(book
+        .append(&rows, &instance, EV, SCOPE, b"event", LP_SCOPED)
+        .is_err());
+    rows.fail_put
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    assert!(book.drop_chain(&rows, &instance, EV, SCOPE).is_err());
+    book.append(&rows, &instance, EV, SCOPE, b"event", LP_SCOPED)
+        .unwrap();
+    assert_eq!(
+        rows.claim_calls.load(std::sync::atomic::Ordering::SeqCst),
+        1
+    );
+    assert_eq!(rows.record_scan(EV, b"", u32::MAX).unwrap().len(), 1);
+}
+
+#[test]
+fn a_retained_claim_expires_at_its_exact_deadline() {
+    let book = ChainBook::default();
+    let at = (
+        Arc::from("inst"),
+        EV.as_str().to_string(),
+        SCOPE.to_string(),
+    );
+    book.hold(&at, "token".to_string(), 100);
+    assert_eq!(book.holds(&at, "token", 99), Some(100));
+    assert_eq!(book.holds(&at, "token", 100), None);
+    assert!(book.claimed.lock().unwrap().is_empty());
+}
+
+#[test]
+fn expired_retry_does_not_bypass_a_renewed_store_claim() {
+    let rows = RetryRows::default();
+    let book = ChainBook::default();
+    let instance = Arc::from("inst");
+    rows.fail_put
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    assert!(book
+        .append(&rows, &instance, EV, SCOPE, b"event", LP_SCOPED)
+        .is_err());
+    // Advance only the retained lease to expiry. The store token models another node's
+    // renewed claim; no sleeping, wall-clock changes, or production clock hook is needed.
+    for held in book.claimed.lock().unwrap().values_mut() {
+        held.expires_at = 0;
+    }
+    assert!(book
+        .append(&rows, &instance, EV, SCOPE, b"event", LP_SCOPED)
+        .is_err());
+    assert!(rows.record_scan(EV, b"", u32::MAX).unwrap().is_empty());
+    assert_eq!(
+        rows.claim_calls.load(std::sync::atomic::Ordering::SeqCst),
+        1 + CLAIM_ATTEMPTS
+    );
+    assert!(book.claimed.lock().unwrap().is_empty());
+}
+
+#[test]
+fn abandoned_and_dropped_positions_retire_only_local_retry_custody() {
+    let rows = RetryRows::default();
+    let book = ChainBook::default();
+    let instance = Arc::from("inst");
+    rows.fail_put
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    assert!(book
+        .append(&rows, &instance, EV, SCOPE, b"event", LP_SCOPED)
+        .is_err());
+    assert_eq!(book.claimed.lock().unwrap().len(), 1);
+    // A completed competing row advances the chain, retiring the old failed-write hint.
+    let (record, _) = sealed();
+    rows.record_put(
+        EV,
+        &record_key(&instance, &chain_key(SCOPE.as_bytes(), 1)),
+        &RecordBytes::new(encode(&record).unwrap()).unwrap(),
+    )
+    .unwrap();
+    book.append(&rows, &instance, EV, SCOPE, b"event", LP_SCOPED)
+        .unwrap();
+    assert!(book.claimed.lock().unwrap().is_empty());
+    rows.fail_put
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    assert!(book
+        .append(&rows, &instance, EV, SCOPE, b"next", LP_SCOPED)
+        .is_err());
+    assert_eq!(book.claimed.lock().unwrap().len(), 1);
+    let store_claims = rows.claims.lock().unwrap().clone();
+    book.drop_chain(&rows, &instance, EV, SCOPE).unwrap();
+    assert!(book.claimed.lock().unwrap().is_empty());
+    assert_eq!(
+        *rows.claims.lock().unwrap(),
+        store_claims,
+        "retirement never edits the store's claims"
+    );
+}
+
 const SCOPE: &str = "a11ce/task-1";
 
 /// Length-prefixed own bytes of one event: `ts`, then the text fields.
