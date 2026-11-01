@@ -555,7 +555,10 @@ fn contract(fold: &Fold, k: &serde_json::Value) {
                 && !line.starts_with("Failed lease=false  host="),
             "a refused validate names why: {line}"
         );
-        let refusal = field(b, "refusal");
+        let refusal = b["refusal"]
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .expect("conformance.json: bad settings name nonempty refusal text");
         assert!(
             line.contains(refusal),
             "validate bad #{i}: {refusal:?} not in {line}"
@@ -573,13 +576,17 @@ fn contract(fold: &Fold, k: &serde_json::Value) {
         let line = at(&label);
         assert!(line.starts_with("Ready lease=false "), "{label}: {line}");
         let seen = line.split_once(" host=[").map_or("", |(_, h)| h);
-        for want in dl
-            .get("observed")
-            .and_then(serde_json::Value::as_array)
-            .into_iter()
-            .flatten()
-        {
-            let want = want.as_str().unwrap_or_default();
+        let observed = match dl.get("observed") {
+            None => &[][..],
+            Some(v) => v
+                .as_array()
+                .expect("conformance.json: observed must be an array")
+                .as_slice(),
+        };
+        for want in observed {
+            let want = want
+                .as_str()
+                .expect("conformance.json: observed entries must be strings");
             assert!(
                 seen.contains(want),
                 "{label}: the host did not observe {want:?}: {line}"

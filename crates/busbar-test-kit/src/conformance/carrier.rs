@@ -369,6 +369,7 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
         };
         (line, (o.listener, bound))
     });
+    let host_listener = listens.then(|| host.made(ls.ticket.ticket())).flatten();
     if listens {
         let mut far = TcpStream::connect(&bound).expect("the script reaches the listener");
         let _ = far.set_read_timeout(Some(Duration::from_secs(5)));
@@ -497,9 +498,18 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     sc.judged("dial not admitted", 1, Want::Starts("Refused "), || {
         dial(&p, &guarded, &unadmitted).0
     });
+    let other_side = Side::new(&d);
+    host.admit(
+        other_side.ticket.ticket(),
+        match other.kind {
+            DEST_AUTHORITY => Admit::Addr(other.authority.clone()),
+            _ => Admit::Program(other.program.clone()),
+        },
+    );
     sc.judged("dial the other kind", 1, Want::Starts("Refused "), || {
-        dial(&p, &guarded, &other).0
+        dial(&p, &other_side, &other).0
     });
+    drop(other_side);
     drop(guarded);
 
     // ── THE HOST'S END OF A PROGRAM (`io.ends`' `exited`): a program that exits while a
@@ -520,7 +530,7 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     });
     // What the carrier did not close itself is the host's to reap: the script's own listener.
     sc.judged("handles held after close", 0, is("true"), || {
-        format!("{}", host.held() <= 1)
+        format!("{}", host.holds_only(host_listener))
     });
     sc.fold()
 }

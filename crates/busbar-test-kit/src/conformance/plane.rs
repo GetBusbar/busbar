@@ -1919,11 +1919,18 @@ fn contract(fold: &Fold, k: &Value) {
     ] {
         assert!(at(label).starts_with("Ready "), "{label}: {}", at(label));
     }
-    let refused = at("validate bad #0");
-    assert!(
-        !refused.starts_with("Ready ") && refused.len() > "Refused lease=false ".len(),
-        "a refused validate names why: {refused}"
-    );
+    for (i, _) in k["bad_settings"]
+        .as_array()
+        .expect("conformance.json: bad_settings must be an array")
+        .iter()
+        .enumerate()
+    {
+        let refused = at(&format!("validate bad #{i}"));
+        assert!(
+            !refused.starts_with("Ready ") && refused.len() > "Refused lease=false ".len(),
+            "a refused validate names why: {refused}"
+        );
+    }
     assert!(
         at("arrive unopened").starts_with("Refused "),
         "{}",

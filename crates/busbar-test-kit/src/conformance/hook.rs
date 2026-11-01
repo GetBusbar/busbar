@@ -156,7 +156,12 @@ impl Request {
         let mut statics = Vec::with_capacity(cands.len());
         let mut dynamics = Vec::with_capacity(cands.len());
         for (i, c) in cands.iter().enumerate() {
-            let f = |k: &str| c[k].as_f64();
+            let f = |k: &str| match c.get(k) {
+                None | Some(serde_json::Value::Null) => None,
+                Some(v) => Some(v.as_f64().unwrap_or_else(|| {
+                    panic!("conformance.json: request '{label}': candidate {k} must be a number")
+                })),
+            };
             let mut present = 0;
             let cost = f("cost_per_mtok").inspect(|_| present |= CANDIDATE_HAS_COST_PER_MTOK);
             statics.push(CandidateStatic {
