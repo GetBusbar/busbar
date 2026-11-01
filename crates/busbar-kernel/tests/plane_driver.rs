@@ -154,6 +154,7 @@ struct Unit {
 struct Slot {
     answer: Option<(Answered, OnPieceOut)>,
     waker: Option<Waker>,
+    polled_pending: bool,
     /// The record writes the `cancel` that ended the op carried (SEAM-L(r)).
     writes: Vec<busbar_contract::plane_calls::CancelWrite>,
 }
@@ -188,6 +189,7 @@ impl Future for Flight {
             Some((a, _)) => Poll::Ready(*a),
             None => {
                 s.waker = Some(cx.waker().clone());
+                s.polled_pending = true;
                 Poll::Pending
             }
         }
@@ -216,6 +218,8 @@ struct Double {
     tickets: Mutex<HashMap<Ticket, u64>>,
     /// The ops held pending, by ticket, and what their `cancel` will answer.
     held: Mutex<HashMap<Ticket, (Arc<Shared>, OnPieceOut)>>,
+    controlled: Mutex<Option<(Arc<Shared>, Answered, OnPieceOut)>>,
+    pending_notice: Mutex<Option<std::sync::mpsc::Sender<bool>>>,
     next: AtomicU32,
     stats: [AtomicU64; stat::COUNT],
     /// `project` crossings, and the bodies each was handed (with the rewrite, when one came).
@@ -311,6 +315,22 @@ unsafe fn put(i: &OnPieceIn, at: &mut usize, b: &[u8]) -> Span {
 }
 
 impl Double {
+    fn release_controlled(&self, require_pending_poll: bool) -> bool {
+        let (slot, answer, out) = {
+            let mut held = self.controlled.lock().unwrap();
+            let Some((slot, _, _)) = held.as_ref() else {
+                return false;
+            };
+            if require_pending_poll && !slot.0.lock().unwrap().polled_pending {
+                return false;
+            }
+            held.take().unwrap()
+        };
+        self.count(stat::HOST_CALLS);
+        slot.put(answer, out);
+        true
+    }
+
     fn count(&self, k: usize) {
         self.stats[k].fetch_add(1, Ordering::SeqCst);
     }
@@ -519,6 +539,10 @@ impl Double {
                     u.pended = true;
                     self.count(stat::HOST_CALLS);
                     hold = Hold::For(Duration::from_millis(30));
+                }
+                b"pend-controlled" if !u.pended => {
+                    u.pended = true;
+                    hold = Hold::Forever;
                 }
                 // An answer whose last window (its reply done) comes LATE (mode `done-late`): the
                 // second far-end piece's answer is held, so a deadline, a drain or the caller
@@ -1280,6 +1304,7 @@ impl PlaneCalls for Double {
         let slot = Arc::new(Shared(Mutex::new(Slot {
             answer: None,
             waker: None,
+            polled_pending: false,
             writes: Vec::new(),
         })));
         // SAFETY: the driver's `in`, whose buffers outlive the answer.
@@ -1300,10 +1325,17 @@ impl PlaneCalls for Double {
         match hold {
             Hold::No => slot.put(answer, out),
             Hold::Forever => {
-                self.held
-                    .lock()
-                    .unwrap()
-                    .insert(ticket, (slot.clone(), out));
+                if answer.outcome == Outcome::Ready {
+                    *self.controlled.lock().unwrap() = Some((slot.clone(), answer, out));
+                    if let Some(notice) = self.pending_notice.lock().unwrap().as_ref() {
+                        let _ = notice.send(true);
+                    }
+                } else {
+                    self.held
+                        .lock()
+                        .unwrap()
+                        .insert(ticket, (slot.clone(), out));
+                }
             }
             Hold::Wedge => {
                 slot.put(answer, out);
@@ -1365,6 +1397,106 @@ impl ServeInFlight for NoServe {
 struct SendOut(OnPieceOut);
 // SAFETY: plain data the double wrote; its pointers are never dereferenced.
 unsafe impl Send for SendOut {}
+
+struct PendingWatchdog {
+    stop: std::sync::mpsc::Sender<bool>,
+    thread: Option<std::thread::JoinHandle<bool>>,
+}
+
+impl PendingWatchdog {
+    fn finish(&mut self) -> bool {
+        let _ = self.stop.send(false);
+        self.thread
+            .take()
+            .unwrap()
+            .join()
+            .expect("cleanup watchdog")
+    }
+}
+
+impl Drop for PendingWatchdog {
+    fn drop(&mut self) {
+        let _ = self.stop.send(false);
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
+/// The real driver yields while this exact on_piece future is pending. Earlier yields in the
+/// far end or caller cannot release it: the sibling requires Flight::poll's pending witness.
+/// Only the cleanup watchdog can release without that witness; using it fails after cleanup.
+#[test]
+fn a_pending_piece_is_released_by_another_task_on_the_same_runtime() {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    rt.block_on(async {
+        let r = rig(Way::Double, BufferCaps::default(), cases::Book::default());
+        let (notice, entered) = std::sync::mpsc::channel();
+        *r.plane.pending_notice.lock().unwrap() = Some(notice.clone());
+        let cleanup_plane = Arc::clone(&r.plane);
+        let mut watchdog = PendingWatchdog {
+            stop: notice,
+            thread: Some(std::thread::spawn(move || {
+                if entered.recv() != Ok(true) {
+                    return false;
+                }
+                if matches!(
+                    entered.recv_timeout(Duration::from_secs(5)),
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+                ) {
+                    return cleanup_plane.release_controlled(false);
+                }
+                false
+            })),
+        };
+        let released = Arc::new(AtomicBool::new(false));
+        let observer = {
+            let plane = Arc::clone(&r.plane);
+            let released = Arc::clone(&released);
+            tokio::spawn(async move {
+                loop {
+                    if plane.release_controlled(true) {
+                        released.store(true, Ordering::SeqCst);
+                        break;
+                    }
+                    tokio::task::yield_now().await;
+                }
+            })
+        };
+        let (steps, far, caller) = (
+            common::TestUnits::passing(),
+            cases::Far::new(&["pend-controlled"], cases::CHUNKS),
+            cases::Caller::default(),
+        );
+        let units = r
+            .driver
+            .unit(&steps, &far, &caller, cases::arrival("/call", b"x"), 0);
+        let outcome = cases::drive(&units).await;
+        observer.abort();
+        let _ = observer.await;
+        let forced = watchdog.finish();
+        drop(units);
+        r.driver.sweep();
+        assert!(
+            !forced,
+            "the runtime needed external cleanup to resume its pending piece"
+        );
+        assert!(
+            released.load(Ordering::SeqCst),
+            "the sibling ran during the actual pending poll"
+        );
+        assert_eq!(outcome, busbar_contract::caps::Outcome::Completed);
+        assert_eq!(caller.text(), "hello far end");
+        assert_eq!(
+            r.stats()[stat::HOST_CALLS],
+            1,
+            "the one release woke the piece"
+        );
+    });
+}
 
 // ── record writes ────────────────────────────────────────────────────────────────────────────────
 

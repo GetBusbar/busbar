@@ -8,8 +8,8 @@
 //! `common::TestUnits`, the kernel steps.
 //!
 //! What is proven, per plane: one unit end to end; zero plane→host calls per chunk (the plane
-//! counts its own crossings and host calls); backpressure; a PENDING answer woken while the
-//! runtime thread keeps running other tasks; FAULT as a failed end; failover before the first
+//! counts its own crossings and host calls); backpressure; a PENDING answer resumed by its wake;
+//! FAULT as a failed end; failover before the first
 //! byte and none after it; the short-buffer re-call for `arrive` and `on_piece`, and a second
 //! short answer as FAULT; cancel on the deadline, the cut, the reload and the caller-drop paths,
 //! and a FAULT disposition billed as `CANCEL_FAILED`; and the session opener.
@@ -728,11 +728,11 @@ async fn every_op_of_a_unit_carries_its_kernel_minted_key() {
     }
 }
 
-/// A PENDING `on_piece` is an await; the runtime thread keeps running other tasks while the
-/// plane waits, and the plane's one wake resumes it. On a current-thread runtime a blocking wait
-/// would starve the ticker below.
+/// A PENDING `on_piece` resumes after the plane's one wake, with every answer byte preserved.
+/// The kernel's controlled-pending case separately proves scheduling during the pending poll;
+/// this shared linked/dropped case has no observation of the host's pending-admission edge.
 #[test]
-fn pending_wake_resumes_without_blocking_the_runtime() {
+fn pending_wake_resumes_and_preserves_the_answer() {
     for way in ways() {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -745,38 +745,15 @@ fn pending_wake_resumes_without_blocking_the_runtime() {
                 Far::new(&["pend"], CHUNKS),
                 Caller::default(),
             );
-            let ticks = Arc::new(AtomicU64::new(0));
-            let ticker = {
-                let ticks = ticks.clone();
-                tokio::spawn(async move {
-                    loop {
-                        ticks.fetch_add(1, Ordering::SeqCst);
-                        tokio::time::sleep(Duration::from_millis(1)).await;
-                    }
-                })
-            };
             let units = r
                 .driver
                 .unit(&steps, &far, &caller, arrival("/call", b"x"), 0);
             let outcome = drive(&units).await;
-            ticker.abort();
             assert!(
                 matches!(outcome, Outcome::Completed),
                 "{way:?}: {outcome:?}"
             );
             assert_eq!(caller.text(), "hello far end");
-            // COUNTED, NOT TIMED. On this current-thread runtime the spawned ticker is polled only
-            // when the driving future yields, so one tick means the thread was handed back while
-            // the unit was in flight; a plane that blocked the thread through its 30 ms hold leaves
-            // the ticker unpolled until the unit ends, and it is aborted then at 0. How many 1 ms
-            // sleeps fit in the hold is the machine's load, not the property (`>= 10` flaked on it).
-            // Residual: a yield before or after the hold (an await in the pump) would also poll the
-            // ticker once; the doubles do not expose the hold's two edges to this shared case.
-            assert!(
-                ticks.load(Ordering::SeqCst) >= 1,
-                "{way:?}: the ticker never ran while the op was pending ({} ticks)",
-                ticks.load(Ordering::SeqCst)
-            );
             assert_eq!(r.stats()[stat::HOST_CALLS], 1, "the one wake");
         });
     }
