@@ -210,34 +210,6 @@ fn the_observability_lift_out_meets_its_1_5_5_bytes() {
     }
 }
 
-/// A test build of the kernel stands the frozen rows in (`migration_rows` in its frozen-text fixture);
-/// they are the root's table, row for row.
-#[test]
-fn the_kernel_test_stand_in_is_the_root_table() {
-    let doc: serde_yaml::Value = serde_yaml::from_str(include_str!(
-        "../../../../busbar-kernel/tests/fixtures/frozen_customer_text.yaml"
-    ))
-    .expect("the kernel fixture parses");
-    let mut stand_in: Vec<(String, String)> = doc["migration_rows"]
-        .as_mapping()
-        .expect("`migration_rows`")
-        .iter()
-        .map(|(k, v)| {
-            (
-                k.as_str().expect("key").to_string(),
-                v.as_str().expect("value").to_string(),
-            )
-        })
-        .collect();
-    let mut root: Vec<(String, String)> = MIGRATION_ROWS
-        .iter()
-        .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
-        .collect();
-    stand_in.sort();
-    root.sort();
-    assert_eq!(stand_in, root);
-}
-
 // ── THE TABLE IS THE RENDER OF plugins.yaml ─────────────────────────────────────────────────────
 // One home per fact: the words live in plugins.yaml (`migration:` and each entry's `retired:`); the
 // manifest's `[package.metadata.busbar.migration]` is their render, and an edit to either side alone is

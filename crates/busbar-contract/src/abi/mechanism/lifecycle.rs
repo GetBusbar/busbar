@@ -26,6 +26,8 @@
 //! awaiting the restart). Every kind's `refresh` slot must still be present (every slot is), and
 //! the SDK's default (`abi::sdk::life::Life::refresh`) answers it REFUSED; nothing a plugin of
 //! those kinds does in `refresh` reaches an operator.
+//! The store SDK refuses refresh with a reason naming the restart that applies a changed store
+//! section, so no store claims settings applied that were not.
 //!
 //! READY, THE ONE OPTIONAL LIFECYCLE OP (ARCHITECT 2026-10-02, "discovery at boot"). It is not a
 //! table slot: it rides the door's append-only tail ([`super::door::Door::ready`]), so no kind's

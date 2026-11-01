@@ -131,19 +131,6 @@ pub fn duration_seconds_to_wire(seconds: Count) -> f64 {
 // later-milestone addition — they arrive when a plane is threaded onto the pricer, and their closed
 // facets need a purity-gate-compatible home. M1b lands only the priced-usage half of the carrier.
 
-/// The service-tier modifier a plane may carry. CLOSED enum (the service-tier section of
-/// `BUSBAR-1.6.0.md` THE DESIGN). A tier is a MODIFIER, not a counted unit, so it never rides `usage_units`;
-/// config resolves each variant to an integer basis-point multiplier the pricer applies (`Standard`
-/// = ×1.0000 = 10_000 bp). Extend additively.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
-pub enum ServiceTier {
-    #[default]
-    Standard,
-    Priority,
-    Batch,
-    Flex,
-}
-
 /// The one neutral usage representation every plane hands core (the neutral-usage section of
 /// `BUSBAR-1.6.0.md` THE DESIGN).
 ///

@@ -1,38 +1,25 @@
-//! THE ONE COUNTING ALLOCATOR a plugin's allocation gates read: plugin crate roots keep the literal
-//! `#![forbid(unsafe_code)]` (BUSBAR-1.6.0.md l.273), so the `GlobalAlloc` impl a gate needs lives
-//! in the test kit, a dev-dependency only (busbar-contract's own tests mount this file). Nothing
-//! here is installed: the allocator only counts where a test binary declares it its own
-//! `#[global_allocator]`:
-//!
-//! ```ignore
-//! #[global_allocator]
-//! static A: busbar_test_kit::alloc_counter::Counting = busbar_test_kit::alloc_counter::Counting::new();
-//! ```
-//!
-//! PER-THREAD, not process-global: `cargo test` runs tests concurrently, so a shared atomic would let
-//! another test thread's allocations inflate the measured count and flap an exact-equality gate. A
-//! `const`-initialized thread-local has no lazy init, no destructor and no heap, so touching it from
-//! inside the allocator never re-enters it.
-//!
-//! THE FREED-KEY WITNESS rides the same allocator (a zeroise gate, "keys are zeroised",
-//! BUSBAR-1.6.0.md l.753): a test builds a marked key with [`marked_key`] and names every secret
-//! derived from it with [`watch`] (a split-out master key or salt, a derived session key, a key
-//! schedule's round keys), each against the test's own id; [`freed_unzeroed`] reports how many
-//! freed blocks still held ANY [`WINDOW`] consecutive bytes of one of that id's secrets (all of a
-//! shorter one). A whole copy, a split copy and a derived copy are all seen, wherever in the block
-//! they sit. Unarmed (every binary that never calls [`marked_key`] or [`watch`]) it costs one
-//! atomic load per free.
-//!
-//! The crate's `deny(unsafe_code)` holds over this whole module except the one
-//! `unsafe impl GlobalAlloc` block, which carries the module's only `#[allow(unsafe_code)]`.
+//! A per-thread allocation counter, installed only by binaries that declare [`Counting`] as their
+//! global allocator. An optional scoped observer checks initialized payload prefixes at deallocation;
+//! it never scans spare capacity, padding, or unrelated allocations.
 
 use std::alloc::{GlobalAlloc, Layout, System};
-use std::cell::Cell;
-use std::sync::atomic::{AtomicU64, AtomicU8, AtomicUsize, Ordering};
+use std::cell::{Cell, RefCell};
+use std::marker::PhantomData;
+use std::rc::Rc;
+#[cfg(target_os = "linux")]
+use std::{fs::File, os::unix::fs::FileExt};
 
 thread_local! {
-    /// Allocations (and reallocations) made by THIS thread since it started or last [`reset`].
     static ALLOCS: Cell<u64> = const { Cell::new(0) };
+    static PAYLOADS: RefCell<Option<ProbeState>> = const { RefCell::new(None) };
+    static READING: Cell<bool> = const { Cell::new(false) };
+    static REENTERED: Cell<bool> = const { Cell::new(false) };
+}
+
+struct ProbeState {
+    payloads: Vec<ObservedPayload>,
+    #[cfg(target_os = "linux")]
+    memory: File,
 }
 
 /// The system allocator, counting every allocation and reallocation on the calling thread.
@@ -55,267 +42,277 @@ impl Default for Counting {
     }
 }
 
-/// The eight bytes that open a marked key; a byte stream drawn from the key's id fills the rest,
-/// so every window of it is distinct from every other id's and from ordinary heap contents.
-pub const MARK: [u8; 8] = *b"ZEROISE!";
-
-/// How many key ids the freed-key witness tells apart: `0..MARKED_IDS`.
-pub const MARKED_IDS: usize = 8;
-
-/// The window the witness matches: a freed block holding ANY `WINDOW` consecutive bytes of a
-/// watched secret (all of a secret shorter than that, such as a 12-byte salt) is counted.
-pub const WINDOW: usize = 16;
-
-/// The most secrets one test binary watches.
-pub const MAX_WATCHED: usize = 256;
-
-/// The longest secret the witness watches.
-pub const MAX_WATCHED_LEN: usize = 64;
-
-/// One watched secret: its id, its length (`0` until it is published) and its bytes.
-struct Watched {
-    id: AtomicUsize,
-    len: AtomicUsize,
-    bytes: [AtomicU8; MAX_WATCHED_LEN],
-}
-
-impl Watched {
-    const fn new() -> Self {
-        Self {
-            id: AtomicUsize::new(0),
-            len: AtomicUsize::new(0),
-            bytes: [const { AtomicU8::new(0) }; MAX_WATCHED_LEN],
-        }
-    }
-}
-
-/// The watched secrets, `0..WATCHING` claimed. Fixed storage: the allocator reads it on every free
-/// and must never allocate, lock or re-enter itself to do so.
-static WATCHED: [Watched; MAX_WATCHED] = [const { Watched::new() }; MAX_WATCHED];
-
-/// How many slots of [`WATCHED`] were claimed: `0` is unarmed.
-static WATCHING: AtomicUsize = AtomicUsize::new(0);
-
-/// One bit per two-byte prefix of every window of every watched secret: a block position whose
-/// two bytes are no window's first two is skipped with one load.
-static PREFIXES: [AtomicU64; 1024] = [const { AtomicU64::new(0) }; 1024];
-
-/// Freed blocks seen still holding a secret watched under `id`, per id.
-static FREED_UNZEROED: [AtomicUsize; MARKED_IDS] = [const { AtomicUsize::new(0) }; MARKED_IDS];
-
-/// The marked key `id` of `N` bytes ([`MARK`], then a byte stream drawn from `id`), on the
-/// caller's stack (the stack is not the allocator's to watch). The whole key is watched under
-/// `id`, so any [`WINDOW`] of it in a freed block is counted.
-///
-/// # Panics
-///
-/// When `id` is not below [`MARKED_IDS`], `N` leaves no room after the mark or exceeds
-/// [`MAX_WATCHED_LEN`], or [`MAX_WATCHED`] secrets are already watched.
-#[must_use]
-pub fn marked_key<const N: usize>(id: u8) -> [u8; N] {
-    assert!(N > MARK.len(), "a {N}-byte key has no room after the mark");
-    let mut k = [0_u8; N];
-    k[..MARK.len()].copy_from_slice(&MARK);
-    // xorshift64*, seeded from the id: deterministic per id, distinct between ids.
-    let mut x = 0x9E37_79B9_7F4A_7C15_u64 ^ (u64::from(id) + 1).wrapping_mul(0xD1B5_4A32_D192_ED03);
-    for b in &mut k[MARK.len()..] {
-        x ^= x << 13;
-        x ^= x >> 7;
-        x ^= x << 17;
-        *b = x.wrapping_mul(0x2545_F491_4F6C_DD1D).to_be_bytes()[0];
-    }
-    watch(id, &k);
-    k
-}
-
-/// Watch `watched` under `id`: from now on a freed block holding any [`WINDOW`] consecutive bytes
-/// of it (all of it when it is shorter) counts against `id`. A test names here every secret it
-/// derives from its marked key (a split-out part, a derived session key, a round key), copied
-/// from the stack: a heap copy the test frees would be counted itself.
-///
-/// # Panics
-///
-/// When `id` is not below [`MARKED_IDS`], `watched` is shorter than 2 or longer than
-/// [`MAX_WATCHED_LEN`] bytes, or [`MAX_WATCHED`] secrets are already watched.
-pub fn watch(id: u8, watched: &[u8]) {
-    assert!(usize::from(id) < MARKED_IDS, "key id {id} >= {MARKED_IDS}");
-    assert!(
-        (2..=MAX_WATCHED_LEN).contains(&watched.len()),
-        "a watched secret is 2..={MAX_WATCHED_LEN} bytes"
-    );
-    let slot = WATCHING.fetch_add(1, Ordering::SeqCst);
-    assert!(
-        slot < MAX_WATCHED,
-        "more than {MAX_WATCHED} watched secrets"
-    );
-    let w = &WATCHED[slot];
-    for (to, b) in w.bytes.iter().zip(watched) {
-        to.store(*b, Ordering::Relaxed);
-    }
-    w.id.store(usize::from(id), Ordering::Relaxed);
-    let win = watched.len().min(WINDOW);
-    for pair in watched.windows(2).take(watched.len() - win + 1) {
-        let bit = prefix(pair[0], pair[1]);
-        PREFIXES[bit / 64].fetch_or(1_u64 << (bit % 64), Ordering::SeqCst);
-    }
-    // Published last: a reader that sees the length sees the bytes and the id.
-    w.len.store(watched.len(), Ordering::Release);
-}
-
-/// Where the witness last saw a secret watched under one id: what a failing zeroise gate names,
-/// so the copy it found can be traced to its holder.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Seen {
-    /// The freed block's size.
-    pub block: usize,
-    /// The offset in the block the secret's window starts at.
-    pub at: usize,
-    /// Which of the id's watched secrets it was: `0` is the first watched (a marked key itself),
-    /// in the order [`marked_key`] and [`watch`] were called for the id.
-    pub nth: usize,
-    /// That secret's length.
+/// The destruction of one explicitly registered initialized payload prefix.
+#[derive(Debug)]
+pub struct ObservedPayload {
+    address: usize,
+    /// The initialized prefix length, excluding spare capacity.
     pub len: usize,
+    /// Whether deallocation of the registered allocation was observed.
+    pub freed: bool,
+    /// Whether every registered byte was zero at deallocation.
+    pub wiped: bool,
+    /// Whether this allocation was freed by a successful reallocation.
+    pub reallocated: bool,
+    /// Bytes successfully copied by the OS reader, excluding spare capacity.
+    pub bytes_read: usize,
+    /// Whether the complete registered prefix was copied without an error.
+    pub complete_read: bool,
+    /// A failed read, invalid range, or unsupported platform prevents memory proof.
+    pub read_error: Option<std::io::ErrorKind>,
 }
 
-/// The last sighting per id: block size, offset, nth secret, its length (`0` block: none yet).
-static LAST_SEEN: [[AtomicUsize; 4]; MARKED_IDS] =
-    [const { [const { AtomicUsize::new(0) }; 4] }; MARKED_IDS];
-
-/// Where a secret watched under `id` was last seen in a freed block, if one was.
-#[must_use]
-pub fn last_seen(id: u8) -> Option<Seen> {
-    let s = &LAST_SEEN[usize::from(id)];
-    let block = s[0].load(Ordering::SeqCst);
-    (block != 0).then(|| Seen {
-        block,
-        at: s[1].load(Ordering::SeqCst),
-        nth: s[2].load(Ordering::SeqCst),
-        len: s[3].load(Ordering::SeqCst),
-    })
+/// The complete observation scope, including allocator reentry during an OS read.
+#[derive(Debug)]
+pub struct PayloadObservations {
+    /// Every explicitly registered allocation, including those not freed in the scope.
+    pub payloads: Vec<ObservedPayload>,
+    /// Whether the OS reader reentered the allocator. A true value invalidates memory proof.
+    pub reentered: bool,
 }
 
-/// How many freed blocks were seen still holding a secret watched under `id`.
-#[must_use]
-pub fn freed_unzeroed(id: u8) -> usize {
-    FREED_UNZEROED[usize::from(id)].load(Ordering::SeqCst)
+/// A thread-bound observation scope. Dropping it disarms observation, including on panic.
+#[derive(Debug)]
+pub struct InitializedPayloadProbe {
+    _thread_bound: PhantomData<Rc<()>>,
 }
 
-/// The prefix bit of two bytes.
-fn prefix(a: u8, b: u8) -> usize {
-    (usize::from(a) << 8) | usize::from(b)
-}
-
-/// Whether the claimed slot `w` holds a secret one of whose windows starts at `block[at..]`, and
-/// under which id.
-fn window_at(w: &Watched, block: &[u8], at: usize) -> Option<usize> {
-    let len = w.len.load(Ordering::Acquire);
-    if len == 0 {
-        return None;
-    }
-    let win = len.min(WINDOW);
-    let rest = block.get(at..at + win)?;
-    (0..=len - win)
-        .any(|start| {
-            rest.iter()
-                .enumerate()
-                .all(|(i, b)| w.bytes[start + i].load(Ordering::Relaxed) == *b)
+impl InitializedPayloadProbe {
+    /// Begin observing payloads registered on this thread.
+    ///
+    /// # Safety
+    /// Every payload registered during this scope, including by test instrumentation, must remain
+    /// exclusively owned until it is deallocated on this thread or the scope ends. The registered
+    /// prefix must remain initialized while owned; deallocation is observed through an OS copy,
+    /// without dereferencing the Rust allocation after its owner gives it up.
+    /// Registration must identify the allocation's base, not an interior slice. Moving a registered
+    /// allocation to another thread before ending this scope is forbidden.
+    ///
+    /// # Panics
+    /// Panics if another observation scope is already active on this thread.
+    ///
+    /// # Errors
+    /// On Linux, opening `/proc/self/mem` must succeed before observation is armed. Other platforms
+    /// still record registrations and frees, but report `Unsupported` instead of memory proof.
+    #[allow(unsafe_code)]
+    pub unsafe fn start() -> std::io::Result<Self> {
+        #[cfg(target_os = "linux")]
+        let memory = File::open("/proc/self/mem")?;
+        PAYLOADS.with(|payloads| {
+            let mut payloads = payloads.borrow_mut();
+            assert!(payloads.is_none(), "one payload probe per thread");
+            *payloads = Some(ProbeState {
+                payloads: Vec::new(),
+                #[cfg(target_os = "linux")]
+                memory,
+            });
+        });
+        REENTERED.with(|reentered| reentered.set(false));
+        Ok(Self {
+            _thread_bound: PhantomData,
         })
-        .then(|| w.id.load(Ordering::Relaxed))
-        .filter(|id| *id < MARKED_IDS)
+    }
+
+    /// End observation and return the registered payloads and their destruction results.
+    #[must_use]
+    pub fn finish(self) -> PayloadObservations {
+        let state =
+            PAYLOADS.with(|payloads| payloads.borrow_mut().take().expect("active payload probe"));
+        PayloadObservations {
+            payloads: state.payloads,
+            reentered: REENTERED.with(Cell::get),
+        }
+    }
 }
 
-/// Count, once per id, every watched secret a block being freed still holds a window of.
-fn witness_freed(block: &[u8]) {
-    let claimed = WATCHING.load(Ordering::SeqCst).min(MAX_WATCHED);
-    let mut seen = [false; MARKED_IDS];
-    for (at, pair) in block.windows(2).enumerate() {
-        let bit = prefix(pair[0], pair[1]);
-        if PREFIXES[bit / 64].load(Ordering::Relaxed) & (1_u64 << (bit % 64)) == 0 {
-            continue;
+impl Drop for InitializedPayloadProbe {
+    fn drop(&mut self) {
+        let _ = PAYLOADS.try_with(|payloads| {
+            payloads.borrow_mut().take();
+        });
+    }
+}
+
+/// Register the initialized prefix of an owned allocation. Does nothing outside a probe scope.
+/// Repeated registration of the same live allocation extends its known initialized prefix.
+///
+/// # Safety
+/// `bytes` must start at the base of a live allocation. Its bytes must remain initialized and
+/// exclusively owned until that allocation is freed on this thread or the active probe ends.
+#[allow(unsafe_code)]
+pub unsafe fn watch_initialized_payload(bytes: &[u8]) {
+    if bytes.is_empty() {
+        return;
+    }
+    PAYLOADS.with(|payloads| {
+        let mut payloads = payloads.borrow_mut();
+        let Some(state) = payloads.as_mut() else {
+            return;
+        };
+        let payloads = &mut state.payloads;
+        let address = bytes.as_ptr() as usize;
+        if let Some(payload) = payloads
+            .iter_mut()
+            .find(|payload| !payload.freed && payload.address == address)
+        {
+            payload.len = payload.len.max(bytes.len());
+        } else {
+            payloads.push(ObservedPayload {
+                address,
+                len: bytes.len(),
+                freed: false,
+                wiped: false,
+                reallocated: false,
+                bytes_read: 0,
+                complete_read: false,
+                read_error: None,
+            });
         }
-        for (slot, w) in WATCHED[..claimed].iter().enumerate() {
-            if let Some(id) = window_at(w, block, at) {
-                seen[id] = true;
-                let nth = WATCHED[..slot]
-                    .iter()
-                    .filter(|o| {
-                        o.len.load(Ordering::Acquire) != 0 && o.id.load(Ordering::Relaxed) == id
-                    })
-                    .count();
-                let last = &LAST_SEEN[id];
-                last[1].store(at, Ordering::SeqCst);
-                last[2].store(nth, Ordering::SeqCst);
-                last[3].store(w.len.load(Ordering::Acquire), Ordering::SeqCst);
-                last[0].store(block.len(), Ordering::SeqCst);
+    });
+}
+
+fn registered(address: usize) -> bool {
+    PAYLOADS
+        .try_with(|payloads| {
+            payloads.try_borrow().is_ok_and(|payloads| {
+                payloads.as_ref().is_some_and(|payloads| {
+                    payloads
+                        .payloads
+                        .iter()
+                        .any(|payload| !payload.freed && payload.address == address)
+                })
+            })
+        })
+        .unwrap_or(false)
+}
+
+fn note_reentry() -> bool {
+    let reading = READING.try_with(Cell::get).unwrap_or(false);
+    if reading {
+        let _ = REENTERED.try_with(|reentered| reentered.set(true));
+    }
+    reading
+}
+
+fn observe_deallocation(address: usize, layout: Layout, reallocated: bool) {
+    let _ = PAYLOADS.try_with(|payloads| {
+        let Ok(mut payloads) = payloads.try_borrow_mut() else {
+            return;
+        };
+        let Some(state) = payloads.as_mut() else {
+            return;
+        };
+        if let Some(payload) = state
+            .payloads
+            .iter_mut()
+            .find(|payload| !payload.freed && payload.address == address)
+        {
+            payload.freed = true;
+            payload.reallocated = reallocated;
+            if payload.len > layout.size() || address.checked_add(payload.len).is_none() {
+                payload.read_error = Some(std::io::ErrorKind::InvalidInput);
+                return;
+            }
+            #[cfg(target_os = "linux")]
+            {
+                READING.with(|reading| reading.set(true));
+                read_payload(&state.memory, payload);
+                READING.with(|reading| reading.set(false));
+            }
+            #[cfg(not(target_os = "linux"))]
+            {
+                payload.read_error = Some(std::io::ErrorKind::Unsupported);
+            }
+        }
+    });
+}
+
+#[cfg(target_os = "linux")]
+fn read_payload(memory: &File, payload: &mut ObservedPayload) {
+    let mut chunk = [0u8; 4096];
+    let mut all_zero = true;
+    while payload.bytes_read < payload.len {
+        let count = chunk.len().min(payload.len - payload.bytes_read);
+        let offset = (payload.address as u64).checked_add(payload.bytes_read as u64);
+        let Some(offset) = offset else {
+            payload.read_error = Some(std::io::ErrorKind::InvalidInput);
+            return;
+        };
+        // The kernel copies the registered range into initialized stack storage. No Rust reference
+        // or load is formed from the allocation passed to GlobalAlloc::dealloc.
+        match memory.read_at(&mut chunk[..count], offset) {
+            Ok(0) => {
+                payload.read_error = Some(std::io::ErrorKind::UnexpectedEof);
+                return;
+            }
+            Ok(read) => {
+                all_zero &= chunk[..read].iter().all(|byte| *byte == 0);
+                payload.bytes_read += read;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(error) => {
+                payload.read_error = Some(error.kind());
+                return;
             }
         }
     }
-    for (id, hit) in seen.iter().enumerate() {
-        if *hit {
-            FREED_UNZEROED[id].fetch_add(1, Ordering::SeqCst);
-        }
-    }
+    payload.complete_read = true;
+    payload.wiped = all_zero;
 }
 
-/// One more allocation on this thread. `try_with`: a thread tearing down its locals may still
-/// allocate, and that allocation is simply not counted.
 fn bump() {
     let _ = ALLOCS.try_with(|c| c.set(c.get() + 1));
 }
 
-// SAFETY: every method forwards to `System` with its own arguments, adding only a thread-local
-// integer increment; nothing writes the memory handed out. Armed, `dealloc` READS the block it is
-// handed (live until `System` frees it below, and given up by its owner) before forwarding, and
-// `realloc` is the trait's own default (allocate, copy, free) so a moved block passes that read.
-#[allow(unsafe_code)] // REVIEWED, TEST ONLY: counting GlobalAlloc for plugin allocation gates
+// SAFETY: allocation operations forward their original arguments to System. Registered reallocations
+// use GlobalAlloc's allocate/copy/free semantics so the actual old buffer reaches the observer. Only
+// explicitly registered prefixes are copied by the OS, before System releases their allocations.
+#[allow(unsafe_code)]
 unsafe impl GlobalAlloc for Counting {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        note_reentry();
         bump();
-        // SAFETY: forwarded verbatim; the caller's obligations on `layout` are unchanged.
+        // SAFETY: forwarded verbatim under the caller's allocator contract.
         unsafe { System.alloc(layout) }
     }
+
     unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+        note_reentry();
         bump();
-        // SAFETY: forwarded verbatim; the caller's obligations on `layout` are unchanged.
+        // SAFETY: forwarded verbatim under the caller's allocator contract.
         unsafe { System.alloc_zeroed(layout) }
     }
+
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        if WATCHING.load(Ordering::SeqCst) != 0 && layout.size() >= 2 {
-            // SAFETY (TEST ONLY, and NOT fully sound): `ptr` is a live block of `layout.size()`
-            // bytes until `System` frees it below, and its owner has given it up, so nothing else
-            // reads or writes it during `dealloc`. But the slice spans the WHOLE block, including
-            // bytes the owner never wrote: reading uninitialised memory through a `&[u8]` is
-            // undefined behaviour, and Miri would flag it. It is accepted here because this
-            // allocator is compiled only into test binaries (the dev-only `alloc-counter`
-            // feature), reads the bytes only to compare them, and keeps nothing it read.
-            let block = unsafe { std::slice::from_raw_parts(ptr, layout.size()) };
-            witness_freed(block);
+        if !note_reentry() {
+            observe_deallocation(ptr as usize, layout, false);
         }
-        // SAFETY: forwarded verbatim; the caller's obligations on `ptr`/`layout` are unchanged.
-        unsafe { System.dealloc(ptr, layout) }
+        // SAFETY: forwarded verbatim under the caller's allocator contract.
+        unsafe {
+            System.dealloc(ptr, layout);
+        }
     }
+
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
-        if WATCHING.load(Ordering::SeqCst) != 0 {
-            // Armed: the trait's default body, so the old block is freed through `dealloc` and
-            // read. One allocation, counted by `alloc`.
-            // SAFETY: the caller guarantees `new_size`, rounded up to `layout.align()`, does not
-            // overflow `isize` (the `realloc` contract), so the layout is valid.
+        bump();
+        note_reentry();
+        if registered(ptr as usize) {
+            // SAFETY: the realloc contract guarantees a valid nonzero new layout.
             let new_layout = unsafe { Layout::from_size_align_unchecked(new_size, layout.align()) };
-            // SAFETY: `new_layout` has a non-zero size (the `realloc` contract).
-            let new = unsafe { self.alloc(new_layout) };
+            // SAFETY: the new layout is valid and nonzero.
+            let new = unsafe { System.alloc(new_layout) };
             if !new.is_null() {
-                // SAFETY: both blocks are live, distinct, and at least the copied length long;
-                // `ptr`/`layout` are the caller's live block, freed once.
+                // SAFETY: the live blocks are distinct, contain at least the copied size, and the
+                // old allocation is observed and freed exactly once. Raw copying allows spare bytes.
                 unsafe {
                     std::ptr::copy_nonoverlapping(ptr, new, layout.size().min(new_size));
-                    self.dealloc(ptr, layout);
+                    observe_deallocation(ptr as usize, layout, true);
+                    System.dealloc(ptr, layout);
                 }
             }
             return new;
         }
-        bump();
-        // SAFETY: forwarded verbatim; the caller's obligations on `ptr`/`layout`/`new_size` are
-        // unchanged.
+        // SAFETY: forwarded verbatim under the caller's allocator contract.
         unsafe { System.realloc(ptr, layout, new_size) }
     }
 }
@@ -344,5 +341,6 @@ pub fn allocations_with<R>(f: impl FnOnce() -> R) -> (u64, R) {
 }
 
 #[cfg(test)]
+#[allow(unsafe_code)] // REVIEWED: scoped registration of initialized owned test payloads
 #[path = "tests/alloc_counter_tests.rs"]
 mod tests;

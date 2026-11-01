@@ -1145,9 +1145,9 @@ impl GovState {
     /// A store that keeps no claims answers every claim lost (fail-closed): nothing is re-wrapped,
     /// every row still opens under `previous`, and the pass reports them pending.
     ///
-    /// NEVER REVIVES A REVOKED ROW: the store's write is an upsert of the whole row, so just before
-    /// writing, the row's metadata is read again and the write is skipped unless it is still there
-    /// and still unrevoked.
+    /// The claim reduces duplicate work; correctness comes from the store's update-only CAS over
+    /// the exact snapshot decrypted here. An intervening rotation, metadata change, revocation,
+    /// deletion or slot reclamation prevents the write. No old plaintext is sealed with new metadata.
     ///
     /// # Errors
     /// The store could not refresh the cache afterwards.
@@ -1187,25 +1187,14 @@ impl GovState {
                 pass.pending += 1;
                 continue;
             }
-            let current = self
-                .store
-                .list_credentials(&row.meta.key_id)
-                .ok()
-                .and_then(|metas| metas.into_iter().find(|m| m.id == row.meta.id));
-            // Written with the row's metadata as it stands now, not as it was listed.
-            let Some(meta) = current.filter(|m| m.revoked_at.is_none()) else {
-                continue;
-            };
-            let written = keys.seal(&meta, plain.as_bytes()).and_then(|sealed| {
+            let written = keys.seal(&row.meta, plain.as_bytes()).and_then(|sealed| {
                 self.store
-                    .put_credential(&CredentialSecret {
-                        meta,
-                        secret: sealed,
-                    })
+                    .rewrap_credential(&row, &sealed)
                     .map_err(|e| e.to_string())
             });
             match written {
-                Ok(()) => pass.resealed += 1,
+                Ok(true) => pass.resealed += 1,
+                Ok(false) => pass.pending += 1,
                 Err(e) => {
                     pass.pending += 1;
                     diag_warn!(

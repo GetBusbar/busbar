@@ -78,15 +78,15 @@ pub fn is_strategy_name(name: &str) -> bool {
     )
 }
 
-/// The strategy a bare `hooks:` keyword selects (`weighted` for anything that is not one of the
-/// four native policies — see [`is_strategy_name`]).
+/// Preserve a strategy's declared word; only `weighted` selects the inline floor.
 pub fn parse_strategy(name: &str) -> PoolPolicy {
     match name {
         STRATEGY_CHEAPEST => PoolPolicy::Cheapest,
         STRATEGY_FASTEST => PoolPolicy::Fastest,
         STRATEGY_LEAST_BUSY => PoolPolicy::LeastBusy,
         STRATEGY_USAGE => PoolPolicy::Usage,
-        _ => PoolPolicy::Weighted,
+        ON_ERROR_WEIGHTED => PoolPolicy::Weighted,
+        _ => PoolPolicy::Named(name.to_string()),
     }
 }
 
@@ -117,7 +117,7 @@ impl<'de> Deserialize<'de> for PoolCfg {
             /// The pool's hooks - an ordering strategy (bare built-in name) and/or hook NAMES
             /// (bare names referencing the top-level `hooks:` map) - in ONE ordered list.
             #[serde(default)]
-            hooks: Option<Vec<String>>,
+            hooks: Option<Vec<PoolHook>>,
             /// Per-pool override of the all-pools `pools.upstream_credentials:` default.
             #[serde(default)]
             upstream_credentials: Option<busbar_contract::config::UpstreamCreds>,
@@ -139,13 +139,20 @@ impl<'de> Deserialize<'de> for PoolCfg {
         let (policy, gates, base_named) = if let Some(entries) = raw.hooks {
             let mut policy: Option<PoolPolicy> = None;
             let mut gates: Vec<String> = Vec::new();
-            for name in entries {
+            for entry in entries {
+                let (name, strategy) = match entry {
+                    PoolHook::Name(name) => {
+                        let strategy = is_strategy_name(&name);
+                        (name, strategy)
+                    }
+                    PoolHook::Strategy { strategy } => (strategy, true),
+                };
                 if name.trim().is_empty() {
                     return Err(serde::de::Error::custom(
                         "a pool `hooks:` entry must be a non-empty strategy keyword or hook name",
                     ));
                 }
-                if is_strategy_name(&name) {
+                if strategy {
                     if policy.is_some() {
                         return Err(serde::de::Error::custom(
                             "a pool `hooks:` list names more than one ordering strategy; a pool \
@@ -181,6 +188,13 @@ impl<'de> Deserialize<'de> for PoolCfg {
     }
 }
 
+#[derive(Deserialize)]
+#[serde(untagged, deny_unknown_fields)]
+enum PoolHook {
+    Name(String),
+    Strategy { strategy: String },
+}
+
 /// A pool's native ranking STRATEGY — the base ordering strategy named in a pool's `hooks:` list
 /// (the retired `policy:` key). `weighted` (default / absent) is today's smooth-weighted-round-robin:
 /// ZERO added cost, no policy object constructed, the byte-identical hot path. The others resolve a
@@ -196,6 +210,9 @@ pub enum PoolPolicy {
     Fastest,
     LeastBusy,
     Usage,
+    /// A strategy word declared by an admitted hook plugin. New words use the structured form
+    /// `hooks: [{ strategy: word }]`, preserving every existing bare hook reference.
+    Named(String),
 }
 
 impl PoolPolicy {
@@ -203,13 +220,14 @@ impl PoolPolicy {
     /// `weighted` returns `None` — it IS the zero-cost inline-SWRR default and constructs no policy
     /// object. Engine-level `STRATEGY_*` consts (not the ranking plugin's constants) so this
     /// compiles when the `hooks-ranking` plugin is removed; the plugin matches the same names.
-    pub fn native_name(&self) -> Option<&'static str> {
+    pub fn native_name(&self) -> Option<&str> {
         match self {
             PoolPolicy::Weighted => None,
             PoolPolicy::Cheapest => Some(STRATEGY_CHEAPEST),
             PoolPolicy::Fastest => Some(STRATEGY_FASTEST),
             PoolPolicy::LeastBusy => Some(STRATEGY_LEAST_BUSY),
             PoolPolicy::Usage => Some(STRATEGY_USAGE),
+            PoolPolicy::Named(name) => Some(name),
         }
     }
 }

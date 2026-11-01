@@ -459,6 +459,7 @@ struct Bearer {
     callers: Mutex<Vec<Option<Vec<u8>>>>,
     /// Never answers on the spot, and its submitted call never answers at all.
     stall: std::sync::atomic::AtomicBool,
+    require_secure: std::sync::atomic::AtomicBool,
     /// Refuses to field the attempt.
     refuse: std::sync::atomic::AtomicBool,
     facts: Mutex<Vec<Facts>>,
@@ -522,6 +523,7 @@ impl OutboundAuth for Bearer {
             name: b"authorization".to_vec(),
             value: b"Bearer sk-test".to_vec().into(),
             sensitive: true,
+            require_secure: self.require_secure.load(Ordering::SeqCst),
         }]))
     }
     fn fields(&self, h: u64, r: FieldsRequest, _: u64) -> Box<dyn Fielding> {
@@ -1654,6 +1656,7 @@ fn auth_material_never_prints() {
         name: b"authorization".to_vec(),
         value: b"Bearer sk-test".to_vec().into(),
         sensitive: true,
+        require_secure: false,
     };
     let request = FieldsRequest {
         caller_credential: Some(b"caller-key".to_vec().into()),
@@ -2714,6 +2717,7 @@ impl OutboundAuth for ByHandle {
             name: b"authorization".to_vec(),
             value: format!("Bearer h{handle}").into_bytes().into(),
             sensitive: true,
+            require_secure: false,
         }]))
     }
     fn fields(&self, h: u64, r: FieldsRequest, _: u64) -> Box<dyn Fielding> {
@@ -3458,4 +3462,20 @@ async fn a_far_request_is_dialled_within_the_address_set_its_plane_judged() {
         .push((WITHIN_REQUEST_FIELD.as_bytes().to_vec(), b"a.test".to_vec()));
     assert!(!far.send(&t, req).await, "an unreadable pin sends nothing");
     assert_eq!(r.table.opened.lock().unwrap().len(), 2, "nothing dialled");
+}
+
+#[tokio::test]
+async fn protected_auth_never_uses_a_raw_connector_and_does_not_blame_the_destination() {
+    let r = rig(
+        &[("a.test", Script::Answer(200, None, vec![b"ok"]))],
+        OnExhausted::Status503,
+        None,
+    );
+    r.auth.require_secure.store(true, Ordering::SeqCst);
+    let t = token();
+    let far = r.egress.unit(route());
+    let _ = far.member(&t, 1).await;
+    assert!(!far.send(&t, request()).await);
+    assert!(r.table.opened.lock().unwrap().is_empty());
+    assert!(r.book.observed.lock().unwrap().is_empty());
 }

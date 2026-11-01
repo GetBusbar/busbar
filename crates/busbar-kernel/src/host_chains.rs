@@ -45,6 +45,7 @@ use indexmap::IndexMap;
 use busbar_contract::abi::plane::{
     RecordChain, CHAIN_DIGESTS_SCOPE, CHAIN_LENGTH_PREFIXED, CHAIN_PIPE_SEPARATED,
 };
+use busbar_contract::abi::sdk::store::conditional::{Expected, Mutation, Predicate, Request};
 use busbar_contract::ids::RecordSchemaId;
 use busbar_contract::kinds::RecordBytes;
 use busbar_contract::services::{chain_key, chain_key_parts};
@@ -176,7 +177,13 @@ type Row = (Vec<u8>, Vec<u8>);
 
 /// A chain's position and its life (how many times the chain had been dropped when it was resumed,
 /// as the store's [`CHAIN_LIFE_SCHEMA`] row held it).
-type Held = (Chain<StreamRecord>, u64);
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Held {
+    chain: Chain<StreamRecord>,
+    life: u64,
+    tail: Option<(Vec<u8>, Arc<[u8]>)>,
+    conditional: bool,
+}
 
 /// Every chain's position, the least recently written first.
 type Positions = IndexMap<Position, Held>;
@@ -256,10 +263,11 @@ impl ChainBook {
         );
         for _ in 0..CLAIM_ATTEMPTS {
             let cached = self.lock().get(&at).cloned();
-            let (mut chain, life) = match cached {
+            let held = match cached {
                 Some(held) => held,
                 None => resume(rows, instance, schema, scope, f)?,
             };
+            let (mut chain, life) = (held.chain, held.life);
             let record = chain.append(
                 scope,
                 StreamInput::new(content.to_vec(), f.framing, f.digests_scope),
@@ -287,7 +295,15 @@ impl ChainBook {
             rows.record_put(schema, &key, &body)
                 .map_err(|_| WRITE_FAILED)?;
             self.hold(&token, false);
-            self.commit(at, (chain, life));
+            self.commit(
+                at,
+                Held {
+                    chain,
+                    life,
+                    tail: None,
+                    conditional: false,
+                },
+            );
             return Ok(());
         }
         crate::diagnostics::diag_error!(
@@ -376,9 +392,7 @@ fn life_of(
     let held = rows
         .record_get(CHAIN_LIFE_SCHEMA, &life_key(instance, schema, scope))
         .map_err(|_| WRITE_FAILED)?;
-    Ok(held
-        .and_then(|life| <[u8; 8]>::try_from(life.as_slice()).ok())
-        .map_or(0, u64::from_be_bytes))
+    parse_life(held.as_ref().map(RecordBytes::as_slice))
 }
 
 /// Raise the life of `instance`'s chain `scope` of `schema` by one, in the store. Two drops racing
@@ -390,10 +404,264 @@ fn raise_life(
     schema: RecordSchemaId,
     scope: &str,
 ) -> Result<(), &'static str> {
-    let next = life_of(rows, instance, schema, scope)?.saturating_add(1);
+    let next = life_of(rows, instance, schema, scope)?
+        .checked_add(1)
+        .ok_or("chain life overflow")?;
     let body = RecordBytes::new(next.to_be_bytes().to_vec()).map_err(|_| WRITE_FAILED)?;
     rows.record_put(CHAIN_LIFE_SCHEMA, &life_key(instance, schema, scope), &body)
         .map_err(|_| WRITE_FAILED)
+}
+
+fn parse_life(bytes: Option<&[u8]>) -> Result<u64, &'static str> {
+    match bytes {
+        None => Ok(0),
+        Some(bytes) => <[u8; 8]>::try_from(bytes)
+            .map(u64::from_be_bytes)
+            .map_err(|_| "malformed chain life"),
+    }
+}
+
+/// Observe the exact optional life before the consumer reads the state it plans to mutate.
+pub(crate) fn observe_life(
+    rows: &dyn RecordRows,
+    instance: &str,
+    schema: RecordSchemaId,
+    scope: &str,
+) -> Result<Expected, &'static str> {
+    let bytes = rows
+        .record_get(CHAIN_LIFE_SCHEMA, &life_key(instance, schema, scope))
+        .map_err(|_| WRITE_FAILED)?;
+    parse_life(bytes.as_ref().map(RecordBytes::as_slice))?;
+    Ok(bytes.map_or(Expected::Absent, |value| {
+        Expected::Bytes(value.as_slice().to_vec())
+    }))
+}
+
+#[derive(Debug)]
+pub(crate) enum ConditionalChainAction {
+    Append(Vec<Vec<u8>>),
+    Drop,
+    Check,
+}
+
+/// A host-authorized chain operation. Its kind and framing came from the admitted declaration.
+#[derive(Debug)]
+pub(crate) struct ConditionalChain {
+    pub schema: RecordSchemaId,
+    pub scope: String,
+    pub framing: ChainFraming,
+    pub life: Expected,
+    pub action: ConditionalChainAction,
+}
+
+/// A prepared append advances the committed-position hint only after an Applied receipt.
+#[derive(Debug)]
+pub(crate) enum ConditionalPosition {
+    Append {
+        at: Position,
+        before: Held,
+        after: Held,
+    },
+    Drop(Position),
+    Check,
+}
+
+impl ChainBook {
+    pub(crate) fn conditional_settled(
+        &self,
+        position: &ConditionalPosition,
+        decision: busbar_contract::abi::sdk::store::conditional::Decision,
+    ) {
+        use busbar_contract::abi::sdk::store::conditional::Decision;
+        match position {
+            ConditionalPosition::Append { at, before, after } => {
+                let mut positions = self.lock();
+                if decision == Decision::ConditionConflict {
+                    positions.shift_remove(at);
+                } else if positions.get(at).is_none_or(|current| current == before) {
+                    // A delayed replay must not regress a hint advanced by a later committed write.
+                    positions.shift_remove(at);
+                    positions.insert(at.clone(), after.clone());
+                    while positions.len() > POSITIONS_CAP {
+                        positions.shift_remove_index(0);
+                    }
+                }
+            }
+            ConditionalPosition::Drop(at) => {
+                self.lock().shift_remove(at);
+            }
+            ConditionalPosition::Check => {}
+        }
+    }
+}
+
+impl ConditionalChain {
+    /// Check and retirement use the original life without reading history. Append resumes only
+    /// when its committed-position hint is missing/stale, then fences the exact tail and slots.
+    pub(crate) fn prepare(
+        &self,
+        rows: &dyn RecordRows,
+        instance: &str,
+        request: &mut Request,
+        book: &ChainBook,
+    ) -> Result<ConditionalPosition, &'static str> {
+        let life_key = life_key(instance, self.schema, &self.scope);
+        let life = parse_life(match &self.life {
+            Expected::Absent => None,
+            Expected::Bytes(bytes) => Some(bytes),
+        })?;
+        request.predicates.push(Predicate {
+            schema: CHAIN_LIFE_SCHEMA.as_str().to_string(),
+            key: life_key.clone(),
+            expected: self.life.clone(),
+        });
+        let at = (
+            Arc::from(instance),
+            self.schema.as_str().to_string(),
+            self.scope.clone(),
+        );
+        let contents = match &self.action {
+            ConditionalChainAction::Check => return Ok(ConditionalPosition::Check),
+            ConditionalChainAction::Drop => {
+                let next_life = life.checked_add(1).ok_or("chain life overflow")?;
+                request.mutations.push(Mutation::Put {
+                    schema: CHAIN_LIFE_SCHEMA.as_str().to_string(),
+                    key: life_key,
+                    value: next_life.to_be_bytes().to_vec(),
+                });
+                let mut scope_prefix = self.scope.as_bytes().to_vec();
+                scope_prefix.push(b'/');
+                let prefix = record_key(instance, &scope_prefix);
+                let exact_key_length = prefix
+                    .len()
+                    .checked_add(20)
+                    .and_then(|length| u64::try_from(length).ok())
+                    .ok_or(WRITE_FAILED)?;
+                // Retire the fixed-width slot domain, including corrupt same-width suffixes.
+                // Valid nested scopes have longer keys and remain untouched.
+                request.mutations.push(Mutation::DeleteRange {
+                    schema: self.schema.as_str().to_string(),
+                    prefix,
+                    exact_key_length,
+                });
+                return Ok(ConditionalPosition::Drop(at));
+            }
+            ConditionalChainAction::Append(contents) => contents,
+        };
+        let cached = book
+            .lock()
+            .get(&at)
+            .filter(|held| held.conditional && held.life == life)
+            .cloned();
+        let before = match cached {
+            Some(held) => held,
+            None => {
+                // This is the existing restart/eviction resume surface. Its store scan ceiling
+                // remains a limitation; steady-state appends do not rescan the whole history.
+                resume_conditional(rows, instance, self.schema, &self.scope, self.framing, life)?
+            }
+        };
+        let mut chain = before.chain.clone();
+        let mut next = match &before.tail {
+            Some((key, body)) => {
+                request.predicates.push(Predicate {
+                    schema: self.schema.as_str().to_string(),
+                    key: key.clone(),
+                    expected: Expected::Bytes(body.to_vec()),
+                });
+                chain_key_parts(key)
+                    .and_then(|(_, seq)| seq.checked_add(1))
+                    .ok_or("conditional chain sequence exhausted")?
+            }
+            None => 1,
+        };
+        let mut after = before.clone();
+        for (index, content) in contents.iter().enumerate() {
+            if index != 0 {
+                next = next
+                    .checked_add(1)
+                    .ok_or("conditional chain sequence exhausted")?;
+            }
+            let key = record_key(instance, &chain_key(self.scope.as_bytes(), next));
+            request.predicates.push(Predicate {
+                schema: self.schema.as_str().to_string(),
+                key: key.clone(),
+                expected: Expected::Absent,
+            });
+            let record = chain.append(
+                &self.scope,
+                StreamInput::new(
+                    content.clone(),
+                    self.framing.framing,
+                    self.framing.digests_scope,
+                ),
+            );
+            let body = encode(&record).ok_or(CHAIN_RECORD_TOO_LARGE)?;
+            RecordBytes::new(body.clone()).map_err(|_| CHAIN_RECORD_TOO_LARGE)?;
+            request.mutations.push(Mutation::Put {
+                schema: self.schema.as_str().to_string(),
+                key: key.clone(),
+                value: body.clone(),
+            });
+            after.tail = Some((key, Arc::from(body)));
+        }
+        after.chain = chain;
+        Ok(ConditionalPosition::Append { at, before, after })
+    }
+}
+
+fn resume_conditional(
+    rows: &dyn RecordRows,
+    instance: &str,
+    schema: RecordSchemaId,
+    scope: &str,
+    framing: ChainFraming,
+    life: u64,
+) -> Result<Held, &'static str> {
+    let unscoped = record_key(instance, &[]).len();
+    let mut stored: Vec<_> = held(rows, instance, schema, scope)?
+        .into_iter()
+        .filter(|(key, _)| {
+            key.get(unscoped..)
+                .and_then(chain_key_parts)
+                .is_some_and(|(actual, _)| actual == scope.as_bytes())
+        })
+        .collect();
+    stored.sort_by(|a, b| a.0.cmp(&b.0));
+    let mut records = Vec::new();
+    for (key, body) in &stored {
+        let record =
+            decode(scope, body.as_slice(), framing).ok_or("malformed conditional chain row")?;
+        if key
+            .get(unscoped..)
+            .and_then(chain_key_parts)
+            .map(|(_, seq)| seq)
+            != Some(record.seq())
+        {
+            return Err("invalid conditional chain sequence");
+        }
+        records.push(record);
+    }
+    let chain = match Chain::from_persisted(&records) {
+        Ok(chain) => chain,
+        Err(brk) => {
+            crate::diagnostics::diag_error!(
+                crate::diagnostics::PLANE_JOURNAL_RESUME_CHAIN_BROKEN,
+                instance = %instance, stream = %schema.as_str(), break_detail = %brk,
+                "a conditional chain resumes from its observed broken tail"
+            );
+            Chain::from_persisted_unverified(&records)
+        }
+    };
+    let tail = stored
+        .last()
+        .map(|(key, body)| (key.clone(), Arc::from(body.as_slice())));
+    Ok(Held {
+        chain,
+        life,
+        tail,
+        conditional: true,
+    })
 }
 
 /// The store's rows under `instance`'s chain `scope` (and any chain whose scope it prefixes).
@@ -465,7 +733,12 @@ fn resume(
             Chain::from_persisted_unverified(&records)
         }
     };
-    Ok((chain, life))
+    Ok(Held {
+        chain,
+        life,
+        tail: None,
+        conditional: false,
+    })
 }
 
 /// The live records among `stored` (`(chain key, body)` of one chain, in key order), decoded and

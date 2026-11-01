@@ -231,3 +231,6 @@ fn a_dropped_transport_is_bound_to_its_own_plugin_log_file() {
         path.display()
     );
 }
+
+#[path = "transport_receive_tests.rs"]
+mod receive_tests;

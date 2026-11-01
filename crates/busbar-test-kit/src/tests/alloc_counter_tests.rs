@@ -1,14 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The counting allocator counts, per thread, and the freed-key witness sees an unzeroed key and
-//! not a zeroised one. This crate's own test binary installs [`super::Counting`] as its
+//! The counting allocator counts per thread. This crate's own test binary installs [`super::Counting`] as its
 //! `#[global_allocator]` (`lib.rs`).
 
-use super::{
-    allocations, allocations_of, allocations_with, freed_unzeroed, last_seen, marked_key, reset,
-    watch, WINDOW,
-};
+use super::{allocations, allocations_of, allocations_with, reset};
 
 /// The counter counts: this crate's own test binary installs [`super::Counting`] as its
 /// `#[global_allocator]` (`lib.rs`), so a heap allocation moves this thread's count and a call
@@ -73,72 +69,115 @@ fn allocations_with_returns_the_value_and_the_count() {
     assert_eq!(n, 1);
 }
 
-/// THE FREED-KEY WITNESS SEES: a marked key freed in a plain `Vec` is counted against its id,
-/// and so is the block a growing `Vec` moved away from; a zeroising holder of the same bytes is
-/// not counted.
 #[test]
-fn the_freed_key_witness_sees_an_unzeroed_key_and_not_a_zeroised_one() {
-    let plain: Vec<u8> = marked_key::<56>(7).to_vec();
-    drop(std::hint::black_box(plain));
-    assert!(freed_unzeroed(7) >= 1, "a key freed unzeroed was not seen");
-
-    let mut grown: Vec<u8> = marked_key::<56>(5).to_vec();
-    grown.extend_from_slice(&[0; 512]);
-    grown.fill(0);
-    drop(std::hint::black_box(grown));
+fn the_payload_probe_checks_only_registered_prefixes_and_records_complete_reads() {
+    // SAFETY: both registered Vecs stay on this thread through destruction.
+    let probe =
+        unsafe { super::InitializedPayloadProbe::start().expect("open the memory observer") };
+    let mut plain = Vec::with_capacity(16384);
+    plain.resize(8193, 0);
+    plain[8192] = 1;
+    let mut wiped = zeroize::Zeroizing::new(Vec::with_capacity(16384));
+    wiped.resize(8193, 1u8);
+    // SAFETY: each slice starts at its allocation base and names only its initialized prefix.
+    unsafe {
+        super::watch_initialized_payload(&plain);
+        super::watch_initialized_payload(&wiped);
+    }
+    drop(Vec::<u8>::with_capacity(32768));
+    drop(plain);
+    drop(wiped);
+    let observations = probe.finish();
     assert!(
-        freed_unzeroed(5) >= 1,
-        "the block a growing Vec moved away from still held the key and was not seen"
+        !observations.reentered,
+        "OS memory reader reentered the allocator"
     );
-
-    let held = zeroize::Zeroizing::new(marked_key::<56>(6).to_vec());
-    drop(std::hint::black_box(held));
-    assert_eq!(freed_unzeroed(6), 0, "a zeroised key was counted");
+    assert_eq!(
+        observations.payloads.len(),
+        2,
+        "unregistered memory is not observed"
+    );
+    for record in &observations.payloads {
+        assert!(
+            record.freed,
+            "registered allocation was not freed: {record:?}"
+        );
+        assert_eq!(record.len, 8193, "spare capacity is excluded");
+        #[cfg(target_os = "linux")]
+        {
+            assert_eq!(record.read_error, None, "OS memory read failed: {record:?}");
+            assert!(
+                record.complete_read,
+                "OS memory read was incomplete: {record:?}"
+            );
+            assert_eq!(record.bytes_read, record.len);
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            assert_eq!(record.read_error, Some(std::io::ErrorKind::Unsupported));
+            assert!(!record.complete_read);
+            assert_eq!(record.bytes_read, 0);
+        }
+    }
+    #[cfg(target_os = "linux")]
+    {
+        assert!(
+            !observations.payloads[0].wiped,
+            "the last initialized byte was not zero"
+        );
+        assert!(
+            observations.payloads[1].wiped,
+            "Zeroizing wipes its initialized payload"
+        );
+    }
+    #[cfg(not(target_os = "linux"))]
+    eprintln!("Registration and frees checked; memory proof requires Linux /proc/self/mem");
 }
 
-/// THE WITNESS SEES A SPLIT COPY: any [`WINDOW`] consecutive bytes of a marked key, wherever they
-/// sit in a freed block (a 16-byte master key split out of the keying material, at an offset
-/// behind other bytes), are counted; fewer than a window's bytes are not.
 #[test]
-fn the_freed_key_witness_sees_any_window_of_a_key_and_not_less() {
-    let key = marked_key::<56>(1);
-    let mut split = vec![0xA5_u8; 40];
-    split.extend_from_slice(&key[20..20 + WINDOW]);
-    drop(std::hint::black_box(split));
+fn growing_a_registered_vec_observes_its_actual_old_allocation() {
+    // SAFETY: the Vec and its initialized prefix stay on this thread through growth and drop.
+    let probe =
+        unsafe { super::InitializedPayloadProbe::start().expect("open the memory observer") };
+    let mut payload = Vec::with_capacity(64);
+    payload.extend_from_slice(b"secret prefix in the old allocation");
+    // SAFETY: this is the allocation's initialized base prefix.
+    unsafe { super::watch_initialized_payload(&payload) };
+    payload.reserve(payload.capacity() + 1);
+    drop(payload);
+    let observations = probe.finish();
     assert!(
-        freed_unzeroed(1) >= 1,
-        "a window of the key behind other bytes was not seen"
+        !observations.reentered,
+        "OS memory reader reentered the allocator"
     );
-    let seen = last_seen(1).expect("the sighting is recorded");
-    assert_eq!((seen.at, seen.nth, seen.len), (40, 0, 56), "{seen:?}");
-    assert!(seen.block >= 56, "{seen:?}");
-
-    let key = marked_key::<56>(2);
-    let short: Vec<u8> = key[30..30 + WINDOW - 1].to_vec();
-    drop(std::hint::black_box(short));
-    assert_eq!(freed_unzeroed(2), 0, "less than a window was counted");
-}
-
-/// THE WITNESS SEES A DERIVED COPY: a secret a test names with [`watch`] (a 12-byte salt, shorter
-/// than a window, is matched whole; a derived 16-byte key at any offset) is counted under the
-/// test's id once freed in a plain `Vec`, and not when its holder zeroises it.
-#[test]
-fn the_freed_key_witness_sees_a_watched_derived_secret() {
-    let salt: [u8; 12] = *b"salt-of-id-3";
-    watch(3, &salt);
-    drop(std::hint::black_box(salt.to_vec()));
-    assert!(freed_unzeroed(3) >= 1, "a watched salt was not seen");
-
-    let derived: [u8; 16] = *b"derived-key-id-4";
-    watch(4, &derived);
-    let held = zeroize::Zeroizing::new(derived.to_vec());
-    drop(std::hint::black_box(held));
-    assert_eq!(freed_unzeroed(4), 0, "a zeroised derived key was counted");
-    let mut plain = vec![7_u8; 3];
-    plain.extend_from_slice(&derived);
-    drop(std::hint::black_box(plain));
+    assert_eq!(
+        observations.payloads.len(),
+        1,
+        "only the old allocation was registered"
+    );
+    let record = &observations.payloads[0];
+    assert!(record.freed, "the actual old allocation was freed");
     assert!(
-        freed_unzeroed(4) >= 1,
-        "a derived key freed unzeroed was not seen"
+        record.reallocated,
+        "growth released the registered allocation"
     );
+    #[cfg(target_os = "linux")]
+    {
+        assert_eq!(record.read_error, None, "OS memory read failed: {record:?}");
+        assert!(
+            record.complete_read,
+            "OS memory read was incomplete: {record:?}"
+        );
+        assert_eq!(record.bytes_read, record.len);
+        assert!(
+            !record.wiped,
+            "the old allocation still contained the secret"
+        );
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        assert_eq!(record.read_error, Some(std::io::ErrorKind::Unsupported));
+        assert!(!record.complete_read);
+        eprintln!("Vec growth and old allocation free checked; memory proof requires Linux /proc/self/mem");
+    }
 }

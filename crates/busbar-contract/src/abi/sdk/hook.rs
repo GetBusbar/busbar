@@ -30,6 +30,7 @@
 //! call is Ready or Pending(wake)).
 
 use std::borrow::Cow;
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::marker::PhantomData;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -52,7 +53,7 @@ use crate::abi::hook::{
 use crate::abi::mechanism::call::{AbiStr, InHead, OutHead, Outcome, BLOB_ABSENT, BLOB_JSON};
 use crate::abi::mechanism::door::{KindTailHead, Statement};
 use crate::abi::mechanism::ticket::Ticket;
-use crate::abi::sdk::exchange::Op;
+use crate::abi::sdk::exchange::{Context, Exchange, Op, Parks};
 use crate::abi::sdk::life::{settings_object, Held, Life, Refreshed, Refusal};
 use crate::abi::sdk::{Instance, Lent, LentList, Out, SafeSlot};
 use crate::hook_wire::{HookStageProjection, OP_NOTIFY};
@@ -60,6 +61,8 @@ use crate::hooks::{
     BudgetBucketState, CallerIdentity, Candidate, PromptProjection, RoutingContext, RoutingRequest,
 };
 use crate::signal::{Signal, SignalBag, SignalValue};
+
+mod projection;
 
 // ── reading the host's views ─────────────────────────────────────────────────────────────────────
 //
@@ -101,8 +104,13 @@ fn signal_value(e: Lent<'_, SignalEntry>) -> Option<SignalValue> {
 fn bag(list: LentList<'_, SignalEntry>) -> SignalBag {
     let mut b = SignalBag::new();
     for e in list.iter() {
-        if let (Some(sig), Some(v)) = (Signal::ALL.get(e.id as usize).copied(), signal_value(e)) {
-            b.push(sig, v);
+        if let Some(sig) = Signal::ALL.get(e.id as usize).copied() {
+            match signal_value(e) {
+                Some(value) => b.push(sig, value),
+                // A malformed recipe must not disappear and fall back to legacy cost data.
+                None if sig == Signal::CandidateRouteCost => b.push(sig, SignalValue::I64(-1)),
+                None => {}
+            }
         }
     }
     b
@@ -397,6 +405,21 @@ impl<'a> Decoded<'a> {
         serde_json::to_value(crate::hook_wire::build(op, &req, &cands, &ctx))
             .unwrap_or_else(|_| serde_json::json!({}))
     }
+
+    /// Append the canonical 1.5.5 projection envelope, with `op` last, directly to `out`.
+    /// Extra top-level fields replace projected fields; an extra `op` is ignored. No projection
+    /// JSON value is built, and borrowed prompt text and signal values are serialized in place.
+    ///
+    /// # Errors
+    /// The JSON serializer's refusal. On failure `out` may contain a partial envelope.
+    pub fn write_projection(
+        &self,
+        op: &str,
+        extra: Option<&serde_json::Map<String, serde_json::Value>>,
+        out: &mut Vec<u8>,
+    ) -> Result<(), serde_json::Error> {
+        projection::write(self, None, false, op, extra, out)
+    }
 }
 
 /// The stage a [`DecodedTap`] observed (the OLD `HookStageProjection`), borrowed.
@@ -494,6 +517,20 @@ impl<'a> DecodedTap<'a> {
             status: s.status,
         });
         serde_json::to_value(wire).unwrap_or_else(|_| serde_json::json!({}))
+    }
+
+    /// Append this tap's canonical projection envelope, with `op` last, directly to `out`.
+    /// Extra fields and serialization failures follow [`Decoded::write_projection`].
+    ///
+    /// # Errors
+    /// The JSON serializer's refusal. On failure `out` may contain a partial envelope.
+    pub fn write_projection(
+        &self,
+        op: &str,
+        extra: Option<&serde_json::Map<String, serde_json::Value>>,
+        out: &mut Vec<u8>,
+    ) -> Result<(), serde_json::Error> {
+        projection::write(&self.request, self.stage.as_ref(), true, op, extra, out)
     }
 }
 
@@ -853,6 +890,68 @@ pub struct HookLife<P> {
     open: PhantomData<fn() -> P>,
 }
 
+/// One operation's hook and exchange travel together. Safe owns this continuation, so cancel,
+/// a fresh entry, a fault and every terminal answer release the original hook along with its IO.
+struct PendingHook {
+    hook: Arc<dyn Hook>,
+    exchange: Option<Exchange>,
+    context: Option<Context>,
+}
+
+/// The running operation's exchange slot. It is local to the crossing; only PendingHook is parked.
+struct HookCall {
+    ticket: Ticket,
+    hook: Arc<dyn Hook>,
+    exchange: RefCell<Option<Exchange>>,
+    context: RefCell<Option<Context>>,
+    resuming: bool,
+}
+
+impl HookCall {
+    fn new<P: HookOpen>(life: &HookLife<P>, i: &Instance<'_, Held<HookLife<P>>>) -> Self {
+        let pending = i.resume_value::<PendingHook>();
+        let resuming = pending.is_some();
+        let pending = pending.unwrap_or_else(|| PendingHook {
+            hook: life.hook(),
+            exchange: None,
+            context: None,
+        });
+        Self {
+            ticket: i.ticket(),
+            hook: pending.hook,
+            exchange: RefCell::new(pending.exchange),
+            context: RefCell::new(pending.context),
+            resuming,
+        }
+    }
+
+    fn park<P: HookOpen>(self, i: &Instance<'_, Held<HookLife<P>>>) {
+        i.park(PendingHook {
+            hook: self.hook,
+            exchange: self.exchange.into_inner(),
+            context: self.context.into_inner(),
+        });
+    }
+}
+
+impl Parks for HookCall {
+    fn context(&self) -> Option<&RefCell<Option<Context>>> {
+        Some(&self.context)
+    }
+    fn resuming(&self) -> bool {
+        self.resuming
+    }
+    fn ticket(&self) -> Ticket {
+        self.ticket
+    }
+    fn park(&self, exchange: Exchange) {
+        self.exchange.replace(Some(exchange));
+    }
+    fn resume(&self) -> Option<Box<Exchange>> {
+        self.exchange.take().map(Box::new)
+    }
+}
+
 /// A verdict a `decide` / `transform` lowered and answered SHORT (its host buffers too small).
 #[derive(Debug)]
 enum Lowered {
@@ -963,7 +1062,7 @@ impl<P: HookOpen> Life for HookLife<P> {
         })
     }
 
-    /// Re-open the hook over the new settings; the old one serves until the swap.
+    /// Re-open the hook over the new settings; pending operations retain their original hook.
     fn refresh(
         &self,
         settings: &[u8],
@@ -971,7 +1070,11 @@ impl<P: HookOpen> Life for HookLife<P> {
         generation: u64,
     ) -> Result<Refreshed, Refusal> {
         let hook = opened::<P>(settings, secrets, generation)?;
-        *self.hook.write().unwrap_or_else(PoisonError::into_inner) = hook;
+        let old = std::mem::replace(
+            &mut *self.hook.write().unwrap_or_else(PoisonError::into_inner),
+            hook,
+        );
+        drop(old);
         Ok(Refreshed::default())
     }
 }
@@ -1019,8 +1122,10 @@ hook_op!(
         let v = match life.short.take(i.ticket(), true) {
             Some(Lowered::Decide(v)) => v,
             _ => {
-                let op = Op::new(&i, held.host());
-                let Poll::Ready(v) = life.hook().decide(&Decoded::of(input), &op) else {
+                let call = HookCall::new(life, &i);
+                let op = Op::over(&call, held.host());
+                let Poll::Ready(v) = call.hook.decide(&Decoded::of(input), &op) else {
+                    call.park(&i);
                     return Outcome::Pending;
                 };
                 v
@@ -1048,8 +1153,10 @@ hook_op!(
         let v = match life.short.take(i.ticket(), false) {
             Some(Lowered::Transform(v)) => v,
             _ => {
-                let op = Op::new(&i, held.host());
-                let Poll::Ready(v) = life.hook().transform(&Decoded::of(input), &op) else {
+                let call = HookCall::new(life, &i);
+                let op = Op::over(&call, held.host());
+                let Poll::Ready(v) = call.hook.transform(&Decoded::of(input), &op) else {
+                    call.park(&i);
                     return Outcome::Pending;
                 };
                 v
@@ -1073,10 +1180,14 @@ hook_op!(
         if check_notify_in(&input).is_err() {
             return Outcome::Fault;
         }
-        let op = Op::new(&i, held.host());
-        match held.life().hook().notify(&DecodedTap::of(input), &op) {
+        let call = HookCall::new(held.life(), &i);
+        let op = Op::over(&call, held.host());
+        match call.hook.notify(&DecodedTap::of(input), &op) {
             Poll::Ready(()) => Outcome::Ready,
-            Poll::Pending => Outcome::Pending,
+            Poll::Pending => {
+                call.park(&i);
+                Outcome::Pending
+            }
         }
     }
 );

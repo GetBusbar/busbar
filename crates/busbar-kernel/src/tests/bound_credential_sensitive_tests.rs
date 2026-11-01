@@ -12,7 +12,9 @@ use busbar_contract::auth_calls::{AuthField, Fielding, OutboundServing};
 const VALUE: &[u8] = b"Bearer sk-bound-s3cr3t";
 
 /// One outbound instance whose `fields` answers a single credential field, on the spot.
-struct Presenting;
+struct Presenting {
+    require_secure: bool,
+}
 
 impl OutboundAuth for Presenting {
     fn open_outbound(&self, _: &str, _: &[u8], _: &serde_json::Value) -> Result<u64, String> {
@@ -23,6 +25,7 @@ impl OutboundAuth for Presenting {
             name: b"authorization".to_vec(),
             value: Secret::new(VALUE.to_vec()),
             sensitive: true,
+            require_secure: self.require_secure,
         }]))
     }
     fn fields(&self, _: u64, _: FieldsRequest, _: u64) -> Box<dyn Fielding> {
@@ -56,7 +59,9 @@ impl AuthAxis for Serving {
     }
     fn serving(&self, _: &str, _: &serde_json::Value) -> Result<Option<OutboundServing>, String> {
         Ok(Some(OutboundServing {
-            auth: Arc::new(Presenting),
+            auth: Arc::new(Presenting {
+                require_secure: false,
+            }),
             flags: 0,
             points: AuthPoints::default().0,
         }))
@@ -102,4 +107,26 @@ fn a_header_built_from_an_auth_plugin_field_is_sensitive() {
     let prebuilt = prebuild_auth(&bound(), "sk-bound-s3cr3t", "upstream.example.test")
         .expect("a lane-constant binding prebuilds");
     assert!(prebuilt["authorization"].is_sensitive());
+}
+
+#[test]
+fn a_legacy_header_only_consumer_never_erases_required_connection_security() {
+    let bound = BoundCredential {
+        auth: Arc::new(Presenting {
+            require_secure: true,
+        }),
+        handle: 7,
+        points: AuthPoints::default(),
+        uses_key: true,
+        statics: &[],
+        headers: Vec::new(),
+    };
+    let ctx = SigningContext {
+        host: "upstream.example.test",
+        canonical_uri: "",
+        body: &[],
+        timestamp_epoch: 0,
+        upstream_creds: UpstreamCreds::Own,
+    };
+    assert!(bound.headers_for("key", &ctx).is_empty());
 }

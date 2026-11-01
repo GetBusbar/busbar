@@ -37,11 +37,31 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
+use busbar_contract::abi::sdk::store::conditional;
 use busbar_contract::ids::RecordSchemaId;
 use busbar_contract::kinds::{RecordBytes, StoreError};
+use busbar_contract::store_calls::StoreFailure;
 
 /// The store kind's typed records.
 pub trait RecordRows: Send + Sync {
+    /// Whether atomic conditional record publication is negotiated with the configured store.
+    fn supports_record_transaction(&self) -> bool {
+        false
+    }
+
+    /// Apply this immutable request, or return a definitive condition conflict.
+    ///
+    /// # Errors
+    /// Failed and faulted calls may already have committed: replay the identical request.
+    fn record_transaction(
+        &self,
+        _request: &conditional::Request,
+    ) -> Result<conditional::Decision, StoreFailure> {
+        Err(StoreFailure::Refused(
+            "record transactions are unsupported".into(),
+        ))
+    }
+
     /// Write one record.
     ///
     /// # Errors
@@ -111,6 +131,17 @@ fn awaited<T>(call: busbar_contract::store_calls::StoreCall<'_, T>) -> Result<T,
 }
 
 impl RecordRows for StoreRows {
+    fn supports_record_transaction(&self) -> bool {
+        self.0.supports_record_transaction()
+    }
+
+    fn record_transaction(
+        &self,
+        request: &conditional::Request,
+    ) -> Result<conditional::Decision, StoreFailure> {
+        futures::executor::block_on(self.0.record_transaction(request))
+    }
+
     fn record_put(
         &self,
         schema: RecordSchemaId,
@@ -302,10 +333,156 @@ pub struct Write {
     pub chain: Option<crate::host_chains::ChainFraming>,
 }
 
+pub use busbar_contract::abi::sdk::plane::conditional::{
+    ChainMutation, ConditionalCandidate, ConditionalFailure, ConditionalResult, RecordMutation,
+    RecordPredicate,
+};
+
+/// Callback for the candidate result; Indeterminate never authorizes local publication.
+pub type ConditionalAcked = Box<dyn FnOnce(ConditionalResult) + Send>;
+
+/// The exact optional chain life observed before reading a candidate's record preimages.
+pub type ChainLifeAcked = Box<dyn FnOnce(Result<conditional::Expected, &'static str>) + Send>;
+
+pub(crate) struct ConditionalOwed {
+    correlation: u64,
+    acked: Option<ConditionalAcked>,
+}
+
+impl ConditionalOwed {
+    pub(crate) fn new(correlation: u64, acked: ConditionalAcked) -> Self {
+        Self {
+            correlation,
+            acked: Some(acked),
+        }
+    }
+
+    fn answer(mut self, decision: Result<conditional::Decision, ConditionalFailure>) {
+        if let Some(acked) = self.acked.take() {
+            acked(ConditionalResult {
+                correlation: self.correlation,
+                decision,
+            });
+        }
+    }
+}
+
+impl std::fmt::Debug for ConditionalOwed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ConditionalOwed")
+            .field("correlation", &self.correlation)
+            .finish()
+    }
+}
+
+/// Host-owned admission. The exact prepared request survives caller cancellation and reload.
+#[derive(Debug)]
+pub(crate) struct ConditionalWrite {
+    pub instance: Arc<str>,
+    pub request: conditional::Request,
+    pub chains: Vec<crate::host_chains::ConditionalChain>,
+    pub owed: ConditionalOwed,
+    _unit: Option<Arc<crate::host_units::UnitRecord>>,
+    prepared: bool,
+    submitted: Option<std::time::Instant>,
+    uncertain: bool,
+    positions: Vec<crate::host_chains::ConditionalPosition>,
+}
+
+impl ConditionalWrite {
+    pub(crate) fn new(
+        instance: Arc<str>,
+        request: conditional::Request,
+        chains: Vec<crate::host_chains::ConditionalChain>,
+        owed: ConditionalOwed,
+        unit: Option<Arc<crate::host_units::UnitRecord>>,
+    ) -> Self {
+        Self {
+            instance,
+            request,
+            chains,
+            owed,
+            _unit: unit,
+            prepared: false,
+            submitted: None,
+            uncertain: false,
+            positions: Vec::new(),
+        }
+    }
+
+    fn attempt(
+        mut self,
+        rows: &dyn RecordRows,
+        book: &crate::host_chains::ChainBook,
+    ) -> Option<Self> {
+        if !self.prepared {
+            // Preparation has no effects; never expose this candidate through PendingRecords.
+            for chain in &self.chains {
+                match chain.prepare(rows, &self.instance, &mut self.request, book) {
+                    Ok(position) => self.positions.push(position),
+                    Err(why) => {
+                        self.owed.answer(Err(ConditionalFailure::Refused(why)));
+                        return None;
+                    }
+                }
+            }
+            if self.request.encode().is_err() {
+                self.owed.answer(Err(ConditionalFailure::Refused(
+                    "invalid record transaction",
+                )));
+                return None;
+            }
+            self.prepared = true;
+        }
+        let first = *self.submitted.get_or_insert_with(std::time::Instant::now);
+        if first.elapsed().as_secs() >= busbar_contract::abi::store::OP_ID_RETENTION_SECS {
+            // Report uncertainty without relinquishing custody or replaying an expired identity.
+            if let Some(acked) = self.owed.acked.take() {
+                acked(ConditionalResult {
+                    correlation: self.owed.correlation,
+                    decision: Err(ConditionalFailure::Indeterminate),
+                });
+            }
+            return Some(self);
+        }
+        match rows.record_transaction(&self.request) {
+            Ok(decision) => {
+                for position in &self.positions {
+                    book.conditional_settled(position, decision);
+                }
+                self.owed.answer(Ok(decision));
+                None
+            }
+            Err(StoreFailure::Conflict) => {
+                self.owed.answer(Err(ConditionalFailure::OpIdConflict));
+                None
+            }
+            Err(StoreFailure::Refused(_)) if self.uncertain => Some(self),
+            Err(StoreFailure::Refused(_)) => {
+                self.owed
+                    .answer(Err(ConditionalFailure::Refused(WRITE_FAILED)));
+                None
+            }
+            Err(StoreFailure::Failed(_) | StoreFailure::Fault(_)) => {
+                self.uncertain = true;
+                Some(self)
+            }
+            Err(StoreFailure::Overloaded) => Some(self),
+        }
+    }
+}
+
+#[derive(Debug)]
+enum QueuedWrite {
+    Ordinary(Write),
+    Conditional(ConditionalWrite),
+}
+
 #[derive(Debug, Default)]
 struct Queue {
-    writes: Vec<Write>,
+    writes: Vec<QueuedWrite>,
     flushing: bool,
+    in_flight: usize,
 }
 
 /// THE WRITE-BEHIND BATCHER of record writes: at most one flush runs at a time.
@@ -324,10 +501,19 @@ impl WriteBehind {
     /// (the caller starts one), `None` when [`QUEUE_CAP`] writes already wait.
     pub fn push_with(&self, make: impl FnOnce() -> Write) -> Option<bool> {
         let mut q = self.lock();
-        if q.writes.len() >= QUEUE_CAP {
+        if q.writes.len() + q.in_flight >= QUEUE_CAP {
             return None;
         }
-        q.writes.push(make());
+        q.writes.push(QueuedWrite::Ordinary(make()));
+        Some(!std::mem::replace(&mut q.flushing, true))
+    }
+
+    pub(crate) fn push_conditional(&self, write: ConditionalWrite) -> Option<bool> {
+        let mut q = self.lock();
+        if q.writes.len() + q.in_flight >= QUEUE_CAP {
+            return None;
+        }
+        q.writes.push(QueuedWrite::Conditional(write));
         Some(!std::mem::replace(&mut q.flushing, true))
     }
 
@@ -360,17 +546,29 @@ impl WriteBehind {
         chains: &crate::host_chains::ChainBook,
     ) {
         loop {
+            let mut unresolved = Vec::new();
             let batch = {
                 let mut q = self.lock();
                 let n = q.writes.len().min(BATCH_CAP);
-                let batch: Vec<Write> = q.writes.drain(..n).collect();
+                let batch: Vec<QueuedWrite> = q.writes.drain(..n).collect();
+                q.in_flight += batch.len();
                 if batch.is_empty() {
                     q.flushing = false;
                     return;
                 }
                 batch
             };
-            for w in batch {
+            let batch_len = batch.len();
+            for queued in batch {
+                let w = match queued {
+                    QueuedWrite::Ordinary(w) => w,
+                    QueuedWrite::Conditional(w) => {
+                        if let Some(write) = w.attempt(rows, chains) {
+                            unresolved.push(QueuedWrite::Conditional(write));
+                        }
+                        continue;
+                    }
+                };
                 if let Some(framing) = w.chain {
                     let scope = String::from_utf8_lossy(&w.key);
                     let took = if w.value.as_slice().is_empty() {
@@ -393,6 +591,15 @@ impl WriteBehind {
                 pending.acked(&w.instance, w.schema.as_str(), &w.key, w.seq);
                 w.owed.answer(took.map_err(|_| WRITE_FAILED));
             }
+            let mut q = self.lock();
+            q.in_flight -= batch_len;
+            if !unresolved.is_empty() {
+                // Retry on the existing cadence, behind other waiting work. Active candidates
+                // occupy the existing queue capacity until their definitive completion.
+                q.writes.append(&mut unresolved);
+                q.flushing = false;
+                return;
+            }
         }
     }
 }
@@ -400,3 +607,7 @@ impl WriteBehind {
 #[cfg(test)]
 #[path = "tests/host_records_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "tests/host_conditional_records_tests.rs"]
+mod conditional_tests;

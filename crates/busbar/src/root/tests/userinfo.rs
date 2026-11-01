@@ -94,6 +94,7 @@ impl OutboundAuth for Answers {
             name: self.0.to_vec(),
             value: Secret::new(b"k".to_vec()),
             sensitive: true,
+            require_secure: false,
         }]))
     }
     fn fields(&self, h: u64, r: FieldsRequest, _: u64) -> Box<dyn Fielding> {

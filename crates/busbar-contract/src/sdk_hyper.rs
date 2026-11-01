@@ -133,7 +133,11 @@ macro_rules! hyper_io {
                     let mut tasks = std::mem::take(&mut *self.0.lock().expect("exec"));
                     tasks.retain_mut(|t| t.as_mut().poll(cx).is_pending());
                     let mut q = self.0.lock().expect("exec");
-                    // Tasks spawned during the pass run on the next round.
+                    // Children queued during this pass have not been polled. Schedule their
+                    // next round even if the parent completed without waking the drive.
+                    if !q.is_empty() {
+                        cx.waker().wake_by_ref();
+                    }
                     tasks.append(&mut q);
                     *q = tasks;
                 }
@@ -340,6 +344,13 @@ macro_rules! hyper_io {
                     let mut p = self.pipe.lock().expect("pipe");
                     p.rx.extend(bytes);
                     p.eof |= end;
+                }
+
+                /// Carrier input not yet consumed by the protocol machine. Report after driving
+                /// it so the host can include this queue in its existing receive backpressure.
+                #[must_use]
+                pub fn pending_input(&self) -> usize {
+                    self.pipe.lock().expect("pipe").rx.len()
                 }
 
                 /// Take up to `cap` wire bytes owed to the far side.

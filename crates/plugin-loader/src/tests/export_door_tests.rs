@@ -50,6 +50,43 @@ fn the_tail_is_read_at_bind() {
 }
 
 #[test]
+fn listener_policy_is_copied_from_the_statement_into_the_opened_sink() {
+    let (plugin, dispatcher) = linked();
+    let facts = plugin.context::<ExportFacts>().unwrap();
+    assert_eq!(facts.public_routes, ["/metrics", "/metrics/hooks"]);
+    assert_eq!(facts.persistent_routes, ["/metrics/hooks"]);
+    let sink = ExportInstance::open(plugin, dispatcher, br#"{"buffer_seconds":60}"#).unwrap();
+    assert_eq!(sink.public_routes(), ["/metrics", "/metrics/hooks"]);
+    assert_eq!(sink.persistent_routes(), ["/metrics/hooks"]);
+}
+
+#[test]
+fn listener_policy_rejects_undeclared_and_non_public_persistent_paths() {
+    use busbar_contract::abi::mechanism::extensions::{encode, statement_blob};
+    for (public, persistent) in [
+        (br#"["/not-declared"]"#.as_slice(), br#"[]"#.as_slice()),
+        (br#"[]"#.as_slice(), br#"["/metrics/hooks"]"#.as_slice()),
+        (
+            br#"["/metrics","/metrics"]"#.as_slice(),
+            br#"[]"#.as_slice(),
+        ),
+        (br#"false"#.as_slice(), br#"[]"#.as_slice()),
+    ] {
+        let bytes = Box::leak(
+            encode(&[
+                ("listener.public_routes", public),
+                ("listener.persistent_routes", persistent),
+            ])
+            .into_boxed_slice(),
+        );
+        // SAFETY: the fixture door's Statement lives for the process.
+        let mut statement = unsafe { *SCRAPE_DOOR().statement() };
+        statement.extensions = statement_blob(bytes);
+        assert!(<Export as crate::dispatch::Kind>::context(&statement).is_err());
+    }
+}
+
+#[test]
 fn settings_the_sink_refuses_never_open() {
     let (plugin, dispatcher) = linked();
     let refused = ExportInstance::open(plugin, dispatcher, br#"{"bogus":1}"#)

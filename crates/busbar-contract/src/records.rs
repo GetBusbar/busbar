@@ -1248,6 +1248,25 @@ pub trait RecordStore: Send + Sync + 'static {
         ))
     }
 
+    /// Update only the envelope of an existing, unrevoked Recoverable credential, atomically
+    /// comparing the complete stored row (metadata including revision, and envelope) to `expected`.
+    /// The owning key must still exist and be untombstoned. Preserve every metadata field except
+    /// the store-managed revision; never insert, reclaim a slot, or resurrect a deleted row.
+    /// Returns true only after committing the replacement. A mismatch or identical replacement
+    /// returns false without any mutation or revision increment. An error may mean a lost commit
+    /// reply: reconcile by reading the row, never fall back to ordinary PUT or blindly replay.
+    /// The trusted host establishes plaintext continuity before requesting this maintenance write.
+    /// Stores without this operation refuse it; a read-then-write fallback cannot implement CAS.
+    fn rewrap_credential(
+        &self,
+        _expected: &CredentialSecret,
+        _replacement: &str,
+    ) -> RecordStoreResult<bool> {
+        Err(RecordStoreError(
+            "this Store does not support credential rewrap CAS".into(),
+        ))
+    }
+
     /// ATOMIC key+credential mint. Persist the bearer `VirtualKey` row AND its paired credential row
     /// together or not at all. A real transactional backend overrides this to wrap both writes in one
     /// transaction. DEFAULT fallback: sequential writes (for test doubles with no transaction).

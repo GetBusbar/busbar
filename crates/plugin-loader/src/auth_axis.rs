@@ -280,6 +280,31 @@ impl AuthRows {
         self.stated(row).map(|f| f.carriers).unwrap_or_default()
     }
 
+    /// Ordinary inbound verifier names, read without binding or opening its door.
+    pub fn inbound_style(&self, module: &str) -> Option<busbar_contract::auth_calls::InboundStyle> {
+        use busbar_contract::abi::auth::{CAP_INBOUND, FACT_OPERATOR};
+        let row = self.row(module)?;
+        let facts = self.stated(row)?;
+        if facts.caps & CAP_INBOUND == 0
+            || facts.facts & (FACT_OPERATOR | FACT_READS_CREDENTIALS) != 0
+        {
+            return None;
+        }
+        let mut names = vec![
+            row.manifest.name.clone(),
+            row.key().to_string(),
+            row.manifest.alias.clone(),
+        ];
+        names.extend(stated_aliases(row));
+        names.sort();
+        names.dedup();
+        Some(busbar_contract::auth_calls::InboundStyle {
+            module: row.manifest.name.clone(),
+            names,
+            points: facts.inbound_points,
+        })
+    }
+
     /// THE HOST'S DEFAULT INBOUND STYLE: the carriers of the one auth row whose Statement states
     /// `FACT_DEFAULT_INBOUND_STYLE` (a row whose door will not load states nothing here), linked
     /// rows first, then the plugins directory's; none when no row states it.
@@ -457,6 +482,10 @@ impl busbar_contract::auth_calls::AuthAxis for AuthRows {
 
     fn carriers(&self, module: &str) -> Vec<String> {
         AuthRows::carriers(self, module)
+    }
+
+    fn inbound_style(&self, module: &str) -> Option<busbar_contract::auth_calls::InboundStyle> {
+        AuthRows::inbound_style(self, module)
     }
 
     fn default_inbound_style(&self) -> Result<Vec<String>, String> {

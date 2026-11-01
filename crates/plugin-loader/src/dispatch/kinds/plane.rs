@@ -143,6 +143,8 @@ pub struct ServedFacts {
     /// The tail's billable classes, in order: a unit count's `class` indexes them (the money
     /// steps ledger each count under its class name, THE DESIGN §7).
     pub billable_classes: Vec<&'static str>,
+    /// The validated routing-cost terms: billable-class index and default expected units.
+    pub route_cost: Vec<(u32, f64)>,
     /// The tail's fee units, each also one of [`Self::billable_classes`]: the plane's report of
     /// whether a unit incurred its fee (THE DESIGN §7, "the plane reports ... whether a fee unit was
     /// incurred").
@@ -307,6 +309,37 @@ fn tail_facts_read(st: &Statement) -> Result<PlaneFacts, String> {
     .map_err(|f| format!("the plane tail breaks {:?} at {}", f.rule, f.field))?;
     let mut decl = declared(&tail);
     decl.ticket_prefix = ticket_prefix(st)?;
+    // Optional capability detection never lends an oversized or unreadable legacy blob.
+    let extensions = if st.extensions.len
+        > busbar_contract::abi::mechanism::check::HARD_MAX_BYTES as usize
+        || (st.extensions.len != 0 && st.extensions.ptr.is_null())
+    {
+        &[][..]
+    } else {
+        // SAFETY: the raw length is bounded above; Statement bytes live for the loaded instance.
+        unsafe { crate::dispatch::validate::lent(st.extensions.ptr, st.extensions.len) }
+            .ok_or("invalid plane Statement extensions")?
+    };
+    use busbar_contract::abi::sdk::plane::conditional;
+    if conditional::present(extensions) {
+        if st.extensions.fmt != busbar_contract::abi::mechanism::call::BLOB_OCTETS
+            || st.extensions.flags != 0
+        {
+            return Err("invalid conditional record capability blob".into());
+        }
+        decl.conditional_records = match conditional::entry(extensions, conditional::CAPABILITY)? {
+            Some(b"1") => true,
+            _ => return Err("invalid conditional record capability".into()),
+        };
+        decl.conditional_record_kinds = conditional::required_kinds(extensions)?;
+        if decl
+            .conditional_record_kinds
+            .iter()
+            .any(|&k| k as usize >= decl.record_kinds.len())
+        {
+            return Err("conditional record kind is not declared".into());
+        }
+    }
     Ok(PlaneFacts {
         bounds: Bounds::of(&tail),
         refusal_statuses,
@@ -364,6 +397,10 @@ fn tail_facts_read(st: &Statement) -> Result<PlaneFacts, String> {
             billable_classes: listed(tail.billable_classes, tail.billable_classes_len)
                 .into_iter()
                 .map(|c| kept(c.class))
+                .collect(),
+            route_cost: listed(tail.route_cost, tail.route_cost_len)
+                .into_iter()
+                .map(|term| (term.class, term.weight))
                 .collect(),
             fee_units: listed(tail.fee_units, tail.fee_units_len)
                 .into_iter()
@@ -440,6 +477,9 @@ fn stated_provider_keys(
 ) -> Result<Option<busbar_contract::provider_keys::ProviderKeys>, String> {
     if ext.ptr.is_null() || ext.len == 0 {
         return Ok(None);
+    }
+    if ext.len > busbar_contract::abi::mechanism::check::HARD_MAX_BYTES as usize {
+        return Err("the Statement's extensions are longer than any blob may be".into());
     }
     // SAFETY: a non-NULL Statement blob is `len` bytes of `'static` plugin data, read here while the
     // plugin is loaded, its length capped before the slice is formed; the descriptor is decoded
@@ -563,6 +603,8 @@ fn declared(t: &PlaneTail) -> InstanceDecl {
         })
         .collect();
     InstanceDecl {
+        conditional_records: false,
+        conditional_record_kinds: Vec::new(),
         label: Arc::from(""),
         record_kinds: words(t.record_kinds, t.record_kinds_len),
         signing: (!domain.is_empty() && !prefix.is_empty()).then_some((domain, prefix)),
@@ -1906,3 +1948,54 @@ pub(crate) fn copy_snapshot(p: *const PlaneSnapshot, dialects: u64) -> Option<Ow
 #[cfg(test)]
 #[path = "../../tests/plane_probe_tests.rs"]
 mod probe_tests;
+
+#[cfg(test)]
+#[test]
+fn conditional_statement_requires_its_own_format_and_preserves_unrelated_extensions() {
+    use busbar_contract::abi::{
+        mechanism::call::{BLOB_JSON, BLOB_OCTETS, BLOB_SECRET},
+        sdk::plane::conditional,
+    };
+    // SAFETY: the fixture door's Statement is process-static, copied while its owner is live.
+    let mut statement = unsafe { *crate::plane_door_plugin::door().parts().statement };
+    let capability = conditional::statement(&[]).unwrap();
+    statement.extensions = Blob {
+        ptr: capability.as_ptr(),
+        len: capability.len(),
+        fmt: BLOB_OCTETS,
+        flags: 0,
+    };
+    assert!(tail_facts(&statement).unwrap().declared.conditional_records);
+    statement.extensions.fmt = BLOB_JSON;
+    assert!(tail_facts(&statement).is_err());
+    statement.extensions.fmt = BLOB_OCTETS;
+    statement.extensions.flags = BLOB_SECRET;
+    assert!(tail_facts(&statement).is_err());
+    let unrelated = busbar_contract::abi::mechanism::extensions::encode(&[("unrelated", b"kept")]);
+    statement.extensions = Blob {
+        ptr: unrelated.as_ptr(),
+        len: unrelated.len(),
+        fmt: BLOB_JSON,
+        flags: BLOB_SECRET,
+    };
+    assert!(!tail_facts(&statement).unwrap().declared.conditional_records);
+    statement.extensions = Blob {
+        ptr: std::ptr::null(),
+        len: 1,
+        fmt: BLOB_OCTETS,
+        flags: 0,
+    };
+    assert!(!tail_facts(&statement).unwrap().declared.conditional_records);
+}
+
+#[cfg(test)]
+#[test]
+fn provider_key_statement_bound_precedes_every_slice() {
+    let oversized = Blob {
+        ptr: std::ptr::NonNull::<u8>::dangling().as_ptr(),
+        len: busbar_contract::abi::mechanism::check::HARD_MAX_BYTES as usize + 1,
+        fmt: busbar_contract::abi::mechanism::call::BLOB_OCTETS,
+        flags: 0,
+    };
+    assert!(stated_provider_keys(oversized).is_err());
+}

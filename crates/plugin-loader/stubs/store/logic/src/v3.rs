@@ -22,7 +22,9 @@ use busbar_contract::abi::sdk::conn::Host;
 use busbar_contract::abi::sdk::store::{OpRefused, OpResult, Scanned, SyncStore, Tail};
 use busbar_contract::abi::store::{OpId, OP_ID_RETENTION_SECS};
 use busbar_contract::kinds::RecordBytes;
-use busbar_contract::records::{MeteringDelta, PlaneRecordRef, RecordStore, UsageDelta};
+use busbar_contract::records::{
+    MeteringDelta, PlaneRecordRef, RecordStore, RecordStoreResult, UsageDelta,
+};
 
 use crate::MemoryStore;
 
@@ -223,7 +225,30 @@ impl SyncStore for MemoryStore {
         Ok(())
     }
 
-    fn open(_settings: &[u8], _host: Option<Host>) -> Result<Self, String> {
+    fn open(settings: &[u8], _host: Option<Host>) -> Result<Self, String> {
+        let settings: serde_json::Value = serde_json::from_slice(settings).unwrap_or_default();
+        if settings
+            .get("test_require_secret")
+            .and_then(|v| v.as_bool())
+            == Some(true)
+        {
+            return Err("the fixture requires its lent secret".into());
+        }
+        Ok(Self::new())
+    }
+
+    fn open_with_secrets(
+        settings: &[u8],
+        secrets: &[&[u8]],
+        host: Option<Host>,
+    ) -> Result<Self, String> {
+        let read: serde_json::Value = serde_json::from_slice(settings).unwrap_or_default();
+        if read.get("test_require_secret").and_then(|v| v.as_bool()) != Some(true) {
+            return <Self as SyncStore>::open(settings, host);
+        }
+        if read.get("password").is_some() || secrets != [b"hunter2".as_slice()] {
+            return Err("the fixture did not receive its declared secret separately".into());
+        }
         Ok(Self::new())
     }
 
@@ -249,5 +274,12 @@ impl SyncStore for MemoryStore {
 
     fn add_metering_batch(&self, op: OpId, deltas: &[MeteringDelta]) -> OpResult<()> {
         self.v3_add_metering_batch(op, deltas)
+    }
+
+    fn purge_usage_before(&self, before: u64) -> RecordStoreResult<u64> {
+        let mut usage = self.usage();
+        let was = usage.len();
+        usage.retain(|(_, window_start), _| *window_start == 0 || *window_start >= before);
+        Ok((was - usage.len()) as u64)
     }
 }

@@ -28,9 +28,9 @@ use busbar_contract::abi::mechanism::KindCode;
 use busbar_contract::abi::transport::check::{
     check_accept, check_arrival, check_begin_scheme, check_binding, check_cancel,
     check_claim_facts, check_claims, check_composes_over, check_emit_body_len, check_fault_cover,
-    check_fault_rows, check_framer, check_framer_fields, check_head_slots, check_io, check_listen,
-    check_locate, check_offered_points, check_settings, check_status_rows, check_tail,
-    check_upgrades_to,
+    check_fault_rows, check_framer, check_framer_fields, check_head_slots_with_pieces, check_io,
+    check_listen, check_locate, check_offered_points, check_settings, check_status_rows,
+    check_tail, check_upgrades_to,
 };
 use busbar_contract::abi::transport::{
     self, slot, AcceptIn, AcceptOut, AdoptIn, ArrivalIn, ArrivalOut, BeginIn, Claim, ConnIn,
@@ -532,5 +532,5 @@ fn framer(a: &Answer, sink: FramerSink) -> Result<(), Fault> {
             "framer.heads_len",
         )
     }?;
-    check_head_slots(o, heads, heads_cap)
+    check_head_slots_with_pieces(o, heads, heads_cap, pieces)
 }

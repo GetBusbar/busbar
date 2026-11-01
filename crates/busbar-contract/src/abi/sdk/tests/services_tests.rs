@@ -184,6 +184,128 @@ fn no_table_is_no_services() {
     assert!(Services::of(&tables).is_none());
 }
 
+fn snapshot_answer(input: *const c_void, out: *mut ServiceOut, bad_pointer: bool) -> RawOutcome {
+    use crate::abi::export::{ScrapeFamily, SCRAPE_KIND_GAUGE};
+    // SAFETY: the snapshot wrapper lends a live SnapshotReadIn and a writable service reply.
+    let i = unsafe { input.cast::<SnapshotReadIn>().read_unaligned() };
+    let name: &[u8] = if i.scope == crate::abi::host::service::SNAPSHOT_SCOPE_WHOLE {
+        b"a_larger_snapshot_family"
+    } else {
+        b"x"
+    };
+    let used = size_of::<ScrapeFamily>() + name.len();
+    if i.into.cap < used {
+        // SAFETY: the caller lends a live service reply.
+        unsafe { (*out).needed_bytes = used as u64 };
+        return answer(out, Outcome::Failed, 0, 0, 0);
+    }
+    let name_ptr = if bad_pointer {
+        // SAFETY: used is within the allocation, but outside the returned layout's text range.
+        unsafe { i.into.buf.add(used) }
+    } else {
+        // SAFETY: the name follows the family inside the adequately sized caller allocation.
+        unsafe { i.into.buf.add(size_of::<ScrapeFamily>()) }
+    };
+    let family = ScrapeFamily {
+        name: AbiStr {
+            ptr: name_ptr,
+            len: name.len(),
+        },
+        help: AbiStr::ZERO,
+        unit: AbiStr::ZERO,
+        kind: SCRAPE_KIND_GAUGE,
+        _reserved: [0; 7],
+        samples: std::ptr::null(),
+        samples_len: 0,
+    };
+    // SAFETY: the wrapper lends an aligned u64 buffer with room for the family and its name.
+    unsafe {
+        i.into.buf.cast::<ScrapeFamily>().write(family);
+        if !bad_pointer {
+            std::ptr::copy_nonoverlapping(name.as_ptr(), name_ptr, name.len());
+        }
+    }
+    answer(out, Outcome::Ready, 1, used as u64, 0)
+}
+
+extern "C" fn snapshots(_ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
+    snapshot_answer(input, out, false)
+}
+
+extern "C" fn snapshot_bad_pointer(
+    _ctx: HostCtx,
+    input: *const c_void,
+    out: *mut ServiceOut,
+) -> RawOutcome {
+    snapshot_answer(input, out, true)
+}
+
+extern "C" fn snapshot_not_ready(
+    _ctx: HostCtx,
+    _input: *const c_void,
+    out: *mut ServiceOut,
+) -> RawOutcome {
+    answer(out, Outcome::Failed, 0, 0, 0)
+}
+
+#[test]
+fn snapshot_receipt_tracks_successful_wire_bytes_and_can_shrink() {
+    use crate::abi::export::ScrapeFamily;
+    use crate::abi::host::service::{SNAPSHOT_SCOPE_HOOKS, SNAPSHOT_SCOPE_WHOLE};
+    let t = HostSlots {
+        snapshot_read: Some(snapshots),
+        ..table(None)
+    };
+    let s = services(&t);
+    let mut buf = [0u64; 128];
+    let (large, used_large) = s
+        .snapshot_read_with_used(handle(), SNAPSHOT_SCOPE_WHOLE, &mut buf)
+        .expect("read")
+        .expect("ready");
+    assert_eq!(large[0].name, "a_larger_snapshot_family");
+    assert_eq!(used_large, size_of::<ScrapeFamily>() + large[0].name.len());
+    assert!(used_large < std::mem::size_of_val(&buf));
+    let (small, used_small) = s
+        .snapshot_read_with_used(handle(), SNAPSHOT_SCOPE_HOOKS, &mut buf)
+        .expect("read")
+        .expect("ready");
+    assert_eq!(small[0].name, "x");
+    assert_eq!(used_small, size_of::<ScrapeFamily>() + 1);
+    assert!(used_small < used_large);
+    assert_eq!(
+        s.snapshot_read(handle(), SNAPSHOT_SCOPE_HOOKS, &mut buf),
+        Ok(Some(small))
+    );
+}
+
+#[test]
+fn snapshot_receipt_does_not_turn_not_ready_or_invalid_layout_into_success() {
+    use crate::abi::host::service::SNAPSHOT_SCOPE_WHOLE;
+    let mut buf = [0u64; 128];
+    let not_ready = HostSlots {
+        snapshot_read: Some(snapshot_not_ready),
+        ..table(None)
+    };
+    assert_eq!(
+        services(&not_ready).snapshot_read_with_used(handle(), SNAPSHOT_SCOPE_WHOLE, &mut buf),
+        Ok(None)
+    );
+    let broken = HostSlots {
+        snapshot_read: Some(snapshot_bad_pointer),
+        ..table(None)
+    };
+    assert_eq!(
+        services(&broken).snapshot_read_with_used(handle(), SNAPSHOT_SCOPE_WHOLE, &mut buf),
+        Err(ServiceError::Broken)
+    );
+    let short = HostSlots {
+        snapshot_read: Some(snapshots),
+        ..table(None)
+    };
+    let answer = services(&short).snapshot_read_with_used(handle(), SNAPSHOT_SCOPE_WHOLE, &mut []);
+    assert!(matches!(answer, Err(ServiceError::Short { bytes, .. }) if bytes > 0));
+}
+
 #[test]
 fn random_fill_fills_the_buffer_fresh_each_call_and_refuses_outside_its_cap_before_the_host() {
     let t = fill_table(Some(fills_with_its_count));

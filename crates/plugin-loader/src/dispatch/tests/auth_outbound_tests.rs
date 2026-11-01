@@ -102,7 +102,7 @@ mod plugin {
         type Out = FieldsOut;
         type State = Inst;
         fn call(
-            _: Instance<'_, Inst>,
+            instance: Instance<'_, Inst>,
             input: Lent<'_, FieldsIn>,
             mut out: Out<'_, FieldsOut>,
         ) -> Outcome {
@@ -117,7 +117,7 @@ mod plugin {
                     v.extend_from_slice(input.field(|i| &i.request.canonical_path).bytes());
                     vec![(b"authorization".to_vec(), v, FIELD_SENSITIVE)]
                 }
-                (2, _) => (0..17)
+                (2 | 8, _) => (0..17)
                     .map(|k| (format!("x-f{k:02}").into_bytes(), b"v".to_vec(), 0))
                     .collect(),
                 (3, _) => {
@@ -129,6 +129,22 @@ mod plugin {
                     }
                     vec![(b"x-signed".to_vec(), v, 0)]
                 }
+                (5 | 6 | 7 | 9 | 11, _) => vec![(
+                    b"authorization".to_vec(),
+                    b"sealed-secret".to_vec(),
+                    FIELD_SENSITIVE,
+                )],
+                (10, _) => vec![(
+                    b"x-held".to_vec(),
+                    instance
+                        .get()
+                        .unwrap()
+                        .leases()
+                        .held()
+                        .to_string()
+                        .into_bytes(),
+                    0,
+                )],
                 (4, _) => {
                     let blob = input.field(|i| &i.head.extensions).bytes();
                     let scope = busbar_contract::abi::mechanism::extensions::get(
@@ -171,6 +187,53 @@ mod plugin {
                     };
                 }
                 at += n.len() + v.len();
+            }
+            if matches!(i.handle, 5 | 6) {
+                const BAD: [u8; busbar_contract::abi::mechanism::extensions::entry_len(
+                    "auth.sealed_fields",
+                    &[2],
+                )] = busbar_contract::abi::mechanism::extensions::entry("auth.sealed_fields", &[2]);
+                const DUPLICATE: [u8; 2 * busbar_contract::abi::mechanism::extensions::entry_len(
+                    "auth.sealed_fields",
+                    &[1],
+                )] = busbar_contract::abi::mechanism::extensions::concat(&[
+                    ("auth.sealed_fields", &[1]),
+                    ("auth.sealed_fields", &[1]),
+                ]);
+                out.lent_blob(
+                    |o| &o.head.extensions,
+                    if i.handle == 5 { &BAD } else { &DUPLICATE },
+                    BLOB_OCTETS,
+                    &instance.generation(),
+                );
+            }
+            if matches!(i.handle, 7 | 8) {
+                const SECURE: [u8; busbar_contract::abi::mechanism::extensions::entry_len(
+                    "auth.sealed_fields",
+                    &[1],
+                )] = busbar_contract::abi::mechanism::extensions::entry("auth.sealed_fields", &[1]);
+                let capability = busbar_contract::abi::mechanism::extensions::get(
+                    input.field(|i| &i.head.extensions).bytes(),
+                    "auth.sealed_fields",
+                );
+                assert_eq!(capability, Some(&[1][..]));
+                out.lent_blob(
+                    |o| &o.head.extensions,
+                    &SECURE,
+                    BLOB_OCTETS,
+                    &instance.generation(),
+                );
+            }
+            if matches!(i.handle, 9 | 11) {
+                out.lease(
+                    |o| &o.head.extensions,
+                    instance.get().unwrap().leases(),
+                    busbar_contract::abi::mechanism::extensions::encode(&[(
+                        "auth.sealed_fields",
+                        if i.handle == 9 { &[1] } else { &[2] },
+                    )]),
+                    BLOB_OCTETS,
+                );
             }
             out.set(|o| &o.fields_len, fields.len() as u32);
             Outcome::Ready
@@ -315,6 +378,7 @@ fn bearer() -> Fields {
         name: b"authorization".to_vec(),
         value: b"Bearer POST far.example:443/v1/call".to_vec().into(),
         sensitive: true,
+        require_secure: false,
     }])
 }
 
@@ -476,4 +540,67 @@ fn futures_lite_block_on<F: std::future::Future>(f: F) -> F::Output {
             .await
             .expect("fields answers")
     })
+}
+
+#[test]
+fn sealed_field_metadata_with_unknown_version_or_duplicate_key_is_refused() {
+    let a = opened();
+    for handle in [5, 6] {
+        assert_eq!(a.fields_now(handle, &request()), Some(Fields::Failed));
+        assert_eq!(
+            futures_lite_block_on(a.fields(handle, request(), 0)),
+            Fields::Failed
+        );
+    }
+}
+
+#[test]
+fn sealed_field_security_survives_copy_out_and_short_retry_on_both_call_paths() {
+    let a = opened();
+    for handle in [7, 8] {
+        for answer in [
+            a.fields_now(handle, &request()).unwrap(),
+            futures_lite_block_on(a.fields(handle, request(), 0)),
+        ] {
+            let Fields::Ready(fields) = answer else {
+                panic!("protected fields refused");
+            };
+            assert_eq!(fields.len(), if handle == 7 { 1 } else { 17 });
+            assert!(fields.iter().all(|f| f.require_secure));
+            if handle == 7 {
+                assert_eq!(fields[0].value, Secret::new(b"sealed-secret".to_vec()));
+            }
+        }
+    }
+}
+
+#[test]
+fn fields_copy_security_before_releasing_the_reply_lease_even_when_metadata_refuses() {
+    let a = opened();
+    for ticketed in [false, true] {
+        for handle in [9, 11] {
+            let answer = if ticketed {
+                futures_lite_block_on(a.fields(handle, request(), 0))
+            } else {
+                a.fields_now(handle, &request()).unwrap()
+            };
+            if handle == 9 {
+                let Fields::Ready(fields) = answer else {
+                    panic!("valid leased metadata refused");
+                };
+                assert!(fields[0].require_secure);
+                assert_eq!(fields[0].value, Secret::new(b"sealed-secret".to_vec()));
+            } else {
+                assert_eq!(answer, Fields::Failed);
+            }
+            let Some(Fields::Ready(held)) = a.fields_now(10, &request()) else {
+                panic!("lease count unavailable");
+            };
+            assert_eq!(
+                held[0].value,
+                Secret::new(b"0".to_vec()),
+                "READY lease was not released"
+            );
+        }
+    }
 }

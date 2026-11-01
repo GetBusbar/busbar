@@ -107,7 +107,7 @@ impl<S: StoreSlots> SlotStore<S> {
         mint: OpIdMint,
     ) -> Result<Self, String> {
         let refused = |reason: &str| format!("plugin '{name}' open failed: {reason}");
-        let store = S::open(settings, None).map_err(|e| refused(&e))?;
+        let store = S::open_with_secrets(settings, &[], None).map_err(|e| refused(&e))?;
         match S::connect(&store, &mut Op::detached()) {
             Step::Ready(Ok(())) => Ok(Self { store, name, mint }),
             Step::Ready(Err(e)) => Err(refused(&e)),
@@ -345,6 +345,10 @@ impl<S: StoreSlots> StoreCalls for SlotStore<S> {
 
     fn purge_plane_records_before<'a>(&'a self, kind: &'a str, before: u64) -> StoreCall<'a, u64> {
         ready(self.record(|s, cx| S::purge_plane_records_before(s, cx, kind, before)))
+    }
+
+    fn purge_usage_before(&self, before: u64) -> StoreCall<'_, u64> {
+        ready(self.record(|s, cx| S::purge_usage_before(s, cx, before)))
     }
 }
 

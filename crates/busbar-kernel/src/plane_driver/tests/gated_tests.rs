@@ -35,10 +35,10 @@ fn the_seams_own_failed_verdict_keeps_its_503_and_a_hook_status_is_clamped() {
 fn the_gates_bind_over_the_recorded_entry_and_a_projection_naming_another_is_refused() {
     use super::bound_entry;
     use busbar_contract::abi::plane::{ROUTE_DIRECT, ROUTE_LOCAL, ROUTE_POOL};
-    let named = |entry: &str| super::Projection {
-        pool: entry.to_string(),
-        projected: Some(b"{}".to_vec()),
-        ..super::Projection::default()
+    let named = |entry: &str| {
+        let mut view = super::Projection::empty(entry.to_string(), String::new());
+        view.projected = Some(b"{}".to_vec());
+        view
     };
     let (files, shell, none) = (named("files"), named("shell"), named(""));
     // The generation's pools: `pair` holds `files` and nothing else.
@@ -89,10 +89,10 @@ fn the_gates_bind_over_the_recorded_entry_and_a_projection_naming_another_is_ref
 fn a_pool_route_binds_only_a_member_of_the_recorded_pool() {
     use super::bound_entry;
     use busbar_contract::abi::plane::ROUTE_POOL;
-    let named = |entry: &str| super::Projection {
-        pool: entry.to_string(),
-        projected: Some(b"{}".to_vec()),
-        ..super::Projection::default()
+    let named = |entry: &str| {
+        let mut view = super::Projection::empty(entry.to_string(), String::new());
+        view.projected = Some(b"{}".to_vec());
+        view
     };
     let holds = |pool: &[u8], member: &str| pool == b"pair" && member == "files";
     assert!(
@@ -169,10 +169,10 @@ fn the_gate_first_binder_names_the_dialect_a_unit_arrived_in() {
 #[test]
 fn a_scope_unit_binds_the_entry_its_scope_resolved_to_inside_the_recorded_candidates() {
     use super::scoped_entry;
-    let named = |entry: &str| super::Projection {
-        pool: entry.to_string(),
-        projected: Some(b"{}".to_vec()),
-        ..super::Projection::default()
+    let named = |entry: &str| {
+        let mut view = super::Projection::empty(entry.to_string(), String::new());
+        view.projected = Some(b"{}".to_vec());
+        view
     };
     let candidates: &[u8] = b"conformance, other";
     // The unaddressed unit: the projection names no entry, the scope resolved to `conformance`.

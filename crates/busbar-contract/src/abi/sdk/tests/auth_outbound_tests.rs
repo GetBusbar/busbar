@@ -115,6 +115,36 @@ impl OutboundPlugin for Echo {
             return Poll::Ready(FieldsAnswer::Ready);
         };
         match credential {
+            b"sealed-secure" | b"sealed-unsecured" | b"sealed-pending" | b"sealed-failed"
+            | b"sealed-stray" => {
+                let value =
+                    crate::abi::sdk::cred::Cred::captured(Zeroizing::new(b"opaque-token".to_vec()));
+                let value = if credential == b"sealed-unsecured" {
+                    value
+                } else {
+                    value.require_secure()
+                };
+                out.push(b"x-public", b"unchanged", 0);
+                out.push_sealed(
+                    b"authorization",
+                    Parts::new()
+                        .public(b"Prefix ")
+                        .sealed(value.field())
+                        .public(b" suffix"),
+                    if credential == b"sealed-stray" {
+                        1 << 31
+                    } else {
+                        0
+                    },
+                );
+                if credential == b"sealed-pending" && !self.pended.swap(true, Ordering::SeqCst) {
+                    return Poll::Pending;
+                }
+                if credential == b"sealed-failed" {
+                    out.diag(NOTED, SEVERITY_WARN, "sealed attempt failed");
+                    return Poll::Ready(FieldsAnswer::Failed("original failure".into()));
+                }
+            }
             b"slow" if !self.pended.swap(true, Ordering::SeqCst) => return Poll::Pending,
             b"note" => {
                 out.diag(NOTED, SEVERITY_WARN, "credential noted on the request");
@@ -452,6 +482,161 @@ fn fields_answers_ready_with_one_field() {
     assert_eq!(host.text(f.name), b"authorization");
     assert_eq!(host.text(f.value), b"Bearer k");
     assert_eq!(f.flags, 0);
+}
+
+fn sealed_input(handle: u64, host: &mut Host) -> FieldsIn {
+    let mut input = fields_in(handle, host, &[]);
+    input.head.extensions = Blob {
+        ptr: SEALED_FIELDS_EXTENSION.as_ptr(),
+        len: SEALED_FIELDS_EXTENSION.len(),
+        fmt: BLOB_OCTETS,
+        flags: 0,
+    };
+    input
+}
+
+fn reply_extensions(out: &FieldsOut) -> &[u8] {
+    if out.head.extensions.len == 0 {
+        return &[];
+    }
+    // SAFETY: the SDK's reply extension names static bytes and remains valid after the call.
+    unsafe { std::slice::from_raw_parts(out.head.extensions.ptr, out.head.extensions.len) }
+}
+
+#[test]
+fn sealed_fields_require_host_custody_before_writing_any_bytes() {
+    let t = ops();
+    let inst = opened(t);
+    let (_, bound) = open_outbound(t, inst, "bearer-test", Some(b"sealed-secure"), b"{}");
+    for version in [None, Some(&[0][..]), Some(&[1, 0][..])] {
+        let mut host = Host::new(128, 3);
+        let mut input = fields_in(bound.handle, &mut host, &[]);
+        let extension = version.map(|v| extensions::encode(&[(EXT_SEALED_FIELDS, v)]));
+        if let Some(extension) = &extension {
+            input.head.extensions = Blob {
+                ptr: extension.as_ptr(),
+                len: extension.len(),
+                fmt: BLOB_OCTETS,
+                flags: 0,
+            };
+        }
+        let (outcome, out) = fields_with(t, inst, &input);
+        assert_eq!(outcome, Outcome::Refused);
+        assert!(host.untouched());
+        assert_eq!(out.fields_len, 0);
+        assert!(reply_extensions(&out).is_empty());
+        // SAFETY: the SDK keeps this static refusal text alive with the instance.
+        let reason = unsafe { std::slice::from_raw_parts(out.head.error.ptr, out.head.error.len) };
+        assert_eq!(reason, SEALED_FIELDS_UNSUPPORTED.as_bytes());
+    }
+}
+
+#[test]
+fn sealed_fields_preserve_short_buffer_atomicity_and_security_on_retry() {
+    let t = ops();
+    let inst = opened(t);
+    let (_, bound) = open_outbound(t, inst, "bearer-test", Some(b"sealed-secure"), b"{}");
+    let mut short = Host::new(4, 1);
+    let input = sealed_input(bound.handle, &mut short);
+    let (outcome, out) = fields_with(t, inst, &input);
+    assert_eq!(outcome, Outcome::Failed);
+    assert!(short.untouched());
+    assert!(reply_extensions(&out).is_empty());
+    assert_eq!(out.needed_fields, 2);
+    let mut host = Host::new(out.needed_bytes as usize, out.needed_fields as usize);
+    let input = sealed_input(bound.handle, &mut host);
+    let (outcome, out) = fields_with(t, inst, &input);
+    assert_eq!(outcome, Outcome::Ready);
+    check(outcome, &out, &input, &host);
+    assert_eq!(
+        extensions::get(reply_extensions(&out), EXT_SEALED_FIELDS),
+        Some(SEALED_FIELDS_V1)
+    );
+    let fields = host.reported(outcome, &out);
+    assert_eq!(host.text(fields[0].value), b"unchanged");
+    assert_eq!(fields[0].flags, 0);
+    assert_eq!(host.text(fields[1].name), b"authorization");
+    assert_eq!(host.text(fields[1].value), b"Prefix opaque-token suffix");
+    assert_eq!(fields[1].flags, FIELD_SENSITIVE);
+}
+
+#[test]
+fn sealed_fields_without_secure_requirement_work_with_older_hosts() {
+    let t = ops();
+    let inst = opened(t);
+    let (_, bound) = open_outbound(t, inst, "bearer-test", Some(b"sealed-unsecured"), b"{}");
+    let mut host = Host::new(128, 3);
+    let (outcome, out, input) = fields(t, inst, bound.handle, &mut host);
+    assert_eq!(outcome, Outcome::Ready);
+    check(outcome, &out, &input, &host);
+    assert!(reply_extensions(&out).is_empty());
+    assert_eq!(host.fields[1].flags, FIELD_SENSITIVE);
+}
+
+#[test]
+fn sealed_fields_keep_plugin_failures_and_reject_stray_flags_without_writing() {
+    let t = ops();
+    let inst = opened(t);
+    for (credential, expected) in [
+        (&b"sealed-failed"[..], Outcome::Failed),
+        (&b"sealed-stray"[..], Outcome::Fault),
+    ] {
+        let (_, bound) = open_outbound(t, inst, "bearer-test", Some(credential), b"{}");
+        let mut host = Host::new(128, 3);
+        let (outcome, out, _) = fields(t, inst, bound.handle, &mut host);
+        assert_eq!(outcome, expected);
+        assert!(host.untouched());
+        assert!(reply_extensions(&out).is_empty());
+        if outcome == Outcome::Failed {
+            // SAFETY: the SDK retains the plugin's failure text until after the crossing.
+            let reason =
+                unsafe { std::slice::from_raw_parts(out.head.error.ptr, out.head.error.len) };
+            assert_eq!(reason, b"original failure");
+            assert_eq!(out.head.envelope.diags_len, 1);
+        }
+    }
+}
+
+#[test]
+fn sealed_fields_pending_resume_and_cancel_do_not_publish_staged_material() {
+    let t = ops();
+    let inst = opened(t);
+    let (_, bound) = open_outbound(t, inst, "bearer-test", Some(b"sealed-pending"), b"{}");
+    let mut host = Host::new(128, 3);
+    let mut input = sealed_input(bound.handle, &mut host);
+    input.head.ticket = Ticket {
+        slot: 5,
+        generation: 1,
+    };
+    let (outcome, out) = fields_with(t, inst, &input);
+    assert_eq!(outcome, Outcome::Pending);
+    assert!(host.untouched());
+    assert!(reply_extensions(&out).is_empty());
+    input.head.flags = FLAG_RESUME;
+    let (outcome, out) = fields_with(t, inst, &input);
+    assert_eq!(outcome, Outcome::Ready);
+    check(outcome, &out, &input, &host);
+    assert_eq!(
+        extensions::get(reply_extensions(&out), EXT_SEALED_FIELDS),
+        Some(SEALED_FIELDS_V1)
+    );
+
+    let inst = opened(t);
+    let (_, bound) = open_outbound(t, inst, "bearer-test", Some(b"sealed-pending"), b"{}");
+    let mut host = Host::new(128, 3);
+    let mut input = sealed_input(bound.handle, &mut host);
+    input.head.ticket = Ticket {
+        slot: 6,
+        generation: 1,
+    };
+    let (outcome, out) = fields_with(t, inst, &input);
+    assert_eq!(outcome, Outcome::Pending);
+    assert_eq!(
+        cancel(t, inst, input.head.ticket),
+        (Outcome::Ready, crate::abi::auth::CANCEL_ABANDONED)
+    );
+    assert!(host.untouched());
+    assert!(reply_extensions(&out).is_empty());
 }
 
 /// (c) RED, THE SHORT-BUFFER RULE: twenty fields into a sixteen-field array is the short answer

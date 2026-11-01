@@ -85,9 +85,9 @@
 //!   only — the prompt view (WIRE-HOOK Q5), `groups:` filter); it never holds the request. [`slot::CONFIGURE`], [`slot::STATUS`], [`slot::DESCRIBE`] (O): run on a FRESH
 //!   MANAGEMENT INSTANCE through the same door; status and describe return the 1.5.5 blobs (as
 //!   [`Blob`] payloads — off-path JSON is allowed here); configure acks the pushed version, 5s
-//!   deadline, a nack does not commit. [`slot::SERVE`] (O): RETIRED (H7): the host never calls it
-//!   and serves no hook route; a tail stating [`Tail::routes`] is refused at bind. The slot stays
-//!   in the table (every slot is non-NULL), filled with the SDK's stub.
+//!   deadline, a nack does not commit. [`slot::SERVE`] (O): serves [`Tail::routes`] on the
+//!   dispatcher after host confinement and auth checks; leased response bytes are copied before
+//!   release. A hook declaring no routes may retain the SDK's ordinary stub.
 //! - **Kernel normalizers** (HOST-SIDE, enforced on the fixed struct, unchanged from 1.5.5; not new
 //!   shapes): `reject_status` clamped to 400-499, else 403 when [`VERB_HAS_REJECT_STATUS`] is
 //!   unset; the full 1.5.5 sanitiser on the reject-message bytes (control characters, U+2028/2029,
@@ -969,10 +969,6 @@ pub struct Tail {
     /// How many.
     pub requested_signals_len: usize,
     /// The HTTP routes this instance serves via `serve`, confined to `/hooks/<name>/*`.
-    ///
-    /// RETIRED (H7): stated empty. The host serves no hook route and never calls `serve` (its
-    /// slot stays in the table, filled with the SDK's stub); it refuses at bind a tail that
-    /// states any route.
     pub routes: *const Route,
     /// How many.
     pub routes_len: usize,

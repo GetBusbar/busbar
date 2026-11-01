@@ -27,12 +27,14 @@ use busbar_contract::abi::auth::{
 use busbar_contract::abi::mechanism::call::{
     AbiStr, Blob, DeadlineClass, Outcome, BLOB_ABSENT, BLOB_JSON, BLOB_OCTETS, BLOB_SECRET,
 };
+use busbar_contract::abi::mechanism::extensions;
+use busbar_contract::abi::sdk::auth_outbound::{EXT_SEALED_FIELDS, SEALED_FIELDS_V1};
 use busbar_contract::auth_calls::{AuthField, Fielding, Fields, FieldsRequest, OutboundAuth};
 use busbar_contract::redacted::Secret;
 
 use super::call::{Answering, Pending, Ticketed};
 use super::kinds::auth::{Auth, AuthFacts, OutboundStyle};
-use super::lifecycle::{open_frame, validate_call};
+use super::lifecycle::{open_frame, release, validate_call};
 use super::{in_head, out_head, Dispatcher, Done, Frame, Plugin};
 
 /// One open auth instance, the dispatcher that adopted it, and the worker a waiting `fields` is
@@ -174,7 +176,10 @@ impl Drop for Lend {
 }
 
 impl Lend {
-    fn new(request: FieldsRequest, bytes: usize, fields: usize) -> Box<Self> {
+    fn new(mut request: FieldsRequest, bytes: usize, fields: usize) -> Box<Self> {
+        let mut capability = extensions::encode(&[(EXT_SEALED_FIELDS, SEALED_FIELDS_V1)]);
+        capability.append(&mut request.extensions);
+        request.extensions = capability;
         let named = request
             .headers
             .iter()
@@ -251,6 +256,9 @@ impl Lend {
     /// The fields a READY answer wrote, copied out of the host buffer. The dispatcher's validator
     /// (`check_fields`) already bounded every span.
     fn answer(&self, out: &FieldsOut) -> Fields {
+        let Some(require_secure) = security_requirement(out.head.extensions) else {
+            return Fields::Failed;
+        };
         let take = |s: busbar_contract::abi::mechanism::call::Span| {
             let start = s.offset as usize;
             self.field_buf
@@ -266,10 +274,36 @@ impl Lend {
                     name: take(f.name),
                     value: Secret::new(take(f.value)),
                     sensitive: f.flags & FIELD_SENSITIVE != 0,
+                    require_secure,
                 })
                 .collect(),
         )
     }
+}
+
+/// Decode while the READY reply's lease/generation still owns its bytes. Malformed envelopes,
+/// repeated custody markers and unknown versions never degrade a protected batch to raw bytes.
+fn security_requirement(blob: Blob) -> Option<bool> {
+    if blob.fmt == BLOB_ABSENT && blob.len == 0 {
+        return Some(false);
+    }
+    if blob.fmt != BLOB_OCTETS || (blob.len != 0 && blob.ptr.is_null()) {
+        return None;
+    }
+    // SAFETY: the validated READY answer owns these bytes until its lease is released below.
+    let bytes = unsafe { super::plugin::blob_bytes(blob) };
+    let mut consumed = 0;
+    let mut secure = false;
+    for (key, value) in extensions::entries(bytes) {
+        consumed += 2 + key.len() + 4 + value.len();
+        if key == EXT_SEALED_FIELDS.as_bytes() {
+            if secure || value != SEALED_FIELDS_V1 {
+                return None;
+            }
+            secure = true;
+        }
+    }
+    (consumed == bytes.len()).then_some(secure)
 }
 
 /// A copy of `r` for one crossing's lent memory (the caller's credential included; each copy is
@@ -410,7 +444,9 @@ impl OutboundAuth for OutboundInstance {
             frame = Frame::new(lend.input(handle, seal), fields_out());
             called = self.plugin.recall(token, slot::FIELDS, &mut frame);
         }
-        (called.outcome == Outcome::Ready).then(|| lend.answer(&frame.out))
+        let answer = (called.outcome == Outcome::Ready).then(|| lend.answer(&frame.out));
+        release(&self.plugin, called.lease);
+        answer
     }
 
     fn fields(&self, handle: u64, request: FieldsRequest, deadline_ns: u64) -> Box<dyn Fielding> {
@@ -499,7 +535,7 @@ impl Answering<FieldsIn, FieldsOut> for Asked {
         call: &mut Ticketed<FieldsIn, FieldsOut>,
     ) -> Option<Fields> {
         let out = done.frame.as_ref().map(|f| f.out);
-        match (done.short && self.first, out, &self.lend) {
+        let answer = match (done.short && self.first, out, &self.lend) {
             // THE ONE RE-CALL, on the same ticket, with what the answer said it needs; the
             // dispatcher answers a second short answer FAULT.
             (true, Some(out), _) => {
@@ -509,7 +545,9 @@ impl Answering<FieldsIn, FieldsOut> for Asked {
             }
             (_, Some(out), Some(lend)) => Some(settled(done.outcome, lend, &out)),
             _ => Some(Fields::Failed),
-        }
+        };
+        release(&self.this.plugin, done.lease);
+        answer
     }
 }
 

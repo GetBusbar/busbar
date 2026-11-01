@@ -33,20 +33,22 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use busbar_contract::abi::hook::{
-    slot, ConfigureIn, ConfigureOut, DecideOut, DescribeOut, NotifyIn, StatusOut, TransformOut,
-    VERB_PREFER,
+    slot, ConfigureIn, ConfigureOut, DecideOut, DescribeOut, NotifyIn, ServeIn, ServeOut,
+    StatusOut, TransformOut, VERB_PREFER,
 };
 use busbar_contract::abi::host::hook::{DecideFrame, NotifyFrame};
 use busbar_contract::abi::mechanism::call::{Blob, DeadlineClass, OutHead, Outcome, BLOB_JSON};
 use busbar_contract::abi::mechanism::door::{DoorFn, MARK_WORD_HOOK};
+use busbar_contract::abi::mechanism::endpoint::{EndpointRequest, EndpointResponse};
 use busbar_contract::abi::mechanism::lifecycle::slot as life;
+use busbar_contract::abi::mechanism::route::Route;
 use busbar_contract::abi::mechanism::KindCode;
 use busbar_contract::conn::DeclaredConns;
-use busbar_contract::hook_calls::{Answered, HookAxis, HookCalls, HookFacts, Pending, Probed};
+use busbar_contract::hook_calls::{Answered, HookAxis, HookCalls, Pending, Probed};
 
 use crate::boot::{Candidate, Origin};
 use crate::dispatch::call::Ticketed;
-use crate::dispatch::kinds::hook::Hook;
+use crate::dispatch::kinds::hook::{Hook, HookContext};
 use crate::dispatch::lifecycle::{
     blob, close, copy_blob, lend_or_null, open_frame, release, text, validate_json,
 };
@@ -146,6 +148,7 @@ fn reconfigure(plugin: &Plugin<Hook>, pushed: &(String, Vec<u8>, u64)) -> Result
 
 struct Inner {
     name: String,
+    routes: Vec<Route>,
     dispatcher: Arc<Dispatcher>,
     rebind: Rebind,
     // settings-leak-lint: allow — NON-PROJECTION engine type: the instance's own settings bytes,
@@ -237,6 +240,11 @@ impl Inner {
             .unwrap_or_else(|p| p.into_inner())
             .clone();
         let opened = (self.rebind)().and_then(|p| {
+            if p.context::<HookContext>()
+                .is_none_or(|context| context.routes != self.routes)
+            {
+                return Err("hook route declarations changed during recovery".into());
+            }
             open(&p, &self.settings)?;
             if let Some(pushed) = configured {
                 if let Err(e) = reconfigure(&p, &pushed) {
@@ -518,6 +526,9 @@ impl HookInstance {
         Ok(Self {
             inner: Arc::new(Inner {
                 name: plugin.name().to_string(),
+                routes: plugin
+                    .context::<HookContext>()
+                    .map_or_else(Vec::new, |f| f.routes.clone()),
                 dispatcher,
                 rebind: Box::new(rebind),
                 settings: settings.to_vec(),
@@ -663,6 +674,66 @@ impl HookCalls for HookInstance {
         &self.inner.name
     }
 
+    fn routes(&self) -> &[Route] {
+        &self.inner.routes
+    }
+
+    fn serve(
+        &self,
+        request: EndpointRequest,
+        budget: Duration,
+    ) -> Pending<Result<EndpointResponse, String>> {
+        let inner = Arc::clone(&self.inner);
+        Box::pin(async move {
+            let lent = Arc::new(ServeLent::new(request));
+            let make = {
+                let lent = Arc::clone(&lent);
+                move || Frame::new(lent.input(), blank_out::<ServeOut>())
+            };
+            let done = match inner
+                .submit(slot::SERVE, budget, lent as Lent, make, |_: &ServeOut| None)
+                .await
+            {
+                Ok(done) => done,
+                Err(Answered::TimedOut) => return Err("hook serve exceeded its budget".into()),
+                Err(Answered::Broken(why)) => return Err(why),
+                Err(Answered::Answer { .. }) => {
+                    return Err("hook serve answered out of turn".into())
+                }
+            };
+            if done.outcome != Outcome::Ready {
+                release(&done.plugin, done.lease);
+                return Err(done.error.unwrap_or_else(|| "hook serve failed".into()));
+            }
+            if done.out.headers_out_len % 2 != 0 {
+                release(&done.plugin, done.lease);
+                return Err("hook serve returned an unpaired response header".into());
+            }
+            let pairs = if done.out.headers_out_len == 0 {
+                &[][..]
+            } else {
+                // SAFETY: the kind's check_serve bounded this non-null list. Its lease is
+                // retained until all response bytes have been copied below.
+                unsafe {
+                    std::slice::from_raw_parts(done.out.headers_out, done.out.headers_out_len)
+                }
+            };
+            let response = pairs
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|[k, v]| Ok((copy_serve_text(*k)?, copy_serve_text(*v)?)))
+                .collect::<Result<Vec<_>, String>>()
+                .map(|headers| EndpointResponse {
+                    status: done.out.status_code,
+                    headers,
+                    body: copy_blob(done.out.body),
+                });
+            release(&done.plugin, done.lease);
+            response
+        })
+    }
+
     fn decide(&self, frame: Arc<DecideFrame>, budget: Duration) -> Pending<Answered<DecideOut>> {
         self.verdict(slot::DECIDE, frame, budget)
     }
@@ -758,6 +829,69 @@ impl HookCalls for HookInstance {
     fn describe(&self, budget: Duration) -> Pending<Option<Vec<u8>>> {
         self.leased::<DescribeOut>(slot::DESCRIBE, budget, |o| o.describe)
     }
+}
+
+/// Immutable request storage lent to the dispatcher, including its header pointer list.
+struct ServeLent {
+    request: EndpointRequest,
+    headers: Vec<busbar_contract::abi::mechanism::call::AbiStr>,
+}
+
+// SAFETY: the header pointers address immutable strings owned by request. Moving this value
+// moves the Vec/String handles, never their allocations; the dispatcher retains its Arc.
+unsafe impl Send for ServeLent {}
+// SAFETY: shared access only lends immutable request bytes while the Arc remains alive.
+unsafe impl Sync for ServeLent {}
+
+impl ServeLent {
+    fn new(request: EndpointRequest) -> Self {
+        let headers = request
+            .headers
+            .iter()
+            .flat_map(|(k, v)| [lend_or_null(k), lend_or_null(v)])
+            .collect();
+        Self { request, headers }
+    }
+
+    fn input(&self) -> ServeIn {
+        ServeIn {
+            head: in_head(),
+            method: lend_or_null(&self.request.method),
+            path: lend_or_null(&self.request.path),
+            query: lend_or_null(&self.request.query),
+            headers: if self.headers.is_empty() {
+                std::ptr::null()
+            } else {
+                self.headers.as_ptr()
+            },
+            headers_len: self.headers.len(),
+            body: blob(
+                &self.request.body,
+                busbar_contract::abi::mechanism::call::BLOB_OCTETS,
+                0,
+            ),
+        }
+    }
+}
+
+impl Drop for ServeLent {
+    fn drop(&mut self) {
+        use zeroize::Zeroize;
+        self.request.query.zeroize();
+        self.request.body.zeroize();
+        for (name, value) in &mut self.request.headers {
+            name.zeroize();
+            value.zeroize();
+        }
+    }
+}
+
+fn copy_serve_text(value: busbar_contract::abi::mechanism::call::AbiStr) -> Result<String, String> {
+    let bytes = crate::dispatch::plugin::str_bytes(value)
+        .ok_or_else(|| "hook serve returned a malformed response header".to_string())?;
+    std::str::from_utf8(bytes)
+        .map(str::to_owned)
+        .map_err(|_| "hook serve returned a non-UTF8 response header".into())
 }
 
 /// A host-built `in` that points at memory the calling future owns (or holds lent), carried
@@ -955,6 +1089,32 @@ impl HookRows {
 }
 
 impl HookAxis for HookRows {
+    fn routes(
+        &self,
+        module: &str,
+        instance: &str,
+        settings: &serde_json::Value,
+    ) -> Result<Vec<Route>, String> {
+        let Some(candidate) = self.find(module) else {
+            return Ok(Vec::new());
+        };
+        let plugin = Self::bind(
+            candidate,
+            &self.dispatcher,
+            instance,
+            Arc::new(NoSink),
+            ConnTable::Probe,
+        )?;
+        let routes = plugin
+            .context::<HookContext>()
+            .map_or_else(Vec::new, |context| context.routes.clone());
+        if !routes.is_empty() {
+            let text = zeroize::Zeroizing::new(settings.to_string());
+            validate(&plugin, text.as_bytes())?;
+        }
+        Ok(routes)
+    }
+
     fn probe(&self, module: &str, instance: &str, settings: &serde_json::Value) -> Option<Probed> {
         let c = self.find(module)?;
         // A PROBE: validated and read for its facts, never opened; bound with no table.
@@ -968,7 +1128,9 @@ impl HookAxis for HookRows {
             // It will not load here: its open refuses the boot naming the instance.
             return Some((None, Vec::new()));
         };
-        let facts = p.context::<HookFacts>().cloned();
+        let facts = p
+            .context::<HookContext>()
+            .map(|context| context.facts.clone());
         let problems = match validate(&p, settings.to_string().as_bytes()) {
             Ok(()) => Vec::new(),
             Err(words) => words.lines().map(str::to_string).collect(),

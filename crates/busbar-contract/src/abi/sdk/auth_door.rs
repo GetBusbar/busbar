@@ -16,8 +16,8 @@
 //!   [`IdentityBuf`](crate::abi::auth::IdentityBuf)), the [`Decision`] and the credential lines to
 //!   strip ([`Strip`], named whatever the verdict; THE DESIGN, "Auth points and guest lists").
 //!   One that does not fit is the short answer (FAILED, every `needed_*` at its full size); the
-//!   host re-calls once and the plugin judges again. A plugin whose verdict is not deterministic
-//!   remembers it per ticket.
+//!   host re-calls once using the SDK's leased answer. The callback judges once; a recall only
+//!   copies that verdict into the larger buffers. The host returns the lease on recall or abandon.
 //! * `refresh` calls [`VerifyPlugin::refresh`] and reports the inbound cache entries it dropped
 //!   under [`METRIC_CACHE_FLUSHED`](crate::abi::auth::METRIC_CACHE_FLUSHED), when the plugin states
 //!   that family ([`VerifyPlugin::CACHE_FAMILY`]).
@@ -53,7 +53,7 @@ use crate::abi::sdk::auth_outbound::Diags;
 use crate::abi::sdk::conn::Host;
 use crate::abi::sdk::door::{AbiIn, AbiOut};
 use crate::abi::sdk::lent::{HostBuf, Lent};
-use crate::abi::sdk::life::{Counted, Held, Life, Refreshed, Refusal};
+use crate::abi::sdk::life::{Counted, Held, Leases, Life, Refreshed, Refusal};
 use crate::abi::sdk::out::Out;
 use crate::abi::sdk::safe::{Instance, SafeSlot};
 use crate::abi::sdk::services::{CredentialSecret, Pend, Services};
@@ -529,6 +529,7 @@ impl<T: VerifyPlugin> SafeSlot for Verify<T> {
         verify_answer(
             h.life().plugin(),
             &verify_op(&instance, h.host()),
+            h.leases(),
             input,
             out,
         )
@@ -550,9 +551,23 @@ pub(crate) fn verify_op<T: Send + Sync + 'static>(
 pub(crate) fn verify_answer<T: VerifyPlugin>(
     plugin: &T,
     op: &VerifyOp,
+    leases: &Leases,
     input: Lent<'_, VerifyIn>,
     mut out: Out<'_, IdentifyOut>,
 ) -> Outcome {
+    match short_reply::decode(input.field(|i| &i.head.extensions).bytes()) {
+        Ok(Some(lease)) => {
+            let Some(kept) = leases.shared::<RetainedVerify>(lease) else {
+                return out.fail(Refusal::refused("verify recall is no longer held"));
+            };
+            if kept.ticket != op.ticket() {
+                return out.fail(Refusal::refused("verify recall belongs to another ticket"));
+            }
+            return write_answer(&kept.answer, input, &mut out);
+        }
+        Err(why) => return out.fail(Refusal::refused(why)),
+        Ok(None) => {}
+    }
     let judged = plugin.verify_ticketed(&VerifyView { input }, op);
     op.take_diags().write(&mut out);
     let answer = match judged {
@@ -566,6 +581,69 @@ pub(crate) fn verify_answer<T: VerifyPlugin>(
         // Nothing written: a PENDING `verify` names no `needed_*` and no verdict.
         Poll::Pending => return Outcome::Pending,
     };
+    let outcome = write_answer(&answer, input, &mut out);
+    if outcome == Outcome::Failed {
+        out.keep(
+            leases,
+            std::sync::Arc::new(RetainedVerify {
+                ticket: op.ticket(),
+                answer,
+            }),
+        );
+        let lease = out.get().head.lease;
+        out.lease(
+            |o| &o.head.extensions,
+            leases,
+            short_reply::encode(lease),
+            crate::abi::mechanism::call::BLOB_OCTETS,
+        );
+    }
+    outcome
+}
+
+struct RetainedVerify {
+    ticket: Ticket,
+    answer: Answer,
+}
+
+/// The SDK/host reference to an immutable SHORT verdict, carried by the existing extensions
+/// blob. The host owns the named lease; this is not a pointer or a plugin-defined cache key.
+pub mod short_reply {
+    use crate::abi::mechanism::extensions;
+    const KEY: &str = "busbar.sdk.short-reply";
+
+    /// Encode a version-one reference. Its lease belongs to the answering instance.
+    pub fn encode(lease: u64) -> Vec<u8> {
+        let mut value = vec![1];
+        value.extend_from_slice(&lease.to_le_bytes());
+        extensions::encode(&[(KEY, value.as_slice())])
+    }
+
+    /// Read a reference without interpreting any other extension.
+    ///
+    /// # Errors
+    /// A present reference with an unsupported version, invalid width, or zero lease.
+    pub fn decode(bytes: &[u8]) -> Result<Option<u64>, &'static str> {
+        const INVALID: &str = "invalid verify recall";
+        let Some(value) = extensions::get(bytes, KEY) else {
+            return Ok(None);
+        };
+        if value.len() != 9 || value[0] != 1 {
+            return Err(INVALID);
+        }
+        let lease = u64::from_le_bytes(value[1..].try_into().map_err(|_| INVALID)?);
+        if lease == 0 {
+            return Err(INVALID);
+        }
+        Ok(Some(lease))
+    }
+}
+
+fn write_answer(
+    answer: &Answer,
+    input: Lent<'_, VerifyIn>,
+    out: &mut Out<'_, IdentifyOut>,
+) -> Outcome {
     let Answer {
         verdict,
         strips,
@@ -576,7 +654,7 @@ pub(crate) fn verify_answer<T: VerifyPlugin>(
         Verdict::Identity(id) => (Some(id), VERDICT_IDENTITY),
         Verdict::Reject => (None, VERDICT_REJECT),
         Verdict::RejectBecause(why) => {
-            out.reason(why.into_text());
+            out.reason(why.clone().into_text());
             (None, VERDICT_REJECT)
         }
         Verdict::Pass => (None, VERDICT_PASS),
@@ -586,7 +664,7 @@ pub(crate) fn verify_answer<T: VerifyPlugin>(
         Decision::Stop => DECISION_STOP,
     };
     write(
-        id.as_ref(),
+        id,
         Some(([strips.as_slice(), fixed_strips], input.strip(), decision)),
         input.field(|i| &i.out_buf),
         out,
@@ -602,10 +680,10 @@ pub(crate) fn verify_answer<T: VerifyPlugin>(
 pub fn write_identity(
     id: &VerifiedIdentity,
     buf: Lent<'_, IdentityBuf>,
-    out: Out<'_, IdentifyOut>,
+    mut out: Out<'_, IdentifyOut>,
     verdict: u32,
 ) -> Outcome {
-    write(Some(id), None, buf, out, verdict)
+    write(Some(id), None, buf, &mut out, verdict)
 }
 
 /// A verify's strips as it writes them: [`Answer::strips`], then [`Answer::fixed_strips`].
@@ -617,7 +695,7 @@ fn write(
     id: Option<&VerifiedIdentity>,
     strip: Option<(Strips<'_>, HostBuf<'_, StripName>, u32)>,
     buf: Lent<'_, IdentityBuf>,
-    mut out: Out<'_, IdentifyOut>,
+    out: &mut Out<'_, IdentifyOut>,
     verdict: u32,
 ) -> Outcome {
     let mut bytes: HostBuf<'_, u8> = buf.buf();

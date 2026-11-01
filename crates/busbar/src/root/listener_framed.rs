@@ -81,6 +81,7 @@ pub type FramerFor = Arc<dyn Fn(&str) -> Option<Arc<dyn FramerDoor>> + Send + Sy
 pub struct DataFramer {
     door: Arc<dyn FramerDoor>,
     owner: u64,
+    scheme: String,
     listener: Arc<crate::root::inbound::ListenerRegistration>,
     offer: Vec<Vec<u8>>,
     upgrade: FramerFor,
@@ -99,7 +100,24 @@ impl std::fmt::Debug for DataFramer {
 /// with, a stream FRAMER whose tail states it accepts, opened by the host (it has an instance).
 /// `None` = the build serves no such framer.
 pub fn data_framer(framer_for: FramerFor) -> Option<DataFramer> {
-    let door = framer_for(DATA_SCHEME)?;
+    configured_framer(framer_for, DATA_SCHEME, None)
+}
+
+/// An accepting listener over its declared transport and generation-bound guest-list policy.
+pub fn listener_framer(
+    framer_for: FramerFor,
+    scheme: &str,
+    policy: crate::root::inbound::ListenerPolicy,
+) -> Option<DataFramer> {
+    configured_framer(framer_for, scheme, Some(policy))
+}
+
+fn configured_framer(
+    framer_for: FramerFor,
+    scheme: &str,
+    policy: Option<crate::root::inbound::ListenerPolicy>,
+) -> Option<DataFramer> {
+    let door = framer_for(scheme)?;
     let facts = door.facts();
     if facts.role != ROLE_FRAMER || facts.datagram || !door.accepts() {
         return None;
@@ -117,13 +135,29 @@ pub fn data_framer(framer_for: FramerFor) -> Option<DataFramer> {
     Some(DataFramer {
         door,
         owner,
-        listener: crate::root::inbound::ListenerRegistration::new(owner, listener),
+        scheme: scheme.to_owned(),
+        listener: match policy {
+            Some(policy) => crate::root::inbound::ListenerRegistration::with_policy(
+                owner,
+                listener,
+                Some(policy),
+            ),
+            None => crate::root::inbound::ListenerRegistration::new(owner, listener),
+        },
         offer,
         upgrade: framer_for,
     })
 }
 
 impl DataFramer {
+    /// Validate this listener's policy before exposing its socket.
+    ///
+    /// # Errors
+    /// The published generation is missing or its selected guest list is invalid.
+    pub fn validate_policy(&self) -> Result<(), String> {
+        self.listener.validate()
+    }
+
     /// The framer entry.
     #[must_use]
     pub fn door(&self) -> &Arc<dyn FramerDoor> {
@@ -331,7 +365,7 @@ pub(super) async fn serve<I>(
 {
     let established = Established {
         scheme: Established::scheme_of(secured),
-        claim: Some(DATA_SCHEME.to_owned()),
+        claim: Some(framer.scheme.clone()),
         ..Established::default()
     };
     let Some(guests) = framer.guests() else {

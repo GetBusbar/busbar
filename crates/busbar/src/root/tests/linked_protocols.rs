@@ -7,7 +7,7 @@
 //! plane. The registry's own machinery over synthetic declarations is the kernel's to prove
 //! (`busbar-kernel`'s `proto` tests, `registry_fold`).
 //!
-//! Compiled only in a build that links every plane (`linked_every_plane`): the fixture is the shipped
+//! Compiled only in a build that links every plane door (`linked_every_plane_door`): the fixture is the shipped
 //! composition's, and a single-plane build links a different protocol set.
 
 use busbar_contract::codec::RequestHandler;

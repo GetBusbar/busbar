@@ -8,6 +8,13 @@
 //! names this, and neither names the other. Nothing here crosses the plugin boundary: the export
 //! kind's ABI is `abi::export`, and the loader lowers these types to it.
 
+/// JSON list of declared route paths requesting a first-party snapshot consumer's
+/// public namespace grant. The host still reserves its own routes and verifies trust.
+pub const EXT_PUBLIC_ROUTES: &str = "listener.public_routes";
+
+/// JSON list of public route paths retained by the boot instance after config removal.
+pub const EXT_PERSISTENT_ROUTES: &str = "listener.persistent_routes";
+
 /// The settings key that states an export instance's in-flight bound: how many deliveries the host
 /// runs at once for that instance (the frozen 1.5.x request-log webhook sink's
 /// `max_inflight_deliveries`). The host bounds the instance by it, within the plugin's declared
@@ -255,6 +262,17 @@ pub trait ExportCalls: Send + Sync {
     /// every kind declares in.
     fn routes(&self) -> &[crate::abi::mechanism::route::Route];
 
+    /// Declared routes outside the instance namespace, granted only to the first-party
+    /// snapshot consumer. These are host metadata read from the Statement extensions.
+    fn public_routes(&self) -> &[String] {
+        &[]
+    }
+
+    /// Public routes retained by the boot instance across configuration removal.
+    fn persistent_routes(&self) -> &[String] {
+        &[]
+    }
+
     /// Hand one already-projected JSON line for `stream` to the instance, OFF the request path:
     /// the line joins the instance's bounded queue, and the host coalesces queued lines into
     /// `deliver` batches (JSON LINES, one host-minted `op_id` each) in the write-behind deadline
@@ -377,6 +395,18 @@ pub trait ExportAxis: Send + Sync {
     /// The routes `module`'s row declares (its Statement's `routes`), read without opening an
     /// instance: what a configuration apply that adds an instance would mount. None by default.
     fn routes(&self, module: &str) -> Vec<crate::abi::mechanism::route::Route> {
+        let _ = module;
+        Vec::new()
+    }
+
+    /// Public route declarations, including rows that have not opened an instance.
+    fn public_routes(&self, module: &str) -> Vec<String> {
+        let _ = module;
+        Vec::new()
+    }
+
+    /// Boot-lifetime route declarations, including unopened rows.
+    fn persistent_routes(&self, module: &str) -> Vec<String> {
         let _ = module;
         Vec::new()
     }

@@ -401,6 +401,7 @@ fn bearer(credential: &[u8]) -> Fields {
         name: b"authorization".to_vec(),
         value: Secret::new(value),
         sensitive: false,
+        require_secure: false,
     }])
 }
 

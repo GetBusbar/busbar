@@ -185,7 +185,7 @@ impl CredentialProvider for BoundCredential {
         // so `http`'s `Debug` never prints it and an h2 encoder never indexes it in HPACK. The
         // bytes are unchanged. The dialect's statics below are not credentials and stay unmarked.
         let mut headers: Vec<(HeaderName, HeaderValue)> = match answered {
-            Some(Fields::Ready(fields)) => fields
+            Some(Fields::Ready(fields)) if !fields.iter().any(|f| f.require_secure) => fields
                 .into_iter()
                 .filter_map(|f| {
                     let mut value =

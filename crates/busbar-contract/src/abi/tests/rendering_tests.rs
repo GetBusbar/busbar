@@ -20,6 +20,44 @@ const NONE: AbiStr = AbiStr {
     len: 0,
 };
 
+#[test]
+fn a_null_string_or_blob_with_bytes_is_not_a_rendering() {
+    let mut extensions = statement("null-bytes", "1", 1);
+    extensions.extensions.len = 5;
+    let mut schema = statement("null-bytes", "1", 1);
+    schema.settings_schema.len = 5;
+    let mut version = statement("null-bytes", "1", 1);
+    version.version = AbiStr {
+        ptr: core::ptr::null(),
+        len: 5,
+    };
+    for (field, st) in [
+        ("extensions", extensions),
+        ("settings_schema", schema),
+        ("version", version),
+    ] {
+        // SAFETY: all non-NULL fields are the SDK's static data; no lists are present.
+        unsafe { crate::abi::mechanism::check::check_statement(&st) }.unwrap();
+        // SAFETY: the checked Statement has only live non-NULL backing; NULL fields are not read.
+        assert!(unsafe { render(&st) }.is_err(), "{field} must refuse");
+    }
+}
+
+#[test]
+fn empty_null_strings_and_blobs_keep_their_canonical_bytes() {
+    let mut st = statement("empty-bytes", "1", 1);
+    st.version = NONE;
+    let null = bytes(&st);
+    st.version.ptr = b"".as_ptr();
+    st.extensions.ptr = b"".as_ptr();
+    st.settings_schema.ptr = b"".as_ptr();
+    assert_eq!(bytes(&st), null);
+    let read = read(&null).expect("empty fields still read back");
+    assert!(read.version.is_empty());
+    assert!(read.extensions.bytes.is_empty());
+    assert!(read.settings_schema.bytes.is_empty());
+}
+
 const fn blob(b: &'static [u8], fmt: u32) -> Blob {
     Blob {
         ptr: b.as_ptr(),

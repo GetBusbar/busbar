@@ -147,6 +147,28 @@ pub fn reference_fields(extensions: &[u8]) -> Result<Vec<String>, String> {
 /// unchanged; it is rendered and signed with the rest of the blob.
 pub const EXT_SPAN_RECORDS: &str = "span_records";
 
+pub use crate::export_calls::{EXT_PERSISTENT_ROUTES, EXT_PUBLIC_ROUTES};
+
+/// Read a route-path list from Statement extensions. An absent entry declares none.
+///
+/// # Errors
+/// The entry is not a JSON array of distinct absolute paths without query or fragment.
+pub fn route_paths(extensions: &[u8], key: &str) -> Result<Vec<String>, String> {
+    let Some(value) = get(extensions, key) else {
+        return Ok(Vec::new());
+    };
+    let paths: Vec<String> = serde_json::from_slice(value)
+        .map_err(|_| format!("extensions.{key} is not a JSON list of route paths"))?;
+    for (i, path) in paths.iter().enumerate() {
+        if !path.starts_with('/') || path.contains(['?', '#']) || paths[..i].contains(path) {
+            return Err(format!(
+                "extensions.{key} contains an invalid or repeated route path"
+            ));
+        }
+    }
+    Ok(paths)
+}
+
 /// Whether a Statement's extensions state the door takes full span records
 /// ([`EXT_SPAN_RECORDS`]); `false` when they state nothing.
 ///

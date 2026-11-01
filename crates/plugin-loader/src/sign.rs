@@ -89,8 +89,8 @@ pub const HOST_IDENTITY: &str = "busbar";
 /// ever in this tree. `.cargo/config.toml` commits no key while the 1.6.0 key ceremony is pending
 /// (the retired 1.5 key, [`RETIRED_RELEASE_KEYS`], is not trusted), so a local build embeds none.
 /// `scripts/release-key-guard.sh` refuses to build a release binary without a well-formed 64-hex
-/// key, and `scripts/release-gate/platform-checks.sh` fails the `pubkey` row when the published
-/// artifact does not embed it. A build that embeds a RETIRED key still refuses what it signed
+/// key, and `scripts/verify-artifact.py` checks the embedded key in the published artifact.
+/// A build that embeds a RETIRED key still refuses what it signed
 /// ([`evaluate`]).
 /// (Owner ruling 2026-09-30, N3 / Q90: a statement of the contract, not a deferral.)
 pub fn embedded_release_pubkey() -> Option<VerifyingKey> {

@@ -201,6 +201,7 @@ pub struct Connection {
     unflushed: bool,
     /// Frame pieces the caller has not taken.
     inbox: VecDeque<Got>,
+    receive_held: usize,
     /// The first message, sent once the framing begins.
     opening: Option<Opening>,
     /// The initial opening's credential names, retained while Begin is parked.
@@ -840,6 +841,7 @@ impl Connection {
             queued: 0,
             unflushed: false,
             inbox: VecDeque::new(),
+            receive_held: 0,
             opening: dial.opening,
             head_words: dial.head_words,
             early: Vec::new(),
@@ -948,6 +950,7 @@ impl Connection {
             queued: 0,
             unflushed: false,
             inbox: VecDeque::new(),
+            receive_held: 0,
             opening: dial.opening,
             head_words: dial.head_words,
             early: Vec::new(),
@@ -1071,6 +1074,7 @@ impl Connection {
             queued: 0,
             unflushed: false,
             inbox: VecDeque::new(),
+            receive_held: 0,
             opening: None,
             head_words: HeadWords::default(),
             early: Vec::new(),
@@ -1725,7 +1729,7 @@ impl Connection {
             // A parked `begin` holds the framer: nothing is read for it until the begin completes.
             // An op parked on one stream holds that stream alone: the far end's bytes keep coming.
             if !self.begin_parked()
-                && self.unread_bytes() < RECEIVE_BUFFER_BYTES
+                && self.buffered_input().saturating_add(self.receive_held) < RECEIVE_BUFFER_BYTES
                 && self.out.len() < 2 * WRITE_BUFFER_BYTES
             {
                 moved |= self.read(cx)?;
@@ -1778,9 +1782,17 @@ impl Connection {
         Ok(true)
     }
 
-    /// The bytes of the pieces read and not yet taken.
-    fn unread_bytes(&self) -> usize {
-        self.inbox.iter().map(|g| g.bytes.len()).sum()
+    /// Undelivered input held here or by the current framer. Line-owned pieces are accounted
+    /// separately so transferring a piece from this inbox to its line does not free read room.
+    pub(crate) fn buffered_input(&self) -> usize {
+        self.inbox.iter().fold(
+            self.framing.as_ref().map_or(0, Framing::retained_input),
+            |n, g| n.saturating_add(g.bytes.len()),
+        )
+    }
+
+    pub(crate) fn set_receive_held(&mut self, bytes: usize) {
+        self.receive_held = bytes;
     }
 
     /// Write what the carrier owes, as far as it takes it; once it took everything, its `flush`.

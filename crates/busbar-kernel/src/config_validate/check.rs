@@ -45,7 +45,8 @@ pub struct Check<'a> {
 
 /// Validate `cfg`: the semantic pass, the root's rules, the plugin pre-flight, the secret modules
 /// and references against the registry it builds, and (when asked) the built-in secrets. Returns
-/// the validated registry. Manifest-only: nothing is `dlopen`ed and no store is opened.
+/// the validated registry. Pool strategies are probed through the admitted hook axis for their
+/// declared words and settings validation; this may load a dropped-in hook. No store is opened.
 ///
 /// # Errors
 ///
@@ -67,6 +68,7 @@ pub fn check(cfg: &RootCfg, c: Check<'_>) -> Result<Arc<dyn PluginRows>, Refusal
         &cfg.export,
     )
     .map_err(Refusal::Plugins)?;
+    crate::preflight::validate_pool_strategies(cfg, &registry).map_err(Refusal::Plugins)?;
     secret_refs::registry_refusal(registry.as_ref(), cfg).map_err(Refusal::Plugins)?;
     // A secret reference in a plugin's settings at a field the plugin did not declare secret.
     super::undeclared_secret_refs(registry.as_ref(), cfg).map_err(Refusal::Plugins)?;

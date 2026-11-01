@@ -559,6 +559,8 @@ pub struct CandidateFacts {
     pub tier: Option<String>,
     /// The member's cost per million tokens.
     pub cost_per_mtok: Option<f64>,
+    /// The host's plane-declared cost terms, already priced for this lane and generation.
+    pub route_cost: SignalBag,
     /// The member's tags.
     pub tags: Vec<String>,
     /// The member's latency average, in milliseconds.
@@ -643,7 +645,7 @@ impl Constraint {
 
 /// THE PLANE'S PROJECTION of a unit's request, owned: what every hook payload of the unit is
 /// built from.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Projection {
     /// The pool the plane names (the walk's, when it names one, wins).
     pub pool: String,
@@ -679,7 +681,46 @@ pub struct Projection {
     pub rewrite_not_applicable: bool,
 }
 
+impl Default for Projection {
+    fn default() -> Self {
+        Self::empty(String::new(), String::new())
+    }
+}
+
+impl Drop for Projection {
+    fn drop(&mut self) {
+        use zeroize::Zeroize as _;
+        self.pool.zeroize();
+        self.dialect.zeroize();
+        self.system.zeroize();
+        self.turns.zeroize();
+        self.end_user.zeroize();
+        self.rewritten.zeroize();
+        self.session.zeroize();
+        self.projected.zeroize();
+    }
+}
+
 impl Projection {
+    fn empty(pool: String, dialect: String) -> Self {
+        Self {
+            pool,
+            dialect,
+            message_count: 0,
+            total_chars: 0,
+            max_tokens: None,
+            has_tools: false,
+            stream: false,
+            system: None,
+            turns: Vec::new(),
+            end_user: None,
+            rewritten: None,
+            session: None,
+            projected: None,
+            rewrite_not_applicable: false,
+        }
+    }
+
     /// The prompt view, under the content ceiling.
     fn prompt(&self) -> PromptProjection<'_> {
         content_capped(PromptProjection {
@@ -1136,7 +1177,7 @@ fn candidates_of<'a>(
         .iter()
         .filter(|c| keep.contains(&c.idx))
         .map(|c| {
-            let mut signals = SignalBag::new();
+            let mut signals = c.route_cost.clone();
             let wants = &hooks.requested;
             if !wants.is_empty() {
                 if wants.wants(Signal::CandidateBreakerState) {
@@ -1245,12 +1286,54 @@ mod rewrite_crossing_tests;
 #[path = "tests/section_attach_tests.rs"]
 mod section_attach_tests;
 
+#[cfg(not(test))]
+type ProjectBytes = Vec<u8>;
+#[cfg(test)]
+type ProjectBytes = project_arena_custody_tests::ObservedArena;
+
 /// The buffers one `project` crossing lends.
 struct ProjectBufs {
     signals: Vec<SignalEntry>,
     messages: Vec<MessageView>,
-    arena: Vec<u8>,
+    arena: ProjectArena,
 }
+
+struct ProjectArena(zeroize::Zeroizing<ProjectBytes>);
+
+impl From<Vec<u8>> for ProjectArena {
+    fn from(bytes: Vec<u8>) -> Self {
+        Self(zeroize::Zeroizing::new(bytes.into()))
+    }
+}
+
+impl std::ops::Deref for ProjectArena {
+    type Target = [u8];
+
+    fn deref(&self) -> &[u8] {
+        self.0.as_slice()
+    }
+}
+
+impl std::ops::DerefMut for ProjectArena {
+    fn deref_mut(&mut self) -> &mut [u8] {
+        self.0.as_mut_slice()
+    }
+}
+
+impl ProjectArena {
+    fn grow(&mut self, needed: usize) {
+        if needed <= self.len() {
+            return;
+        }
+        let mut grown = Self::from(vec![0; needed]);
+        grown[..self.len()].copy_from_slice(self);
+        *self = grown;
+    }
+}
+
+#[cfg(test)]
+#[path = "tests/project_arena_custody_tests.rs"]
+mod project_arena_custody_tests;
 
 const SIGNALS_CAP: usize = 16;
 const MESSAGES_CAP: usize = 64;
@@ -1288,7 +1371,7 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
                 };
                 MESSAGES_CAP
             ],
-            arena: vec![0u8; self.driver.config.caps.arena.max(4096)],
+            arena: vec![0u8; self.driver.config.caps.arena.max(4096)].into(),
         };
         let mut input = ProjectIn {
             claim: a.claim,
@@ -1319,11 +1402,10 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
                     (short.messages_needed as usize).max(bufs.messages.len()),
                     bufs.messages[0],
                 );
-                bufs.arena.resize(
+                bufs.arena.grow(
                     usize::try_from(short.arena_needed)
                         .unwrap_or(usize::MAX)
                         .max(bufs.arena.len()),
-                    0,
                 );
                 i.signals_buf = bufs.signals.as_mut_ptr();
                 i.signals_cap = bufs.signals.len();
@@ -1561,11 +1643,9 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
             // and the taps read no document (`.ok()`, `:170`, `:1330`). Only a configured rewrite
             // made it the shared 500. The gates and the policy judge the zeroed view, the request
             // proceeding.
-            Err(Stopped::Unparseable { .. }) => Projection {
-                pool: walk_pool.clone(),
-                dialect: hooks.dialect.clone(),
-                ..Projection::default()
-            },
+            Err(Stopped::Unparseable { .. }) => {
+                Projection::empty(walk_pool.clone(), hooks.dialect.clone())
+            }
             // A request the plane cannot read is the request's failure where a hook must judge
             // it (a rewrite, a gate, a route policy); a tap only observes, and observes the zeroed
             // shape (the previous release's stage capture), the request proceeding.
@@ -1574,18 +1654,11 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
                     && hooks.gates.is_empty()
                     && hooks.policy.is_none() =>
             {
-                Projection {
-                    pool: walk_pool.clone(),
-                    dialect: hooks.dialect.clone(),
-                    ..Projection::default()
-                }
+                Projection::empty(walk_pool.clone(), hooks.dialect.clone())
             }
             Err(stopped) => {
                 // The unit's response taps still see it, in the zeroed shape.
-                let zeroed = Projection {
-                    dialect: hooks.dialect.clone(),
-                    ..Projection::default()
-                };
+                let zeroed = Projection::empty(String::new(), hooks.dialect.clone());
                 self.lock().hooked = Some((hooks, zeroed));
                 return Err(stopped);
             }
@@ -2200,15 +2273,12 @@ impl SessionStage {
     fn view(&self, system: Option<String>, turns: Vec<(String, String)>) -> Projection {
         let total_chars = turns.iter().map(|(_, t)| t.chars().count()).sum::<usize>()
             + system.as_deref().map_or(0, |s| s.chars().count());
-        Projection {
-            pool: self.pool.clone(),
-            dialect: self.dialect.clone(),
-            message_count: turns.len(),
-            total_chars,
-            system,
-            turns,
-            ..Projection::default()
-        }
+        let mut view = Projection::empty(self.pool.clone(), self.dialect.clone());
+        view.message_count = turns.len();
+        view.total_chars = total_chars;
+        view.system = system;
+        view.turns = turns;
+        view
     }
 
     /// Run `job` over the unit's hooks on the stage's runtime and answer through `done`.

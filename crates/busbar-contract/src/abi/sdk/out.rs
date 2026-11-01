@@ -641,11 +641,236 @@ impl<'a, T: AbiOut> Out<'a, T> {
         unsafe { &mut *ptr::from_mut::<T>(self.out).cast::<OutHead>() }
     }
 
+    /// Append one negotiated inspection request to the existing main reply extensions, holding
+    /// every copied byte under this answer's lease. A second different query returns Busy and
+    /// preserves the first request and all unrelated extension bytes.
+    pub fn inspection_request(
+        &mut self,
+        leases: &Leases,
+        request: &crate::abi::mechanism::inspection::InspectionRequest,
+    ) -> Result<(), crate::abi::mechanism::inspection::InspectionError> {
+        use crate::abi::mechanism::inspection::{self, InspectionError};
+        let ext = self.head().extensions;
+        if ext.len > inspection::MAX_BYTES
+            || (ext.len != 0
+                && (ext.ptr.is_null() || ext.fmt != crate::abi::mechanism::call::BLOB_OCTETS))
+        {
+            return Err(InspectionError::Invalid);
+        }
+        let existing = if ext.len == 0 {
+            &[][..]
+        } else {
+            // SAFETY: only SDK writers can name this output field; their owned/lent bytes are
+            // still live for this call, and the bounded nonempty range was checked above.
+            unsafe { std::slice::from_raw_parts(ext.ptr, ext.len) }
+        };
+        use crate::abi::sdk::plane::conditional as wire;
+        for key in [
+            wire::INTENT,
+            wire::OBSERVE,
+            wire::RESULT,
+            wire::OBSERVED,
+            wire::CAPABILITY,
+            wire::SETTLEMENT,
+            wire::SETTLEMENT_ACK,
+        ] {
+            if wire::entry(existing, key)
+                .map_err(|_| InspectionError::Invalid)?
+                .is_some()
+            {
+                return Err(InspectionError::Busy);
+            }
+        }
+        if let Some(held) = inspection::read_request(existing)? {
+            return if held == *request {
+                Ok(())
+            } else {
+                Err(InspectionError::Busy)
+            };
+        }
+        if !inspection::query_fits(&request.query, existing.len()) {
+            return Err(InspectionError::Invalid);
+        }
+        let bytes = inspection::append_request(existing, request)?;
+        self.held_by(&leases.alive);
+        let mut blob = if ext.flags & crate::abi::mechanism::call::BLOB_SECRET != 0 {
+            leases.secret_blob(self.head(), bytes, crate::abi::mechanism::call::BLOB_OCTETS)
+        } else {
+            leases.blob(self.head(), bytes, crate::abi::mechanism::call::BLOB_OCTETS)
+        };
+        blob.flags = ext.flags;
+        self.put(
+            |out| {
+                // SAFETY: AbiOut starts with OutHead; this selects a field inside that head.
+                unsafe { &(*ptr::from_ref(out).cast::<OutHead>()).extensions }
+            },
+            blob,
+        );
+        Ok(())
+    }
+
+    /// Acknowledge explicitly consumed terminal service results on this driver. The bytes are
+    /// leased until host validation; the guest waits for the next capability before reusing IDs.
+    pub fn completion_ack(
+        &mut self,
+        leases: &Leases,
+        ack: &crate::abi::sdk::completion_retirement::Acknowledgement,
+    ) -> Result<(), crate::abi::sdk::completion_retirement::Error> {
+        use crate::abi::mechanism::call::{BLOB_OCTETS, BLOB_SECRET};
+        use crate::abi::sdk::completion_retirement::{self as wire, Error};
+        let ext = self.head().extensions;
+        if ext.len > crate::abi::mechanism::check::HARD_MAX_BYTES as usize
+            || (ext.len != 0 && (ext.ptr.is_null() || ext.fmt != BLOB_OCTETS))
+        {
+            return Err(Error::Invalid);
+        }
+        let prior = if ext.len == 0 {
+            &[][..]
+        } else {
+            // SAFETY: prior SDK output writers retain these bytes for this answer.
+            unsafe { std::slice::from_raw_parts(ext.ptr, ext.len) }
+        };
+        if let Some(previous) = wire::read_ack(prior)? {
+            return if previous == *ack {
+                Ok(())
+            } else {
+                Err(Error::Invalid)
+            };
+        }
+        let bytes = wire::append_ack(prior, ack)?;
+        self.held_by(&leases.alive);
+        let mut blob = if ext.flags & BLOB_SECRET != 0 {
+            leases.secret_blob(self.head(), bytes, BLOB_OCTETS)
+        } else {
+            leases.blob(self.head(), bytes, BLOB_OCTETS)
+        };
+        blob.flags = ext.flags;
+        self.head().extensions = blob;
+        Ok(())
+    }
+
     /// For a PENDING answer: resume this op no later than `mono_ns` on the host's monotonic clock
     /// (`clock.now`'s `mono_ns`) even if nothing wakes it — the host's timer, never earlier than
     /// `mono_ns` (a wake may still resume it sooner: see `abi::sdk::conn::not_before`).
     pub fn wake_at(&mut self, mono_ns: u64) {
         self.head().wake_at_ns = mono_ns;
+    }
+
+    /// Lease an immutable logical publication intent. Return PENDING with no ordinary output;
+    /// read its exact result on RESUME/DRIVE before publishing any effects.
+    pub fn conditional_request(
+        &mut self,
+        leases: &Leases,
+        request: &crate::abi::sdk::plane::conditional::Request,
+    ) -> Result<(), &'static str> {
+        use crate::abi::sdk::plane::conditional as wire;
+        self.conditional_extension(leases, wire::INTENT, wire::encode_request(request)?)
+    }
+
+    /// Lease a read-only original-incarnation observation. Return PENDING, then issue fresh
+    /// planning reads only after the exact observation arrives on RESUME/DRIVE.
+    pub fn conditional_observation(
+        &mut self,
+        leases: &Leases,
+        request: &crate::abi::sdk::plane::conditional::Observation,
+    ) -> Result<(), &'static str> {
+        use crate::abi::sdk::plane::conditional as wire;
+        self.conditional_extension(leases, wire::OBSERVE, wire::encode_observation(request)?)
+    }
+
+    /// Lease an exact outcome-only settlement acknowledgement. Return PENDING from DRIVE/TICK
+    /// with no ordinary output. Retain the original journal and ACK marker until the next valid
+    /// same-instance driver input no longer carries this sticky settlement; SHORT does not ACK.
+    pub fn conditional_settlement_ack(
+        &mut self,
+        leases: &Leases,
+        settlement: &crate::abi::sdk::plane::conditional::Settlement,
+    ) -> Result<(), &'static str> {
+        use crate::abi::sdk::plane::conditional as wire;
+        let encoded = wire::encode_settlement_ack(settlement);
+        wire::read_settlement_ack(&encoded)?;
+        self.conditional_extension(leases, wire::SETTLEMENT_ACK, encoded)
+    }
+
+    fn conditional_extension(
+        &mut self,
+        leases: &Leases,
+        key: &str,
+        encoded: Vec<u8>,
+    ) -> Result<(), &'static str> {
+        use crate::abi::mechanism::call::{BLOB_OCTETS, BLOB_SECRET};
+        use crate::abi::sdk::plane::conditional as wire;
+        let ext = self.head().extensions;
+        if ext.len > crate::abi::mechanism::check::HARD_MAX_BYTES as usize
+            || (ext.len != 0 && (ext.ptr.is_null() || ext.fmt != BLOB_OCTETS))
+        {
+            return Err(wire::INVALID);
+        }
+        let prior = if ext.len == 0 {
+            &[][..]
+        } else {
+            // SAFETY: SDK writers retain this bounded output blob for the answer's lifetime.
+            unsafe { std::slice::from_raw_parts(ext.ptr, ext.len) }
+        };
+        let mut repeated = false;
+        for other in [
+            wire::INTENT,
+            wire::OBSERVE,
+            wire::RESULT,
+            wire::OBSERVED,
+            wire::CAPABILITY,
+            wire::SETTLEMENT,
+            wire::SETTLEMENT_ACK,
+        ] {
+            if let Some(value) = wire::entry(prior, other)? {
+                if other != key || wire::entry(&encoded, key)? != Some(value) {
+                    return Err(wire::INVALID);
+                }
+                repeated = true;
+            }
+        }
+        if crate::abi::mechanism::extensions::get(
+            prior,
+            crate::abi::mechanism::inspection::EXT_REQUEST,
+        )
+        .is_some()
+        {
+            return Err(wire::INVALID);
+        }
+        if repeated {
+            return Ok(());
+        }
+        let len = prior
+            .len()
+            .checked_add(encoded.len())
+            .filter(|&n| n <= crate::abi::mechanism::check::HARD_MAX_BYTES as usize)
+            .ok_or(wire::INVALID)?;
+        let mut bytes = Vec::with_capacity(len);
+        bytes.extend_from_slice(prior);
+        #[cfg(test)]
+        // SAFETY: this owned initialized Vec stays on the probe's thread through lease release.
+        if ext.flags & BLOB_SECRET != 0 {
+            unsafe {
+                crate::alloc_counter::watch_initialized_payload(&bytes);
+            }
+        }
+        bytes.extend_from_slice(&encoded);
+        #[cfg(test)]
+        // SAFETY: include the initialized appended bytes without observing spare capacity.
+        if ext.flags & BLOB_SECRET != 0 {
+            unsafe {
+                crate::alloc_counter::watch_initialized_payload(&bytes);
+            }
+        }
+        self.held_by(&leases.alive);
+        let mut blob = if ext.flags & BLOB_SECRET != 0 {
+            leases.secret_blob(self.head(), bytes, BLOB_OCTETS)
+        } else {
+            leases.blob(self.head(), bytes, BLOB_OCTETS)
+        };
+        blob.flags = ext.flags;
+        self.head().extensions = blob;
+        Ok(())
     }
 
     /// Answer `refusal`: its outcome, the head's error naming its text. A `'static` text is named
@@ -844,6 +1069,11 @@ impl<'a, T: AbiOut> Out<'a, T> {
         bytes: Vec<u8>,
         fmt: u32,
     ) {
+        #[cfg(test)]
+        // SAFETY: this owned initialized Vec stays on the probe's thread through lease release.
+        unsafe {
+            crate::alloc_counter::watch_initialized_payload(&bytes);
+        }
         self.held_by(&leases.alive);
         let blob = leases.secret_blob(self.head(), bytes, fmt);
         self.put(pick, blob);

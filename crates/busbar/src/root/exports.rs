@@ -85,6 +85,16 @@ impl ExportAxis for RootExports {
         rows().map(|r| r.routes(module)).unwrap_or_default()
     }
 
+    fn public_routes(&self, module: &str) -> Vec<String> {
+        rows().map(|r| r.public_routes(module)).unwrap_or_default()
+    }
+
+    fn persistent_routes(&self, module: &str) -> Vec<String> {
+        rows()
+            .map(|r| r.persistent_routes(module))
+            .unwrap_or_default()
+    }
+
     fn secret_refs(&self, module: &str) -> Vec<String> {
         use busbar_contract::plugin_rows::PluginRows;
         crate::root::linked::dropped()

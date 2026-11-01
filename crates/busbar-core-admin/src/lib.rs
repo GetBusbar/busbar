@@ -207,6 +207,10 @@ pub fn build_split_routers_with_limits(
 #[path = "tests/txn_tests.rs"]
 mod txn_tests;
 
+#[cfg(test)]
+#[path = "tests/hook_route_timeout_tests.rs"]
+mod hook_route_timeout_tests;
+
 // The key-revoke tombstone suite drives the admin key-revoke HTTP surface; it moved here from
 // busbar-core with the service.
 #[cfg(test)]

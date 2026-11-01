@@ -473,12 +473,64 @@ pub fn check_framer_fields(pieces: &[FramePiece], frame: &[u8]) -> Result<(), Fa
 ///
 /// The rule the slots break.
 pub fn check_head_slots(out: &FramerOut, heads: &[HeadSlots], heads_cap: u64) -> Result<(), Fault> {
+    head_slots(out, heads, heads_cap, &[])
+}
+
+/// Head slots checked with the actual field pieces after [`check_framer`] passed. A reason-only
+/// slot immediately precedes its head's first piece in the SDK sink. An explicitly interim head
+/// does not consume the stream's terminal slot; a duplicate terminal head is still refused.
+///
+/// # Errors
+/// The same slot rules as [`check_head_slots`], including duplicate or uncorrelated head slots.
+pub fn check_head_slots_with_pieces(
+    out: &FramerOut,
+    heads: &[HeadSlots],
+    heads_cap: u64,
+    pieces: &[FramePiece],
+) -> Result<(), Fault> {
+    let pieces = first(pieces, u64::from(out.yielded.pieces_len), "framer.pieces")?;
+    head_slots(out, heads, heads_cap, pieces)
+}
+
+/// The actual first field piece adjacent to a dialled head's reason words, as the SDK sink
+/// writes them. Request words and absent reasons do not identify a response piece.
+#[must_use]
+pub fn head_piece_index(head: &HeadSlots, pieces: &[FramePiece]) -> Option<usize> {
+    if head.method.len != 0
+        || head.target.len != 0
+        || head.authority.len != 0
+        || head.reason.len == 0
+    {
+        return None;
+    }
+    let end = head.reason.offset.checked_add(head.reason.len)?;
+    pieces.iter().position(|piece| {
+        piece.stream == head.stream
+            && piece.offset == end
+            && piece.flags & (PIECE_FIELDS | PIECE_HAS_CODE) == PIECE_FIELDS | PIECE_HAS_CODE
+            && piece.flags & PIECE_CONTINUED == 0
+    })
+}
+
+fn head_slots(
+    out: &FramerOut,
+    heads: &[HeadSlots],
+    heads_cap: u64,
+    pieces: &[FramePiece],
+) -> Result<(), Fault> {
+    let reason_end = |head: &HeadSlots| head.reason.offset.checked_add(head.reason.len);
+    let interim = |head: &HeadSlots| {
+        head_piece_index(head, pieces).is_some_and(|index| pieces[index].flags & PIECE_INTERIM != 0)
+    };
     let y = &out.yielded;
     let n = u64::from(y.heads_len);
     within(n, heads_cap, "framer.heads_len")?;
     let heads = first(heads, n, "framer.heads")?;
     for (i, h) in heads.iter().enumerate() {
-        if heads[..i].iter().any(|e| e.stream == h.stream) {
+        if heads[..i].iter().any(|earlier| {
+            earlier.stream == h.stream
+                && (!interim(earlier) || reason_end(earlier) == reason_end(h))
+        }) {
             return Err(fault(Rule::Contradiction, "framer.head.stream_twice"));
         }
         let span = |s: FrameSpan, field| range(s.offset, s.len, y.frame_len, field);
@@ -1019,7 +1071,7 @@ unsafe fn framer(outcome: Outcome, o: &FramerOut, sink: FramerSink) -> Result<()
             "framer.heads_len",
         )
     }?;
-    check_head_slots(o, heads, heads_cap)
+    check_head_slots_with_pieces(o, heads, heads_cap, pieces)
 }
 
 // THE TRANSPORT KIND'S ANSWERS (`check_answer`), each op's frames in the order the loader reads

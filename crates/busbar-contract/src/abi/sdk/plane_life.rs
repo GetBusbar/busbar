@@ -13,8 +13,8 @@
 //! * `open` publishes the first generation's snapshot and holds the state; `refresh` publishes the
 //!   next one over the same state; `retire` drops a generation's snapshot ([`Generations`]);
 //! * a FAILED or REFUSED `validate`/`open`/`refresh` answers its [`Refusal`]'s text;
-//! * `release` and `close` answer READY: a plane answers under no lease, and the SDK drops the state
-//!   and every snapshot it still holds.
+//! * `release` forwards optional plane-owned leases; planes naming none retain READY. `close`
+//!   drops the state, outstanding leases and every snapshot it still holds.
 
 use std::ffi::c_void;
 use std::marker::PhantomData;
@@ -64,6 +64,13 @@ pub trait PlaneLife: Send + Sync + Sized + 'static {
 
     /// The generations this state publishes.
     fn generations(&self) -> &Generations<PlaneSnapshot, Self::Held>;
+
+    /// Optional owned answer leases, released by the existing generic RELEASE slot. A plane
+    /// using leased main-call extensions exposes the same owner it passes to the output writer.
+    /// None retains the existing lease-free lifecycle.
+    fn leases(&self) -> Option<&crate::abi::sdk::life::Leases> {
+        None
+    }
 
     /// `validate`: whether `settings` open an instance. The default is the SDK's object check.
     ///
@@ -233,8 +240,16 @@ plane_slot!(
 );
 
 plane_slot!(
-    /// `release`: READY; a plane answers under no lease.
-    Release(ReleaseIn => OutHead) |_, _, _out| { Outcome::Ready }
+    /// `release`: release optional plane-owned answers, or READY for a lease-free plane.
+    Release(ReleaseIn => OutHead) |instance, input, out| {
+        match instance.get().and_then(PlaneLife::leases) {
+            None => Outcome::Ready,
+            Some(leases) => match leases.release(input.lease()) {
+                Outcome::Ready => Outcome::Ready,
+                _ => out.fail(Refusal::refused(crate::abi::sdk::life::NO_SUCH_LEASE)),
+            },
+        }
+    }
 );
 
 plane_slot!(
@@ -271,3 +286,7 @@ impl RawSlot for NoServe {
 #[cfg(test)]
 #[path = "tests/plane_life_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "tests/plane_inspection_leases_tests.rs"]
+mod inspection_leases_tests;

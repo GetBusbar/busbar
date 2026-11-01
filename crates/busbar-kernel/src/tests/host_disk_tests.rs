@@ -325,3 +325,87 @@ fn an_append_whose_completion_panics_leaves_the_lane_running() {
     assert_eq!(std::fs::read_to_string(&file).unwrap(), "first\nsecond\n");
     let _ = std::fs::remove_dir_all(&d);
 }
+
+#[test]
+fn a_blocked_disk_job_does_not_block_ordered_appends_or_their_completions() {
+    let d = dir("blocked-resolve");
+    let file = d.join("log.jsonl");
+    let lane = DiskLane::default();
+    let (entered_tx, entered) = std::sync::mpsc::channel();
+    let (release, released) = std::sync::mpsc::channel();
+    let (finished_tx, finished) = std::sync::mpsc::channel();
+    lane.run(Box::new(move || {
+        let _ = entered_tx.send(());
+        let _ = released.recv();
+        let _ = finished_tx.send(());
+    }))
+    .unwrap();
+    let running = entered.recv_timeout(std::time::Duration::from_secs(10));
+    let (drained_tx, drained) = std::sync::mpsc::channel();
+    let mut queued = true;
+    for n in 0..LANE_BOUND {
+        let tx = drained_tx.clone();
+        queued &= lane
+            .run(Box::new(move || {
+                if n + 1 == LANE_BOUND {
+                    let _ = tx.send(());
+                }
+            }))
+            .is_ok();
+    }
+    let full = lane.run(Box::new(|| {}));
+    let (done_tx, done) = std::sync::mpsc::channel();
+    let mut submitted = true;
+    for bytes in [b"first\n".as_slice(), b"second\n"] {
+        let tx = done_tx.clone();
+        submitted &= lane
+            .submit(
+                dest(&file, None),
+                bytes.to_vec(),
+                Box::new(move |report| {
+                    let _ = tx.send(report);
+                }),
+            )
+            .is_ok();
+    }
+    let first = submitted.then(|| done.recv_timeout(std::time::Duration::from_secs(2)));
+    let second = submitted.then(|| done.recv_timeout(std::time::Duration::from_secs(2)));
+    // Always unblock the resolver before asserting, including on the old shared-worker failure.
+    let _ = release.send(());
+    let cleaned = finished.recv_timeout(std::time::Duration::from_secs(10));
+    let backlog_cleaned = drained.recv_timeout(std::time::Duration::from_secs(10));
+    if first.as_ref().is_some_and(Result::is_err) {
+        let _ = done.recv_timeout(std::time::Duration::from_secs(10));
+    }
+    if second.as_ref().is_some_and(Result::is_err) {
+        let _ = done.recv_timeout(std::time::Duration::from_secs(10));
+    }
+    let bytes = std::fs::read(&file);
+    drop(lane);
+    let _ = std::fs::remove_dir_all(&d);
+    running.expect("the disk job entered its blocking callback");
+    cleaned.expect("the callback is released before the test ends");
+    backlog_cleaned.expect("the bounded backlog is drained before the test ends");
+    assert!(queued, "the existing bound admits the queued jobs");
+    assert_eq!(
+        full,
+        Err(LANE_FULL),
+        "blocking jobs retain bounded admission"
+    );
+    assert!(submitted, "appends retain their own queue admission");
+    assert_eq!(
+        first
+            .expect("first append was admitted")
+            .expect("append completes while the disk job is blocked")
+            .outcome,
+        Outcome::Ready
+    );
+    assert_eq!(
+        second
+            .expect("second append was admitted")
+            .expect("second append completes while the disk job is blocked")
+            .outcome,
+        Outcome::Ready
+    );
+    assert_eq!(bytes.unwrap(), b"first\nsecond\n");
+}

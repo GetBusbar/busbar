@@ -56,9 +56,52 @@ pub struct TrustKeyRef<'a> {
 
 /// THE HOST SERVICES, as the kernel implements them. The dispatcher holds one for every instance it
 /// adopts; each slot validates the caller's `in`, applies the mechanism's rules, and calls in here
-/// at most once per completion handle. Every service is required, with no default body (spec
-/// #38(a)): an implementor that does not serve one says so in its own body, never by inheriting.
+/// at most once per completion handle. Every ABI service is required, with no default body (spec
+/// #38(a)). The optional, negotiated Rust-only inspection capability explicitly defaults to
+/// Unsupported so hosts without that extension retain their existing ABI services.
 pub trait HostServices: Send + Sync {
+    /// Observe a declared chain's incarnation before the caller performs fresh planning reads.
+    fn observe_chain_life(
+        &self,
+        _caller: &Caller,
+        _kind: u32,
+        _scope: &[u8],
+        _done: Box<
+            dyn FnOnce(Result<crate::abi::sdk::store::conditional::Expected, &'static str>) + Send,
+        >,
+    ) -> Result<(), &'static str> {
+        Err("chain observation unsupported")
+    }
+
+    /// True only when the configured record store supports atomic conditional publication.
+    fn supports_record_transactions(&self) -> bool {
+        false
+    }
+
+    /// Submit an immutable logical candidate. Once accepted, custody belongs to the host even
+    /// when the caller disappears. Unknown commit outcomes are not condition conflicts.
+    fn conditional_record_transaction(
+        &self,
+        _caller: &Caller,
+        _unit: Option<u64>,
+        _candidate: crate::abi::sdk::plane::conditional::ConditionalCandidate,
+        _acked: Box<dyn FnOnce(crate::abi::sdk::plane::conditional::ConditionalResult) + Send>,
+    ) -> Result<(), &'static str> {
+        Err("conditional record transactions unsupported")
+    }
+
+    /// Optional, negotiated generic host observations. This Rust-only extension does not add a
+    /// host slot. A host without this capability explicitly refuses it; ordinary services keep
+    /// their required implementations. The loader supplies the admitted caller and serving unit.
+    fn inspect(
+        &self,
+        _caller: &Caller,
+        _unit: Option<u64>,
+        _query: &crate::abi::mechanism::inspection::InspectionQuery,
+    ) -> crate::abi::mechanism::inspection::InspectionResult {
+        Err(crate::abi::mechanism::inspection::InspectionError::Unsupported)
+    }
+
     /// `clock.now`: the kernel's one clock. Never pends.
     fn now(&self) -> Reading;
 

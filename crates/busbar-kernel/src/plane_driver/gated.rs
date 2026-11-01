@@ -203,11 +203,10 @@ impl<S: DriverSteps, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
                 let Some(hooks) = hooks else {
                     return Ok(());
                 };
-                let null = Projection {
-                    pool: entry,
-                    dialect: binder.dialect(self.lock().decoded.as_ref().map_or(0, |d| d.dialect)),
-                    ..Projection::default()
-                };
+                let null = Projection::empty(
+                    entry,
+                    binder.dialect(self.lock().decoded.as_ref().map_or(0, |d| d.dialect)),
+                );
                 return self.screen_gates(&hooks, &null, ran).await;
             }
             Err(other) => return Err(other),

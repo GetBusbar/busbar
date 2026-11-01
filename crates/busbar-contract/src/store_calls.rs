@@ -65,6 +65,23 @@ impl std::error::Error for StoreFailure {}
 
 /// ONE STORE INSTANCE'S CALLS, as the kernel makes them: the store v3 slots, typed.
 pub trait StoreCalls: Send + Sync {
+    /// Whether this opened implementation negotiated the versioned conditional-record capability.
+    fn supports_record_transaction(&self) -> bool {
+        false
+    }
+
+    /// Submit one immutable atomic conditional-record candidate asynchronously. Unknown outcomes
+    /// require replaying this exact id and body; no current-row observation proves application.
+    fn record_transaction<'a>(
+        &'a self,
+        request: &'a crate::abi::sdk::store::conditional::Request,
+    ) -> StoreCall<'a, crate::abi::sdk::store::conditional::Decision> {
+        let _ = request;
+        Box::pin(std::future::ready(Err(StoreFailure::Refused(
+            "record transactions unsupported".into(),
+        ))))
+    }
+
     /// `add_usage_batch`: one coalesced batch, one `op_id`.
     fn add_usage_batch<'a>(
         &'a self,
@@ -210,6 +227,14 @@ pub trait StoreCalls: Send + Sync {
     fn purge_plane_records_before<'a>(&'a self, kind: &'a str, before: u64) -> StoreCall<'a, u64> {
         let _ = (kind, before);
         not_served("purge_plane_records_before")
+    }
+    /// The usage ledger's purge: every usage window whose start is nonzero and earlier than
+    /// `before` removed, the all-time window kept; how many went
+    /// ([`RETENTION_USAGE_WINDOWS`](crate::abi::store::RETENTION_USAGE_WINDOWS)). An
+    /// implementation that does not serve it REFUSES it.
+    fn purge_usage_before(&self, before: u64) -> StoreCall<'_, u64> {
+        let _ = before;
+        not_served("purge_usage_before")
     }
 }
 

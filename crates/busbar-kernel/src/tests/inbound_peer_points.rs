@@ -65,6 +65,7 @@ fn peer_identity_does_not_skip_a_request_point(point: u32) {
                 door_refusals: prior.listener.door_refusals.clone(),
                 ids: prior.listener.ids.clone(),
                 signed_ingress: Arc::clone(&prior.listener.signed_ingress),
+                scope: prior.listener.scope.clone(),
             },
         )
         .unwrap();
@@ -182,6 +183,7 @@ fn a_mixed_peers_provisional_identity_does_not_skip_a_later_peer_provider() {
                 door_refusals: prior.listener.door_refusals.clone(),
                 ids: prior.listener.ids.clone(),
                 signed_ingress: Arc::clone(&prior.listener.signed_ingress),
+                scope: prior.listener.scope.clone(),
             },
         )
         .unwrap();

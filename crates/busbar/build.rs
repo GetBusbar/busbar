@@ -188,16 +188,6 @@ fn main() {
         .filter(|f| enabled(f))
         .collect();
     println!("cargo:rustc-env=BUSBAR_ENABLED_FEATURES={}", on.join(" "));
-    // `linked_every_plane`: EVERY linked row carrying the `plane` axis is enabled — the "every plane
-    // compiled in" shape a test about unmounted-but-present planes needs, read off the same table.
-    println!("cargo::rustc-check-cfg=cfg(linked_every_plane)");
-    let every_plane = metadata_map(&manifest, "package.metadata.busbar.linked-axes")
-        .iter()
-        .filter(|(_, axes)| axes.split_whitespace().any(|a| a == "plane"))
-        .all(|(feature, _)| enabled(feature));
-    if every_plane {
-        println!("cargo::rustc-cfg=linked_every_plane");
-    }
     // `linked_every_plane_door`: EVERY linked row on the plane-door axis is enabled — the default
     // distribution's doors, whose stated rows a byte pin of the whole distribution reads.
     println!("cargo::rustc-check-cfg=cfg(linked_every_plane_door)");
@@ -228,13 +218,6 @@ fn main() {
     {
         println!("cargo::rustc-cfg=linked_operator_auth");
     }
-
-    // THE LINKED PLANE ROWS FOR THE INTEGRATION TESTS (tests only include it): each enabled linked
-    // plane crate's registry row, assembled from its `linked` entry exactly as the root assembles it,
-    // so a test reasons over the real rows without naming a plane crate.
-    let out =
-        std::path::PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR")).join("linked_planes.rs");
-    std::fs::write(out, linked_planes_source(&manifest, &enabled)).expect("write linked_planes.rs");
 
     // THE LINKED PLANE DOORS FOR THE INTEGRATION TESTS (tests only include it): each enabled linked
     // row on the `plane-door` axis, its memory-ABI `door` resolved as the root resolves its entry,
@@ -472,23 +455,6 @@ fn node_plane_source(manifest: &str, enabled: &dyn Fn(&str) -> bool) -> String {
     out
 }
 
-/// THE DOOR PLANES' OWN ROOT CELLS, one `#[path]` module per enabled linked plane door, named for
-/// its row: the plane crate states where its cells are under its `links` name
-/// (`busbar-door-cells-<crate>`, its `build.rs` printing `cargo::metadata=cells=<path>`), and this
-/// reads it as `DEP_BUSBAR_DOOR_CELLS_<CRATE>_CELLS` — the same for a path dependency and a pinned
-/// one, so no checkout is resolved by hand. Beside the modules: `door_cells_secret_driven()` (the
-/// Statement names every module's `secret_source_driven()` drives through the root's secret-source
-/// scan), `DOOR_CELLS` (every module's capability-equality `COLUMNS` and `NOT_APPLICABLE` cells, for
-/// the root's ledger agreement), and `DOOR_CELLS_MISSING` (every enabled plane door whose crate
-/// states no cells: the root's tests refuse it, naming the crate — a root leg is never skipped). A
-/// build with a door's feature off has no module for it, exactly as it links no door for that plane.
-///
-/// The second source is `DOOR_CELLS_FILES` for the capability-equality gate: every door's cells as
-/// the ledger cites them (`crates/<crate>/tests/root/mod.rs`, the crate's census mount) beside the
-/// file its crate states — one resolver for a path dependency and a pinned one alike.
-///
-/// The third answer: whether any of those cells names the door cells' rig (`door_rig`), the
-/// root's one surface for them.
 fn door_cells_source(manifest: &str, enabled: &dyn Fn(&str) -> bool) -> (String, String, bool) {
     let axes = metadata_map(manifest, "package.metadata.busbar.linked-axes");
     let mut out = String::from(
@@ -496,9 +462,7 @@ fn door_cells_source(manifest: &str, enabled: &dyn Fn(&str) -> bool) -> (String,
          door's `links` metadata.\n",
     );
     let mut driven: Vec<String> = Vec::new();
-    let mut cells: Vec<String> = Vec::new();
-    let mut missing: Vec<String> = Vec::new();
-    let mut files: Vec<String> = Vec::new();
+
     let mut blackbox: Vec<String> = Vec::new();
     let mut rig = false;
     for (feature, krate) in metadata_map(manifest, "package.metadata.busbar.linked") {
@@ -525,7 +489,6 @@ fn door_cells_source(manifest: &str, enabled: &dyn Fn(&str) -> bool) -> (String,
         );
         println!("cargo:rerun-if-env-changed={var}");
         let Ok(at) = env::var(&var) else {
-            missing.push(krate);
             continue;
         };
         println!("cargo:rerun-if-changed={at}");
@@ -536,13 +499,6 @@ fn door_cells_source(manifest: &str, enabled: &dyn Fn(&str) -> bool) -> (String,
         let module = ident(&feature);
         out.push_str(&format!("#[path = {at:?}]\nmod {module};\n"));
         driven.push(format!(".chain({module}::secret_source_driven())"));
-        cells.push(format!(
-            "    ({krate:?}, {at:?}, {module}::COLUMNS, {module}::NOT_APPLICABLE),\n"
-        ));
-        files.push(format!(
-            "    ({:?}, {at:?}),\n",
-            format!("crates/{krate}/tests/root/mod.rs")
-        ));
     }
     out.push_str(&format!(
         "/// The Statement names the door planes' own root cells drive through the secret-source scan.\n\
@@ -551,38 +507,12 @@ fn door_cells_source(manifest: &str, enabled: &dyn Fn(&str) -> bool) -> (String,
          std::iter::empty::<String>(){}.collect()\n}}\n",
         driven.concat()
     ));
-    out.push_str(&format!(
-        "/// Every door plane's root cells: its crate, the file its crate states, its\n\
-         /// capability-equality columns and its not-applicable `(capability, column, reason)` cells.\n\
-         #[allow(dead_code)]\n\
-         pub(crate) static DOOR_CELLS: &[DoorCellsRow] = &[\n{}];\n\
-         /// One door plane's root cells: `(crate, file, columns, not-applicable cells)`.\n\
-         #[allow(dead_code)]\n\
-         pub(crate) type DoorCellsRow = (\n    \
-         &'static str,\n    \
-         &'static str,\n    \
-         &'static [&'static str],\n    \
-         &'static [(&'static str, &'static str, &'static str)],\n\
-         );\n",
-        cells.concat()
-    ));
-    out.push_str(&format!(
-        "/// Every enabled plane door whose crate states no root cells (its `links` metadata).\n\
-         #[allow(dead_code)]\n\
-         pub(crate) static DOOR_CELLS_MISSING: &[&str] = &{missing:?};\n"
-    ));
+
     let files = format!(
-        "// @generated by build.rs from Cargo.toml `[package.metadata.busbar.linked]` and each plane \
-         door's `links` metadata.\n\
-         /// Every door plane's root cells: the path the ledger cites them by (the crate's census\n\
-         /// mount, `crates/<crate>/tests/root/mod.rs`) and the file its crate states.\n\
-         #[allow(dead_code)]\n\
-         static DOOR_CELLS_FILES: &[(&str, &str)] = &[\n{}];\n\
-         /// Every door plane's black-box case directory (`blackbox=<dir>` under its `links` name):\n\
-         /// its crate and the directory its crate states.\n\
+        "// @generated by build.rs from linked plane metadata.\n\
+         /// Every linked plane's black-box case directory.\n\
          #[allow(dead_code)]\n\
          static DOOR_BLACKBOX: &[(&str, &str)] = &[\n{}];\n",
-        files.concat(),
         blackbox.concat()
     );
     (out, files, rig)
@@ -726,34 +656,6 @@ fn linked_axis_cfgs(manifest: &str, enabled: &dyn Fn(&str) -> bool) -> (Vec<Stri
         }
     }
     (set, declared)
-}
-
-/// `static LINKED_PLANES` — `PlaneDecl::assemble(<crate>::linked::PLANE_DECLARATION,
-/// <crate>::linked::PLANE_HOOKS)` for every enabled `[package.metadata.busbar.linked]` row whose
-/// axes carry `plane` and whose entry module is the crate's own `linked` (a root-module entry is not
-/// reachable from an integration test), in manifest order.
-fn linked_planes_source(manifest: &str, enabled: &dyn Fn(&str) -> bool) -> String {
-    let axes = metadata_map(manifest, "package.metadata.busbar.linked-axes");
-    let entries = metadata_map(manifest, "package.metadata.busbar.linked-entry");
-    let mut out = String::from(
-        "// @generated by build.rs from Cargo.toml `[package.metadata.busbar.linked]`.\n\
-         pub(crate) static LINKED_PLANES: &[::busbar_kernel::plane_driver::registry::PlaneDecl] = &[\n",
-    );
-    for (feature, krate) in metadata_map(manifest, "package.metadata.busbar.linked") {
-        let is_plane = axes
-            .iter()
-            .any(|(f, a)| *f == feature && a.split_whitespace().any(|x| x == "plane"));
-        let own_entry = !entries.iter().any(|(k, _)| *k == krate);
-        if enabled(&feature) && is_plane && own_entry {
-            let id = ident(&krate);
-            out.push_str(&format!(
-                "    ::busbar_kernel::plane_driver::registry::PlaneDecl::assemble(\n        \
-                 ::{id}::linked::PLANE_DECLARATION,\n        ::{id}::linked::PLANE_HOOKS,\n    ),\n"
-            ));
-        }
-    }
-    out.push_str("];\n");
-    out
 }
 
 /// `static LINKED_PLANE_DOORS`: every enabled `[package.metadata.busbar.linked]` row carrying the

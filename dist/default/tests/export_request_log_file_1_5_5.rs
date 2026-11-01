@@ -262,6 +262,96 @@ fn the_request_log_file_holds_the_1_5_5_line_byte_for_byte() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+#[test]
+fn config_reload_moves_the_open_file_exporter_and_can_move_it_back() {
+    const TOKEN: &str = "file-refresh-admin";
+    let dir = fixture_dir();
+    let (data_port, admin_port) = (common::boot::free_port(), common::boot::free_port());
+    write_configs(&dir, data_port, admin_port, upstream());
+    let key = Command::new(common::boot::exe())
+        .arg("--generate-signing-key")
+        .output()
+        .unwrap();
+    assert!(key.status.success());
+    let key_path = dir.join("signing.key");
+    std::fs::write(&key_path, key.stdout).unwrap();
+    let config_path = dir.join("config.yaml");
+    let mut config = std::fs::read_to_string(&config_path).unwrap().replace(
+        "auth:\n  chain: []\n",
+        &format!(
+            "auth:\n  chain: []\n  signing_key: {{ file: '{}' }}\n  admin_auth: [admin-tokens]\n",
+            key_path.display()
+        ),
+    );
+    config.push_str("identity-providers:\n  admin-tokens:\n    module: admin-tokens\n    token: { env: BUSBAR_ADMIN_TOKEN }\n");
+    std::fs::write(&config_path, &config).unwrap();
+    let log = std::fs::File::create(dir.join("out.log")).unwrap();
+    let mut child = Reap(
+        Command::new(common::boot::exe())
+            .env("BUSBAR_CONFIG", &config_path)
+            .env("BUSBAR_PROVIDERS", dir.join("providers.yaml"))
+            .env("BUSBAR_ADMIN_TOKEN", TOKEN)
+            .env("CAP_KEY", "export-reload-provider")
+            .env("RUST_LOG", "warn")
+            .stdout(log.try_clone().unwrap())
+            .stderr(log)
+            .spawn()
+            .unwrap(),
+    );
+    let a = dir.join("audit.jsonl");
+    let b = dir.join("after-reload.jsonl");
+    let body = r#"{"model":"m-cap","messages":[{"role":"user","content":"ping"}]}"#;
+    let request = format!(
+        "POST /v1/chat/completions HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    let reload = format!(
+        "POST /api/v1/admin/config/reload HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {TOKEN}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+    );
+    let mut before_move = Vec::new();
+    let mut after_move = Vec::new();
+    for (step, destination, count) in [(0, &a, 1), (1, &b, 1), (2, &a, 2)] {
+        if step != 0 {
+            let next = config.replace(&a.display().to_string(), &destination.display().to_string());
+            std::fs::write(&config_path, next).unwrap();
+            assert_eq!(exchange(admin_port, &reload), Some(200), "{}", log_of(&dir));
+        }
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let status = loop {
+            assert!(child.0.try_wait().unwrap().is_none(), "{}", log_of(&dir));
+            if let Some(status) = exchange(data_port, &request) {
+                break status;
+            }
+            assert!(Instant::now() < deadline, "{}", log_of(&dir));
+            std::thread::sleep(Duration::from_millis(25));
+        };
+        assert_eq!(status, 200, "{}", log_of(&dir));
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let written = loop {
+            let written = std::fs::read(destination).unwrap_or_default();
+            if written.iter().filter(|byte| **byte == b'\n').count() == count {
+                break written;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "reload did not move the real disk destination: {}",
+                log_of(&dir)
+            );
+            std::thread::sleep(Duration::from_millis(25));
+        };
+        match step {
+            0 => before_move = written,
+            1 => {
+                assert_eq!(std::fs::read(&a).unwrap(), before_move);
+                after_move = written;
+            }
+            _ => assert_eq!(std::fs::read(&b).unwrap(), after_move),
+        }
+    }
+    drop(child);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 /// The mask is the cell's: a number under a masked key is replaced, nothing else moves.
 #[test]
 fn the_mask_replaces_only_the_masked_numbers() {

@@ -292,6 +292,104 @@ pub struct Done<I, O> {
     pub cancel_writes: Vec<busbar_contract::plane_calls::CancelWrite>,
 }
 
+/// Only an answer still queued for its caller owns this lease. Taking Done disarms this
+/// private custody; the existing raw caller then owns Done.lease exactly as before.
+struct Queued<I, O> {
+    done: Done<I, O>,
+    lease: UnhandedLease,
+    short: UnhandedShort,
+}
+impl<I, O> Queued<I, O> {
+    fn unleased(done: Done<I, O>) -> Self {
+        Self {
+            done,
+            lease: UnhandedLease(None),
+            short: UnhandedShort(None),
+        }
+    }
+    fn take(mut self) -> Done<I, O> {
+        if let Some(lease) = self.lease.0.as_mut() {
+            lease.id = 0;
+        }
+        self.short.0 = None;
+        self.done
+    }
+}
+
+/// An unhanded answer returns to its originating instance and captured framing Scope.
+/// Worker-owned destruction uses the existing LET_GO list, never a callback under a lock.
+struct UnhandedLease(Option<LeaseReturn>);
+
+/// The entry and unread completion share release-once custody. Consuming the completion
+/// leaves the entry responsible; abandoning it retires only this reply's storage.
+pub(crate) struct ShortLease {
+    id: AtomicU64,
+    instance: Arc<Instance>,
+    framing: Option<Arc<dyn busbar_contract::framing_scope::FramingScope>>,
+}
+impl ShortLease {
+    fn release(&self) {
+        let id = self.id.swap(0, Ordering::AcqRel);
+        if id != 0 {
+            drop_after_lock(Box::new(LeaseReturn {
+                instance: Arc::clone(&self.instance),
+                framing: self.framing.clone(),
+                id,
+            }));
+        }
+    }
+}
+impl Drop for ShortLease {
+    fn drop(&mut self) {
+        self.release();
+        hold_past_lock(&self.instance);
+        if let Some(framing) = self.framing.take() {
+            drop_after_lock(Box::new(framing));
+        }
+    }
+}
+struct UnhandedShort(Option<Arc<ShortLease>>);
+impl Drop for UnhandedShort {
+    fn drop(&mut self) {
+        if let Some(short) = self.0.take() {
+            short.release();
+        }
+    }
+}
+impl UnhandedLease {
+    fn new(
+        instance: &Arc<Instance>,
+        framing: Option<Arc<dyn busbar_contract::framing_scope::FramingScope>>,
+        id: u64,
+    ) -> Self {
+        Self((id != 0).then(|| LeaseReturn {
+            instance: Arc::clone(instance),
+            framing,
+            id,
+        }))
+    }
+}
+impl Drop for UnhandedLease {
+    fn drop(&mut self) {
+        if let Some(lease) = self.0.take() {
+            drop_after_lock(Box::new(lease));
+        }
+    }
+}
+struct LeaseReturn {
+    instance: Arc<Instance>,
+    framing: Option<Arc<dyn busbar_contract::framing_scope::FramingScope>>,
+    id: u64,
+}
+impl Drop for LeaseReturn {
+    fn drop(&mut self) {
+        if self.id != 0 {
+            let _scope = super::framing_context::enter(self.framing.clone());
+            self.instance.release_unread(self.id);
+        }
+    }
+}
+
 /// One op's completion slot: filled ONCE by the dispatcher, read by a sync waiter (the condvar)
 /// or an async one (the registered [`Waker`]), the same slot for both.
 struct ReplySlot<T> {
@@ -302,6 +400,8 @@ struct ReplySlot<T> {
 struct SlotState<T> {
     /// An answer was given (it may already have been taken).
     settled: bool,
+    /// The waiter was dropped or detached; future output must not be stored without an owner.
+    abandoned: bool,
     value: Option<T>,
     /// The async waiter to wake when the answer arrives.
     waker: Option<Waker>,
@@ -312,6 +412,7 @@ impl<T> ReplySlot<T> {
         Self {
             v: Mutex::new(SlotState {
                 settled: false,
+                abandoned: false,
                 value: None,
                 waker: None,
             }),
@@ -326,20 +427,27 @@ impl<T> ReplySlot<T> {
     /// The FIRST answer wins; `false` when one was already given. Wakes the sync waiter and the
     /// async one; the waker is woken outside the lock.
     fn put(&self, t: T) -> bool {
-        let waker = {
+        let mut value = Some(t);
+        let (accepted, waker) = {
             let mut g = self.lock();
             if g.settled {
-                return false;
+                (false, None)
+            } else {
+                g.settled = true;
+                let accepted = !g.abandoned;
+                if accepted {
+                    g.value = value.take();
+                }
+                (accepted, g.waker.take())
             }
-            g.settled = true;
-            g.value = Some(t);
-            g.waker.take()
         };
+        // A rejected queued lease is detached from the slot before its owner is dropped.
+        drop(value);
         self.cv.notify_all();
-        if let Some(w) = waker {
-            w.wake();
+        if let Some(waker) = waker {
+            drop_after_lock(Box::new(WakeAfterLock(Some(waker))));
         }
-        true
+        accepted
     }
 }
 
@@ -348,9 +456,9 @@ pub(crate) trait Settle: Send + Sync {
     fn settle(&self, outcome: Outcome, detached: bool) -> bool;
 }
 
-impl<I: InFrame, O: OutFrame> Settle for ReplySlot<Done<I, O>> {
+impl<I: InFrame, O: OutFrame> Settle for ReplySlot<Queued<I, O>> {
     fn settle(&self, outcome: Outcome, detached: bool) -> bool {
-        self.put(Done {
+        self.put(Queued::unleased(Done {
             outcome,
             error: None,
             lease: 0,
@@ -359,7 +467,7 @@ impl<I: InFrame, O: OutFrame> Settle for ReplySlot<Done<I, O>> {
             short: false,
             disposition: None,
             cancel_writes: Vec::new(),
-        })
+        }))
     }
 }
 
@@ -372,7 +480,7 @@ impl<I: InFrame, O: OutFrame> Settle for ReplySlot<Done<I, O>> {
 /// cancelled, WriteBehind runs on), by a non-blocking message and nothing else, never an await.
 /// [`Reply::detach`] lets an op run on with nobody waiting.
 pub struct Reply<I, O> {
-    slot: Arc<ReplySlot<Done<I, O>>>,
+    slot: Arc<ReplySlot<Queued<I, O>>>,
     /// The op's ticket and dispatcher, for the client drop; `None` once detached or when the
     /// reply was answered at submission.
     owner: Option<(Ticket, Weak<Pool>)>,
@@ -391,7 +499,8 @@ impl<I: InFrame, O: OutFrame> Reply<I, O> {
         let mut g = self.slot.lock();
         loop {
             if let Some(d) = g.value.take() {
-                return Some(d);
+                drop(g);
+                return Some(d.take());
             }
             let left = until.checked_duration_since(Instant::now())?;
             g = self
@@ -411,7 +520,8 @@ impl<I: InFrame, O: OutFrame> Reply<I, O> {
         let mut g = self.slot.lock();
         loop {
             if let Some(d) = g.value.take() {
-                return d;
+                drop(g);
+                return d.take();
             }
             g = self.slot.cv.wait(g).unwrap_or_else(|e| e.into_inner());
         }
@@ -419,7 +529,7 @@ impl<I: InFrame, O: OutFrame> Reply<I, O> {
 
     fn settled(outcome: Outcome, frame: Frame<I, O>) -> Self {
         let slot = Arc::new(ReplySlot::new());
-        slot.put(Done {
+        slot.put(Queued::unleased(Done {
             outcome,
             error: None,
             lease: 0,
@@ -428,7 +538,7 @@ impl<I: InFrame, O: OutFrame> Reply<I, O> {
             short: false,
             disposition: None,
             cancel_writes: Vec::new(),
-        });
+        }));
         Self { slot, owner: None }
     }
 
@@ -442,26 +552,32 @@ impl<I: InFrame, O: OutFrame> Future for Reply<I, O> {
     type Output = Done<I, O>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Done<I, O>> {
+        // A user waker's clone/drop may run code; neither happens under the reply-slot lock.
+        let mut waker = Some(cx.waker().clone());
         let mut g = self.slot.lock();
         if let Some(d) = g.value.take() {
-            return Poll::Ready(d);
+            drop(g);
+            return Poll::Ready(d.take());
         }
-        match &g.waker {
-            Some(w) if w.will_wake(cx.waker()) => {}
-            _ => g.waker = Some(cx.waker().clone()),
-        }
+        let old = match &g.waker {
+            Some(w) if w.will_wake(waker.as_ref().expect("new waiter")) => None,
+            _ => std::mem::replace(&mut g.waker, waker.take()),
+        };
+        drop(g);
+        drop(old);
         Poll::Pending
     }
 }
 
 impl<I, O> Drop for Reply<I, O> {
     fn drop(&mut self) {
-        let settled = {
+        let (settled, value, waker) = {
             let mut g = self.slot.v.lock().unwrap_or_else(|e| e.into_inner());
-            // A later answer wakes nobody: this waiter is gone.
-            g.waker = None;
-            g.settled
+            g.abandoned = true;
+            (g.settled, g.value.take(), g.waker.take())
         };
+        drop(waker);
+        drop(value);
         if settled {
             return;
         }
@@ -478,14 +594,16 @@ impl<I, O> Drop for Reply<I, O> {
 pub(crate) trait Job: Send {
     fn heads(&mut self) -> (*mut InHead, *mut OutHead, u32);
     /// Deliver the answer with the frame; `false` when the caller already had one (detached).
-    fn finish(self: Box<Self>, c: Crossed) -> bool;
+    fn finish(self: Box<Self>, c: Crossed, short: Option<Arc<ShortLease>>) -> bool;
 }
 
 /// Boxed once at submit, the frame inline: its address is stable from the first crossing to the
 /// last (a PENDING op's `in`/`out` stay where the plugin saw them).
 struct JobOf<I, O> {
     frame: Frame<I, O>,
-    reply: Arc<ReplySlot<Done<I, O>>>,
+    reply: Arc<ReplySlot<Queued<I, O>>>,
+    instance: Arc<Instance>,
+    framing: Option<Arc<dyn busbar_contract::framing_scope::FramingScope>>,
     /// The memory the frame's pointers lend the plugin ([`Lent`]): held with the frame, so it is
     /// dropped only when the job is — after the op's last crossing returned (an answer, a `cancel`
     /// or a hung crossing that finally returns), never when the caller drops its [`Reply`].
@@ -506,22 +624,33 @@ impl<I: InFrame, O: OutFrame> Job for JobOf<I, O> {
         self.frame.heads()
     }
 
-    fn finish(self: Box<Self>, c: Crossed) -> bool {
-        let JobOf { frame, reply, lent } = *self;
-        let put = reply.put(Done {
-            outcome: c.outcome,
-            error: c.error,
-            lease: c.lease,
-            frame: Some(frame),
-            detached: false,
-            short: c.short,
-            disposition: c.disposition,
-            cancel_writes: c.cancel_writes,
-        });
-        // The op is over: nothing crosses on this frame again, so the lent memory may go (the
-        // caller's own clone, if it kept one, still holds it).
-        drop(lent);
-        put
+    fn finish(self: Box<Self>, c: Crossed, short: Option<Arc<ShortLease>>) -> bool {
+        let lease = UnhandedLease::new(&self.instance, self.framing.clone(), c.lease);
+        self.reply.put(Queued {
+            done: Done {
+                outcome: c.outcome,
+                error: c.error,
+                lease: c.lease,
+                frame: Some(self.frame),
+                detached: false,
+                short: c.short,
+                disposition: c.disposition,
+                cancel_writes: c.cancel_writes,
+            },
+            lease,
+            short: UnhandedShort(short),
+        })
+    }
+}
+
+impl<I, O> Drop for JobOf<I, O> {
+    fn drop(&mut self) {
+        // A canceled queued job can be removed under the worker lock too. Its arbitrary Lent
+        // destructor and captured Scope belong after the lock, just like the instance owner.
+        if self.lent.is_some() || self.framing.is_some() {
+            drop_after_lock(Box::new((self.lent.take(), self.framing.take())));
+        }
+        hold_past_lock(&self.instance);
     }
 }
 
@@ -545,6 +674,8 @@ pub(crate) struct Meta {
     drainable: bool,
     /// An admitted unit's op ([`Dispatcher::submit_unit`]): counted in [`Instance::unit_ops`].
     unit: bool,
+    /// PlaneCalls reads only TickOut's scalar schedule; no answer lease is handed to it.
+    tick_copy: bool,
     pub(crate) reply: Arc<dyn Settle>,
 }
 
@@ -555,6 +686,8 @@ enum Admit {
     Cap,
     /// On a driver ticket: outside `max_inflight`.
     Driver,
+    /// A plane driver tick whose caller only copies the scalar schedule.
+    DriverCopy,
     /// An op of an admitted unit: outside `max_inflight`, and in flight for `close`.
     Unit,
 }
@@ -584,6 +717,9 @@ impl Drop for Meta {
         self.give_back();
         self.reply.settle(Outcome::Fault, false);
         hold_past_lock(&self.instance);
+        if let Some(framing) = self.framing.take() {
+            drop_after_lock(Box::new(framing));
+        }
     }
 }
 
@@ -603,6 +739,27 @@ std::thread_local! {
 /// What a worker loop lets go once its lock is released ([`LET_GO`]): an instance, or the dials
 /// a ticket left in flight. Only ever dropped.
 type Late = Box<dyn std::any::Any>;
+
+/// Add one owned cleanup to the existing worker-local list. Off a worker it drops now;
+/// callers detach it from their own mutex first. Never hold the TLS borrow across destruction.
+fn drop_after_lock(value: Late) {
+    let mut value = Some(value);
+    let _ = LET_GO.try_with(|list| {
+        if let Some(held) = list.borrow_mut().as_mut() {
+            held.extend(value.take());
+        }
+    });
+    drop(value);
+}
+
+struct WakeAfterLock(Option<Waker>);
+impl Drop for WakeAfterLock {
+    fn drop(&mut self) {
+        if let Some(waker) = self.0.take() {
+            waker.wake();
+        }
+    }
+}
 
 /// Keep `instance` past a drop made under the worker's lock: on a worker loop's own thread the loop
 /// takes it by [`let_go`] and drops it with the lock released; on any other thread nothing is kept.
@@ -671,7 +828,7 @@ pub(crate) struct Current {
     parked: bool,
 }
 
-/// THE NAMES A DRIVER TICKET'S READY `drive` ANSWERED (a plane's ready sessions), held for the
+/// THE NAMES A DRIVER TICKET'S READY OR PENDING `drive` ANSWERED (a plane's ready sessions), held for the
 /// host until it collects them ([`Driven::take`]): each once, at most [`Driven::HELD`] at a time
 /// (a plane that names more before the host collects is told nothing new until it wakes again).
 #[derive(Debug, Default)]
@@ -802,6 +959,8 @@ pub(crate) struct Entry {
     recycle_when_idle: bool,
     /// The op whose last answer was SHORT: its next answer on this ticket is the one re-call.
     short_slot: Option<u32>,
+    /// Immutable negotiated SHORT storage belongs to this live ticket until recall or abandon.
+    short_reply: Option<UnhandedShort>,
     next: Option<Action>,
     pub(crate) current: Option<Current>,
     pub(crate) queue: VecDeque<(Meta, Box<dyn Job>)>,
@@ -1130,6 +1289,8 @@ impl Worker {
             Msg::DropClient(t) => {
                 if let Some((idx, e)) = self.entry(st, t) {
                     e.client_dropped = true;
+                    e.short_reply = None;
+                    e.short_slot = None;
                     let (keep, gone): (VecDeque<_>, VecDeque<_>) = std::mem::take(&mut e.queue)
                         .into_iter()
                         .partition(|(m, _)| m.class == DeadlineClass::WriteBehind);
@@ -1185,6 +1346,7 @@ impl Worker {
         e.client_dropped = false;
         e.recycle_when_idle = false;
         e.short_slot = None;
+        e.short_reply = None;
         e.next = None;
         e.driver = None;
         // A slot whose counter is spent is RETIRED: never handed out again, so no generation of
@@ -1224,15 +1386,32 @@ impl Worker {
         e.latched = false;
         // THE ONE RE-CALL: a short answer may be re-asked once on this ticket; short twice is FAULT.
         let recall = e.short_slot.take() == Some(cur.meta.slot);
+        e.short_reply = None;
         if c.short && recall {
+            let _lease = UnhandedLease::new(&cur.meta.instance, cur.meta.framing.clone(), c.lease);
+            let _short =
+                UnhandedLease::new(&cur.meta.instance, cur.meta.framing.clone(), c.short_lease);
             c = Crossed::host(Outcome::Fault);
         } else if c.short {
             e.short_slot = Some(cur.meta.slot);
+            let lease = std::mem::take(&mut c.short_lease);
+            if lease != 0 {
+                let owner = Arc::new(ShortLease {
+                    instance: Arc::clone(&cur.meta.instance),
+                    framing: cur.meta.framing.clone(),
+                    id: AtomicU64::new(lease),
+                });
+                if !e.client_dropped && !e.recycle_when_idle {
+                    e.short_reply = Some(UnhandedShort(Some(owner)));
+                }
+            }
         }
         let mut cur = cur;
         cur.meta.give_back();
         if let Some(job) = cur.job {
-            if !job.finish(c) {
+            let short = e.short_reply.as_ref().and_then(|owner| owner.0.clone());
+            if !job.finish(c, short) {
+                e.short_reply = None;
                 env.stats.write_behind_late.fetch_add(1, Ordering::Relaxed);
             }
         }
@@ -1319,20 +1498,54 @@ impl Worker {
         framing: Option<Arc<dyn busbar_contract::framing_scope::FramingScope>>,
     ) -> Option<(MutexGuard<'a, WorkerState>, Crossed)> {
         st.crossing = Some(instance.clone());
+        // Only a raw driver's TICK hands its PENDING frame to a caller. Ordinary PENDING
+        // and DRIVE retain host frames, but no caller owns their intermediate answer leases.
+        // Instance::cross already copied the common head and negotiated reply extensions.
+        // SAFETY: this crossing owns the host input frame.
+        let ticket = unsafe { (*heads.0).ticket };
+        let entry = st.entries.get(decode(ticket.slot).1 as usize);
+        let tick_copy = s == slot::TICK
+            && entry
+                .and_then(|e| e.current.as_ref())
+                .is_some_and(|c| c.meta.tick_copy);
+        let pending_is_handed =
+            s == slot::TICK && !tick_copy && entry.is_some_and(|e| e.driver.is_some());
         let budget = u64::try_from(budget.as_nanos()).unwrap_or(u64::MAX);
         self.crossing_budget.store(budget, Ordering::Relaxed);
         self.crossing_since
             .store(now_ns().max(1), Ordering::Release);
         drop(st);
-        let crossed = {
-            let _framing = super::framing_context::enter(framing);
+        let mut crossed = {
+            let _framing = super::framing_context::enter(framing.clone());
             // SAFETY: the frame is boxed and owned by this crossing; `s` passed `refuse` at submit.
             unsafe { instance.cross(s, heads.0, heads.1, heads.2) }
         };
+        if tick_copy || (crossed.outcome == Outcome::Pending && !pending_is_handed) {
+            let lease = std::mem::take(&mut crossed.lease);
+            if lease != 0 {
+                // No worker or custody lock is held while release enters plugin code. For
+                // the scalar-only plane TICK this happens before ReplySlot publication, so
+                // dropping an unpolled future cannot orphan a queued answer lease.
+                let _scope = super::framing_context::enter(framing.clone());
+                instance.release_unread(lease);
+            }
+        }
         self.crossing_since.store(0, Ordering::Release);
         let mut st = self.lock();
         st.crossing = None;
-        (!st.dead).then_some((st, crossed))
+        if st.dead {
+            drop(st);
+            let _scope = super::framing_context::enter(framing);
+            if crossed.lease != 0 {
+                instance.release_unread(crossed.lease);
+            }
+            if crossed.short_lease != 0 {
+                instance.release_unread(crossed.short_lease);
+            }
+            None
+        } else {
+            Some((st, crossed))
+        }
     }
 
     /// Run the action scheduled for `idx`. `None` when this worker was replaced mid-crossing.
@@ -1356,6 +1569,18 @@ impl Worker {
                 let Some((meta, mut job)) = e.queue.pop_front() else {
                     return Some(st);
                 };
+                if e.short_reply
+                    .as_ref()
+                    .and_then(|owner| owner.0.as_ref())
+                    .is_some_and(|kept| {
+                        kept.id.load(Ordering::Acquire) == 0
+                            || e.short_slot != Some(meta.slot)
+                            || !Arc::ptr_eq(&kept.instance, &meta.instance)
+                    })
+                {
+                    e.short_reply = None;
+                    e.short_slot = None;
+                }
                 // A tick on a driver ticket whose held set is full waits for a slot (parked); one
                 // of a kept cycle may not reuse a handle the cycle issued (`super::held`).
                 let (mut full, mut kept_cycle) = (false, false);
@@ -1493,6 +1718,7 @@ impl Worker {
                 let budget = env.budgets.of(slot::CANCEL, class);
                 let (mut st, c) =
                     self.cross(st, &inst, slot::CANCEL, heads, budget, framing.clone())?;
+                let _cancel_lease = UnhandedLease::new(&inst, framing.clone(), c.lease);
                 // A cancelled `open` that pended will never answer: the plugin still holds its
                 // half-open box, and no caller will close an instance that never opened. The host
                 // closes it here, once, inside the open's own lifecycle exclusion (given back by
@@ -1552,9 +1778,11 @@ impl Worker {
                 d.pending = false;
                 let budget = env.budgets.of(slot::DRIVE, DeadlineClass::Connection);
                 env.services.held.enter(ticket, false);
-                let (mut st, c) = self.cross(st, &inst, slot::DRIVE, heads, budget, framing)?;
+                let (mut st, c) =
+                    self.cross(st, &inst, slot::DRIVE, heads, budget, framing.clone())?;
+                let _drive_lease = UnhandedLease::new(&inst, framing, c.lease);
                 env.services.held.leave(ticket);
-                if c.outcome == Outcome::Ready {
+                if matches!(c.outcome, Outcome::Ready | Outcome::Pending) {
                     inst.driven.name(frame.named());
                 }
                 inst.driven.answer(c.outcome);
@@ -1627,7 +1855,26 @@ impl Worker {
         let framing = cur.meta.framing.clone();
         let mut job = cur.job.take()?;
         let heads = job.heads();
+        let reference = st.entries[idx as usize]
+            .short_reply
+            .as_ref()
+            .and_then(|owner| owner.0.as_ref())
+            .map(|kept| kept.id.load(Ordering::Acquire))
+            .filter(|&id| id != 0);
+        // SAFETY: `job` exclusively owns this frame until after the guard restores its head.
+        let _reference = match reference {
+            Some(lease) => match unsafe { super::plugin::RecallInput::new(heads.0, lease) } {
+                Ok(reference) => Some(reference),
+                Err(()) => {
+                    st.entries[idx as usize].current.as_mut()?.job = Some(job);
+                    self.end(&mut st, idx, Crossed::host(Outcome::Refused), env);
+                    return Some(st);
+                }
+            },
+            None => None,
+        };
         let (mut st, c) = self.cross(st, inst, s, heads, budget, framing)?;
+        drop(_reference);
         let e = &mut st.entries[idx as usize];
         let Some(cur) = e.current.as_mut() else {
             return Some(st);
@@ -2428,6 +2675,27 @@ impl Dispatcher {
         driver: Ticket,
         now_ns: u64,
     ) -> Reply<TickIn, TickOut> {
+        self.tick_with(plugin, driver, now_ns, Admit::Driver)
+    }
+
+    /// The plane driver copies only the scalar schedule. Its answer lease is released by the
+    /// worker before completing the reply, including when nobody ever polls that reply.
+    pub(crate) fn tick_copy<K: Kind>(
+        &self,
+        plugin: &Plugin<K>,
+        driver: Ticket,
+        now_ns: u64,
+    ) -> Reply<TickIn, TickOut> {
+        self.tick_with(plugin, driver, now_ns, Admit::DriverCopy)
+    }
+
+    fn tick_with<K: Kind>(
+        &self,
+        plugin: &Plugin<K>,
+        driver: Ticket,
+        now_ns: u64,
+        admit: Admit,
+    ) -> Reply<TickIn, TickOut> {
         let frame = Frame::new(
             TickIn {
                 head: in_head(),
@@ -2447,7 +2715,7 @@ impl Dispatcher {
             0,
             None,
             Duration::ZERO,
-            Admit::Driver,
+            admit,
         );
         // Dropping it cancels nothing: a client drop would end the instance's driver ticket.
         reply.owner = None;
@@ -2527,11 +2795,14 @@ impl Dispatcher {
             lifecycle,
             drainable,
             unit,
+            tick_copy: admit == Admit::DriverCopy,
             reply: slot.clone(),
         };
         let job = Box::new(JobOf {
             frame,
             reply: slot.clone(),
+            instance: Arc::clone(inst),
+            framing: meta.framing.clone(),
             lent,
         });
         self.pool.send(ticket, Msg::Submit { ticket, meta, job });
@@ -2565,3 +2836,8 @@ impl Drop for Dispatcher {
         }
     }
 }
+
+#[cfg(test)]
+#[allow(unsafe_code)]
+#[path = "worker_lease_tests.rs"]
+mod lease_tests;

@@ -428,9 +428,9 @@ fn zeroed_pending_and_refused_pass_every_op() {
 /// frozen size is refused, naming it.
 #[test]
 fn the_hook_tail_follows_the_growth_rule() {
+    use crate::dispatch::kinds::hook::HookContext;
     use busbar_contract::abi::hook::{Tail, CLASS_TAP, PROMPT_NO, USER_NO};
     use busbar_contract::abi::sdk::door::statement;
-    use busbar_contract::hook_calls::HookFacts;
     let bind = |size: usize| {
         let mut tail = Tail::EMPTY.with_access(CLASS_TAP, PROMPT_NO, USER_NO);
         tail.head.size = size as u32;
@@ -441,8 +441,8 @@ fn the_hook_tail_follows_the_growth_rule() {
             ..statement("t", "1", 0)
         };
         <Hook as Kind>::context(&st).map(|c| {
-            c.and_then(|c| c.downcast::<HookFacts>().ok())
-                .map(|f| f.class)
+            c.and_then(|c| c.downcast::<HookContext>().ok())
+                .map(|f| f.facts.class)
         })
     };
     let host = size_of::<Tail>();
@@ -457,13 +457,9 @@ fn the_hook_tail_follows_the_growth_rule() {
     );
 }
 
-/// RED (H7): A HOOK STATES NO SURFACE THE HOST NEVER READS. The host never calls a hook's `serve`
-/// (no route under `/hooks/<name>/*` is served) and never reads its tail's `requested_signals`
-/// (the signals a hook is lent are the operator's `hooks:` configuration), so a tail stating
-/// either is refused at bind, naming the field, instead of loading a promise nothing keeps. The
-/// tail stating neither binds.
+/// Hook routes state their method and auth bar; malformed routes and requested signals are refused.
 #[test]
-fn a_hook_tail_stating_routes_or_requested_signals_is_refused_at_bind() {
+fn a_hook_tail_admits_valid_routes_and_refuses_malformed_routes_or_requested_signals() {
     use busbar_contract::abi::hook::{Route, Tail, CLASS_GATE, PROMPT_NO, USER_NO};
     use busbar_contract::abi::mechanism::call::AbiStr;
     use busbar_contract::abi::mechanism::door::{KindTailHead, Statement};
@@ -489,8 +485,21 @@ fn a_hook_tail_stating_routes_or_requested_signals_is_refused_at_bind() {
     };
     assert_eq!(bind(&plain), Ok(()), "a tail stating neither binds");
     let routed = plain.with_routes(routes);
-    let err = bind(&routed).expect_err("routes are refused");
-    assert!(err.contains("routes"), "{err}");
+    let err = bind(&routed).expect_err("a route without a rooted path is refused");
+    assert!(err.contains("route"), "{err}");
+    let routes: &'static [Route] = Box::leak(Box::new([Route {
+        path: AbiStr {
+            ptr: b"/hooks/h/feedback".as_ptr(),
+            len: 17,
+        },
+        method: AbiStr {
+            ptr: b"POST".as_ptr(),
+            len: 4,
+        },
+        auth: busbar_contract::abi::hook::ROUTE_AUTH_KEY,
+        _reserved: 0,
+    }]));
+    assert_eq!(bind(&plain.with_routes(routes)), Ok(()));
     let signalled = plain.with_requested_signals(&SIGNALS);
     let err = bind(&signalled).expect_err("requested signals are refused");
     assert!(err.contains("requested_signals"), "{err}");

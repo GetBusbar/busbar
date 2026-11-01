@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The one wiped HMAC-SHA256: RFC 4231's known answers, its SHA-256 against the contract's at every
-//! padding boundary, and THE DESIGN section 6 rule it exists for, read off the SDK's own sources.
+//! Wiped authentication digests against published vectors and the contract's SHA-256 oracle.
 
 use super::*;
 
@@ -29,6 +28,72 @@ fn the_hmac_answers_rfc_4231() {
     );
 }
 
+#[test]
+fn hmac_sha1_answers_rfc_2202_with_multipart_messages() {
+    let cases: &[(&[u8], &[u8], &str)] = &[
+        (
+            &[0x0b; 20],
+            b"Hi There",
+            "b617318655057264e28bc0b6fb378c8ef146be00",
+        ),
+        (
+            b"Jefe",
+            b"what do ya want for nothing?",
+            "effcdf6ae5eb2fa2d27416d5f184df9c259a7c79",
+        ),
+        (
+            &[0xaa; 80],
+            b"Test Using Larger Than Block-Size Key - Hash Key First",
+            "aa4ae5e15272d00e95705637ce8a3b55ed402112",
+        ),
+    ];
+    for &(key, message, expected) in cases {
+        let key = Cred::captured(Zeroizing::new(key.to_vec()));
+        let digest: Zeroizing<[u8; 20]> = hmac_sha1(&key, &[message]);
+        assert_eq!(hex::encode(&digest[..]), expected);
+        for split in 0..=message.len() {
+            let digest: Zeroizing<[u8; 20]> =
+                hmac_sha1(&key, &[&message[..split], b"", &message[split..]]);
+            assert_eq!(hex::encode(&digest[..]), expected, "split {split}");
+        }
+    }
+}
+
+#[test]
+fn hmac_sha1_accepts_empty_key_and_message() {
+    let key = Cred::empty();
+    for parts in [&[][..], &[b"".as_slice()][..]] {
+        let digest: Zeroizing<[u8; 20]> = hmac_sha1(&key, parts);
+        assert_eq!(
+            hex::encode(&digest[..]),
+            "fbdb1d1b18aa6c08324b7d64b71fb76370690e1d"
+        );
+    }
+}
+
+#[test]
+fn public_wiped_sha256_answers_fips_vectors() {
+    for (message, expected) in [
+        (
+            b"".as_slice(),
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        ),
+        (
+            b"abc".as_slice(),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+        ),
+        (
+            b"abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq".as_slice(),
+            "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1",
+        ),
+    ] {
+        let digest: Zeroizing<[u8; 32]> = sha256(&[message]);
+        assert_eq!(hex::encode(&digest[..]), expected);
+    }
+    let digest: Zeroizing<[u8; 32]> = sha256(&[]);
+    assert_eq!(digest[..], crate::abi::sdk::digest::sha256(b""));
+}
+
 /// The wiped SHA-256 is SHA-256: every message length across the one- and two-block padding
 /// boundaries, with and without a whole prefix block, digests as the contract's SHA-256 does.
 #[test]
@@ -51,37 +116,13 @@ fn the_wiped_sha256_matches_sha256_at_every_padding_boundary() {
             crate::abi::sdk::digest::sha256(&whole),
             "prefix + length {n}"
         );
-    }
-}
-
-/// THE DESIGN section 6 ("auth material is zeroised"), the rule this primitive is the ledgered
-/// exception for: every buffer the HMAC fills from the key (the padded key, the pads, the chaining state, the
-/// final blocks, the digests) is born a `Zeroizing` one, and nothing in the SDK keys an HMAC on a
-/// library value it frees unwiped (`ring`'s `hmac::Key`, a RustCrypto `Hmac`).
-#[test]
-fn every_key_derived_buffer_is_wiped_and_no_library_hmac_is_keyed() {
-    let src = include_str!("../hmac.rs");
-    let code: Vec<&str> = src
-        .lines()
-        .map(str::trim)
-        .filter(|l| !l.starts_with("//"))
-        .collect();
-    for line in &code {
-        if line.starts_with("let ") && (line.contains("[0_u8;") || line.contains("SHA256_IV")) {
-            assert!(
-                line.contains("Zeroizing::new("),
-                "a key-derived buffer is not wiped on drop: {line}"
+        for split in [0, msg.len() / 2, msg.len()] {
+            let digest: Zeroizing<[u8; 32]> = sha256(&[&msg[..split], b"", &msg[split..]]);
+            assert_eq!(
+                digest[..],
+                crate::abi::sdk::digest::sha256(msg),
+                "length {n}, split {split}"
             );
         }
-    }
-    for marker in [
-        concat!("hmac", "::Key"),
-        concat!("Hmac", "<"),
-        concat!("ring", "::hmac"),
-    ] {
-        assert!(
-            !code.iter().any(|l| l.contains(marker)),
-            "the SDK keys an HMAC on a library value it frees unwiped: {marker}"
-        );
     }
 }

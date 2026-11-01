@@ -24,6 +24,23 @@ pub trait SyncStore: RecordStore + Sized + Send + Sync + 'static {
     /// [`StoreSlots::TAIL`].
     const TAIL: Tail;
 
+    /// Explicit opt-in to the atomic conditional-record protocol.
+    const RECORD_TRANSACTION: bool = false;
+
+    /// [`StoreSlots::record_transaction`], answered synchronously.
+    ///
+    /// # Errors
+    /// Unsupported by default; an implementation must commit rows and receipt atomically.
+    fn record_transaction(
+        &self,
+        request: &super::conditional::Request,
+    ) -> OpResult<super::conditional::Decision> {
+        let _ = request;
+        Err(super::OpRefused::Refused(
+            "record transactions unsupported".into(),
+        ))
+    }
+
     /// [`StoreSlots::validate`].
     ///
     /// # Errors
@@ -35,6 +52,30 @@ pub trait SyncStore: RecordStore + Sized + Send + Sync + 'static {
     /// # Errors
     /// Why the settings do not open a store.
     fn open(settings: &[u8], host: Option<Host>) -> Result<Self, String>;
+
+    /// [`StoreSlots::open_with_secrets`], defaulting to opening without declared secrets.
+    ///
+    /// # Errors
+    /// Why the settings do not open a store.
+    fn open_with_secrets(
+        settings: &[u8],
+        secrets: &[&[u8]],
+        host: Option<Host>,
+    ) -> Result<Self, String> {
+        let _ = secrets;
+        Self::open(settings, host)
+    }
+
+    /// [`StoreSlots::purge_usage_before`], refused when the backend does not implement it.
+    ///
+    /// # Errors
+    /// The backend's refusal.
+    fn purge_usage_before(&self, before: u64) -> RecordStoreResult<u64> {
+        let _ = before;
+        Err(crate::records::RecordStoreError(
+            super::PURGE_USAGE_UNSUPPORTED.to_string(),
+        ))
+    }
 
     /// [`StoreSlots::append_plane_record_op`].
     ///
@@ -93,6 +134,15 @@ macro_rules! extra {
 
 impl<T: SyncStore> StoreSlots for T {
     const TAIL: Tail = <T as SyncStore>::TAIL;
+    const RECORD_TRANSACTION: bool = <T as SyncStore>::RECORD_TRANSACTION;
+
+    fn record_transaction(
+        &self,
+        _: &mut Op<'_>,
+        request: &super::conditional::Request,
+    ) -> Step<OpResult<super::conditional::Decision>> {
+        Step::Ready(<T as SyncStore>::record_transaction(self, request))
+    }
 
     fn validate(settings: &[u8]) -> Result<(), String> {
         <T as SyncStore>::validate(settings)
@@ -102,7 +152,16 @@ impl<T: SyncStore> StoreSlots for T {
         <T as SyncStore>::open(settings, host)
     }
 
+    fn open_with_secrets(
+        settings: &[u8],
+        secrets: &[&[u8]],
+        host: Option<Host>,
+    ) -> Result<Self, String> {
+        <T as SyncStore>::open_with_secrets(settings, secrets, host)
+    }
+
     extra! {
+        purge_usage_before(before: u64) -> RecordStoreResult<u64>;
         append_plane_record_op(op: OpId, record: PlaneRecordRef<'_>) -> OpResult<()>;
         record_put(schema: &str, key: &[u8], value: &[u8]) -> Result<(), String>;
         record_get(schema: &str, key: &[u8]) -> Result<Option<RecordBytes>, String>;
@@ -121,6 +180,7 @@ impl<T: SyncStore> StoreSlots for T {
         put_usage(bucket_id: &str, window_start: u64, ledger: &UsageLedger) -> ();
         list_metering(bucket: u64) -> Vec<MeteringRow>;
         put_credential(secret: &CredentialSecret) -> ();
+        rewrap_credential(expected: &CredentialSecret, replacement: &str) -> bool;
         put_key_with_credential(key: &VirtualKey, secret: &CredentialSecret) -> ();
         list_credentials(key_id: &str) -> Vec<CredentialMeta>;
         revoke_credential(id: &str, reason: &str) -> ();

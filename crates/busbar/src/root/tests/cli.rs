@@ -170,7 +170,7 @@ fn the_list_plugins_header_heads_the_row_formats_columns() {
 /// so a door that stops stating its rows, or a reader that drops a slot, fails here. A build that
 /// links fewer planes prints a different help, not a wrong one, so the pin holds only where every
 /// plane and every plane door is linked.
-#[cfg(all(linked_every_plane, linked_every_plane_door))]
+#[cfg(linked_every_plane_door)]
 #[test]
 fn the_default_distributions_help_is_byte_identical() {
     assert_eq!(

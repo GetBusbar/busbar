@@ -135,6 +135,170 @@ fn doors(third_party: bool) -> [PluginRegistry; 2] {
     [linked, dropped]
 }
 
+/// The callback changes its answer on every invocation. SHORT is a buffer negotiation,
+/// so neither the on-the-spot recall nor a submitted recall may judge the credential again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn short_verdicts_keep_the_first_judgment_through_both_auth_doors() {
+    for registry in doors(false) {
+        let rows = AuthRows::new(Arc::new(registry), dispatcher());
+        let opened = rows
+            .open(
+                "the-auth",
+                "the-auth",
+                &serde_json::json!(sha256_hex(TOKEN.as_bytes())),
+            )
+            .expect("the fixture opens");
+        let wide = || {
+            let mut r = request(Some(TOKEN), None);
+            r.path = "/auth-short-custody".into();
+            r
+        };
+        let identity = |answer: VerifyAnswer, judgment: u64| {
+            let Verified::Identity(id) = answer.verified else {
+                panic!("the fixture must identify")
+            };
+            assert_eq!(id.subject, format!("judgment-{judgment}"));
+            assert_eq!(id.groups.len(), 300);
+            assert_eq!(id.groups[299], "group-299");
+        };
+        identity(opened.verify_now(&wide()).expect("on the spot"), 1);
+        identity(Box::into_pin(opened.verify(wide())).await, 2);
+        // Fresh operations with identical inputs get their own judgment, not a cached verdict.
+        identity(Box::into_pin(opened.verify(wide())).await, 3);
+        identity(
+            opened.verify_now(&wide()).expect("another on-the-spot op"),
+            4,
+        );
+    }
+}
+
+/// A one-shot recall token owns its SDK lease even when no recall is made. Closing an
+/// instance with an outstanding token drops its SDK storage and never calls a freed instance.
+#[test]
+fn abandoned_short_tokens_release_and_closed_auth_instances_refuse_recall_both_ways() {
+    use crate::dispatch::{in_head, out_head, Frame};
+    use busbar_contract::abi::auth::{slot, IdentifyOut, VerifyIn, POINT_HEAD};
+    use busbar_contract::abi::mechanism::call::Outcome;
+    use busbar_contract::abi::mechanism::lifecycle::{slot as life, ReleaseIn};
+    let frame = || {
+        // SAFETY: all fields are plain wire data. Only static request bytes are lent here.
+        let mut input: VerifyIn = unsafe { std::mem::zeroed() };
+        input.head = in_head();
+        input.point = POINT_HEAD;
+        input.request.canonical_path =
+            busbar_contract::abi::sdk::door::abi_str("/auth-short-custody");
+        let mut output: IdentifyOut = unsafe { std::mem::zeroed() };
+        output.head = out_head();
+        Frame::new(input, output)
+    };
+    for registry in doors(false) {
+        let d = dispatcher();
+        let rows = AuthRows::new(Arc::new(registry), d.clone());
+        let opened = rows
+            .open(
+                "the-auth",
+                "the-auth",
+                &serde_json::json!(sha256_hex(TOKEN.as_bytes())),
+            )
+            .unwrap();
+        let plugin = opened.plugin();
+        let mut first = frame();
+        let short = plugin.call(slot::VERIFY, &mut first);
+        assert_eq!(short.outcome, Outcome::Failed);
+        assert_eq!(short.lease, 0, "negotiated storage stays private");
+        let lease = first.out.head.lease;
+        assert_ne!(lease, 0);
+        drop(short.recall.expect("one recall token"));
+        let mut release = Frame::new(
+            ReleaseIn {
+                head: in_head(),
+                lease,
+            },
+            out_head(),
+        );
+        assert_eq!(
+            plugin.call(life::RELEASE, &mut release).outcome,
+            Outcome::Refused,
+            "token drop already returned its lease"
+        );
+        for cancel in [false, true] {
+            use busbar_contract::abi::mechanism::call::DeadlineClass;
+            use busbar_contract::abi::mechanism::lifecycle::{TickIn, TickOut};
+            let ticket = d.mint(0).unwrap();
+            let done = d
+                .submit(
+                    plugin,
+                    ticket,
+                    slot::VERIFY,
+                    frame(),
+                    DeadlineClass::Call,
+                    0,
+                )
+                .wait(Duration::from_secs(10))
+                .unwrap();
+            assert!(done.short);
+            assert_eq!(done.lease, 0);
+            let lease = done.frame.unwrap().out.head.lease;
+            if cancel {
+                d.drop_client(ticket);
+            } else {
+                d.recycle(ticket);
+            }
+            // Two real crossings on this worker place a loop boundary after deferred release.
+            // The first can be scheduled in the same batch as the lifecycle message.
+            for _ in 0..2 {
+                let barrier = d.mint(0).unwrap();
+                let tick = Frame::new(
+                    TickIn {
+                        head: in_head(),
+                        now_ns: 0,
+                    },
+                    TickOut {
+                        head: out_head(),
+                        next_tick_ns: 0,
+                    },
+                );
+                assert_eq!(
+                    d.submit(plugin, barrier, life::TICK, tick, DeadlineClass::Call, 0)
+                        .wait(Duration::from_secs(10))
+                        .unwrap()
+                        .outcome,
+                    Outcome::Ready
+                );
+                d.recycle(barrier);
+            }
+            let mut release = Frame::new(
+                ReleaseIn {
+                    head: in_head(),
+                    lease,
+                },
+                out_head(),
+            );
+            assert_eq!(
+                plugin.call(life::RELEASE, &mut release).outcome,
+                Outcome::Refused,
+                "ticket lifecycle already returned its lease"
+            );
+            if cancel {
+                d.recycle(ticket);
+            }
+        }
+        let mut second = frame();
+        let token = plugin.call(slot::VERIFY, &mut second).recall.unwrap();
+        assert_eq!(
+            plugin
+                .call(life::CLOSE, &mut Frame::new(in_head(), out_head()))
+                .outcome,
+            Outcome::Ready
+        );
+        assert!(!plugin.is_open());
+        assert!(matches!(
+            plugin.recall(token, slot::VERIFY, &mut frame()).outcome,
+            Outcome::Refused | Outcome::Fault
+        ));
+    }
+}
+
 /// What one door does, as one comparable transcript: the opened instance's name and facts, the
 /// operator credential's row the axis finds by its Statement, and its answer for every case on the
 /// spot and submitted.

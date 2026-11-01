@@ -131,6 +131,7 @@ pub struct HookEnv {
     /// every `kind: hook` row, compiled in or dropped in, opened on the hook kind's ABI over the
     /// process's one dispatcher. `None` = this build installs no axis: no hook opens.
     axis: Option<std::sync::Arc<dyn busbar_contract::hook_calls::HookAxis>>,
+    route_calls: Arc<std::collections::HashMap<String, RouteCalls>>,
     /// The secret resolver used to turn any SecretRef-typed hook setting (e.g. a `licenseKey`) into
     /// its raw value BEFORE the settings cross the ABI at open/configure (ADR-0010). Shared with the
     /// store/auth open paths; the same fail-closed resolver. Held behind the NEUTRAL
@@ -169,6 +170,7 @@ impl HookEnv {
         Ok(HookEnv {
             registry,
             axis,
+            route_calls: Arc::new(std::collections::HashMap::new()),
             secret_resolver,
             banner_seen: std::sync::Arc::new(std::sync::Mutex::new(
                 std::collections::HashSet::new(),
@@ -187,6 +189,7 @@ impl HookEnv {
         HookEnv {
             registry,
             axis: Some(axis),
+            route_calls: Arc::new(std::collections::HashMap::new()),
             secret_resolver,
             banner_seen: std::sync::Arc::new(std::sync::Mutex::new(
                 std::collections::HashSet::new(),
@@ -210,6 +213,16 @@ impl HookEnv {
         name: &str,
         timeout_ms: u64,
     ) -> Result<Arc<dyn RoutingPolicy>, String> {
+        if let Some(opened) = self.route_calls.get(name).filter(|opened| {
+            opened.module == module
+                && opened.resolved.as_value() == settings.as_value()
+                && opened.budget == policy_timeout(timeout_ms)
+        }) {
+            return Ok(crate::plane_driver::hooks::policy::HookPolicy::policy(
+                opened.calls.clone(),
+                name,
+            ));
+        }
         let axis = self
             .axis
             .as_ref()
@@ -223,6 +236,75 @@ impl HookEnv {
         Ok(crate::plane_driver::hooks::policy::HookPolicy::policy(
             calls, name,
         ))
+    }
+
+    /// Open route-bearing configured hooks once for this candidate generation. The same calls
+    /// back its policy and its HTTP dispatcher; the old App retains its own calls across reload.
+    ///
+    /// # Errors
+    /// A declared route, settings resolution, or instance open is refused.
+    pub fn route_decls(
+        &mut self,
+        hooks: &std::collections::HashMap<String, crate::config::HookCfg>,
+    ) -> Result<Vec<crate::plugin_routes::RouteDecl>, String> {
+        let Some(axis) = self.axis.as_ref() else {
+            return Ok(Vec::new());
+        };
+        let mut names: Vec<_> = hooks.keys().collect();
+        names.sort();
+        let mut calls = std::collections::HashMap::new();
+        let mut declarations = Vec::new();
+        for name in names {
+            let hook = &hooks[name];
+            let resolved = self.resolve_hook_settings(&hook.plugin, &hook.settings)?;
+            let routes = axis.routes(&hook.plugin, name, resolved.as_value())?;
+            if routes.is_empty() {
+                continue;
+            }
+            let budget = policy_timeout(hook.timeout_ms);
+            let opened = match self.route_calls.get(name).filter(|opened| {
+                opened.module == hook.plugin
+                    && opened.resolved.as_value() == resolved.as_value()
+                    && opened.budget == budget
+                    && opened.calls.routes() == routes.as_slice()
+            }) {
+                Some(opened) => opened.calls.clone(),
+                None => axis.open(&hook.plugin, name, resolved.as_value(), budget)?,
+            };
+            if opened.routes() != routes.as_slice() {
+                return Err(format!(
+                    "hook '{name}' route declarations changed while opening"
+                ));
+            }
+            let dispatch: Arc<dyn crate::plugin_routes::PluginHttpDispatch> = Arc::new(HookHttp {
+                calls: opened.clone(),
+                budget,
+            });
+            for route in opened.routes() {
+                declarations.push(crate::plugin_routes::RouteDecl {
+                    owner: name.clone(),
+                    source_instance: name.clone(),
+                    dispatch_available: true,
+                    kind: crate::plugin_routes::RouteKind::Hook,
+                    route: route.clone(),
+                    scrape: false,
+                    persistent: false,
+                    dispatch: dispatch.clone(),
+                });
+            }
+            calls.insert(
+                name.clone(),
+                RouteCalls {
+                    module: hook.plugin.clone(),
+                    definition: ResolvedSettings::from_map(hook.settings.clone()),
+                    resolved,
+                    budget,
+                    calls: opened,
+                },
+            );
+        }
+        self.route_calls = Arc::new(calls);
+        Ok(declarations)
     }
 
     /// Resolve a hook's opaque `settings:` map — substituting any SecretRef-typed value (e.g. a
@@ -324,6 +406,41 @@ impl HookEnv {
     }
 }
 
+struct RouteCalls {
+    module: String,
+    definition: ResolvedSettings,
+    resolved: ResolvedSettings,
+    budget: std::time::Duration,
+    calls: Arc<dyn busbar_contract::hook_calls::HookCalls>,
+}
+
+struct HookHttp {
+    calls: Arc<dyn busbar_contract::hook_calls::HookCalls>,
+    budget: std::time::Duration,
+}
+
+impl crate::plugin_routes::PluginHttpDispatch for HookHttp {
+    fn handle_http(
+        &self,
+        request: &busbar_contract::abi::mechanism::endpoint::EndpointRequest,
+    ) -> busbar_contract::abi::mechanism::endpoint::EndpointResponse {
+        // Plugin route dispatch invokes this arm on a Tokio blocking thread.
+        match tokio::runtime::Handle::current()
+            .block_on(self.calls.serve(request.clone(), self.budget))
+        {
+            Ok(response) => response,
+            Err(why) => {
+                tracing::warn!(hook = self.calls.name(), error = %why, "hook route failed");
+                busbar_contract::abi::mechanism::endpoint::EndpointResponse {
+                    status: 502,
+                    headers: Vec::new(),
+                    body: Vec::new(),
+                }
+            }
+        }
+    }
+}
+
 // The per-pool routing-policy carriers [`ResolvedPolicy`] / [`FallbackHook`] — the plain-data layer
 // resolved ONCE at config load — live in the NEUTRAL substrate (`busbar_kernel::hooks`) so the LLM
 // model plane names them without reaching back into core (BUSBAR-1.6.0.md decision #1).
@@ -351,7 +468,11 @@ pub fn resolve_policy(cfg: &crate::config::PoolCfg) -> Option<ResolvedPolicy> {
     // hook axis. Compiled OUT, no door claims them (a config_validate BOOT ERROR, so unreachable in a
     // running server); degrade to None (SWRR) as belt-and-suspenders.
     let (policy, timeout) = crate::preflight::builtin_ranking(name)?;
-    Some(ResolvedPolicy::Policy {
+    Some(ranked_policy(policy, timeout))
+}
+
+fn ranked_policy(policy: Arc<dyn RoutingPolicy>, timeout: std::time::Duration) -> ResolvedPolicy {
+    ResolvedPolicy::Policy {
         policy,
         on_error: crate::config::PolicyOnError::default(),
         on_error_chain: Vec::new(),
@@ -361,7 +482,7 @@ pub fn resolve_policy(cfg: &crate::config::PoolCfg) -> Option<ResolvedPolicy> {
         send_user: false,
         // A native ordering policy never restricts, so on_empty is inert; keep the fail-closed default.
         on_empty: crate::config::PolicyOnError::Reject,
-    })
+    }
 }
 
 /// The name of the registered `default: true` hook, if any — the base ordering that pools which named
@@ -389,6 +510,19 @@ pub fn resolve_pool_ordering(
     default_hook: Option<&str>,
     settings_version: u64,
 ) -> Option<ResolvedPolicy> {
+    try_resolve_pool_ordering(cfg, hooks, env, default_hook, settings_version)
+        .ok()
+        .flatten()
+}
+
+/// Boot/reload must retain an opening failure instead of replacing the selected strategy with SWRR.
+pub fn try_resolve_pool_ordering(
+    cfg: &crate::config::PoolCfg,
+    hooks: &std::collections::HashMap<String, crate::config::HookCfg>,
+    env: &HookEnv,
+    default_hook: Option<&str>,
+    settings_version: u64,
+) -> Result<Option<ResolvedPolicy>, String> {
     if !cfg.base_named {
         if let Some(name) = default_hook {
             if let Some(hook) = hooks.get(name) {
@@ -399,7 +533,13 @@ pub fn resolve_pool_ordering(
                 // (`can_rewrite`), not `admits_rewrite`, to match the siblings exactly.
                 if hook.kind == crate::config::HookKind::Gate && !hook.prompt.can_rewrite() {
                     // The default gate becomes this pool's base ordering.
-                    return resolve_gate_transport(name, hook, hooks, env, settings_version);
+                    return Ok(resolve_gate_transport(
+                        name,
+                        hook,
+                        hooks,
+                        env,
+                        settings_version,
+                    ));
                 }
                 tracing::warn!(
                     hook = %name,
@@ -409,7 +549,15 @@ pub fn resolve_pool_ordering(
             }
         }
     }
-    resolve_policy(cfg)
+    let Some(name) = cfg.policy.native_name() else {
+        return Ok(None);
+    };
+    let axis = env
+        .axis
+        .as_ref()
+        .ok_or_else(|| format!("ranking strategy '{name}' has no hook axis"))?;
+    let (policy, timeout) = crate::preflight::ranking_on_axis(axis.as_ref(), name)?;
+    Ok(Some(ranked_policy(policy, timeout)))
 }
 
 /// Resolve a pool's GATES (`hook:` / the non-strategy names in `hooks: [...]`) into their transports,
@@ -836,6 +984,16 @@ fn gate_transport_named(
     env: &HookEnv,
     _settings_version: u64,
 ) -> Option<(Arc<dyn RoutingPolicy>, ResolvedSettings)> {
+    if let Some(opened) = env.route_calls.get(name).filter(|opened| {
+        opened.module == hook.plugin
+            && &*opened.definition == &hook.settings
+            && opened.budget == policy_timeout(hook.timeout_ms)
+    }) {
+        return Some((
+            crate::plane_driver::hooks::policy::HookPolicy::policy(opened.calls.clone(), name),
+            opened.resolved.clone(),
+        ));
+    }
     // ONE load per distinct resolution, and that load is SINGLE-FLIGHT. See [`resolution`] for why
     // this is a correctness fix and not a cache for speed's sake. A hook carrying a `SecretRef` is
     // deliberately NOT eligible (`key` returns `None`) and re-resolves on every call, exactly as
@@ -1030,6 +1188,7 @@ mod resolution {
         (std::sync::Arc::as_ptr(&env.registry) as *const u8 as usize).hash(&mut h);
         name.hash(&mut h);
         hook.plugin.hash(&mut h);
+        super::policy_timeout(hook.timeout_ms).hash(&mut h);
         serde_json::Value::Object(hook.settings.clone())
             .to_string()
             .hash(&mut h);

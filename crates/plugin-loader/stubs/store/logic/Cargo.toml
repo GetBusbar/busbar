@@ -36,6 +36,8 @@ busbar-contract = { workspace = true }
 # The dedupe log keeps a SHA-256 digest of each op's value fields, never their text, so what it
 # holds per op is fixed size. Already in busbar-contract's own closure: no crate is added.
 sha2 = { workspace = true }
+# This neutral fixture validates the settings used by its secret-opening regression.
+serde_json = { workspace = true }
 
 [dev-dependencies]
 # The `Store` contract conformance suites live in this crate's own tests (no shared test util
@@ -45,4 +47,3 @@ sha2 = { workspace = true }
 # every store runs; the test kit is dev-only (`test-seal`: no test kit ships).
 busbar-contract = { workspace = true, features = ["test-seal"] }
 serde = { workspace = true }
-serde_json = { workspace = true }

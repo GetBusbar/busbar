@@ -33,6 +33,14 @@ use axum::{
 use serde_json::Value;
 use tokio::task::JoinHandle;
 
+/// Run boot's existing route preparation for a dependent crate's real hook-axis fixture.
+pub fn hook_route_declarations(
+    env: &mut crate::hooks::HookEnv,
+    definitions: &std::collections::HashMap<String, crate::config::HookCfg>,
+) -> Result<Vec<crate::plugin_routes::RouteDecl>, String> {
+    env.route_decls(definitions)
+}
+
 #[derive(Debug, Clone)]
 pub enum MockResponse {
     Ok {
@@ -1250,6 +1258,7 @@ impl TestApp {
             name.to_string(),
             crate::auth::login::LoginMethod {
                 module: calls,
+                inbound_style: None,
                 has_button,
                 issuer: None,
                 login_kind,

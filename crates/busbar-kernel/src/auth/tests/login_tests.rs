@@ -112,6 +112,13 @@ impl busbar_contract::auth_calls::AuthAxis for Recording {
     fn operator(&self) -> Option<(String, String)> {
         None
     }
+    fn inbound_style(&self, module: &str) -> Option<busbar_contract::auth_calls::InboundStyle> {
+        (module == "idp-plugin").then(|| busbar_contract::auth_calls::InboundStyle {
+            module: "idp-plugin".into(),
+            names: vec!["idp-plugin".into(), "request-signature".into()],
+            points: busbar_contract::abi::auth::AuthPoints::HEAD,
+        })
+    }
     fn open(
         &self,
         module: &str,
@@ -133,6 +140,107 @@ impl Recording {
             door: std::sync::Arc::new(OpenedLogin),
         })
     }
+}
+
+fn headless_methods(names: &[&str], axis: &std::sync::Arc<Recording>) -> LoginMethods {
+    let mut cfg = crate::config::AuthCfg::default_none();
+    for name in names {
+        cfg.methods.insert(
+            (*name).into(),
+            crate::config::AuthMethodCfg {
+                module: "idp-plugin".into(),
+                browser_login: None,
+                settings: serde_json::Map::from_iter([(
+                    "realm".into(),
+                    serde_json::Value::String((*name).into()),
+                )]),
+            },
+        );
+    }
+    LoginMethods::build_on(
+        &cfg,
+        &rows_of(&[]),
+        &crate::config::secret::SecretResolver::builtins_only(),
+        || Some(axis.clone() as std::sync::Arc<dyn busbar_contract::auth_calls::AuthAxis>),
+    )
+    .expect("headless providers open")
+}
+
+#[test]
+fn inbound_default_reuses_candidate_provider_and_never_opens_on_lookup() {
+    let axis = Recording::new();
+    let methods = headless_methods(&["tenant-one"], &axis);
+    let bound = methods
+        .inbound_default_auth("request-signature")
+        .unwrap()
+        .unwrap();
+    assert_eq!(bound.provider, "tenant-one");
+    assert_eq!(bound.module, "idp-plugin");
+    assert_eq!(bound.points, busbar_contract::abi::auth::AuthPoints::HEAD);
+    let opened: std::sync::Arc<dyn AuthCalls> = axis.door.clone();
+    assert!(std::sync::Arc::ptr_eq(&bound.calls, &opened));
+    assert!(methods
+        .inbound_default_auth("idp-plugin")
+        .unwrap()
+        .is_some());
+    assert!(methods.inbound_default_auth("tenant-one").is_err());
+    assert!(methods.inbound_default_auth("outbound-style").is_err());
+    assert!(methods.inbound_default_auth("").unwrap().is_none());
+    let calls = axis.opened.lock().unwrap();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].1, "tenant-one#login");
+    assert_eq!(calls[0].2["realm"], "tenant-one");
+}
+
+#[test]
+fn inbound_default_refuses_ambiguous_providers_and_unconfigured_styles() {
+    let axis = Recording::new();
+    let methods = headless_methods(&["tenant-one", "tenant-two"], &axis);
+    let error = methods
+        .inbound_default_auth("request-signature")
+        .err()
+        .expect("two configured providers cannot be selected by their shared module style");
+    assert!(error.contains("tenant-one") && error.contains("tenant-two"));
+    let empty = headless_methods(&[], &axis);
+    assert!(empty.inbound_default_auth("request-signature").is_err());
+    assert!(empty.inbound_default_auth("").unwrap().is_none());
+}
+
+#[test]
+fn inbound_default_cannot_reinterpret_a_provider_name_as_host_auth() {
+    let axis = Recording::new();
+    for name in crate::config::builtin_identity_providers() {
+        let methods = headless_methods(&[name], &axis);
+        let error = methods
+            .inbound_default_auth("request-signature")
+            .err()
+            .expect("a provider name must not select a host auth arm");
+        assert!(error.contains("reserved") && error.contains(name));
+    }
+    assert!(headless_methods(&["ordinary"], &axis)
+        .inbound_default_auth("request-signature")
+        .unwrap()
+        .is_some());
+}
+
+#[test]
+fn inbound_default_retains_its_candidate_instance_across_replacement() {
+    let old_axis = Recording::new();
+    let old = headless_methods(&["tenant"], &old_axis);
+    let bound = old
+        .inbound_default_auth("request-signature")
+        .unwrap()
+        .unwrap();
+    let next_axis = Recording::new();
+    let next = headless_methods(&["tenant"], &next_axis);
+    let replacement = next
+        .inbound_default_auth("request-signature")
+        .unwrap()
+        .unwrap();
+    assert!(!std::sync::Arc::ptr_eq(&bound.calls, &replacement.calls));
+    drop(old);
+    let opened: std::sync::Arc<dyn AuthCalls> = old_axis.door.clone();
+    assert!(std::sync::Arc::ptr_eq(&bound.calls, &opened));
 }
 
 /// One `identity-providers.idp` method on `idp-plugin` with a `browser_login` whose client secret

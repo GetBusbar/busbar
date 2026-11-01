@@ -1053,7 +1053,10 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
     // works — it's the engine's inline SWRR floor, not a plugin.)
     for (pool_name, pool_cfg) in &cfg.pools {
         let name = pool_cfg.policy.native_name();
-        if name.is_some_and(|n| !crate::preflight::builtin_ranking_known(n)) {
+        if !matches!(pool_cfg.policy, crate::config::PoolPolicy::Named(_))
+            && !cfg.plugins.enabled
+            && name.is_some_and(|n| !crate::preflight::builtin_ranking_known(n))
+        {
             errors.push(format!(
                 "pool '{pool_name}' names the {:?} ranking strategy but this binary was built \
                  WITHOUT the `hooks-ranking` feature — the built-in ranking strategies are absent. \

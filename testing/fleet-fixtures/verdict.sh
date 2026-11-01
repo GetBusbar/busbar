@@ -3,8 +3,7 @@
 #
 # Reads every ledger row every probe wrote, diffs it against the ids that were OWED (the kinds the
 # caller asked to verify), and exits non-zero if anything failed, did not run, or if NOTHING ran.
-# This is the ONLY place the gate decides anything; every probe merely reports. Same inversion as
-# scripts/release-gate/gate.sh, and for the same three reasons:
+# This is the ONLY place the gate decides anything; every probe merely reports:
 #
 #   * NO PROBE MASKS ANOTHER — probes do not control flow, so ordering cannot decide what runs.
 #   * A PROBE THAT COULD NOT RUN IS NOT A PASS — an owed id with no ledger row is `did not run`, RED.
@@ -28,7 +27,7 @@ GATE_NAME="${GATE_NAME:-plugin functional gate}"
 GATE_UPPER="$(printf '%s' "$GATE_NAME" | tr '[:lower:]' '[:upper:]')"
 
 # awk not `grep -c`: grep -c on an empty file prints 0 AND exits 1, which turns the vacuous-run
-# guard's own input into a broken test — the exact trap release-gate/gate.sh documents.
+# guard's own input into a broken test.
 rows="$(awk 'NF{n++} END{print n+0}' "$LEDGER" 2>/dev/null || echo 0)"
 
 echo "═══ ${GATE_UPPER} ═══"

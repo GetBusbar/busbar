@@ -979,7 +979,7 @@ mod auth_tests;
 #[path = "tests/linked_canonical.rs"]
 mod linked_canonical;
 
-#[cfg(all(test, linked_every_plane))]
+#[cfg(all(test, linked_every_plane_door))]
 #[path = "tests/linked_protocols.rs"]
 mod linked_protocols;
 

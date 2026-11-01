@@ -1522,7 +1522,11 @@ pub(crate) fn principal_from_vkey(key: &crate::governance::VirtualKey) -> Princi
 /// in one dialect and another handler shapes it in a different dialect — or where auth answers a
 /// MOUNTED, audience-bound path in the residual plane's envelope because it could not see the mount.
 fn ingress_for_path(app: &crate::state::App, path: &str) -> crate::plane_driver::dispatch::Ingress {
-    app.planes.ingress_of(path)
+    if crate::router::is_private_listener() {
+        crate::plane_driver::dispatch::Ingress::Fallback(None)
+    } else {
+        app.planes.ingress_of(path)
+    }
 }
 
 /// The auth-failure wire message for an inferred ingress protocol — a THIN delegation to the
@@ -2434,6 +2438,14 @@ pub(crate) async fn auth_middleware(
     // downstream handler time is never attributed to auth. No-op unless `BUSBAR_PROFILE` is set.
     let mut _mw = crate::profile::start(crate::profile::Stage::MwAuth);
     let path = req.uri().path().to_owned();
+    let admission = inbound.as_ref().map_or_else(
+        || {
+            (!crate::router::is_private_listener())
+                .then(|| app.planes.admission_for(&path).cloned())
+                .flatten()
+        },
+        crate::inbound::RequestAdmission::plane_admission,
+    );
     // THE DOOR ROUTE THIS REQUEST MATCHES, resolved FIRST (spec Part 3 section 12: route, then
     // authenticate): a `401` this middleware decides on it is rendered by the route's plane. `None`
     // on every residual data-plane path, which keeps its envelope byte for byte.
@@ -2482,7 +2494,12 @@ pub(crate) async fn auth_middleware(
     // chain below; `key` needs no special handling (it flows through the normal client-token check).
     // Consulted off the LIVE snapshot so a hot-swap that changes a route's auth takes effect at once.
     // `declared_auth` returns `None` for every non-plugin path, so this is a no-op on the hot path.
-    if let Some(auth) = app.plugin_routes.declared_auth(&path, req.method()) {
+    // A core/plane route belongs to this physical router. A plugin on another listener may
+    // declare the same path, but its policy cannot replace this router's matched route policy.
+    if let Some(auth) = (!claimed_at_key && !declared_admin)
+        .then(|| app.plugin_routes.declared_auth(&path, req.method()))
+        .flatten()
+    {
         match auth {
             busbar_contract::abi::mechanism::route::RouteAuth::None => {
                 drop(_mw.take());
@@ -2536,7 +2553,7 @@ pub(crate) async fn auth_middleware(
                 Some(token)
             }
             dpop::SenderConstraint::Refused => {
-                return Err(match app.planes.admission_for(&path) {
+                return Err(match admission.as_ref() {
                     Some(adm) => challenge::refuse(
                         challenge::ChallengeError::InvalidToken,
                         &adm.resource_metadata,
@@ -2574,7 +2591,6 @@ pub(crate) async fn auth_middleware(
     // this point costs anything. `Some` means this path is an OAuth 2.1 protected resource: a token
     // presented here must be bound to this resource's canonical URI, and a refusal owes the caller
     // a machine-readable challenge naming where to go and get one.
-    let admission = app.planes.admission_for(&path).cloned();
 
     // the /admin management API is gated by the ADMIN AUTH CHAIN (`admin_auth:`, default
     // the operator credential — the single operator token, Bearer or X-Admin-Token) — NOT a virtual key,

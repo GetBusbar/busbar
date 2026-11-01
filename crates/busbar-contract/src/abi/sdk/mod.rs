@@ -16,6 +16,10 @@
 #![allow(unsafe_op_in_unsafe_fn)]
 
 pub mod boundary;
+pub mod completion_retirement;
+/// Rust-only codec and typed facts for negotiated main-call host inspection.
+/// Re-exported as `abi::mechanism::inspection`; no C layout or generated-header declaration.
+pub mod inspection_wire;
 // THE URL AND HOST READER a plugin judges a destination with, the same one the host's guard reads
 // through (`crate::net`, a pure helper outside `abi/`).
 pub use crate::net;

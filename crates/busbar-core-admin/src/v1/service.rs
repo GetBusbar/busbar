@@ -931,6 +931,7 @@ pub fn build_with_hook(current: &App, name: &str, cfg: HookCfg) -> Result<App, A
         // demotion. Mirrors `build_without_hook`'s DELETE cleanup.
         next.global_hooks.retain(|n| n != name);
     }
+    stage_hook_routes(&mut next)?;
     // FAIL-CLOSED (open-time variant): before re-resolving, actually OPEN every referenced
     // decision/rewrite gate so a plugin that fails to `open()` ABORTS this register instead of being
     // silently `filter_map`-dropped by the resolvers below (which would return 200 OK while the gate
@@ -942,7 +943,26 @@ pub fn build_with_hook(current: &App, name: &str, cfg: HookCfg) -> Result<App, A
     // Re-resolve every registry-derived field (transports, plane gates, and the two compute gates)
     // from the new registry so a global hook — and anything it declared — is live after the swap.
     rebuild_hook_derived(&mut next);
+    next.root_rules
+        .check_built(&next)
+        .map_err(AdminError::Validation)?;
     Ok(next)
+}
+
+/// Stage route-bearing calls and their HTTP dispatchers together on the unpublished candidate.
+/// Policy resolution below must reuse these same calls at the candidate's effective budget.
+fn stage_hook_routes(next: &mut App) -> Result<(), AdminError> {
+    let mut env = next.hook_env.clone();
+    let declarations = env
+        .route_decls(&next.hook_registry)
+        .map_err(AdminError::Validation)?;
+    let routes = next
+        .plugin_routes
+        .with_hook_routes(declarations)
+        .map_err(AdminError::Validation)?;
+    next.hook_env = env;
+    next.plugin_routes = std::sync::Arc::new(routes);
+    Ok(())
 }
 
 /// Build the next `App` snapshot with `name` REMOVED from the hook registry — the pure core of
@@ -959,7 +979,11 @@ pub fn build_without_hook(current: &App, name: &str) -> Result<App, AdminError> 
     next.config_version = current.config_version.wrapping_add(1);
     next.hook_registry.remove(name);
     next.global_hooks.retain(|n| n != name);
+    stage_hook_routes(&mut next)?;
     rebuild_hook_derived(&mut next);
+    next.root_rules
+        .check_built(&next)
+        .map_err(AdminError::Validation)?;
     Ok(next)
 }
 
@@ -1096,6 +1120,7 @@ pub(crate) fn build_with_registry(
     next.config_version = current.config_version.wrapping_add(1);
     next.hook_registry = registry;
     next.global_hooks = global_hooks;
+    stage_hook_routes(&mut next)?;
     // FAIL-CLOSED (open-time variant): OPEN every referenced decision/rewrite gate before
     // re-resolving so a plugin that fails to `open()` aborts this snapshot install instead of being
     // silently dropped from the routing chain (fail-open). A genuinely-absent plugin stays a skip.
@@ -1103,6 +1128,9 @@ pub(crate) fn build_with_registry(
         return Err(AdminError::Validation(e));
     }
     rebuild_hook_derived(&mut next);
+    next.root_rules
+        .check_built(&next)
+        .map_err(AdminError::Validation)?;
     Ok(next)
 }
 

@@ -131,6 +131,10 @@ impl busbar_contract::auth_calls::AuthAxis for Around {
     fn carriers(&self, module: &str) -> Vec<String> {
         self.0.carriers(module)
     }
+
+    fn inbound_style(&self, module: &str) -> Option<busbar_contract::auth_calls::InboundStyle> {
+        self.0.inbound_style(module)
+    }
     fn default_inbound_style(&self) -> Result<Vec<String>, String> {
         self.0.default_inbound_style()
     }

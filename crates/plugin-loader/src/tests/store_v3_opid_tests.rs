@@ -30,7 +30,7 @@ type Databases = std::collections::HashMap<Vec<u8>, Arc<MemoryStore>>;
 static BACKING: std::sync::Mutex<Option<Databases>> = std::sync::Mutex::new(None);
 
 impl Hooks for Shared {
-    fn open(settings: &[u8], _: Option<Host>) -> Result<Arc<MemoryStore>, String> {
+    fn open(settings: &[u8], _: &[&[u8]], _: Option<Host>) -> Result<Arc<MemoryStore>, String> {
         let mut dbs = BACKING
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);

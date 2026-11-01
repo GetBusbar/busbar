@@ -97,9 +97,12 @@ fn metrics_route_declared_only_when_configured() {
         .iter()
         .map(|route| crate::plugin_routes::RouteDecl {
             owner: "prometheus".into(),
+            source_instance: "prometheus".into(),
+            dispatch_available: true,
             kind: crate::plugin_routes::RouteKind::Export,
             route: route.clone(),
             scrape: true,
+            persistent: route.path == "/metrics/hooks",
             dispatch: Arc::new(Granted(Arc::new(super::super::plugin::Served(
                 sink.clone(),
             )))),

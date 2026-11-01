@@ -59,6 +59,7 @@ enum Values<'a> {
     Usage(&'a [(&'a str, u64, UsageDelta)]),
     Metering(&'a [MeteringDelta]),
     Append(PlaneRecordRef<'a>),
+    RecordTransaction(&'a super::conditional::Request),
 }
 
 /// Whether an `op_id` is new, a replay of the op that recorded it, or a conflict with it.
@@ -99,6 +100,12 @@ impl<'a> Dedupe<'a> {
         Self::of(Values::Append(record))
     }
 
+    /// Atomic conditional-record request; version, predicates and all mutations form its body.
+    #[must_use]
+    pub fn record_transaction(request: &'a super::conditional::Request) -> Self {
+        Self::of(Values::RecordTransaction(request))
+    }
+
     fn of(values: Values<'a>) -> Self {
         let mut f = Feed(Sha256::new());
         f.text(TAG);
@@ -122,6 +129,47 @@ impl<'a> Dedupe<'a> {
             Values::Append(record) => {
                 f.text("append_plane_record");
                 f.record(record);
+            }
+            Values::RecordTransaction(request) => {
+                f.text("record_transaction");
+                f.u64(u64::from(request.version));
+                f.count(request.predicates.len());
+                for predicate in &request.predicates {
+                    f.text(&predicate.schema);
+                    f.bytes(&predicate.key);
+                    match &predicate.expected {
+                        super::conditional::Expected::Absent => f.0.update([0]),
+                        super::conditional::Expected::Bytes(bytes) => {
+                            f.0.update([1]);
+                            f.bytes(bytes);
+                        }
+                    }
+                }
+                f.count(request.mutations.len());
+                for mutation in &request.mutations {
+                    let (schema, key) = mutation.address();
+                    match mutation {
+                        super::conditional::Mutation::Put { value, .. } => {
+                            f.0.update([0]);
+                            f.text(schema);
+                            f.bytes(key);
+                            f.bytes(value);
+                        }
+                        super::conditional::Mutation::Delete { .. } => {
+                            f.0.update([1]);
+                            f.text(schema);
+                            f.bytes(key);
+                        }
+                        super::conditional::Mutation::DeleteRange {
+                            exact_key_length, ..
+                        } => {
+                            f.0.update([2]);
+                            f.text(schema);
+                            f.bytes(key);
+                            f.u64(*exact_key_length);
+                        }
+                    }
+                }
             }
         }
         Self {
@@ -206,6 +254,7 @@ impl<'a> Dedupe<'a> {
     fn older_form_is(&self, recorded: &[u8]) -> bool {
         let mut older = String::new();
         match self.values {
+            Values::RecordTransaction(_) => return false,
             Values::Usage(cells) => {
                 let _ = write!(older, "add_usage_batch:{cells:?}");
             }

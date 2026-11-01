@@ -26,10 +26,12 @@
 use std::mem::size_of;
 use std::ptr;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Mutex;
+use std::task::Poll;
 
 use busbar_contract::abi::hook::signal;
 use busbar_contract::abi::host::service::DISTRUST_NONE;
-use busbar_contract::abi::mechanism::call::{AbiStr, InHead, OutHead, Outcome};
+use busbar_contract::abi::mechanism::call::{AbiStr, InHead, OutHead, Outcome, FLAG_RESUME};
 use busbar_contract::abi::mechanism::door::{KindTailHead, Section, Statement, SECTION_DECLARING};
 use busbar_contract::abi::mechanism::lifecycle::{
     GenIn, RefreshIn, ReleaseIn, TickIn, TickOut, ValidateIn,
@@ -44,7 +46,9 @@ use busbar_contract::abi::plane::{
     SHAPE_PIECEWISE, UNITS_ESTIMATED, UNITS_REPORTED, VERDICT_OK,
 };
 use busbar_contract::abi::plane::{PlaneCancelIn, PlaneCancelOut};
+use busbar_contract::abi::sdk::completion_retirement::{Domain, Handle, Retirement};
 use busbar_contract::abi::sdk::door::{abi_str, statement};
+use busbar_contract::abi::sdk::life::Leases;
 use busbar_contract::abi::sdk::publish::{AdminRouteSpec, ClaimSpec, SnapshotSpec};
 use busbar_contract::abi::sdk::services::Services;
 use busbar_contract::abi::sdk::{Generations, Instance, Lent, Out, Safe, SafeSlot, SignalScalar};
@@ -122,6 +126,74 @@ pub const LISTED: &str = "door-listed";
 /// The settings `validate` refuses.
 pub const BAD_SETTINGS: &[u8] = b"bad";
 
+pub const PENDING_DRIVE: &[u8] = b"pending-drive";
+pub const PENDING_DRIVE_OVER_CAP: &[u8] = b"pending-drive-over-cap";
+pub const PENDING_DRIVE_NEEDED: &[u8] = b"pending-drive-needed";
+pub const DRIVE_RESUMES: u64 = u64::MAX - 1;
+pub const DRIVE_RESTART: u64 = u64::MAX - 2;
+pub const ACK_PENDING: &[u8] = b"ack-pending";
+pub const ACK_READY: &[u8] = b"ack-ready";
+pub const ACK_FAILED: &[u8] = b"ack-failed";
+pub const ACK_SHORT: &[u8] = b"ack-short";
+pub const ACK_MALFORMED: &[u8] = b"ack-malformed";
+pub const ACK_WRONG_OWNER: &[u8] = b"ack-wrong-owner";
+pub const ACK_WRONG_NONCE: &[u8] = b"ack-wrong-nonce";
+pub const ACK_CANCEL: &[u8] = b"ack-cancel";
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum AckMode {
+    Pending,
+    Ready,
+    Failed,
+    Short,
+    Malformed,
+    WrongOwner,
+    WrongNonce,
+    Cancel,
+}
+
+struct DriveProbe {
+    ack: Option<AckMode>,
+    retirement: Mutex<Retirement>,
+    malformed: u8,
+    completed: AtomicU64,
+    resumes: AtomicU64,
+    lease: AtomicU64,
+    leases: Mutex<Leases>,
+}
+
+impl DriveProbe {
+    fn new(settings: &[u8]) -> Option<Self> {
+        let ack = match settings {
+            ACK_PENDING => Some(AckMode::Pending),
+            ACK_READY => Some(AckMode::Ready),
+            ACK_FAILED => Some(AckMode::Failed),
+            ACK_SHORT => Some(AckMode::Short),
+            ACK_MALFORMED => Some(AckMode::Malformed),
+            ACK_WRONG_OWNER => Some(AckMode::WrongOwner),
+            ACK_WRONG_NONCE => Some(AckMode::WrongNonce),
+            ACK_CANCEL => Some(AckMode::Cancel),
+            _ => None,
+        };
+        let malformed = match settings {
+            PENDING_DRIVE => 0,
+            PENDING_DRIVE_OVER_CAP => 1,
+            PENDING_DRIVE_NEEDED => 2,
+            _ if ack.is_some() => 0,
+            _ => return None,
+        };
+        Some(Self {
+            ack,
+            retirement: Mutex::new(Retirement::default()),
+            malformed,
+            completed: AtomicU64::new(0),
+            resumes: AtomicU64::new(0),
+            lease: AtomicU64::new(0),
+            leases: Mutex::new(Leases::default()),
+        })
+    }
+}
+
 /// One instance: the live generations' snapshots (control lane only), the session with
 /// unsolicited output, `0` = none, and the ticket its caller piece crossed on, packed, `0` = none
 /// (the two things the request path touches).
@@ -135,6 +207,7 @@ struct Plane {
     /// kernel entitles the unit to `door:echo` and approves the member's `echo` (a service the
     /// host does not serve gates nothing).
     services: Option<Services>,
+    drive_probe: Option<DriveProbe>,
 }
 
 impl Plane {
@@ -183,6 +256,7 @@ slot!(Open, PlaneOpenIn, PlaneOpenOut, |instance, input, out| {
         snapshots: Generations::new(),
         ready: AtomicU64::new(0),
         session_ticket: AtomicU64::new(0),
+        drive_probe: DriveProbe::new(input.field(|i| &i.open.settings).bytes()),
         public: !input.field(|i| &i.public_url).bytes().is_empty(),
         services: input
             .field(|i| &i.open)
@@ -224,7 +298,21 @@ slot!(Retire, GenIn, OutHead, |instance, input, _out| {
     Outcome::Ready
 });
 
-slot!(Tick, TickIn, TickOut, |_, input, out| {
+slot!(Tick, TickIn, TickOut, |instance, input, out| {
+    if let Some(probe) = instance.get().and_then(|p| p.drive_probe.as_ref()) {
+        let value = match input.now_ns {
+            DRIVE_RESUMES => Some(probe.resumes.load(Ordering::Acquire)),
+            DRIVE_RESTART => {
+                probe.completed.store(0, Ordering::Release);
+                Some(0)
+            }
+            _ => None,
+        };
+        if let Some(value) = value {
+            out.set(|o| &o.next_tick_ns, value);
+            return Outcome::Ready;
+        }
+    }
     out.set(|o| &o.next_tick_ns, input.now_ns + 1_000_000);
     Outcome::Ready
 });
@@ -237,9 +325,106 @@ slot!(
         let Some(p) = instance.get() else {
             return Outcome::Failed;
         };
+        let mut outcome = Outcome::Ready;
+        if let Some(probe) = p.drive_probe.as_ref() {
+            if probe.ack.is_some()
+                && probe
+                    .retirement
+                    .lock()
+                    .unwrap()
+                    .begin(
+                        input.drive.head.host,
+                        input.drive.driver,
+                        input.field(|i| &i.drive.head.extensions).bytes(),
+                    )
+                    .is_err()
+            {
+                return Outcome::Fault;
+            }
+            if input.drive.head.flags & FLAG_RESUME != 0 {
+                probe.resumes.fetch_add(1, Ordering::AcqRel);
+            }
+            if probe.completed.load(Ordering::Acquire) == 0 {
+                let Some(services) = p.services.as_ref() else {
+                    return Outcome::Failed;
+                };
+                let handle = CompletionHandle {
+                    ticket: input.drive.driver,
+                    seq: 0,
+                    ..CompletionHandle::ZERO
+                };
+                let mut bytes = [0; 16];
+                match services.records_get(handle, "last", b"drive", &mut bytes) {
+                    Poll::Pending => outcome = Outcome::Pending,
+                    Poll::Ready(Ok(Some(bytes))) if bytes == b"completed" => {
+                        probe.completed.store(1, Ordering::Release);
+                        if probe.ack.is_some()
+                            && probe
+                                .retirement
+                                .lock()
+                                .unwrap()
+                                .consumed(Handle {
+                                    domain: Domain::Host,
+                                    seq: 0,
+                                })
+                                .is_err()
+                        {
+                            return Outcome::Fault;
+                        }
+                    }
+                    _ => return Outcome::Fault,
+                }
+            }
+            let leases = probe.leases.lock().unwrap();
+            if leases.held() != 0 {
+                return Outcome::Fault;
+            }
+            out.lease_str(|o| &o.head.error, &leases, "drive-owned-answer".to_owned());
+            if let Some(mode) = probe.ack {
+                let mut retirement = probe.retirement.lock().unwrap();
+                let Ok(ack) = retirement.acknowledgement(0) else {
+                    return Outcome::Fault;
+                };
+                if let Some(mut ack) = ack {
+                    if mode == AckMode::WrongOwner {
+                        ack.capability.owner.handle ^= 1;
+                    }
+                    if mode == AckMode::WrongNonce {
+                        ack.capability.nonce += 1;
+                    }
+                    if mode != AckMode::Cancel && out.completion_ack(&leases, &ack).is_err() {
+                        return Outcome::Fault;
+                    }
+                }
+                if retirement.queued() {
+                    outcome = Outcome::Pending;
+                }
+                match mode {
+                    AckMode::Ready => outcome = Outcome::Ready,
+                    AckMode::Failed => outcome = Outcome::Failed,
+                    AckMode::Short => {
+                        out.set(|o| &o.sessions_needed, input.sessions_cap as u32 + 1);
+                        outcome = Outcome::Failed;
+                    }
+                    AckMode::Malformed => {
+                        out.set(|o| &o.sessions_written, input.sessions_cap as u32 + 1)
+                    }
+                    _ => {}
+                }
+            }
+            probe.lease.store(out.get().head.lease, Ordering::Release);
+            if probe.malformed == 1 {
+                out.set(|o| &o.sessions_written, input.sessions_cap as u32 + 1);
+                return outcome;
+            }
+            if probe.malformed == 2 {
+                out.set(|o| &o.sessions_needed, input.sessions_cap as u32 + 1);
+                return outcome;
+            }
+        }
         let ready = p.ready.load(Ordering::Acquire);
         if ready == 0 {
-            return Outcome::Ready;
+            return outcome;
         }
         let mut sessions = input.sessions_buf();
         sessions.push(ready);
@@ -249,7 +434,7 @@ slot!(
         }
         out.set(|o| &o.sessions_written, sessions.written() as u32);
         p.ready.store(0, Ordering::Release);
-        Outcome::Ready
+        outcome
     }
 );
 
@@ -266,6 +451,22 @@ slot!(
     |instance, input, out| {
         let named = packed(input.cancel.ticket);
         if let Some(p) = instance.get() {
+            if let Some(probe) = p
+                .drive_probe
+                .as_ref()
+                .filter(|p| p.ack == Some(AckMode::Cancel))
+            {
+                let Ok(Some(ack)) = probe.retirement.lock().unwrap().acknowledgement(0) else {
+                    return Outcome::Fault;
+                };
+                let leases = probe.leases.lock().unwrap();
+                if out.completion_ack(&leases, &ack).is_err() {
+                    return Outcome::Fault;
+                }
+                probe
+                    .lease
+                    .store(out.get().cancel.head.lease, Ordering::Release);
+            }
             if named != 0
                 && p.session_ticket
                     .compare_exchange(named, 0, Ordering::AcqRel, Ordering::Acquire)
@@ -279,7 +480,25 @@ slot!(
     }
 );
 
-slot!(Release, ReleaseIn, OutHead, |_, _, _out| { Outcome::Ready });
+slot!(Release, ReleaseIn, OutHead, |instance, input, _out| {
+    if let Some(probe) = instance.get().and_then(|p| p.drive_probe.as_ref()) {
+        if probe
+            .lease
+            .compare_exchange(input.lease, 0, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return Outcome::Refused;
+        }
+        // The probe allows one outstanding answer. Dropping its owner releases the actual
+        // allocated error bytes; the next DRIVE must observe no previous answer still held.
+        let retired = std::mem::take(&mut *probe.leases.lock().unwrap());
+        drop(retired);
+        if let Some(services) = instance.get().and_then(|p| p.services.as_ref()) {
+            let _ = services.entitled(CompletionHandle::ZERO, "door:drive-release");
+        }
+    }
+    Outcome::Ready
+});
 
 // `close` answering READY: the SDK drops the instance's `Plane`.
 slot!(Close, InHead, OutHead, |_, _, _out| { Outcome::Ready });
@@ -351,6 +570,9 @@ slot!(OnPiece, OnPieceIn, OnPieceOut, |instance, input, out| {
             p.ready.store(input.stream, Ordering::Release);
             p.session_ticket
                 .store(packed(input.head.ticket), Ordering::Release);
+            if p.drive_probe.is_some() && piece == b"pending-session" {
+                return Outcome::Pending;
+            }
         }
         // The far end's answer: echoed to the caller, with a field, a count and a record.
         (FROM_FAR_END, _) => {

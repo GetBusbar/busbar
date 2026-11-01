@@ -101,6 +101,10 @@ signed by the owner (spec: `docs/design/BUSBAR-1.6.0.md`).
   **Migration:** run `busbar --migrate-config`, which inserts exactly `store: {module: memory}`
   (spec line 557, "a signed customer-visible change from 1.5.5"; owner ruling Q-STORE (B), spec lines
   4365-4378). See [the migration guide](docs/migration-1.6.md#the-store-block-is-required).
+- **Config migration explains how to configure a required missing signing key.** When the migrated
+  auth chain uses `keys` without `auth.signing_key`, the YAML and migration summary tell the
+  operator to generate a key and configure a secret reference. Validation and boot still require
+  that key; migration does not generate one.
 - **A published 1.5.5 JSON-contract plugin no longer loads.** Plugins speak the memory ABI only; boot
   refuses a 1.5.5 plugin, including the four published store plugins, with a message naming the
   rebuild against the 1.6.0 SDK (spec lines 1387-1389, section 11.8, "an owner-signed

@@ -663,3 +663,160 @@ fn a_sections_work_bounds_fall_back_to_the_hosts_key_by_key() {
         assert!(refused.starts_with("`p.work`"), "{bad}: {refused}");
     }
 }
+
+#[test]
+fn inspection_reads_actual_work_times_and_current_retention_without_inventing_live_expiry() {
+    use busbar_contract::abi::mechanism::inspection::{
+        InspectionObservation, InspectionQuery, WorkObservation,
+    };
+    let r = rig();
+    let (handle, reference) = open(&r, 1, b"work");
+    let query = InspectionQuery::Work { reference };
+    r.clock.store(1_000_100, Ordering::SeqCst);
+    assert_eq!(
+        r.s.inspect(&caller("inst"), Some(2), &query),
+        Ok(InspectionObservation::Work(WorkObservation {
+            observed_ms: 1_000_100,
+            opened_ms: 1_000_000,
+            retain_ms: 300_000,
+            settled_ms: None,
+        }))
+    );
+    assert_eq!(
+        settle(&r, "inst", Some(1), handle, b"done").outcome,
+        Outcome::Ready
+    );
+    r.s.bound_work(
+        "inst",
+        WorkBounds {
+            max_live: 17,
+            retain_ms: 700,
+        },
+    );
+    r.clock.store(1_000_200, Ordering::SeqCst);
+    assert_eq!(
+        r.s.inspect(&caller("inst"), Some(2), &query),
+        Ok(InspectionObservation::Work(WorkObservation {
+            observed_ms: 1_000_200,
+            opened_ms: 1_000_000,
+            retain_ms: 700,
+            settled_ms: Some(1_000_100),
+        }))
+    );
+    // A later policy binding changes the next observation, never the actual settlement time.
+    r.s.bound_work(
+        "inst",
+        WorkBounds {
+            max_live: 17,
+            retain_ms: 0,
+        },
+    );
+    assert_eq!(
+        r.s.inspect(&caller("inst"), Some(2), &query),
+        Err(busbar_contract::abi::mechanism::inspection::InspectionError::NotFound)
+    );
+}
+
+#[test]
+fn inspection_work_denials_collapse_and_only_an_actual_find_imports_durable_work() {
+    use busbar_contract::abi::mechanism::inspection::{InspectionError, InspectionQuery};
+    let r = rig();
+    let (handle, reference) = open(&r, 1, b"private");
+    let query = InspectionQuery::Work {
+        reference: reference.clone(),
+    };
+    for (instance, unit) in [("inst", 3), ("other", 1)] {
+        assert_eq!(
+            r.s.inspect(&caller(instance), Some(unit), &query),
+            Err(InspectionError::NotFound)
+        );
+    }
+    for unit in [None, Some(999)] {
+        assert_eq!(
+            r.s.inspect(&caller("inst"), unit, &query),
+            Err(InspectionError::Refused)
+        );
+    }
+    assert_eq!(
+        r.s.inspect(&caller("unknown"), Some(1), &query),
+        Err(InspectionError::Refused)
+    );
+    let restarted = rig_over(Arc::clone(&r.store), WorkBounds::default());
+    assert_eq!(
+        restarted.s.inspect(&caller("inst"), Some(1), &query),
+        Err(InspectionError::NotFound)
+    );
+    assert_ne!(find(&restarted, "inst", 1, &reference).value, svc::ABSENT);
+    assert!(restarted
+        .s
+        .inspect(&caller("inst"), Some(1), &query)
+        .is_ok());
+    assert_eq!(
+        settle(&r, "inst", Some(1), handle, b"done").outcome,
+        Outcome::Ready
+    );
+    r.clock.fetch_add(300_000, Ordering::SeqCst);
+    assert_eq!(
+        r.s.inspect(&caller("inst"), Some(1), &query),
+        Err(InspectionError::NotFound)
+    );
+    assert_eq!(
+        r.s.inspect(
+            &caller("inst"),
+            Some(1),
+            &InspectionQuery::Work {
+                reference: b"bad".to_vec()
+            }
+        ),
+        Err(InspectionError::NotFound)
+    );
+}
+
+#[test]
+fn inspection_carriers_are_instance_owned_point_in_time_observations_without_callbacks() {
+    use busbar_contract::abi::mechanism::inspection::{
+        InspectionObservation, InspectionQuery, SessionObservation,
+    };
+    let r = rig();
+    let sink: crate::host_services::CarrierSink =
+        Arc::new(|_| panic!("inspection must not call the sink"));
+    let alice = r.s.open_carrier_session("inst", "alice", Arc::clone(&sink));
+    let bob = r.s.open_carrier_session("inst", "bob", Arc::clone(&sink));
+    let foreign = r.s.open_carrier_session("other", "alice", sink);
+    let query = InspectionQuery::CarrierSessions {
+        sessions: vec![alice, bob, foreign, u64::MAX],
+    };
+    let observation = |live| {
+        Ok(InspectionObservation::CarrierSessions(vec![
+            SessionObservation {
+                session: alice,
+                live,
+            },
+            SessionObservation {
+                session: bob,
+                live: true,
+            },
+            SessionObservation {
+                session: foreign,
+                live: false,
+            },
+            SessionObservation {
+                session: u64::MAX,
+                live: false,
+            },
+        ]))
+    };
+    // A driver's validated instance is the authority, not any self-asserted user identity.
+    let earlier = r.s.inspect(&caller("inst"), None, &query);
+    assert_eq!(earlier, observation(true));
+    r.s.close_carrier_session(alice);
+    assert_eq!(
+        r.s.inspect(&caller("inst"), None, &query),
+        observation(false)
+    );
+    assert_eq!(
+        earlier,
+        observation(true),
+        "the old observation is a copied fact, not a lease"
+    );
+}

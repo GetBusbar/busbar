@@ -147,10 +147,11 @@ impl Life for FileSink {
 
     /// A reload's settings replace the instance's.
     fn refresh(&self, settings: &[u8], _: &[&[u8]], _: u64) -> Result<Refreshed, Refusal> {
+        let settings = parse(settings)?;
         *self
             .settings
             .write()
-            .unwrap_or_else(PoisonError::into_inner) = parse(settings).ok();
+            .unwrap_or_else(PoisonError::into_inner) = Some(settings);
         Ok(Refreshed::default())
     }
 }

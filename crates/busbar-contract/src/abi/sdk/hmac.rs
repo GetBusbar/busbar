@@ -1,21 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE ONE WIPED HMAC-SHA256 (coordinator ruling 2026-10-18, Q128 auth-sigv4 round 2 (a)): the HMAC
-//! an auth plugin keys over secret material ([`hmac_sha256`]). Every key-derived value — the padded
-//! key, the inner and outer pad blocks, the SHA-256 chaining states and the inner digest — lives in
-//! a buffer wiped on drop, and so does the answer (THE DESIGN section 6: "auth material is
-//! zeroised").
-//!
-//! WHY IT IS NOT `ring`. A library HMAC keeps its key's inner and outer pad states in a value it
-//! frees unwiped (`ring::hmac::Key`), and a library digest context does not wipe its chaining state
-//! either, so keying `ring` here would move the leak, not close it. This one primitive is the
-//! ledgered exception to THE DESIGN section 2's single crypto backend: section 6's zeroisation
-//! over section 2's rule, for HMAC-SHA256 over key material only; every other primitive stays on `ring`. Moved unchanged
-//! in substance from `busbar-auth-sigv4` (`sigv4.rs`), whose copy is deleted; any other auth plugin
-//! with an HMAC over secret keys moves to it in its next sync.
+//! Wiped HMAC-SHA256, HMAC-SHA1 and SHA-256 for authentication material. Padded keys, pad blocks,
+//! digest states and outputs live in buffers wiped on drop. HMAC-SHA1 borrows its key from a
+//! [`Cred`] without exposing the credential bytes to the caller.
 
 use zeroize::Zeroizing;
+
+use super::chip::digests;
+use super::cred::Cred;
 
 /// SHA-256's block size, in bytes.
 pub(crate) const BLOCK: usize = 64;
@@ -189,6 +182,38 @@ pub fn hmac_sha256(key: &[u8], data: &[u8]) -> Zeroizing<[u8; 32]> {
         *p = k ^ 0x5c;
     }
     sha256_wiped(Some(&*pad), &inner[..])
+}
+
+/// HMAC-SHA1 of the concatenation of `parts` under `key` (RFC 2104). Keys longer than the block
+/// size are hashed first. Every key-derived buffer and the returned digest are wiped on drop.
+pub fn hmac_sha1(key: &Cred, parts: &[&[u8]]) -> Zeroizing<[u8; 20]> {
+    let key = key.wire();
+    let mut k0 = Zeroizing::new([0_u8; BLOCK]);
+    if key.len() > BLOCK {
+        k0[..20].copy_from_slice(&digests::sha1(&[key])[..]);
+    } else {
+        k0[..key.len()].copy_from_slice(key);
+    }
+    let mut pad = Zeroizing::new([0_u8; BLOCK]);
+    for (p, k) in pad.iter_mut().zip(k0.iter()) {
+        *p = k ^ 0x36;
+    }
+    let inner = {
+        let mut inner_parts = Vec::with_capacity(parts.len() + 1);
+        inner_parts.push(&pad[..]);
+        inner_parts.extend_from_slice(parts);
+        digests::sha1(&inner_parts)
+    };
+    for (p, k) in pad.iter_mut().zip(k0.iter()) {
+        *p = k ^ 0x5c;
+    }
+    digests::sha1(&[&pad[..], &inner[..]])
+}
+
+/// SHA-256 of the concatenation of `parts`. Message copies, digest states and the returned digest
+/// are wiped on drop.
+pub fn sha256(parts: &[&[u8]]) -> Zeroizing<[u8; 32]> {
+    digests::sha256(parts)
 }
 
 #[cfg(test)]

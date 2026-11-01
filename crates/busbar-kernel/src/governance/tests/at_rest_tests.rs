@@ -345,3 +345,189 @@ fn a_legacy_plain_row_is_resealed_under_the_key() {
     assert!(!r.secret.contains(&secret));
     assert_eq!(read(&g, &public_id), (secret, true));
 }
+
+mod immutable_store {
+    use super::*;
+    use busbar_contract::records::{
+        MeteringDelta, MeteringRow, RecordStoreError, RecordStoreResult, UsageLedger, VirtualKey,
+    };
+
+    // Models the durable stores' live-row immutability. The ordinary in-memory fixture permits
+    // same-id replacement, so its rotation tests cannot expose a maintenance write using PUT.
+    struct ImmutableStore(Arc<MemoryStore>);
+
+    impl RecordStore for ImmutableStore {
+        fn put_key(&self, key: &VirtualKey) -> RecordStoreResult<()> {
+            self.0.put_key(key)
+        }
+        fn get_key(&self, id: &str) -> RecordStoreResult<Option<VirtualKey>> {
+            self.0.get_key(id)
+        }
+        fn list_keys(&self) -> RecordStoreResult<Vec<VirtualKey>> {
+            self.0.list_keys()
+        }
+        fn delete_key(&self, id: &str) -> RecordStoreResult<()> {
+            self.0.delete_key(id)
+        }
+        fn get_usage(&self, bucket: &str, window: u64) -> RecordStoreResult<UsageLedger> {
+            self.0.get_usage(bucket, window)
+        }
+        fn put_usage(&self, bucket: &str, window: u64, row: &UsageLedger) -> RecordStoreResult<()> {
+            self.0.put_usage(bucket, window, row)
+        }
+        fn add_metering(&self, delta: &MeteringDelta) -> RecordStoreResult<()> {
+            self.0.add_metering(delta)
+        }
+        fn list_metering(&self, bucket: u64) -> RecordStoreResult<Vec<MeteringRow>> {
+            self.0.list_metering(bucket)
+        }
+        fn put_credential(&self, secret: &CredentialSecret) -> RecordStoreResult<()> {
+            if self.0.list_credentials_since(0)?.iter().any(|old| {
+                old.meta.id == secret.meta.id
+                    && old.meta.revoked_at.is_none()
+                    && old.secret != secret.secret
+            }) {
+                return Err(RecordStoreError(
+                    "live credential replacement refused".into(),
+                ));
+            }
+            self.0.put_credential(secret)
+        }
+        fn rewrap_credential(
+            &self,
+            expected: &CredentialSecret,
+            replacement: &str,
+        ) -> RecordStoreResult<bool> {
+            self.0.rewrap_credential(expected, replacement)
+        }
+        fn list_credentials(&self, key: &str) -> RecordStoreResult<Vec<CredentialMeta>> {
+            self.0.list_credentials(key)
+        }
+        fn list_credentials_since(&self, since: u64) -> RecordStoreResult<Vec<CredentialSecret>> {
+            self.0.list_credentials_since(since)
+        }
+        fn revoke_credential(&self, id: &str, reason: &str) -> RecordStoreResult<()> {
+            self.0.revoke_credential(id, reason)
+        }
+        fn redeem_plane_token(
+            &self,
+            kind: &str,
+            token: &str,
+            expires: u64,
+            now: u64,
+        ) -> RecordStoreResult<bool> {
+            self.0.redeem_plane_token(kind, token, expires, now)
+        }
+    }
+
+    fn rewrap(legacy_plaintext: bool) {
+        let backing = Arc::new(MemoryStore::new());
+        let (public_id, secret) = mint(&node(backing.clone(), 1, None));
+        if legacy_plaintext {
+            let mut old = row(&backing);
+            old.secret = format!("v1:plain:{secret}");
+            backing.put_credential(&old).unwrap();
+        }
+        let before = row(&backing);
+        let store = Arc::new(ImmutableStore(backing.clone()));
+        let mut forbidden = before.clone();
+        forbidden.secret = "v1:plain:replacement".into();
+        assert!(store.put_credential(&forbidden).is_err());
+        assert_eq!(row(&backing).secret, before.secret);
+
+        let rotated = GovState::new_with_signer(store.clone(), None, None).unwrap();
+        rotated.set_at_rest_keys(Some(keys(2, Some(1))));
+        assert_eq!(read(&rotated, &public_id), (secret.clone(), true));
+        let pass = rotated.rewrap_credentials(NOW).unwrap();
+        assert_eq!((pass.resealed, pass.pending), (1, 0), "{pass:?}");
+        let after = row(&backing);
+        assert_eq!(kid_of(&after.secret), keys(2, None).kid());
+        assert_eq!(after.meta.id, before.meta.id);
+        assert_eq!(after.meta.key_id, before.meta.key_id);
+        assert_eq!(after.meta.public_id, before.meta.public_id);
+        assert_eq!(after.meta.revoked_at, before.meta.revoked_at);
+        assert!(!after.secret.contains(&secret));
+        assert!(after.meta.revision > before.meta.revision);
+
+        let retired = GovState::new_with_signer(store.clone(), None, None).unwrap();
+        retired.set_at_rest_keys(Some(keys(2, None)));
+        assert_eq!(read(&retired, &public_id), (secret, true));
+        assert!(store.put_credential(&forbidden).is_err());
+        let again = retired.rewrap_credentials(NOW).unwrap();
+        assert_eq!((again.resealed, again.pending), (0, 0), "{again:?}");
+        assert_eq!(row(&backing).meta.revision, after.meta.revision);
+    }
+
+    #[test]
+    fn key_rotation_works_without_allowing_ordinary_live_secret_replacement() {
+        rewrap(false);
+    }
+
+    #[test]
+    fn legacy_plaintext_is_sealed_without_allowing_ordinary_live_secret_replacement() {
+        rewrap(true);
+    }
+
+    #[test]
+    fn racing_rewraps_apply_once_and_stale_replay_cannot_increment_revision() {
+        let store = Arc::new(MemoryStore::new());
+        mint(&node(store.clone(), 1, None));
+        let expected = row(&store);
+        let replacement = keys(2, Some(1))
+            .seal(&expected.meta, b"replacement")
+            .unwrap();
+        let barrier = Arc::new(std::sync::Barrier::new(3));
+        let workers: Vec<_> = (0..2)
+            .map(|_| {
+                let (store, expected, replacement, barrier) = (
+                    store.clone(),
+                    expected.clone(),
+                    replacement.clone(),
+                    barrier.clone(),
+                );
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    store.rewrap_credential(&expected, &replacement).unwrap()
+                })
+            })
+            .collect();
+        barrier.wait();
+        let applied = workers
+            .into_iter()
+            .map(|w| usize::from(w.join().unwrap()))
+            .sum::<usize>();
+        assert_eq!(applied, 1);
+        let after = row(&store);
+        assert_eq!(after.secret, replacement);
+        let mut meta = after.meta.clone();
+        meta.revision = expected.meta.revision;
+        assert_eq!(
+            meta, expected.meta,
+            "CAS only changes envelope and store revision"
+        );
+        assert!(!store.rewrap_credential(&expected, &replacement).unwrap());
+        assert_eq!(row(&store), after, "replay makes no write");
+    }
+
+    #[test]
+    fn rewrap_cannot_resurrect_a_revoked_or_deleted_snapshot() {
+        for delete in [false, true] {
+            let store = Arc::new(MemoryStore::new());
+            mint(&node(store.clone(), 1, None));
+            let expected = row(&store);
+            let replacement = keys(2, Some(1))
+                .seal(&expected.meta, b"replacement")
+                .unwrap();
+            if delete {
+                store.delete_key(&expected.meta.key_id).unwrap();
+            } else {
+                store
+                    .revoke_credential(&expected.meta.id, "retired")
+                    .unwrap();
+            }
+            let before = store.list_credentials_since(0).unwrap();
+            assert!(!store.rewrap_credential(&expected, &replacement).unwrap());
+            assert_eq!(store.list_credentials_since(0).unwrap(), before);
+        }
+    }
+}

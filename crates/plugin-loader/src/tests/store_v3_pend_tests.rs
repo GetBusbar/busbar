@@ -201,7 +201,7 @@ pub(super) fn mint() -> OpId {
     )
 }
 
-fn open(door: busbar_contract::abi::mechanism::door::DoorFn) -> LoadedStore {
+pub(super) fn open(door: busbar_contract::abi::mechanism::door::DoorFn) -> LoadedStore {
     let d = Arc::new(Dispatcher::new(DispatchConfig::default()));
     let p = load_linked::<Store>(
         &LinkedRow::of(door).expect("the store states its Statement"),
@@ -656,6 +656,7 @@ struct PendsInOpen;
 impl Hooks for PendsInOpen {
     fn open(
         settings: &[u8],
+        _: &[&[u8]],
         host: Option<busbar_contract::abi::sdk::conn::Host>,
     ) -> Result<Arc<MemoryStore>, String> {
         let _ = (settings, host);

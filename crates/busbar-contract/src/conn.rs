@@ -238,6 +238,24 @@ pub trait Conns: Send + Sync {
         desc: &OpenDesc<'_>,
     ) -> Result<ConnId, ConnError>;
 
+    /// Open while preserving the auth field batch's required connection security. A table that
+    /// cannot enforce this requirement refuses before copying or transmitting the fields.
+    ///
+    /// # Errors
+    /// As [`Self::open`], or [`ConnError::AuthRefused`] when secure delivery is unavailable.
+    fn open_with_security(
+        &self,
+        caller: InstanceId,
+        need: NeedId,
+        desc: &OpenDesc<'_>,
+        require_secure: bool,
+    ) -> Result<ConnId, ConnError> {
+        if require_secure {
+            return Err(ConnError::AuthRefused);
+        }
+        self.open(caller, need, desc)
+    }
+
     /// Offer `bytes` to the connection (`end` = the caller's message is complete, `text` = it is a
     /// text message, for a wire whose messages are text or binary); answers how many were taken.
     ///

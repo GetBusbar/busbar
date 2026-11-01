@@ -520,6 +520,7 @@ struct Redial {
     dial: Dial,
     egress_class: u32,
     judged_class: u32,
+    require_secure: bool,
     /// The need's private reach to the destination ([`DialJudge::judge_dial_reaching`]).
     reach: bool,
     /// The bytes the line's socket had taken when the exchange was lent it.
@@ -1814,6 +1815,9 @@ impl Connector {
         *held.line.lock().expect("line") = None;
         self.let_go(held, &line, stream, false);
         let planned = self.plan(&r.door, r.dial).map_err(|f| map(&f))?;
+        if r.require_secure && !planned.secure() {
+            return Err(ConnError::AuthRefused);
+        }
         match self.dial_judged(planned, r.egress_class, r.judged_class, &[], r.reach)? {
             (Some(conn), _) => {
                 self.ride(held, conn);
@@ -2467,6 +2471,7 @@ impl Connector {
             Option<String>,
             Option<Arc<rustls::ClientConfig>>,
         ),
+        require_secure: bool,
     ) -> Result<Held, ConnError> {
         if desc.unit == 0 {
             return Err(ConnError::Refused);
@@ -2529,6 +2534,7 @@ impl Connector {
             open_timeout,
             (egress_class, declared_target, tls),
             false,
+            require_secure,
         )?;
         Ok(held.dialling(dialled::Dialled::new(framing, port, pairing, due)))
     }
@@ -2550,6 +2556,7 @@ impl Connector {
             Option<Arc<rustls::ClientConfig>>,
         ),
         poolable: bool,
+        require_secure: bool,
     ) -> Result<Held, ConnError> {
         endpoint::named(target).map_err(|_| ConnError::Refused)?;
         let dial = Dial {
@@ -2571,6 +2578,9 @@ impl Connector {
         // secured with it.
         let trust = dial.tls.clone().map(Same);
         let planned = self.plan(&door, dial).map_err(|f| map(&f))?;
+        if require_secure && !planned.secure() {
+            return Err(ConnError::AuthRefused);
+        }
         // THE DESTINATION'S TRUST ANCHORS (the transport pin): every connection to a sealed
         // destination is held to them; one that pins the far end's key and is not secured has no
         // key to hold, and is refused before any judgement or dial. An open naming a registration
@@ -2674,6 +2684,7 @@ impl Connector {
                     dial: planned.dial().clone(),
                     egress_class,
                     judged_class,
+                    require_secure,
                     reach,
                     mark: line.flushed(),
                 };
@@ -2705,6 +2716,9 @@ impl Connector {
                 }
             }
         }
+        if require_secure && !planned.secure() {
+            return Err(ConnError::AuthRefused);
+        }
         let (conn, judging) =
             self.dial_judged(planned, egress_class, judged_class, desc.within, reach)?;
         let held = Held::over(None, judging, pooled).bounded(desc.timeout_ms);
@@ -2721,6 +2735,16 @@ impl Conns for Connector {
         caller: InstanceId,
         need: NeedId,
         desc: &OpenDesc<'_>,
+    ) -> Result<ConnId, ConnError> {
+        self.open_with_security(caller, need, desc, false)
+    }
+
+    fn open_with_security(
+        &self,
+        caller: InstanceId,
+        need: NeedId,
+        desc: &OpenDesc<'_>,
+        require_secure: bool,
     ) -> Result<ConnId, ConnError> {
         self.slab.check_need(caller, need)?;
         let authority_held = self
@@ -2751,6 +2775,9 @@ impl Conns for Connector {
         // member its config does not name is refused); the open's body is the lease's first
         // message. No address is judged: no network is dialled.
         if let Some(members) = members {
+            if require_secure {
+                return Err(ConnError::AuthRefused);
+            }
             if !desc.fields.is_empty() {
                 return Err(ConnError::Refused);
             }
@@ -2767,6 +2794,9 @@ impl Conns for Connector {
         // A PROGRAM NEED spawns the program its config names, and nothing else: an open naming a
         // target of its own is refused. No address is judged: no network is dialled.
         if let Some((program, env)) = program {
+            if require_secure {
+                return Err(ConnError::AuthRefused);
+            }
             if !desc.target.is_empty() {
                 return Err(ConnError::Refused);
             }
@@ -2823,6 +2853,7 @@ impl Conns for Connector {
                 target,
                 open_timeout,
                 (egress_class, declared_target, tls),
+                require_secure,
             )?;
             return self.slab.insert(caller, need, held);
         }
@@ -2831,6 +2862,9 @@ impl Conns for Connector {
         // judge, so its loopback rule and the node's own ports could not hold). A need whose config
         // names its target dials that path and no other.
         if let Some(path) = socket::unix_path(target) {
+            if require_secure {
+                return Err(ConnError::AuthRefused);
+            }
             if egress_class != EGRESS_OPERATOR_INFRASTRUCTURE
                 || declared_target.as_deref().is_some_and(|d| d != target)
             {
@@ -2871,6 +2905,7 @@ impl Conns for Connector {
             open_timeout,
             (egress_class, declared_target, tls),
             true,
+            require_secure,
         )?;
         self.slab.insert(caller, need, held)
     }

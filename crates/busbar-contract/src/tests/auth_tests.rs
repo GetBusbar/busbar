@@ -103,6 +103,7 @@ fn an_auth_field_never_prints_its_value_marked_or_not() {
             name: b"authorization".to_vec(),
             value: Secret::new(b"Bearer the-token".to_vec()),
             sensitive,
+            require_secure: false,
         };
         let shown = format!("{field:?}");
         assert!(!shown.contains("the-token"), "printed: {shown}");

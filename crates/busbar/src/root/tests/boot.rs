@@ -284,25 +284,143 @@ fn listening_plane(target_from: &str) -> Candidate {
     }
 }
 
-/// RED (ARCHITECT ruling 2026-09-30): until an accepted connection has a consumer, a selected
-/// plugin that declares an inbound need is refused at validate, naming the instance, the plugin and
-/// the need, before its bind is even read, never bound and closed.
+/// A selected plane's declared bind reaches its SERVE consumer; an unused declaration binds nothing.
 #[test]
-fn red_a_selected_plugin_with_an_inbound_need_is_refused_until_it_can_be_served() {
+fn a_selected_plane_inbound_need_keeps_its_consumer_and_physical_bind() {
     let doc: serde_json::Value =
         serde_json::from_str(r#"{"agents": {"ingress": {"listen": "127.0.0.1:8081"}}}"#).unwrap();
-    let err = stages(&doc, vec![listening_plane("ingress")], Vec::new())
-        .err()
-        .expect("refused");
-    assert!(
-        err.starts_with(
-            "agents (p1): inbound need 0 over `scheme-a` cannot be served by this build"
-        ),
-        "{err}"
-    );
-    // Not selected, not refused: the refusal is the configuration's use, not the plugin's presence.
+    let candidates = vec![listening_plane("ingress")];
+    let selected = select(&Uses::of(&doc), &candidates);
+    let plan = listener_needs(&doc, &candidates, &selected, Vec::new()).unwrap();
+    assert_eq!(plan.binds[0].listen.to_string(), "127.0.0.1:8081");
+    assert_eq!(plan.needs[0].instance, "p1");
+    assert_eq!(plan.needs[0].at, "agents.ingress");
     let unused: serde_json::Value = serde_json::from_str(r#"{}"#).unwrap();
     assert!(stages(&unused, vec![listening_plane("ingress")], Vec::new()).is_ok());
+}
+
+#[test]
+fn a_root_listen_selector_preserves_effective_tls_and_does_not_shadow_relative_settings() {
+    let doc =
+        serde_json::json!({"tls": {"cert": {"env": "CERT"}, "key": {"env": "KEY"}}, "agents": {}});
+    let roots = root_binds(
+        &doc,
+        &RootListens {
+            listen: "127.0.0.1:8080",
+            admin_listen: "127.0.0.1:8081",
+        },
+    );
+    let candidates = vec![listening_plane("listen")];
+    let selected = select(&Uses::of(&doc), &candidates);
+    let plan = listener_needs(&doc, &candidates, &selected, roots.clone()).unwrap();
+    assert_eq!(plan.binds, roots);
+    assert_eq!(plan.needs[0].at, "listen");
+    let relative =
+        serde_json::json!({"agents": {"listen": {"listen": "127.0.0.1:8090", "max_conns": 7}}});
+    let plan = listener_needs(&relative, &candidates, &selected, roots.clone()).unwrap();
+    assert_eq!(plan.binds.last().unwrap().listen.port(), 8090);
+    assert_eq!(plan.binds.last().unwrap().max_conns, 7);
+    assert_eq!(plan.needs[0].at, "agents.listen");
+    for malformed in [
+        serde_json::Value::Null,
+        serde_json::json!({}),
+        serde_json::json!("127.0.0.1:8090"),
+    ] {
+        let doc = serde_json::json!({"agents": {"listen": malformed}});
+        assert!(
+            listener_needs(&doc, &candidates, &selected, roots.clone()).is_err(),
+            "a present malformed relative bind must not attach to root"
+        );
+    }
+    let missing = vec![listening_plane("")];
+    assert!(listener_needs(&doc, &missing, &selected, roots).is_err());
+}
+
+#[test]
+fn two_instances_of_one_module_can_share_root_and_own_a_distinct_bind() {
+    let mut candidate = listening_plane("listen");
+    candidate.kind = KindCode::Export;
+    let doc = serde_json::json!({"export": {
+        "shared": {"module": "p1", "settings": {}},
+        "private": {"module": "p1", "settings": {"listen": {"listen": "127.0.0.1:8090"}}}
+    }});
+    let candidates = vec![candidate];
+    let selected = select(&Uses::of(&doc), &candidates);
+    let roots = root_binds(
+        &doc,
+        &RootListens {
+            listen: "127.0.0.1:8080",
+            admin_listen: "127.0.0.1:8081",
+        },
+    );
+    let plan = listener_needs(&doc, &candidates, &selected, roots).unwrap();
+    assert_eq!(
+        plan.needs
+            .iter()
+            .find(|n| n.instance == "shared")
+            .unwrap()
+            .at,
+        "listen"
+    );
+    assert_eq!(
+        plan.needs
+            .iter()
+            .find(|n| n.instance == "private")
+            .unwrap()
+            .at,
+        "export.private.settings.listen"
+    );
+    assert_eq!(plan.binds.last().unwrap().listen.port(), 8090);
+}
+
+#[test]
+fn explicit_same_address_needs_share_compatible_physical_policy() {
+    let mut candidate = listening_plane("ingress");
+    candidate.kind = KindCode::Export;
+    let candidates = vec![candidate];
+    let mut doc = serde_json::json!({"tls": {"cert": "cert", "key": "key"}, "export": {
+        "first": {"module": "p1", "settings": {"ingress": {"listen": "127.0.0.1:8080"}}},
+        "second": {"module": "p1", "settings": {"ingress": {"listen": "127.0.0.1:8080"}}}
+    }});
+    let roots = root_binds(
+        &doc,
+        &RootListens {
+            listen: "127.0.0.1:8080",
+            admin_listen: "127.0.0.1:8081",
+        },
+    );
+    let selected = select(&Uses::of(&doc), &candidates);
+    let plan = listener_needs(&doc, &candidates, &selected, roots.clone()).unwrap();
+    assert_eq!(plan.binds, roots);
+    assert_eq!(plan.needs.len(), 2);
+    assert!(plan.needs.iter().all(|need| need.at == "listen"));
+    doc["export"]["second"]["settings"]["ingress"]["tls"] = serde_json::Value::Null;
+    assert!(
+        listener_needs(&doc, &candidates, &selected, roots.clone()).is_err(),
+        "explicit clear TLS cannot downgrade an encrypted physical listener"
+    );
+    doc["export"]["second"]["settings"]["ingress"] = serde_json::json!({"listen": "0.0.0.0:8080"});
+    assert!(
+        listener_needs(&doc, &candidates, &selected, roots.clone()).is_err(),
+        "overlapping wildcard binds are not identical physical listeners"
+    );
+    doc["export"]["second"]["settings"]["ingress"] =
+        serde_json::json!({"listen": "127.0.0.1:8081"});
+    assert!(
+        listener_needs(&doc, &candidates, &selected, roots.clone()).is_err(),
+        "a data SERVE need cannot attach to admin"
+    );
+    doc["export"]["first"]["settings"]["ingress"] =
+        serde_json::json!({"listen": "127.0.0.1:8090", "max_conns": 7});
+    doc["export"]["second"]["settings"]["ingress"] =
+        serde_json::json!({"listen": "127.0.0.1:8090"});
+    assert!(listener_needs(&doc, &candidates, &selected, roots.clone()).is_err());
+    let mut reversed = selected.clone();
+    reversed.reverse();
+    assert!(
+        listener_needs(&doc, &candidates, &reversed, roots).is_err(),
+        "new private physical policy cannot depend on instance iteration order"
+    );
 }
 
 /// RED (ARCHITECT ruling 2026-09-30): the root's own listeners head THE ONE LIST: the data

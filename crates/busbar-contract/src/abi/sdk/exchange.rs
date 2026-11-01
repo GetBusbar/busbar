@@ -20,6 +20,9 @@
 //! [`Request`], [`ExchangeResponse`] and [`Ack`] are [`Zeroize`]: a plugin wipes the ones it holds
 //! (`zeroize::Zeroizing::new(reply)`). The bytes on the wire are unchanged.
 
+use std::any::Any;
+use std::cell::RefCell;
+use std::sync::Arc;
 use std::task::Poll;
 
 use zeroize::{Zeroize, Zeroizing};
@@ -48,7 +51,7 @@ pub const REPLY_OVER_BOUND: &str = "the reply passed the exchange's bound";
 pub type SealedField = (usize, Vec<u8>, crate::abi::sdk::cred::Seal);
 
 /// ONE REQUEST, as [`exchange`] sends it through a framed need.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Clone, Default, PartialEq, Eq)]
 pub struct Request {
     /// The method.
     pub method: Vec<u8>,
@@ -64,6 +67,18 @@ pub struct Request {
     pub timeout_ms: u64,
 }
 
+impl std::fmt::Debug for Request {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Request")
+            .field("method_len", &self.method.len())
+            .field("target_len", &self.target.len())
+            .field("fields_len", &self.fields.len())
+            .field("body_len", &self.body.len())
+            .field("timeout_ms", &self.timeout_ms)
+            .finish()
+    }
+}
+
 impl Zeroize for Request {
     fn zeroize(&mut self) {
         self.method.zeroize();
@@ -75,7 +90,7 @@ impl Zeroize for Request {
 }
 
 /// The far end's reply to an [`exchange`].
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Clone, Default, PartialEq, Eq)]
 pub struct ExchangeResponse {
     /// The code: the reply's status, or the transport's result code.
     pub status: u16,
@@ -88,6 +103,17 @@ pub struct ExchangeResponse {
     pub body: Vec<u8>,
 }
 
+impl std::fmt::Debug for ExchangeResponse {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ExchangeResponse")
+            .field("status", &self.status)
+            .field("reason_len", &self.reason.as_ref().map(Vec::len))
+            .field("fields_len", &self.fields.len())
+            .field("body_len", &self.body.len())
+            .finish()
+    }
+}
+
 impl Zeroize for ExchangeResponse {
     fn zeroize(&mut self) {
         self.status.zeroize();
@@ -98,12 +124,21 @@ impl Zeroize for ExchangeResponse {
 }
 
 /// What became of what a [`send_and_ack`] sent: the transport's code and the peer's text.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Clone, Default, PartialEq, Eq)]
 pub struct Ack {
     /// The transport's result code.
     pub code: u32,
     /// The peer's text, exactly as sent; empty when none.
     pub reason: Vec<u8>,
+}
+
+impl std::fmt::Debug for Ack {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Ack")
+            .field("code", &self.code)
+            .field("reason_len", &self.reason.len())
+            .finish()
+    }
 }
 
 impl Zeroize for Ack {
@@ -115,7 +150,6 @@ impl Zeroize for Ack {
 
 /// What is sent: a framed request's head bytes and descriptors, or raw bytes. The bytes wipe on
 /// drop; the descriptors (`repr(C)`) hold spans and a timeout, never a byte of the request.
-#[derive(Debug)]
 enum Sending {
     Framed {
         /// The head's method, target and field block, one after another.
@@ -129,11 +163,46 @@ enum Sending {
     Raw(Zeroizing<Vec<u8>>),
 }
 
+impl std::fmt::Debug for Sending {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Framed {
+                head,
+                body,
+                timeout_ms,
+                ..
+            } => f
+                .debug_struct("Framed")
+                .field("head_len", &head.len())
+                .field("body_len", &body.len())
+                .field("timeout_ms", timeout_ms)
+                .finish(),
+            Self::Raw(bytes) => f
+                .debug_struct("Raw")
+                .field("bytes_len", &bytes.len())
+                .finish(),
+        }
+    }
+}
+
+impl std::fmt::Debug for Exchange {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Exchange")
+            .field("sending", &self.sending)
+            .field("buffer_len", &self.buf.len())
+            .field("reply", &*self.reply)
+            .field("code", &self.code)
+            .field("head_seen", &self.head_seen)
+            .field("applied", &self.applied)
+            .field("sealed_fields_len", &self.sealed_lines.len())
+            .finish()
+    }
+}
+
 /// An [`exchange`]'s (or a [`send_and_ack`]'s) state across its op's PENDING entries: what it sends
 /// (a pending write reads it), the read buffer and the descriptor slot (a pending read writes
 /// them) and the reply so far. Parked on the ticket. Every byte it holds of the request or the
 /// reply wipes on drop.
-#[derive(Debug)]
 pub struct Exchange {
     sending: Sending,
     /// The read buffer: each piece's bytes are wiped once applied, the whole of it on drop.
@@ -723,10 +792,16 @@ fn apply(state: &mut Exchange, p: ReplyPiece, len: usize, fresh: bool) -> Result
                 .collect();
         }
         REPLY_BODY if fresh => {
-            extend_wiping(&mut state.reply.body, &state.buf[..len]);
-            if state.reply.body.len() > state.reply_ceiling {
+            if state
+                .reply
+                .body
+                .len()
+                .checked_add(len)
+                .is_none_or(|total| total > state.reply_ceiling)
+            {
                 return Err(REPLY_OVER_BOUND);
             }
+            extend_wiping(&mut state.reply.body, &state.buf[..len]);
         }
         REPLY_HEAD | REPLY_ACK | REPLY_BODY | REPLY_END => {}
         _ => return Err("the transport answered no reply piece: every request is acked"),
@@ -784,8 +859,17 @@ pub fn send_and_ack(
     }))
 }
 
+/// A kind's optional typed state, owned by the operation's existing continuation.
+pub(crate) type Context = Arc<dyn Any + Send + Sync>;
+
 /// What an op parks its exchange on: its instance, whatever the instance state's type.
-trait Parks {
+pub(crate) trait Parks {
+    fn context(&self) -> Option<&RefCell<Option<Context>>> {
+        None
+    }
+    fn resuming(&self) -> bool {
+        false
+    }
     fn ticket(&self) -> Ticket;
     fn park(&self, exchange: Exchange);
     fn resume(&self) -> Option<Box<Exchange>>;
@@ -829,6 +913,69 @@ impl From<ConnFailure> for OpFailure {
     }
 }
 
+/// Retained inspection state for one outer operation or kept driver cycle. Keep it across
+/// PENDING/RESUME (and TICK-to-DRIVE); dropping it on cancellation discards plugin-side custody.
+/// It does not park into the connection exchange's continuation. IDs never wrap within an epoch.
+#[derive(Debug, Default)]
+pub struct Inspection {
+    pending: Option<crate::abi::mechanism::inspection::InspectionRequest>,
+    completed: Option<crate::abi::mechanism::inspection::InspectionReceipt>,
+    last: Option<(crate::abi::mechanism::ticket::Ticket, u64, u64)>,
+}
+
+/// An operation failure with the reply head received before the failure, when one arrived.
+/// The head's reason and fields are wiped when this owner drops; no partial body is exposed.
+pub struct ExchangeFailure {
+    cause: OpFailure,
+    head: Option<Zeroizing<ExchangeResponse>>,
+}
+
+impl ExchangeFailure {
+    fn without_head(cause: OpFailure) -> Self {
+        Self { cause, head: None }
+    }
+
+    /// The builder or connector failure, independently of any earlier reply head.
+    #[must_use]
+    pub fn cause(&self) -> &OpFailure {
+        &self.cause
+    }
+
+    /// The earlier status, reason and fields. The body is always empty. A caller can judge this
+    /// status before reporting a later read failure or body-limit refusal.
+    #[must_use]
+    pub fn head(&self) -> Option<&ExchangeResponse> {
+        self.head.as_deref()
+    }
+
+    /// Take the underlying failure, wiping and releasing any retained head.
+    #[must_use]
+    pub fn into_cause(self) -> OpFailure {
+        self.cause
+    }
+}
+
+impl std::fmt::Debug for ExchangeFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ExchangeFailure")
+            .field("status", &self.head().map(|head| head.status))
+            .field("head", &self.head().map(|_| "<redacted>"))
+            .finish_non_exhaustive()
+    }
+}
+
+impl std::fmt::Display for ExchangeFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.cause.fmt(f)
+    }
+}
+
+impl std::error::Error for ExchangeFailure {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.cause)
+    }
+}
+
 /// ONE OP'S EXCHANGE ON ITS TICKET (THE DESIGN, the plugin ABI: every call is Ready or
 /// Pending(wake); the replay rule of `abi::sdk::conn`), for a kind SDK whose author answers
 /// [`Poll`]: [`Op::exchange`] resumes the exchange the op's last PENDING entry parked, or starts
@@ -859,6 +1006,11 @@ impl<'a> Op<'a> {
         Self { on: instance, host }
     }
 
+    /// A kind SDK's composite continuation, still owned and cleaned up by its safe instance.
+    pub(crate) fn over(on: &'a dyn Parks, host: Option<&'a Host>) -> Self {
+        Self { on, host }
+    }
+
     /// The host tables the op runs over (`None`: the instance was handed none): what an op that
     /// waits on another ticket's work wakes that ticket with ([`Host::wake`]).
     #[must_use]
@@ -870,6 +1022,153 @@ impl<'a> Op<'a> {
     #[must_use]
     pub fn ticket(&self) -> Ticket {
         self.on.ticket()
+    }
+
+    /// Whether the kind SDK restored its parked continuation for this entry. This reports actual
+    /// continuation state, rather than trusting a resume flag left on an entry after cancellation.
+    #[must_use]
+    pub fn resuming(&self) -> bool {
+        self.on.resuming()
+    }
+
+    /// Retain this operation's typed state with its continuation. Hook operations support this;
+    /// other kind SDKs may refuse it. The first call initializes the state, and subsequent calls
+    /// and pending re-entries return that same value, even across configuration changes.
+    ///
+    /// The SDK releases its reference on cancellation, replacement, or a terminal answer. A
+    /// caller that clones the returned reference is responsible for its own clones. Use one state
+    /// type per operation; a different type is refused without replacing the original state.
+    ///
+    /// # Errors
+    /// The kind does not support operation context, or this operation already holds another type.
+    pub fn context<T: Send + Sync + 'static>(
+        &self,
+        initialize: impl FnOnce() -> Arc<T>,
+    ) -> Result<Arc<T>, &'static str> {
+        let slot = self
+            .on
+            .context()
+            .ok_or("operation context is unavailable")?;
+        let existing = slot.borrow().as_ref().cloned();
+        let value = if let Some(existing) = existing {
+            existing
+        } else {
+            // Initialize without borrowing the slot, so an initializer may re-enter safely.
+            let created: Context = initialize();
+            let selected = {
+                let mut held = slot.borrow_mut();
+                Arc::clone(held.get_or_insert_with(|| Arc::clone(&created)))
+            };
+            // A nested initializer may have filled the slot. Drop the unused state only after
+            // releasing the borrow, since user state may perform cleanup when it drops.
+            selected
+        };
+        value
+            .downcast::<T>()
+            .map_err(|_| "operation context type changed")
+    }
+
+    /// Read one negotiated generic host observation. The first supported entry appends a leased
+    /// request and returns Pending. Retain `state` and re-enter on the same op's RESUME or the
+    /// driver's DRIVE. An older host without the capability returns Unsupported immediately.
+    /// The host enforces the copied receipt's epoch, caller and unit; this helper verifies its
+    /// complete ticket, epoch, ID and query before returning owned values.
+    pub fn inspect<I: super::door::AbiIn, O: super::door::AbiOut>(
+        &self,
+        input: super::Lent<'_, I>,
+        out: &mut super::Out<'_, O>,
+        leases: &super::life::Leases,
+        state: &mut Inspection,
+        id: u64,
+        query: &crate::abi::mechanism::inspection::InspectionQuery,
+    ) -> Poll<crate::abi::mechanism::inspection::InspectionResult> {
+        use crate::abi::mechanism::call::{InHead, FLAG_RESUME};
+        use crate::abi::mechanism::inspection::{self, InspectionError, InspectionRequest};
+        // SAFETY: AbiIn starts with InHead, and Lent's host-owned pointers live for this entry.
+        let head = unsafe { &*std::ptr::from_ref(input.get()).cast::<InHead>() };
+        // SAFETY: the extensions are part of the host's lent head, not plugin-provided memory.
+        let ext = unsafe { super::Lent::new(&head.extensions) }.bytes();
+        let capability = match inspection::read_capability(ext) {
+            Ok(Some(capability)) => capability,
+            Ok(None) => return Poll::Ready(Err(InspectionError::Unsupported)),
+            Err(error) => return Poll::Ready(Err(error)),
+        };
+        if head.ticket != self.ticket() || head.ticket.is_none() {
+            return Poll::Ready(Err(InspectionError::Unticketed));
+        }
+        if !inspection::query_fits(query, 0) {
+            return Poll::Ready(Err(InspectionError::Invalid));
+        }
+        let request = InspectionRequest {
+            ticket: head.ticket,
+            epoch: capability.epoch,
+            id,
+            query: query.clone(),
+        };
+        if let Err(error) = inspection::encode_request(&request) {
+            return Poll::Ready(Err(error));
+        }
+        if let Some(completed) = state.completed.as_ref().filter(|r| {
+            r.request.ticket == request.ticket
+                && r.request.epoch == request.epoch
+                && r.request.id == id
+        }) {
+            return if completed.request == request {
+                Poll::Ready(completed.result.clone())
+            } else {
+                Poll::Ready(Err(InspectionError::Correlation))
+            };
+        }
+        if let Some(pending) = state.pending.as_ref() {
+            if pending.ticket != request.ticket || pending.epoch != request.epoch {
+                state.pending = None;
+                return Poll::Ready(Err(InspectionError::Correlation));
+            }
+            if pending != &request {
+                return Poll::Ready(Err(InspectionError::Busy));
+            }
+            match inspection::read_receipt(ext) {
+                Ok(Some(receipt)) if receipt.request == request => {
+                    state.pending = None;
+                    let result = receipt.result.clone();
+                    state.completed = Some(receipt);
+                    return Poll::Ready(result);
+                }
+                Ok(Some(_)) => return Poll::Ready(Err(InspectionError::Correlation)),
+                Ok(None) if head.flags & FLAG_RESUME != 0 => {
+                    state.pending = None;
+                    return Poll::Ready(Err(InspectionError::MissingReceipt));
+                }
+                Ok(None) => {}
+                Err(error) => return Poll::Ready(Err(error)),
+            }
+        } else if state.last.is_some_and(|(ticket, epoch, last)| {
+            ticket == request.ticket && epoch == request.epoch && id <= last
+        }) {
+            return Poll::Ready(Err(InspectionError::Invalid));
+        }
+        let retained = crate::abi::mechanism::extensions::entries(ext)
+            .filter(|(key, _)| {
+                ![
+                    inspection::EXT_CAPABILITY,
+                    inspection::EXT_REQUEST,
+                    inspection::EXT_REPLY,
+                ]
+                .iter()
+                .any(|known| *key == known.as_bytes())
+            })
+            .map(|(key, value)| 2 + key.len() + 4 + value.len())
+            .sum();
+        if !inspection::query_fits(query, retained) {
+            return Poll::Ready(Err(InspectionError::Invalid));
+        }
+        if let Err(error) = out.inspection_request(leases, &request) {
+            return Poll::Ready(Err(error));
+        }
+        state.completed = None;
+        state.last = Some((request.ticket, request.epoch, id));
+        state.pending = Some(request);
+        Poll::Pending
     }
 
     /// [`exchange`] over the declared framed need `need` to `target`: `request` is built only on
@@ -919,30 +1218,104 @@ impl<'a> Op<'a> {
         reply_limit: usize,
         request: impl FnOnce() -> Result<(Request, Vec<SealedField>), String>,
     ) -> Poll<Result<ExchangeResponse, OpFailure>> {
+        self.exchange_sealed_bounded_with_head(need, target, reply_limit, false, request)
+            .map(|answer| answer.map_err(ExchangeFailure::into_cause))
+    }
+
+    /// A bounded exchange that retains an earlier reply head when the exchange later fails.
+    /// `head_only` ends the exchange at its reply head, without reading or collecting a body
+    /// ([`Exchange::head_only`]). The limit and this choice are fixed by the first entry's builder;
+    /// a resumed exchange keeps both. Request builders and sealed fields follow
+    /// [`Op::exchange_sealed_bounded`].
+    pub fn exchange_sealed_bounded_with_head(
+        &self,
+        need: u32,
+        target: Option<&str>,
+        reply_limit: usize,
+        head_only: bool,
+        request: impl FnOnce() -> Result<(Request, Vec<SealedField>), String>,
+    ) -> Poll<Result<ExchangeResponse, ExchangeFailure>> {
         let Some(host) = self.host else {
-            return Poll::Ready(Err(ConnFailure::Unarmed.into()));
+            return Poll::Ready(Err(ExchangeFailure::without_head(
+                ConnFailure::Unarmed.into(),
+            )));
         };
         let mut state = match self.on.resume() {
             Some(parked) => *parked,
             None => match request() {
-                Err(why) => return Poll::Ready(Err(OpFailure::Unbuilt(why))),
+                Err(why) => {
+                    return Poll::Ready(Err(ExchangeFailure::without_head(OpFailure::Unbuilt(why))))
+                }
                 Ok((r, sealed)) => match Exchange::request_sealed(r, sealed) {
-                    Ok(s) => s.reply_limit(reply_limit),
-                    Err(e) => return Poll::Ready(Err(e.into())),
+                    Ok(s) => {
+                        let s = s.reply_limit(reply_limit);
+                        if head_only {
+                            s.head_only()
+                        } else {
+                            s
+                        }
+                    }
+                    Err(e) => return Poll::Ready(Err(ExchangeFailure::without_head(e.into()))),
                 },
             },
         };
         let mut c = host.connector(self.on.ticket());
-        let answer = exchange(&mut c, &mut state, need, target);
-        if answer.is_pending() {
-            // Parked, the exchange may be given up (a cancel, a fresh op on the ticket): what it
-            // keeps closes its stream then.
-            self.on.park(state);
+        match exchange(&mut c, &mut state, need, target) {
+            Poll::Pending => {
+                // The same continuation, including any earlier reply head, owns pending buffers
+                // and its closer until the next entry or cancellation.
+                self.on.park(state);
+                Poll::Pending
+            }
+            Poll::Ready(Ok(reply)) => Poll::Ready(Ok(reply)),
+            Poll::Ready(Err(cause)) => {
+                let head = state.head_status().map(|status| {
+                    Zeroizing::new(ExchangeResponse {
+                        status,
+                        reason: state.reply.reason.take(),
+                        fields: std::mem::take(&mut state.reply.fields),
+                        body: Vec::new(),
+                    })
+                });
+                Poll::Ready(Err(ExchangeFailure {
+                    cause: cause.into(),
+                    head,
+                }))
+            }
         }
-        answer.map(|r| r.map_err(OpFailure::Conn))
+    }
+}
+
+#[cfg(test)]
+mod bounded_body_tests {
+    use super::*;
+
+    #[test]
+    fn a_refused_body_piece_is_not_collected_past_the_reply_limit() {
+        let mut state = Exchange::request(Request::default())
+            .expect("a valid request")
+            .reply_limit(100);
+        state.buf[..60].fill(b'a');
+        let body = ReplyPiece {
+            kind: REPLY_BODY,
+            ..ReplyPiece::default()
+        };
+        assert_eq!(apply(&mut state, body, 60, true), Ok(()));
+        state.buf[..41].fill(b'b');
+        assert_eq!(apply(&mut state, body, 41, true), Err(REPLY_OVER_BOUND));
+        assert_eq!(
+            state.reply.body.len(),
+            60,
+            "a rejected piece must not enter the collected body"
+        );
+        assert!(state.reply.body.iter().all(|byte| *byte == b'a'));
     }
 }
 
 #[cfg(test)]
 #[path = "tests/exchange_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "tests/inspection_tests.rs"]
+mod inspection_tests;

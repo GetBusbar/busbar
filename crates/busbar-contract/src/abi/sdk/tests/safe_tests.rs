@@ -510,6 +510,110 @@ fn release(instance: *mut c_void, ticket: Ticket, flags: u32) -> Outcome {
     call(table().head.release, instance, &input, &mut out)
 }
 
+fn cancel_ticket(instance: *mut c_void, ticket: Ticket) -> Outcome {
+    let mut input: CancelIn = zeroed();
+    input.head = in_head::<CancelIn>(slot::CANCEL);
+    input.ticket = ticket;
+    let mut out: CancelOut = zeroed();
+    out.head = out_head::<CancelOut>();
+    call(table().head.cancel, instance, &input, &mut out)
+}
+
+/// A continuation's destructor may call back into the same instance. Probe the existing slot
+/// guards first, so the broken baseline reports a failed assertion instead of deadlocking.
+#[test]
+fn cancelled_and_replaced_continuations_drop_unlocked_and_preserve_reentrant_work() {
+    use std::sync::Arc;
+
+    struct Reentrant {
+        instance: usize,
+        original: Ticket,
+        replacement: Ticket,
+        entered: Arc<AtomicUsize>,
+        drops: Arc<AtomicUsize>,
+    }
+    impl Drop for Reentrant {
+        fn drop(&mut self) {
+            self.drops.fetch_add(1, Ordering::SeqCst);
+            let instance = self.instance as *mut c_void;
+            // SAFETY: this continuation belongs to the still-open instance. The test calls close
+            // only after cancellation/replacement has returned and detached this continuation.
+            let head = unsafe { super::head(instance) }.expect("live instance");
+            if !head.slots().all(|slot| slot.try_hold().is_some()) {
+                return;
+            }
+            self.entered.fetch_or(1, Ordering::SeqCst);
+            // This exact-ticket re-entry deadlocks if the destructor still owns the old guard.
+            assert_eq!(cancel_ticket(instance, self.original), Outcome::Ready);
+            self.entered.fetch_or(2, Ordering::SeqCst);
+            assert_eq!(release(instance, self.replacement, 0), Outcome::Pending);
+            self.entered.fetch_or(4, Ordering::SeqCst);
+        }
+    }
+
+    for fresh in [false, true] {
+        let (opened, instance, _) = open(OPEN_READY);
+        assert_eq!(opened, Outcome::Ready);
+        // SAFETY: open minted this instance; close runs only after the assertions' inputs are copied.
+        let head = unsafe { super::head(instance) }.expect("live instance");
+        let original = Ticket {
+            slot: 63,
+            generation: 1,
+        };
+        let replacement = Ticket {
+            generation: 2,
+            ..original
+        };
+        let entered = Arc::new(AtomicUsize::new(0));
+        let drops = Arc::new(AtomicUsize::new(0));
+        head.park(
+            original,
+            Reentrant {
+                instance: instance as usize,
+                original,
+                replacement,
+                entered: Arc::clone(&entered),
+                drops: Arc::clone(&drops),
+            },
+        );
+        let answer = if fresh {
+            release(instance, original, 0)
+        } else {
+            cancel_ticket(instance, original)
+        };
+        let fresh_value = head.take::<u64>(original);
+        // A late cancellation of the old generation must leave the destructor's new operation.
+        let late = cancel_ticket(instance, original);
+        let replacement_value = head.take::<u64>(replacement);
+        assert_eq!(close(instance, 0), Outcome::Ready);
+        assert_eq!(
+            answer,
+            if fresh {
+                Outcome::Pending
+            } else {
+                Outcome::Ready
+            }
+        );
+        assert_eq!(late, Outcome::Ready);
+        assert_eq!(
+            entered.load(Ordering::SeqCst),
+            7,
+            "destructor must run after unlocking"
+        );
+        assert_eq!(
+            drops.load(Ordering::SeqCst),
+            1,
+            "old state is dropped exactly once"
+        );
+        assert_eq!(fresh_value, fresh.then_some(PARKED));
+        assert_eq!(
+            replacement_value,
+            Some(PARKED),
+            "old cleanup must not overwrite reentrant state"
+        );
+    }
+}
+
 /// A NOT-READY CONTINUATION COMES FROM A RECYCLED POOL (BUSBAR-1.6.0.md A.8, decision #30: "no
 /// allocation and no blocking on the hot path"). Once an instance has parked on a ticket, a later
 /// PENDING, RESUME, READY cycle on a recycled ticket reuses the continuation's allocation: the

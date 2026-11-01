@@ -34,6 +34,50 @@ impl Hearing {
     }
 }
 
+#[test]
+fn a_completed_candidate_refusal_is_returned_before_a_reload_can_replace_the_old_app() {
+    struct RefuseBuilt(std::sync::atomic::AtomicUsize);
+    impl RootRules for RefuseBuilt {
+        fn check(&self, _: &crate::config::RootCfg) -> Result<(), String> {
+            Ok(())
+        }
+        fn check_built(&self, candidate: &crate::state::App) -> Result<(), String> {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            assert_eq!(
+                candidate.config_version, 1,
+                "the rule receives the rebuilt candidate, not the old App"
+            );
+            Err("candidate listener has no compatible auth point".into())
+        }
+    }
+    crate::test_support::register_neutral_test_plane();
+    crate::snapshot::init();
+    let cfg = || {
+        let mut cfg = crate::test_support::cfg_with_provider_api_key(
+            crate::config::SecretRef::env("BUSBAR_TEST_NO_SUCH_KEY_BUILT_LISTENER"),
+        );
+        cfg.allow_all_metadata = true;
+        cfg
+    };
+    let prior = crate::test_support::build_once_under(
+        cfg(),
+        None,
+        &(Arc::new(crate::appbuild::AcceptAll) as Arc<dyn RootRules>),
+    )
+    .expect("the original generation builds");
+    let prior_version = prior.config_version;
+    let reject = Arc::new(RefuseBuilt(std::sync::atomic::AtomicUsize::new(0)));
+    let rules: Arc<dyn RootRules> = reject.clone();
+    let result = crate::test_support::build_once_under(cfg(), Some(&prior), &rules);
+    let refusal = match result {
+        Err(refusal) => refusal,
+        Ok(_) => panic!("the completed candidate escaped its listener refusal"),
+    };
+    assert_eq!(refusal, "candidate listener has no compatible auth point");
+    assert_eq!(reject.0.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert_eq!(prior.config_version, prior_version);
+}
+
 /// THE COMMIT REACHES THE GUARD THROUGH THE ROOT'S RULES, as it reached it through the installed
 /// capability: a build dropped unkept (an apply whose persist or swap failed) raises nothing, and a
 /// kept build raises exactly the destinations its configuration states, once.

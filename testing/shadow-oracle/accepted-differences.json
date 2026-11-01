@@ -5465,6 +5465,36 @@
       "classes": [
         "body"
       ]
+    },
+    {
+      "id": "MIGRATE-MISSING-SIGNING-KEY operator guidance",
+      "kind": "breaking",
+      "cells": "^(?:config\\.migrate\\|v0\\.10\\.0\\|migrate|config\\.migrate\\|v0\\.11\\.0\\|migrate|config\\.migrate\\|v0\\.11\\.1\\|migrate|config\\.migrate\\|v0\\.12\\.0\\|migrate|config\\.migrate\\|v0\\.13\\.0\\|migrate|config\\.migrate\\|v0\\.14\\.0\\|migrate|config\\.migrate\\|v0\\.14\\.1\\|migrate|config\\.migrate\\|v0\\.15\\.0\\|migrate|config\\.migrate\\|v0\\.16\\.0\\|migrate|config\\.migrate\\|v0\\.16\\.1\\|migrate|config\\.migrate\\|v0\\.16\\.2\\|migrate|config\\.migrate\\|v0\\.17\\.0\\|migrate|config\\.migrate\\|v0\\.17\\.1\\|migrate|config\\.migrate\\|v0\\.17\\.2\\|migrate|config\\.migrate\\|v0\\.17\\.3\\|migrate|config\\.migrate\\|v0\\.17\\.4\\|migrate|config\\.migrate\\|v0\\.9\\.0\\|migrate|config\\.migrate\\|v0\\.9\\.1\\|migrate|config\\.migrate\\|v1\\.0\\.0\\|migrate|config\\.migrate\\|v1\\.0\\.0_bench_latency_config\\.anthropic\\.yaml\\|migrate|config\\.migrate\\|v1\\.0\\.0_bench_latency_config\\.mock\\.yaml\\|migrate|config\\.migrate\\|v1\\.0\\.1\\|migrate|config\\.migrate\\|v1\\.0\\.1_bench_latency_config\\.anthropic\\.yaml\\|migrate|config\\.migrate\\|v1\\.0\\.1_bench_latency_config\\.mock\\.yaml\\|migrate|config\\.migrate\\|v1\\.1\\.0\\|migrate|config\\.migrate\\|v1\\.1\\.0_bench_latency_config\\.anthropic\\.yaml\\|migrate|config\\.migrate\\|v1\\.1\\.0_bench_latency_config\\.mock\\.yaml\\|migrate|config\\.migrate\\|v1\\.1\\.1\\|migrate|config\\.migrate\\|v1\\.1\\.1_bench_latency_config\\.anthropic\\.yaml\\|migrate|config\\.migrate\\|v1\\.1\\.1_bench_latency_config\\.mock\\.yaml\\|migrate|config\\.migrate\\|v1\\.2\\.0\\|migrate|config\\.migrate\\|v1\\.2\\.0_bench_latency_config\\.anthropic\\.yaml\\|migrate|config\\.migrate\\|v1\\.2\\.0_bench_latency_config\\.mock\\.yaml\\|migrate|config\\.migrate\\|v1\\.2\\.1\\|migrate|config\\.migrate\\|v1\\.2\\.1_bench_latency_config\\.anthropic\\.yaml\\|migrate|config\\.migrate\\|v1\\.2\\.1_bench_latency_config\\.mock\\.yaml\\|migrate|config\\.migrate\\|v1\\.3\\.0_bench_latency_config\\.anthropic\\.yaml\\|migrate|config\\.migrate\\|v1\\.3\\.0_bench_latency_config\\.mock\\.yaml\\|migrate|config\\.migrate\\|v1\\.3\\.1_bench_latency_config\\.anthropic\\.yaml\\|migrate|config\\.migrate\\|v1\\.3\\.1_bench_latency_config\\.mock\\.yaml\\|migrate|config\\.migrate\\|v1\\.3\\.2_bench_latency_config\\.anthropic\\.yaml\\|migrate|config\\.migrate\\|v1\\.3\\.2_bench_latency_config\\.mock\\.yaml\\|migrate|config\\.migrate\\|v1\\.3\\.3_bench_latency_config\\.anthropic\\.yaml\\|migrate|config\\.migrate\\|v1\\.3\\.3_bench_latency_config\\.mock\\.yaml\\|migrate|config\\.migrate\\|v1\\.4\\.0_bench_latency_config\\.anthropic\\.yaml\\|migrate|config\\.migrate\\|v1\\.4\\.0_bench_latency_config\\.mock\\.yaml\\|migrate|config\\.migrate\\|v1\\.4\\.1_bench_latency_config\\.anthropic\\.yaml\\|migrate|config\\.migrate\\|v1\\.4\\.1_bench_latency_config\\.mock\\.yaml\\|migrate|config\\.migrate\\|v1\\.5\\.0\\|migrate|config\\.migrate\\|v1\\.5\\.0_examples_claude\\-code\\-bedrock\\|migrate|config\\.migrate\\|v1\\.5\\.1_examples_claude\\-code\\-bedrock\\|migrate|config\\.migrate\\|v1\\.5\\.2_examples_claude\\-code\\-bedrock\\|migrate)$",
+      "expected_cells": 52,
+      "classes": [
+        "body",
+        "effects.stderr"
+      ],
+      "by": "owner (Matthew Jackson), direct approval 2026-10-31",
+      "signoff": {
+        "who": "owner (Matthew Jackson)",
+        "when": "2026-10-31",
+        "ruling": "Direct yes, warning or boot failure? then agreed: migration adds guidance; existing validation/boot failure remains. Exact52cells and hint in SIGN-migrate-signing-key.md."
+      },
+      "changelog": "Config migration explains how to configure a required missing signing key.",
+      "rationale": "Owner approved C directly. Only the exact signing-key TODO is removed for comparison. Existing warnings/TODOs, configuration bytes, status and every other effect remain compared. Golden unchanged. The exact otherwise-empty stderr TODO (1) block introduced by this hint is removed too; a block containing another TODO, changed hint, other warnings, status or configuration remains compared. Classified breaking because migration output is an operator-visible contract, with the matching changelog line.",
+      "transform": {
+        "candidate": [
+          [
+            "# TODO\\(migrate\\): auth\\.signing_key: required now that the chain uses `keys` \\(busbar no longer auto-generates one\\); run `busbar --generate-signing-key` and set auth\\.signing_key to a secret reference for it \\(\\{file: /path\\} or \\{env: VAR\\}, shared across a fleet\\)\\n",
+            ""
+          ],
+          [
+            "\\nTODO \\(1\\) - a human must decide:\\n  \\* auth\\.signing_key: required now that the chain uses `keys` \\(busbar no longer auto-generates one\\); run `busbar --generate-signing-key` and set auth\\.signing_key to a secret reference for it \\(\\{file: /path\\} or \\{env: VAR\\}, shared across a fleet\\)\\n",
+            ""
+          ]
+        ]
+      }
     }
   ]
 }

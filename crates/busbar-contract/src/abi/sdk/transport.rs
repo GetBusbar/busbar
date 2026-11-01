@@ -33,6 +33,7 @@ use crate::grammar::SelectorForm;
 use crate::transport::DEFAULT_REQUEST_BODY_MAX_BYTES;
 
 pub mod policy;
+pub mod receive;
 pub mod sink;
 pub mod table;
 

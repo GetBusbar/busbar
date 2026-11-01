@@ -987,6 +987,71 @@ fn red_a_tail_whose_fee_unit_is_no_billable_class_does_not_bind() {
     assert!(refused.contains("billable_class.family"), "{refused}");
 }
 
+#[test]
+fn routing_recipe_is_kept_after_plane_tail_validation() {
+    use busbar_contract::abi::mechanism::door::{
+        KindTailHead, Section, Statement, SECTION_DECLARING,
+    };
+    use busbar_contract::abi::plane::{
+        BillableClass, PlaneTail, RouteCost, INGRESS_DUPLEX_SESSION,
+    };
+    fn s(text: &'static str) -> AbiStr {
+        AbiStr {
+            ptr: text.as_ptr(),
+            len: text.len(),
+        }
+    }
+    let classes = Box::leak(Box::new([
+        BillableClass {
+            class: s("frames"),
+            family: s("count"),
+        },
+        BillableClass {
+            class: s("seconds"),
+            family: s("time"),
+        },
+    ]));
+    let recipe = Box::leak(Box::new([
+        RouteCost {
+            class: 1,
+            _reserved: 0,
+            weight: 0.0,
+        },
+        RouteCost {
+            class: 0,
+            _reserved: 0,
+            weight: 2.5,
+        },
+        RouteCost {
+            class: 0,
+            _reserved: 0,
+            weight: 1.0,
+        },
+    ]));
+    let mut tail: PlaneTail = z();
+    tail.head = KindTailHead {
+        size: size_of::<PlaneTail>() as u32,
+        _reserved: 0,
+    };
+    tail.ingress = INGRESS_DUPLEX_SESSION;
+    tail.billable_classes = classes.as_ptr();
+    tail.billable_classes_len = classes.len();
+    tail.route_cost = recipe.as_ptr();
+    tail.route_cost_len = recipe.len();
+    let tail = Box::leak(Box::new(tail));
+    let sections = Box::leak(Box::new([Section {
+        name: s("door"),
+        flags: SECTION_DECLARING,
+        _reserved: 0,
+    }]));
+    let mut statement: Statement = z();
+    statement.kind_tail = &tail.head;
+    statement.sections = sections.as_ptr();
+    statement.sections_len = sections.len();
+    let facts = Plane::context(&statement).expect("valid declared recipe");
+    assert_eq!(facts.served.route_cost, vec![(1, 0.0), (0, 2.5), (0, 1.0)]);
+}
+
 /// RED: the tail's chained record kinds are judged at bind (the host frames and verifies each in
 /// its declared framing, `BUSBAR-1.6.0.md` Part 3 §5). A chain naming a known framing over a
 /// declared kind binds and is the instance's; an unknown framing, a kind past the list, or a kind

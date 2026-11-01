@@ -35,6 +35,7 @@ const DISPOSITION: u32 = 3;
 static RETIRED: AtomicU64 = AtomicU64::new(0);
 /// The state of every instance closed, and whether it was handed host tables.
 static CLOSED: std::sync::Mutex<Vec<(Vec<u8>, bool)>> = std::sync::Mutex::new(Vec::new());
+static CANCELLED: std::sync::Mutex<Vec<(Vec<u8>, Ticket)>> = std::sync::Mutex::new(Vec::new());
 
 /// The test kind's state: the bytes `resolve` answers.
 struct Echo(Vec<u8>);
@@ -105,6 +106,15 @@ impl Life for Echo {
 
     fn retire(&self, generation: u64) {
         RETIRED.fetch_add(generation, Ordering::SeqCst);
+    }
+
+    fn cancel(&self, ticket: Ticket) -> u32 {
+        CANCELLED.lock().unwrap().push((self.0.clone(), ticket));
+        if self.0 == b"cancel-callback" {
+            2
+        } else {
+            DISPOSITION
+        }
     }
 
     fn tick(&self, now_ns: u64) -> u64 {
@@ -868,6 +878,57 @@ fn state_parked_on_a_ticket_is_dropped_by_its_cancel() {
         "the cancel dropped it"
     );
     assert_eq!(close(inst), Outcome::Ready);
+}
+
+#[test]
+fn cancel_callback_receives_the_exact_target_ticket_and_supplies_disposition() {
+    let (_, inst, _) = open(b"cancel-callback", &[]);
+    let target = Ticket {
+        slot: 19,
+        generation: 7,
+    };
+    for ticket in [
+        target,
+        Ticket {
+            generation: 6,
+            ..target
+        },
+        Ticket::NONE,
+    ] {
+        let mut input: CancelIn = zeroed();
+        input.head = in_head::<CancelIn>(slot::CANCEL);
+        input.ticket = ticket;
+        let mut out: CancelOut = zeroed();
+        out.head = out_head::<CancelOut>();
+        assert_eq!(
+            call(table().head.cancel, inst, &input, &mut out),
+            Outcome::Ready
+        );
+        assert_eq!(out.disposition, 2);
+    }
+    let observed: Vec<_> = CANCELLED
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(name, _)| name == b"cancel-callback")
+        .map(|(_, ticket)| *ticket)
+        .collect();
+    assert_eq!(
+        observed,
+        [
+            target,
+            Ticket {
+                generation: 6,
+                ..target
+            },
+            Ticket::NONE
+        ]
+    );
+    assert_eq!(close(inst), Outcome::Ready);
+    assert_eq!(
+        <Defaulted as Life>::cancel(&Defaulted, target),
+        <Defaulted as Life>::CANCEL
+    );
 }
 
 #[test]

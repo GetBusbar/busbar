@@ -40,7 +40,9 @@ use std::time::Duration;
 use busbar_contract::abi::mechanism::call::{
     AbiStr, Blob, DeadlineClass, InHead, OutHead, Outcome, BLOB_JSON, BLOB_OCTETS, BLOB_SECRET,
 };
+use busbar_contract::abi::mechanism::extensions;
 use busbar_contract::abi::mechanism::lifecycle::{slot as life, OpenIn, OpenOut, LIFECYCLE_SLOTS};
+use busbar_contract::abi::sdk::store::conditional;
 use busbar_contract::abi::store::{
     self as st, slot, AddUsageBatchIn, AppendPlaneRecordIn, BlobIn, CountOut, GetPlaneRecordIn,
     HostBlobs, HostBuf, HostBytesOut, HostListOut, HostRecords, IdIn, IdReasonIn,
@@ -106,15 +108,24 @@ impl LoadedStore {
         settings: &[u8],
         mint: OpIdMint,
     ) -> Result<Self, String> {
-        let facts = *plugin
+        let facts = plugin
             .context::<StoreFacts>()
+            .cloned()
             .ok_or_else(|| "the store states no tail".to_string())?;
-        // The settings the `open` lends, owned so they outlive its crossing ([`Lent`]).
-        let settings: Arc<Vec<u8>> = Arc::new(settings.to_vec());
+        // THE DECLARED SECRETS, as every kind's `open` takes them: each path the Statement names
+        // in `secret_refs` (its value already resolved by the kernel) is taken OUT of the settings
+        // and lent as a `BLOB_SECRET` blob, in the Statement's order.
+        let (settings, secrets) = split_secrets(&facts.secret_refs, settings);
+        // The settings and secrets the `open` lends, owned so they outlive its crossing ([`Lent`]).
+        let lent = Arc::new(OpenLent::new(settings, secrets));
         // `open` is the settings' judge, as it was in 1.5.5: its refusal carries the plugin's own
         // reason (the host's lent reason buffer), which a bare `validate` answer cannot.
-        let o = open_frame(octets(&settings));
-        let c = Self::open_on_ticket(&plugin, &dispatcher, o, settings);
+        let mut o = open_frame(octets(&lent.settings));
+        if !lent.blobs.is_empty() {
+            o.input.secrets = lent.blobs.as_ptr();
+            o.input.secrets_len = lent.blobs.len();
+        }
+        let c = Self::open_on_ticket(&plugin, &dispatcher, o, lent);
         if c.outcome != Outcome::Ready {
             return Err(c.open_failure(plugin.name()));
         }
@@ -140,7 +151,7 @@ impl LoadedStore {
         plugin: &Plugin<Store>,
         dispatcher: &Dispatcher,
         mut o: Frame<OpenIn, OpenOut>,
-        settings: Arc<Vec<u8>>,
+        settings: Arc<OpenLent>,
     ) -> crate::dispatch::Called {
         let Some(worker) = pick_worker(dispatcher, 0) else {
             return plugin.call(life::OPEN, &mut o);
@@ -191,7 +202,7 @@ impl LoadedStore {
 
     /// What the store states in its tail.
     pub fn facts(&self) -> StoreFacts {
-        self.facts
+        self.facts.clone()
     }
 
     /// The store's name, as its Statement states it.
@@ -306,7 +317,7 @@ impl LoadedStore {
             return (Ran::host(Outcome::Refused, r.out()), Lend::new(r));
         };
         let _recycle = Recycle(&self.dispatcher, ticket);
-        let (class, deadline) = deadline_of(s);
+        let (class, deadline) = r.schedule();
         let r = Lend::new(r);
         let mut regrown = false;
         loop {
@@ -325,6 +336,7 @@ impl LoadedStore {
             let done = reply.await;
             let out = done.frame.as_ref().map_or_else(|| r.get().out(), |f| f.out);
             if done.short && !regrown {
+                self.release(done.lease);
                 regrown = true;
                 r.grow(&out);
                 continue;
@@ -591,6 +603,10 @@ trait Req: 'static {
     type I: InFrame;
     type O: OutFrame;
     fn slot(&self) -> u32;
+    /// Host-selected scheduling; only the typed transaction request overrides the slot default.
+    fn schedule(&self) -> (DeadlineClass, u64) {
+        deadline_of(self.slot())
+    }
     /// The `in`, pointing at the request's own buffers and borrowed data.
     fn input(&mut self) -> Self::I;
     /// A blank `out`.
@@ -769,6 +785,92 @@ impl<I> BytesReq<I> {
     fn read(&self, ran: &Ran<HostBytesOut>) -> Result<Option<Vec<u8>>, StoreFailure> {
         ran.ok()?;
         Ok((ran.out.found == FOUND).then(|| self.buf[..ran.out.written as usize].to_vec()))
+    }
+}
+
+/// A transaction is a typed host request carried on GET, with its own immutable intent.
+struct ConditionalReq {
+    read: BytesReq<RecordGetIn>,
+    candidate: conditional::Request,
+}
+
+impl ConditionalReq {
+    fn new(candidate: &conditional::Request) -> Result<Self, StoreFailure> {
+        let encoded = candidate
+            .encode()
+            .map_err(|s| StoreFailure::Refused(s.into()))?;
+        let (schema, key) = candidate.carrier().ok_or_else(|| {
+            StoreFailure::Refused("record transaction requires a predicate".into())
+        })?;
+        let mut read = LoadedStore::record_get_req(schema, key);
+        read.input.head.extensions = read._owned.octets(&extensions::encode(&[(
+            conditional::INTENT,
+            encoded.as_slice(),
+        )]));
+        Ok(Self {
+            read,
+            candidate: candidate.clone(),
+        })
+    }
+}
+
+impl Req for ConditionalReq {
+    type I = RecordGetIn;
+    type O = HostBytesOut;
+    fn slot(&self) -> u32 {
+        slot::RECORD_GET
+    }
+    fn schedule(&self) -> (DeadlineClass, u64) {
+        (DeadlineClass::WriteBehind, 0)
+    }
+    fn input(&mut self) -> Self::I {
+        self.read.input()
+    }
+    fn out(&self) -> Self::O {
+        self.read.out()
+    }
+    fn grow(&mut self, out: &Self::O) {
+        self.read.grow(out);
+    }
+}
+
+/// Releases a handed answer after validation, including every early failure.
+struct AnswerLease<'a>(&'a LoadedStore, u64);
+impl Drop for AnswerLease<'_> {
+    fn drop(&mut self) {
+        self.0.release(self.1);
+    }
+}
+
+impl LoadedStore {
+    fn transaction_result(
+        &self,
+        ran: Ran<HostBytesOut>,
+        candidate: &conditional::Request,
+    ) -> Result<conditional::Decision, StoreFailure> {
+        let _lease = AnswerLease(self, ran.lease);
+        ran.ok()?;
+        let extension = ran.out.head.extensions;
+        if ran.lease == 0 || extension.fmt != BLOB_OCTETS || extension.flags != 0 {
+            return Err(StoreFailure::Fault(
+                "record transaction outcome unknown: missing leased result".into(),
+            ));
+        }
+        if extension.len as u64 > busbar_contract::abi::mechanism::check::HARD_MAX_BYTES {
+            return Err(StoreFailure::Fault(
+                "record transaction outcome unknown: oversized result bytes".into(),
+            ));
+        }
+        // SAFETY: the raw byte length passed HARD_MAX_BYTES before any slice was formed. A READY
+        // reply's plugin memory remains live under `_lease`; `lent` checks the pointer as well.
+        let bytes = unsafe { crate::dispatch::validate::lent(extension.ptr, extension.len) }
+            .ok_or_else(|| {
+                StoreFailure::Fault(
+                    "record transaction outcome unknown: invalid result bytes".into(),
+                )
+            })?;
+        conditional::read_result(ran.outcome, true, bytes, candidate)
+            .map_err(|s| StoreFailure::Fault(format!("record transaction outcome unknown: {s}")))
     }
 }
 
@@ -1012,6 +1114,26 @@ fn boxed<'a, T>(f: impl Future<Output = Result<T, StoreFailure>> + Send + 'a) ->
 }
 
 impl StoreCalls for LoadedStore {
+    fn supports_record_transaction(&self) -> bool {
+        self.facts.record_transaction
+    }
+
+    fn record_transaction<'a>(
+        &'a self,
+        candidate: &'a conditional::Request,
+    ) -> StoreCall<'a, conditional::Decision> {
+        boxed(async move {
+            if !self.supports_record_transaction() {
+                return Err(StoreFailure::Refused(
+                    "store does not support record transactions".into(),
+                ));
+            }
+            let request = ConditionalReq::new(candidate)?;
+            let (ran, request) = self.submit(request).await;
+            self.transaction_result(ran, &request.get().candidate)
+        })
+    }
+
     fn add_usage_batch<'a>(
         &'a self,
         op: OpId,
@@ -1415,6 +1537,24 @@ impl StoreCalls for LoadedStore {
             ran.ok().map(|()| ran.out.count)
         })
     }
+
+    fn purge_usage_before(&self, before: u64) -> StoreCall<'_, u64> {
+        boxed(async move {
+            let r = fixed::<_, CountOut>(
+                slot::PURGE_PLANE_RECORDS_BEFORE,
+                // The usage ledger's purge rides slot 22 under its own code, `kind` empty.
+                owned_in(|o, head| KindBeforeIn {
+                    head,
+                    kind: o.text(""),
+                    before,
+                    retention: st::RETENTION_USAGE_WINDOWS,
+                    _reserved: 0,
+                }),
+            );
+            let (ran, _) = run!(self, submit, r);
+            ran.ok().map(|()| ran.out.count)
+        })
+    }
 }
 
 // ── RecordStore: the synchronous bridge (until M6) ────────────────────────────────────────────────
@@ -1575,6 +1715,50 @@ impl RecordStore for LoadedStore {
                 record: o.secret_json(to_json(secret)),
             }),
         )
+    }
+
+    fn rewrap_credential(
+        &self,
+        expected: &CredentialSecret,
+        replacement: &str,
+    ) -> RecordStoreResult<bool> {
+        use busbar_contract::abi::mechanism::extensions;
+        use busbar_contract::abi::sdk::store::rewrap;
+        if !self.facts.credential_rewrap {
+            return Err(RecordStoreError(
+                "the store does not state credential rewrap CAS support".into(),
+            ));
+        }
+        let request = rewrap::Request::new(expected, replacement);
+        let (ran, _lent) = self.now(fixed::<_, OutHead>(
+            slot::PUT_CREDENTIAL,
+            owned_in(|o, mut head| {
+                head.extensions = o.octets(&extensions::encode(&[(rewrap::INTENT, b"1")]));
+                BlobIn {
+                    head,
+                    record: o.secret_json(to_json(&request)),
+                }
+            }),
+        ));
+        let result = bridge(ran.ok()).and_then(|()| {
+            if ran.lease == 0 {
+                return Err(RecordStoreError(
+                    "credential rewrap answered without a leased result".into(),
+                ));
+            }
+            // A successful result extension is held by the same lease as its answer memory.
+            // Copy it before releasing; do not infer success from READY alone.
+            let bytes = copy(ran.out.extensions.ptr, ran.out.extensions.len);
+            match extensions::get(&bytes, rewrap::RESULT) {
+                Some(b"applied") => Ok(true),
+                Some(b"conflict") => Ok(false),
+                _ => Err(RecordStoreError(
+                    "credential rewrap result is missing or invalid".into(),
+                )),
+            }
+        });
+        self.release(ran.lease);
+        result
     }
 
     fn put_key_with_credential(
@@ -1742,6 +1926,72 @@ impl RecordStore for LoadedStore {
     }
 }
 
+/// THE STORE'S DECLARED SECRETS OUT OF ITS SETTINGS: each exact path `refs` names is taken out of
+/// the `settings` object (its value already resolved by the kernel) and handed back as the secret's
+/// bytes, in order (an unset or non-string one as empty bytes); then each wildcard path's string
+/// matches, each replaced in the settings by its `{"$secret": <index>}` marker
+/// (`busbar_contract::secret_fields::lend`), as the auth host splits an auth instance's. Settings
+/// that are not a JSON object, or a store declaring none, pass as written.
+fn split_secrets(refs: &[String], settings: &[u8]) -> (Vec<u8>, Vec<Zeroing>) {
+    let Some(mut block) = (!refs.is_empty())
+        .then(|| serde_json::from_slice::<serde_json::Value>(settings).ok())
+        .flatten()
+        .filter(serde_json::Value::is_object)
+    else {
+        return (settings.to_vec(), Vec::new());
+    };
+    let as_bytes = |v: Option<serde_json::Value>| match v {
+        Some(serde_json::Value::String(s)) => s.into_bytes(),
+        _ => Vec::new(),
+    };
+    let secrets = busbar_contract::secret_fields::lend(
+        &mut block,
+        refs,
+        false,
+        |_, v| Ok::<_, std::convert::Infallible>(as_bytes(v)),
+        |_, v| Ok(as_bytes(Some(v))),
+    )
+    .unwrap_or_else(|e| match e {});
+    let settings = serde_json::to_vec(&block).unwrap_or_default();
+    (settings, secrets.into_iter().map(Zeroing).collect())
+}
+
+/// What a store's `open` is lent, held until its crossing returns (even past a watchdog fault):
+/// the settings, the secrets (zeroed when this drops) and the `BLOB_SECRET` list over them.
+struct OpenLent {
+    // settings-leak-lint: allow — NON-PROJECTION engine type: OPEN's settings bytes,
+    // held for the crossing's lifetime; never exposed through an admin read.
+    settings: Vec<u8>,
+    #[allow(dead_code)] // held: `blobs` points into it
+    secrets: Vec<Zeroing>,
+    blobs: Vec<Blob>,
+}
+
+impl OpenLent {
+    fn new(settings: Vec<u8>, secrets: Vec<Zeroing>) -> Self {
+        let blobs = secrets
+            .iter()
+            .map(|s| Blob {
+                ptr: s.0.as_ptr(),
+                len: s.0.len(),
+                fmt: BLOB_OCTETS,
+                flags: BLOB_SECRET,
+            })
+            .collect();
+        Self {
+            settings,
+            secrets,
+            blobs,
+        }
+    }
+}
+
+// SAFETY: `blobs` points only into `secrets`' heap buffers, which this value owns and never
+// moves or writes while it lives; nothing reaches the bytes through `OpenLent` but a read.
+unsafe impl Send for OpenLent {}
+// SAFETY: as `Send`: shared access only reads.
+unsafe impl Sync for OpenLent {}
+
 /// Serialized secret material, zeroed when dropped.
 struct Zeroing(Vec<u8>);
 impl Drop for Zeroing {
@@ -1849,3 +2099,15 @@ mod axis_tests;
 #[cfg(test)]
 #[path = "tests/store_v3_lent_tests.rs"]
 mod lent_tests;
+
+#[cfg(test)]
+#[path = "tests/store_v3_conditional_tests.rs"]
+mod conditional_tests;
+
+#[cfg(test)]
+#[path = "tests/store_v3_secrets_tests.rs"]
+mod secrets_tests;
+
+#[cfg(test)]
+#[path = "tests/store_v3_rewrap_tests.rs"]
+mod rewrap_tests;

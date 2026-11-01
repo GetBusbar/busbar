@@ -42,14 +42,12 @@ use axum::Router;
 
 // `DEFAULT_CONFIG_PATH` and `ENV_PROVIDERS` left with the flag surface (`root::cli`): they are the
 // config/providers path precedence the scanners there answer for boot AND for every command.
-use busbar_kernel::{
-    build_app_from_config, build_split_routers_serving_doors, load_config_from_disk, LoadedConfig,
-    ENV_CONFIG,
-};
+use busbar_kernel::{build_app_from_config, load_config_from_disk, LoadedConfig, ENV_CONFIG};
 use busbar_kernel::{config, config_validate, diagnostics, export, snapshot};
 // The root's own binds listen through the connector's listener (the one listener source).
 #[cfg(unix)]
-use busbar_core_connector::listen::{AcceptLimits, Listening, DEFAULT_HANDSHAKE_TIMEOUT};
+use busbar_core_connector::listen::DEFAULT_HANDSHAKE_TIMEOUT;
+use busbar_core_connector::listen::{AcceptLimits, Listening};
 // Read only by the jemalloc idle-purge fallback below, which is itself
 // `#[cfg(not(target_env = "msvc"))]` — windows-msvc has no jemalloc, so importing this
 // unconditionally is an unused-import error there under `-D warnings`.
@@ -302,17 +300,6 @@ fn register_planes() {
     // The settings each plugin's schema declares public, before any configuration is read: every
     // other plugin setting is sensitive (`busbar_kernel::config::settings_public`).
     root::settings_public::install(&LINKED, dropped);
-    // A plugin that declares an inbound need is refused until an accepted connection has a
-    // consumer, after the axes it selects against are registered.
-    if let Some(registry) = dropped {
-        let path = root::cli::resolve_config_path(root::cli::config_path_flag().as_deref());
-        if let Err(refusal) =
-            root::boot::refuse_unserved_inbound(std::path::Path::new(&path), registry)
-        {
-            eprintln!("busbar: {refusal}");
-            std::process::exit(2);
-        }
-    }
 
     // THE AUTHORIZATION-SERVER PLANE'S SEAM, registered UNCONDITIONALLY (no feature flag — see the
     // manifest note on the `busbar-core-oauth2` dependency), before any config loads. Mirrors
@@ -814,6 +801,14 @@ async fn run(
     // The plane doors the boot's configuration does not use, so the boot never loads them (Law 7):
     // a running process refuses a first section of one (u67 BLOCK 2 item 2).
     root_rules.hold_unloaded(root::door_steps::unloaded_doors());
+    let listener_plan = Arc::new(root::serve::ListenerPlan::new(
+        root::door_steps::listener_needs(&cfg).unwrap_or_else(|e| die(e)),
+        root::serve::transport_offers(LINKED.transports, dropped_doors),
+        &|scheme| root::connector::the().framer_for(scheme),
+    ));
+    root_rules
+        .hold_listeners(Arc::clone(&listener_plan))
+        .unwrap_or_else(|e| die(e));
 
     // The configured store's name, captured before `cfg` is consumed: the boot book's journal is
     // kept in that store, and a store that cannot keep it is refused by name.
@@ -927,7 +922,7 @@ async fn run(
         models: Some(&door_models),
         upgrades: root::serve::upgrade_carriers(LINKED.transports, dropped_doors),
     };
-    let served = root::serve::compose_served(
+    let mut served = root::serve::compose_served_checked(
         app.governance.clone(),
         root::boot::door_planes(),
         &root::dispatch::dispatcher(),
@@ -960,8 +955,17 @@ async fn run(
             })
         }),
         &app.serve_tables,
+        &|served| {
+            listener_plan.mount_planes(
+                served,
+                &app,
+                &root::serve::upgrade_carriers(LINKED.transports, dropped_doors),
+            )?;
+            Ok(listener_plan.binds().to_vec())
+        },
     )
     .unwrap_or_else(|e| die(e));
+    listener_plan.share_claim_doors(&mut served);
     root_rules.hold_owned_anchors(&served.need_trust());
     // THE DOOR PLANES THE BOOT LEFT UNOPENED OR NEVER BOUND (their section absent, Law 7): a door
     // plane is bound and opened once, at boot, so an apply that first writes one's section is stored and validated but
@@ -1057,23 +1061,69 @@ async fn run(
             (provider, points)
         })
         .collect();
-    let (doors, sessions, refusals, refuse_by_path) = root::serve::data_mounts(
+    let mut physical_mounts = Vec::new();
+    for bind in listener_plan.stream_binds() {
+        let mounts = root::serve::data_mounts_with_listeners(
+            served.clone(),
+            &app,
+            &listener_plan,
+            &bind.at,
+            &data_chain,
+            &[],
+            &root::serve::upgrade_carriers(LINKED.transports, dropped_doors),
+            &root::serve::transport_offers(LINKED.transports, dropped_doors),
+        )
+        .unwrap_or_else(|e| die(e));
+        listener_plan.hold_refusals(&bind.at, mounts.2.clone());
+        let plugins = app.plugin_routes.for_listener(
+            &listener_plan
+                .guests(&app, &bind.at)
+                .unwrap_or_else(|e| die(e)),
+        );
+        physical_mounts.push((bind.at.clone(), mounts, plugins));
+    }
+    let (doors, sessions, refusals, refuse_by_path) = root::serve::data_mounts_with_listeners(
         served,
+        &app,
+        &listener_plan,
+        "listen",
         &data_chain,
         &busbar_kernel::base_data_core_lines(&app),
         &root::serve::upgrade_carriers(LINKED.transports, dropped_doors),
         &root::serve::transport_offers(LINKED.transports, dropped_doors),
     )
     .unwrap_or_else(|e| die(e));
-    let (data_router, admin_router, app_handle) = build_split_routers_serving_doors(
-        app,
-        doors,
-        sessions,
-        refusals,
-        req_body_max,
-        max_inbound,
-        response_headers_cfg.server_timing,
-    );
+    let listener_refusals = refusals.clone();
+    listener_plan.hold_refusals("listen", refusals.clone());
+    let plugins = app
+        .plugin_routes
+        .for_listener(&listener_plan.data_guests(&app).unwrap_or_else(|e| die(e)));
+    let (data_router, admin_router, app_handle) =
+        busbar_kernel::build_split_routers_serving_listener(
+            app,
+            &plugins,
+            doors,
+            sessions,
+            refusals,
+            req_body_max,
+            max_inbound,
+            response_headers_cfg.server_timing,
+        );
+    let mut physical_routers = std::collections::HashMap::new();
+    for (at, (doors, sessions, refusals, refuse_by_path), plugins) in physical_mounts {
+        let router = busbar_kernel::build_data_router_on(
+            &app_handle,
+            &plugins,
+            doors,
+            sessions,
+            refusals,
+            refuse_by_path,
+            req_body_max,
+            max_inbound,
+            response_headers_cfg.server_timing,
+        );
+        physical_routers.insert(at, router);
+    }
     // The kernel-shaped refusals render through the door that owns the path (ARCHITECT ruling
     // 2026-10-16, 3b B).
     if let Some(refuse) = refuse_by_path {
@@ -1094,8 +1144,15 @@ async fn run(
     // dispatcher: the kernel's inbound side serves it.
     let _ = root::inbound::install(root::doors::dispatcher());
     let _ = root::inbound::publish(&app_handle.load());
-    app_handle.on_apply(Box::new(|app| {
-        let _ = root::inbound::publish(app);
+    app_handle.on_apply(Box::new({
+        let plan = Arc::clone(&listener_plan);
+        move |app| {
+            let guests = plan.data_guests(app).expect(
+                "RootRules checked this candidate's physical listener lists before publication",
+            );
+            root::inbound::stage(guests, listener_refusals.clone());
+            let _ = root::inbound::publish(app);
+        }
     }));
     app_handle.on_apply(Box::new({
         let door_appliers = door_appliers.clone();
@@ -1311,7 +1368,54 @@ async fn run(
     }
 
     // Resolve the data transport before either listener binds or reports readiness.
-    let framer = data_framer(&listen);
+    let framer = listener_framer(
+        &listen,
+        root::listener::framed::DATA_SCHEME,
+        &listener_plan,
+        "listen",
+    );
+    let (worker_shutdown_tx, worker_shutdown_rx) = tokio::sync::watch::channel(false);
+    {
+        let rx = shutdown_tx.subscribe();
+        tokio::spawn(async move {
+            recv_shutdown(rx).await;
+            let _ = worker_shutdown_tx.send(true);
+        });
+    }
+    let mut plugin_listeners = Vec::new();
+    for bind in listener_plan.stream_binds() {
+        let framer = listener_framer(&bind.at, &bind.transport, &listener_plan, &bind.at);
+        let tls: Option<busbar_kernel::config::sections::TlsCfg> = bind
+            .tls
+            .clone()
+            .map(serde_json::from_value)
+            .transpose()
+            .unwrap_or_else(|e| die(format!("{}: {e}", bind.at)));
+        let addr = bind.listen.to_string();
+        busbar_core_connector::tls::prepare(&addr, tls.as_ref(), &tls_secret_resolver, true)
+            .unwrap_or_else(|e| die(e.to_string()));
+        let limits = busbar_core_connector::listen::AcceptLimits {
+            max_conns: usize::try_from(bind.max_conns).unwrap_or(usize::MAX),
+            handshake_timeout: busbar_core_connector::listen::DEFAULT_HANDSHAKE_TIMEOUT,
+        };
+        let router = physical_routers
+            .remove(&bind.at)
+            .expect("each physical listener has its own boot router");
+        plugin_listeners.push((limits, framer, tls, addr, router));
+    }
+    let mut plugin_tasks = Vec::new();
+    for (limits, framer, tls, addr, router) in plugin_listeners {
+        plugin_tasks.push(serve_private_listener(
+            addr,
+            limits,
+            router,
+            tls,
+            Arc::clone(&tls_secret_resolver),
+            shutdown_tx.subscribe(),
+            worker_shutdown_rx.clone(),
+            framer,
+        ));
+    }
 
     // SERVE (one topology; see `main()`). On unix the DATA plane runs on N pinned
     // `current_thread` runtimes — one SO_REUSEPORT listener per worker, kernel fanning connections
@@ -1328,25 +1432,7 @@ async fn run(
         // (`busbar_kernel::detached::set_worker_shutdown`) beside its detached tracker, and a plane's
         // task runner selects on it to write its CANCELLED terminal status within the drain grace
         // instead of being aborted with a caller left polling forever.
-        let (worker_shutdown_tx, worker_shutdown_rx) = tokio::sync::watch::channel(false);
-        {
-            let rx = shutdown_tx.subscribe();
-            tokio::spawn(async move {
-                recv_shutdown(rx).await;
-                let _ = worker_shutdown_tx.send(true);
-            });
-        }
-        // THE ONE LIST OF LISTENERS (ARCHITECT ruling 2026-09-30): the root's own binds head
-        // it, and every one is bound through the connector's listener. A plugin's inbound need
-        // joins it with the driver binding; until then boot refuses a configuration that declares
-        // one (root::boot::refuse_unserved_inbound).
-        let binds = root::boot::root_binds(
-            &serde_json::Value::Null,
-            &root::boot::RootListens {
-                listen: &listen,
-                admin_listen: &admin_listen,
-            },
-        );
+        let binds = listener_plan.binds();
         let bound_at = |setting: &str, addr: &str| {
             binds
                 .iter()
@@ -1440,6 +1526,12 @@ async fn run(
             ),
         );
     }
+    let _ = tokio::task::spawn_blocking(move || {
+        for task in plugin_tasks {
+            let _ = task.join();
+        }
+    })
+    .await;
     // THE ONE SHUTDOWN TAIL (`root::shutdown::tail`), the same one the line-serve mode runs: the
     // budget/metering write-behind flushed, then the plane records and the journal lane drained.
     let gov = app_handle.load().governance.clone();
@@ -1470,15 +1562,22 @@ async fn bind_listener(addr: &str) -> tokio::net::TcpListener {
 /// THE DATA LISTENER'S FRAMER, found by facts on the process's one connector
 /// (`root::listener::framed::data_framer`): the framer serving the listener's scheme whose tail
 /// states it accepts. A missing transport is a startup error naming the configured listener.
-fn data_framer(listen: &str) -> root::listener::framed::DataFramer {
-    let framer = root::listener::framed::data_framer(Arc::new(|scheme: &str| {
-        root::connector::the().framer_for(scheme)
-    }))
+fn listener_framer(
+    listen: &str,
+    scheme: &str,
+    plan: &Arc<root::serve::ListenerPlan>,
+    at: &str,
+) -> root::listener::framed::DataFramer {
+    let framer = root::listener::framed::listener_framer(
+        Arc::new(|scheme: &str| root::connector::the().framer_for(scheme)),
+        scheme,
+        plan.policy(at.into()),
+    )
     .unwrap_or_else(|| {
         die(format!(
             "cannot serve data listener '{listen}': no loaded transport plugin provides an \
          accepting framer for '{}'; load a transport plugin that accepts this listener's scheme",
-            root::listener::framed::DATA_SCHEME,
+            scheme,
         ))
     });
     tracing::debug!(
@@ -1646,6 +1745,55 @@ fn serve_thread_per_core(
         handles.push(spawned);
     }
     handles
+}
+
+/// A private physical listener has the same detached-work ownership and shutdown grace as a
+/// root data worker. Its runtime binds and resolves security before serving its first request.
+#[allow(clippy::too_many_arguments)]
+fn serve_private_listener(
+    addr: String,
+    limits: AcceptLimits,
+    router: Router,
+    tls: Option<busbar_kernel::config::sections::TlsCfg>,
+    resolver: Arc<busbar_kernel::config::secret::SecretResolver>,
+    shutdown: tokio::sync::broadcast::Receiver<()>,
+    worker_shutdown: tokio::sync::watch::Receiver<bool>,
+    framer: root::listener::framed::DataFramer,
+) -> std::thread::JoinHandle<()> {
+    std::thread::Builder::new()
+        .name("busbar-listener".into())
+        .spawn(move || {
+            let detached = busbar_kernel::detached::DetachedTasks::new();
+            busbar_kernel::detached::set_worker_detached(detached.clone());
+            busbar_kernel::detached::set_worker_shutdown(worker_shutdown);
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap_or_else(|e| die(format!("cannot build listener runtime for {addr}: {e}")));
+            runtime.block_on(async move {
+                let via = root::connector::the().address_via();
+                let listener = Listening::bind_stream(via.as_ref(), &addr, limits)
+                    .unwrap_or_else(|e| die(format!("cannot bind listener {addr}: {e}")));
+                serve_listener(
+                    listener,
+                    router,
+                    tls,
+                    resolver,
+                    &addr,
+                    recv_shutdown(shutdown),
+                    None,
+                    true,
+                    Some(framer),
+                )
+                .await;
+                let _ = tokio::time::timeout(
+                    busbar_kernel::detached::DETACHED_DRAIN_GRACE,
+                    detached.drained(),
+                )
+                .await;
+            });
+        })
+        .unwrap_or_else(|e| die(format!("cannot spawn listener worker: {e}")))
 }
 
 /// Serve one listener to graceful shutdown: the data transport's accepting framer, or the admin

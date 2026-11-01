@@ -182,6 +182,7 @@ fn header_token(value: &[u8]) -> Option<&str> {
 #[derive(Debug)]
 pub struct AdminTokens {
     configured_hash: String,
+    short_judgments: std::sync::atomic::AtomicU64,
 }
 
 impl VerifyPlugin for AdminTokens {
@@ -192,6 +193,7 @@ impl VerifyPlugin for AdminTokens {
     fn open_refusing(settings: &[u8], _secrets: &[&[u8]]) -> Result<Self, Refusal> {
         Ok(Self {
             configured_hash: digest_of(settings).map_err(Refusal::failed)?,
+            short_judgments: std::sync::atomic::AtomicU64::new(0),
         })
     }
 
@@ -200,6 +202,19 @@ impl VerifyPlugin for AdminTokens {
     /// verdict, both lines are named for the transport to strip: they are this module's credential
     /// lines.
     fn verify(&self, request: &VerifyView<'_>) -> Answer {
+        // Fixture-only mutable verdict: a buffer recall must copy the first judgment.
+        if request.path() == b"/auth-short-custody" {
+            let judgment = self
+                .short_judgments
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+                + 1;
+            return Verdict::Identity(VerifiedIdentity {
+                subject: format!("judgment-{judgment}"),
+                groups: (0..300).map(|i| format!("group-{i}")).collect(),
+                ..VerifiedIdentity::default()
+            })
+            .into();
+        }
         let verdict = authenticate_admin_tokens(
             Some(&self.configured_hash),
             request.line(AUTHORIZATION_HEADER).and_then(bearer_token),

@@ -14,7 +14,7 @@
 //! (`tests/bounded_limits.rs`), so a body is a shared slab here and the host adopts it as its own
 //! buffer, without copying, at its transport boundary.
 
-use crate::billing::TokenUsage;
+use crate::billing::{Billing, TokenUsage};
 use crate::bounded::SlabBytes;
 use crate::ir::handle::IrHandle;
 use crate::operation::OpVerb;
@@ -366,6 +366,12 @@ pub trait OperationHandler: Send + Sync {
             Ok(r) => Ok(r.token_usage()),
             Err(_) => Err(UsageTapFault::Decode),
         }
+    }
+    /// Recover independently reported billing when the complete response cannot be decoded.
+    /// Called only after the ordinary read failed. Implementations must use their existing
+    /// usage parser and preserve the billing variant; the default infers nothing.
+    fn recover_response_billing(&self, _host: &dyn CodecHost, _body: &[u8]) -> Option<Billing> {
+        None
     }
     /// The Content-Type of THIS operation's egress request wire (what `write_request` emits).
     /// JSON for every JSON-bodied operation; a multipart operation overrides with its boundary.

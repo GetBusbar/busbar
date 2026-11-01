@@ -28,6 +28,12 @@ pub struct SessionTransfer {
 
 /// One host-owned framing leg, independent of the tickets its operations use.
 pub trait FramingScope: std::fmt::Debug + Send + Sync {
+    /// The latest copied count of this leg's framer-owned unread input, independent of tickets.
+    fn retained_input(&self) -> u64 {
+        0
+    }
+    /// Record a validated reply count while its lease is live. Missing reports do not clear it.
+    fn set_retained_input(&self, _bytes: u64) {}
     /// The actual loaded plugin owner.
     fn owner(&self) -> u64;
     /// The accepting listener registration, or zero for an outbound connection.
