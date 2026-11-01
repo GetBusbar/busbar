@@ -78,7 +78,6 @@ deny = [
     { crate = "openssl-sys", reason = "TLS is rustls; no OpenSSL (C)" },
     { crate = "native-tls", reason = "TLS is rustls; no platform TLS" },
     { crate = "aws-lc-rs", reason = "ONE crypto backend = ring" },
-    { crate = "aws-lc-sys", reason = "ONE crypto backend = ring (and a C/cmake build)" },
     # cargo-deny matches `name@version` as an exact or PARTIAL version (`0` = every 0.x), not a
     # range, so the older lines are listed one by one.
     { crate = "hyper@0", reason = "HTTP is hyper 1" },

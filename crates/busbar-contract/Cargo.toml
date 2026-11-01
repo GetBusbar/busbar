@@ -31,6 +31,7 @@ unicode-normalization = { workspace = true }
 num-bigint = { workspace = true }
 getrandom = { workspace = true }
 ring = { workspace = true }
+aws-lc-sys = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }
 base64 = { workspace = true }
