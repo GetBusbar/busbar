@@ -3099,6 +3099,50 @@ fetch:
 }
 
 #[test]
+fn test_fetch_url_filename_requires_a_path_segment() {
+    for url in [
+        "https://host",
+        "https://host?next=/plugin.tar.gz",
+        "https://host#plugin.tar.gz",
+        "https://user:pass@host:443",
+        "https://user:pass@host:443/",
+        "https://[::1]:443",
+        "https://host/",
+        "https://host/plugins/?download=1",
+    ] {
+        let cfg = PluginsCfg {
+            fetch: vec![PluginFetch::Url(UrlFetch {
+                url: url.to_string(),
+                sha256: None,
+            })],
+            ..PluginsCfg::default()
+        };
+        let error = cfg.fetch_targets().expect_err("URL has no path basename");
+        assert!(
+            !error.contains("user:pass"),
+            "URL credentials must not be echoed"
+        );
+    }
+    for url in [
+        "https://host/plugin.tar.gz",
+        "https://host/plugins/plugin.tar.gz?next=/ignored#ignored",
+        "https://[::1]:443/plugin.tar.gz",
+    ] {
+        let cfg = PluginsCfg {
+            fetch: vec![PluginFetch::Url(UrlFetch {
+                url: url.to_string(),
+                sha256: Some("deadbeef".to_string()),
+            })],
+            ..PluginsCfg::default()
+        };
+        let targets = cfg.fetch_targets().expect("URL has a path basename");
+        assert_eq!(targets[0].filename, "plugin.tar.gz");
+        assert_eq!(targets[0].url, url);
+        assert_eq!(targets[0].sha256.as_deref(), Some("deadbeef"));
+    }
+}
+
+#[test]
 fn test_fetch_env_spec_reads_var() {
     use crate::config::PluginsCfg;
     std::env::set_var("BUSBAR_T_FETCH_URL", "https://host/p/thing.tar.gz@abc123");

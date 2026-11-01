@@ -7,7 +7,7 @@
 //! public. [`public_settings_of_schema`] is what the host reads: the settings a schema declares
 //! public, every other setting sensitive (`busbar_contract::settings_public`).
 
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 /// Field-name heuristic: an UNMARKED field whose name matches one of these
 /// (case-insensitive substring) is hard-rejected at pack time — the only mitigation against a
@@ -61,68 +61,86 @@ pub fn public_settings_of_schema(
 /// 200-link `allOf` chain walks straight past it. This runs on operator-supplied input at pack time,
 /// and uncapped the end of that chain is a stack overflow or an unbounded re-resolve that never
 /// returns — an abort or a hang with no diagnostic, the one answer a validator must never give.
-fn resolve_effective(
-    schema: &serde_json::Value,
-    defs: &serde_json::Map<String, serde_json::Value>,
-    resolving: &mut HashSet<String>,
-    depth: u32,
-) -> Result<serde_json::Map<String, serde_json::Value>, String> {
-    // Same ceiling as `MAX_SCAN_DEPTH`, and the same one `busbar_contract::json_grammar` holds for
-    // wire JSON: deeper than this is not a schema anyone wrote by hand, it is the recursion.
-    const MAX_RESOLVE_DEPTH: u32 = 64;
-    if depth > MAX_RESOLVE_DEPTH {
-        return Err(format!(
-            "settings_schema nests deeper than {MAX_RESOLVE_DEPTH} levels while resolving \
+struct Resolution<'a> {
+    defs: &'a serde_json::Map<String, serde_json::Value>,
+    resolving: HashSet<String>,
+    // Cache the whole resolution, including reference siblings and allOf merging. Depth is
+    // part of the key so a shallow success cannot bypass a later, deeper use's limit.
+    memo: HashMap<(serde_json::Value, u32), serde_json::Map<String, serde_json::Value>>,
+    scanned: HashSet<(serde_json::Value, Position, u32)>,
+}
+
+impl Resolution<'_> {
+    fn effective(
+        &mut self,
+        schema: &serde_json::Value,
+        depth: u32,
+    ) -> Result<serde_json::Map<String, serde_json::Value>, String> {
+        // Same ceiling as `MAX_SCAN_DEPTH`, and the same one `busbar_contract::json_grammar` holds for
+        // wire JSON: deeper than this is not a schema anyone wrote by hand, it is the recursion.
+        const MAX_RESOLVE_DEPTH: u32 = 64;
+        if depth > MAX_RESOLVE_DEPTH {
+            return Err(format!(
+                "settings_schema nests deeper than {MAX_RESOLVE_DEPTH} levels while resolving \
              $ref/allOf — a self-referencing $defs entry is the usual cause; the schema cannot be \
              validated"
-        ));
-    }
-    let Some(obj) = schema.as_object() else {
-        return Ok(serde_json::Map::new());
-    };
-    let mut merged = obj.clone();
-    if let Some(r) = obj.get("$ref").and_then(|v| v.as_str()) {
-        let name = r
-            .strip_prefix("#/$defs/")
-            .or_else(|| r.strip_prefix("#/definitions/"));
-        if let Some(name) = name {
-            if !resolving.insert(name.to_string()) {
-                return Err(format!("cyclic $ref in settings_schema: '{r}'"));
-            }
-            let target = defs
-                .get(name)
-                .ok_or_else(|| format!("settings_schema has a dangling $ref: '{r}'"))?;
-            let base = resolve_effective(target, defs, resolving, depth + 1)?;
-            resolving.remove(name);
-            merged = base;
-            for (k, v) in obj {
-                if k != "$ref" {
-                    merged.insert(k.clone(), v.clone());
+            ));
+        }
+        let key = (schema.clone(), depth);
+        if let Some(effective) = self.memo.get(&key) {
+            return Ok(effective.clone());
+        }
+        let Some(obj) = schema.as_object() else {
+            return Ok(serde_json::Map::new());
+        };
+        let mut merged = obj.clone();
+        if let Some(r) = obj.get("$ref").and_then(|v| v.as_str()) {
+            let name = r
+                .strip_prefix("#/$defs/")
+                .or_else(|| r.strip_prefix("#/definitions/"));
+            if let Some(name) = name {
+                if !self.resolving.insert(name.to_string()) {
+                    return Err(format!("cyclic $ref in settings_schema: '{r}'"));
+                }
+                let defs = self.defs;
+                let target = defs
+                    .get(name)
+                    .ok_or_else(|| format!("settings_schema has a dangling $ref: '{r}'"))?;
+                let base = self.effective(target, depth + 1)?;
+                self.resolving.remove(name);
+                merged = base;
+                for (k, v) in obj {
+                    if k != "$ref" {
+                        merged.insert(k.clone(), v.clone());
+                    }
                 }
             }
         }
-    }
-    if let Some(all_of) = merged.get("allOf").and_then(|v| v.as_array()).cloned() {
-        for sub in &all_of {
-            let sub_eff = resolve_effective(sub, defs, resolving, depth + 1)?;
-            if let Some(sub_props) = sub_eff.get("properties").and_then(|v| v.as_object()) {
-                let props = merged
-                    .entry("properties")
-                    .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()))
-                    .as_object_mut()
-                    .expect("properties is always inserted as an object");
-                for (k, v) in sub_props {
-                    props.entry(k.clone()).or_insert_with(|| v.clone());
+        if let Some(all_of) = merged.get("allOf").and_then(|v| v.as_array()).cloned() {
+            for sub in &all_of {
+                let sub_eff = self.effective(sub, depth + 1)?;
+                if let Some(sub_props) = sub_eff.get("properties").and_then(|v| v.as_object()) {
+                    let props = merged
+                        .entry("properties")
+                        .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()))
+                        .as_object_mut()
+                        .ok_or("settings_schema properties must be an object")?;
+                    for (k, v) in sub_props {
+                        props.entry(k.clone()).or_insert_with(|| v.clone());
+                    }
                 }
-            }
-            for (k, v) in &sub_eff {
-                if k != "properties" {
-                    merged.entry(k.clone()).or_insert_with(|| v.clone());
+                for (k, v) in &sub_eff {
+                    if k != "properties" {
+                        merged.entry(k.clone()).or_insert_with(|| v.clone());
+                    }
                 }
             }
         }
+        // Only a finished resolution is reusable. With immutable definitions, a subtree
+        // containing a reference cycle cannot have produced a successful cached result.
+        self.memo.insert(key, merged.clone());
+        Ok(merged)
     }
-    Ok(merged)
 }
 
 /// Where the schema the walk is currently looking at SITS, which is what the secret-marker rule is
@@ -131,7 +149,7 @@ fn resolve_effective(
 /// `patternProperties` (or `items`, or a `$defs` entry reached from anywhere) sits one level down and
 /// is NOT a root property, while a root `oneOf` alternative's top-level property sits two levels down
 /// and IS.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 enum Position {
     /// The root schema itself, or a composition alternative still describing the root.
     Root,
@@ -196,12 +214,19 @@ pub fn validate_secret_fields(root: &serde_json::Value) -> Result<(), String> {
         .and_then(|v| v.as_object())
         .or_else(|| root.get("definitions").and_then(|v| v.as_object()))
         .unwrap_or(&empty);
+    let public = busbar_contract::settings_public::public_settings(root);
+    let mut resolution = Resolution {
+        defs,
+        resolving: HashSet::new(),
+        memo: HashMap::new(),
+        scanned: HashSet::new(),
+    };
     fn scan(
         schema: &serde_json::Value,
-        defs: &serde_json::Map<String, serde_json::Value>,
+        resolution: &mut Resolution<'_>,
+        public: &BTreeSet<String>,
         at: Position,
         depth: u32,
-        resolving: &mut HashSet<String>,
     ) -> Result<(), String> {
         // A schema may nest as deeply as it likes, but a `$defs` entry that refers to ITSELF is not
         // caught by the `resolving` cycle guard: that guard is unwound as each resolution returns,
@@ -217,7 +242,13 @@ pub fn validate_secret_fields(root: &serde_json::Value) -> Result<(), String> {
                  $defs entry is the usual cause; the schema cannot be validated"
             ));
         }
-        let eff = resolve_effective(schema, defs, resolving, depth)?;
+        // Only successful walks are reused, at the same field position and remaining depth.
+        // A shared definition reached below a property must still be judged as nested.
+        let key = (schema.clone(), at, depth);
+        if resolution.scanned.contains(&key) {
+            return Ok(());
+        }
+        let eff = resolution.effective(schema, depth)?;
         if eff.get("x-busbar-secret") == Some(&serde_json::Value::Bool(true)) {
             if at != Position::RootProperty {
                 // 1.5.5's words, naming the nesting depth (v1.5.5
@@ -241,10 +272,15 @@ pub fn validate_secret_fields(root: &serde_json::Value) -> Result<(), String> {
         }
         if let Some(props) = eff.get("properties").and_then(|p| p.as_object()) {
             for (name, prop_schema) in props {
-                let prop_eff = resolve_effective(prop_schema, defs, resolving, depth)?;
+                let prop_eff = resolution.effective(prop_schema, depth)?;
                 let marked =
                     prop_eff.get("x-busbar-secret") == Some(&serde_json::Value::Bool(true));
-                check_public(name, &prop_eff, at == Position::Root, marked)?;
+                check_public(
+                    name,
+                    &prop_eff,
+                    at == Position::Root && public.contains(name),
+                    marked,
+                )?;
                 if !marked {
                     let lower = name.to_ascii_lowercase();
                     if SECRET_NAME_HINTS.iter().any(|hint| lower.contains(hint)) {
@@ -264,11 +300,11 @@ pub fn validate_secret_fields(root: &serde_json::Value) -> Result<(), String> {
                     Position::Root => Position::RootProperty,
                     _ => Position::Nested,
                 };
-                scan(prop_schema, defs, child, depth + 1, resolving)?;
+                scan(prop_schema, resolution, public, child, depth + 1)?;
             }
         }
         if let Some(items) = eff.get("items") {
-            scan(items, defs, Position::Nested, depth + 1, resolving)?;
+            scan(items, resolution, public, Position::Nested, depth + 1)?;
         }
         // `oneOf`/`anyOf`/`prefixItems` are also places a field can hide — walked the same way as
         // `properties`/`items` (one nesting level deeper), or both the root-only placement rule
@@ -282,13 +318,13 @@ pub fn validate_secret_fields(root: &serde_json::Value) -> Result<(), String> {
         for combinator in ["oneOf", "anyOf"] {
             if let Some(alts) = eff.get(combinator).and_then(|v| v.as_array()) {
                 for alt in alts {
-                    scan(alt, defs, at, depth + 1, resolving)?;
+                    scan(alt, resolution, public, at, depth + 1)?;
                 }
             }
         }
         if let Some(prefix_items) = eff.get("prefixItems").and_then(|v| v.as_array()) {
             for item in prefix_items {
-                scan(item, defs, Position::Nested, depth + 1, resolving)?;
+                scan(item, resolution, public, Position::Nested, depth + 1)?;
             }
         }
         // Every other JSON Schema 2020-12 keyword whose value is itself a subschema (or holds one)
@@ -313,14 +349,14 @@ pub fn validate_secret_fields(root: &serde_json::Value) -> Result<(), String> {
         // `contentSchema` describe something else entirely and are nested.
         for keyword in ["if", "then", "else"] {
             if let Some(sub) = eff.get(keyword) {
-                scan(sub, defs, at, depth + 1, resolving)?;
+                scan(sub, resolution, public, at, depth + 1)?;
             }
         }
         if let Some(sub) = eff.get("not") {
-            scan(sub, defs, Position::Nested, depth + 1, resolving)?;
+            scan(sub, resolution, public, Position::Nested, depth + 1)?;
         }
         if let Some(sub) = eff.get("contentSchema") {
-            scan(sub, defs, Position::Nested, depth + 1, resolving)?;
+            scan(sub, resolution, public, Position::Nested, depth + 1)?;
         }
         for keyword in [
             "additionalProperties",
@@ -330,18 +366,19 @@ pub fn validate_secret_fields(root: &serde_json::Value) -> Result<(), String> {
         ] {
             if let Some(sub) = eff.get(keyword) {
                 if sub.is_object() {
-                    scan(sub, defs, Position::Nested, depth + 1, resolving)?;
+                    scan(sub, resolution, public, Position::Nested, depth + 1)?;
                 }
             }
         }
         for keyword in ["patternProperties", "dependentSchemas"] {
             if let Some(map) = eff.get(keyword).and_then(|v| v.as_object()) {
                 for sub in map.values() {
-                    scan(sub, defs, Position::Nested, depth + 1, resolving)?;
+                    scan(sub, resolution, public, Position::Nested, depth + 1)?;
                 }
             }
         }
+        resolution.scanned.insert(key);
         Ok(())
     }
-    scan(root, defs, Position::Root, 0, &mut HashSet::new())
+    scan(root, &mut resolution, &public, Position::Root, 0)
 }

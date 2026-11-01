@@ -568,7 +568,7 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
         // `affinity.header_name`, however, becomes an outbound/inbound HTTP HEADER NAME: a non-ASCII
         // or over-long value can't be a valid header field-name (the `http` crate rejects it at
         // header construction), so a bad value would either panic the build or silently disable
-        // affinity. Validate it at boot: ASCII only, non-empty, and a sane <= 64-char bound.
+        // affinity. Validate it at boot: an HTTP token within the existing <= 64-char bound.
         if let Some(affinity) = &pool_cfg.affinity {
             if let Some(header_name) = &affinity.header_name {
                 // Non-empty: an empty header name is not a valid HTTP field-name, and it PASSES the
@@ -584,6 +584,12 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
                 if !header_name.is_ascii() {
                     errors.push(format!(
                         "pool '{pool_name}' affinity.header_name '{header_name}' must be ASCII (an HTTP header field-name cannot contain non-ASCII bytes)"
+                    ));
+                } else if !header_name.is_empty()
+                    && !busbar_contract::header::is_header_name_token(header_name.as_bytes())
+                {
+                    errors.push(format!(
+                        "pool '{pool_name}' affinity.header_name must be a valid HTTP field-name"
                     ));
                 }
                 if header_name.len() > MAX_AFFINITY_HEADER_NAME_LEN {
@@ -2265,7 +2271,12 @@ fn refused_private_host(url: &str) -> Option<String> {
 fn destination_allowed(allow: &[String], host: &str) -> bool {
     let ip = busbar_contract::net::host_ip(host);
     allow.iter().any(|entry| {
-        let entry = entry.trim();
+        // The connector guard folds configured entries this way before matching them.
+        let entry = entry.trim().trim_start_matches('[').trim_end_matches(']');
+        let entry = entry
+            .strip_suffix('.')
+            .unwrap_or(entry)
+            .to_ascii_lowercase();
         if entry.eq_ignore_ascii_case(host) {
             return true;
         }
@@ -2275,8 +2286,11 @@ fn destination_allowed(allow: &[String], host: &str) -> bool {
         }
         let Some(ip) = ip else { return false };
         match entry.split_once('/') {
-            None => busbar_contract::net::host_ip(entry) == Some(ip),
-            Some((net, bits)) => match (busbar_contract::net::host_ip(net), bits.parse::<u32>()) {
+            None => busbar_contract::net::host_ip(&entry) == Some(ip),
+            Some((net, bits)) => match (
+                busbar_contract::net::host_ip(net.trim_end_matches(']')),
+                bits.parse::<u32>(),
+            ) {
                 (Some(std::net::IpAddr::V4(n)), Ok(b)) if b <= 32 => match ip {
                     std::net::IpAddr::V4(a) => {
                         let mask = u32::MAX.checked_shl(32 - b).unwrap_or(0);
@@ -2836,7 +2850,7 @@ fn credential_refusals_from(
 ) -> Vec<String> {
     let refusals = axis
         .check_outbound(style, credential.as_bytes(), params)
-        .unwrap_or_default();
+        .unwrap_or_else(|error| vec![error]);
     let needles = credential_needles(credential);
     refusals
         .into_iter()
