@@ -38,6 +38,111 @@ use crate::dispatch::{
     ManifestFacts, Metric, Plugin, NO_BLOB,
 };
 
+/// Native finalizer observations shared with the direct dlclose regression.
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+mod unload_witness {
+    use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::mpsc::{self, Receiver, Sender};
+    use std::time::Duration;
+
+    use libloading::Library;
+
+    pub(crate) struct Unloaded {
+        pub(crate) thread: std::thread::ThreadId,
+        pub(crate) permanent: bool,
+    }
+
+    /// The callback is host code and owns its sender independently of the test stack. If an unload is
+    /// leaked or delayed past a failed assertion, the finalizer cannot dereference a dead stack frame.
+    extern "C" fn witnessed_unload(context: usize) {
+        // SAFETY: `UnloadWitness::new` transfers exactly this Box to the fixture, whose finalizer
+        // takes its callback once. No other code consumes the pointer after successful registration.
+        let sender = unsafe { Box::from_raw(context as *mut Sender<Unloaded>) };
+        let _ = sender.send(Unloaded {
+            thread: std::thread::current().id(),
+            permanent: crate::ffi_thread::on_permanent_worker(),
+        });
+    }
+
+    /// Each test owns a separate image, so another test's dlopen reference or unload cannot satisfy
+    /// this receiver. Only the finalizer in this copied image receives its sender.
+    pub(crate) struct UnloadWitness {
+        dir: PathBuf,
+        path: PathBuf,
+        unloaded: Receiver<Unloaded>,
+    }
+
+    impl UnloadWitness {
+        pub(crate) fn new() -> (Self, Library) {
+            static NEXT: AtomicU64 = AtomicU64::new(0);
+            let dir = loop {
+                let dir = std::env::temp_dir().join(format!(
+                    "busbar-unload-witness-{}-{}",
+                    std::process::id(),
+                    NEXT.fetch_add(1, Ordering::Relaxed)
+                ));
+                match std::fs::create_dir(&dir) {
+                    Ok(()) => break dir,
+                    Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                    Err(e) => panic!("create unique fixture directory: {e}"),
+                }
+            };
+            let (sender, unloaded) = mpsc::channel();
+            let path = dir.join(crate::plugin_library_filename("dispatch_test_plugin"));
+            let witness = Self {
+                dir,
+                path,
+                unloaded,
+            };
+            std::fs::copy(
+                crate::dispatch_tests::example_cdylib("dispatch_test_plugin"),
+                &witness.path,
+            )
+            .expect("copy this test's existing dropped fixture");
+            let lib =
+                crate::dlopen_on_worker(witness.path.as_os_str()).expect("load the copied image");
+            type Arm = extern "C" fn(extern "C" fn(usize), usize) -> bool;
+            // SAFETY: the existing fixture exports exactly this registration function. `lib` remains
+            // live through the call; neither the Symbol nor a plugin function pointer escapes it.
+            let arm = unsafe { lib.get::<Arm>(b"busbar_test_arm_unload\0") }
+                .expect("the dropped fixture exports its finalizer witness");
+            let context = Box::into_raw(Box::new(sender)) as usize;
+            let armed = crate::ffi_thread::on_plugin_thread(|| arm(witnessed_unload, context))
+                .expect("fixture registration does not panic");
+            if !armed {
+                // SAFETY: a refused registration retains no pointer; this caller still owns the Box.
+                drop(unsafe { Box::from_raw(context as *mut Sender<Unloaded>) });
+            }
+            assert!(armed, "a new copied image has no previous witness");
+            (witness, lib)
+        }
+
+        pub(crate) fn path(&self) -> &Path {
+            &self.path
+        }
+
+        pub(crate) fn finished(&self) -> Unloaded {
+            self.unloaded
+                .recv_timeout(Duration::from_secs(5))
+                .expect("this image's actual finalizer must report its unload")
+        }
+
+        pub(crate) fn is_pending(&self) -> bool {
+            matches!(self.unloaded.try_recv(), Err(mpsc::TryRecvError::Empty))
+        }
+    }
+
+    impl Drop for UnloadWitness {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+}
+
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+pub(crate) use unload_witness::UnloadWitness;
+
 /// The test kind's context: the Statement's `max_inflight`, as bound.
 #[derive(Debug, PartialEq, Eq)]
 struct TestContext(u32);
@@ -2180,24 +2285,33 @@ fn red_the_host_zeroes_the_whole_out_before_a_crossing() {
     assert_eq!(f.out.next_tick_ns, 0, "the tail was zeroed too");
 }
 
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
 #[test]
-fn an_unload_runs_on_the_reaper_never_under_a_worker_lock() {
-    use crate::dispatch::load::UNLOADS;
-    use std::sync::atomic::Ordering::SeqCst;
+fn recycling_the_last_driver_releases_its_own_image_on_a_permanent_worker() {
+    let caller = std::thread::current().id();
+    let (witness, registration) = UnloadWitness::new();
     let d = Dispatcher::new(config());
-    let p = dropped(quiet());
+    let p = load_dropped::<TestKind>(witness.path(), &stated(), bind(quiet()))
+        .expect("this test's independently owned image loads");
+    crate::dlclose_on_worker(registration);
     assert_eq!(open(&d, &p, 0), Outcome::Ready);
     let drv = d.driver(&p, 0).unwrap();
     let gone = std::sync::Arc::downgrade(&p.inner);
-    let unloads0 = UNLOADS.load(SeqCst);
-    // The driver holds the last reference; a recycle drops it on the worker, under its lock. The
-    // unload is handed to the reaper, which runs it after (and apart from) the worker.
+    let mut close: Frame<busbar_contract::abi::mechanism::call::InHead, OutHead> =
+        Frame::new(in_head(), out_head());
+    assert_eq!(p.call(slot::CLOSE, &mut close).outcome, Outcome::Ready);
+    // The driver holds the last instance reference. Its recycling must release this exact image;
+    // an unrelated test's unload cannot send on this receiver.
     drop(p);
+    assert!(
+        witness.is_pending(),
+        "the driver's reference retains its image"
+    );
     d.recycle(drv);
-    until("the instance is gone", || gone.strong_count() == 0);
-    until("the reaper unloaded the library", || {
-        UNLOADS.load(SeqCst) > unloads0
-    });
+    let unloaded = witness.finished();
+    assert_eq!(gone.strong_count(), 0, "the driver's instance was released");
+    assert_ne!(unloaded.thread, caller);
+    assert!(unloaded.permanent);
 }
 
 #[test]
