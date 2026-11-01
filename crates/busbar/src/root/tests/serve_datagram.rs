@@ -674,6 +674,112 @@ async fn caller_write_publishes_the_framers_emitted_channel_output_once() {
 }
 
 #[tokio::test]
+async fn a_bridged_line_emit_delivers_its_callers_channel_output_once() {
+    use busbar_core_connector::datagram::{Across, Leg, LegSink};
+    use busbar_test_kit::root_door_fixtures::datagram_order::Recording;
+
+    struct Upstream;
+    impl LegSink for Upstream {
+        fn line(&self, _: Across, _: Instant) {}
+        fn close(&self) {}
+    }
+    const CALLER_LINE: u64 = 11;
+    const UPSTREAM_LINE: u64 = 21;
+
+    let (door, leg, pairing, mut rx) = leg(8);
+    let framer = Recording::new();
+    join_recording(&door, &leg, &framer);
+    framer.echo_emits_on(SESSION_CHANNEL);
+    let now = Instant::now();
+    pairing.sort(
+        Leg::Caller,
+        vec![got(CALLER_LINE, b"kind: audio\r\n", true)],
+        now,
+    );
+    pairing.sort(
+        Leg::Upstream,
+        vec![got(UPSTREAM_LINE, b"kind: audio\r\n", true)],
+        now,
+    );
+    pairing.attach(Arc::new(Upstream)).unwrap();
+    leg.take(vec![got(SESSION_CHANNEL, b"label: events\r\n", true)], now);
+    let session = pairing.sort(
+        Leg::Upstream,
+        vec![got(UPSTREAM_LINE, b"line frame", false)],
+        now,
+    );
+    let received = rx.try_recv();
+    let extra = rx.try_recv();
+    pairing.close();
+
+    assert!(
+        session.is_empty(),
+        "the LINE stays out of the upstream session"
+    );
+    assert_eq!(framer.emitted(), vec![b"line frame".to_vec()]);
+    assert_eq!(received.unwrap(), b"line frame");
+    assert!(extra.is_err());
+}
+
+#[tokio::test]
+async fn a_line_queued_during_application_emit_delivers_its_own_output_in_order() {
+    use busbar_core_connector::datagram::{Across, Leg, LegSink};
+    use busbar_kernel::plane_driver::CallerEnd;
+    use busbar_test_kit::root_door_fixtures::datagram_order::Recording;
+
+    struct Upstream;
+    impl LegSink for Upstream {
+        fn line(&self, _: Across, _: Instant) {}
+        fn close(&self) {}
+    }
+    const CALLER_LINE: u64 = 11;
+    const UPSTREAM_LINE: u64 = 21;
+
+    let (door, leg, pairing, mut rx) = leg(8);
+    let framer = Recording::new();
+    join_recording(&door, &leg, &framer);
+    framer.echo_emits_on(SESSION_CHANNEL);
+    let now = Instant::now();
+    pairing.sort(
+        Leg::Caller,
+        vec![got(CALLER_LINE, b"kind: audio\r\n", true)],
+        now,
+    );
+    pairing.sort(
+        Leg::Upstream,
+        vec![got(UPSTREAM_LINE, b"kind: audio\r\n", true)],
+        now,
+    );
+    pairing.attach(Arc::new(Upstream)).unwrap();
+    leg.take(vec![got(SESSION_CHANNEL, b"label: events\r\n", true)], now);
+    let source = Arc::downgrade(&pairing);
+    framer.observe(Arc::new(move |bytes| {
+        if bytes == b"application" {
+            source.upgrade().unwrap().sort(
+                Leg::Upstream,
+                vec![got(UPSTREAM_LINE, b"queued line", false)],
+                Instant::now(),
+            );
+        }
+    }));
+    let caller = caller_for(leg);
+    let accepted = CallerEnd::write(&caller, b"application").await;
+    let application = rx.try_recv();
+    let line = rx.try_recv();
+    let extra = rx.try_recv();
+    pairing.close();
+
+    assert!(accepted);
+    assert_eq!(
+        framer.emitted(),
+        vec![b"application".to_vec(), b"queued line".to_vec()]
+    );
+    assert_eq!(application.unwrap(), b"application");
+    assert_eq!(line.unwrap(), b"queued line");
+    assert!(extra.is_err());
+}
+
+#[tokio::test]
 async fn refusal_of_an_accepted_early_message_closes_before_later_messages_cross() {
     use busbar_kernel::plane_driver::CallerEnd;
     use busbar_test_kit::root_door_fixtures::datagram_order::Recording;
