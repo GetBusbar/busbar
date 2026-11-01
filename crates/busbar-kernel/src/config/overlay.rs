@@ -1,104 +1,26 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The busbar-owned config OVERLAY — the persistence substrate that lets an API-applied hook survive
-//! a restart. Effective config = base (`config.yaml`, hand-written, NEVER touched) + overlay
-//! (busbar-owned). Today the overlay carries the runtime hook registry; it grows as more of the config
-//! surface becomes API-mutable.
-//!
-//! This module is the PURE substrate (read/write/merge) — unit-tested in isolation. The wiring (write
-//! on apply, read + merge at boot, gated by the overlay path) is layered on top. `write` is atomic
-//! (temp + rename) so a crash mid-write never leaves a torn overlay; `read` is fail-soft (a missing or
-//! corrupt overlay yields `None` and boot proceeds on base config alone — a bad overlay never bricks
-//! startup).
-
-use std::collections::{BTreeMap, HashMap};
-use std::path::{Path, PathBuf};
-
-use busbar_contract::plugin::Kind;
-use serde::{Deserialize, Serialize};
-
-use crate::diagnostics::{
-    diag_error, diag_warn, CONFIG_OVERLAY_CORRUPT_BASE_ONLY, CONFIG_OVERLAY_CORRUPT_REFUSE_WRITE,
-    CONFIG_OVERLAY_NOT_WRITABLE, CONFIG_OVERLAY_PATCH_UNPARSABLE, CONFIG_OVERLAY_PROBE_LEAK,
-    CONFIG_OVERLAY_VERSION_TOO_NEW, CONFIG_OVERLAY_VERSION_TOO_NEW_RMW,
-};
-
+//! Store-owned runtime configuration overlay. Operator config files remain read-only inputs.
+pub use super::overlay_store::OverlayStore;
 use super::{
     ConfigMgmtCfg, DeployCfg, GroupCfg, HookCfg, OverlayCfg, RateEntryCfg, RootCfg, StoreCfg,
     TlsCfg,
 };
+use crate::diagnostics::{diag_error, CONFIG_OVERLAY_PATCH_UNPARSABLE};
+use busbar_contract::plugin::Kind;
+use serde::{Deserialize, Serialize};
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::path::Path;
 
-/// The single, actionable message a config mutation gets when there is no writable overlay backend to
-/// record it. With the 1.5.3 boot invariant (`locked` XOR a writable overlay), a MUTABLE busbar always
-/// has a writable overlay, so this is only reachable on a LOCKED (immutable/GitOps) deployment — where
-/// refusing runtime config mutation is exactly the point. Used both as the `persist_*` `None`-path
-/// error (the structural backstop that makes silent non-durable mutation impossible) and by the admin
-/// handlers' early locked-config refusals.
-pub const NO_WRITABLE_OVERLAY_MSG: &str =
-    "config mutation refused: this busbar has no writable config overlay. This is expected when \
-     `config.locked: true` (an immutable/GitOps deployment) — edit config.yaml and POST /config/reload \
-     to change it. If the config is meant to be mutable, give it a writable `config.overlay` backend \
-     and reload.";
-
-/// The default overlay filename, written next to `config.yaml` when `config.overlay` names no explicit
-/// path. One source of truth for the code + tests (the doc-comment prose in `config/mod.rs` mirrors it).
+pub const NO_WRITABLE_OVERLAY_MSG: &str = "config mutation refused: this busbar has no writable Store-backed config overlay; edit config.yaml and reload a locked deployment";
+/// Legacy selector only. No file is created, read, probed or removed.
 pub const DEFAULT_OVERLAY_FILENAME: &str = "busbar-overlay.json";
-/// Filename prefix for the boot-time writability probe (a leading-dot temp file, pid-suffixed).
-const PROBE_FILE_PREFIX: &str = ".busbar-overlay-probe-";
-
-/// Unix owner read/write (`S_IRUSR | S_IWUSR`), with no group/other access. An overlay may
-/// contain credential material, so the durable writer applies this mode at file creation.
-const OVERLAY_FILE_MODE_OWNER_READ_WRITE: u32 = 0o600;
-
-/// The resolved config-management posture for a boot/reload: whether config is locked, and the
-/// writable overlay backend path (if any). Computed by [`resolve_backend`].
 #[derive(Debug, Clone)]
 pub struct OverlayResolution {
-    /// `true` ⇒ `config.locked: true`: admin-API config mutations are refused at runtime.
     pub locked: bool,
-    /// The writable file-backend path when the config is MUTABLE and its backend is writable; `None`
-    /// when locked, and `None` when the config is mutable but its backend turned out to be UNWRITABLE
-    /// (see `read_only_backend`). The boot invariant is therefore
-    /// `(locked || read_only_backend) == path.is_none()` for a config that BOOTED.
-    pub path: Option<PathBuf>,
-    /// `true` ⇒ the config did NOT declare `config.locked: true`, but the resolved overlay backend is
-    /// not writable on this filesystem — the classic case being a config directory mounted read-only
-    /// (`docker run -v ./config.yaml:/etc/busbar/config.yaml:ro`). Busbar boots and serves, but with
-    /// NO durable config overlay: every admin-API config mutation is refused up front with
-    /// [`NO_WRITABLE_OVERLAY_MSG`] rather than applying in RAM and silently reverting on restart. The
-    /// operator is told loudly at boot. Never `true` when `locked` is `true`.
-    pub read_only_backend: bool,
+    pub enabled: bool,
 }
-
-/// Resolve the config-management posture + overlay backend from the `config:` block (1.5.3), enforcing
-/// the BOOT INVARIANT: no snapshot ever carries a backend path it cannot durably write. What the
-/// invariant actually protects against is a mutation that applies in RAM only and silently reverts on
-/// restart; it is satisfied by handing back `path: None` (which makes every admin-API config mutation
-/// refuse up front with [`NO_WRITABLE_OVERLAY_MSG`]), and does NOT require refusing to boot.
-///
-/// So the two "mutable but no usable backend" states are treated differently, on purpose:
-///
-/// * `config.overlay: false` on a mutable config is a SELF-CONTRADICTORY config the operator wrote by
-///   hand ("mutable, and also no place to store mutations"). It stays a boot `Err`, because the only
-///   way to reach it is to have typed it, and the fix is to edit the file.
-/// * An overlay backend that is not WRITABLE is a property of the ENVIRONMENT, not of the config: a
-///   read-only config mount is a legitimate and common hardening choice, and the documented Docker
-///   quickstart uses exactly that (`-v "$PWD/config.yaml:/etc/busbar/config.yaml:ro"`). Refusing to
-///   boot for it means a hardened deployment cannot serve traffic at all, which is a far worse
-///   outcome than serving with the admin-API config mutations disabled. This degrades: it warns
-///   loudly, sets `read_only_backend`, and returns `path: None`.
-///
-/// Precedence for a mutable config's backend path: an explicit `config.overlay` wins; else the
-/// deprecated `BUSBAR_CONFIG_OVERLAY` env var (`env_override`, with a deprecation warn); else the
-/// default `busbar-overlay.json` next to the resolved config.yaml. `probe_fs` gates the filesystem
-/// writability check — `true` at boot/reload (so a read-only config dir degrades to no overlay,
-/// above), `false` for `--validate` (which must have zero side effects and may run away from the
-/// target filesystem).
-///
-/// [`resolve_backend`] is the same resolution with no env override — the form the overlay tests
-/// exercise the precedence through (the disk loader is the only production caller, and it always
-/// threads the env value in).
 #[cfg(test)]
 pub fn resolve_backend(
     cfg: &ConfigMgmtCfg,
@@ -107,317 +29,82 @@ pub fn resolve_backend(
 ) -> Result<OverlayResolution, String> {
     resolve_backend_with_env(cfg, config_path, None, probe_fs)
 }
-
-/// [`resolve_backend`] with the deprecated `BUSBAR_CONFIG_OVERLAY` value (`env_override`) threaded
-/// in. The disk loader reads that env var and calls this; it wins over the default path only when
-/// `config.overlay` is unset, and its presence is deprecation-warned here so the warning sits next
-/// to the precedence that honors it.
 pub fn resolve_backend_with_env(
     cfg: &ConfigMgmtCfg,
-    config_path: &Path,
+    _config_path: &Path,
     env_override: Option<&Path>,
-    probe_fs: bool,
+    _probe_fs: bool,
 ) -> Result<OverlayResolution, String> {
-    if env_override.is_some() {
-        crate::diagnostics::diag_warn!(
-            crate::diagnostics::DEPRECATED_ENV_VAR_HONORED,
-            "BUSBAR_CONFIG_OVERLAY is DEPRECATED and will be removed in a future release; set \
-             `config.overlay.file` in config.yaml instead. It is honored for now only when \
-             `config.overlay` is not set."
-        );
-    }
     if cfg.locked {
-        // Immutable/GitOps: the overlay is irrelevant and ignored; runtime mutations are refused.
         return Ok(OverlayResolution {
             locked: true,
-            path: None,
-            read_only_backend: false,
+            enabled: false,
         });
     }
-    let config_dir = config_path.parent().unwrap_or_else(|| Path::new("."));
-    // MUTABLE: resolve the backend path (config wins > deprecated env > default next to config.yaml).
-    let path: Option<PathBuf> = match &cfg.overlay {
-        Some(OverlayCfg::Disabled(false)) => None, // `overlay: false` — explicitly no backend.
-        Some(OverlayCfg::Disabled(true)) => {
-            return Err(
-                "config.overlay: `true` names no backend — use `{ file: <path> }`, or \
-                        `false` together with `config.locked: true` to run immutable."
-                    .to_string(),
-            );
-        }
-        Some(OverlayCfg::Backend(b)) => b.file.as_ref().map(|f| resolve_rel(f, config_dir)),
-        None => Some(
-            env_override
-                .map(Path::to_path_buf)
-                .unwrap_or_else(|| config_dir.join(DEFAULT_OVERLAY_FILENAME)),
-        ),
-    };
-    let Some(p) = path else {
-        return Err("config is mutable (config.locked: false) but has no writable overlay backend — \
-                    `config.overlay` is disabled, so an admin-API config change could not be stored \
-                    and would silently revert on restart. Give it a backend (`config.overlay.file: \
-                    <path>`), or set `config.locked: true` for an immutable deployment."
-            .to_string());
-    };
-    if probe_fs && !is_backend_writable(&p) {
-        // DEGRADE, do not refuse to boot. A read-only config directory is a hardening choice, not a
-        // config error, and a gateway that will not start is strictly worse than a gateway that
-        // serves traffic with admin-API config mutations turned off. `path: None` is what makes the
-        // "off" real: every mutation entry point refuses against a `None` backend, so nothing can
-        // apply in RAM and silently revert. Logged at WARN here (and again at boot in `main`) because
-        // an operator who DID intend to drive this busbar by admin API must not discover it at the
-        // first mutation.
-        diag_warn!(
-            CONFIG_OVERLAY_NOT_WRITABLE,
-            overlay = %p.display(),
-            "the config overlay backend is NOT WRITABLE (is the config directory mounted read-only?) \
-             — busbar is starting WITHOUT a durable config overlay: it serves traffic normally, but \
-             every admin-API config mutation will be REFUSED, because a change that cannot be \
-             persisted would silently revert on restart. If that is what you want, set \
-             `config.locked: true` to say so explicitly and silence this warning. If you want a \
-             mutable config, point `config.overlay.file` at a writable path (e.g. mount a writable \
-             volume and set `config.overlay.file: /var/lib/busbar/busbar-overlay.json`)."
-        );
-        return Ok(OverlayResolution {
-            locked: false,
-            path: None,
-            read_only_backend: true,
-        });
+    match &cfg.overlay {
+        Some(OverlayCfg::Disabled(_)) => return Err("mutable config requires its configured Store-backed overlay; set config.locked: true to disable runtime mutations".into()),
+        Some(OverlayCfg::Backend(backend)) if backend.file.is_none() => return Err("config.overlay names no backend".into()),
+        _ => {}
+    }
+    if env_override.is_some() || matches!(&cfg.overlay, Some(OverlayCfg::Backend(_))) {
+        tracing::warn!("legacy config overlay file selector is deprecated and does not select a file; runtime config persists exclusively in the configured Store");
     }
     Ok(OverlayResolution {
         locked: false,
-        path: Some(p),
-        read_only_backend: false,
+        enabled: true,
     })
 }
-
-/// Resolve a possibly-relative overlay path against the config.yaml directory.
-fn resolve_rel(file: &str, config_dir: &Path) -> PathBuf {
-    let p = Path::new(file);
-    if p.is_absolute() {
-        p.to_path_buf()
-    } else {
-        config_dir.join(p)
-    }
-}
-
-/// Probe the sibling-file creation and replacement that overlay persistence requires, without
-/// touching the overlay itself. The disposable probes need not survive, so this does not route
-/// through `crate::durable`. Permissions can still change after this boot-time capability check.
-fn is_backend_writable(p: &Path) -> bool {
-    match std::fs::symlink_metadata(p) {
-        Ok(metadata) => {
-            if metadata.is_dir() {
-                return false;
-            }
-            #[cfg(windows)]
-            if metadata.permissions().readonly() {
-                return false;
-            }
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(_) => return false,
-    }
-    // Both an existing overlay and a new one are published by sibling rename. A bare filename's
-    // empty parent denotes the current directory, just as it does for the durable writer.
-    let dir = p
-        .parent()
-        .filter(|d| !d.as_os_str().is_empty())
-        .unwrap_or_else(|| Path::new("."));
-    // pid + a process-global monotonic nonce so concurrent probes (parallel test threads sharing a
-    // cwd, or repeated boot-time calls) never collide on the same probe filename.
-    static PROBE_NONCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let nonce = PROBE_NONCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let probe = dir.join(format!("{PROBE_FILE_PREFIX}{}-{nonce}", std::process::id()));
-    let replacement = probe.with_extension("replacement");
-    let mut owned = Vec::new();
-    let result = (|| -> std::io::Result<()> {
-        for path in [&probe, &replacement] {
-            let file = std::fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(path)?;
-            owned.push(path);
-            // Close before rename/unlink, including on Windows.
-            drop(file);
-        }
-        std::fs::rename(&probe, &replacement)
-    })();
-    let mut removed = true;
-    for probe in owned {
-        if let Err(e) = std::fs::remove_file(probe) {
-            if e.kind() != std::io::ErrorKind::NotFound {
-                removed = false;
-                diag_warn!(
-                    CONFIG_OVERLAY_PROBE_LEAK,
-                    probe = %probe.display(), error = %e,
-                    "could not remove the overlay writability probe file after creating it; it may be \
-                     left behind in the config directory"
-                );
-            }
-        }
-    }
-    result.is_ok() && removed
-}
-
-/// Current overlay schema version. Stamped on every write; a missing field (a pre-versioning overlay)
-/// reads as `1`, the additive baseline (hooks + the newly-added groups section, both backward
-/// compatible). Bump only on a BREAKING overlay-format change, and add a migration at `read` time.
 pub const OVERLAY_VERSION: u32 = 1;
 fn default_overlay_version() -> u32 {
     1
 }
-
-/// Persist the current hook state to the overlay at `path`, IF persistence is enabled (`Some`), and
-/// update the TOMBSTONE set for this change: `deleted_add` (a just-deleted hook) is tombstoned so the
-/// additive boot-merge REMOVES it even if it was defined in base `config.yaml`; `deleted_remove` (a
-/// just-registered hook) clears any prior tombstone (a re-add). Read-modify-write so tombstones
-/// accumulate across applies. The path is resolved from the `config.overlay` backend (1.5.3) and
-/// carried on `App`. FAIL-CLOSED: returns `Err` on an unreadable overlay (refuse-to-clobber) or a
-/// write failure, so its caller — `AppHandle::commit_and_swap` — does NOT swap a mutation it could not
-/// durably record (a live-applied-but-unpersisted config that a restart would silently revert). A
-/// `None` path is NO LONGER a silent success: with the boot invariant it means the config is LOCKED,
-/// so the mutation is refused ([`NO_WRITABLE_OVERLAY_MSG`]).
+fn backend(value: Option<&OverlayStore>) -> Result<&OverlayStore, String> {
+    value.ok_or_else(|| NO_WRITABLE_OVERLAY_MSG.to_string())
+}
 pub fn persist(
-    path: Option<&Path>,
+    store: Option<&OverlayStore>,
     hooks: &HashMap<String, HookCfg>,
     global_hooks: &[String],
     deleted_add: Option<&str>,
     deleted_remove: Option<&str>,
-    base_hook_names: &std::collections::HashSet<String>,
+    base_hook_names: &HashSet<String>,
 ) -> Result<(), String> {
-    let Some(p) = path else {
-        // 1.5.3: NEVER a silent `Ok`. With the boot invariant (`locked` XOR a writable overlay), a
-        // mutable busbar always has a backend here, so `None` means the config is locked — refuse.
-        return Err(NO_WRITABLE_OVERLAY_MSG.to_string());
-    };
-    // Read-modify-WRITE the WHOLE overlay so a hook write preserves the groups section verbatim
-    // (and vice-versa in `persist_groups`). `load_for_rmw` refuses on an unreadable overlay —
-    // starting empty then overwriting would PERMANENTLY drop accumulated tombstones from BOTH
-    // sections and silently resurrect an API-deleted hook/group on restart. That REFUSE is now an
-    // `Err` (fail-closed): the caller must NOT swap a mutation it could not durably record.
-    let Some(mut doc) = load_for_rmw(p) else {
-        return Err(format!(
-            "could not read the overlay at '{}' to persist hooks (refusing to overwrite a corrupt \
-             overlay, which would drop deletion tombstones)",
-            p.display()
-        ));
-    };
-    if let Some(name) = deleted_add {
-        if !doc.deleted.iter().any(|n| n == name) {
-            doc.deleted.push(name.to_string());
+    backend(store)?.update(|doc| {
+        if let Some(name) = deleted_add {
+            if !doc.deleted.iter().any(|n| n == name) {
+                doc.deleted.push(name.into());
+            }
         }
-    }
-    if let Some(name) = deleted_remove {
-        doc.deleted.retain(|n| n != name);
-    }
-    doc.hooks = hooks.clone();
-    doc.global_hooks = global_hooks.to_vec();
-    // INVARIANT: a hook present in the registry being persisted can never ALSO be tombstoned —
-    // the boot-merge would insert it then subtract it, silently dropping a live hook. The
-    // explicit `deleted_remove` above covers the register-a-name case; this reconciliation also
-    // covers the WHOLESALE-registry writes (config ROLLBACK, which passes both args `None`):
-    // rollback restores a registry that may contain a name still tombstoned from an earlier
-    // API delete, and without this the rollback would not survive a restart.
-    //
-    // ALSO prune any tombstone whose name is not (or no longer) in BASE `config.yaml`
-    // (`base_hook_names`): such a tombstone can never be reconciled by the "name comes back" rule
-    // above, since nothing at boot ever re-inserts a non-base name into `hooks` on its own — it is
-    // permanently inert dead weight that would otherwise grow the overlay file forever. A tombstone
-    // for a name still present in base config is kept: it is still actively shadowing that entry.
-    doc.deleted
-        .retain(|name| !hooks.contains_key(name) && base_hook_names.contains(name));
-    doc.version = OVERLAY_VERSION;
-    write(p, &doc).map_err(|e| format!("overlay write to '{}' failed: {e}", p.display()))
+        if let Some(name) = deleted_remove {
+            doc.deleted.retain(|n| n != name);
+        }
+        doc.hooks = hooks.clone();
+        doc.global_hooks = global_hooks.to_vec();
+        doc.deleted
+            .retain(|name| !hooks.contains_key(name) && base_hook_names.contains(name));
+    })
 }
-
-/// Load the existing overlay for a read-modify-WRITE, or `None` to signal REFUSE-to-overwrite.
-/// `Absent` -> a fresh default doc (safe to start clean); `Loaded` -> the existing doc (all sections
-/// carried forward so a write to one section never clobbers another); `Unreadable` -> `None`, and the
-/// caller aborts the write, because overwriting a corrupt overlay would drop the deletion tombstones
-/// of EVERY section. `version` is stamped by the caller just before `write`.
-fn load_for_rmw(p: &Path) -> Option<OverlayDoc> {
-    match read_state(p) {
-        OverlayReadState::Absent => Some(OverlayDoc::default()),
-        OverlayReadState::Loaded(doc) => Some(*doc),
-        OverlayReadState::Unreadable => {
-            diag_error!(
-                CONFIG_OVERLAY_CORRUPT_REFUSE_WRITE,
-                path = %p.display(),
-                "config overlay exists but is unreadable/corrupt; REFUSING to overwrite it (would \
-                 drop hook AND group deletion tombstones and could resurrect a deleted item). This \
-                 apply is NOT persisted — fix or remove the overlay file to restore durability."
-            );
-            None
-        }
-        OverlayReadState::VersionTooNew(v) => {
-            diag_error!(
-                CONFIG_OVERLAY_VERSION_TOO_NEW_RMW,
-                path = %p.display(), overlay_version = v, understood = OVERLAY_VERSION,
-                "config overlay was written by a NEWER busbar; REFUSING to overwrite it — this \
-                 binary cannot represent everything it holds, so a write would silently discard \
-                 whatever it does not understand. This apply is NOT persisted."
-            );
-            None
-        }
-    }
-}
-
-/// Persist the current GROUPS state to the overlay, mirroring `persist` for the `groups:` section:
-/// the API-mutable group registry + its tombstones (`deleted_groups`), read-modify-written so the
-/// HOOKS section and its tombstones are preserved untouched. FAIL-CLOSED (matches `persist`): returns
-/// `Err` on an unreadable overlay or a write failure so `commit_and_swap` does not swap an
-/// unpersistable mutation. `None` path is NOT a silent success (matches `persist`): with the boot
-/// invariant it means the config is LOCKED, so the mutation is refused ([`NO_WRITABLE_OVERLAY_MSG`]).
-/// `deleted_add`/`deleted_remove` tombstone/untombstone a group name; a wholesale write (both `None`,
-/// e.g. rollback) reconciles away any tombstone for a name the restored registry contains.
 pub fn persist_groups(
-    path: Option<&Path>,
+    store: Option<&OverlayStore>,
     groups: &BTreeMap<String, GroupCfg>,
     deleted_add: Option<&str>,
     deleted_remove: Option<&str>,
-    base_group_names: &std::collections::HashSet<String>,
+    base_group_names: &HashSet<String>,
 ) -> Result<(), String> {
-    let Some(p) = path else {
-        // 1.5.3: never a silent `Ok` (see `persist`). `None` here ⇒ a locked config — refuse.
-        return Err(NO_WRITABLE_OVERLAY_MSG.to_string());
-    };
-    let Some(mut doc) = load_for_rmw(p) else {
-        return Err(format!(
-            "could not read the overlay at '{}' to persist groups (refusing to overwrite a corrupt \
-             overlay)",
-            p.display()
-        ));
-    };
-    if let Some(name) = deleted_add {
-        if !doc.deleted_groups.iter().any(|n| n == name) {
-            doc.deleted_groups.push(name.to_string());
+    backend(store)?.update(|doc| {
+        if let Some(name) = deleted_add {
+            if !doc.deleted_groups.iter().any(|n| n == name) {
+                doc.deleted_groups.push(name.into());
+            }
         }
-    }
-    if let Some(name) = deleted_remove {
-        doc.deleted_groups.retain(|n| n != name);
-    }
-    doc.groups = groups.clone();
-    // Prune on "name comes back" (as above) AND on "name is absent from base config.yaml" (a
-    // tombstone that can never be reconciled the first way, since nothing at boot re-adds a
-    // non-base name — see `persist`'s matching comment).
-    doc.deleted_groups
-        .retain(|name| !groups.contains_key(name) && base_group_names.contains(name));
-    doc.version = OVERLAY_VERSION;
-    write(p, &doc).map_err(|e| format!("overlay write to '{}' failed: {e}", p.display()))
+        if let Some(name) = deleted_remove {
+            doc.deleted_groups.retain(|n| n != name);
+        }
+        doc.groups = groups.clone();
+        doc.deleted_groups
+            .retain(|name| !groups.contains_key(name) && base_group_names.contains(name));
+    })
 }
-
-/// The `root` overlay section (1.5.0 full-config coverage): the API-settable SINGLE-VALUE config
-/// sections that are NOT name-keyed maps (so they carry no tombstones — a field is either PRESENT in
-/// the overlay, and WINS over base `config.yaml`, or ABSENT, and base stands). It mirrors the
-/// uncovered `DeployCfg` surface: the process-level binds (`listen`/`tls`/`admin_listen`/`admin_tls`/
-/// `admin_require_mtls`), the cost inputs (`rate_card`/`per_request_fee`), the durable `store`, the
-/// `security` SSRF controls, and the operational-limit blocks (`limits`/`advanced`/`health`/
-/// `routing`). Every field is `Option`: a `PUT /config/settings` overwrites only
-/// the fields it names (a partial edit), and the merge (`apply_to_deploy`) splices exactly those onto
-/// the resolved base `DeployCfg` BEFORE `resolve` — so the limits projection + admin-mTLS boot-guard
-/// re-run over the merged shape exactly as for a hand-written config. `deny_unknown_fields` so a
-/// typo'd key is a loud reject, never a silent no-op.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RootSettings {
@@ -563,77 +250,21 @@ impl RootSettings {
         }
     }
 }
-
-/// Persist the `root` overlay section (1.5.0 full-config coverage), IF persistence is enabled. Same
-/// read-modify-WRITE durability contract as `persist`/`persist_groups`: the hooks + groups sections
-/// (and their tombstones) are carried forward verbatim, and an unreadable overlay is REFUSED (never
-/// clobbered). `None` path is a no-op. `settings` is the full desired root state (the merge of the
-/// prior overlay root + this request's fields is computed by the caller, so a `PUT /config/settings`
-/// passes the already-merged desired state here — this fn just stores it).
-pub fn persist_root(path: Option<&Path>, settings: &RootSettings) -> Result<(), String> {
-    let Some(p) = path else {
-        // 1.5.3: this is the exact silent-`Ok` that let handlers report durable storage that never
-        // happened. It is now a hard error. The boot invariant guarantees a MUTABLE config has a
-        // writable backend here, so `None` means the config is LOCKED — refuse the mutation instead
-        // of lying about persisting it.
-        return Err(NO_WRITABLE_OVERLAY_MSG.to_string());
-    };
-    let Some(mut doc) = load_for_rmw(p) else {
-        return Err(format!(
-            "could not read the overlay at '{}' to persist root settings (refusing to overwrite a \
-             corrupt overlay)",
-            p.display()
-        ));
-    };
-    doc.root = if settings.is_empty() {
-        None
-    } else {
-        Some(settings.clone())
-    };
-    doc.version = OVERLAY_VERSION;
-    write(p, &doc).map_err(|e| format!("overlay write to '{}' failed: {e}", p.display()))
+pub fn persist_root(store: Option<&OverlayStore>, settings: &RootSettings) -> Result<(), String> {
+    backend(store)?.update(|doc| {
+        doc.root = if settings.is_empty() {
+            None
+        } else {
+            Some(settings.clone())
+        }
+    })
 }
-
-/// Persist the `plugin_versions` overlay section — the durable half of an explicit plugin ROLLBACK
-/// (1.5.0). Same read-modify-WRITE durability contract as `persist_root`: the hooks/groups/root
-/// sections (and their tombstones) are carried forward verbatim, and an unreadable overlay is REFUSED
-/// (never clobbered). `pins` is the FULL desired pin map (the caller computed the merge of the prior
-/// pins + this rollback), so an empty map clears the section (every pin lifted).
-///
-/// Persist the plugin version-pin section (read-modify-WRITE; siblings preserved). Returns whether the
-/// write landed: the rollback path (both the forward persist and the compensating revert after a failed
-/// rebuild) must FAIL CLOSED on a persist error — a silently-swallowed failure would leave disk out of
-/// sync with the running engine (a stale pin a restart would honor, contradicting the live policy), so
-/// every caller propagates the error rather than warning-and-continuing. A `None` path is likewise NOT
-/// a silent success (matching the sibling `persist_*`): it means the config is LOCKED, so the pin is
-/// refused ([`NO_WRITABLE_OVERLAY_MSG`]).
 pub fn try_persist_plugin_versions(
-    path: Option<&Path>,
+    store: Option<&OverlayStore>,
     pins: &BTreeMap<String, String>,
 ) -> Result<(), String> {
-    let Some(p) = path else {
-        // 1.5.3: NEVER a silent `Ok` — this matches the fail-closed contract stated in this function's
-        // own doc comment and the sibling `persist_*` functions. With the boot invariant (`locked` XOR a
-        // writable overlay), a mutable busbar always has a backend here, so `None` means the config is
-        // LOCKED. The `plugins/rollback` caller already refuses a locked config up front; this is the
-        // structural backstop so a future caller cannot silently drop an operator's rollback/pin.
-        return Err(NO_WRITABLE_OVERLAY_MSG.to_string());
-    };
-    let Some(mut doc) = load_for_rmw(p) else {
-        return Err(format!(
-            "could not read the overlay at '{}' to update plugin_versions",
-            p.display()
-        ));
-    };
-    doc.plugin_versions = pins.clone();
-    doc.version = OVERLAY_VERSION;
-    write(p, &doc).map_err(|e| format!("overlay write to '{}' failed: {e}", p.display()))
+    backend(store)?.update(|doc| doc.plugin_versions = pins.clone())
 }
-
-/// One MUTABLE overlay SECTION — the unit a per-section reset (`DELETE /api/v1/admin/overlay/{section}`)
-/// discards. Each section is an independent `base + overlay` layer with its own entries + tombstones;
-/// clearing one reverts exactly that slice of the effective config to base `config.yaml` while the
-/// other section's overlay mutations survive untouched.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OverlaySection {
     Hooks,
@@ -706,37 +337,9 @@ impl OverlaySection {
     }
 }
 
-/// Clear ONE section's entries + tombstones from the persisted overlay, IF persistence is enabled —
-/// the durable half of a per-section reset (`DELETE /api/v1/admin/overlay/{section}`). Read-modify-write
-/// so the OTHER section (its API-applied entries and tombstones) is carried forward verbatim: a
-/// `groups` reset must not resurrect an API-deleted hook, and vice-versa. FAIL-CLOSED (matches
-/// `persist`/`persist_groups`): returns `Err` on an unreadable overlay (REFUSED — clearing it would
-/// silently drop the other section's tombstones) or a write failure, so `commit_and_swap` does not
-/// swap a reset it could not durably record. `None` path is NO LONGER a silent success: with the boot
-/// invariant it means the config is LOCKED, so the reset is refused ([`NO_WRITABLE_OVERLAY_MSG`]).
-pub fn clear_section(path: Option<&Path>, section: OverlaySection) -> Result<(), String> {
-    let Some(p) = path else {
-        // 1.5.3: NEVER a silent `Ok` (matches `persist`/`persist_groups`/`persist_root`). With the boot
-        // invariant (`locked` XOR a writable overlay), a mutable busbar always has a backend here, so
-        // `None` means the config is LOCKED — refuse the reset instead of reporting a success that never
-        // touched disk. (The `DELETE /overlay/{section}` caller already short-circuits a locked config
-        // to an idempotent no-op before reaching here; this is the structural backstop so a future
-        // caller cannot reintroduce the lying `Ok`.)
-        return Err(NO_WRITABLE_OVERLAY_MSG.to_string());
-    };
-    let Some(mut doc) = load_for_rmw(p) else {
-        return Err(format!(
-            "could not read the overlay at '{}' to reset the '{}' section (refusing to overwrite a \
-             corrupt overlay)",
-            p.display(),
-            section.as_str()
-        ));
-    };
-    doc.clear_section(section);
-    doc.version = OVERLAY_VERSION;
-    write(p, &doc).map_err(|e| format!("overlay write to '{}' failed: {e}", p.display()))
+pub fn clear_section(store: Option<&OverlayStore>, section: OverlaySection) -> Result<(), String> {
+    backend(store)?.update(|doc| doc.clear_section(section))
 }
-
 /// The persisted overlay document: the API-applied hook registry + global-hook wiring, plus TOMBSTONES
 /// (`deleted`) — hooks removed via the API that must be subtracted from base config at boot. Tombstones
 /// are what let the additive `base + overlay` model express a DELETION (an additive merge alone cannot
@@ -866,93 +469,43 @@ impl OverlayDoc {
     }
 }
 
-/// Read the overlay at `path`, or `None` if it is absent, unreadable, or malformed. Fail-soft: a
-/// corrupt overlay must NEVER brick boot — busbar starts on base config alone and the operator can
-/// re-apply. Unlike the old silent-soft read, a present-but-corrupt overlay is now logged LOUD at
-/// boot: silently starting on base config alone drops every API-applied hook AND group with no signal,
-/// which is exactly the failure that hides overlay corruption.
-pub fn read(path: &Path) -> Option<OverlayDoc> {
-    match read_state(path) {
-        OverlayReadState::Absent => None,
-        OverlayReadState::Loaded(doc) => Some(*doc),
-        OverlayReadState::Unreadable => {
-            // ADMISSION-CONTROL SIGNAL: a torn overlay drops every API-registered hook,
-            // which includes SECURITY GATES — so admission control silently reverts to base config. Warn
-            // LOUD and name gates explicitly, aligning with the fail-closed hook discipline: an operator
-            // who registered a gate via the API must not silently lose it to a corrupt overlay without a
-            // diagnostic. (We still fail-soft on boot — a corrupt overlay must never brick startup — but
-            // never silently.)
-            diag_warn!(
-                CONFIG_OVERLAY_CORRUPT_BASE_ONLY,
-                path = %path.display(),
-                "config overlay is present but unreadable/corrupt; starting on base config.yaml ALONE \
-                 — API-applied hooks (INCLUDING security GATES that enforce admission control), groups, \
-                 and plugin version pins are NOT restored. Any gate registered only via the admin API \
-                 is now ABSENT until re-applied. Fix or remove the overlay file to restore durability."
-            );
-            None
-        }
-        OverlayReadState::VersionTooNew(v) => {
-            // NOT the corrupt path: this overlay is intact and meaningful. Ignoring it would run
-            // without hooks and groups the operator believes are persisted — security gates
-            // included — so the boot caller refuses to start rather than silently disarming them.
-            diag_error!(
-                CONFIG_OVERLAY_VERSION_TOO_NEW,
-                path = %path.display(), overlay_version = v, understood = OVERLAY_VERSION,
-                "config overlay was written by a NEWER busbar than this one"
-            );
-            None
-        }
-    }
+/// Convenience projection for diagnostics. Boot/reload use OverlayStore::read_required.
+pub fn read(store: &OverlayStore) -> Option<OverlayDoc> {
+    store.read_required().ok().flatten()
 }
-
-/// Classified overlay read for the read-modify-WRITE path (`persist`), which — unlike the fail-soft
-/// boot `read` — MUST tell "absent" (safe to start fresh) apart from "present but unreadable/corrupt"
-/// (must NOT overwrite, or accumulated tombstones are lost).
 pub enum OverlayReadState {
     Absent,
-    // Boxed: `OverlayDoc` grew a large `root` section (1.5.0 full-config coverage), so an inline
-    // variant would make the whole enum ~1 KiB regardless of the `Absent`/`Unreadable` common case
-    // (clippy `large_enum_variant`). The box keeps the enum pointer-sized.
     Loaded(Box<OverlayDoc>),
     Unreadable,
-    /// Written by a NEWER busbar than this one. Distinct from `Unreadable` on purpose: a corrupt
-    /// overlay has lost its bytes and there is nothing to honour, but this one is intact and
-    /// meaningful — silently ignoring it would run without hooks and groups the operator believes
-    /// are persisted, security gates included.
     VersionTooNew(u32),
 }
-
-pub fn read_state(path: &Path) -> OverlayReadState {
-    match std::fs::read(path) {
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => OverlayReadState::Absent,
-        Err(_) => OverlayReadState::Unreadable,
-        // Parse to a generic `Value` FIRST so a pre-1.6.0 overlay whose hook entries still use the
-        // retired `plugin:`/`at:` spellings can be rewritten to `module:`/`phase:` BEFORE the typed,
-        // `deny_unknown_fields` `HookCfg` deserialize would reject them. This is the boot-time
-        // half of the 1.6.0 clean-slate migration (the config-file half is `--migrate-config`); it is
-        // what keeps removing the `plugin` alias + the `at` key from bricking a durable overlay. The
-        // next `persist` rewrites the file in the new spelling, so the migration runs at most once.
-        Ok(bytes) => match serde_json::from_slice::<serde_json::Value>(&bytes) {
-            Ok(mut value) => {
-                migrate_legacy_hook_keys(&mut value);
-                match serde_json::from_value::<Box<OverlayDoc>>(value) {
-                    // A newer overlay may have added a section this binary drops, or changed how an
-                    // existing one is represented — neither is visible as a parse error, so the
-                    // version is the only signal. 1.5.0 is the first release that can refuse one; a
-                    // binary without this check never can, whatever number is stamped.
-                    Ok(doc) if doc.version > OVERLAY_VERSION => {
-                        OverlayReadState::VersionTooNew(doc.version)
-                    }
-                    Ok(doc) => OverlayReadState::Loaded(doc),
-                    Err(_) => OverlayReadState::Unreadable,
-                }
-            }
-            Err(_) => OverlayReadState::Unreadable,
-        },
+pub fn read_state(store: &OverlayStore) -> OverlayReadState {
+    match store.read_bytes() {
+        Ok(bytes) => classify_bytes(bytes),
+        Err(error) => {
+            tracing::error!(%error, "config overlay Store read failed");
+            OverlayReadState::Unreadable
+        }
     }
 }
-
+pub(super) fn classify_bytes(bytes: Option<Vec<u8>>) -> OverlayReadState {
+    let Some(bytes) = bytes else {
+        return OverlayReadState::Absent;
+    };
+    let Ok(mut value) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+        return OverlayReadState::Unreadable;
+    };
+    if let Some(version) = value.get("version").and_then(serde_json::Value::as_u64) {
+        if version > u64::from(OVERLAY_VERSION) {
+            return OverlayReadState::VersionTooNew(u32::try_from(version).unwrap_or(u32::MAX));
+        }
+    }
+    migrate_legacy_hook_keys(&mut value);
+    match serde_json::from_value(value) {
+        Ok(doc) => OverlayReadState::Loaded(Box::new(doc)),
+        Err(_) => OverlayReadState::Unreadable,
+    }
+}
 /// Rewrite the RETIRED hook-key spellings in a raw overlay document IN PLACE so a pre-1.6.0 overlay
 /// still loads after the 1.6.0 clean slate removed the `plugin` alias and the single-stage `at:` key
 /// from [`HookCfg`]:
@@ -1003,37 +556,10 @@ fn migrate_legacy_hook_keys(value: &mut serde_json::Value) {
         }
     }
 }
-
-/// Atomically + durably write the overlay via the crate's ONE durable-write choke point
-/// ([`crate::durable::write_with`]): serialize to a sibling temp, fsync its CONTENTS, rename over
-/// `path`, then fsync the parent DIRECTORY — so a reader (or a crash) never observes a half-written
-/// file AND a power loss cannot surface a torn/zero-length overlay after the rename. This is the
-/// former reference implementation of the dance; it is now SUBSUMED (behavior identical: same temp-in-
-/// same-dir, same fsync order, same empty-parent→"." resolution, same tmp cleanup on error) so a
-/// future facet fix lands once, in the primitive, for every durable write.
-///
-/// `mode: Some(0o600)` — the overlay can carry operator-supplied credential material verbatim (e.g. a
-/// postgres `store.settings.url` of the form `postgres://user:pass@host:5432/busbar`), the same class
-/// of secret the signing key gets 0600 treatment for; the temp (and therefore the published overlay)
-/// is created 0600 AT OPEN, so it is never briefly world-readable between write and a later chmod (no
-/// TOCTOU window). `exclusive` is left at its default (`false`), unlike the signing key: the signing
-/// key's `exclusive: true` guards a first-boot, predictable-path secret MINTING moment (anti-pre-plant
-/// so a decoy left at that exact path is never adopted). The overlay is instead written repeatedly
-/// during normal operation, and `write_with` already gives every call a per-call-unique
-/// `.<name>.<pid>-<seq>.tmp` temp name, so there is no fixed, guessable temp name for a pre-planted
-/// decoy to occupy in the first place — the anti-pre-plant posture would add no protection here.
-pub fn write(path: &Path, doc: &OverlayDoc) -> std::io::Result<()> {
-    let json = serde_json::to_vec_pretty(doc).map_err(std::io::Error::other)?;
-    crate::durable::write_with(
-        path,
-        &json,
-        crate::durable::DurableOpts {
-            mode: Some(OVERLAY_FILE_MODE_OWNER_READ_WRITE),
-            ..Default::default()
-        },
-    )
+/// Replace the complete document through the same atomic Store generation protocol.
+pub fn write(store: &OverlayStore, doc: &OverlayDoc) -> Result<(), String> {
+    store.update(|current| *current = doc.clone())
 }
-
 /// Build an overlay from a hook state (registry + global-hook names), no tombstones — a test helper
 /// (the live apply path builds the doc inline in `persist` so it can carry tombstones).
 #[cfg(test)]
@@ -1157,11 +683,11 @@ pub struct UnparseableNamedDef {
 /// partial patch can produce is a less precise ERROR STRING for a name that genuinely failed for
 /// some other reason. The flag itself is correct either way.
 pub fn unparseable_named_map_entries(
-    path: Option<&Path>,
+    store: Option<&OverlayStore>,
     section: crate::config::named_map::NamedMapSection,
 ) -> BTreeMap<String, UnparseableNamedDef> {
     let mut out = BTreeMap::new();
-    let Some(doc) = path.and_then(read) else {
+    let Some(doc) = store.and_then(read) else {
         return out;
     };
     let Some(entries) = doc.named_maps.get(section.key()) else {
@@ -1180,43 +706,22 @@ pub fn unparseable_named_map_entries(
     }
     out
 }
-
-/// Apply EVERY pre-resolve overlay section that is not the `root` block — the `plugin_versions` pins
-/// and the `named_maps` definitions. One function so a caller that must NOT take the overlay's `root`
-/// (because it is applying a caller-supplied root, e.g. `PUT /config/settings`) still cannot forget a
-/// sibling pre-resolve section; adding the next one is an edit HERE, not at six rebuild sites.
 pub fn apply_pre_resolve_sections(deploy: &mut DeployCfg, doc: &OverlayDoc) {
     apply_plugin_versions_to_deploy(deploy, doc);
     apply_named_maps_to_deploy(deploy, doc);
 }
-
-/// Persist ONE named-map entry to the overlay: `Some(def)` upserts it, `None` removes it. Same
-/// read-modify-WRITE durability contract as `persist`/`persist_groups`/`persist_root` — every sibling
-/// section (and its tombstones) is carried forward verbatim, an unreadable overlay is REFUSED rather
-/// than clobbered, and a `None` path is the LOCKED config (refuse, never a silent `Ok`).
 pub fn persist_named_map(
-    path: Option<&Path>,
+    store: Option<&OverlayStore>,
     section: crate::config::named_map::NamedMapSection,
     name: &str,
     def: Option<&serde_json::Value>,
 ) -> Result<(), String> {
-    let Some(p) = path else {
-        return Err(NO_WRITABLE_OVERLAY_MSG.to_string());
-    };
-    let Some(mut doc) = load_for_rmw(p) else {
-        return Err(format!(
-            "could not read the overlay at '{}' to persist the `{}` section (refusing to overwrite \
-             a corrupt overlay)",
-            p.display(),
-            section.key()
-        ));
-    };
-    match def {
-        Some(v) => {
+    backend(store)?.update(|doc| match def {
+        Some(value) => {
             doc.named_maps
-                .entry(section.key().to_string())
+                .entry(section.key().into())
                 .or_default()
-                .insert(name.to_string(), v.clone());
+                .insert(name.into(), value.clone());
         }
         None => {
             if let Some(entries) = doc.named_maps.get_mut(section.key()) {
@@ -1226,11 +731,8 @@ pub fn persist_named_map(
                 }
             }
         }
-    }
-    doc.version = OVERLAY_VERSION;
-    write(p, &doc).map_err(|e| format!("overlay write to '{}' failed: {e}", p.display()))
+    })
 }
-
 /// Merge an overlay into the RESOLVED config (the boot-merge, run AFTER `config::resolve` - the
 /// runtime hook registry is synthesized there from the inline refs, so the overlay layers on top
 /// of it). Overlay hooks are inserted into the registry (an overlay hook with a base hook's name

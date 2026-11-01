@@ -379,7 +379,7 @@ pub struct App {
     /// mutations are refused (a persist against `None` errors — see `overlay::NO_WRITABLE_OVERLAY_MSG`).
     /// The boot invariant guarantees a mutable config always has a writable backend here. Carried on
     /// `App` (not a global) so it is testable + survives config swaps (`App::clone` copies it).
-    pub overlay_path: Option<std::path::PathBuf>,
+    pub overlay_path: Option<Arc<crate::config::overlay::OverlayStore>>,
     /// Monotonic config version — `0` at boot, incremented by each API config apply (the swap builds
     /// the next snapshot with `config_version + 1`). Exposed on `GET /api/v1/admin/info` so drift-detection
     /// tooling can tell whether the running config changed since a prior read. Process-local (resets on
