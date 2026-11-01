@@ -1203,3 +1203,7 @@ fn a_sealed_credential_reaches_the_far_end_and_never_the_framer() {
         assert!(!contains(&door.handed.lock().unwrap(), &SECRET[7..]));
     });
 }
+
+#[path = "compose_receive_tests.rs"]
+#[allow(unsafe_code)]
+mod receive_tests;

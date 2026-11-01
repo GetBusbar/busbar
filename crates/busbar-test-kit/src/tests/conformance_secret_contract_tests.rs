@@ -224,3 +224,161 @@ fn a_fold_with_no_empty_input_passes_the_contract() {
         .collect();
     contract(&fold);
 }
+
+mod lifecycle_inputs {
+    use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+    use std::sync::Mutex;
+
+    use busbar_contract::abi::mechanism::call::Outcome;
+    use busbar_contract::abi::sdk::door::statement;
+    use busbar_contract::abi::sdk::life::{Held, HeldSlot, Life, Opened, Refreshed, Refusal};
+    use busbar_contract::abi::sdk::{Instance, Lent, Out, Safe};
+    use busbar_contract::abi::secret::{Ops, ResolveIn, ResolveOut};
+    use busbar_contract::secret::SecretModuleError;
+
+    use crate::conformance::{Leg, Subject};
+
+    static SERIAL: Mutex<()> = Mutex::new(());
+    static BAD_OPENS: AtomicU8 = AtomicU8::new(0);
+    static BAD_REFRESHES: AtomicU8 = AtomicU8::new(0);
+    const MATERIAL: &[u8] = b"material-preserved";
+
+    fn bad(settings: &[u8]) -> Option<u8> {
+        serde_json::from_slice::<serde_json::Value>(settings)
+            .ok()?
+            .get("bad")?
+            .as_u64()
+            .and_then(|n| u8::try_from(n).ok())
+    }
+
+    struct Probe<const WIPE_SECOND: bool>(AtomicBool);
+
+    impl<const WIPE_SECOND: bool> Life for Probe<WIPE_SECOND> {
+        const CANCEL: u32 = 0;
+
+        fn validate(settings: &[u8]) -> Result<(), Refusal> {
+            if bad(settings).is_some() {
+                Err(Refusal::failed("probe: invalid setting"))
+            } else {
+                Ok(())
+            }
+        }
+
+        fn open(settings: &[u8], _: &[&[u8]], _: u64) -> Result<Self, Refusal> {
+            if let Some(n) = bad(settings) {
+                BAD_OPENS.fetch_or(1 << n, Ordering::SeqCst);
+            }
+            Self::validate(settings)?;
+            Ok(Self(AtomicBool::new(true)))
+        }
+
+        fn refresh(&self, settings: &[u8], _: &[&[u8]], _: u64) -> Result<Refreshed, Refusal> {
+            if let Some(n) = bad(settings) {
+                BAD_REFRESHES.fetch_or(1 << n, Ordering::SeqCst);
+                if WIPE_SECOND && n == 1 {
+                    self.0.store(false, Ordering::SeqCst);
+                }
+                return Err(Refusal::failed("probe: invalid setting"));
+            }
+            self.0.store(true, Ordering::SeqCst);
+            Ok(Refreshed::default())
+        }
+    }
+
+    struct Resolve<const WIPE_SECOND: bool>;
+
+    impl<const WIPE_SECOND: bool> HeldSlot for Resolve<WIPE_SECOND> {
+        type In = ResolveIn;
+        type Out = ResolveOut;
+        type Life = Probe<WIPE_SECOND>;
+
+        fn call(
+            held: &Held<Self::Life>,
+            _: &Instance<'_, Held<Self::Life>>,
+            input: Lent<'_, ResolveIn>,
+            mut out: Out<'_, ResolveOut>,
+        ) -> Outcome {
+            let read = busbar_contract::abi::sdk::secret::settings_of(
+                input.field(|i| &i.settings).bytes(),
+            );
+            let read = read.and_then(|s| {
+                let name = s
+                    .get("name")
+                    .and_then(serde_json::Value::as_str)
+                    .ok_or_else(|| SecretModuleError::invalid("probe: invalid name"))?;
+                if name == "known" && held.life().0.load(Ordering::SeqCst) {
+                    Ok(MATERIAL.to_vec())
+                } else {
+                    Err(SecretModuleError::not_found("probe: not held"))
+                }
+            });
+            match read {
+                Ok(bytes) => busbar_contract::abi::sdk::cred::resolved(
+                    input,
+                    &mut out,
+                    busbar_contract::abi::sdk::cred::Held::new(bytes),
+                ),
+                Err(error) => busbar_contract::abi::sdk::secret::failed(&mut out, error),
+            }
+        }
+    }
+
+    mod honest {
+        busbar_contract::plugin_door! {
+            ops: super::Ops,
+            statement: super::statement("secret-input-probe", "1.6.0", 4),
+            lifecycle: life(super::Probe<false>),
+            kind_ops: { resolve: super::Safe<super::Opened<super::Resolve<false>>> },
+        }
+    }
+
+    mod wipes_second {
+        busbar_contract::plugin_door! {
+            ops: super::Ops,
+            statement: super::statement("secret-input-probe", "1.6.0", 4),
+            lifecycle: life(super::Probe<true>),
+            kind_ops: { resolve: super::Safe<super::Opened<super::Resolve<true>>> },
+        }
+    }
+
+    fn inputs() -> String {
+        serde_json::json!({
+            "settings": {},
+            "credentials": [String::from_utf8_lossy(MATERIAL)],
+            "secret": {
+                "bad_settings": [{"bad": 0}, {"bad": 1}],
+                "known": {"resolve": {"name": "known"}, "material": String::from_utf8_lossy(MATERIAL)},
+                "unknown": {"name": "unknown"},
+                "malformed": {"name": 5}
+            }
+        })
+        .to_string()
+    }
+
+    #[test]
+    fn every_bad_setting_reaches_open_and_refresh_through_the_secret_door() {
+        let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        BAD_OPENS.store(0, Ordering::SeqCst);
+        BAD_REFRESHES.store(0, Ordering::SeqCst);
+        let s = Subject::new(honest::door, "unused", &inputs());
+        let _fold = super::super::fold(&s, Leg::Linked);
+        assert_eq!(BAD_OPENS.load(Ordering::SeqCst), 0b11);
+        assert_eq!(BAD_REFRESHES.load(Ordering::SeqCst), 0b11);
+    }
+
+    #[test]
+    fn a_second_refused_refresh_that_loses_material_is_detected() {
+        let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        let s = Subject::new(wipes_second::door, "unused", &inputs());
+        let failed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            super::super::fold(&s, Leg::Linked)
+        }));
+        let error = failed.expect_err("the second refused refresh lost the material");
+        let why = error
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .or_else(|| error.downcast_ref::<&str>().copied())
+            .unwrap_or("non-text panic");
+        assert!(why.contains("resolve after a refused refresh #1"), "{why}");
+    }
+}
