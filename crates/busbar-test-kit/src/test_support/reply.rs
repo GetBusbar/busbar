@@ -53,6 +53,8 @@ mod sealed {
         fn head(&mut self) -> &mut OutHead;
         /// Clear every reviewed pointer field (the head's included), keeping every scalar.
         fn clear(&mut self, token: Token);
+        /// Judge fields whose limits come from the input actually lent for this call.
+        fn judge_input(&self, _: &dyn core::any::Any, _: Token) {}
         /// Judge and copy every reviewed field the op wrote.
         fn take(&self, outcome: Outcome, token: Token) -> <Self as super::Reply>::Owned
         where
@@ -281,6 +283,7 @@ fn run_op<I: AbiIn, O: Reply>(
     let outcome = raw.outcome();
     let error = optional_text(out.head().error, "head.error");
     let envelope = envelope(&out.head().envelope);
+    out.judge_input(&input, Token(()));
     let owned = out.take(outcome, Token(()));
     let opened = out.opened(Token(()));
     out.clear(Token(()));
@@ -534,14 +537,17 @@ impl sealed::Take for busbar_contract::abi::secret::ResolveOut {
             ..self.secret
         };
     }
-    fn take(&self, _: Outcome, _: Token) -> SecretCopy {
-        // The `in` is the test's own, so the host buffer is judged where the answer names it: the
-        // dispatcher judges it against the buffer it lent (`check_resolve`'s `buf`/`cap`).
+    fn judge_input(&self, input: &dyn core::any::Any, _: Token) {
+        let input = input
+            .downcast_ref::<busbar_contract::abi::secret::ResolveIn>()
+            .expect("reply: ResolveOut requires ResolveIn");
         judged(busbar_contract::abi::secret::validate::check_resolve(
             self,
-            self.secret.ptr as usize,
-            self.secret.len as u64,
+            input.secret_buf as usize,
+            input.secret_cap as u64,
         ));
+    }
+    fn take(&self, _: Outcome, _: Token) -> SecretCopy {
         let mut copy = Zeroizing::new(Vec::new());
         copy.extend_from_slice(lent(self.secret.ptr, self.secret.len, "resolve.secret"));
         SecretCopy(copy)
@@ -629,15 +635,16 @@ impl sealed::Take for busbar_contract::abi::export::ScrapeOut {
     fn clear(&mut self, _: Token) {
         clear_head(&mut self.head);
     }
-    /// The bytes land in the buffer the `in` lent, which the caller holds; `written` and `needed`
-    /// stay on the `out`. The kit does not know the buffer's capacity here, so the capacity judged
-    /// is what was written.
-    fn take(&self, _: Outcome, _: Token) {
+    fn judge_input(&self, input: &dyn core::any::Any, _: Token) {
+        let input = input
+            .downcast_ref::<busbar_contract::abi::export::ScrapeIn>()
+            .expect("reply: ScrapeOut requires ScrapeIn");
         judged(busbar_contract::abi::export::validate::check_scrape(
-            self,
-            self.written,
+            self, input.cap,
         ));
     }
+    /// The bytes stay in the caller's buffer; only the scalar counts remain on the `out`.
+    fn take(&self, _: Outcome, _: Token) {}
 }
 impl Reply for busbar_contract::abi::export::ScrapeOut {
     type Owned = ();
