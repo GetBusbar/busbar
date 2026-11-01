@@ -1275,14 +1275,24 @@ impl AuthMiddleware {
     /// THE CACHE FLUSH (`POST /admin/auth/cache/flush`): every chain position's instance (or only
     /// the provider `module`'s) `refresh`ed with unchanged settings, so each auth plugin drops the
     /// verified credentials it caches inside itself (THE DESIGN 11.11 R3); the sum of the entries
-    /// they report dropping (1.5.5's `{"flushed": N}`). A position that will not refresh reports
-    /// none.
-    pub fn flush_verified(&self, module: Option<&str>) -> u64 {
-        self.chain
+    /// they report dropping (1.5.5's `{"flushed": N}`). Every selected position is attempted;
+    /// any failed refresh makes the overall flush incomplete, even if others already succeeded.
+    pub fn flush_verified(&self, module: Option<&str>) -> Result<u64, String> {
+        let mut flushed = 0;
+        let mut failure = None;
+        for entry in self
+            .chain
             .iter()
             .filter(|e| module.is_none_or(|m| m == e.provider))
-            .map(|e| e.calls.refresh().unwrap_or(0))
-            .sum()
+        {
+            match entry.calls.refresh() {
+                Ok(count) => flushed += count,
+                Err(error) => {
+                    failure.get_or_insert(error);
+                }
+            }
+        }
+        failure.map_or(Ok(flushed), Err)
     }
 
     /// THE REQUEST-PATH ENTRY POINT for the data-plane auth chain, for a caller with no 503 to

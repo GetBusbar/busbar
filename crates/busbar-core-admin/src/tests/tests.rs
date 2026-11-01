@@ -4,6 +4,9 @@ use busbar_kernel::governance::{GovState, MemoryStore, NewKeySpec};
 use busbar_kernel::test_support::warn_capture::WarnCapture;
 use std::sync::Arc;
 
+#[path = "cache_flush_tests.rs"]
+mod cache_flush_tests;
+
 /// The OpenAPI 3 Operation Object's status-keyed field, spelled once. It is the OpenAPI
 /// specification's own key, not a busbar or instance word.
 ///

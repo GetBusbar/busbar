@@ -2015,7 +2015,18 @@ pub(crate) async fn flush_credential_cache(
                 )),
             }
         };
-    let flushed = app.flush_verified_credentials(module.as_deref());
+    let flushed = match app.flush_verified_credentials(module.as_deref()) {
+        Ok(count) => count,
+        Err(_) => {
+            tracing::warn!("credential cache flush incomplete: an auth module failed to refresh; other modules may already have refreshed");
+            return reject(
+                "auth.cache_flush",
+                module.as_deref().unwrap_or("*"),
+                principal.actor_id(),
+                &AdminError::Internal,
+            );
+        }
+    };
     audit::AUDIT.record_by(
         "auth.cache_flush",
         module.as_deref().unwrap_or("*"),

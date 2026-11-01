@@ -4160,11 +4160,14 @@ fn resource_documents(
         let path = metadata[after..]
             .find('/')
             .map_or("/", |at| &metadata[after + at..]);
-        let facts: serde_json::Value = snapshot
-            .resource_facts
-            .as_deref()
-            .and_then(|f| serde_json::from_slice(f).ok())
-            .unwrap_or_default();
+        let facts: serde_json::Value = match snapshot.resource_facts.as_deref() {
+            Some(bytes) => serde_json::from_slice(bytes).unwrap_or_else(|error| {
+                tracing::warn!(plane = %plane.instance, error = %error,
+                    "plane resource facts are not JSON; protected-resource metadata uses empty facts");
+                serde_json::Value::Null
+            }),
+            None => serde_json::Value::Null,
+        };
         let list = |key: &str| -> Vec<String> {
             facts
                 .get(key)

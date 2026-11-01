@@ -301,7 +301,11 @@ pub(crate) const DOOR_MESSAGE: &str =
 /// discards an answer; it cannot discard an execution that already happened.
 #[cfg(feature = "root-admin")]
 pub(crate) fn door_answer() -> AdminAnswer {
-    error_answer_with_message(DOOR_STATUS, DOOR_CODE, DOOR_MESSAGE)
+    let mut answer = error_answer_with_message(DOOR_STATUS, DOOR_CODE, DOOR_MESSAGE);
+    answer
+        .headers
+        .push(("www-authenticate".to_string(), "Bearer".to_string()));
+    answer
 }
 
 /// The surface's answer for one ending.
