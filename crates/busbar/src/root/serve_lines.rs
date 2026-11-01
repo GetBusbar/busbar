@@ -198,6 +198,32 @@ pub struct LineCaller<R> {
     lines: AsyncMutex<tokio::io::BufReader<R>>,
     max_line: usize,
     out: mpsc::UnboundedSender<Vec<u8>>,
+    failure: Arc<IoFailure>,
+}
+
+#[derive(Default)]
+struct IoFailure(std::sync::Mutex<Option<(&'static str, std::io::Error)>>);
+
+impl IoFailure {
+    fn record(&self, direction: &'static str, error: std::io::Error) {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get_or_insert((direction, error));
+    }
+
+    fn report(&self) -> bool {
+        let failure = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some((direction, error)) = failure.as_ref() {
+            eprintln!("busbar: line {direction} failed: {error}");
+            true
+        } else {
+            false
+        }
+    }
 }
 
 impl<R: AsyncRead + Unpin + Send> CallerEnd for LineCaller<R> {
@@ -227,7 +253,11 @@ impl<R: AsyncRead + Unpin + Send> SessionCaller for LineCaller<R> {
         loop {
             let mut buf = Vec::new();
             match read_line(&mut *reader, &mut buf, self.max_line).await {
-                Ok(0) | Err(_) => return None,
+                Ok(0) => return None,
+                Err(error) => {
+                    self.failure.record("input", error);
+                    return None;
+                }
                 Ok(_) => {}
             }
             let line = trim(&buf);
@@ -318,14 +348,24 @@ where
     };
     // THE ONE WRITER: whole lines, in the order they were handed over, flushed each.
     let (out, mut lines_out) = mpsc::unbounded_channel::<Vec<u8>>();
-    let written = tokio::spawn(async move {
+    let failure = Arc::new(IoFailure::default());
+    let write_failure = Arc::clone(&failure);
+    let mut written = tokio::spawn(async move {
         let mut writer = writer;
         while let Some(line) = lines_out.recv().await {
-            if writer.write_all(&line).await.is_err() || writer.flush().await.is_err() {
-                break;
+            if let Err(error) = async {
+                writer.write_all(&line).await?;
+                writer.flush().await
+            }
+            .await
+            {
+                write_failure.record("output", error);
+                return;
             }
         }
-        let _ = writer.flush().await;
+        if let Err(error) = writer.flush().await {
+            write_failure.record("output", error);
+        }
     });
     let max_line = busbar_kernel::config::limits::installed().map_or_else(
         busbar_kernel::config::limits::default_request_body_max_bytes,
@@ -335,6 +375,7 @@ where
         lines: AsyncMutex::new(tokio::io::BufReader::new(reader)),
         max_line,
         out: out.clone(),
+        failure: Arc::clone(&failure),
     });
     // THE CARRIER SESSION on the kernel's services: what the plane emits on it goes to the writer.
     let principal = gov.key().map_or_else(
@@ -354,7 +395,20 @@ where
     let session_field = axum::http::HeaderValue::from(number);
     let mut units = tokio::task::JoinSet::new();
     let mut stop = std::pin::pin!(stop);
-    while let Some(line) = next_line(&*caller, stop.as_mut()).await {
+    let mut writer_ended = false;
+    loop {
+        let line = tokio::select! {
+            biased;
+            result = &mut written => {
+                writer_ended = true;
+                if let Err(error) = result {
+                    failure.record("output", std::io::Error::other(error));
+                }
+                break;
+            }
+            line = next_line(&*caller, stop.as_mut()) => line,
+        };
+        let Some(line) = line else { break };
         let mut headers = axum::http::HeaderMap::new();
         headers.insert(CARRIER_SESSION_FIELD, session_field.clone());
         let req = DoorRequest {
@@ -392,18 +446,30 @@ where
     // answer within the drain grace, as the listener path lets its in-flight requests drain on the
     // same signal; any still running after it are ended. Then the session closes (an emit on it is
     // refused from now on).
-    let ended = drain_units(&mut units, busbar_kernel::detached::DETACHED_DRAIN_GRACE).await;
+    let ended = if writer_ended {
+        let ended = units.len();
+        units.abort_all();
+        while units.join_next().await.is_some() {}
+        ended
+    } else {
+        drain_units(&mut units, busbar_kernel::detached::DETACHED_DRAIN_GRACE).await
+    };
     if ended > 0 {
         tracing::warn!(
             ended,
-            "{carrier} serve: units still running after the drain grace were ended"
+            writer_ended,
+            "{carrier} serve: remaining units were ended"
         );
     }
     kernel.close_carrier_session(number);
     drop(caller);
     drop(out);
-    let _ = written.await;
-    0
+    if !writer_ended {
+        if let Err(error) = written.await {
+            failure.record("output", std::io::Error::other(error));
+        }
+    }
+    i32::from(failure.report())
 }
 
 /// The caller's next line, or `None` at EOF or once `stop` resolves: a stop that fires mid-line
@@ -475,8 +541,17 @@ async fn read_line<R: AsyncBufReadExt + Unpin>(
             Some(i) => (i + 1, true),
             None => (chunk.len(), false),
         };
-        if !over && buf.len() + take <= max {
+        if !over && take <= max.saturating_add(2).saturating_sub(buf.len()) {
             buf.extend_from_slice(&chunk[..take]);
+            let fits = if done {
+                trim(buf).len() <= max
+            } else {
+                buf.len() <= max || (buf.len() == max.saturating_add(1) && buf.ends_with(b"\r"))
+            };
+            if !fits {
+                over = true;
+                buf.clear();
+            }
         } else {
             over = true;
             buf.clear();

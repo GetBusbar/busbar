@@ -104,12 +104,40 @@ async fn a_line_past_the_bound_is_dropped_with_its_tail() {
     assert_eq!(trim(&next), b"ok", "the session goes on at the next line");
 }
 
+#[tokio::test]
+async fn a_full_payload_has_the_same_bound_with_lf_crlf_or_eof() {
+    for input in [&b"abcd\n"[..], &b"abcd\r\n"[..], &b"abcd"[..]] {
+        for capacity in 1..=input.len() {
+            let mut reader = tokio::io::BufReader::with_capacity(capacity, input);
+            let mut bytes = Vec::new();
+            assert_eq!(
+                read_line(&mut reader, &mut bytes, 4).await.unwrap(),
+                input.len()
+            );
+            assert_eq!(
+                trim(&bytes),
+                b"abcd",
+                "capacity={capacity}, input={input:?}"
+            );
+        }
+    }
+    for input in [&b"abcde\nnext\n"[..], &b"abcde\r\nnext\n"[..]] {
+        let mut reader = tokio::io::BufReader::with_capacity(1, input);
+        let mut bytes = Vec::new();
+        read_line(&mut reader, &mut bytes, 4).await.unwrap();
+        assert!(bytes.is_empty());
+        read_line(&mut reader, &mut bytes, 4).await.unwrap();
+        assert_eq!(trim(&bytes), b"next");
+    }
+}
+
 /// A caller over `reader`, its writes kept nowhere.
 fn caller_over<R: AsyncRead + Unpin + Send>(reader: R) -> LineCaller<R> {
     LineCaller {
         lines: AsyncMutex::new(tokio::io::BufReader::new(reader)),
         max_line: 1024,
         out: mpsc::unbounded_channel().0,
+        failure: Arc::new(IoFailure::default()),
     }
 }
 
