@@ -121,8 +121,8 @@ fn trace_cdylib() -> &'static str {
     both_ways::fixture("export-trace").1
 }
 
-/// What the FILE sink carries: the request-log line.
-const FILE_CARRIES: [u8; 1] = [ExportStream::Logs as u8];
+/// The neutral FILE fixture carries request logs and accepted audit events.
+const FILE_CARRIES: &[u8] = &[ExportStream::Logs as u8, ExportStream::Events as u8];
 
 /// The FILE sink's own manifest declaration (its `declares.json`): its series, its codes and its
 /// one destination, `path`.
@@ -2153,4 +2153,76 @@ fn the_operators_keep_beside_a_destination_outranks_the_manifest() {
         "the rotated lines are kept in the first archive"
     );
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn accepted_event_payload_crosses_linked_and_dropped_fixture_doors_unchanged() {
+    use busbar_contract::abi::export::ExportField as F;
+
+    const FIXTURE_NAME: &str = "accepted-events-carrier";
+    const INSTANCE_LABEL: &str = "export.accepted-events";
+    const ACTION: &str = "fixture.mutate";
+    const RESOURCE: &str = "fixture:accepted";
+    const ACTOR: &str = "fixture-admin";
+    const FIRST_SEQUENCE: u64 = 1;
+    const FIXTURE_UNIX_SECONDS: u64 = 1_700_000_000;
+    const ONE_RECORD: usize = 1;
+    const FIRST_RECORD: usize = 0;
+
+    let doors = both(
+        manifest(FIXTURE_NAME, renaming(file_declares())),
+        FILE_DOOR,
+        file_cdylib(),
+    );
+    let dir = scratch(FIXTURE_NAME);
+    let path = dir.join("accepted-events.jsonl");
+    let fields = [
+        (F::Seq, serde_json::Value::from(FIRST_SEQUENCE)),
+        (F::Ts, serde_json::Value::from(FIXTURE_UNIX_SECONDS)),
+        (F::PrevHash, serde_json::Value::from("")),
+        (F::Kind, serde_json::Value::from(ACTION)),
+        (F::Actor, serde_json::Value::from(ACTOR)),
+        (F::Resource, serde_json::Value::from(RESOURCE)),
+        (
+            F::Outcome,
+            serde_json::Value::from(busbar_contract::vocab::OUTCOME_APPLIED),
+        ),
+    ];
+    let expected = serde_json::Value::Object(
+        fields
+            .into_iter()
+            .map(|(field, value)| (field.as_token().into(), value))
+            .collect(),
+    );
+    let [linked, dropped] = doors.map(|registry| {
+        let _ = std::fs::remove_file(&path);
+        let tape = Arc::new(Tape::default());
+        let sink = ExportRows::new(&registry, dispatcher())
+            .with_envelope(tape)
+            .open(FIXTURE_NAME, INSTANCE_LABEL, &file_settings(&path))
+            .expect("the neutral carrier opens through either memory ABI door");
+        assert!(sink.streams().contains(&(ExportStream::Events as u8)));
+        assert!(matches!(
+            sink.deliver(
+                ExportStream::Events as u8,
+                serde_json::to_vec(&expected).unwrap(),
+                Box::new(()),
+            ),
+            Delivered::Queued
+        ));
+        until("the accepted event reaches the host disk lane", || {
+            std::fs::read_to_string(&path).is_ok_and(|text| text.ends_with('\n'))
+        });
+        drop(sink);
+        let text = std::fs::read_to_string(&path).unwrap();
+        let records: Vec<serde_json::Value> = text
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(records.len(), ONE_RECORD);
+        assert_eq!(records[FIRST_RECORD], expected);
+        records
+    });
+    assert_eq!(linked, dropped);
+    std::fs::remove_dir_all(dir).unwrap();
 }

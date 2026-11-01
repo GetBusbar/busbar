@@ -436,7 +436,7 @@ pub(crate) fn deliver_logs(cache: &mut PayloadCache<'_>) {
 
 /// Hand `stream`'s payload — built by `f` to each sink's own projection — to every opened, live
 /// sink subscribed to it ([`deliver_to`]).
-pub(super) fn deliver(stream: ExportStream, op: &str, mut f: impl FnMut(Projection) -> Arc<Value>) {
+pub(crate) fn deliver(stream: ExportStream, op: &str, mut f: impl FnMut(Projection) -> Arc<Value>) {
     deliver_to(stream, op, |projection, _| f(projection));
 }
 
