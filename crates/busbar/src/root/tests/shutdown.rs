@@ -6,6 +6,12 @@
 //! of the process's tails — the listener path's and the line-serve mode's — are this one function.
 
 use busbar_contract::caps::{DurableWrite, StepName};
+use busbar_contract::records::{
+    MeteringDelta, MeteringRow, RecordStore, RecordStoreError, RecordStoreResult, UsageDelta,
+    UsageLedger, VirtualKey, UNIT_INPUT,
+};
+use busbar_kernel::cost::CostModel;
+use busbar_kernel::governance::{metering_bucket, MemoryStore};
 use busbar_kernel_wal::{Entry, Record, RecordClass};
 
 use super::*;
@@ -146,4 +152,311 @@ async fn the_shutdown_tail_hands_the_store_what_the_journal_held_back() {
         "every record the journal sealed reached the store before the tail returned"
     );
     recovers.join().expect("the recovery thread");
+}
+
+const SHUTDOWN_KEY: &str = "vk_shutdown_tail";
+const SHUTDOWN_MODEL: &str = "shutdown-model";
+const SHUTDOWN_PROVIDER: &str = "shutdown-provider";
+const INPUT_USED: u64 = 17;
+const STORE_DOWN: &str = "the shutdown test store is unavailable";
+
+/// A store write requires the single-threaded runtime to release it. The fixture watchdog only
+/// unhangs a broken inline tail; assertions inspect the write results after all gates are released.
+#[derive(Default)]
+struct FlushGate {
+    entered: tokio::sync::Notify,
+    released: Mutex<bool>,
+    changed: std::sync::Condvar,
+    timed_out: std::sync::atomic::AtomicBool,
+}
+
+impl FlushGate {
+    fn wait(&self) -> RecordStoreResult<()> {
+        self.entered.notify_one();
+        let (released, _) = self
+            .changed
+            .wait_timeout_while(self.released.lock().expect("gate lock"), WAIT, |open| {
+                !*open
+            })
+            .expect("gate wait");
+        if !*released {
+            self.timed_out
+                .store(true, std::sync::atomic::Ordering::Release);
+            return Err(RecordStoreError(
+                "runtime did not release the store write".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn release(&self) {
+        *self.released.lock().expect("gate lock") = true;
+        self.changed.notify_all();
+    }
+}
+
+#[derive(Clone, Copy)]
+enum FlushOutcome {
+    Commit,
+    Fail,
+    PanicBudget,
+}
+
+/// The real governance store seam, delegating persistence/readback to the shared memory double.
+/// It keeps legacy-store behavior, so these controls also cover stores without deduped batches.
+struct FlushStore {
+    inner: MemoryStore,
+    budget: Option<Arc<FlushGate>>,
+    metering: Option<Arc<FlushGate>>,
+    outcome: FlushOutcome,
+}
+
+impl FlushStore {
+    fn new(outcome: FlushOutcome) -> Self {
+        Self {
+            inner: MemoryStore::new(),
+            budget: None,
+            metering: None,
+            outcome,
+        }
+    }
+}
+
+impl RecordStore for FlushStore {
+    fn put_key(&self, key: &VirtualKey) -> RecordStoreResult<()> {
+        self.inner.put_key(key)
+    }
+    fn get_key(&self, id: &str) -> RecordStoreResult<Option<VirtualKey>> {
+        self.inner.get_key(id)
+    }
+    fn list_keys(&self) -> RecordStoreResult<Vec<VirtualKey>> {
+        self.inner.list_keys()
+    }
+    fn delete_key(&self, id: &str) -> RecordStoreResult<()> {
+        self.inner.delete_key(id)
+    }
+    fn get_usage(&self, bucket: &str, window: u64) -> RecordStoreResult<UsageLedger> {
+        self.inner.get_usage(bucket, window)
+    }
+    fn put_usage(&self, bucket: &str, window: u64, ledger: &UsageLedger) -> RecordStoreResult<()> {
+        self.inner.put_usage(bucket, window, ledger)
+    }
+    fn add_usage(&self, bucket: &str, window: u64, delta: &UsageDelta) -> RecordStoreResult<()> {
+        if let Some(gate) = &self.budget {
+            gate.wait()?;
+        }
+        match self.outcome {
+            FlushOutcome::Fail => Err(RecordStoreError(STORE_DOWN.into())),
+            FlushOutcome::PanicBudget => panic!("planted budget store panic"),
+            FlushOutcome::Commit => self.inner.add_usage(bucket, window, delta),
+        }
+    }
+    fn add_metering(&self, delta: &MeteringDelta) -> RecordStoreResult<()> {
+        if let Some(gate) = &self.metering {
+            gate.wait()?;
+        }
+        match self.outcome {
+            FlushOutcome::Fail => Err(RecordStoreError(STORE_DOWN.into())),
+            FlushOutcome::Commit | FlushOutcome::PanicBudget => self.inner.add_metering(delta),
+        }
+    }
+    fn list_metering(&self, bucket: u64) -> RecordStoreResult<Vec<MeteringRow>> {
+        self.inner.list_metering(bucket)
+    }
+}
+
+fn accrued_governance(store: Arc<FlushStore>) -> (Arc<GovState>, u64) {
+    let key = VirtualKey {
+        id: SHUTDOWN_KEY.into(),
+        name: SHUTDOWN_KEY.into(),
+        enabled: true,
+        ..Default::default()
+    };
+    store.put_key(&key).expect("key persists before the outage");
+    let gov = Arc::new(GovState::new(store, None).expect("governance boots"));
+    let cost = CostModel::resolve_parts(None, 0, &std::collections::BTreeMap::new());
+    let now = busbar_kernel::store::now();
+    let units = [(UNIT_INPUT.to_owned(), INPUT_USED)].into_iter().collect();
+    gov.try_admit(&cost, &key, "", now).expect("request admits");
+    gov.record_usage(&cost, &key, "", SHUTDOWN_MODEL, &units, now);
+    gov.record_lane_metering(
+        SHUTDOWN_KEY,
+        SHUTDOWN_MODEL,
+        Some(SHUTDOWN_PROVIDER),
+        &units,
+        now,
+    );
+    (gov, metering_bucket(now))
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn shutdown_flushes_allow_runtime_progress_and_wait_for_each_store_write() {
+    let budget = Arc::new(FlushGate::default());
+    let metering = Arc::new(FlushGate::default());
+    let store = Arc::new(FlushStore {
+        budget: Some(budget.clone()),
+        metering: Some(metering.clone()),
+        ..FlushStore::new(FlushOutcome::Commit)
+    });
+    let (gov, bucket) = accrued_governance(store.clone());
+    let task = tokio::spawn(async move { tail(Some(gov), &LateServices::new(), None).await });
+
+    let budget_entered = tokio::time::timeout(WAIT, budget.entered.notified())
+        .await
+        .is_ok();
+    let waiting_for_budget = !task.is_finished();
+    let before_budget = store.get_usage(SHUTDOWN_KEY, 0).expect("usage reads");
+    let before_metering = store.list_metering(bucket).expect("metering reads");
+    budget.release();
+    let metering_entered = tokio::time::timeout(WAIT, metering.entered.notified())
+        .await
+        .is_ok();
+    let waiting_for_metering = !task.is_finished();
+    let budget_at_metering = store.get_usage(SHUTDOWN_KEY, 0).expect("usage reads");
+    let metering_before_return = store.list_metering(bucket).expect("metering reads");
+    metering.release();
+    tokio::time::timeout(WAIT, task)
+        .await
+        .expect("tail completes")
+        .expect("tail joins");
+
+    assert!(
+        budget_entered && metering_entered,
+        "both real store writes ran"
+    );
+    assert!(
+        waiting_for_budget && waiting_for_metering,
+        "tail waits for each store write"
+    );
+    assert_eq!(
+        before_budget.requests, 0,
+        "the gated budget write has not landed"
+    );
+    assert!(
+        before_metering.is_empty(),
+        "metering follows the completed budget flush"
+    );
+    assert_eq!(
+        budget_at_metering.requests, 1,
+        "budget completes before metering starts"
+    );
+    assert!(
+        metering_before_return.is_empty(),
+        "the gated metering write has not landed"
+    );
+    assert_eq!(
+        store
+            .get_usage(SHUTDOWN_KEY, 0)
+            .expect("usage reads")
+            .total_input(),
+        INPUT_USED
+    );
+    let rows = store.list_metering(bucket).expect("metering reads");
+    assert_eq!(
+        rows.iter().map(|row| row.tokens_input).sum::<u64>(),
+        INPUT_USED
+    );
+    assert!(!budget.timed_out.load(std::sync::atomic::Ordering::Acquire));
+    assert!(!metering
+        .timed_out
+        .load(std::sync::atomic::Ordering::Acquire));
+}
+
+#[test]
+fn shutdown_tail_reports_terminal_budget_and_metering_store_failures() {
+    use busbar_kernel::test_support::warn_capture::WarnCapture;
+    use tracing_subscriber::layer::SubscriberExt as _;
+    let store = Arc::new(FlushStore::new(FlushOutcome::Fail));
+    let (gov, bucket) = accrued_governance(store.clone());
+    let captured = WarnCapture::default();
+    tracing::subscriber::with_default(
+        tracing_subscriber::registry().with(captured.clone()),
+        || {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("runtime")
+                .block_on(tail(Some(gov), &LateServices::new(), None));
+        },
+    );
+    let lines = captured.messages();
+    assert!(
+        lines
+            .iter()
+            .any(|line| line.contains("shutdown budget flush:") && line.contains(SHUTDOWN_KEY)),
+        "{lines:?}"
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|line| line.contains("shutdown metering flush:") && line.contains(SHUTDOWN_KEY)),
+        "{lines:?}"
+    );
+    assert!(
+        !lines
+            .iter()
+            .any(|line| line.contains("will retry next tick")),
+        "{lines:?}"
+    );
+    assert_eq!(
+        store
+            .get_usage(SHUTDOWN_KEY, 0)
+            .expect("usage reads")
+            .requests,
+        0
+    );
+    assert!(store
+        .list_metering(bucket)
+        .expect("metering reads")
+        .is_empty());
+}
+
+#[test]
+fn a_panicking_budget_flush_is_logged_and_metering_and_journal_still_drain() {
+    use busbar_kernel::test_support::warn_capture::WarnCapture;
+    use tracing_subscriber::layer::SubscriberExt as _;
+    let store = Arc::new(FlushStore::new(FlushOutcome::PanicBudget));
+    let (gov, bucket) = accrued_governance(store.clone());
+    let slots = RecordSlots::new();
+    let (book, lane) = store_book(&slots);
+    let queued = Record::new(NODE + 1, 1, vec![7u8; 24]);
+    lane.shipper()
+        .ship(&[queued])
+        .expect("journal record queues");
+    let captured = WarnCapture::default();
+    tracing::subscriber::with_default(
+        tracing_subscriber::registry().with(captured.clone()),
+        || {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("runtime")
+                .block_on(async { tail(Some(gov), &LateServices::new(), Some(&book)).await });
+        },
+    );
+    assert!(
+        captured.contains("budget shutdown flush task failed"),
+        "{:?}",
+        captured.messages()
+    );
+    assert_eq!(
+        store
+            .list_metering(bucket)
+            .expect("metering reads")
+            .iter()
+            .map(|row| row.tokens_input)
+            .sum::<u64>(),
+        INPUT_USED
+    );
+    assert_eq!(
+        lane.pending(),
+        0,
+        "journal retirement follows the failed budget task"
+    );
+    assert_eq!(
+        read_chain(slots.calls().as_ref(), NODE + 1)
+            .expect("journal reads")
+            .len(),
+        1
+    );
 }
