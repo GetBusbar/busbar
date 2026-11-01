@@ -288,9 +288,11 @@ fn the_shipped_binary_posts_its_spans_to_an_otlp_collector() {
         .filter(|s| !s.parent_span_id.is_empty())
         .collect();
     for child in &children {
-        if let Some(parent) = spans.iter().find(|s| s.span_id == child.parent_span_id) {
-            assert_eq!(parent.trace_id, child.trace_id, "{child:?}");
-        }
+        let parent = spans
+            .iter()
+            .find(|s| s.span_id == child.parent_span_id)
+            .unwrap_or_else(|| panic!("the parent of the exported child is missing: {child:?}"));
+        assert_eq!(parent.trace_id, child.trace_id, "{child:?}");
     }
 }
 

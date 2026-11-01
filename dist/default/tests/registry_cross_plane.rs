@@ -480,7 +480,7 @@ fn dup_claim_guard_fires_when_a_plane_claims_a_core_owned_section() {
 /// top-level section it owns the grammar of takes).
 static ONE_CLAIMS_GIZMOS: PlaneDecl = PlaneDecl {
     declaration: PlaneDeclaration {
-        key: "one",
+        key: "gizmo-first-claimant",
         owned_config_sections: &["gizmos"],
         fee_units: &[],
         ..WIDGET_PLANE.declaration
@@ -492,7 +492,7 @@ static ONE_CLAIMS_GIZMOS: PlaneDecl = PlaneDecl {
 /// A DIFFERENT plane also claiming `gizmos` — the collision the guard must refuse by construction.
 static TWO_CLAIMS_GIZMOS: PlaneDecl = PlaneDecl {
     declaration: PlaneDeclaration {
-        key: "two",
+        key: "gizmo-second-claimant",
         owned_config_sections: &["gizmos"],
         fee_units: &[],
         ..WIDGET_PLANE.declaration
@@ -516,7 +516,9 @@ fn dup_claim_guard_admits_a_lone_claim_and_refuses_a_section_collision() {
     )
     .expect_err("two planes claiming `gizmos` MUST be refused — one plane's grammar would answer for the other's");
     assert!(
-        err.contains("gizmos") && err.contains("one") && err.contains("two"),
+        err.contains("gizmos")
+            && err.contains("gizmo-first-claimant")
+            && err.contains("gizmo-second-claimant"),
         "the refusal must name the contested section and both claimants, got: {err}"
     );
 }

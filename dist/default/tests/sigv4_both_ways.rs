@@ -370,12 +370,28 @@ fn the_aws_credential_mints_when_the_chain_does_not_name_keys() {
 
     // A plain mint (no flag) on the same node carries neither AWS field.
     let plain = node.mint(admin_port, br#"{"name":"plain"}"#);
+    if plain.status != 201 {
+        node.fail(&format!(
+            "a bearer-only mint must create a key, got {}:\n{}",
+            plain.status, plain.text
+        ));
+    }
     let plain: serde_json::Value = serde_json::from_slice(&plain.body).unwrap_or_else(|e| {
         node.fail(&format!(
             "the plain mint answered non-JSON ({e}): {}",
             plain.text
         ))
     });
+    if !(plain["token"]
+        .as_str()
+        .is_some_and(|t| t.starts_with("bbk_"))
+        && plain["state"] == "active"
+        && plain["id"].is_string())
+    {
+        node.fail(&format!(
+            "the bearer-only mint did not return a created key: {plain}"
+        ));
+    }
     if !(plain["aws_access_key_id"].is_null() && plain["aws_secret_access_key"].is_null()) {
         node.fail(&format!(
             "a bearer-only key must not carry AWS fields: {plain}"

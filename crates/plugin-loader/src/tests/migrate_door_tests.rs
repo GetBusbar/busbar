@@ -10,18 +10,10 @@ use super::migrate_door;
 use crate::dispatch::load::raw;
 
 /// The stub plugin's migration: renames `signing-secret` to `signing_secret` and asks core to allow
-/// the host its `url` names. A section holding `refuse` is not migrated.
+/// the host its `url` names.
 pub(crate) struct Stub;
 impl Migrate for Stub {
     fn migrate(mut settings: serde_json::Value, from: &str) -> Migrated {
-        if settings.get("refuse").is_some() {
-            // An answer that is no migration: the host must refuse it, naming the plugin's words.
-            return Migrated {
-                settings: serde_json::Value::Null,
-                report: vec!["refused".into()],
-                needs: Vec::new(),
-            };
-        }
         let mut report = Vec::new();
         let mut needs = Vec::new();
         if let Some(m) = settings.as_object_mut() {
@@ -45,7 +37,9 @@ impl Migrate for Stub {
 }
 
 mod witness {
-    use busbar_contract::abi::mechanism::call::Outcome;
+    use busbar_contract::abi::mechanism::call::{AbiStr, OutHead, Outcome};
+    use busbar_contract::abi::mechanism::lifecycle::ValidateIn;
+    use busbar_contract::abi::sdk::door::RawSlot;
     use busbar_contract::abi::sdk::life::{Held, Life, Refreshed, Refusal};
     use busbar_contract::abi::sdk::{Instance, Lent, Out, SafeSlot};
     use busbar_contract::abi::secret::{ResolveIn, ResolveOut};
@@ -72,6 +66,39 @@ mod witness {
             _: Out<'_, ResolveOut>,
         ) -> Outcome {
             Outcome::Refused
+        }
+    }
+
+    pub const REFUSAL: &str = "migrate-stub: the old endpoint needs an operator choice";
+
+    pub struct Refuse;
+    impl RawSlot for Refuse {
+        type In = ValidateIn;
+        type Out = OutHead;
+
+        unsafe fn call(_: *mut std::ffi::c_void, input: &ValidateIn, out: &mut OutHead) -> Outcome {
+            assert!(!input.err_buf.is_null());
+            assert!(input.err_cap >= REFUSAL.len());
+            // SAFETY: migrate_door lends this writable buffer for the entire call; the checked
+            // capacity covers the static refusal bytes, which do not overlap it.
+            unsafe {
+                std::ptr::copy_nonoverlapping(REFUSAL.as_ptr(), input.err_buf, REFUSAL.len());
+            }
+            out.error = AbiStr {
+                ptr: input.err_buf,
+                len: REFUSAL.len(),
+            };
+            Outcome::Refused
+        }
+    }
+
+    pub mod refusing {
+        busbar_contract::plugin_door! {
+            ops: busbar_contract::abi::secret::Ops,
+            statement: busbar_contract::abi::sdk::door::statement("migrate-stub", "1.6.0", 1),
+            lifecycle: life(super::L),
+            migrate: super::Refuse,
+            kind_ops: { resolve: busbar_contract::abi::sdk::Safe<super::Resolve> },
         }
     }
 
@@ -128,4 +155,15 @@ fn a_door_that_states_no_migrate_is_not_called() {
         none.is_none(),
         "no migrate: the section passes through unchanged"
     );
+}
+
+#[test]
+fn a_refused_migration_preserves_the_plugins_reason() {
+    let refused = migrate_door(
+        raw(witness::refusing::door),
+        &serde_json::json!({"url": "old-endpoint"}),
+        "1.5.5",
+    )
+    .expect_err("a refused MIGRATE must not become an unchanged or migrated section");
+    assert_eq!(refused, witness::REFUSAL);
 }
