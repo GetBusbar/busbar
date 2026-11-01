@@ -3376,6 +3376,8 @@ mod one_recorded_usage_every_surface {
     /// omission in this fixture — see the module note on `UsageLedger` below.
     fn enforcement(now: u64) -> Arc<busbar_kernel::governance::GovState> {
         let store = Arc::new(busbar_kernel::governance::MemoryStore::new());
+        busbar_contract::records::RecordStore::put_key(store.as_ref(), &enforcement_key())
+            .expect("the memory store accepts the key needed for hydration");
         let ledger = busbar_contract::records::UsageLedger {
             requests: 2,
             billable_requests: 2,
@@ -3395,6 +3397,14 @@ mod one_recorded_usage_every_surface {
                 .expect("the memory store accepts a usage ledger");
         }
         Arc::new(busbar_kernel::governance::GovState::new(store, None).expect("governance builds"))
+    }
+
+    fn enforcement_key() -> busbar_contract::records::VirtualKey {
+        busbar_contract::records::VirtualKey {
+            id: KEY.to_string(),
+            enabled: true,
+            ..Default::default()
+        }
     }
 
     /// The recorded usage as the ONE FUNCTION's input: one [`LedgerEntry`] per posting, each
@@ -3452,6 +3462,8 @@ mod one_recorded_usage_every_surface {
 
         // ── SURFACES 2/3/4: the ENFORCEMENT book. Each is the real call the handler makes.
         let gov = enforcement(now);
+        gov.hydrate_budgets(&cost, now)
+            .expect("the key ledger hydrates");
         //    GET /api/v1/admin/groups/{name}/usage — service_operations.rs:371.
         let group_cents = gov
             .derived_bucket_usage(&cost, KEY, busbar_kernel::governance::WINDOW_DAY, true, now)
@@ -3468,36 +3480,24 @@ mod one_recorded_usage_every_surface {
             )
             .expect("the key bucket reads")
             .spend_cents;
-        //    THE BUDGET GATE — governance/state.rs:1970, the figure `try_admit` compares to a cap.
-        let gate_cents = cost
-            .derive_spend_cents(
-                [(
-                    LANE,
-                    &std::collections::BTreeMap::from([(
-                        busbar_contract::records::UNIT_INPUT.to_string(),
-                        TOKENS * 2,
-                    )]),
-                )]
-                .into_iter(),
-                2,
+        // The metrics reader uses the derived money view over the same raw bucket.
+        let scrape_cents = gov
+            .viewed_bucket_usage(
+                &cost,
+                KEY,
+                busbar_kernel::governance::WINDOW_TOTAL,
                 true,
+                now,
             )
-            .expect("the one function prices");
-        //    THE HOOK SEAM / budget_state — governance/state.rs:1691, the same fold in micro-units.
-        let hook_micros = cost
-            .derive_spend_micros(
-                [(
-                    LANE,
-                    &std::collections::BTreeMap::from([(
-                        busbar_contract::records::UNIT_INPUT.to_string(),
-                        TOKENS * 2,
-                    )]),
-                )]
-                .into_iter(),
-                2,
-                true,
-            )
-            .expect("the one function prices");
+            .expect("the metrics bucket reads")
+            .spend_cents;
+        // The actual hook projection, after hydration, retains the finer micro-unit figure.
+        let hook_micros = gov
+            .budget_state(&cost, &enforcement_key(), now)
+            .into_iter()
+            .find(|bucket| bucket.bucket_id == KEY)
+            .expect("the key budget state is present")
+            .spend_micros_at_current_rate;
 
         eprintln!("\n── ONE RECORDED USAGE: 2 x {TOKENS} input tokens on `{LANE}`, one posting");
         eprintln!("   under a {RATE_EARNED} card and one under a {RATE_CURRENT} card ────────────");
@@ -3515,8 +3515,8 @@ mod one_recorded_usage_every_surface {
             key_cents,
         );
         row(
-            "the budget gate  try_admit                 [cents]",
-            gate_cents,
+            "the metrics money view                    [cents]",
+            scrape_cents,
         );
         row(
             "the hook seam    budget_state              [micro]",
@@ -3527,7 +3527,7 @@ mod one_recorded_usage_every_surface {
         row("GET /admin/usage", admin);
         row("GET /groups/{g}/usage", group_cents * MICROS_PER_CENT);
         row("GET /keys/{id}/usage", key_cents * MICROS_PER_CENT);
-        row("the budget gate", gate_cents * MICROS_PER_CENT);
+        row("the metrics money view", scrape_cents * MICROS_PER_CENT);
         row("the hook seam", hook_micros);
 
         // ── HALF ONE: THE DATED BOOK. PROVEN, AND PROVEN BY CONSTRUCTION ────────────────────
@@ -3578,7 +3578,7 @@ mod one_recorded_usage_every_surface {
         for (surface, cents) in [
             ("GET /groups/{g}/usage", group_cents),
             ("GET /keys/{id}/usage", key_cents),
-            ("the budget gate", gate_cents),
+            ("the metrics money view", scrape_cents),
         ] {
             assert_eq!(
                 cents, 2,

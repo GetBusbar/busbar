@@ -4,24 +4,10 @@
 //! **THE EQUIVALENCE PROOF.** `money = f(ledger counts, dated ratecard)` — ONE function, and every
 //! former copy of it in this tree now answers through it.
 //!
-//! A census taken on 2026-09-22 found `f` implemented more than twenty times across five crates;
-//! the six that survived into Phase 2 (item 104) answered a card silent about a model in THREE
-//! ways — `i64::MAX` (block), the flat fee alone (free), `Err(LaneUnpriced)` (refuse) — with three
-//! rounding rules and two overflow policies. They are collapsed onto
-//! `busbar_kernel_ledger::cost::Tally`, the one function, and this file proves it two ways:
-//!
-//! 1. **BEHAVIOURALLY** — every former copy is RUN on one constructed ledger slice and one card, and
-//!    must answer exactly what the one function answers: the same figure, or the same refusal. The
-//!    fixtures cover the cases the copies used to disagree on: an unpriced lane and an unpriced
-//!    class (#42), an overflow (item 28), a rate below the card's quantum (item 22), a non-standard
-//!    tier on the settlement path and on the read path (item 27), and billing off (#42's one
-//!    silent zero). A copy that DIVERGES reddens here.
-//! 2. **STRUCTURALLY** — the production source is walked and every function that derives money must
-//!    route through the one function; the tier arithmetic and the multiply-and-sum fold may be
-//!    CALLED only where the census names. A planted SEVENTH COPY — a new `derive_spend_*` with its
-//!    own arithmetic, a new call to the tier rule, a new fold — reddens here even if it happens to
-//!    agree on every fixture above. The census proves it can see one: it is run over the real tree
-//!    plus a planted copy and must flag it.
+//! The live metering projection, admin readers, host pricing seam and settlement lookup price
+//! the same constructed consumption. Independent expected amounts and refusals pin the result;
+//! equivalence alone cannot make a wrong shared figure pass. Cases cover absent and incomplete
+//! cards, overflow, precision, tiers, history edits and open meter classes.
 //!
 //! The composition root is the only crate entitled to name all five crates, which is why the proof
 //! lives here. Run with `-- --nocapture` to print the table.
@@ -191,14 +177,12 @@ fn rule(title: &str) {
 // THE BEHAVIOURAL HALF — every former copy, run, against the one function.
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 
-/// What every former copy answered for one case, projected to the one function's vocabulary:
-/// `Ok(micro-units)` or the refusal. A copy that only speaks whole minor units is compared at the
-/// minor projection instead (see [`Case::check`]).
+/// The live readers' answers, projected to the canonical function's vocabulary. Its minor
+/// projection is also asserted against independent expected amounts below.
 struct Answers {
     one_micros: Result<i128, MoneyError>,
     one_minor: Result<i128, MoneyError>,
     micros: Vec<(&'static str, Result<i128, MoneyError>)>,
-    minor: Vec<(&'static str, Result<i128, MoneyError>)>,
     /// Copies with their own refusal vocabulary: they must refuse exactly when the one function
     /// refuses, and otherwise match its figure (in micro-units).
     refuse_alike: Vec<(&'static str, Option<i128>)>,
@@ -219,7 +203,6 @@ impl Case {
         let card = ledger_card(self.rates, self.fee);
         let history = History::opening(card.clone(), 0);
         let kernel = kernel_cost_model(self.rates, self.fee);
-        let lines = usage_lines(self.counts);
         let units = enforcement_units(self.counts);
 
         // THE ONE FUNCTION.
@@ -232,20 +215,15 @@ impl Case {
 
         let micros: Vec<(&'static str, Result<i128, MoneyError>)> = vec![
             (
-                "ledger  derive_spend_micros",
-                ledger_cost::derive_spend_micros(
-                    &card,
-                    [(self.lane, &lines[..])].into_iter(),
+                "ledger  MeteredRow::spend_micros_at_card",
+                ledger_cost::MeteredRow::new(
+                    self.lane,
+                    units.clone(),
                     self.fee_count,
-                    true,
+                    &BTreeMap::new(),
                 )
+                .spend_micros_at_card(&card)
                 .map(i128::from),
-            ),
-            (
-                "kernel  CostModel::derive_spend_micros (hooks, reads)",
-                kernel
-                    .derive_spend_micros([(self.lane, &units)].into_iter(), self.fee_count, true)
-                    .map(i128::from),
             ),
             (
                 "admin   derive_spend_micros_row (current card)",
@@ -262,25 +240,6 @@ impl Case {
                     .map(i128::from),
             ),
         ];
-        let minor: Vec<(&'static str, Result<i128, MoneyError>)> = vec![
-            (
-                "ledger  derive_spend_cents",
-                ledger_cost::derive_spend_cents(
-                    &card,
-                    [(self.lane, &lines[..])].into_iter(),
-                    self.fee_count,
-                    true,
-                )
-                .map(i128::from),
-            ),
-            (
-                "kernel  CostModel::derive_spend_cents (the request door)",
-                kernel
-                    .derive_spend_cents([(self.lane, &units)].into_iter(), self.fee_count, true)
-                    .map(i128::from),
-            ),
-        ];
-
         // THE SETTLEMENT LOOKUP, in its settlement posture — it refuses exactly where the one
         // function refuses, and otherwise posts the one function's figure.
         let posting = ledger_cost::Posting::from_usage(
@@ -314,7 +273,6 @@ impl Case {
             one_micros,
             one_minor,
             micros,
-            minor,
             refuse_alike: vec![
                 ("ledger  price_fail_closed (settlement)", settled),
                 ("kernel  price_usage_nanos (metering seam)", metered),
@@ -336,14 +294,6 @@ impl Case {
             );
         }
         row("THE ONE FUNCTION  [minor]", &a.one_minor);
-        for (label, got) in &a.minor {
-            row(label, got);
-            assert_eq!(
-                got, &a.one_minor,
-                "{}: `{label}` diverges from the one function",
-                self.title
-            );
-        }
         for (label, got) in &a.refuse_alike {
             row(label, got);
             assert_eq!(
@@ -420,12 +370,9 @@ fn d5_an_unpriced_class_on_a_priced_lane_refuses_everywhere() {
         &[one_entry(LANE, &counts, 0, 0)],
         &History::opening(card.clone(), 0),
     );
-    let derived = ledger_cost::derive_spend_micros(
-        &card,
-        [(LANE, &usage_lines(&counts)[..])].into_iter(),
-        0,
-        true,
-    );
+    let derived =
+        ledger_cost::MeteredRow::new(LANE, enforcement_units(&counts), 0, &BTreeMap::new())
+            .spend_micros_at_card(&card);
     let posting = ledger_cost::Posting::from_usage(
         LANE,
         &usage_report(&counts),
@@ -438,7 +385,7 @@ fn d5_an_unpriced_class_on_a_priced_lane_refuses_everywhere() {
 
     rule("D5  a priced lane, a class the card is silent about (#42)");
     row("THE ONE FUNCTION", &one);
-    row("ledger  derive_spend_micros", &derived);
+    row("ledger  MeteredRow", &derived);
     row(
         "ledger  price_fail_closed (settlement)",
         settled.as_ref().err(),
@@ -589,14 +536,13 @@ fn d1_a_rate_card_edit_is_one_function_over_two_different_inputs() {
     )
     .expect("prices");
     let kernel = kernel_cost_model(Some(&[(LANE, [1.0, 4.0, 0.0, 0.0])]), 1);
-    let units = enforcement_units(&counts);
-    let flat_micros = kernel
-        .derive_spend_micros([(LANE, &units), (LANE, &units)].into_iter(), 2, true)
-        .expect("prices");
+    let flat_row = admin::derive_spend_micros_row(&kernel, LANE, &admin_row(&counts, 1))
+        .expect("the current-card admin reader prices");
+    let flat_micros = flat_row.checked_add(flat_row).expect("the two rows fit");
 
     row("ONE function, dated history  [micro]", dated.micros());
     row("ONE function, current card   [micro]", at_current.micros());
-    row("kernel derive (current card) [micro]", flat_micros);
+    row("admin read (current card)   [micro]", flat_micros);
     assert_eq!(dated.micros(), 39_000);
     assert_eq!(i128::from(flat_micros), at_current.micros());
     assert_eq!(at_current.micros(), 24_000);
@@ -605,16 +551,38 @@ fn d1_a_rate_card_edit_is_one_function_over_two_different_inputs() {
 /// D8 — THE METRICS GAUGE IS THE ONE FUNCTION'S INTEGER, UP TO THE ONE EGRESS BOUNDARY. Item 24
 /// moved the money gauges to `snapshot/money.rs`, where the only float is `set_gauge` — the declared
 /// `MONEY_EGRESS` boundary the exporter forces. Everything before it is integer: the figure the
-/// gauge is handed is `CostModel::derive_spend_cents`, which is the one function, exact above 2^53
+/// gauge is handed comes from `GovState::viewed_bucket_usage`, exact above 2^53
 /// where a float would have lost the ones digit.
 #[test]
 fn d8_the_gauge_figure_is_the_one_functions_integer_up_to_the_egress_boundary() {
     rule("D8  `busbar_*_spend_cents` — integer up to MONEY_EGRESS");
     let requests: u64 = (1u64 << 53) + 1;
     let kernel = kernel_cost_model(None, 1);
-    let gauge_input = kernel
-        .derive_spend_cents(std::iter::empty(), requests, true)
-        .expect("a fee-only bucket prices");
+    let store = std::sync::Arc::new(busbar_kernel::governance::MemoryStore::new());
+    const BUCKET: &str = "fee-only-gauge";
+    const NOW: u64 = 1_700_000_000;
+    busbar_contract::records::RecordStore::put_usage(
+        store.as_ref(),
+        BUCKET,
+        busbar_kernel::governance::budget_window(busbar_kernel::governance::WINDOW_TOTAL, NOW),
+        &busbar_contract::records::UsageLedger {
+            requests,
+            billable_requests: requests,
+            models: Vec::new(),
+        },
+    )
+    .expect("the raw fee count persists");
+    let gov = busbar_kernel::governance::GovState::new(store, None).expect("governance builds");
+    let gauge_input = gov
+        .viewed_bucket_usage(
+            &kernel,
+            BUCKET,
+            busbar_kernel::governance::WINDOW_TOTAL,
+            true,
+            NOW,
+        )
+        .expect("the actual metrics reader prices the fee-only bucket")
+        .spend_cents;
     let mut tally = ledger_cost::Tally::at_card(kernel.card());
     tally
         .fee(
@@ -630,6 +598,34 @@ fn d8_the_gauge_figure_is_the_one_functions_integer_up_to_the_egress_boundary() 
     assert_eq!(
         gauge_input, 9_007_199_254_740_993,
         "2^53 + 1, exact — no float before egress"
+    );
+    let over_range = kernel_cost_model(None, i64::MAX);
+    assert!(
+        matches!(
+            gov.derived_bucket_usage_priced(
+                &over_range,
+                BUCKET,
+                busbar_kernel::governance::WINDOW_TOTAL,
+                true,
+                NOW,
+            )
+            .expect("the raw bucket reads"),
+            Err(MoneyError::Overflow)
+        ),
+        "the actual reader refuses an overflowing fee"
+    );
+    assert_eq!(
+        gov.viewed_bucket_usage(
+            &over_range,
+            BUCKET,
+            busbar_kernel::governance::WINDOW_TOTAL,
+            false,
+            NOW,
+        )
+        .expect("excluding the fee leaves a representable empty amount")
+        .spend_cents,
+        0,
+        "excluding fees preserves the raw request count without pricing it"
     );
 }
 
@@ -694,12 +690,9 @@ fn d2_an_open_meter_class_is_handed_to_the_one_function_by_the_enforcement_side(
         &History::opening(card.clone(), 0),
     )
     .expect("the card prices both classes");
-    let ledger_micros = ledger_cost::derive_spend_micros(
-        &card,
-        [(LANE, &usage_lines(&counts)[..])].into_iter(),
-        0,
-        true,
-    );
+    let ledger_micros =
+        ledger_cost::MeteredRow::new(LANE, enforcement_units(&counts), 0, &BTreeMap::new())
+            .spend_micros_at_card(&card);
     let units = enforcement_units(&counts);
     let config_card: BTreeMap<String, busbar_kernel::config::RateEntryCfg> = serde_yaml::from_str(
         &format!("{LANE}: {{ output_utok: 2, units: {{ hops: 5 }} }}\n"),
@@ -707,41 +700,53 @@ fn d2_an_open_meter_class_is_handed_to_the_one_function_by_the_enforcement_side(
     .expect("an open class parses under units:");
     let kernel =
         busbar_kernel::cost::CostModel::resolve_parts(Some(&config_card), 0, &BTreeMap::new());
-    let kernel_micros = kernel.derive_spend_micros([(LANE, &units)].into_iter(), 0, true);
-    // THE LIVE DOOR: the kernel's `derive_spend_cents`, the figure `try_admit` caps on.
-    let door_cents = kernel.derive_spend_cents([(LANE, &units)].into_iter(), 0, true);
+    let kernel_nanos = kernel.price_usage_nanos(
+        LANE,
+        &busbar_contract::billing::Usage {
+            usage_units: units.clone(),
+        },
+    );
+    let kernel_micros = kernel_nanos
+        .map(|nanos| i128::try_from(nanos / ledger_cost::NANOS_PER_MICRO).expect("fixture fits"));
+    let open_card = format!("{OPEN_LANE}: {{ output_utok: 2, units: {{ hops: 5 }} }}\n");
+    let (door_cents, _) = accrued_on_the_book(Some(&open_card), &counts);
     row("ONE function                 [micro]", one.micros());
     row("ledger derive (every class)  [micro]", &ledger_micros);
     row("kernel derive (every class)  [micro]", &kernel_micros);
-    row("kernel door   (every class)  [minor]", &door_cents);
+    row("governance read (every class) [minor]", &door_cents);
     assert_eq!(one.micros(), 5_200_000, "100,000×2 + 1,000,000×5");
     assert_eq!(ledger_micros.map(i128::from), Ok(one.micros()));
     assert_eq!(
-        kernel_micros.map(i128::from),
-        Ok(one.micros()),
+        kernel_micros,
+        Some(one.micros()),
         "item 123: every class reaches it"
     );
     assert_eq!(
         door_cents.map(i128::from),
         Ok(one.minor()),
-        "and the door caps on the same figure"
+        "the actual governance read answers the same figure"
     );
 
     // A card that prices the lane but is silent about `hops`: both sides REFUSE (#42).
     let silent = kernel_cost_model(Some(&[(LANE, [0.0, 2.0, 0.0, 0.0])]), 0);
-    for refusal in [
-        silent
-            .derive_spend_micros([(LANE, &units)].into_iter(), 0, true)
-            .map(i128::from),
-        silent
-            .derive_spend_cents([(LANE, &units)].into_iter(), 0, true)
-            .map(i128::from),
-    ] {
-        assert!(
-            matches!(refusal, Err(MoneyError::ClassUnpriced { ref class, .. }) if class == "hops"),
-            "an unpriced open class refuses, never a silent 0: {refusal:?}"
-        );
-    }
+    let refusal = ledger_cost::MeteredRow::new(LANE, units.clone(), 0, &BTreeMap::new())
+        .spend_micros_at_card(silent.card());
+    assert!(
+        matches!(refusal, Err(MoneyError::ClassUnpriced { ref class, .. }) if class == "hops"),
+        "an unpriced open class refuses, never a silent 0: {refusal:?}"
+    );
+    assert_eq!(
+        silent.price_usage_nanos(
+            LANE,
+            &busbar_contract::billing::Usage { usage_units: units }
+        ),
+        None
+    );
+    let silent_card = format!("{OPEN_LANE}: {{ output_utok: 2 }}\n");
+    assert!(
+        accrued_on_the_book(Some(&silent_card), &counts).0.is_err(),
+        "the actual enforcement read refuses the unpriced open class too"
+    );
 }
 
 /// D7 — A RATE IS ITS DECIMAL, EXACTLY, OR IT IS REFUSED: NEVER ROUNDED (#81, #77(8); both
@@ -809,14 +814,6 @@ fn d7_a_rate_converts_from_its_decimal_exactly_and_is_never_rounded() {
         (refused, exact),
     );
 }
-
-// ─────────────────────────────────────────────────────────────────────────────────────────────
-// THE STRUCTURAL HALF — the census. A copy that AGREES is still a copy.
-// ─────────────────────────────────────────────────────────────────────────────────────────────
-
-// ─────────────────────────────────────────────────────────────────────────────────────────────
-// THE SCALES — ten thousand is a money number twice over, and each is written ONCE.
-// ─────────────────────────────────────────────────────────────────────────────────────────────
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 // LEDGER-100 ON THE GOVERNANCE BOOK — an open class is one line, priced by the card (#42, #71).

@@ -66,10 +66,9 @@
 //!
 //! # The two readers
 //!
-//! [`price`] is the lookup. [`derive_spend_cents`] and [`derive_spend_micros`] are the legacy
-//! read-time derivation over a whole bucket's lanes at one card, kept because the legacy usage
-//! projection still reads that way. A property test asserts the two agree: the lookup over a
-//! single-entry history equals the legacy derivation at that card, exactly.
+//! [`price`] is the settlement lookup. [`MeteredRow`] projects usage endpoint rows into the
+//! canonical pricing inputs, either at one card or through dated history. [`Tally`] accumulates
+//! borrowed bucket rows. Their figures project through [`Money`]'s checked narrowings.
 
 mod history;
 mod posting;
@@ -90,7 +89,7 @@ pub use posting::{
     checked_apply_tier, price, price_at_card, price_fail_closed, Posting, Priced, PricedLine,
     Quantity, Unpriceable, FEE_CLASS, STANDARD_TIER_BP,
 };
-pub use project::{derive_spend_cents, derive_spend_micros, MeteredRow};
+pub use project::MeteredRow;
 pub use rate::{
     compose_plane_cards, flat_card_present, nano_rate, plane_fee_lane, representable_nano_rate,
     split_plane_lane, CellPrices, ClassPrice, LaneClass, LanePricing, LaneRates, PlaneFees,
