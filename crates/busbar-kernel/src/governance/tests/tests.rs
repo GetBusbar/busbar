@@ -1710,6 +1710,8 @@ fn test_budget_sweep_is_window_agnostic_across_cotenants() {
 
     // A seeded ledger cell with `requests` accrued (spend derives from requests x fee).
     let seeded = |window_start: u64, requests: u64, dirty: bool| BudgetCell {
+        group_owners: Default::default(),
+        flushing: 0,
         window_start,
         requests,
         billable_requests: requests,
@@ -1719,6 +1721,7 @@ fn test_budget_sweep_is_window_agnostic_across_cotenants() {
         fee_eras: Default::default(),
         flushed_fee_eras: Default::default(),
         rolled: Vec::new(),
+        rolled_eras: Vec::new(),
         dirty,
         last_touch: now,
     };
@@ -1789,6 +1792,8 @@ fn test_budget_sweep_staleness_boundary_is_exact() {
     let survivor = sample_key("survivor2", "hs2");
 
     let seeded = |window_start: u64, last_touch: u64| BudgetCell {
+        group_owners: Default::default(),
+        flushing: 0,
         window_start,
         requests: 1,
         billable_requests: 1,
@@ -1798,6 +1803,7 @@ fn test_budget_sweep_staleness_boundary_is_exact() {
         fee_eras: Default::default(),
         flushed_fee_eras: Default::default(),
         rolled: Vec::new(),
+        rolled_eras: Vec::new(),
         dirty: false,
         last_touch,
     };
@@ -1869,6 +1875,8 @@ fn test_budget_sweep_cadence_post_increment_no_off_by_one() {
     let k = sample_key("k1", "h1");
     let now = 1_700_000_040u64;
     let stale = || BudgetCell {
+        group_owners: Default::default(),
+        flushing: 0,
         window_start: now - 40 * SECS_PER_DAY, // genuinely stale (>31 d)
         requests: 1,
         billable_requests: 1,
@@ -1878,6 +1886,7 @@ fn test_budget_sweep_cadence_post_increment_no_off_by_one() {
         fee_eras: Default::default(),
         flushed_fee_eras: Default::default(),
         rolled: Vec::new(),
+        rolled_eras: Vec::new(),
         dirty: false,
         last_touch: now,
     };
@@ -3668,6 +3677,8 @@ fn test_budget_sweep_evicts_idle_attribution_cells_but_never_group_caps() {
     let survivor = sample_key("survivor", "hs");
 
     let all_time = |requests: u64, dirty: bool, last_touch: u64| BudgetCell {
+        group_owners: Default::default(),
+        flushing: 0,
         window_start: 0,
         requests,
         billable_requests: requests,
@@ -3677,6 +3688,7 @@ fn test_budget_sweep_evicts_idle_attribution_cells_but_never_group_caps() {
         fee_eras: Default::default(),
         flushed_fee_eras: Default::default(),
         rolled: Vec::new(),
+        rolled_eras: Vec::new(),
         dirty,
         last_touch,
     };
@@ -4648,6 +4660,8 @@ fn test_budget_sweep_only_exempts_group_cells_that_still_enforce_a_cap() {
     // Every seeded cell is an all-time (`window_start == 0`) cell, long idle and CLEAN — so the only
     // thing that can keep it alive is the `group:` exemption.
     let idle = || BudgetCell {
+        group_owners: Default::default(),
+        flushing: 0,
         window_start: 0,
         requests: 7,
         billable_requests: 7,
@@ -4657,6 +4671,7 @@ fn test_budget_sweep_only_exempts_group_cells_that_still_enforce_a_cap() {
         fee_eras: Default::default(),
         flushed_fee_eras: Default::default(),
         rolled: Vec::new(),
+        rolled_eras: Vec::new(),
         dirty: false,
         last_touch: now - max_window - 1,
     };
@@ -4713,6 +4728,8 @@ fn test_reclaim_group_cells_drops_every_window_and_scope_of_that_group() {
     let gov = GovState::new(store, None).unwrap();
     let now = 1_700_000_040u64;
     let cell = BudgetCell {
+        group_owners: Default::default(),
+        flushing: 0,
         window_start: 0,
         requests: 1,
         billable_requests: 1,
@@ -4722,6 +4739,7 @@ fn test_reclaim_group_cells_drops_every_window_and_scope_of_that_group() {
         fee_eras: Default::default(),
         flushed_fee_eras: Default::default(),
         rolled: Vec::new(),
+        rolled_eras: Vec::new(),
         dirty: false,
         last_touch: now,
     };
@@ -4732,7 +4750,9 @@ fn test_reclaim_group_cells_drops_every_window_and_scope_of_that_group() {
         "group:doomed@month",
         "group:doomed@day#pool:frontier",
     ] {
-        gov.budget.write(id).insert(id.to_string(), cell.clone());
+        let mut owned = cell.clone();
+        owned.group_owners.insert("doomed".to_string());
+        gov.budget.write(id).insert(id.to_string(), owned);
     }
     // Neighbours that must NOT be collateral: a different group, and one whose name merely PREFIXES
     // the deleted one (the `@` in the prefix is what keeps `doomed-2` safe).
@@ -4885,6 +4905,8 @@ fn test_sweep_exemption_survives_a_group_name_containing_the_id_delimiters() {
     let cost = crate::cost::CostModel::resolve_parts(None, 1, &groups);
 
     let idle = || BudgetCell {
+        group_owners: Default::default(),
+        flushing: 0,
         window_start: 0,
         requests: 7,
         billable_requests: 7,
@@ -4894,6 +4916,7 @@ fn test_sweep_exemption_survives_a_group_name_containing_the_id_delimiters() {
         fee_eras: Default::default(),
         flushed_fee_eras: Default::default(),
         rolled: Vec::new(),
+        rolled_eras: Vec::new(),
         dirty: false,
         last_touch: now - max_window - 1,
     };
@@ -4935,6 +4958,8 @@ fn test_reclaim_group_cells_never_takes_a_longer_name_that_shares_the_at_prefix(
     let gov = GovState::new(store, None).unwrap();
     let now = 1_700_000_040u64;
     let cell = BudgetCell {
+        group_owners: Default::default(),
+        flushing: 0,
         window_start: 0,
         requests: 1,
         billable_requests: 1,
@@ -4944,16 +4969,22 @@ fn test_reclaim_group_cells_never_takes_a_longer_name_that_shares_the_at_prefix(
         fee_eras: Default::default(),
         flushed_fee_eras: Default::default(),
         rolled: Vec::new(),
+        rolled_eras: Vec::new(),
         dirty: false,
         last_touch: now,
     };
-    for id in [
-        "group:user:alice@total",
-        "group:user:alice@day#pool:frontier",
-        "group:user:alice@corp.com@total",
-        "group:user:alice@corp.com@day#pool:frontier",
+    for (id, owner) in [
+        ("group:user:alice@total", "user:alice"),
+        ("group:user:alice@day#pool:frontier", "user:alice"),
+        ("group:user:alice@corp.com@total", "user:alice@corp.com"),
+        (
+            "group:user:alice@corp.com@day#pool:frontier",
+            "user:alice@corp.com",
+        ),
     ] {
-        gov.budget.write(id).insert(id.to_string(), cell.clone());
+        let mut owned = cell.clone();
+        owned.group_owners.insert(owner.to_string());
+        gov.budget.write(id).insert(id.to_string(), owned);
     }
 
     assert_eq!(

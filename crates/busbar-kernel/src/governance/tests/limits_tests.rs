@@ -1824,6 +1824,7 @@ struct FlakyStore {
     inner: MemoryStore,
     down: std::sync::atomic::AtomicBool,
     meter_down: std::sync::atomic::AtomicBool,
+    era_down: std::sync::atomic::AtomicBool,
     before_add: std::sync::Mutex<Option<Box<dyn FnOnce() + Send>>>,
 }
 
@@ -1833,6 +1834,7 @@ impl FlakyStore {
             inner: MemoryStore::new(),
             down: std::sync::atomic::AtomicBool::new(false),
             meter_down: std::sync::atomic::AtomicBool::new(false),
+            era_down: std::sync::atomic::AtomicBool::new(false),
             before_add: std::sync::Mutex::new(None),
         }
     }
@@ -1868,6 +1870,12 @@ impl RecordStore for FlakyStore {
         if let Some(hook) = hook {
             hook();
         }
+        if self.down.load(std::sync::atomic::Ordering::SeqCst)
+            || (bucket_id.starts_with(super::ERA_BUCKET_PREFIX)
+                && self.era_down.load(std::sync::atomic::Ordering::SeqCst))
+        {
+            return Err(RecordStoreError("planted usage write failure".to_string()));
+        }
         self.inner.add_usage(bucket_id, window, d)
     }
     fn add_metering(&self, delta: &MeteringDelta) -> RecordStoreResult<()> {
@@ -1880,6 +1888,9 @@ impl RecordStore for FlakyStore {
         self.inner.list_metering(bucket)
     }
 }
+
+#[path = "ledger_ownership_cases.rs"]
+mod ledger_ownership_cases;
 
 /// The per-minute group bucket the window-roll tests read, under a fee-10 card pricing `m`.
 fn minute_fee_model() -> CostModel {

@@ -77,7 +77,8 @@ fn a_segment_pruned_mid_flush_still_flushes_its_refund() {
     cell.prune_dead_models();
     assert!(cell.models.is_empty(), "the refunded segment looked dead");
     // The write lands and is acknowledged.
-    cell.advance_model_baselines(&snapshot);
+    cell.advance_model_baselines(&snapshot, false);
+    cell.advance_model_baselines(&snapshot, true);
     assert!(cell.dirty, "the restored segment owes the store a write");
     let delta = cell.unflushed();
     let lane = delta
@@ -86,9 +87,17 @@ fn a_segment_pruned_mid_flush_still_flushes_its_refund() {
         .find(|m| m.model == "fee-lane-double")
         .expect("the segment's refund is still to be written");
     assert_eq!(lane.usage_units.get(unit), Some(&-1));
+    let dated = cell.unflushed_eras();
+    let dated_lane = dated
+        .models
+        .iter()
+        .find(|model| model.model == "7\u{1f}fee-lane-double")
+        .expect("the dated segment also keeps its refund");
+    assert_eq!(dated_lane.usage_units.get(unit), Some(&-1));
     // Once that refund is acknowledged the segment is dead for good.
     let settled = cell.models.clone();
-    cell.advance_model_baselines(&settled);
+    cell.advance_model_baselines(&settled, false);
+    cell.advance_model_baselines(&settled, true);
     cell.prune_dead_models();
     assert!(cell.models.is_empty());
 }

@@ -131,6 +131,7 @@ struct ModelCell {
     cur: std::collections::BTreeMap<String, u64>,
     /// The last durably-ACKNOWLEDGED (flushed) unit counters — the additive-flush baseline.
     flushed: std::collections::BTreeMap<String, u64>,
+    flushed_era: std::collections::BTreeMap<String, u64>,
 }
 
 /// In-memory TOKEN-LEDGER cell for a bucket's CURRENT window - the AUTHORITATIVE hot-path
@@ -144,6 +145,8 @@ struct ModelCell {
 /// rollover), so growth is bucket-count-bounded (keys + group-window buckets).
 #[derive(Clone, Default)]
 struct BudgetCell {
+    group_owners: std::collections::BTreeSet<String>,
+    flushing: usize,
     window_start: u64,
     /// ADMISSION count: incremented once per admitted request, NEVER refunded. This backs the
     /// `requests`-LIMIT metric, so a caller cannot escape the requests cap by hammering failing
@@ -177,6 +180,7 @@ struct BudgetCell {
     /// under their OWN window and parks a failed one back, so a store outage across a boundary
     /// loses nothing. Empty in steady state.
     rolled: Vec<(u64, UsageDelta)>,
+    rolled_eras: Vec<(u64, UsageDelta)>,
     dirty: bool,
     /// Wall-clock of the last accrual or admission charge. The eviction sweep ages cells by
     /// `window_start`, but a key's own bucket and a synthesized SSO principal's bucket both live in
@@ -200,40 +204,32 @@ impl BudgetCell {
     /// old window ([`BudgetCell::park`]) for the flusher to write there. The cell stays dirty while
     /// anything is parked.
     fn roll(&mut self, window: u64) {
-        let (old, unacked) = (self.window_start, self.unflushed());
+        let (old, unacked, eras) = (self.window_start, self.unflushed(), self.unflushed_eras());
         let rolled = std::mem::take(&mut self.rolled);
+        let rolled_eras = std::mem::take(&mut self.rolled_eras);
+        let owners = std::mem::take(&mut self.group_owners);
+        let flushing = self.flushing;
         *self = Self::fresh(window);
+        self.group_owners = owners;
+        self.flushing = flushing;
         self.rolled = rolled;
+        self.rolled_eras = rolled_eras;
         self.park(old, unacked);
-        self.dirty = !self.rolled.is_empty();
+        self.park_eras(old, eras);
+        self.dirty = !self.rolled.is_empty() || !self.rolled_eras.is_empty();
     }
 
     /// Add `delta` to what is parked under `window` (signed: a negative delta takes back counts the
     /// store already holds). An entry that nets to nothing is dropped.
     fn park(&mut self, window: u64, delta: UsageDelta) {
-        if delta.is_zero() {
-            return;
-        }
-        let at = self.rolled.iter().position(|(w, _)| *w == window);
-        let Some(i) = at else {
-            self.rolled.push((window, delta));
-            return;
-        };
-        let into = &mut self.rolled[i].1;
-        into.requests = into.requests.saturating_add(delta.requests);
-        into.billable_requests = into
-            .billable_requests
-            .saturating_add(delta.billable_requests);
-        let both = (into.models.iter()).chain(delta.models.iter());
-        into.models = model_deltas(both.map(|m| (m.model.as_str(), m.usage_units.clone())));
-        if into.is_zero() {
-            self.rolled.remove(i);
-        }
+        park_window(&mut self.rolled, window, delta);
     }
 
-    /// The cell's counts past its last acknowledged flush (current - flushed baseline), per model:
-    /// the eras of one model are one delta on the wire (the durable row is per model and carries no
-    /// era — Q14's wire step), byte-identical to an undated cell's.
+    fn park_eras(&mut self, window: u64, delta: UsageDelta) {
+        park_window(&mut self.rolled_eras, window, delta);
+    }
+
+    /// The cell's counts past its last acknowledged plain-row flush.
     fn unflushed(&self) -> UsageDelta {
         let deltas = (self.models.iter()).map(|m| (&*m.model, units_delta(&m.cur, &m.flushed)));
         UsageDelta {
@@ -244,16 +240,15 @@ impl BudgetCell {
         }
     }
 
-    /// The DATED part of [`Self::unflushed`], for the bucket's card-era row ([`era_bucket`]): each
-    /// dated (model, era) segment under `"<era>\u{1f}<model>"`, each dated fee era under `"<era>"`
-    /// with unit [`ERA_FEE_UNIT`]. Era zero is not written: it is the plain row minus these.
+    /// The dated row has its own acknowledged baselines: a successful plain-row write does
+    /// not acknowledge a failed era-row write.
     fn unflushed_eras(&self) -> UsageDelta {
         let mut rows: Vec<(String, std::collections::BTreeMap<String, i64>)> = (self.models.iter())
             .filter(|m| m.era != 0)
             .map(|m| {
                 (
-                    format!("{}\u{1f}{}", m.era, m.model),
-                    units_delta(&m.cur, &m.flushed),
+                    format!("{}{ERA_MODEL_SEP}{}", m.era, m.model),
+                    units_delta(&m.cur, &m.flushed_era),
                 )
             })
             .collect();
@@ -292,6 +287,7 @@ impl BudgetCell {
                     era,
                     cur: std::collections::BTreeMap::new(),
                     flushed: std::collections::BTreeMap::new(),
+                    flushed_era: std::collections::BTreeMap::new(),
                 });
                 self.models.last_mut().expect("just pushed")
             }
@@ -336,8 +332,11 @@ impl BudgetCell {
     /// A segment pruned while a flush of it is still in flight is restored when that flush is
     /// acknowledged ([`BudgetCell::advance_model_baselines`]).
     fn prune_dead_models(&mut self) {
-        self.models
-            .retain(|m| units_total(&m.cur) != 0 || units_total(&m.flushed) != 0);
+        self.models.retain(|m| {
+            units_total(&m.cur) != 0
+                || units_total(&m.flushed) != 0
+                || units_total(&m.flushed_era) != 0
+        });
     }
 
     /// ADVANCE THE PER-SEGMENT BASELINES to `acked`, the segments a flush snapshotted and the store
@@ -347,17 +346,32 @@ impl BudgetCell {
     /// next flush writes the refund as a negative delta instead of leaving the store one fee unit
     /// over (THE DESIGN §7: a refund returns the bucket actually charged; the write-behind loses no
     /// delta).
-    fn advance_model_baselines(&mut self, acked: &[ModelCell]) {
+    fn advance_model_baselines(&mut self, acked: &[ModelCell], dated: bool) {
         for s in acked {
             let at = (self.models.iter()).position(|m| m.model == s.model && m.era == s.era);
             match at {
-                Some(i) => self.models[i].flushed = s.cur.clone(),
+                Some(i) => {
+                    if dated {
+                        self.models[i].flushed_era = s.cur.clone();
+                    } else {
+                        self.models[i].flushed = s.cur.clone();
+                    }
+                }
                 None if units_total(&s.cur) != 0 => {
                     self.models.push(ModelCell {
                         model: s.model.clone(),
                         era: s.era,
                         cur: std::collections::BTreeMap::new(),
-                        flushed: s.cur.clone(),
+                        flushed: if dated {
+                            Default::default()
+                        } else {
+                            s.cur.clone()
+                        },
+                        flushed_era: if dated {
+                            s.cur.clone()
+                        } else {
+                            Default::default()
+                        },
                     });
                     self.dirty = true;
                 }
@@ -397,13 +411,65 @@ fn units_delta(
 /// The unit a card-era row counts a dated fee era's billable requests under.
 const ERA_FEE_UNIT: &str = "billable_requests";
 
+/// Namespace prefix of the existing hashed card-era sibling usage row.
+const ERA_BUCKET_PREFIX: &str = "e:";
+/// Separator between the existing card-era number and its model lane.
+const ERA_MODEL_SEP: char = '\u{1f}';
+
+fn dated_delta(delta: &UsageDelta, era: u64) -> UsageDelta {
+    if era == 0 {
+        return UsageDelta::default();
+    }
+    let mut models: Vec<_> = delta
+        .models
+        .iter()
+        .map(|model| busbar_contract::records::ModelTokensDelta {
+            model: format!("{era}{ERA_MODEL_SEP}{}", model.model),
+            usage_units: model.usage_units.clone(),
+        })
+        .collect();
+    if delta.billable_requests != 0 {
+        models.push(busbar_contract::records::ModelTokensDelta {
+            model: era.to_string(),
+            usage_units: std::collections::BTreeMap::from([(
+                ERA_FEE_UNIT.to_string(),
+                delta.billable_requests,
+            )]),
+        });
+    }
+    UsageDelta {
+        models,
+        ..UsageDelta::default()
+    }
+}
+
+fn park_window(parked: &mut Vec<(u64, UsageDelta)>, window: u64, delta: UsageDelta) {
+    if delta.is_zero() {
+        return;
+    }
+    let Some(i) = parked.iter().position(|(w, _)| *w == window) else {
+        parked.push((window, delta));
+        return;
+    };
+    let into = &mut parked[i].1;
+    into.requests = into.requests.saturating_add(delta.requests);
+    into.billable_requests = into
+        .billable_requests
+        .saturating_add(delta.billable_requests);
+    let both = into.models.iter().chain(delta.models.iter());
+    into.models = model_deltas(both.map(|m| (m.model.as_str(), m.usage_units.clone())));
+    if into.is_zero() {
+        parked.remove(i);
+    }
+}
+
 /// THE CARD-ERA ROW of `bucket` (owner 2026-10-27, #79, Q14): a sibling usage row holding the
 /// bucket's dated counts, so a restart (or another node) prices each count at the card in force when
 /// it was ledgered. `"e:" ++ hex(SHA-256(bucket)[..16])`, 34 bytes whatever the bucket's length; the
 /// plain row stays exactly the 1.5.5 row.
 fn era_bucket(bucket: &str) -> String {
     let digest = ring::digest::digest(&ring::digest::SHA256, bucket.as_bytes());
-    format!("e:{}", hex::encode(&digest.as_ref()[..16]))
+    format!("{ERA_BUCKET_PREFIX}{}", hex::encode(&digest.as_ref()[..16]))
 }
 
 /// Clamp a u64 counter into the signed delta domain.

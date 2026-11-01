@@ -315,11 +315,21 @@ impl GovState {
             return Ok(Err(refused));
         }
         // The buckets, as `record_usage` picks them, each at the window holding the epoch.
+        let mut group_owners: BTreeMap<String, std::collections::BTreeSet<String>> =
+            BTreeMap::new();
         let mut buckets: Vec<(String, u64)> = match cost.chain_for(&key) {
             Ok(chain) => chain
                 .iter()
                 .filter(|b| b.applies_to_pool(adj.pool))
-                .map(|b| (b.bucket_id.to_string(), budget_window(b.window, epoch)))
+                .map(|b| {
+                    if let Some(group) = b.group_name {
+                        group_owners
+                            .entry(b.bucket_id.to_string())
+                            .or_default()
+                            .insert(group.to_string());
+                    }
+                    (b.bucket_id.to_string(), budget_window(b.window, epoch))
+                })
                 .collect(),
             Err(_) => vec![(
                 adj.key_id.to_string(),
@@ -332,11 +342,11 @@ impl GovState {
         // RAM moves, so a store that refuses the row leaves nothing applied. A refusal on the
         // second, applying pass (a concurrent charge moved a count between the two) writes the
         // opposite row, so the metered view never keeps an adjustment the book refused.
-        if let Err(refused) = self.budget_pass(&buckets, adj, &delta, false)? {
+        if let Err(refused) = self.budget_pass(&buckets, &group_owners, adj, &delta, false)? {
             return Ok(Err(refused));
         }
         self.write_usage_adjustment(adj, &delta, day, 1)?;
-        match self.budget_pass(&buckets, adj, &delta, true)? {
+        match self.budget_pass(&buckets, &group_owners, adj, &delta, true)? {
             Ok(()) => Ok(Ok(())),
             Err(refused) => {
                 self.write_usage_adjustment(adj, &delta, day, -1)?;
@@ -501,6 +511,7 @@ impl GovState {
     fn budget_pass(
         &self,
         buckets: &[(String, u64)],
+        group_owners: &BTreeMap<String, std::collections::BTreeSet<String>>,
         adj: &Adjustment<'_>,
         delta: &BTreeMap<&str, i64>,
         apply: bool,
@@ -564,9 +575,15 @@ impl GovState {
                         Some(old) => {
                             old.roll(*window);
                             let parked = std::mem::take(&mut old.rolled);
+                            let parked_eras = std::mem::take(&mut old.rolled_eras);
+                            let owners = std::mem::take(&mut old.group_owners);
+                            let flushing = old.flushing;
                             *old = cell;
                             old.rolled = parked;
-                            old.dirty = !old.rolled.is_empty();
+                            old.rolled_eras = parked_eras;
+                            old.group_owners.extend(owners);
+                            old.flushing = flushing;
+                            old.dirty = !old.rolled.is_empty() || !old.rolled_eras.is_empty();
                         }
                         None => {
                             map.insert(bucket_id.clone(), cell);
@@ -577,6 +594,14 @@ impl GovState {
         }
         // THE CHECK, every bucket first: a downward delta with no count of its own window to move,
         // or a count of the segment taken out of range, refuses the whole.
+        for ((bucket_id, _), i) in buckets.iter().zip(&at) {
+            if let (Some(cell), Some(owners)) = (
+                guards[*i].1.get_mut(bucket_id.as_str()),
+                group_owners.get(bucket_id),
+            ) {
+                cell.group_owners.extend(owners.iter().cloned());
+            }
+        }
         for ((bucket_id, window), i) in buckets.iter().zip(&at) {
             let cell = guards[*i].1.get(bucket_id.as_str());
             for (class, d) in delta {
@@ -634,6 +659,7 @@ impl GovState {
                             era: adj.entry_era,
                             cur: BTreeMap::new(),
                             flushed: BTreeMap::new(),
+                            flushed_era: BTreeMap::new(),
                         });
                         cell.models.last_mut().expect("just pushed")
                     }
@@ -653,17 +679,16 @@ impl GovState {
                 let usage_units = (delta.iter())
                     .map(|(class, d)| ((*class).to_string(), *d))
                     .collect();
-                cell.park(
-                    *window,
-                    UsageDelta {
-                        requests: 0,
-                        billable_requests: 0,
-                        models: vec![busbar_contract::records::ModelTokensDelta {
-                            model: adj.model.to_string(),
-                            usage_units,
-                        }],
-                    },
-                );
+                let parked = UsageDelta {
+                    requests: 0,
+                    billable_requests: 0,
+                    models: vec![busbar_contract::records::ModelTokensDelta {
+                        model: adj.model.to_string(),
+                        usage_units,
+                    }],
+                };
+                cell.park_eras(*window, dated_delta(&parked, adj.entry_era));
+                cell.park(*window, parked);
             }
             cell.dirty = true;
             cell.last_touch = adj.now;
