@@ -185,6 +185,16 @@ fn a_card_edit_mid_window_prices_every_budget_read_and_the_gate_at_the_card_in_f
         "GET /keys/vk_dated/usage and the key spend gauge"
     );
     let hook = gov.budget_state(&after, &key, now);
+    let team_hook = hook
+        .iter()
+        .find(|b| b.bucket_id == team.bucket_id)
+        .expect("the hook view includes the configured team's budget");
+    assert_eq!(team_hook.budget_group.as_deref(), Some("team"));
+    assert_eq!(
+        team_hook.remaining_micros,
+        Some(0),
+        "the dated spend leaves the team's hook view no headroom"
+    );
     assert!(
         hook.iter()
             .all(|b| b.spend_micros_at_current_rate == reference * 10_000),

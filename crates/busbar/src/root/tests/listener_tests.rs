@@ -717,10 +717,11 @@ async fn balancer_hands_off_only_past_margin_and_counts_exactly() {
 
     // A full handoff channel rolls the increment back and serves locally: fill worker 1's
     // channel to capacity, then force a handoff attempt at margin.
+    let mut local_guards = Vec::new();
     for _ in 0..2 {
         let (_c, s, p) = socket_pair(&listener).await;
-        b0.try_hand_off(admitted(s, p));
-        b0.place_local();
+        assert!(b0.try_hand_off(admitted(s, p)).is_some());
+        local_guards.push(b0.place_local());
     }
     // b1/b2 both at 0; drain nothing — fill b1's queue directly.
     let mut fillers = Vec::new();
@@ -729,7 +730,10 @@ async fn balancer_hands_off_only_past_margin_and_counts_exactly() {
         fillers.push(_c);
         match b0.txs[1].try_send(admitted(s, p)) {
             Ok(()) => continue,
-            Err(_) => break, // full
+            Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => break,
+            Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                panic!("worker 1's channel must remain open for the full-channel fallback")
+            }
         }
     }
     // Park worker 2 at a high count so worker 1 (full channel) is the unique argmin.
@@ -739,6 +743,13 @@ async fn balancer_hands_off_only_past_margin_and_counts_exactly() {
     let before = b1.counts[b1.me]
         .0
         .load(std::sync::atomic::Ordering::Relaxed);
+    assert_eq!(
+        b0.counts[b0.me]
+            .0
+            .load(std::sync::atomic::Ordering::Relaxed),
+        before + super::REBALANCE_MARGIN,
+        "the local guards must keep the handoff threshold reached"
+    );
     let (_c, s, p) = socket_pair(&listener).await;
     let kept = b0.try_hand_off(admitted(s, p));
     assert!(
@@ -751,6 +762,14 @@ async fn balancer_hands_off_only_past_margin_and_counts_exactly() {
             .load(std::sync::atomic::Ordering::Relaxed),
         before,
         "the failed handoff must roll its increment back"
+    );
+    drop(local_guards);
+    assert_eq!(
+        b0.counts[b0.me]
+            .0
+            .load(std::sync::atomic::Ordering::Relaxed),
+        0,
+        "releasing the local connections restores this worker's count"
     );
     drop(b1);
 }
