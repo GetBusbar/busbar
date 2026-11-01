@@ -10,6 +10,55 @@ use std::time::Duration;
 
 use super::take_ready;
 
+thread_local! {
+    static AFTER_READY_POP: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+pub(super) fn after_ready_pop() {
+    let hook = AFTER_READY_POP.with(|hook| hook.borrow_mut().take());
+    if let Some(hook) = hook {
+        hook();
+    }
+}
+
+#[test]
+fn a_concurrent_reader_gets_the_partial_messages_suffix_before_the_next_message() {
+    let ready = Arc::new(Mutex::new(VecDeque::from([
+        (b"abcd".to_vec(), true),
+        (b"ef".to_vec(), true),
+    ])));
+    let other = Arc::clone(&ready);
+    let reader = Arc::new(Mutex::new(None));
+    let spawned = Arc::clone(&reader);
+    AFTER_READY_POP.with(|hook| {
+        *hook.borrow_mut() = Some(Box::new(move || {
+            // Select the same boundary on both versions. If pop released the mutex, force the
+            // second read to finish before the first can put its suffix back. With atomic pop
+            // and suffix retention, the second read waits for the first to release its guard.
+            let unlocked = other.try_lock().is_ok();
+            let (finished, done) = mpsc::channel();
+            *spawned.lock().unwrap() = Some(std::thread::spawn(move || {
+                let mut buf = [0; 2];
+                let got = take_ready(&other, &mut buf).map(|(n, end)| (buf[..n].to_vec(), end));
+                let _ = finished.send(());
+                got
+            }));
+            if unlocked {
+                done.recv().unwrap();
+            }
+        }));
+    });
+    let mut buf = [0; 2];
+    let first = take_ready(&ready, &mut buf).map(|(n, end)| (buf[..n].to_vec(), end));
+    let second = reader.lock().unwrap().take().unwrap().join().unwrap();
+    let third = take_ready(&ready, &mut buf).map(|(n, end)| (buf[..n].to_vec(), end));
+    assert_eq!(first, Some((b"ab".to_vec(), false)));
+    assert_eq!(second, Some((b"cd".to_vec(), true)));
+    assert_eq!(third, Some((b"ef".to_vec(), true)));
+    assert_eq!(take_ready(&ready, &mut buf), None);
+}
+
 /// RED (THE DESIGN §5: a plugin's slow I/O answers not-ready, "no blocking thread exists"): a
 /// channel message longer than the reader's buffer is read in parts, its rest kept first in line.
 /// Put back while the queue's lock was still held (the lock taken for the pop lives through the

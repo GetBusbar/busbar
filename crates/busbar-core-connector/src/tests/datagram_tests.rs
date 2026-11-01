@@ -123,6 +123,10 @@ struct St {
     secured: Vec<Vec<u8>>,
     routes: Vec<(u32, u32, Vec<u8>)>,
     pieces: Vec<(u64, Vec<u8>)>,
+    /// Flags for the next scripted batch of pieces; ordinary messages use zero.
+    piece_flags: u16,
+    /// Channel messages the framer was asked to emit, before secure routing.
+    emitted: Vec<Vec<u8>>,
     terms: bool,
     request: (u32, u32, u32),
     candidates: String,
@@ -292,12 +296,13 @@ fn write_answer(st: &mut St, sink: &FramerSink, lane: Option<&DatagramLane>, o: 
                 stream,
                 offset: s.offset,
                 len: s.len,
-                flags: PIECE_END_OF_FRAME,
+                flags: PIECE_END_OF_FRAME | st.piece_flags,
                 ..std::mem::zeroed()
             });
         }
         n += 1;
     }
+    st.piece_flags = 0;
     o.yielded.wire_len = wire_at as u64;
     o.yielded.frame_len = frame_at as u64;
     o.yielded.pieces_len = n as u32;
@@ -405,6 +410,7 @@ impl FramerDoor for Scripted {
             Call::Emit(i, o) => {
                 let lane = read_lane(&mut st, i.lane).expect("a datagram framer reads its lane");
                 let bytes = raw(i.bytes, i.len).to_vec();
+                st.emitted.push(bytes.clone());
                 if !bytes.is_empty() {
                     st.routes.push((lane.bound.max(1), LANE_SECURED, bytes));
                 }
@@ -1567,6 +1573,458 @@ fn a_message_written_in_parts_past_its_bound_is_refused() {
 
 const C_UFRAG: &str = "cfrag";
 const C_PWD: &str = "c-password-0123456789";
+
+/// The existing scripted dialler, retained so tests can deliver later channel heads or failures.
+fn observed_dialled() -> (
+    Arc<crate::dialled::Dialled>,
+    Arc<Scripted>,
+    Arc<super::Pairing>,
+    SocketAddr,
+) {
+    let pairing = super::Pairing::new(Arc::new(Sink::default()), p("127.0.0.1:3478"));
+    observed_dialled_for(pairing)
+}
+
+fn observed_dialled_for(
+    pairing: Arc<super::Pairing>,
+) -> (
+    Arc<crate::dialled::Dialled>,
+    Arc<Scripted>,
+    Arc<super::Pairing>,
+    SocketAddr,
+) {
+    let door = scripted(dialling());
+    let port = crate::udp::ReadyPort::open(crate::udp::bind("127.0.0.1:0").unwrap()).unwrap();
+    let at = port.local_addr();
+    let (framing, _) = DatagramFraming::dial(
+        door.clone(),
+        Arc::new(SessionCert::mint().unwrap()),
+        at,
+        &pairing.opening(),
+        judge(Arc::new(Mutex::new(Vec::new()))),
+        0,
+    )
+    .unwrap();
+    let d = Arc::new(crate::dialled::Dialled::new(
+        framing,
+        port,
+        pairing.clone(),
+        None,
+    ));
+    d.exchanged(
+        head(busbar_contract::transport::wire::WireStatusClass::Success),
+        b"",
+    )
+    .unwrap();
+    let fp = hex(&SessionCert::mint().unwrap().fingerprint());
+    let answer = format!("{FAR_UFRAG} {FAR_PWD} {fp}");
+    d.exchanged(
+        piece(busbar_contract::conn::PieceKind::Body),
+        answer.as_bytes(),
+    )
+    .unwrap();
+    (d, door, pairing, at)
+}
+
+/// A verified peer check drives the scripted batch through the real port and association.
+async fn deliver_dialled(d: &crate::dialled::Dialled, door: &Scripted, at: SocketAddr) -> bool {
+    let peer = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    peer.send_to(&check(HOST_UFRAG, FAR_UFRAG, HOST_PWD, 1), at)
+        .await
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let ready = d.ready(std::task::Waker::noop());
+            if door.st.lock().unwrap().pieces.is_empty() {
+                return ready;
+            }
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .expect("the peer check drives the scripted channel piece")
+}
+
+#[test]
+fn a_pending_final_write_preserves_accepted_parts_until_the_channel_is_named() {
+    use busbar_contract::conn::{ConnError, PieceKind};
+    crate::support::worker().block_on(async {
+        let (d, door, pairing, at) = observed_dialled();
+        d.exchanged(piece(PieceKind::Completion), b"").unwrap();
+        assert!(!pairing.closed());
+        assert_eq!(d.write(b"accepted-", false, false), Ok(9));
+        assert_eq!(d.write(b"tail", true, false), Err(ConnError::Pending));
+        assert_eq!(d.write(b"tail", true, false), Err(ConnError::Pending));
+        {
+            let mut st = door.st.lock().unwrap();
+            st.pieces.push((3, b"label: events\r\n".to_vec()));
+            st.piece_flags = busbar_contract::abi::transport::PIECE_FIELDS;
+        }
+        assert!(!deliver_dialled(&d, &door, at).await);
+        assert_eq!(d.write(b"tail", true, false), Ok(4));
+        assert_eq!(d.write(b"next", true, false), Ok(4));
+        assert_eq!(
+            door.st.lock().unwrap().emitted,
+            vec![b"accepted-tail".to_vec(), b"next".to_vec()],
+            "only rejected final bytes are re-offered; the accepted prefix appears once"
+        );
+        d.close();
+    });
+}
+
+#[test]
+fn wait_readiness_keeps_a_consumed_channel_failure_as_the_next_reads_answer() {
+    use busbar_contract::conn::{ConnError, PieceKind};
+    crate::support::worker().block_on(async {
+        let (d, door, pairing, at) = observed_dialled();
+        d.exchanged(piece(PieceKind::Completion), b"").unwrap();
+        {
+            let mut st = door.st.lock().unwrap();
+            st.pieces.push((3, b"channel failed".to_vec()));
+            st.piece_flags = busbar_contract::abi::transport::PIECE_STREAM_FAILED;
+        }
+        assert!(deliver_dialled(&d, &door, at).await);
+        let mut buf = [0; 32];
+        assert_eq!(
+            d.read(std::task::Waker::noop(), &mut buf),
+            Err(ConnError::Fault)
+        );
+        assert!(pairing.closed(), "the failed association closes both legs");
+        assert!(d.ready(std::task::Waker::noop()));
+        assert_eq!(
+            d.read(std::task::Waker::noop(), &mut buf),
+            Err(ConnError::Fault)
+        );
+        d.close();
+    });
+}
+
+#[test]
+fn a_channel_failure_yielded_by_a_write_stays_terminal_for_the_reader() {
+    use busbar_contract::conn::{ConnError, PieceKind};
+    crate::support::worker().block_on(async {
+        let (d, door, pairing, at) = observed_dialled();
+        d.exchanged(piece(PieceKind::Completion), b"").unwrap();
+        {
+            let mut st = door.st.lock().unwrap();
+            st.pieces.push((3, b"label: events\r\n".to_vec()));
+            st.piece_flags = busbar_contract::abi::transport::PIECE_FIELDS;
+        }
+        assert!(!deliver_dialled(&d, &door, at).await);
+        {
+            let mut st = door.st.lock().unwrap();
+            st.pieces.push((3, b"channel failed".to_vec()));
+            st.piece_flags = busbar_contract::abi::transport::PIECE_STREAM_FAILED;
+        }
+        assert_eq!(d.write(b"message", true, false), Err(ConnError::Fault));
+        assert!(pairing.closed());
+        assert_eq!(
+            d.read(std::task::Waker::noop(), &mut [0; 8]),
+            Err(ConnError::Fault)
+        );
+        d.close();
+    });
+}
+
+#[derive(Default)]
+struct SettledWake(std::sync::atomic::AtomicBool);
+
+impl std::task::Wake for SettledWake {
+    fn wake(self: Arc<Self>) {
+        self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+#[test]
+fn a_settling_exchange_is_pending_and_wakes_readers_after_the_crossing() {
+    use busbar_contract::conn::{ConnError, PieceKind};
+    let rt = crate::support::worker();
+    let handle = rt.handle().clone();
+    rt.block_on(async {
+        let (d, door, pairing, _) = observed_dialled();
+        let (entered, release) = park(&door, Parks::Ingest);
+        let settling = d.clone();
+        let crossing = std::thread::spawn(move || {
+            let _rt = handle.enter();
+            settling.exchanged(piece(PieceKind::Completion), b"")
+        });
+        entered.recv_timeout(Duration::from_secs(5)).unwrap();
+        let woke = Arc::new(SettledWake::default());
+        let waker = std::task::Waker::from(woke.clone());
+        let wrote = d.write(b"later", true, false);
+        let read = d.read(&waker, &mut [0; 8]);
+        let ready = d.ready(&waker);
+        release.send(()).unwrap();
+        let settled = crossing.join().unwrap();
+        assert_eq!(wrote, Err(ConnError::Pending));
+        assert_eq!(read, Err(ConnError::Pending));
+        assert!(!ready, "settlement has not closed a healthy session");
+        assert_eq!(settled, Ok(None));
+        assert!(woke.0.load(std::sync::atomic::Ordering::SeqCst));
+        assert!(!pairing.closed());
+        d.close();
+    });
+}
+
+#[test]
+fn a_close_during_settlement_stays_closed_after_the_crossing_returns() {
+    use busbar_contract::conn::{ConnError, PieceKind};
+    let rt = crate::support::worker();
+    let handle = rt.handle().clone();
+    rt.block_on(async {
+        let (d, door, pairing, _) = observed_dialled();
+        let (entered, release) = park(&door, Parks::Ingest);
+        let settling = d.clone();
+        let crossing = std::thread::spawn(move || {
+            let _rt = handle.enter();
+            settling.exchanged(piece(PieceKind::Completion), b"")
+        });
+        entered.recv_timeout(Duration::from_secs(5)).unwrap();
+        let woke = Arc::new(SettledWake::default());
+        let waker = std::task::Waker::from(woke.clone());
+        let _ = d.ready(&waker);
+        d.close();
+        release.send(()).unwrap();
+        assert_eq!(crossing.join().unwrap(), Err(ConnError::Closed));
+        assert!(woke.0.load(std::sync::atomic::Ordering::SeqCst));
+        assert!(pairing.closed());
+        assert_eq!(d.write(b"late", false, false), Err(ConnError::Closed));
+        assert_eq!(d.read(&waker, &mut [0; 8]), Err(ConnError::Closed));
+    });
+}
+
+struct LineGate {
+    gate: Mutex<Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>>,
+}
+
+impl super::LegSink for LineGate {
+    fn line(&self, _: super::Across, _: Instant) {
+        let gate = self.gate.lock().unwrap().take();
+        if let Some((entered, release)) = gate {
+            entered.send(()).unwrap();
+            release.recv().unwrap();
+        }
+    }
+
+    fn close(&self) {}
+}
+
+struct PortWake(tokio::sync::mpsc::UnboundedSender<()>);
+
+struct RetryWrite {
+    dialled: Arc<crate::dialled::Dialled>,
+    result: Mutex<Option<Result<usize, busbar_contract::conn::ConnError>>>,
+}
+
+impl std::task::Wake for RetryWrite {
+    fn wake(self: Arc<Self>) {
+        *self.result.lock().unwrap() = Some(self.dialled.write(b"next-", false, false));
+    }
+}
+
+#[test]
+fn a_woken_writer_can_accept_bytes_as_soon_as_the_association_comes_home() {
+    use busbar_contract::conn::PieceKind;
+    let rt = crate::support::worker();
+    let handle = rt.handle().clone();
+    rt.block_on(async {
+        let (d, door, _, at) = observed_dialled();
+        d.exchanged(piece(PieceKind::Completion), b"").unwrap();
+        {
+            let mut st = door.st.lock().unwrap();
+            st.pieces.push((3, b"label: events\r\n".to_vec()));
+            st.piece_flags = busbar_contract::abi::transport::PIECE_FIELDS;
+        }
+        assert!(!deliver_dialled(&d, &door, at).await);
+        let (entered, release) = park(&door, Parks::Emit);
+        let writing = d.clone();
+        let first = std::thread::spawn(move || {
+            let _rt = handle.enter();
+            writing.write(b"first", true, false)
+        });
+        entered.recv_timeout(Duration::from_secs(5)).unwrap();
+        let retry = Arc::new(RetryWrite {
+            dialled: d.clone(),
+            result: Mutex::new(None),
+        });
+        let waker = std::task::Waker::from(retry.clone());
+        let ready = d.ready(&waker);
+        release.send(()).unwrap();
+        let wrote = first.join().unwrap();
+        let accepted = retry.result.lock().unwrap().take();
+        let final_part = d.write(b"tail", true, false);
+        d.close();
+        assert!(
+            !ready,
+            "the association was still out when interest was registered"
+        );
+        assert_eq!(wrote, Ok(5));
+        assert_eq!(
+            accepted,
+            Some(Ok(5)),
+            "publication makes write ownership available before waking"
+        );
+        assert_eq!(final_part, Ok(4));
+        assert_eq!(
+            door.st.lock().unwrap().emitted,
+            vec![b"first".to_vec(), b"next-tail".to_vec()]
+        );
+    });
+}
+
+impl std::task::Wake for PortWake {
+    fn wake(self: Arc<Self>) {
+        let _ = self.0.send(());
+    }
+}
+
+#[test]
+fn a_pending_final_write_never_overwrites_another_writers_accepted_part() {
+    use busbar_contract::conn::{ConnError, PieceKind};
+    let rt = crate::support::worker();
+    let handle = rt.handle().clone();
+    rt.block_on(async {
+        let (d, door, _, at) = observed_dialled();
+        d.exchanged(piece(PieceKind::Completion), b"").unwrap();
+        {
+            let mut st = door.st.lock().unwrap();
+            st.pieces.push((3, b"label: events\r\n".to_vec()));
+            st.piece_flags = busbar_contract::abi::transport::PIECE_FIELDS;
+        }
+        assert!(!deliver_dialled(&d, &door, at).await);
+        assert_eq!(d.write(b"accepted-", false, false), Ok(9));
+        let (wake_tx, mut wake_rx) = tokio::sync::mpsc::unbounded_channel();
+        let waker = std::task::Waker::from(Arc::new(PortWake(wake_tx)));
+        assert!(!d.ready(&waker));
+        let (entered, release) = park(&door, Parks::Ingest);
+        let peer = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        peer.send_to(&check(HOST_UFRAG, FAR_UFRAG, HOST_PWD, 2), at)
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(5), wake_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        let driving = d.clone();
+        let drive = std::thread::spawn(move || {
+            let _rt = handle.enter();
+            driving.ready(&waker)
+        });
+        entered.recv_timeout(Duration::from_secs(5)).unwrap();
+        let other = d.clone();
+        let result = Arc::new(Mutex::new(None));
+        let observed = result.clone();
+        crate::dialled::after_next_write_take(move || {
+            let writing = std::thread::spawn(move || other.write(b"middle-", false, false));
+            *observed.lock().unwrap() = Some(writing.join().unwrap());
+        });
+        let final_part = d.write(b"tail", true, false);
+        release.send(()).unwrap();
+        drive.join().unwrap();
+        let concurrent = result.lock().unwrap().take().unwrap();
+        if concurrent == Err(ConnError::Pending) {
+            assert_eq!(d.write(b"middle-", false, false), Ok(7));
+        }
+        assert_eq!(d.write(b"tail", true, false), Ok(4));
+        d.close();
+        assert_eq!(final_part, Err(ConnError::Pending));
+        assert_eq!(
+            concurrent,
+            Err(ConnError::Pending),
+            "the first final write owns its prefix"
+        );
+        assert_eq!(
+            door.st.lock().unwrap().emitted,
+            vec![b"accepted-middle-tail".to_vec()]
+        );
+    });
+}
+
+#[test]
+fn a_read_cannot_overtake_the_older_channel_message_a_wait_is_publishing() {
+    use busbar_contract::conn::{ConnError, PieceKind};
+    let rt = crate::support::worker();
+    let handle = rt.handle().clone();
+    rt.block_on(async {
+        let caller = Arc::new(LineGate {
+            gate: Mutex::new(None),
+        });
+        let pairing = super::Pairing::new(caller.clone(), p("127.0.0.1:3478"));
+        pairing.sort(
+            super::Leg::Caller,
+            vec![got(10, b"kind: audio\r\n", true)],
+            Instant::now(),
+        );
+        let (d, door, _, at) = observed_dialled_for(pairing);
+        {
+            let mut st = door.st.lock().unwrap();
+            st.pieces.push((20, b"kind: audio\r\n".to_vec()));
+            st.piece_flags = busbar_contract::abi::transport::PIECE_FIELDS;
+        }
+        d.exchanged(piece(PieceKind::Completion), b"").unwrap();
+        let (wake_tx, mut wake_rx) = tokio::sync::mpsc::unbounded_channel();
+        let waker = std::task::Waker::from(Arc::new(PortWake(wake_tx)));
+        assert!(!d.ready(&waker), "register the port's pending read");
+        let peer = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        {
+            let mut st = door.st.lock().unwrap();
+            st.pieces
+                .extend([(3, b"older".to_vec()), (20, b"line".to_vec())]);
+        }
+        let (entered_tx, entered) = std::sync::mpsc::channel();
+        let (release, held_back) = std::sync::mpsc::channel();
+        *caller.gate.lock().unwrap() = Some((entered_tx, held_back));
+        peer.send_to(&check(HOST_UFRAG, FAR_UFRAG, HOST_PWD, 1), at)
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(5), wake_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        let waiting = d.clone();
+        let wait_waker = waker.clone();
+        let wait = std::thread::spawn(move || {
+            let _rt = handle.enter();
+            waiting.ready(&wait_waker)
+        });
+        entered.recv_timeout(Duration::from_secs(5)).unwrap();
+        // The older read drained the port, registering its waker again, and is now paused in
+        // pairing.sort before it can publish the older session message. Await a fresh port edge.
+        while wake_rx.try_recv().is_ok() {}
+        door.st.lock().unwrap().pieces.push((3, b"newer".to_vec()));
+        peer.send_to(&check(HOST_UFRAG, FAR_UFRAG, HOST_PWD, 2), at)
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(5), wake_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        let mut buf = [0; 16];
+        let first = d.read(&waker, &mut buf);
+        let mut messages = Vec::new();
+        if let Ok(piece) = &first {
+            messages.push(buf[..piece.len].to_vec());
+        }
+        release.send(()).unwrap();
+        assert!(wait.join().unwrap());
+        while messages.len() < 2 {
+            let piece = futures::future::poll_fn(|cx| match d.read(cx.waker(), &mut buf) {
+                Err(ConnError::Pending) => std::task::Poll::Pending,
+                answer => std::task::Poll::Ready(answer),
+            })
+            .await
+            .unwrap();
+            messages.push(buf[..piece.len].to_vec());
+        }
+        d.close();
+        assert_eq!(messages, vec![b"older".to_vec(), b"newer".to_vec()]);
+        assert_eq!(
+            first,
+            Err(ConnError::Pending),
+            "the older crossing owns publication"
+        );
+    });
+}
 
 /// Arm `door` to park its next `call` crossing: told when it is in, held until released.
 fn park(
