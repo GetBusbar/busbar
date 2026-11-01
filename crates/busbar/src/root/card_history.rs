@@ -877,8 +877,8 @@ impl CardStore {
         }
     }
 
-    /// Re-put every pending entry, oldest first, until each is READY. An entry the store keeps
-    /// REFUSING is alarmed, naming the store's reason, and still re-put: the node never drops it.
+    /// Re-put every pending entry, oldest first, until each is READY. Repeatedly unconfirmed
+    /// owners alarm and remain held, including refusals after an earlier unknown outcome.
     fn spawn_reput(self: &Arc<Self>) {
         {
             let mut state = self.lock();
@@ -896,7 +896,7 @@ impl CardStore {
             .name("card-reput".into())
             .spawn(move || {
                 let mut pause = Duration::from_millis(100);
-                let mut refusals: BTreeMap<EntryKey, u32> = BTreeMap::new();
+                let mut unconfirmed: BTreeMap<EntryKey, u32> = BTreeMap::new();
                 loop {
                     std::thread::sleep(pause);
                     pause = (pause * 2).min(Duration::from_secs(5));
@@ -940,24 +940,23 @@ impl CardStore {
                                     state.pending.retain(|(held, _)| *held != key);
                                     this.publish(&state);
                                 }
-                                refusals.remove(&key);
+                                unconfirmed.remove(&key);
                                 tracing::warn!("rate card entry {key} is confirmed by the store");
                             }
-                            PutOutcome::Refused(why) => {
-                                let n = refusals.entry(key).or_insert(0);
+                            PutOutcome::Refused(why) | PutOutcome::Doubtful(why) => {
+                                let n = unconfirmed.entry(key).or_insert(0);
                                 *n += 1;
                                 if *n == 3 {
                                     let mut state = this.lock();
                                     this.alarm(
                                         &mut state,
                                         format!(
-                                            "the store keeps REFUSING rate card entry {key}: \
-                                             {why}; it is in force on this node and still re-put"
+                                            "the Store has not confirmed rate card entry {key} \
+                                             after repeated retries: {why}; its immutable owner remains pending"
                                         ),
                                     );
                                 }
                             }
-                            PutOutcome::Doubtful(_) => {}
                         }
                     }
                 }
