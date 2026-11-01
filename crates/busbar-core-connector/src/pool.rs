@@ -35,7 +35,7 @@
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
 use busbar_contract::conn::{InstanceId, NeedId};
@@ -137,8 +137,7 @@ type Shard = Mutex<HashMap<PoolKey, Vec<Entry>>>;
 
 /// The pools, one per shard.
 pub(crate) struct Pools {
-    posture: PoolPosture,
-    per_shard: usize,
+    posture: RwLock<PoolPosture>,
     shards: Box<[Shard]>,
     /// The instant the pools were made: what [`Self::reap_due`] counts from.
     epoch: Instant,
@@ -150,7 +149,7 @@ pub(crate) struct Pools {
 impl std::fmt::Debug for Pools {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Pools")
-            .field("posture", &self.posture)
+            .field("posture", &self.posture())
             .field("shards", &self.shards.len())
             .finish_non_exhaustive()
     }
@@ -168,17 +167,46 @@ impl Pools {
     /// The pools for `posture`.
     pub(crate) fn new(posture: PoolPosture) -> Self {
         let count = shard_count();
-        let per_shard = if posture.max_idle_per_host == 0 {
-            0
-        } else {
-            posture.max_idle_per_host.div_ceil(count).max(1)
-        };
         Self {
-            posture,
-            per_shard,
+            posture: RwLock::new(posture),
             shards: (0..count).map(|_| Mutex::new(HashMap::new())).collect(),
             epoch: Instant::now(),
             reap_due: AtomicU64::new(u64::MAX),
+        }
+    }
+
+    /// The applied posture, copied before any connection or plugin is driven.
+    fn posture(&self) -> PoolPosture {
+        *self.posture.read().expect("pool posture")
+    }
+
+    fn per_shard(&self, posture: PoolPosture) -> usize {
+        if posture.max_idle_per_host == 0 {
+            0
+        } else {
+            posture.max_idle_per_host.div_ceil(self.shards.len()).max(1)
+        }
+    }
+
+    /// Bootstrap recovery replaces the posture without replacing the connector or its active
+    /// connections. Retire the old cache: held lines stay with their holders, and idle lines
+    /// close only after every host lock has been released.
+    pub(crate) fn reconfigure(&self, posture: PoolPosture) {
+        let mut gone = Vec::new();
+        {
+            let mut applied = self.posture.write().expect("pool posture");
+            *applied = posture;
+            for shard in &*self.shards {
+                gone.push(std::mem::take(&mut *shard.lock().expect("pool")));
+            }
+            self.reap_due.store(u64::MAX, Ordering::Release);
+        }
+        for map in gone {
+            for entry in map.into_values().flatten() {
+                if entry.line.users() == 0 {
+                    entry.line.close();
+                }
+            }
         }
     }
 
@@ -188,9 +216,9 @@ impl Pools {
     }
 
     /// A line went idle at `now`: the sweep is due by the time its idle time runs out.
-    fn idled(&self, now: Instant) {
+    fn idled(&self, now: Instant, timeout: Duration) {
         let due = now
-            .checked_add(self.posture.idle_timeout)
+            .checked_add(timeout)
             .map_or(u64::MAX, |ends| self.since_epoch(ends));
         self.reap_due.fetch_min(due, Ordering::AcqRel);
     }
@@ -199,6 +227,7 @@ impl Pools {
     /// idle line whose time ran out is dropped from the pool and closed (when nobody holds it),
     /// whatever place the use that found it due is for. Called holding no shard.
     fn reap_if_due(&self, now: Instant) {
+        let posture = self.posture.read().expect("pool posture");
         let at = self.since_epoch(now);
         let due = self.reap_due.load(Ordering::Acquire);
         if due > at
@@ -210,7 +239,7 @@ impl Pools {
             // Not due yet, or another use is sweeping (or a line idled since): its time stands.
             return;
         }
-        let timeout = self.posture.idle_timeout;
+        let timeout = posture.idle_timeout;
         let mut spent = Vec::new();
         let mut next: Option<Instant> = None;
         for shard in &*self.shards {
@@ -236,6 +265,7 @@ impl Pools {
             self.reap_due
                 .fetch_min(self.since_epoch(next), Ordering::AcqRel);
         }
+        drop(posture);
         for line in spent {
             if line.users() == 0 {
                 line.close();
@@ -245,7 +275,7 @@ impl Pools {
 
     /// Whether anything is ever kept.
     pub(crate) fn keeps(&self) -> bool {
-        self.per_shard > 0
+        self.posture().max_idle_per_host > 0
     }
 
     /// The calling thread's shard: assigned on its first use and kept (1.5.5's `get`).
@@ -262,7 +292,8 @@ impl Pools {
     /// Hold a line just dialled for `key` on `shard`: in use by its first exchange, and, once it
     /// multiplexes, shared with concurrent opens to the same place.
     pub(crate) fn hold(&self, shard: usize, key: PoolKey, line: &Arc<Line>) {
-        if !self.keeps() {
+        let posture = self.posture.read().expect("pool posture");
+        if posture.max_idle_per_host == 0 {
             return;
         }
         self.shards[shard]
@@ -290,12 +321,16 @@ impl Pools {
         }
         let now = Instant::now();
         self.reap_if_due(now);
-        let timeout = self.posture.idle_timeout;
         let mut spent = Vec::new();
         // Newest first, as hyper-util's idle list pops: the walk resumes below a line read stale.
         let mut below = usize::MAX;
         let lent = loop {
             let (at, idle) = {
+                let posture = self.posture.read().expect("pool posture");
+                if posture.max_idle_per_host == 0 {
+                    break None;
+                }
+                let timeout = posture.idle_timeout;
                 let mut map = self.shards[shard].lock().expect("pool");
                 let Some(entries) = map.get_mut(key) else {
                     break None;
@@ -339,6 +374,7 @@ impl Pools {
             };
             let fresh = idle.fresh();
             {
+                let _posture = self.posture.read().expect("pool posture");
                 let mut map = self.shards[shard].lock().expect("pool");
                 if let Some(entries) = map.get_mut(key) {
                     if let Some(i) = entries
@@ -374,8 +410,11 @@ impl Pools {
     /// another exchange (past the shard's budget the oldest idle one is closed), else dropped and
     /// closed. A line a holder still holds is left as it is.
     pub(crate) fn release(&self, shard: usize, key: &PoolKey, line: &Arc<Line>) {
-        if !self.keeps() {
-            line.close();
+        let applied = self.posture.read().expect("pool posture");
+        let posture = *applied;
+        if posture.max_idle_per_host == 0 {
+            drop(applied);
+            self.drop_line(shard, key, line);
             return;
         }
         let now = Instant::now();
@@ -389,6 +428,7 @@ impl Pools {
                 // Every dial is held before release. Missing membership means it was removed
                 // (including by instance retirement), so this last holder must close it.
                 drop(map);
+                drop(applied);
                 line.close();
                 self.reap_if_due(now);
                 return;
@@ -398,13 +438,13 @@ impl Pools {
             match (at, keep) {
                 (Some(i), true) => {
                     entries[i].idle = Some(now);
-                    self.idled(now);
+                    self.idled(now, posture.idle_timeout);
                 }
                 (Some(i), false) => spent.push(entries.remove(i).line),
                 (None, _) => spent.push(Arc::clone(line)),
             }
             // The idle time ran out, or past the budget: the oldest idle lines go.
-            let timeout = self.posture.idle_timeout;
+            let timeout = posture.idle_timeout;
             entries.retain(|e| {
                 let expired = e
                     .idle
@@ -419,9 +459,10 @@ impl Pools {
                 .enumerate()
                 .filter_map(|(i, e)| e.idle.map(|since| (since, i)))
                 .collect();
-            if idle.len() > self.per_shard {
+            let per_shard = self.per_shard(posture);
+            if idle.len() > per_shard {
                 idle.sort();
-                let mut drop: Vec<usize> = idle[..idle.len() - self.per_shard]
+                let mut drop: Vec<usize> = idle[..idle.len() - per_shard]
                     .iter()
                     .map(|(_, i)| *i)
                     .collect();
@@ -434,6 +475,7 @@ impl Pools {
                 map.remove(key);
             }
         }
+        drop(applied);
         for line in spent {
             if line.users() == 0 {
                 line.close();

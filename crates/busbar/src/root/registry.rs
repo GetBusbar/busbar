@@ -235,6 +235,7 @@ pub type Built = (Registered, Arc<HostWire>);
 
 /// A transport DOOR dropped into `plugins.dir`: a memory-ABI entry admitted through the one
 /// dispatcher's door validation and served over the host's sockets (`crate::root::doors`).
+#[derive(Clone)]
 pub struct DroppedDoor {
     /// Its registry key: its own claim.
     pub key: &'static str,
@@ -257,15 +258,18 @@ pub struct DroppedDoor {
 }
 
 /// The transports a plugins directory contributes.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub struct Dropped {
-    /// Memory-ABI transport doors.
-    pub doors: &'static [DroppedDoor],
+    /// A snapshot of the memory-ABI transport doors. An owned inventory may be replaced after
+    /// Store recovery without invalidating a reader or permanently retaining obsolete doors.
+    pub doors: std::borrow::Cow<'static, [DroppedDoor]>,
 }
 
 impl Dropped {
     /// Nothing dropped in.
-    pub const NONE: Self = Self { doors: &[] };
+    pub const NONE: Self = Self {
+        doors: std::borrow::Cow::Borrowed(&[]),
+    };
 }
 
 /// One row of the transport axis, whichever door it came in by.
@@ -373,7 +377,7 @@ pub fn seal(
     dropped: Dropped,
     settings: TransportSettings,
 ) -> Result<BootRegistry, BootRefusal> {
-    let registered: Vec<Registered> = compose(linked.transports, dropped, &settings)?
+    let registered: Vec<Registered> = compose(linked.transports, dropped.clone(), &settings)?
         .into_iter()
         .map(|(row, _)| row)
         .collect();

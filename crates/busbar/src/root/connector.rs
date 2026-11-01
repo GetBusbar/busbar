@@ -19,7 +19,7 @@ use busbar_contract::abi::mechanism::door::DoorFn;
 use busbar_contract::transport::TransportSettings;
 use busbar_core_connector::framer::FramerDoor;
 use busbar_core_connector::pool::PoolPosture;
-use busbar_core_connector::registry::Entry;
+use busbar_core_connector::registry::{Entry, Transports};
 use busbar_core_connector::{process, Connector};
 use busbar_kernel::config::{Destinations, RootCfg};
 use busbar_kernel::host_services::DestJudge;
@@ -234,7 +234,7 @@ pub fn boot(
         || {
             declared(
                 entries(doors, settings)?,
-                crate::root::boot::dropped_transports(settings).doors,
+                &crate::root::boot::dropped_transports(settings).doors,
             )
         },
         dest,
@@ -262,6 +262,50 @@ pub fn boot(
         eprintln!("busbar: a second connector was built; the process has one");
         std::process::exit(2);
     })
+}
+
+/// Finish bootstrap recovery with freshly opened effective transports and listener/pool
+/// metadata. The bootstrap Store's declared needs and pending connections keep their captured
+/// doors; later declarations and listeners use the recovered configuration. Fresh OPEN also
+/// supports transports whose settings cannot be changed through REFRESH.
+///
+/// # Errors
+///
+/// An effective transport would not open or its claims do not compose. Nothing is published and
+/// the bootstrap connector, its declarations and the Store anchor remain held by their owners.
+pub fn finalize_boot(settings: &TransportSettings, listens: &[&str]) -> Result<(), String> {
+    let connector = installed().ok_or("the bootstrap connector is not installed")?;
+    let dropped = crate::root::boot::open_dropped_transports(settings)?;
+    let dropped = finalize_prepared(
+        connector,
+        crate::LINKED_TRANSPORT_DOORS,
+        settings,
+        listens,
+        dropped,
+    )?;
+    crate::root::boot::publish_dropped_transports(dropped);
+    Ok(())
+}
+
+fn finalize_prepared(
+    connector: &Connector,
+    doors: &[(&str, DoorFn)],
+    settings: &TransportSettings,
+    listens: &[&str],
+    dropped: crate::root::registry::Dropped,
+) -> Result<crate::root::registry::Dropped, String> {
+    let view = prepare_effective(doors, settings, &dropped)?;
+    connector.finalize_boot_metadata(view, &process::own_ports(listens), pool_posture(settings));
+    Ok(dropped)
+}
+
+fn prepare_effective(
+    doors: &[(&str, DoorFn)],
+    settings: &TransportSettings,
+    dropped: &crate::root::registry::Dropped,
+) -> Result<Transports, String> {
+    let entries = declared(entries(doors, settings)?, &dropped.doors)?;
+    Transports::new(entries).map_err(|error| error.to_string())
 }
 
 /// THE REACTOR A SOCKET A PLUGIN OPENS FROM A DISPATCHER WORKER REGISTERS ON

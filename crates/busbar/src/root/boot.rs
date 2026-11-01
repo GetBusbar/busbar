@@ -1057,13 +1057,15 @@ pub fn unbound_sections() -> Vec<&'static str> {
 }
 
 /// The `base_url` of every resolved provider (its catalog definition merged with the document's
-/// deployment), noted by `main` once the configuration resolves and before the seal opens the
-/// dropped-in transports ([`transport_uses`]).
-static PROVIDER_URLS: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+/// deployment), noted by `main` before bootstrap and again after Store recovery, before opening
+/// the effective dropped-in transports ([`transport_uses`]).
+static PROVIDER_URLS: std::sync::RwLock<Vec<String>> = std::sync::RwLock::new(Vec::new());
 
-/// Note the resolved providers' `base_url`s (`main`, once, before the seal).
+/// Note the resolved providers' `base_url`s before opening bootstrap or effective transports.
 pub fn note_provider_urls(urls: impl IntoIterator<Item = String>) {
-    let _ = PROVIDER_URLS.set(urls.into_iter().collect());
+    let next = urls.into_iter().collect();
+    let previous = std::mem::replace(&mut *PROVIDER_URLS.write().expect("provider URLs"), next);
+    drop(previous);
 }
 
 /// WHAT SELECTS A DROPPED-IN TRANSPORT (Law 7; `BUSBAR-1.6.0.md` §4, "a transport loads iff a
@@ -1073,13 +1075,8 @@ pub fn note_provider_urls(urls: impl IntoIterator<Item = String>) {
 /// second owner of it, opened so the seal refuses the boot as it refuses a second linked row with
 /// that key (two transports claiming one scheme refuse boot).
 fn transport_uses() -> Uses {
-    let mut uses = plan(&config_path()).reaching(
-        PROVIDER_URLS
-            .get()
-            .map_or(&[][..], Vec::as_slice)
-            .iter()
-            .map(String::as_str),
-    );
+    let urls = PROVIDER_URLS.read().expect("provider URLs").clone();
+    let mut uses = plan(&config_path()).reaching(urls.iter().map(String::as_str));
     uses.schemes.extend(
         crate::LINKED_TRANSPORT_DOORS
             .iter()
@@ -1200,22 +1197,45 @@ pub fn door_planes() -> &'static [(String, DoorPlane)] {
 }
 
 /// THE TRANSPORTS DROPPED INTO THE CONFIGURED `plugins.dir` (the registry [`dropped_from_config`]
-/// scanned): every `kind: transport` plugin it admitted, loaded ONCE and held for the process, so the
-/// boot seal folds them beside the linked wires (`crate::root::registry::compose`) and a wire the
-/// data door serves through lives as long as the door. Each image is a memory-ABI door, opened
-/// through the one dispatcher and served over the host's sockets (`crate::root::doors`, opened with
-/// the deployment's `settings`; the boot's call is the one that loads them). A trusted transport
+/// scanned): the current opened inventory, first the bootstrap dependencies and then the
+/// effective instances after Store recovery. The boot seal folds that snapshot beside the linked
+/// wires (`crate::root::registry::compose`). Each image is a memory-ABI door opened through the
+/// one dispatcher and served over the host's sockets (`crate::root::doors`, opened with the
+/// deployment's `settings`). Bootstrap declarations and pending IO retain their captured doors
+/// when the inventory is replaced. A trusted transport
 /// that will not LOAD, or that exports no door, refuses the boot, as a linked plane's would.
 pub fn dropped_transports(
     settings: &busbar_contract::transport::TransportSettings,
 ) -> crate::root::registry::Dropped {
-    static WIRES: std::sync::OnceLock<Vec<crate::root::registry::DroppedDoor>> =
-        std::sync::OnceLock::new();
-    let doors = WIRES.get_or_init(|| {
-        let Some(registry) = REGISTRY.get() else {
-            return Vec::new();
-        };
-        let opened = registry
+    if let Some(opened) = WIRES.lock().expect("transport inventory").clone() {
+        return opened;
+    }
+    let opened = open_dropped_transports(settings).unwrap_or_else(|refusal| {
+        eprintln!("busbar: {refusal}");
+        std::process::exit(2);
+    });
+    let retained = {
+        let mut wires = WIRES.lock().expect("transport inventory");
+        wires.get_or_insert_with(|| opened.clone()).clone()
+    };
+    // A concurrent reader may have installed the inventory first. Discard this reader's fresh
+    // doors only after releasing the inventory lock: their close callbacks may re-enter hosts.
+    drop(opened);
+    retained
+}
+
+/// The current boot inventory. Snapshots own their doors, so publishing effective settings can
+/// release the obsolete inventory while bootstrap needs and pending IO retain their own doors.
+static WIRES: std::sync::Mutex<Option<crate::root::registry::Dropped>> =
+    std::sync::Mutex::new(None);
+
+/// Prepare fresh dropped-in instances without changing the inventory serving bootstrap needs.
+pub(crate) fn open_dropped_transports(
+    settings: &busbar_contract::transport::TransportSettings,
+) -> Result<crate::root::registry::Dropped, String> {
+    let doors = match REGISTRY.get() {
+        None => Vec::new(),
+        Some(registry) => registry
             .open_transport_entries(&crate::root::doors::bind(), &transport_uses(), plugin_logs())
             .and_then(|entries| {
                 entries
@@ -1243,13 +1263,24 @@ pub fn dropped_transports(
                         })
                     })
                     .collect::<Result<Vec<_>, String>>()
-            });
-        opened.unwrap_or_else(|refusal| {
-            eprintln!("busbar: {refusal}");
-            std::process::exit(2);
-        })
-    });
-    crate::root::registry::Dropped { doors }
+            })?,
+    };
+    Ok(crate::root::registry::Dropped {
+        doors: std::borrow::Cow::Owned(doors),
+    })
+}
+
+/// Publish the inventory only after every effective transport opened and its view validated.
+pub(crate) fn publish_dropped_transports(dropped: crate::root::registry::Dropped) {
+    publish_transport_inventory(&WIRES, dropped);
+}
+
+fn publish_transport_inventory(
+    wires: &std::sync::Mutex<Option<crate::root::registry::Dropped>>,
+    dropped: crate::root::registry::Dropped,
+) {
+    let previous = wires.lock().expect("transport inventory").replace(dropped);
+    drop(previous);
 }
 
 /// THE BOOT JOURNAL, COMPOSED — the extracted seam [`book`] calls, wired against a store lane so its
@@ -1426,3 +1457,7 @@ pub fn no_record_slots(store: &str) -> String {
 #[cfg(test)]
 #[path = "tests/boot.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "tests/transport_inventory.rs"]
+mod transport_inventory_tests;

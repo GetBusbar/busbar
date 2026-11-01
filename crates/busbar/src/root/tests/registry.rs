@@ -1041,7 +1041,7 @@ fn two_linked_door_rows_are_bound_under_two_distinct_labels() {
 
 fn one_door() -> Dropped {
     Dropped {
-        doors: &dropped_doors()[..1],
+        doors: std::borrow::Cow::Borrowed(&dropped_doors()[..1]),
     }
 }
 
