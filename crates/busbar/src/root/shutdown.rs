@@ -7,7 +7,7 @@
 //! the store before the process is gone, whichever transport the answer went out on (ruling H2
 //! U10; BUSBAR-1.6.0.md THE DESIGN, §7):
 //!
-//! 1. the budget and metering write-behind, flushed synchronously;
+//! 1. the budget and metering write-behind, each final flush awaited off the runtime;
 //! 2. the plane record write-behind, drained ([`crate::root::serve::drain_records`]);
 //! 3. the journal's lane to the configured store, drained under the same deadline
 //!    ([`crate::root::serve::RECORD_DRAIN`]): on a node with no data directory the store is where
@@ -28,25 +28,46 @@ use crate::root::serve::{drain_records, LateServices, RECORD_DRAIN};
 
 /// Run the shutdown tail: flush `governance`'s write-behind, drain the plane records `late`
 /// queued, then drain the journal lane of the book `journal` holds (a book over the configured
-/// store has one; none, or a book with no lane, has nothing queued). Returns once each has drained
-/// or its deadline passed; a step that did not drain is logged, never fatal.
+/// store has one; none, or a book with no lane, has nothing queued). Governance waits for its store
+/// calls to return; the record drains retain their deadlines. Failures are logged, never fatal.
 pub async fn tail(
     governance: Option<Arc<GovState>>,
     late: &LateServices,
     journal: Option<&Arc<Mutex<Durability>>>,
 ) {
-    // BUDGET WRITE-BEHIND: one FINAL, SYNCHRONOUS flush after the graceful drain, so a graceful stop
-    // persists the freshest accrued spend/requests before the process exits. The background
-    // flusher's shutdown arm also flushes, but it is a fire-and-forget task that could lose the race
-    // with process exit; flushing inline here guarantees durability (this call blocks briefly under
-    // the budget lock, off any request path — the serving side has already stopped).
+    // The background flusher is not joined by either caller. Own and await the final writes here
+    // before retiring records and the host lease. Store progress may require this runtime, so the
+    // synchronous final methods run on the blocking pool. A failed write reports terminal loss;
+    // completion of the attempt alone does not promise persistence.
     if let Some(gov) = governance {
-        let n = gov.flush_budgets();
-        tracing::info!(flushed = n, "budget counters flushed on shutdown");
-        // The flusher task's own shutdown arm also flushes metering, but it is fire-and-forget and
-        // can lose the race with process exit (same reason the budget flush above is inline here).
-        let m = gov.flush_metering();
-        tracing::info!(flushed = m, "metering rows flushed on shutdown");
+        let budgets = gov.clone();
+        let dispatch = tracing::dispatcher::get_default(Clone::clone);
+        match tokio::task::spawn_blocking(move || {
+            tracing::dispatcher::with_default(&dispatch, || budgets.flush_budgets_final())
+        })
+        .await
+        {
+            Ok(n) => tracing::info!(flushed = n, "budget shutdown flush completed"),
+            Err(error) => tracing::error!(
+                panicked = error.is_panic(),
+                cancelled = error.is_cancelled(),
+                "budget shutdown flush task failed"
+            ),
+        }
+        // A budget task panic must not skip the independent metering flush or record retirement.
+        let dispatch = tracing::dispatcher::get_default(Clone::clone);
+        match tokio::task::spawn_blocking(move || {
+            tracing::dispatcher::with_default(&dispatch, || gov.flush_metering_final())
+        })
+        .await
+        {
+            Ok(n) => tracing::info!(flushed = n, "metering shutdown flush completed"),
+            Err(error) => tracing::error!(
+                panicked = error.is_panic(),
+                cancelled = error.is_cancelled(),
+                "metering shutdown flush task failed"
+            ),
+        }
     }
     // THE PLANE RECORD WRITE-BEHIND, drained before the store closes.
     if !drain_records(late).await {
