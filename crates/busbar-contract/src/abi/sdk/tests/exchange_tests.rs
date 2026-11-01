@@ -437,9 +437,10 @@ fn a_request_timeout_is_clamped_to_the_ops_deadline() {
     let _g = SERIAL
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let long = Request {
-        timeout_ms: 60_000,
-        ..post()
+    let long = {
+        let mut request = post();
+        request.timeout_ms = 60_000;
+        request
     };
     let r = run(
         http_reply(),
@@ -450,9 +451,10 @@ fn a_request_timeout_is_clamped_to_the_ops_deadline() {
     );
     assert!(r.answered.is_ok());
     assert_eq!(r.framed.timeout_ms, 10_000, "clamped");
-    let short = Request {
-        timeout_ms: 2_000,
-        ..post()
+    let short = {
+        let mut request = post();
+        request.timeout_ms = 2_000;
+        request
     };
     let r = run(
         http_reply(),
@@ -495,17 +497,19 @@ fn a_stream_that_is_not_framed_refuses_a_request() {
 /// RED: a pseudo-field (or a line break) in a request's fields is refused before anything is sent.
 #[test]
 fn a_pseudo_field_in_a_request_is_refused() {
-    let pseudo = Request {
-        fields: vec![(b":path".to_vec(), b"/x".to_vec())],
-        ..post()
+    let pseudo = {
+        let mut request = post();
+        request.fields = vec![(b":path".to_vec(), b"/x".to_vec())];
+        request
     };
     assert!(matches!(
         Exchange::request(pseudo),
         Err(ConnFailure::Refused(t)) if t.contains("pseudo-field")
     ));
-    let split = Request {
-        fields: vec![(b"x-a".to_vec(), b"1\r\nx-b: 2".to_vec())],
-        ..post()
+    let split = {
+        let mut request = post();
+        request.fields = vec![(b"x-a".to_vec(), b"1\r\nx-b: 2".to_vec())];
+        request
     };
     assert!(matches!(
         Exchange::request(split),

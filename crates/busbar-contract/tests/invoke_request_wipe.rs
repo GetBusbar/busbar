@@ -13,7 +13,7 @@ use busbar_contract::ir::invoke::InvokeReq;
 use serde_json::{json, Value};
 
 thread_local! {
-    static WATCH: Cell<Option<(*mut u8, usize)>> = const { Cell::new(None) };
+    static WATCH: Cell<Option<(usize, usize)>> = const { Cell::new(None) };
     static WIPED: Cell<Option<bool>> = const { Cell::new(None) };
 }
 
@@ -29,14 +29,18 @@ unsafe impl GlobalAlloc for InspectBeforeFree {
 
     unsafe fn dealloc(&self, pointer: *mut u8, layout: Layout) {
         let _ = WATCH.try_with(|watch| {
-            if let Some((watched, len)) = watch.get().filter(|(watched, _)| *watched == pointer) {
+            if let Some((_, len)) = watch
+                .get()
+                .filter(|(address, _)| *address == pointer.addr())
+            {
                 watch.set(None);
                 let wiped = len <= layout.size()
                     && (0..len).all(|index| {
                         // SAFETY: these bytes were initialized String contents when registered,
                         // and the matching live allocation has not yet reached System.dealloc.
-                        // No spare capacity, allocation padding, or freed memory is read.
-                        unsafe { watched.add(index).read_volatile() == 0 }
+                        // Read through dealloc's current owning pointer, not the shared
+                        // registration borrow. No spare capacity, padding, or freed memory is read.
+                        unsafe { pointer.add(index).read_volatile() == 0 }
                     });
                 let _ = WIPED.try_with(|result| result.set(Some(wiped)));
             }
@@ -51,7 +55,7 @@ static ALLOCATOR: InspectBeforeFree = InspectBeforeFree;
 
 fn watch(bytes: &[u8]) {
     assert!(!bytes.is_empty());
-    WATCH.with(|watched| watched.set(Some((bytes.as_ptr().cast_mut(), bytes.len()))));
+    WATCH.with(|watched| watched.set(Some((bytes.as_ptr().addr(), bytes.len()))));
     WIPED.with(|result| result.set(None));
 }
 

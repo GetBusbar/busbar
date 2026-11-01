@@ -1009,10 +1009,11 @@ struct Forward;
 impl Hook for Forward {
     fn decide(&self, _: &Decoded<'_>, op: &Op<'_>) -> Poll<Verdict> {
         op.exchange(0, Some("http://far.example"), || {
-            Ok(Request {
-                method: b"POST".to_vec(),
-                target: b"/".to_vec(),
-                ..Request::default()
+            Ok({
+                let mut request = Request::default();
+                request.method = b"POST".to_vec();
+                request.target = b"/".to_vec();
+                request
             })
         })
         .map(|r| match r {
@@ -2289,10 +2290,11 @@ fn bounded_op_failures_keep_the_earlier_head_and_head_only_ops_never_read_a_body
                 || {
                     PROBE.with(|probe| probe.borrow_mut().as_mut().unwrap().built += 1);
                     Ok((
-                        Request {
-                            method: b"POST".to_vec(),
-                            target: b"/".to_vec(),
-                            ..Request::default()
+                        {
+                            let mut request = Request::default();
+                            request.method = b"POST".to_vec();
+                            request.target = b"/".to_vec();
+                            request
                         },
                         Vec::new(),
                     ))

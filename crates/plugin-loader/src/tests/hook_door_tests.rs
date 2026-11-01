@@ -379,10 +379,11 @@ mod sdk_refresh {
             self.probe.calls.lock().unwrap().push(self.secret.clone());
             op.exchange_sealed(0, Some("http://hook.example"), || {
                 Ok((
-                    Request {
-                        method: b"POST".to_vec(),
-                        target: b"/hook".to_vec(),
-                        ..Request::default()
+                    {
+                        let mut request = Request::default();
+                        request.method = b"POST".to_vec();
+                        request.target = b"/hook".to_vec();
+                        request
                     },
                     vec![(0, b"authorization".to_vec(), self.cred.field())],
                 ))
