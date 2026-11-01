@@ -13,6 +13,37 @@ fn zeroed<T>() -> T {
     unsafe { std::mem::zeroed() }
 }
 
+#[test]
+fn once_preserves_route_flags_in_every_builder_position() {
+    use crate::abi::plane::{ArriveOut, ROUTE_COUNTED, ROUTE_ONCE, ROUTE_SESSION, ROUTE_STREAM};
+    for once_at in 0..=3 {
+        let mut raw: ArriveOut = zeroed();
+        let mut out = Out::new(&mut raw);
+        for at in 0..=3 {
+            if at == once_at {
+                out.once();
+            }
+            match at {
+                0 => out.session(),
+                1 => out.stream(),
+                2 => out.counted(),
+                _ => {}
+            }
+        }
+        assert_eq!(
+            raw.route_flags,
+            ROUTE_ONCE | ROUTE_SESSION | ROUTE_STREAM | ROUTE_COUNTED,
+            "once at builder position {once_at}"
+        );
+        Out::new(&mut raw).once();
+        assert_eq!(
+            raw.route_flags,
+            ROUTE_ONCE | ROUTE_SESSION | ROUTE_STREAM | ROUTE_COUNTED,
+            "repeating once preserves every flag"
+        );
+    }
+}
+
 /// A call's holders for a test `out` (leaked: the test process is short).
 fn holders() -> &'static Holders {
     Box::leak(Box::default())

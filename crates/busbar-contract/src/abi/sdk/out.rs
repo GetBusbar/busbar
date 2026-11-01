@@ -379,7 +379,8 @@ impl Out<'_, crate::abi::plane::ArriveOut> {
     /// THE UNIT'S OPERATION IS PERFORMED AT MOST ONCE ([`crate::abi::plane::ROUTE_ONCE`]): a member
     /// that answered with a failure is not retried on another.
     pub fn once(&mut self) {
-        self.set(|o| &o.route_flags, crate::abi::plane::ROUTE_ONCE);
+        let flags = self.get().route_flags | crate::abi::plane::ROUTE_ONCE;
+        self.set(|o| &o.route_flags, flags);
     }
 
     /// THE UNIT IS SERVED AS A DUPLEX SESSION ([`crate::abi::plane::ROUTE_SESSION`]): its pieces

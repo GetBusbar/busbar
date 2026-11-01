@@ -15,6 +15,162 @@ use crate::support::{Knobs, TestDoor};
 mod loan_tests;
 
 #[test]
+fn sdk_sink_keeps_deferred_final_reason_with_its_first_piece_after_an_interim() {
+    use std::collections::VecDeque;
+
+    use busbar_contract::abi::mechanism::call::{InHead, OutHead};
+    use busbar_contract::abi::mechanism::lifecycle::{slot as lifecycle, OpenIn, OpenOut};
+    use busbar_contract::abi::sdk::door::Entry;
+    use busbar_contract::abi::sdk::transport::sink::{self, HeadWords, Owed, Piece};
+    use busbar_contract::abi::sdk::{HostBuf, Instance, Lent, Out, Safe, SafeSlot};
+    use busbar_contract::abi::transport::{slot, IngestIn};
+
+    struct OwedHeads(VecDeque<Piece<Vec<u8>>>);
+    impl Owed<Vec<u8>> for OwedHeads {
+        fn wire_into(&mut self, _: &mut HostBuf<'_, u8>) {}
+        fn wire_pending(&self) -> bool {
+            false
+        }
+        fn pieces(&mut self) -> &mut VecDeque<Piece<Vec<u8>>> {
+            &mut self.0
+        }
+        fn next_deadline(&self) -> Option<u64> {
+            None
+        }
+        fn ended(&self) -> bool {
+            false
+        }
+        fn rest(bytes: &mut Vec<u8>, at: usize) {
+            bytes.drain(..at);
+        }
+    }
+    type State = std::sync::Mutex<OwedHeads>;
+    struct Open;
+    impl SafeSlot for Open {
+        type State = State;
+        type In = OpenIn;
+        type Out = OpenOut;
+        fn call(
+            instance: Instance<'_, State>,
+            _: Lent<'_, OpenIn>,
+            _: Out<'_, OpenOut>,
+        ) -> Outcome {
+            instance.open(State::new(OwedHeads(VecDeque::from([
+                Piece {
+                    status: Some(103),
+                    head: Some(HeadWords::reason(b"Hint".to_vec())),
+                    ..Piece::fields(7, b"x-hint: yes\r\n".to_vec())
+                },
+                Piece {
+                    status: Some(200),
+                    head: Some(HeadWords::reason(b"OK".to_vec())),
+                    ..Piece::fields(7, b"long-name: v\r\n".to_vec())
+                },
+            ]))));
+            Outcome::Ready
+        }
+    }
+    struct Fill;
+    impl SafeSlot for Fill {
+        type State = State;
+        type In = IngestIn;
+        type Out = FramerOut;
+        fn call(
+            instance: Instance<'_, State>,
+            input: Lent<'_, IngestIn>,
+            mut out: Out<'_, FramerOut>,
+        ) -> Outcome {
+            sink::fill(
+                &mut *instance.get().unwrap().lock().unwrap(),
+                input.field(|i| &i.sink),
+                &mut out,
+                |code| u8::try_from(code / 100).unwrap_or(0),
+                |_| 0,
+            );
+            Outcome::Ready
+        }
+    }
+    struct Close;
+    impl SafeSlot for Close {
+        type State = State;
+        type In = InHead;
+        type Out = OutHead;
+        fn call(
+            instance: Instance<'_, State>,
+            _: Lent<'_, InHead>,
+            _: Out<'_, OutHead>,
+        ) -> Outcome {
+            assert!(instance.get().unwrap().lock().unwrap().0.is_empty());
+            Outcome::Ready
+        }
+    }
+    let mut opened: OpenOut = blank_out();
+    // SAFETY: a fresh SDK open with live, zeroed ABI input/output; it mints the instance below.
+    assert_eq!(
+        unsafe {
+            Safe::<Open>::enter(
+                std::ptr::null_mut(),
+                lifecycle::OPEN,
+                &OpenIn::default(),
+                &mut opened,
+            )
+        },
+        Outcome::Ready
+    );
+    let mut buffers = Buffers::new(1, 24, 4);
+    let mut yielded = Yielded::default();
+    for call in 0..2 {
+        let input = IngestIn {
+            sink: buffers.sink(),
+            ..IngestIn::default()
+        };
+        let mut out: FramerOut = blank_out();
+        // SAFETY: the matching SDK open owns this live instance; buffers owns the lent sink.
+        assert_eq!(
+            unsafe { Safe::<Fill>::enter(opened.instance, slot::INGEST, &input, &mut out) },
+            Outcome::Ready
+        );
+        // The protocol adapter classifies informational responses after the generic sink fill.
+        for piece in &mut buffers.pieces[..out.yielded.pieces_len as usize] {
+            if piece.code == 103 {
+                piece.flags |= PIECE_INTERIM;
+            }
+        }
+        assert_eq!(out.yielded.pieces_len, 1);
+        assert_eq!(out.yielded.heads_len, 1);
+        assert_eq!(buffers.take(&out, &mut yielded).unwrap(), call == 1);
+        if call == 0 {
+            assert!(yielded.heads.is_empty());
+            assert!(yielded.pieces.is_empty());
+            assert_eq!(yielded.interim.len(), 1);
+            assert_eq!(
+                yielded.interim[0].reason.as_deref(),
+                Some(b"Hint".as_slice())
+            );
+        }
+    }
+    // SAFETY: this is the matching instance's only close, after both fills returned.
+    assert_eq!(
+        unsafe {
+            Safe::<Close>::enter(
+                opened.instance,
+                lifecycle::CLOSE,
+                &InHead::default(),
+                &mut OutHead::default(),
+            )
+        },
+        Outcome::Ready
+    );
+    assert_eq!(yielded.interim.len(), 1);
+    assert_eq!(yielded.pieces.len(), 1);
+    assert_eq!(yielded.pieces[0].status_code, Some(200));
+    assert_eq!(yielded.pieces[0].bytes, b"long-name: v\r\n");
+    assert_eq!(yielded.pieces[0].reason.as_deref(), Some(b"OK".as_slice()));
+    assert_eq!(yielded.heads.len(), 1);
+    assert_eq!(yielded.heads[0].reason.as_deref(), Some(b"OK".as_slice()));
+}
+
+#[test]
 fn a_full_sink_is_re_called_until_every_byte_is_out() {
     let door = Arc::new(TestDoor::identity("bytes"));
     let (mut f, _) =
