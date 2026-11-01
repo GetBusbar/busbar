@@ -400,8 +400,8 @@ enum Source<'a> {
 /// **THE ONE FUNCTION, AS AN ACCUMULATOR.** `money = f(ledger counts, dated ratecard)`.
 ///
 /// Every spend figure in this tree is this fold. [`price`], [`price_in_view`] and [`price_exact`]
-/// drive it over a slice of [`LedgerEntry`]; the read-time derivation
-/// ([`crate::cost::derive_spend_micros`]), the settlement lookup ([`crate::cost::price_at_card`]),
+/// drive it over a slice of [`LedgerEntry`]; the metering projection
+/// ([`crate::cost::MeteredRow`]), the settlement lookup ([`crate::cost::price_at_card`]),
 /// the kernel's enforcement reads and the budget door drive it over the rows THEY hold — borrowed,
 /// with no conversion allocation — because a row is a lane, some counts keyed by class, a fee
 /// count, a tier and an instant in every book, and asking the caller to rebuild a `LedgerEntry`

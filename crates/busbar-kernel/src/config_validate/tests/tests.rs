@@ -5063,9 +5063,22 @@ fn test_validate_rate_card_entry_omitting_a_tier_is_accepted_and_bills_that_clas
     // micro-units: 1,000 micro-units is one whole unit.
     let micros = |card: &std::collections::BTreeMap<String, config::RateEntryCfg>,
                   units: &std::collections::BTreeMap<String, u64>| {
-        crate::cost::CostModel::resolve_parts(Some(card), 0, &std::collections::BTreeMap::new())
-            .derive_spend_micros([("claude-sonnet", units)].into_iter(), 0, false)
-            .expect("the model is on the card")
+        let model = crate::cost::CostModel::resolve_parts(
+            Some(card),
+            0,
+            &std::collections::BTreeMap::new(),
+        );
+        let entry = units.iter().fold(
+            busbar_kernel_ledger::cost::LedgerEntry::new("claude-sonnet", 0),
+            |entry, (class, count)| entry.with_whole(class, *count),
+        );
+        busbar_kernel_ledger::cost::price_ledger(
+            &[entry],
+            &busbar_kernel_ledger::cost::History::opening(model.card().clone(), 0),
+        )
+        .expect("the model is on the card")
+        .micros_i64()
+        .expect("the fixture fits")
     };
     let a_day_of_cache_reads =
         std::collections::BTreeMap::from([("cache_read".to_string(), 10_000_000u64)]);
