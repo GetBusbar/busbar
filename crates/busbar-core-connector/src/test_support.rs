@@ -22,6 +22,80 @@ use std::sync::{Arc, Mutex};
 use rustls::pki_types::pem::PemObject;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 
+/// A real held datagram upstream for composition-root tests. Its exchange, writer, reader and
+/// teardown are the connector's private `Dialled` implementation, with no substitute leg sink.
+pub struct DatagramSession(crate::dialled::Dialled);
+
+impl DatagramSession {
+    /// Hold a begun association until its exchange settles it and attaches its actual leg.
+    #[must_use]
+    pub fn new(
+        framing: crate::datagram::DatagramFraming,
+        port: crate::udp::ReadyPort,
+        pairing: Arc<crate::datagram::Pairing>,
+    ) -> Self {
+        Self(crate::dialled::Dialled::new(framing, port, pairing, None))
+    }
+
+    /// Feed an actual exchange piece through the held upstream's admission path.
+    pub fn exchanged(
+        &self,
+        piece: busbar_contract::conn::Piece,
+        bytes: &[u8],
+    ) -> Result<Option<busbar_contract::conn::Piece>, busbar_contract::conn::ConnError> {
+        self.0.exchanged(piece, bytes)
+    }
+
+    /// Consume the next upstream channel piece, retaining partial-read storage in the real leg.
+    pub fn read(
+        &self,
+        waker: &std::task::Waker,
+        bytes: &mut [u8],
+    ) -> Result<busbar_contract::conn::Piece, busbar_contract::conn::ConnError> {
+        self.0.read(waker, bytes)
+    }
+
+    /// Offer application input to the actual bounded upstream writer.
+    pub fn write(
+        &self,
+        bytes: &[u8],
+        end: bool,
+        text: bool,
+    ) -> Result<usize, busbar_contract::conn::ConnError> {
+        self.0.write(bytes, end, text)
+    }
+
+    /// Register the actual upstream reader's interest.
+    #[must_use]
+    pub fn ready(&self, waker: &std::task::Waker) -> bool {
+        self.0.ready(waker)
+    }
+
+    /// Close both legs through the real session's close path.
+    pub fn close(&self) {
+        self.0.close();
+    }
+}
+
+impl Drop for DatagramSession {
+    fn drop(&mut self) {
+        self.0.close();
+    }
+}
+
+/// The default association's actual conservative pre-crossing reservation, including lease
+/// metadata. Regression budgets add their independently chosen live-frontier storage to this
+/// value instead of copying a production budget or depending on allocator capacity identity.
+#[must_use]
+pub fn datagram_output_reservation_bytes() -> usize {
+    let copied = crate::framer::Buffers::default()
+        .retention_bound()
+        .expect("default copied-output layout fits usize");
+    let routed = crate::datagram::ROUTES_CAP * crate::framer::WIRE_CAP * 3;
+    crate::publication::Memory::reservation_size(copied + routed)
+        .expect("default reservation layout fits usize")
+}
+
 /// A private test CA and a `localhost` leaf it signed: the CA's certificate as PEM (what a suite's
 /// test trust anchors are), the leaf's certificate and its private key, DER (what a far end serves
 /// with [`ServerTls::new`]).
