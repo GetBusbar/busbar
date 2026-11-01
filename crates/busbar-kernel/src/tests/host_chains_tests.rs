@@ -617,3 +617,68 @@ fn exhausted_chain_life_refuses_drop_without_deleting_its_records() {
         &u64::MAX.to_be_bytes()
     );
 }
+
+/// A node that already cached a tail must observe another node's completed drop too.
+#[test]
+fn a_cached_writer_observes_a_remote_completed_drop() {
+    let store = Arc::new(MemoryStore::new());
+    let a = services_over(&store, CHAIN_PIPE_SEPARATED, CHAIN_DIGESTS_SCOPE);
+    let b = services_over(&store, CHAIN_PIPE_SEPARATED, CHAIN_DIGESTS_SCOPE);
+    append(&a, b"t1", b"|old").unwrap();
+    append(&b, b"t1", b"").unwrap();
+    append(&a, b"t1", b"|new").unwrap();
+    assert_eq!(
+        listed(&a, b"t1/"),
+        vec![(record_of("t1", 1), b"|new".to_vec())]
+    );
+}
+
+/// An unreadable occupied tail is preserved; later evidence continues beyond its key.
+#[test]
+fn an_unreadable_occupied_tail_does_not_wedge_future_evidence() {
+    let (s, store) = rig();
+    append(&s, b"t1", b"|first").unwrap();
+    store
+        .record_put(
+            EV,
+            &stored_at("t1", 2),
+            &RecordBytes::new(vec![255]).unwrap(),
+        )
+        .unwrap();
+    drop(s);
+    let restarted = services_over(&store, CHAIN_PIPE_SEPARATED, CHAIN_DIGESTS_SCOPE);
+    append(&restarted, b"t1", b"|after unreadable").unwrap();
+    assert_eq!(
+        store
+            .record_get(EV, &stored_at("t1", 2))
+            .unwrap()
+            .unwrap()
+            .as_slice(),
+        &[255]
+    );
+    let read = listed(&restarted, b"t1/");
+    assert_eq!(read[0].0, b"t1", "the sequence gap remains reported");
+    assert_eq!(
+        read.last(),
+        Some(&(record_of("t1", 3), b"|after unreadable".to_vec()))
+    );
+}
+
+#[test]
+fn an_unreadable_genesis_does_not_reuse_its_occupied_key() {
+    let (s, store) = rig();
+    store
+        .record_put(
+            EV,
+            &stored_at("t1", 1),
+            &RecordBytes::new(vec![255]).unwrap(),
+        )
+        .unwrap();
+    append(&s, b"t1", b"|after unreadable").unwrap();
+    let read = listed(&s, b"t1/");
+    assert_eq!(read[0].0, b"t1", "missing genesis remains reported");
+    assert_eq!(
+        read.last(),
+        Some(&(record_of("t1", 2), b"|after unreadable".to_vec()))
+    );
+}

@@ -23,7 +23,9 @@
 //!   (with a data directory), then every part and the commit are put and acked within
 //!   [`super::card_store::IN_LOCK_BOUND`]. Anything else is PENDING: the node prices with the
 //!   pending entry's locally computed id and re-puts the same bytes until READY (strict mode, PR-B2,
-//!   refuses admissions meanwhile: [`CardStore::pending_refusal`]).
+//!   refuses admissions meanwhile: [`CardStore::pending_refusal`]). An entry the existing record
+//!   format cannot encode stays pending with its original contents in memory and raises an alarm;
+//!   it cannot be spooled and does not survive restart.
 //! - **There is no WITHDRAW.** An entry that landed stays. [`CardStore::void`] keeps an entry
 //!   known but out of force; no operator verb reaches it, because a later change already keys
 //!   above a far-future entry and prices from its own start.
@@ -94,11 +96,39 @@ struct State {
     entries: BTreeMap<EntryKey, StoredEntry>,
     voids: Vec<VoidRecord>,
     /// Entries written and not yet confirmed by the store, oldest first.
-    pending: Vec<(EntryKey, super::card_store::Records)>,
+    pending: Vec<(EntryKey, PendingWrite)>,
     reputting: bool,
     alarmed: BTreeSet<String>,
     /// The entry this node prices with: the one it appended or adopted.
     own: Option<EntryKey>,
+}
+
+#[derive(Clone)]
+enum PendingWrite {
+    Encoded(super::card_store::Records),
+    Unencoded(Arc<StoredEntry>),
+}
+
+struct Reputting {
+    book: Weak<CardStore>,
+    armed: bool,
+}
+
+impl Reputting {
+    fn finish(&mut self, state: &mut State) {
+        state.reputting = false;
+        self.armed = false;
+    }
+}
+
+impl Drop for Reputting {
+    fn drop(&mut self) {
+        if self.armed {
+            if let Some(book) = self.book.upgrade() {
+                book.lock().reputting = false;
+            }
+        }
+    }
 }
 
 impl std::fmt::Debug for CardStore {
@@ -436,20 +466,16 @@ impl CardStore {
         self.data_dir.as_deref()
     }
 
-    fn load_spool(&self) -> Spool {
+    fn load_spool(&self) -> Result<Spool, String> {
         match self.spool_dir().map(Spool::load) {
-            Some(Ok(spool)) => spool,
-            Some(Err(why)) => {
-                tracing::error!("the rate card spool does not read: {why}");
-                Spool::default()
-            }
-            None => Spool::default(),
+            Some(result) => result,
+            None => Ok(Spool::default()),
         }
     }
 
-    fn save_spool(&self, spool: &Spool) -> Result<(), String> {
+    fn update_spool(&self, edit: impl FnOnce(&mut Spool)) -> Result<(), String> {
         match self.spool_dir() {
-            Some(dir) => spool.save(dir),
+            Some(dir) => Spool::update(dir, edit),
             None => Ok(()),
         }
     }
@@ -478,7 +504,7 @@ impl CardStore {
     ) -> Result<(), String> {
         let deadline = || Some(Instant::now() + BOOT_DEADLINE);
         // THE SPOOL FIRST: an entry written and not confirmed before the restart is re-put.
-        let spool = self.load_spool();
+        let spool = self.load_spool()?;
         let mut unconfirmed = Vec::new();
         for write in &spool.pending {
             let records = write.records()?;
@@ -498,14 +524,22 @@ impl CardStore {
                     "the rate card entry {key} is not confirmed by the store yet; it is re-put in \
                      the background"
                 );
-                unconfirmed.push((key, records));
+                unconfirmed.push((key, PendingWrite::Encoded(records)));
             }
         }
         if unconfirmed.len() != spool.pending.len() {
             let keep: BTreeSet<String> = unconfirmed.iter().map(|(k, _)| k.hex()).collect();
-            let mut spool = spool.clone();
-            spool.pending.retain(|w| keep.contains(&w.key));
-            self.save_spool(&spool)?;
+            let confirmed: BTreeSet<&str> = spool
+                .pending
+                .iter()
+                .filter(|w| !keep.contains(&w.key))
+                .map(|w| w.key.as_str())
+                .collect();
+            self.update_spool(|latest| {
+                latest
+                    .pending
+                    .retain(|w| !confirmed.contains(w.key.as_str()));
+            })?;
         }
         let reput = !unconfirmed.is_empty();
         self.lock().pending = unconfirmed;
@@ -639,34 +673,49 @@ impl CardStore {
 
     /// Write `entry` write-before-apply: spooled first, put with the in-lock bound. READY, it is
     /// confirmed; anything else leaves it PENDING, in force on this node and re-put in the
-    /// background until READY. Never refused.
+    /// background until READY. An encoding failure retains the original entry in memory pending
+    /// successful encoding and confirmation, with an alarm that it cannot survive restart.
+    /// Never refused.
     fn write(self: &Arc<Self>, entry: StoredEntry, own: bool) {
         let key = entry.key;
-        let records = match entry.records() {
-            Ok(records) => records,
-            Err(why) => {
-                tracing::error!("rate card entry {key} cannot be written: {why}");
-                Vec::new()
+        let records = entry.records();
+        if let Ok(records) = &records {
+            if let Err(why) = self.update_spool(|spool| {
+                spool.pending.push(SpooledWrite::of(&key, records));
+            }) {
+                tracing::error!(
+                    "rate card entry {key} could not be spooled before it was written: {why}; it is \
+                     held in memory and re-put until the store confirms it"
+                );
             }
-        };
-        let mut spool = self.load_spool();
-        spool.pending.push(SpooledWrite::of(&key, &records));
-        if let Err(why) = self.save_spool(&spool) {
-            tracing::error!(
-                "rate card entry {key} could not be spooled before it was written: {why}; it is \
-                 held in memory and re-put until the store confirms it"
-            );
         }
-        // IN FORCE ON THIS NODE AT ONCE, already spooled: the generation that resolved it is live,
-        // so its counts carry this entry's id from now, before the store has answered.
+        // The generation that resolved this entry is already live. Even an unencodable entry
+        // must retain its identity and original card until real records can be confirmed.
         {
             let mut state = self.lock();
+            if let Err(why) = &records {
+                state
+                    .pending
+                    .push((key, PendingWrite::Unencoded(Arc::new(entry.clone()))));
+                self.alarm(
+                    &mut state,
+                    format!(
+                        "rate card entry {key} cannot be encoded for the store: {why}; it remains \
+                         pending in memory with its original card and is retried, but cannot be \
+                         spooled in the current format and will be lost on restart"
+                    ),
+                );
+            }
             state.entries.insert(key, entry);
             if own {
                 state.own = Some(key);
             }
             self.publish(&state);
         }
+        let Ok(records) = records else {
+            self.spawn_reput();
+            return;
+        };
         let outcome = put_all(
             self.calls.as_ref(),
             &records,
@@ -674,8 +723,9 @@ impl CardStore {
             true,
         );
         if outcome == PutOutcome::Ready {
-            spool.pending.retain(|w| w.key != key.hex());
-            if let Err(why) = self.save_spool(&spool) {
+            if let Err(why) = self.update_spool(|spool| {
+                spool.pending.retain(|w| w.key != key.hex());
+            }) {
                 tracing::error!(
                     "rate card entry {key} IS in force fleet-wide, and the local spool could not \
                      be cleared: {why}"
@@ -693,7 +743,9 @@ impl CardStore {
             "rate card entry {key} is in force on this node and pending confirmation from the \
              store ({why}); it is re-put until the store confirms it"
         );
-        self.lock().pending.push((key, records));
+        self.lock()
+            .pending
+            .push((key, PendingWrite::Encoded(records)));
         self.spawn_reput();
     }
 
@@ -794,13 +846,17 @@ impl CardStore {
     fn spawn_reput(self: &Arc<Self>) {
         {
             let mut state = self.lock();
-            if state.reputting {
+            if state.reputting || state.pending.is_empty() {
                 return;
             }
             state.reputting = true;
         }
         let weak: Weak<Self> = Arc::downgrade(self);
-        let _ = std::thread::Builder::new()
+        let mut ownership = Reputting {
+            book: weak.clone(),
+            armed: true,
+        };
+        if let Err(why) = std::thread::Builder::new()
             .name("card-reput".into())
             .spawn(move || {
                 let mut pause = Duration::from_millis(100);
@@ -809,12 +865,38 @@ impl CardStore {
                     std::thread::sleep(pause);
                     pause = (pause * 2).min(Duration::from_secs(5));
                     let Some(this) = weak.upgrade() else { return };
-                    let pending = this.lock().pending.clone();
-                    if pending.is_empty() {
-                        this.lock().reputting = false;
-                        return;
-                    }
-                    for (key, records) in pending {
+                    let pending = {
+                        let mut state = this.lock();
+                        if state.pending.is_empty() {
+                            ownership.finish(&mut state);
+                            return;
+                        }
+                        state.pending.clone()
+                    };
+                    for (key, pending) in pending {
+                        let records = match pending {
+                            PendingWrite::Encoded(records) => records,
+                            PendingWrite::Unencoded(entry) => {
+                                let Ok(records) = entry.records() else {
+                                    continue;
+                                };
+                                if let Err(why) = this.update_spool(|spool| {
+                                    spool.pending.push(SpooledWrite::of(&key, &records));
+                                }) {
+                                    tracing::error!(
+                                        "rate card entry {key} could not be spooled: {why}; it \
+                                         remains held in memory until the store confirms it"
+                                    );
+                                }
+                                let mut state = this.lock();
+                                if let Some((_, pending)) =
+                                    state.pending.iter_mut().find(|(k, _)| *k == key)
+                                {
+                                    *pending = PendingWrite::Encoded(records.clone());
+                                }
+                                records
+                            }
+                        };
                         match put_all(
                             this.calls.as_ref(),
                             &records,
@@ -822,9 +904,9 @@ impl CardStore {
                             true,
                         ) {
                             PutOutcome::Ready => {
-                                let mut spool = this.load_spool();
-                                spool.pending.retain(|w| w.key != key.hex());
-                                if let Err(why) = this.save_spool(&spool) {
+                                if let Err(why) = this.update_spool(|spool| {
+                                    spool.pending.retain(|w| w.key != key.hex());
+                                }) {
                                     tracing::error!(
                                         "rate card entry {key} is confirmed; the spool: {why}"
                                     );
@@ -851,7 +933,10 @@ impl CardStore {
                         }
                     }
                 }
-            });
+            })
+        {
+            tracing::error!("the rate card re-put worker could not start: {why}");
+        }
     }
 
     /// Rescan on the history's tick, for the life of the store.
@@ -868,6 +953,7 @@ impl CardStore {
                 if let Err(why) = this.rescan(Some(Instant::now() + RESCAN_INTERVAL)) {
                     tracing::warn!("{why}");
                 }
+                this.spawn_reput();
             });
     }
 }

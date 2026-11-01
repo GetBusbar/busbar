@@ -5,6 +5,41 @@
 
 use super::*;
 
+#[test]
+fn pack_refuses_unknown_and_duplicate_scalar_flags() {
+    for args in [
+        vec!["--needs-promt", "rw"],
+        vec!["--setings-schema-file", "schema.json"],
+        vec!["--name", "first", "--name", "second"],
+        vec!["--schema-derived", "--schema-derived"],
+        vec!["--allow-unsigned", "--allow-unsigned"],
+    ] {
+        let args: Vec<String> = args.into_iter().map(str::to_owned).collect();
+        assert!(parse_flags(&args).is_err(), "{args:?}");
+    }
+    let args = [
+        "--needs-prompt",
+        "rw",
+        "--former-name",
+        "old-a",
+        "--former-name",
+        "old-b",
+    ];
+    let flags = parse_flags(&args.map(str::to_owned)).unwrap();
+    assert_eq!(flags.map["needs-prompt"], "rw");
+    assert_eq!(flags.former_names, ["old-a", "old-b"]);
+}
+
+#[test]
+fn pack_user_need_has_no_rewrite_level() {
+    for level in ["rw", "readwrite", "read-write", " RW "] {
+        assert!(parse_flags(&["--needs-user".to_owned(), level.to_owned()]).is_err());
+    }
+    for level in ["no", "none", "ro", "read", "RO"] {
+        assert!(parse_flags(&["--needs-user".to_owned(), level.to_owned()]).is_ok());
+    }
+}
+
 /// `pack`-equivalent flow: a signed manifest packaged here unpacks + verifies as trusted under
 /// the matching public key (the exact artifact contract the engine consumes).
 #[test]

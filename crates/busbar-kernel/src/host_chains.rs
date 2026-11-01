@@ -25,17 +25,19 @@
 //!   (`PLANE_JOURNAL_ROW_UNREADABLE`), never allowed to drop the rest.
 //! * A record is stored under `record_key(instance, chain_key(scope, seq))` as [`encode`]'s body:
 //!   a version byte, the sequence, the previous and own digests, then the plane's bytes.
-//! * ONE WRITER PER POSITION ACROSS THE FLEET. Before a record is stored its position is CLAIMED in
+//! * LEGACY POSITION CLAIMS. Before a record is stored its position is CLAIMED in
 //!   the store ([`RecordRows::claim`]): the instance, the kind, the scope, the chain's life, the
 //!   sequence and the previous digest. A node that loses the claim, or finds the slot already
 //!   holding a record (its cached position is stale: another node wrote there), forgets its
 //!   position, resumes from the store's tail and seals again, so two nodes appending to one chain
-//!   continue each other's records instead of overwriting them. The chain's LIFE is a counter the
+//!   continue each other's completed records. The chain's LIFE is a counter the
 //!   store keeps under the host's own record kind ([`CHAIN_LIFE_SCHEMA`], never a plane's, so a scan
 //!   of the plane's kind never meets it): every drop raises it before striking the chain's rows, and
-//!   a resume reads it, so a chain dropped and begun again, on this node or any other, never meets
+//!   every append rereads it, so a chain dropped and begun again, on this node or any other, never meets
 //!   its old claims. (A drop's strikes REMOVE its rows, slot 26's rule, so nothing in the plane's
-//!   kind is left to count.)
+//!   kind is left to count.) These separate legacy reads, claims and puts cannot atomically fence
+//!   a concurrent drop or a lease expiring during a store call. The conditional path below uses
+//!   the existing transactional contract for that stronger guarantee.
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -76,7 +78,7 @@ pub const CHAIN_OVERHEAD: usize = 1 + 8 + 1 + 64 + 1 + 64;
 /// the store on its next append.
 pub const POSITIONS_CAP: usize = 65_536;
 
-/// How long a position's claim is held, in seconds: it only has to outlive the write it guards.
+/// How long a position's claim is held, in seconds. Retried writes cannot reuse it after expiry.
 const CLAIM_SECS: u64 = 60;
 
 /// The record kind every chain's LIFE is kept under: the host's own, never one a plane declares, so
@@ -188,13 +190,18 @@ pub(crate) struct Held {
 /// Every chain's position, the least recently written first.
 type Positions = IndexMap<Position, Held>;
 
+struct RetainedClaim {
+    token: String,
+    expires_at: u64,
+}
+
 /// THE CHAIN POSITIONS of every instance's chained kinds, the flush's to keep.
 #[derive(Default)]
 pub struct ChainBook {
     positions: Mutex<Positions>,
     /// The position claims this node won and has not yet stored a record under: a write the store
     /// refused after its claim was won is retried under the claim it already holds.
-    claimed: Mutex<std::collections::HashSet<String>>,
+    claimed: Mutex<BTreeMap<Position, RetainedClaim>>,
 }
 
 impl std::fmt::Debug for ChainBook {
@@ -210,27 +217,38 @@ impl ChainBook {
         self.positions.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// Whether this node won `token` and has not yet stored under it.
-    fn holds(&self, token: &str) -> bool {
+    /// A failed write may reuse its claim only before the exact lease it won expires.
+    fn holds(&self, at: &Position, token: &str, now: u64) -> Option<u64> {
+        let mut claimed = self.claimed.lock().unwrap_or_else(|e| e.into_inner());
+        claimed.retain(|_, held| held.expires_at > now);
+        match claimed.get(at) {
+            Some(held) if held.token == token => Some(held.expires_at),
+            _ => {
+                claimed.remove(at);
+                None
+            }
+        }
+    }
+
+    /// Retain one current failed-write claim per position, within the existing bound.
+    fn hold(&self, at: &Position, token: String, expires_at: u64) {
+        let mut claimed = self.claimed.lock().unwrap_or_else(|e| e.into_inner());
+        if claimed.contains_key(at) || claimed.len() < POSITIONS_CAP {
+            claimed.insert(at.clone(), RetainedClaim { token, expires_at });
+        }
+    }
+
+    /// Retire only this node's retry hint; never remove or renew a store claim.
+    fn retire(&self, at: &Position) {
         self.claimed
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .contains(token)
-    }
-
-    /// Remember (`true`) or let go of (`false`) a claim this node won. Bounded like the positions:
-    /// a claim past the bound is simply retaken, or lapses.
-    fn hold(&self, token: &str, held: bool) {
-        let mut claimed = self.claimed.lock().unwrap_or_else(|e| e.into_inner());
-        if !held {
-            claimed.remove(token);
-        } else if claimed.len() < POSITIONS_CAP {
-            claimed.insert(token.to_string());
-        }
+            .remove(at);
     }
 
     /// Keep `chain` as the position at `at`, the most recently written.
     fn commit(&self, at: Position, chain: Held) {
+        self.retire(&at);
         let mut positions = self.lock();
         positions.shift_remove(&at);
         positions.insert(at, chain);
@@ -262,9 +280,15 @@ impl ChainBook {
             scope.to_string(),
         );
         for _ in 0..CLAIM_ATTEMPTS {
+            let observed_life = life_of(rows, instance, schema, scope)?;
             let cached = self.lock().get(&at).cloned();
             let held = match cached {
-                Some(held) => held,
+                Some(held) if held.life == observed_life => held,
+                Some(_) => {
+                    self.retire(&at);
+                    self.lock().shift_remove(&at);
+                    resume(rows, instance, schema, scope, f)?
+                }
                 None => resume(rows, instance, schema, scope, f)?,
             };
             let (mut chain, life) = (held.chain, held.life);
@@ -277,24 +301,37 @@ impl ChainBook {
             let key = record_key(instance, &chain_key(scope.as_bytes(), record.seq()));
             let now = busbar_kernel::store::now();
             let token = position_token(instance, schema, scope, life, &record);
-            let won = self.holds(&token)
-                || rows
-                    .claim(CLAIM_KIND, &token, now.saturating_add(CLAIM_SECS), now)
-                    .map_err(|_| WRITE_FAILED)?;
-            let ours = won
-                && rows
-                    .record_get(schema, &key)
-                    .map_err(|_| WRITE_FAILED)?
-                    .is_none_or(|held| held.as_slice().is_empty());
+            let expires_at = match self.holds(&at, &token, now) {
+                Some(expires_at) => expires_at,
+                None => {
+                    let expires_at = now.saturating_add(CLAIM_SECS);
+                    if !rows
+                        .claim(CLAIM_KIND, &token, expires_at, now)
+                        .map_err(|_| WRITE_FAILED)?
+                    {
+                        self.lock().shift_remove(&at);
+                        continue;
+                    }
+                    self.hold(&at, token, expires_at);
+                    expires_at
+                }
+            };
+            let ours = rows
+                .record_get(schema, &key)
+                .map_err(|_| WRITE_FAILED)?
+                .is_none_or(|held| held.as_slice().is_empty())
+                && life_of(rows, instance, schema, scope)? == life
+                && busbar_kernel::store::now() < expires_at;
             if !ours {
                 // Another writer holds this position: read the chain back and seal at its tail.
+                self.retire(&at);
                 self.lock().shift_remove(&at);
                 continue;
             }
-            self.hold(&token, true);
+            // These fresh observations reject known stale custody, but the legacy store API
+            // cannot atomically fence a life change or lease expiry during record_put itself.
             rows.record_put(schema, &key, &body)
                 .map_err(|_| WRITE_FAILED)?;
-            self.hold(&token, false);
             self.commit(
                 at,
                 Held {
@@ -340,6 +377,11 @@ impl ChainBook {
         // life, never a chain begun again in the old one.
         let dropped = raise_life(rows, instance, schema, scope)
             .and_then(|()| tombstone(rows, instance, schema, scope));
+        if dropped.is_ok() {
+            self.retire(&at);
+        }
+        // A failed life write may have left the old life intact. Preserve its retry claim
+        // until a later observation proves a changed position/life, or the lease expires.
         self.lock().shift_remove(&at);
         dropped
     }
@@ -706,6 +748,7 @@ fn resume(
     scope: &str,
     f: ChainFraming,
 ) -> Result<Held, &'static str> {
+    let life = life_of(rows, instance, schema, scope)?;
     let unscoped = record_key(instance, &[]).len();
     let mut stored: Vec<Row> = held(rows, instance, schema, scope)?
         .into_iter()
@@ -713,12 +756,15 @@ fn resume(
         .filter(|(k, _)| chain_key_parts(k).is_some_and(|(s, _)| s == scope.as_bytes()))
         .collect();
     stored.sort();
-    let life = life_of(rows, instance, schema, scope)?;
-    let records: Vec<StreamRecord> = decoded(instance, schema, scope, &stored, f)
-        .into_iter()
-        .map(|(_, r)| r)
-        .collect();
-    let chain = match Chain::from_persisted(&records) {
+    if life_of(rows, instance, schema, scope)? != life {
+        return Err(WRITE_FAILED);
+    }
+    let decoded = decoded(instance, schema, scope, &stored, f);
+    let key_mismatch = decoded
+        .iter()
+        .any(|(key, record)| chain_key_parts(key).is_none_or(|(_, seq)| seq != record.seq()));
+    let records: Vec<StreamRecord> = decoded.into_iter().map(|(_, r)| r).collect();
+    let mut chain = match Chain::from_persisted(&records) {
         Ok(chain) => chain,
         Err(brk) => {
             crate::diagnostics::diag_error!(
@@ -733,6 +779,41 @@ fn resume(
             Chain::from_persisted_unverified(&records)
         }
     };
+    let occupied = stored
+        .iter()
+        .rev()
+        .find(|(_, body)| !body.is_empty())
+        .and_then(|(key, _)| chain_key_parts(key))
+        .map(|(_, seq)| seq);
+    if let Some(seq) = occupied {
+        // The key is the occupied position even when its body is unreadable or names another
+        // sequence. Keep the last readable digest, report the break, and continue beyond it.
+        // This temporary position anchor is never persisted or passed off as verified history.
+        if key_mismatch || records.last().is_none_or(|last| last.seq() != seq) {
+            crate::diagnostics::diag_error!(
+                crate::diagnostics::PLANE_JOURNAL_RESUME_CHAIN_BROKEN,
+                instance = %instance, stream = %schema.as_str(),
+                break_detail = "occupied chain keys disagree with the readable tail",
+                "a plane record chain continues beyond its occupied broken tail"
+            );
+            let anchor = StreamRecord::from_parts(
+                scope.to_string(),
+                seq,
+                String::new(),
+                records
+                    .last()
+                    .map_or_else(String::new, |last| last.hash().to_string()),
+                Vec::new(),
+                f.framing,
+                f.digests_scope,
+            );
+            chain = Chain::from_persisted_unverified(&[anchor]);
+        }
+        // Saturating the next sequence would otherwise repeatedly target the occupied last slot.
+        if seq == u64::MAX {
+            return Err(WRITE_FAILED);
+        }
+    }
     Ok(Held {
         chain,
         life,

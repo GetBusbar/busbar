@@ -101,6 +101,7 @@ impl ClaimDoors {
 /// session leg.
 pub struct ClaimDoor {
     port: ReadyPort,
+    runtime: tokio::runtime::Handle,
     assocs: PortAssociations,
     legs: Mutex<HashMap<u64, Arc<CallerLeg>>>,
     /// Woken when an association joins, or a writer ran what the port's task queued for an
@@ -123,6 +124,7 @@ impl ClaimDoor {
     pub fn serve(port: ReadyPort) -> Arc<Self> {
         let door = Arc::new(ClaimDoor {
             port,
+            runtime: tokio::runtime::Handle::current(),
             assocs: PortAssociations::new(),
             legs: Mutex::new(HashMap::new()),
             joined: Notify::new(),
@@ -201,9 +203,10 @@ impl ClaimDoor {
         framing: DatagramFraming,
         leg: &Arc<CallerLeg>,
     ) -> Result<u64, busbar_core_connector::datagram::NotAdded> {
-        let id = self.assocs.add(framing)?;
-        leg.bind(id);
-        lock(&self.legs).insert(id, Arc::clone(leg));
+        let id = self.assocs.add_with(framing, |id| {
+            leg.bind(id);
+            lock(&self.legs).insert(id, Arc::clone(leg));
+        })?;
         self.joined.notify_one();
         Ok(id)
     }
@@ -228,6 +231,23 @@ impl ClaimDoor {
         ok
     }
 
+    async fn emit_ready(&self, id: u64, stream: u64, bytes: &[u8], text: bool) -> bool {
+        self.assocs
+            .emit_ready(
+                id,
+                stream,
+                bytes,
+                true,
+                text,
+                &|to, d| self.send(to, d),
+                &|answered| {
+                    self.joined.notify_one();
+                    self.answer(answered, Instant::now());
+                },
+            )
+            .await
+    }
+
     /// Stop carrying association `id`: its framing finishes as it drops.
     fn leave(&self, id: u64) {
         lock(&self.legs).remove(&id);
@@ -241,12 +261,34 @@ pub struct CallerLeg {
     door: Weak<ClaimDoor>,
     id: Mutex<Option<u64>>,
     pairing: Mutex<Option<Arc<Pairing>>>,
-    /// The channel a written piece goes to: the first channel the association named.
-    channel: Mutex<Option<u64>>,
-    /// Pieces the plane wrote before the channel opened, at most `CALLER_QUEUE`; none once the leg
-    /// closed.
-    held: Mutex<VecDeque<(Vec<u8>, bool)>>,
+    /// Channel selection, pending messages and the one writer draining them share a handoff.
+    outbound: Mutex<Outbound>,
+    writes: tokio::sync::Semaphore,
+    released: Notify,
     to_session: Mutex<Option<mpsc::Sender<Vec<u8>>>>,
+}
+
+#[derive(Default)]
+struct Outbound {
+    channel: Option<u64>,
+    held: VecDeque<(Vec<u8>, bool)>,
+    draining: bool,
+    closed: bool,
+}
+
+struct Draining<'a>(&'a CallerLeg);
+
+impl Drop for Draining<'_> {
+    fn drop(&mut self) {
+        let unfinished = {
+            let mut out = lock(&self.0.outbound);
+            std::mem::take(&mut out.draining)
+        };
+        if unfinished {
+            self.0.failed();
+        }
+        self.0.released.notify_waiters();
+    }
 }
 
 impl CallerLeg {
@@ -255,8 +297,9 @@ impl CallerLeg {
             door: Arc::downgrade(door),
             id: Mutex::new(None),
             pairing: Mutex::new(None),
-            channel: Mutex::new(None),
-            held: Mutex::new(VecDeque::new()),
+            outbound: Mutex::new(Outbound::default()),
+            writes: tokio::sync::Semaphore::new(1),
+            released: Notify::new(),
             to_session: Mutex::new(Some(to_session)),
         })
     }
@@ -267,7 +310,7 @@ impl CallerLeg {
 
     /// What the association yielded: through the pairing (its lines go across), then its channels'
     /// heads name the session's channel and their messages go to the session.
-    fn yielded(&self, pieces: Vec<Got>, now: Instant) {
+    fn yielded(self: &Arc<Self>, pieces: Vec<Got>, now: Instant) {
         let Some(pairing) = lock(&self.pairing).clone() else {
             return;
         };
@@ -275,12 +318,26 @@ impl CallerLeg {
         self.take(session, now);
     }
 
-    fn take(&self, session: Vec<Got>, now: Instant) {
+    fn take(self: &Arc<Self>, session: Vec<Got>, _now: Instant) {
         for g in session {
             if g.fields {
-                if lock(&self.channel).is_none() {
-                    *lock(&self.channel) = Some(g.stream);
-                    self.release(now);
+                let release = {
+                    let mut out = lock(&self.outbound);
+                    if out.closed || out.channel.is_some() {
+                        false
+                    } else {
+                        out.channel = Some(g.stream);
+                        out.draining = !out.held.is_empty();
+                        out.draining
+                    }
+                };
+                if release {
+                    match self.door.upgrade() {
+                        Some(door) => {
+                            door.runtime.spawn(Arc::clone(self).release());
+                        }
+                        None => self.failed(),
+                    }
                 }
                 continue;
             }
@@ -298,35 +355,72 @@ impl CallerLeg {
         }
     }
 
-    /// The pieces the plane wrote before the channel opened, now on it.
-    fn release(&self, now: Instant) {
-        let held: Vec<(Vec<u8>, bool)> = lock(&self.held).drain(..).collect();
-        for (bytes, text) in held {
-            self.write(&bytes, text, now);
+    /// Drain accepted early messages before later writers; no host lock crosses the framer
+    /// or the pairing's callbacks.
+    async fn release(self: Arc<Self>) {
+        let _draining = Draining(&self);
+        loop {
+            let next = {
+                let mut out = lock(&self.outbound);
+                match out.held.pop_front() {
+                    Some((bytes, text)) => {
+                        Some((out.channel.expect("draining a channel"), bytes, text))
+                    }
+                    None => {
+                        out.draining = false;
+                        None
+                    }
+                }
+            };
+            let Some((channel, bytes, text)) = next else {
+                return;
+            };
+            let id = *lock(&self.id);
+            let sent = match (self.door.upgrade(), id) {
+                (Some(door), Some(id)) => door.emit_ready(id, channel, &bytes, text).await,
+                _ => false,
+            };
+            if !sent {
+                self.failed();
+                return;
+            }
         }
     }
 
     /// One piece toward the caller, on the session's channel.
-    fn write(&self, bytes: &[u8], text: bool, now: Instant) -> bool {
-        let channel = *lock(&self.channel);
-        let Some(channel) = channel else {
-            if lock(&self.to_session).is_none() {
-                return false;
-            }
-            let mut held = lock(&self.held);
-            if held.len() < CALLER_QUEUE {
-                held.push_back((bytes.to_vec(), text));
-                return true;
-            }
-            drop(held);
-            // A far end that opens no channel while the plane writes ends the session.
-            self.failed();
+    async fn write(&self, bytes: &[u8], text: bool) -> bool {
+        let Ok(_order) = self.writes.acquire().await else {
             return false;
         };
-        let (Some(door), Some(id)) = (self.door.upgrade(), *lock(&self.id)) else {
-            return false;
-        };
-        door.emit(id, channel, bytes, true, text, now)
+        loop {
+            let released = self.released.notified();
+            tokio::pin!(released);
+            released.as_mut().enable();
+            let channel = {
+                let mut out = lock(&self.outbound);
+                if out.closed {
+                    return false;
+                }
+                if out.channel.is_none() {
+                    if out.held.len() == CALLER_QUEUE {
+                        drop(out);
+                        self.failed();
+                        return false;
+                    }
+                    out.held.push_back((bytes.to_vec(), text));
+                    return true;
+                }
+                out.channel.filter(|_| !out.draining)
+            };
+            if let Some(channel) = channel {
+                let id = *lock(&self.id);
+                return match (self.door.upgrade(), id) {
+                    (Some(door), Some(id)) => door.emit_ready(id, channel, bytes, text).await,
+                    _ => false,
+                };
+            }
+            released.await;
+        }
     }
 
     /// The association failed or the plane fell behind: the session's pairing closes, this leg
@@ -357,8 +451,14 @@ impl LegSink for CallerLeg {
     }
 
     fn close(&self) {
+        {
+            let mut out = lock(&self.outbound);
+            out.closed = true;
+            out.held.clear();
+        }
+        self.writes.close();
+        self.released.notify_waiters();
         lock(&self.to_session).take();
-        lock(&self.held).clear();
         let id = lock(&self.id).take();
         if let (Some(door), Some(id)) = (self.door.upgrade(), id) {
             door.leave(id);
@@ -400,11 +500,11 @@ impl CallerEnd for DatagramCaller {
     }
 
     async fn write(&self, bytes: &[u8]) -> bool {
-        self.leg.write(bytes, false, Instant::now())
+        self.leg.write(bytes, false).await
     }
 
     async fn write_text(&self, bytes: &[u8]) -> bool {
-        self.leg.write(bytes, true, Instant::now())
+        self.leg.write(bytes, true).await
     }
 }
 

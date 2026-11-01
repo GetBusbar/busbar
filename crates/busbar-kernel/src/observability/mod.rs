@@ -7,8 +7,9 @@
 //! Spans leave the process as `traces` RECORDS (K9a S7, `crate::export::traces`), which an export
 //! sink subscribed to the stream is handed like any other stream (K9e-2).
 
-/// Percent-decode a URL component to its raw UTF-8 string, leaving any byte that is not a valid
-/// `%XX` escape (or invalid UTF-8) untouched so a credential is never silently corrupted. Also used
+/// Percent-decode a URL component to its raw UTF-8 string, leaving invalid `%XX` escapes untouched.
+/// If decoding would produce invalid UTF-8, preserve the entire encoded component unchanged so a
+/// credential is never silently corrupted. Also used
 /// by the protocol catch-all to decode path-model segments (axum's `Path` extractor decoded them
 /// before the collapse; the raw-path dispatch must match).
 pub fn percent_decode(s: &str) -> String {
@@ -28,7 +29,7 @@ pub fn percent_decode(s: &str) -> String {
         out.push(bytes[i]);
         i += 1;
     }
-    String::from_utf8_lossy(&out).into_owned()
+    String::from_utf8(out).unwrap_or_else(|_| s.to_owned())
 }
 
 /// THE TRACING SEAM — the one-spot level policy for every per-request span/event.

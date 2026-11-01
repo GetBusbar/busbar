@@ -67,6 +67,9 @@ pub fn fallback_error_response(
     {
         use crate::admin::gate::{ApiError, API_ROOT};
         if path == API_ROOT || path.starts_with(&format!("{API_ROOT}/")) {
+            if status == axum::http::StatusCode::PAYLOAD_TOO_LARGE {
+                return crate::admin::gate::error_envelope(status.as_u16(), kind, message);
+            }
             let e = if status == axum::http::StatusCode::METHOD_NOT_ALLOWED {
                 ApiError::MethodNotAllowed
             } else if status == axum::http::StatusCode::INTERNAL_SERVER_ERROR {

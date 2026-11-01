@@ -727,13 +727,14 @@ pub fn percent_decode(s: &str) -> String {
 
 // POST /<name>/v1/messages — name resolves to a pool (weighted) or a single model. The pool/model
 // routing + forward logic RELOCATED into the plane that owns it; this core shell mints the neutral
-// arrival (reconstructing the URL the convenience route pinned) and hands it to the plane's
+// arrival (retaining the encoded URI the auth gate admitted) and hands it to the plane's
 // universal body-arrival, exactly as `protocol_dispatch` does for a body-model hit. Core names no
 // plane-specific type; no plane linked → the honest no-handler 404.
 #[tracing::instrument(level = "debug", name = "named", skip_all, fields(pool = %name))]
 pub(crate) async fn named(
     crate::state::CurrentApp(app): crate::state::CurrentApp,
     Path(name): Path<String>,
+    OriginalUri(uri): OriginalUri,
     axum::extract::Extension(gov): axum::extract::Extension<crate::governance::GovCtx>,
     consumed: Option<axum::extract::Extension<crate::auth::ConsumedCredentials>>,
     mut headers: HeaderMap,
@@ -750,7 +751,7 @@ pub(crate) async fn named(
         gov,
         consumed.and_then(|axum::extract::Extension(c)| c.caller),
         proto,
-        format!("/{name}/v1/messages"),
+        uri,
         // The `named` convenience surface routes by the PATH name (a pool or model), NOT a body
         // `model` — so thread it as the model hint the universal ingress resolves against.
         Some(name),
@@ -772,13 +773,13 @@ async fn delegate_body_arrival(
     gov: crate::governance::GovCtx,
     caller: Option<crate::auth::CallerCredential>,
     proto: &'static str,
-    path: String,
+    uri: axum::http::Uri,
     model_hint: Option<String>,
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
     if let Some(body_ingress) = crate::ingress::body_ingress_for(proto) {
-        let uri = path.parse::<axum::http::Uri>().unwrap_or_default();
+        let path = uri.path().to_owned();
         let ctx = busbar_kernel::ingress::arrival::ArrivalCtx::new(
             crate::ingress::arrival_host::ArrivalPayload {
                 host: crate::plane_driver::engine_host(&app),
@@ -811,6 +812,7 @@ async fn delegate_body_arrival(
 pub async fn adhoc(
     crate::state::CurrentApp(app): crate::state::CurrentApp,
     Path((provider, model)): Path<(String, String)>,
+    OriginalUri(uri): OriginalUri,
     axum::extract::Extension(gov): axum::extract::Extension<crate::governance::GovCtx>,
     consumed: Option<axum::extract::Extension<crate::auth::ConsumedCredentials>>,
     mut headers: HeaderMap,
@@ -844,7 +846,7 @@ pub async fn adhoc(
         gov,
         consumed.and_then(|axum::extract::Extension(c)| c.caller),
         proto,
-        format!("/{provider}/{model}/v1/messages"),
+        uri,
         // The `adhoc` surface names the model in the PATH (with the provider verified above); thread the
         // model as the hint the universal ingress resolves against.
         Some(model),

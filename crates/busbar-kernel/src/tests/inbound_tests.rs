@@ -850,6 +850,35 @@ fn only_the_successful_unchanged_hand_in_can_be_claimed_once() {
 }
 
 #[test]
+fn a_claimed_body_limit_keeps_its_listener_generation_across_reload() {
+    for limit in [0, 7] {
+        let script = Script::new(AuthPoints::HEAD, Verified::Reject, Vec::new());
+        let k = kit(&[("a", script)]);
+        let mut listener = k.inbound.table(OWNER, GEN).unwrap().listener.clone();
+        listener.body_limit = limit;
+        k.inbound
+            .install_at(OWNER, 71, GEN, listener.clone())
+            .unwrap();
+        k.inbound.framing_started(OWNER, 71, 1, GEN).unwrap();
+        k.inbound.grant_stream(OWNER, 1, 1, GEN).unwrap();
+        let mut head = post(HEALTHZ, &[], None);
+        head.method = "GET".into();
+        assert_eq!(
+            k.hand_in(HEALTHZ, HEALTHZ, UnitRef::NONE, head.clone()).0,
+            FLOW_CONTINUE
+        );
+        let admitted = k.inbound.claim_request(OWNER, 1, 1, &head).unwrap();
+        listener.body_limit = 19;
+        k.inbound.install_at(OWNER, 71, GEN + 1, listener).unwrap();
+        assert_eq!(
+            admitted.body_limit(),
+            limit,
+            "the live replacement cannot change an admitted body, including zero"
+        );
+    }
+}
+
+#[test]
 fn an_active_unit_keeps_its_policy_after_three_reloads_without_reopening_the_old_list() {
     let a = Script::new(
         AuthPoints::HEAD,

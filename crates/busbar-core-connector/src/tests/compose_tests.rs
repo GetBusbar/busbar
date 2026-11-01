@@ -18,6 +18,9 @@ use crate::support::{worker, Knobs, TestDoor};
 #[allow(unsafe_code)]
 mod sensitive_tests;
 
+#[path = "compose_close_deadline_tests.rs"]
+mod close_deadline_tests;
+
 /// An echo far end on the worker's own runtime: every connection, every byte back.
 async fn echo() -> String {
     let l = TcpListener::bind("127.0.0.1:0").await.unwrap();

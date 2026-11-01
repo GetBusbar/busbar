@@ -72,6 +72,9 @@ pub const FIRST_BYTE_BOUND: std::time::Duration = std::time::Duration::from_secs
 /// The status an answer that switches protocols carries.
 const SWITCHING_PROTOCOLS: u16 = 101;
 
+/// HTTP refusal used when a request exceeds its admitted listener body ceiling.
+const BODY_LIMIT_REFUSAL: u32 = axum::http::StatusCode::PAYLOAD_TOO_LARGE.as_u16() as u32;
+
 /// The framer the connector serves a scheme with, where it serves one.
 pub type FramerFor = Arc<dyn Fn(&str) -> Option<Arc<dyn FramerDoor>> + Send + Sync>;
 
@@ -265,6 +268,11 @@ type BodyError = Box<dyn std::error::Error + Send + Sync>;
 struct Inflow {
     body: Option<mpsc::UnboundedSender<Result<Bytes, BodyError>>>,
     task: tokio::task::AbortHandle,
+    body_limit: u64,
+    received: u64,
+    refused: bool,
+    refusal_sent: bool,
+    head_sent: bool,
 }
 
 /// A REQUEST BODY as its pieces arrive on the connection.
@@ -319,8 +327,12 @@ type SessionSlot = busbar_kernel::plane_routes::FramedSession;
 /// the frames the session writes toward the caller, and the frame being written.
 struct Session {
     stream: u64,
-    from: Option<mpsc::UnboundedSender<Vec<u8>>>,
+    from: Option<mpsc::Sender<Vec<u8>>>,
     message: Vec<u8>,
+    messages: VecDeque<Vec<u8>>,
+    sending: Option<Pin<Box<dyn std::future::Future<Output = bool> + Send>>>,
+    closing: bool,
+    body_limit: u64,
     to: mpsc::Receiver<busbar_kernel::plane_routes::SessionOut>,
     writing: Option<(Bytes, bool)>,
 }
@@ -331,22 +343,67 @@ impl Session {
             from_caller,
             to_caller,
         } = pipe;
-        let (from, mut messages) = mpsc::unbounded_channel::<Vec<u8>>();
-        drop(tokio::spawn(async move {
-            while let Some(message) = messages.recv().await {
-                if from_caller.send(message).await.is_err() {
-                    break;
-                }
-            }
-        }));
         Self {
             stream,
-            from: Some(from),
+            from: Some(from_caller),
             message: Vec::new(),
+            messages: VecDeque::new(),
+            sending: None,
+            closing: false,
+            body_limit: configured_body_limit(),
             to: to_caller,
             writing: None,
         }
     }
+
+    /// Drain only the pieces already yielded by one ingest before reading more socket bytes.
+    /// Waiting on this exclusively switched pipe does not park unrelated multiplexed streams.
+    fn deliver(&mut self, cx: &mut Context<'_>) -> Option<bool> {
+        let mut moved = false;
+        loop {
+            if let Some(send) = self.sending.as_mut() {
+                match send.as_mut().poll(cx) {
+                    Poll::Pending => return Some(moved),
+                    Poll::Ready(false) => {
+                        self.from = None;
+                        self.messages.clear();
+                        self.message.clear();
+                        self.closing = true;
+                        self.sending = None;
+                        return None;
+                    }
+                    Poll::Ready(true) => {}
+                }
+                self.sending = None;
+                moved = true;
+            }
+            let Some(from) = self.from.as_ref() else {
+                return None;
+            };
+            if let Some(message) = self.messages.pop_front() {
+                let from = from.clone();
+                self.sending = Some(Box::pin(async move { from.send(message).await.is_ok() }));
+                continue;
+            }
+            if self.closing {
+                self.from = None;
+                return None;
+            }
+            return Some(moved);
+        }
+    }
+
+    fn read_blocked(&self) -> bool {
+        self.closing || self.sending.is_some() || !self.messages.is_empty()
+    }
+}
+
+/// Contextless fixtures and the legacy data listener use the existing resolved body ceiling.
+fn configured_body_limit() -> u64 {
+    busbar_kernel::config::limits::installed().map_or(
+        busbar_kernel::config::limits::DEFAULT_REQUEST_BODY_MAX_BYTES as u64,
+        |limits| limits.request_body_max_bytes as u64,
+    )
 }
 
 // ── one connection ───────────────────────────────────────────────────────────────────────────────
@@ -490,6 +547,11 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
                     None => {
                         self.ended = true;
                         self.session = None;
+                        self.tasks.abort_all();
+                        // This connection belonged exclusively to the switched session. Finish
+                        // its framing before any later socket or timer output can become a new
+                        // request after that session has gone.
+                        return self.close(cx);
                     }
                 }
             }
@@ -607,7 +669,9 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
 
     /// Read what the socket holds into the framer.
     fn read(&mut self, cx: &mut Context<'_>) -> bool {
-        if self.framing.as_ref().is_some_and(Framing::begin_parked) {
+        if self.framing.as_ref().is_some_and(Framing::begin_parked)
+            || self.session.as_ref().is_some_and(Session::read_blocked)
+        {
             return false;
         }
         let mut buf = [0_u8; READ_CHUNK];
@@ -624,16 +688,16 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
                     return false;
                 };
                 let r = framing.ingest(&buf[..n], end);
+                self.took(r);
                 if end {
                     // Nothing more arrives: every body still open ends here.
                     for inflow in self.inflows.values_mut() {
                         inflow.body = None;
                     }
                     if let Some(s) = self.session.as_mut() {
-                        s.from = None;
+                        s.closing = true;
                     }
                 }
-                self.took(r);
                 true
             }
             Poll::Ready(Err(e)) => {
@@ -697,19 +761,33 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
 
     /// One frame piece off the framer.
     fn piece(&mut self, piece: Got) {
+        if self.failed {
+            return;
+        }
         if let Some(session) = self.session.as_mut() {
             session.stream = piece.stream;
-            if piece.failed || piece.end {
+            if piece.failed {
                 session.from = None;
+                session.messages.clear();
+                session.sending = None;
+                session.message.clear();
+                session.closing = true;
+                return;
+            }
+            if session.closing {
+                return;
+            }
+            let size = session.message.len().checked_add(piece.bytes.len());
+            if size.is_none_or(|size| session.body_limit != 0 && size as u64 > session.body_limit) {
+                self.failed = true;
                 return;
             }
             session.message.extend_from_slice(&piece.bytes);
             if piece.end_of_frame {
                 let message = std::mem::take(&mut session.message);
-                if let Some(from) = &session.from {
-                    let _ = from.send(message);
-                }
+                session.messages.push_back(message);
             }
+            session.closing |= piece.end;
             return;
         }
         match self.inflows.get_mut(&piece.stream) {
@@ -723,6 +801,9 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
             // A piece of a stream no task holds (answered, or never served): dropped.
             None => {}
             Some(inflow) => {
+                if inflow.refused {
+                    return;
+                }
                 if piece.failed {
                     // The far side gave the stream up: its body fails and its task ends.
                     if let Some(body) = inflow.body.take() {
@@ -734,6 +815,28 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
                 }
                 // A trailer block of the request is not read: the router reads data.
                 if !piece.fields && !piece.bytes.is_empty() {
+                    if inflow
+                        .body
+                        .as_ref()
+                        .is_none_or(mpsc::UnboundedSender::is_closed)
+                    {
+                        return;
+                    }
+                    let received = inflow.received.checked_add(piece.bytes.len() as u64);
+                    if received.is_none_or(|n| inflow.body_limit != 0 && n > inflow.body_limit) {
+                        inflow.refused = true;
+                        inflow.body = None;
+                        inflow.task.abort();
+                        self.pending.push_back((
+                            piece.stream,
+                            Op::Refuse {
+                                status: BODY_LIMIT_REFUSAL,
+                                head_sent: inflow.head_sent,
+                            },
+                        ));
+                        return;
+                    }
+                    inflow.received = received.expect("checked above");
                     if let Some(body) = &inflow.body {
                         let _ = body.send(Ok(Bytes::from(piece.bytes)));
                     }
@@ -748,6 +851,7 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
     /// A request head on `piece`'s stream: the request built and served on its own task.
     fn head(&mut self, piece: &Got) {
         let stream = piece.stream;
+        let mut body_limit = configured_body_limit();
         let head = self.heads.remove(&stream).unwrap_or_default();
         let h2 = self.framer.is_h2(self.agreed);
         let (body_tx, body_rx) = mpsc::unbounded_channel();
@@ -803,6 +907,7 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
                         &request_head,
                     ) {
                         Ok(admission) => {
+                            body_limit = admission.body_limit();
                             scope.admit_stream(stream);
                             req.extensions_mut().insert(admission);
                         }
@@ -852,6 +957,11 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
             Inflow {
                 body: (!end).then_some(body_tx),
                 task,
+                body_limit,
+                received: 0,
+                refused: false,
+                refusal_sent: false,
+                head_sent: false,
             },
         );
     }
@@ -862,6 +972,17 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
         let mut next = None;
         let framing = self.framing.as_ref();
         for (index, (stream, op)) in self.pending.iter().enumerate() {
+            if self
+                .inflows
+                .get(stream)
+                .is_some_and(|inflow| inflow.refused)
+                && matches!(op, Op::Head { .. } | Op::Data { .. } | Op::Switch { .. })
+            {
+                // These writes will be discarded, so neither output room nor a stalled stream
+                // may keep them in front of the terminal size refusal.
+                next = Some(index);
+                break;
+            }
             // Nothing crosses a switch: it waits for every earlier queued op and parked crossing.
             if matches!(op, Op::Switch { .. }) {
                 if index == 0 && !framing.is_some_and(Framing::parked) {
@@ -886,6 +1007,20 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
         let Some((stream, op)) = self.pending.remove(index) else {
             return Step::Wait;
         };
+        if self
+            .inflows
+            .get(&stream)
+            .is_some_and(|inflow| inflow.refused)
+        {
+            match op {
+                Op::Head { done, .. } | Op::Data { done, .. } => {
+                    let _ = done.send(false);
+                    return Step::Done;
+                }
+                Op::Switch { .. } => return Step::Done,
+                _ => {}
+            }
+        }
         let Some(framing) = self.framing.as_mut() else {
             return Step::Done;
         };
@@ -898,6 +1033,11 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
             } => {
                 let r = framing.emit_head(stream, &fields, end, status);
                 let ok = self.took(r);
+                if ok {
+                    if let Some(inflow) = self.inflows.get_mut(&stream) {
+                        inflow.head_sent = true;
+                    }
+                }
                 let _ = done.send(ok);
             }
             Op::Data { bytes, end, done } => {
@@ -906,10 +1046,14 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
                 let _ = done.send(ok);
             }
             Op::Refuse { status, head_sent } => {
-                let r = framing.refuse(Some(stream), &[], status, head_sent);
-                if let Ok(y) = r {
-                    self.absorb(y);
+                if let Some(inflow) = self.inflows.get_mut(&stream).filter(|i| i.refused) {
+                    if status != BODY_LIMIT_REFUSAL || inflow.refusal_sent {
+                        return Step::Done;
+                    }
+                    inflow.refusal_sent = true;
                 }
+                let r = framing.refuse(Some(stream), &[], status, head_sent);
+                self.took(r);
             }
             Op::Switch { pipe } => self.switch(stream, pipe),
             Op::Ended { scope } => {
@@ -951,7 +1095,11 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
         match Framing::adopt_detached(door, SIDE_ACCEPT, leftover, &self.established) {
             Ok((framing, y)) => {
                 self.framing = Some(framing);
-                self.session = Some(Session::over(stream, pipe));
+                let mut session = Session::over(stream, pipe);
+                if let Some(inflow) = self.inflows.get(&stream) {
+                    session.body_limit = inflow.body_limit;
+                }
+                self.session = Some(session);
                 self.absorb(y);
             }
             Err(e) => {
@@ -964,7 +1112,7 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
     /// Pump a switched connection's session: the frames it writes go out as the socket's room
     /// allows. `Some(moved)` while it runs; `None` once the session has ended.
     fn pump_session(&mut self, cx: &mut Context<'_>) -> Option<bool> {
-        let mut moved = false;
+        let mut moved = self.session.as_mut()?.deliver(cx)?;
         loop {
             if self.out.len() >= WRITE_ROOM {
                 return Some(moved);

@@ -296,6 +296,7 @@ impl Early {
 struct Tunnel {
     request: Vec<u8>,
     asked: bool,
+    deadline: Option<Instant>,
     head: Vec<u8>,
     authority: String,
 }
@@ -745,6 +746,7 @@ impl Planned {
         conn.tunnel = connect.map(|request| Tunnel {
             request,
             asked: false,
+            deadline: None,
             head: Vec::new(),
             authority: authority_for_tunnel,
         });
@@ -987,7 +989,7 @@ impl Connection {
             _ => {}
         }
         if let Err(f) = self.drive(cx) {
-            self.phase = Phase::Failed(f.clone());
+            self.fail(f.clone());
             return Err(f);
         }
         let queued = self.buffered();
@@ -1004,7 +1006,7 @@ impl Connection {
             }
         }
         if let Err(f) = self.drive(cx) {
-            self.phase = Phase::Failed(f.clone());
+            self.fail(f.clone());
             return Err(f);
         }
         Ok(true)
@@ -1179,7 +1181,7 @@ impl Connection {
                 Ok(true) if self.inbox.is_empty() && self.live() => {}
                 Ok(_) => return self.reusable(),
                 Err(f) => {
-                    self.phase = Phase::Failed(f);
+                    self.fail(f);
                     return false;
                 }
             }
@@ -1224,7 +1226,7 @@ impl Connection {
             }),
         }
         if let Err(f) = self.drive(cx) {
-            self.phase = Phase::Failed(f.clone());
+            self.fail(f.clone());
             return Err(f);
         }
         Ok(())
@@ -1425,7 +1427,7 @@ impl Connection {
             self.open_deadline = Some(Instant::now() + timeout);
             if !matches!(self.phase, Phase::Connecting) {
                 if let Err(f) = self.tls_out() {
-                    self.phase = Phase::Failed(f.clone());
+                    self.fail(f.clone());
                     return Poll::Ready(Err(f));
                 }
             }
@@ -1442,7 +1444,7 @@ impl Connection {
             match self.drive(cx) {
                 Ok(true) => {}
                 Ok(false) => return Poll::Pending,
-                Err(f) => self.phase = Phase::Failed(f),
+                Err(f) => self.fail(f),
             }
         }
     }
@@ -1504,6 +1506,8 @@ impl Connection {
             (_, Phase::Open) if framer.is_some() => CAUSE_FRAMER,
             (_, Phase::Connecting) => CAUSE_CONNECT,
             (_, Phase::Handshaking) => CAUSE_SECURITY,
+            // A mid-stream upgrade retains the already-open framing while TLS handshakes.
+            _ if self.handshaking() => CAUSE_SECURITY,
             _ => CAUSE_EXCHANGE,
         };
         let text = match &f {
@@ -1688,6 +1692,9 @@ impl Connection {
     /// One pass: connect, handshake, flush, read, and keep the deadlines. `Ok(true)` = something
     /// moved; `Ok(false)` = nothing can until a waker fires.
     fn drive(&mut self, cx: &mut Context<'_>) -> Result<bool, Failure> {
+        // A buffered CONNECT answer or final TLS flight must not erase an expired opening
+        // bound by completing the stage before its timer is checked.
+        self.check_open_deadlines(Instant::now())?;
         let mut moved = false;
         if self.tunnel.as_ref().is_some_and(|t| t.asked) {
             // THE PROXY'S ANSWER: what the tunnel request owes is written, and the proxy's head is
@@ -1703,9 +1710,9 @@ impl Connection {
                         // Connected to the PROXY: ask it for the tunnel first, under the CONNECT
                         // handshake's own bound.
                         t.asked = true;
+                        t.deadline = Some(Instant::now() + crate::proxy::CONNECT_HANDSHAKE);
                         let request = std::mem::take(&mut t.request);
                         self.queue(&request, false);
-                        self.open_deadline = Some(Instant::now() + crate::proxy::CONNECT_HANDSHAKE);
                         moved |= self.flush(cx)?;
                     } else {
                         self.connected()?;
@@ -1876,16 +1883,28 @@ impl Connection {
         }
     }
 
-    /// The open's bound and the framer's deadline: the earlier is a timer on the worker's clock.
-    fn keep_deadlines(&mut self, cx: &mut Context<'_>) -> Result<bool, Failure> {
-        let now = Instant::now();
+    /// Check opening bounds before advancing their stages, and again when arming their timer.
+    fn check_open_deadlines(&self, now: Instant) -> Result<(), Failure> {
         if matches!(self.phase, Phase::Connecting | Phase::Handshaking) || self.handshaking() {
             if self.open_deadline.is_some_and(|at| at <= now) {
                 return Err(Failure::Timeout);
             }
-        } else {
+        }
+        let tunnel_deadline = self.tunnel.as_ref().and_then(|t| t.deadline);
+        if tunnel_deadline.is_some_and(|at| at <= now) {
+            return Err(Failure::Timeout);
+        }
+        Ok(())
+    }
+
+    /// The overall open, CONNECT exchange and framer bounds share the earliest worker timer.
+    fn keep_deadlines(&mut self, cx: &mut Context<'_>) -> Result<bool, Failure> {
+        let now = Instant::now();
+        self.check_open_deadlines(now)?;
+        if !matches!(self.phase, Phase::Connecting | Phase::Handshaking) && !self.handshaking() {
             self.open_deadline = None;
         }
+        let tunnel_deadline = self.tunnel.as_ref().and_then(|t| t.deadline);
         let mut moved = false;
         // The framer's own deadline waits while its `begin` is parked (no other op crosses the
         // framing until that one completes); an op parked on one stream holds no deadline.
@@ -1902,10 +1921,10 @@ impl Connection {
             }
         }
         let framer_deadline = self.framer_deadline.filter(|_| !self.begin_parked());
-        let next = match (self.open_deadline, framer_deadline) {
-            (Some(a), Some(b)) => Some(a.min(b)),
-            (a, b) => a.or(b),
-        };
+        let next = [self.open_deadline, tunnel_deadline, framer_deadline]
+            .into_iter()
+            .flatten()
+            .min();
         match next {
             None => self.sleep = None,
             Some(at) => {
@@ -2078,7 +2097,7 @@ impl Connection {
         }
         self.seals.clear();
         let f = Failure::Refused(crate::seal::SEAL_BROKEN.to_owned());
-        self.phase = Phase::Failed(f.clone());
+        self.fail(f.clone());
         Err(f)
     }
 
@@ -2113,11 +2132,20 @@ impl Connection {
         };
         let mut rest = bytes;
         while !rest.is_empty() {
-            tls.read_tls(&mut rest).map_err(failed)?;
+            if tls.read_tls(&mut rest).map_err(failed)? == 0 {
+                // After close_notify rustls deliberately consumes no more carrier bytes.
+                // Ignore that tail instead of retrying the same unconsumed slice forever.
+                break;
+            }
             if let Err(e) = tls.process_new_packets() {
                 self.security_error = Some(e.to_string());
                 return Err(Failure::Refused(format!("tls: {e}")));
             }
+        }
+        if end {
+            // Carrier EOF must reach rustls: only its authenticated close_notify is a clean
+            // TLS end. Otherwise the plaintext reader reports UnexpectedEof below.
+            tls.read_tls(&mut io::empty()).map_err(failed)?;
         }
         if matches!(self.phase, Phase::Handshaking) {
             if end {
@@ -2143,7 +2171,7 @@ impl Connection {
             }
         }
         let mut plain = Vec::new();
-        let mut closed = end;
+        let mut closed = false;
         if let Some(tls) = self.tls.as_mut() {
             let mut buf = [0_u8; READ_CHUNK];
             loop {

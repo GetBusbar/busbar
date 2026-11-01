@@ -12,6 +12,7 @@ pub mod aws4;
 pub(crate) mod digests;
 mod jws;
 pub(crate) mod rsa;
+mod saslprep;
 mod scheme;
 
 use base64::Engine as _;
@@ -329,6 +330,8 @@ impl Cred {
     /// and the link that checks the server-final message. `client_first_bare` is what the client
     /// sent (`n=,r=<nonce>`); `server_first` is the server's reply; `channel_binding` is the GS2
     /// header plus any binding data (`b"n,,"` without binding).
+    /// Passwords use SASLprep's Unicode 3.2 profile, retaining the original bytes
+    /// if preparation fails or maps the password to empty, as PostgreSQL does.
     ///
     /// # Errors
     /// The server's message is malformed, does not extend the client nonce, or names an iteration
@@ -376,7 +379,11 @@ impl Cred {
                 "the SCRAM iteration count is outside 4096..=1000000",
             ));
         }
-        let salted = pbkdf2_sha256(self.wire(), &salt, iterations);
+        // PostgreSQL keeps the original bytes when UTF-8 or SASLprep is invalid.
+        let prepared = saslprep::password(self.wire());
+        let password = prepared.as_deref().map_or(self.wire(), |s| s.as_bytes());
+        let salted = pbkdf2_sha256(password, &salt, iterations);
+        drop(prepared);
         let client_key = hmac_sha256(&salted[..], b"Client Key");
         let stored_key = digests::sha256(&[&client_key[..]]);
         let server_key = hmac_sha256(&salted[..], b"Server Key");

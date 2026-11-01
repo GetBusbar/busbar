@@ -357,16 +357,18 @@ fn a_refusal_echoing_the_largest_admitted_field_line_fits() {
     assert_eq!(check_arrive(Refused, &o, &[], 4, &bounds()), Ok(()));
 }
 
-/// The three refusal causes are distinct, and a rendering's status defaults to the kernel's.
+/// The ABI distinguishes refusal causes and accepts a rendering that leaves status unspecified.
+/// The host's fallback is exercised by kernel `plane_driver`'s
+/// `a_refused_arrival_is_rendered_in_the_planes_own_words`: its refusal callback leaves status
+/// zero, and the driven refusal retains status 400.
 #[test]
-fn the_refusal_causes_are_distinct_and_status_zero_keeps_the_kernels() {
+fn the_refusal_causes_are_distinct_and_zero_status_is_accepted() {
     assert_eq!(
         [REFUSAL_KERNEL, REFUSAL_GATE, REFUSAL_ARRIVE],
         [0, 1, 2],
         "the cause numbering is the ABI's"
     );
     let o: RefusalOut = z();
-    assert_eq!(o.status, 0);
     assert_eq!(check_refusal(Ready, &o, &[], &caps()), Ok(()));
 }
 

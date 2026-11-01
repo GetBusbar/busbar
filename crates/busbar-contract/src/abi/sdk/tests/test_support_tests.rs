@@ -641,11 +641,26 @@ fn resolved(secret: Blob) -> ResolveOut {
     out
 }
 
+fn answered_resolve(
+    template: &mut ResolveOut,
+    material: &mut [u8],
+) -> super::reply::Called<ResolveOut> {
+    let mut input: crate::abi::secret::ResolveIn = zeroed();
+    input.secret_buf = material.as_mut_ptr();
+    input.secret_cap = material.len();
+    call(
+        answer::<ResolveOut>,
+        ptr::from_mut(template).cast(),
+        &input,
+        *template,
+    )
+}
+
 #[test]
 fn a_secret_is_copied_into_wiped_memory_before_the_buffer_is_wiped() {
     let mut material = b"s3cret".to_vec();
     let mut t = resolved(bytes_of(&material));
-    let got = answered(&mut t);
+    let got = answered_resolve(&mut t, &mut material);
     material.fill(0); // the host wipes its buffer once its consumer is done
     assert_eq!(got.outcome, Outcome::Ready);
     assert_eq!(got.owned.material(), b"s3cret");
@@ -668,7 +683,7 @@ fn a_forged_secret_with_no_pointer_is_refused() {
         len: 5,
         ..Blob::ABSENT
     });
-    let _ = answered(&mut t);
+    let _ = answered_resolve(&mut t, &mut [0; 5]);
 }
 
 #[test]
@@ -679,7 +694,66 @@ fn a_secret_past_the_declared_bound_is_refused() {
         len: HARD_MAX_BYTES as usize + 1,
         ..Blob::ABSENT
     });
-    let _ = answered(&mut t);
+    let _ = answered_resolve(&mut t, &mut [0; 5]);
+}
+
+#[test]
+#[should_panic(expected = "resolve.secret_outside_buffer")]
+fn a_resolve_cannot_substitute_its_own_secret_memory() {
+    let mut t = resolved(bytes_of(b"secret"));
+    let _ = answered_resolve(&mut t, &mut [0; 6]);
+}
+
+#[test]
+#[should_panic(expected = "resolve.needed")]
+fn a_resolve_cannot_claim_more_than_the_lent_buffer() {
+    // The allocation is long enough for the old helper's copy; only two bytes are lent.
+    let mut material = [0; 3];
+    let mut t = resolved(Blob {
+        ptr: material.as_ptr(),
+        len: 3,
+        ..Blob::ABSENT
+    });
+    let mut input: crate::abi::secret::ResolveIn = zeroed();
+    input.secret_buf = material.as_mut_ptr();
+    input.secret_cap = 2;
+    let _ = call(
+        answer::<ResolveOut>,
+        ptr::from_mut(&mut t).cast(),
+        &input,
+        t,
+    );
+}
+
+fn answered_scrape(
+    written: usize,
+    cap: usize,
+) -> super::reply::Called<crate::abi::export::ScrapeOut> {
+    let mut material = vec![0; cap];
+    let mut input: crate::abi::export::ScrapeIn = zeroed();
+    input.buf = material.as_mut_ptr();
+    input.cap = material.len();
+    let mut out: crate::abi::export::ScrapeOut = zeroed();
+    out.head = ready_head(0);
+    out.written = written;
+    call(
+        answer::<crate::abi::export::ScrapeOut>,
+        ptr::from_mut(&mut out).cast(),
+        &input,
+        out,
+    )
+}
+
+#[test]
+#[should_panic(expected = "scrape.bytes")]
+fn a_scrape_cannot_claim_more_than_the_lent_buffer() {
+    let _ = answered_scrape(3, 2);
+}
+
+#[test]
+fn a_scrape_may_fill_or_leave_the_lent_buffer_empty() {
+    assert_eq!(answered_scrape(2, 2).out.written, 2);
+    assert_eq!(answered_scrape(0, 2).out.written, 0);
 }
 
 fn served(headers: &[AbiStr], body: &[u8]) -> ServeOut {

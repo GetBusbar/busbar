@@ -1677,6 +1677,63 @@ fn every_minted_node_id_is_held_by_its_claim() {
     assert_eq!(node_id(slots.calls().as_ref(), "host-x").expect("again"), a);
 }
 
+#[test]
+fn a_malformed_registry_row_cannot_make_stored_verification_report_complete() {
+    use store_identity::NODE_SCHEMA;
+    use tracing_subscriber::layer::SubscriberExt as _;
+    let slots = crate::root::store_double::RecordSlots::new();
+    let own = node_id(slots.calls().as_ref(), "registry-reader").unwrap();
+    let other = node_id(slots.calls().as_ref(), "registry-other").unwrap();
+    let healthy = node_id(slots.calls().as_ref(), "registry-healthy").unwrap();
+    let mut book = keyed_store_book(&slots, own);
+    book.seal_unit(audit_inputs(1), audit_pass(), &token())
+        .unwrap();
+    let mut other_book = keyed_store_book(&slots, other);
+    other_book
+        .seal_unit(audit_inputs(1), audit_pass(), &token())
+        .unwrap();
+    drained(&book);
+    drained(&other_book);
+    let (lane, node, keys) = book.stored_walk_inputs().unwrap();
+    let clean = walk_stored_chains(&lane, node, &keys);
+    assert!(clean.findings.is_empty());
+    assert!(clean.chains.contains(&other));
+
+    slots.put_row(NODE_SCHEMA, b"host:registry-other", b"private-invalid-id");
+    slots.put_row(NODE_SCHEMA, b"host:\xff", &other.to_be_bytes());
+    let broken = walk_stored_chains(&lane, node, &keys);
+    assert!(
+        broken.chains.contains(&own),
+        "the own chain is still verified"
+    );
+    assert!(
+        broken.chains.contains(&healthy),
+        "other readable registry rows remain in the walk"
+    );
+    assert!(
+        !broken.findings.is_empty(),
+        "an omitted chain must be reported"
+    );
+    assert!(broken
+        .findings
+        .iter()
+        .all(|why| !why.contains("private-invalid-id")));
+    let captured = busbar_kernel::test_support::warn_capture::WarnCapture::default();
+    let migrated = tracing::subscriber::with_default(
+        tracing_subscriber::registry().with(captured.clone()),
+        || store_identity::stored_chains(slots.calls().as_ref(), own),
+    )
+    .expect("migration retains its existing skip policy");
+    assert!(migrated.iter().any(|(node, _)| *node == healthy));
+    assert!(!migrated.iter().any(|(node, _)| *node == other));
+    assert!(captured.contains("node registry"));
+    assert!(!captured.contains("private-invalid-id"));
+    assert!(
+        node_id(slots.calls().as_ref(), "registry-new").is_ok(),
+        "mint behavior is unchanged"
+    );
+}
+
 /// A LIVE HOLDER: `lease` refreshed on every lease poll until the guard drops, as a running node's
 /// flush tick refreshes it.
 struct Refreshing(

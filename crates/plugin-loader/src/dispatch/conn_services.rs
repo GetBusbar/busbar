@@ -850,14 +850,13 @@ impl ConnState {
         {
             let answer = match (replay, &k.read) {
                 (Some(input), Some(Wrote::Reply(piece, bytes))) => {
-                    replay_read(input, *piece, bytes);
-                    k.answer
+                    replay_read(input, k.answer, *piece, bytes)
                 }
                 (Some(input), Some(Wrote::Raw(bytes))) => replay_raw(input, k.answer, bytes),
                 (Some(input), Some(Wrote::Facts(f))) => self.replay_facts(input, k.answer, f),
                 _ => k.answer,
             };
-            k.delivered = answer.outcome != Outcome::Pending
+            k.delivered = answer.outcome == k.answer.outcome
                 && answer.needed_bytes == 0
                 && answer.needed_items == 0;
             return answer;
@@ -958,18 +957,25 @@ impl ConnState {
 }
 
 /// A replayed read: what it wrote, written again into the piece slot and the buffer the replay's
-/// `in` lends (as much of the bytes as the buffer holds).
-fn replay_read(input: *const c_void, piece: ReplyPiece, kept: &[u8]) {
+/// `in` lends. Like a raw read, an undersized replay leaves both outputs untouched and keeps
+/// the complete answer available for a sufficiently large retry.
+fn replay_read(input: *const c_void, answer: Answered, piece: ReplyPiece, kept: &[u8]) -> Answered {
     // SAFETY: `slot` checked the head covers a `ReplyIn`.
     let i = unsafe { input.cast::<ReplyIn>().read_unaligned() };
     // SAFETY: the caller's buffer, lent for this call only.
     let (false, Some(buf)) = (i.piece.is_null(), unsafe { bytes(i.buf, i.len) }) else {
-        return;
+        return Answered::fault();
     };
-    let n = kept.len().min(buf.len());
-    buf[..n].copy_from_slice(&kept[..n]);
+    if kept.len() > buf.len() {
+        return Answered {
+            needed_bytes: kept.len() as u64,
+            ..Answered::bare(Outcome::Failed, super::services::SHORT)
+        };
+    }
+    buf[..kept.len()].copy_from_slice(kept);
     // SAFETY: the caller's descriptor slot, checked non-NULL.
     unsafe { i.piece.write_unaligned(piece) };
+    answer
 }
 
 /// A replayed raw `READ`: the bytes it wrote, written again into the buffer the replay's `in`
@@ -1423,9 +1429,8 @@ extern "C" fn write_request(
                                             seal.as_deref(),
                                         )
                                     }
-                                    Some(Fields::Refused | Fields::Failed) => {
-                                        Conn::Failed(ConnError::Refused)
-                                    }
+                                    Some(Fields::Refused) => Conn::Failed(ConnError::AuthRefused),
+                                    Some(Fields::Failed) => Conn::Failed(ConnError::AuthFailed),
                                     None => Conn::Authing(Box::new(Authing {
                                         fielding: binding.auth.fields(handle, request, 0),
                                         need,
@@ -1723,7 +1728,8 @@ fn reply(
                 &auth,
                 lent_seal(ctx).as_deref(),
             ),
-            Fields::Refused | Fields::Failed => Conn::Failed(ConnError::Refused),
+            Fields::Refused => Conn::Failed(ConnError::AuthRefused),
+            Fields::Failed => Conn::Failed(ConnError::AuthFailed),
         };
         install(st, id, stream, table, opened);
     }

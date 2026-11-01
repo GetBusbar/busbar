@@ -127,13 +127,13 @@ pub fn fetch_plugins(
         let record_problem = |errors: &mut Vec<String>,
                               outcomes: &mut Vec<FetchOutcome>,
                               msg: String| {
+            let shown = printable_url(&spec.url);
+            let error = msg.replace(spec.url.as_str(), &shown);
             if fatal_on_miss {
-                errors.push(msg);
+                errors.push(error);
             } else {
                 // The URL as a log may repeat it (H10): no userinfo, no query, in either field,
                 // here and in the recorded outcome (which the kernel logs as its reload miss).
-                let shown = printable_url(&spec.url);
-                let error = msg.replace(spec.url.as_str(), &shown);
                 tracing::warn!(url = %shown, %error, "plugin fetch problem (reload); keeping the current artifact");
                 outcomes.push(FetchOutcome::Warned {
                     url: shown.into_owned(),

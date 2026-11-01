@@ -986,7 +986,7 @@ pub const fn check_begin_scheme(i: &super::BeginIn) -> Result<(), Fault> {
 ///
 /// The rule the route breaks.
 pub fn check_route_view(r: &super::route::RouteView<'_>) -> Result<(), Fault> {
-    use super::route::{pattern_segments, PATH_PATTERN, PATH_PREFIX};
+    use super::route::{pattern_segments, FIELD_VALUE_PREFIX, PATH_PATTERN, PATH_PREFIX};
     if r.methods == 0 {
         return Err(fault(Rule::Missing, "route.methods"));
     }
@@ -1007,6 +1007,12 @@ pub fn check_route_view(r: &super::route::RouteView<'_>) -> Result<(), Fault> {
         return Err(fault(Rule::UnknownCode, "route.path.pattern"));
     }
     for (op, name, value) in &r.fields {
+        code(
+            u64::from(*op),
+            u64::from(FIELD_PRESENT),
+            u64::from(FIELD_VALUE_PREFIX),
+            "route.field.op",
+        )?;
         let token = !name.is_empty()
             && name
                 .bytes()

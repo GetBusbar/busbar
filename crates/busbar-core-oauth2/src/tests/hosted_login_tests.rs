@@ -1980,3 +1980,61 @@ async fn the_hosted_login_page_moved_with_its_1_5_5_bytes() {
     assert_ne!(signed_out, golden["body"]["text"].as_str().unwrap());
     handle.abort();
 }
+
+#[test]
+fn a_login_cookie_in_a_later_field_matches_its_joined_form() {
+    let cookie = door_cookie().encode();
+    let mut split = Request::new(Body::empty());
+    split
+        .headers_mut()
+        .append(header::COOKIE, "unrelated=first".parse().unwrap());
+    split.headers_mut().append(
+        header::COOKIE,
+        format!("{LOGIN_COOKIE}={cookie}").parse().unwrap(),
+    );
+    let mut joined = Request::new(Body::empty());
+    joined.headers_mut().insert(
+        header::COOKIE,
+        format!("unrelated=first; {LOGIN_COOKIE}={cookie}")
+            .parse()
+            .unwrap(),
+    );
+    let split_value = read_cookie(&split).expect("the login cookie is present");
+    assert_eq!(Some(split_value.clone()), read_cookie(&joined));
+    assert_eq!(
+        LoginCookie::decode(&split_value).unwrap().state,
+        door_cookie().state
+    );
+}
+
+#[test]
+fn login_cookie_fields_keep_first_match_and_existing_pair_grammar() {
+    for (fields, expected) in [
+        (
+            vec!["busbar_login=first", "busbar_login=second"],
+            Some("first"),
+        ),
+        (
+            vec!["other=x", "busbar_login=first; busbar_login=second"],
+            Some("first"),
+        ),
+        (vec!["busbar_login=", "busbar_login=second"], Some("")),
+        (vec!["bad-pair", " busbar_login=value "], Some("value")),
+        (vec!["busbar_login =wrong", "other=x"], None),
+    ] {
+        let mut req = Request::new(Body::empty());
+        for field in fields {
+            req.headers_mut()
+                .append(header::COOKIE, field.parse().unwrap());
+        }
+        assert_eq!(read_cookie(&req).as_deref(), expected);
+    }
+    let mut req = Request::new(Body::empty());
+    req.headers_mut().append(
+        header::COOKIE,
+        axum::http::HeaderValue::from_bytes(b"unreadable=\x80").unwrap(),
+    );
+    req.headers_mut()
+        .append(header::COOKIE, "busbar_login=later".parse().unwrap());
+    assert_eq!(read_cookie(&req), None);
+}

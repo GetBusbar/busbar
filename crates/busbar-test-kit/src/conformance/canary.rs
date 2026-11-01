@@ -56,16 +56,20 @@ pub(super) fn take_heard() -> Vec<Vec<u8>> {
 /// The credentials `inputs` names.
 #[must_use]
 pub fn credentials(inputs: &serde_json::Value) -> Vec<Vec<u8>> {
-    inputs["credentials"]
-        .as_array()
-        .map(|a| {
-            a.iter()
-                .filter_map(|v| v.as_str())
-                .filter(|s| !s.is_empty())
-                .map(|s| s.as_bytes().to_vec())
-                .collect()
-        })
-        .unwrap_or_default()
+    match inputs.get("credentials") {
+        None => Vec::new(),
+        Some(v) => v
+            .as_array()
+            .expect("conformance.json: credentials must be an array")
+            .iter()
+            .map(|v| {
+                v.as_str()
+                    .expect("conformance.json: credentials entries must be strings")
+            })
+            .filter(|s| !s.is_empty())
+            .map(|s| s.as_bytes().to_vec())
+            .collect(),
+    }
 }
 
 fn percent(b: &[u8]) -> Vec<u8> {

@@ -1221,10 +1221,18 @@ fn locate_as(door: &dyn FramerDoor, target: &str, accept: bool) -> Result<Locate
             continue;
         }
         ready(c)?;
-        let text = |b: &[u8], n: u64| {
-            String::from_utf8_lossy(b.get(..usize::try_from(n).unwrap_or(0)).unwrap_or_default())
-                .into_owned()
+        let text = |b: &[u8], n: u64, what: &str| -> Result<String, Refused> {
+            let bytes = usize::try_from(n)
+                .ok()
+                .and_then(|n| b.get(..n))
+                .ok_or_else(|| Refused {
+                    outcome: Outcome::Fault,
+                    error: format!("the framer's {what} overruns its locate buffer"),
+                })?;
+            Ok(String::from_utf8_lossy(bytes).into_owned())
         };
+        let authority = text(&authority, o.authority_written, "authority")?;
+        let name = text(&name, o.name_written, "name")?;
         let offered = alpn
             .get(..usize::try_from(o.alpn_written).unwrap_or(usize::MAX))
             .and_then(protocol_names)
@@ -1239,8 +1247,8 @@ fn locate_as(door: &dyn FramerDoor, target: &str, accept: bool) -> Result<Locate
                 error: "the framer's head lines overrun its buffer".into(),
             })?;
         return Ok(Located {
-            authority: text(&authority, o.authority_written),
-            name: (o.has_name != 0).then(|| text(&name, o.name_written)),
+            authority,
+            name: (o.has_name != 0).then_some(name),
             secure: o.secure != 0,
             offer: offered,
             defaults: crate::framed_stream::field_lines(lines)?,

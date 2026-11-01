@@ -413,6 +413,10 @@ fn the_pgo_stamp_is_derived_only_from_the_flags_that_reached_the_compiler() {
         !pgo_from_flags(&["-Cprofile-generate=/tmp/prof"]),
         "the training build writes a profile, it does not consume one"
     );
+    assert!(!pgo_from_flags(&[
+        "-Cprofile-generate=/tmp/profile-use-training"
+    ]));
+    assert!(!pgo_from_flags(&["--cfg", "profile-use"]));
 
     // THE REGRESSION ITSELF: no environment value, however spelled, can put PGO into the answer.
     // `pgo_from_flags` takes only the flag list, so the ONLY way to reintroduce the escape hatch is
@@ -467,6 +471,21 @@ fn a_flag_value_is_the_last_one_passed_under_its_exact_name() {
     assert_eq!(
         flag_value(&["-Ctarget-cpu=native"], "target-cpu").as_deref(),
         Some("native")
+    );
+    assert_eq!(flag_value(&["-Clto"], "lto").as_deref(), Some("fat"));
+    assert_eq!(flag_value(&["-C", "lto"], "lto").as_deref(), Some("fat"));
+    assert_eq!(
+        flag_value(&["-Clto", "-Clto=thin"], "lto").as_deref(),
+        Some("thin")
+    );
+    assert_eq!(
+        flag_value(&["-Ctarget-feature=+sse2", "-C", "target-feature=+avx,-sse2"], "target-feature").as_deref(),
+        Some("+sse2,+avx,-sse2"),
+        "rustc combines target-feature options in order, with later entries overriding earlier ones"
+    );
+    assert_eq!(
+        flag_value(&["--cfg", "target-cpu=native"], "target-cpu"),
+        None
     );
 }
 

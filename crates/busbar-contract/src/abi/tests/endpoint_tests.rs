@@ -5,26 +5,73 @@
 
 use super::*;
 
-/// The request/response dispatch pair round-trips through JSON unchanged (the wire is stable).
+/// Independently authored JSON fixes the field names, ordered header pairs and byte-array body.
 #[test]
-fn request_response_json_roundtrip() {
-    let req = EndpointRequest {
-        method: "GET".into(),
-        path: "/metrics".into(),
-        query: "format=prometheus".into(),
-        headers: vec![("accept".into(), "text/plain".into())],
-        body: Vec::new(),
-    };
-    let j = serde_json::to_vec(&req).unwrap();
-    let back: EndpointRequest = serde_json::from_slice(&j).unwrap();
-    assert_eq!(serde_json::to_vec(&back).unwrap(), j);
+fn endpoint_request_json_preserves_the_dispatch_fields() {
+    let wire = serde_json::json!({
+        "method": "POST",
+        "path": "/hooks/example/submit",
+        "query": "key=a%2Fb&key=c+d",
+        "headers": [["x-tag", "first"], ["x-tag", "second"]],
+        "body": [0, 127, 128, 255]
+    });
+    let decoded: EndpointRequest = serde_json::from_value(wire.clone()).unwrap();
+    assert_eq!(decoded.method, "POST");
+    assert_eq!(decoded.path, "/hooks/example/submit");
+    assert_eq!(decoded.query, "key=a%2Fb&key=c+d");
+    assert_eq!(
+        decoded
+            .headers
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect::<Vec<_>>(),
+        [("x-tag", "first"), ("x-tag", "second")]
+    );
+    assert_eq!(decoded.body, [0, 127, 128, 255]);
 
-    let resp = EndpointResponse {
-        status: 200,
-        headers: vec![("content-type".into(), "text/plain".into())],
-        body: b"busbar_up 1\n".to_vec(),
+    let req = EndpointRequest {
+        method: "POST".into(),
+        path: "/hooks/example/submit".into(),
+        query: "key=a%2Fb&key=c+d".into(),
+        headers: vec![
+            ("x-tag".into(), "first".into()),
+            ("x-tag".into(), "second".into()),
+        ],
+        body: vec![0, 127, 128, 255],
     };
-    let j = serde_json::to_vec(&resp).unwrap();
-    let back: EndpointResponse = serde_json::from_slice(&j).unwrap();
-    assert_eq!(serde_json::to_vec(&back).unwrap(), j);
+    assert_eq!(serde_json::to_value(&req).unwrap(), wire);
+}
+
+#[test]
+fn endpoint_response_json_preserves_status_headers_and_arbitrary_body_bytes() {
+    let wire = serde_json::json!({
+        "status": 409,
+        "headers": [["content-type", "application/octet-stream"], ["x-tag", "first"], ["x-tag", "second"]],
+        "body": [255, 0, 128, 10]
+    });
+    let decoded: EndpointResponse = serde_json::from_value(wire.clone()).unwrap();
+    assert_eq!(decoded.status, 409);
+    assert_eq!(
+        decoded
+            .headers
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect::<Vec<_>>(),
+        [
+            ("content-type", "application/octet-stream"),
+            ("x-tag", "first"),
+            ("x-tag", "second")
+        ]
+    );
+    assert_eq!(decoded.body, [255, 0, 128, 10]);
+    let resp = EndpointResponse {
+        status: 409,
+        headers: vec![
+            ("content-type".into(), "application/octet-stream".into()),
+            ("x-tag".into(), "first".into()),
+            ("x-tag".into(), "second".into()),
+        ],
+        body: vec![255, 0, 128, 10],
+    };
+    assert_eq!(serde_json::to_value(&resp).unwrap(), wire);
 }

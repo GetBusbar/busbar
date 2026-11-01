@@ -56,13 +56,15 @@ fn leg(
 #[tokio::test]
 async fn a_channels_messages_are_the_sessions_pieces_and_early_writes_wait_for_the_channel() {
     let (door, leg, pairing, mut rx) = leg(8);
+    let framer = busbar_test_kit::root_door_fixtures::datagram_order::Recording::new();
+    join_recording(&door, &leg, &framer);
     let mut doors = ClaimDoors::default();
     doors.insert("dg", Arc::clone(&door));
     assert!(doors.get("dg").is_some() && doors.get("other").is_none());
     let now = Instant::now();
     // Written before the channel opened: held, not lost.
-    assert!(leg.write(b"early", true, now));
-    assert_eq!(lock(&leg.held).len(), 1);
+    assert!(leg.write(b"early", true).await);
+    assert_eq!(lock(&leg.outbound).held.len(), 1);
     leg.take(
         vec![
             got(0, b"description", false),
@@ -71,12 +73,17 @@ async fn a_channels_messages_are_the_sessions_pieces_and_early_writes_wait_for_t
         ],
         now,
     );
+    let caller = caller_for(Arc::clone(&leg));
+    assert!(busbar_kernel::plane_driver::CallerEnd::write(&caller, b"after opening").await);
     assert_eq!(
-        *lock(&leg.channel),
+        lock(&leg.outbound).channel,
         Some(1),
         "the first channel is the session's"
     );
-    assert!(lock(&leg.held).is_empty(), "released onto the channel");
+    assert!(
+        lock(&leg.outbound).held.is_empty(),
+        "released onto the channel"
+    );
     assert_eq!(rx.recv().await.unwrap(), b"{\"type\":\"x\"}");
     assert!(rx.try_recv().is_err(), "the description is never a piece");
     assert!(!pairing.closed());
@@ -104,15 +111,22 @@ async fn a_plane_that_falls_behind_its_caller_ends_the_session() {
 /// before and after.
 #[tokio::test]
 async fn early_writes_up_to_the_bound_wait_for_the_channel() {
-    let (_door, leg, pairing, _rx) = leg(8);
+    let (door, leg, pairing, _rx) = leg(8);
+    let framer = busbar_test_kit::root_door_fixtures::datagram_order::Recording::new();
+    join_recording(&door, &leg, &framer);
     let now = Instant::now();
     for _ in 0..CALLER_QUEUE {
-        assert!(leg.write(b"early", false, now));
+        assert!(leg.write(b"early", false).await);
     }
-    assert_eq!(lock(&leg.held).len(), CALLER_QUEUE);
+    assert_eq!(lock(&leg.outbound).held.len(), CALLER_QUEUE);
     assert!(!pairing.closed());
     leg.take(vec![got(1, b"label: events\r\n", true)], now);
-    assert!(lock(&leg.held).is_empty(), "released onto the channel");
+    let caller = caller_for(Arc::clone(&leg));
+    assert!(busbar_kernel::plane_driver::CallerEnd::write(&caller, b"after opening").await);
+    assert!(
+        lock(&leg.outbound).held.is_empty(),
+        "released onto the channel"
+    );
     assert!(!pairing.closed());
 }
 
@@ -126,23 +140,25 @@ async fn early_writes_up_to_the_bound_wait_for_the_channel() {
 #[tokio::test]
 async fn a_plane_that_writes_past_the_bound_before_the_channel_opens_ends_the_session() {
     let (_door, leg, pairing, mut rx) = leg(8);
-    let now = Instant::now();
     for _ in 0..CALLER_QUEUE {
-        assert!(leg.write(b"early", false, now));
+        assert!(leg.write(b"early", false).await);
     }
     assert!(
-        !leg.write(b"one too many", false, now),
+        !leg.write(b"one too many", false).await,
         "the write past the bound is refused"
     );
     assert!(pairing.closed(), "the session ended");
-    assert!(lock(&leg.held).is_empty(), "what it held went with it");
+    assert!(
+        lock(&leg.outbound).held.is_empty(),
+        "what it held went with it"
+    );
     assert!(lock(&leg.to_session).is_none());
     assert!(rx.recv().await.is_none(), "the session's caller side ended");
     assert!(
-        !leg.write(b"after", false, now),
+        !leg.write(b"after", false).await,
         "a closed leg takes no write"
     );
-    assert!(lock(&leg.held).is_empty(), "nor holds one");
+    assert!(lock(&leg.outbound).held.is_empty(), "nor holds one");
 }
 
 /// A door that states only its facts.
@@ -295,4 +311,392 @@ async fn the_caller_side_opens_with_one_empty_piece() {
     assert_eq!(caller.read().await, Some(b"{\"type\":\"x\"}".to_vec()));
     drop(to);
     assert_eq!(caller.read().await, None);
+}
+
+#[tokio::test]
+async fn a_reentrant_write_cannot_overtake_the_early_messages_being_released() {
+    use busbar_core_connector::datagram::DatagramFraming;
+    use busbar_core_connector::framer::FramerDoor;
+    use busbar_test_kit::root_door_fixtures::datagram_order::Recording;
+
+    let (door, leg, pairing, _rx) = leg(8);
+    let framer = Recording::new();
+    let now = Instant::now();
+    let (mut framing, _) =
+        DatagramFraming::accept_minted(Arc::clone(&framer) as Arc<dyn FramerDoor>, door.local())
+            .expect("begin");
+    framing.rendezvous(b"offer", now).expect("valid terms");
+    door.join(framing, &leg).expect("join");
+    let weak = Arc::downgrade(&leg);
+    let (written, third) = tokio::sync::oneshot::channel();
+    let written = std::sync::Mutex::new(Some(written));
+    framer.observe(Arc::new(move |bytes| {
+        if bytes == b"first" {
+            let leg = weak.upgrade().unwrap();
+            let written = written.lock().unwrap().take().unwrap();
+            tokio::spawn(async move {
+                let _ = written.send(leg.write(b"third", false).await);
+            });
+        }
+    }));
+    assert!(leg.write(b"first", false).await);
+    assert!(leg.write(b"second", false).await);
+    leg.take(vec![got(1, b"label: events\r\n", true)], now);
+    assert!(third.await.unwrap());
+    assert_eq!(
+        framer.emitted(),
+        vec![b"first".to_vec(), b"second".to_vec(), b"third".to_vec()]
+    );
+    assert!(!pairing.closed());
+    pairing.close();
+}
+
+#[tokio::test]
+async fn a_closed_leg_with_an_open_channel_refuses_further_writes() {
+    let (_door, leg, pairing, _rx) = leg(8);
+    let now = Instant::now();
+    leg.take(vec![got(1, b"label: events\r\n", true)], now);
+    pairing.close();
+    assert!(!leg.write(b"after close", false).await);
+}
+
+const SESSION_CHANNEL: u64 = 1;
+const FRAMER_PARK_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+
+fn caller_for(leg: Arc<CallerLeg>) -> super::DatagramCaller {
+    let (_to, from) = mpsc::channel(8);
+    let (head, _answer) = tokio::sync::oneshot::channel();
+    super::DatagramCaller {
+        leg,
+        from: tokio::sync::Mutex::new(from),
+        head: std::sync::Mutex::new(Some(head)),
+        stated: std::sync::atomic::AtomicU32::new(0),
+        opened: std::sync::atomic::AtomicBool::new(false),
+    }
+}
+
+fn join_recording(
+    door: &Arc<ClaimDoor>,
+    leg: &Arc<CallerLeg>,
+    framer: &Arc<busbar_test_kit::root_door_fixtures::datagram_order::Recording>,
+) -> u64 {
+    use busbar_core_connector::datagram::DatagramFraming;
+    use busbar_core_connector::framer::FramerDoor;
+    let (mut framing, _) =
+        DatagramFraming::accept_minted(Arc::clone(framer) as Arc<dyn FramerDoor>, door.local())
+            .expect("begin");
+    framing.rendezvous(b"offer", Instant::now()).expect("terms");
+    door.join(framing, leg).expect("join")
+}
+
+#[derive(Default)]
+struct WriteWake(std::sync::atomic::AtomicUsize);
+
+impl std::task::Wake for WriteWake {
+    fn wake(self: Arc<Self>) {
+        self.wake_by_ref();
+    }
+
+    fn wake_by_ref(self: &Arc<Self>) {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+#[tokio::test]
+async fn early_drain_wakes_the_next_writer_after_cancel_without_overtaking_accepted_messages() {
+    use busbar_kernel::plane_driver::CallerEnd;
+    use busbar_test_kit::root_door_fixtures::datagram_order::Recording;
+    use std::future::Future;
+    use std::task::{Context, Poll, Waker};
+
+    let (door, leg, pairing, _rx) = leg(8);
+    let framer = Recording::new();
+    join_recording(&door, &leg, &framer);
+    let caller = Arc::new(caller_for(Arc::clone(&leg)));
+    assert!(CallerEnd::write(&*caller, b"first").await);
+    assert!(CallerEnd::write(&*caller, b"second").await);
+    let (queued, pending) = tokio::sync::oneshot::channel();
+    let queued = std::sync::Mutex::new(Some(queued));
+    framer.observe(Arc::new(move |bytes| {
+        if bytes != b"first" {
+            return;
+        }
+        let wake = Arc::new(WriteWake::default());
+        let waker = Waker::from(Arc::clone(&wake));
+        let mut cx = Context::from_waker(&waker);
+        let mut cancelled = Box::pin(CallerEnd::write(&*caller, b"cancelled during drain"));
+        let cancelled_poll = cancelled.as_mut().poll(&mut cx);
+        let later = Arc::clone(&caller);
+        let mut later = Box::pin(async move { CallerEnd::write(&*later, b"last").await });
+        let later_poll = later.as_mut().poll(&mut cx);
+        drop(cancelled);
+        let later_retry = if later_poll.is_pending() {
+            later.as_mut().poll(&mut cx)
+        } else {
+            later_poll
+        };
+        // Both waits are registered during the actual first Emit crossing. The later
+        // writer must hear the drainer finish even though its predecessor was cancelled.
+        let _ = queued.lock().unwrap().take().unwrap().send((
+            cancelled_poll,
+            later_poll,
+            later_retry,
+            later,
+            wake,
+        ));
+    }));
+    let opened = {
+        let leg = Arc::clone(&leg);
+        std::thread::spawn(move || {
+            leg.take(
+                vec![got(SESSION_CHANNEL, b"label: events\r\n", true)],
+                Instant::now(),
+            );
+        })
+    };
+    if let Err(panic) = opened.join() {
+        pairing.close();
+        std::panic::resume_unwind(panic);
+    }
+    let (cancelled_poll, later_poll, later_retry, later, wake) = pending.await.unwrap();
+    let notified = wake.0.load(std::sync::atomic::Ordering::SeqCst);
+    let accepted = match later_retry {
+        Poll::Ready(ok) => ok,
+        Poll::Pending => later.await,
+    };
+    let emitted = framer.emitted();
+    pairing.close();
+
+    assert!(cancelled_poll.is_pending() && later_poll.is_pending() && later_retry.is_pending());
+    assert!(
+        notified > 0,
+        "finishing the early queue wakes the surviving writer"
+    );
+    assert!(accepted);
+    assert_eq!(
+        emitted,
+        vec![b"first".to_vec(), b"second".to_vec(), b"last".to_vec()]
+    );
+}
+
+#[tokio::test]
+async fn busy_caller_writes_wait_without_accepting_cancelled_bytes_and_other_associations_progress()
+{
+    use busbar_kernel::plane_driver::CallerEnd;
+    use busbar_test_kit::root_door_fixtures::datagram_order::Recording;
+    use std::future::Future;
+    use std::task::{Context, Poll, Waker};
+
+    let (door, leg, pairing, _rx) = leg(8);
+    let framer = Recording::new();
+    let id = join_recording(&door, &leg, &framer);
+    leg.take(
+        vec![got(SESSION_CHANNEL, b"label: events\r\n", true)],
+        Instant::now(),
+    );
+    tokio::task::yield_now().await;
+    let caller = caller_for(Arc::clone(&leg));
+    let (tx, _rx_b) = mpsc::channel(8);
+    let leg_b = CallerLeg::new(&door, tx);
+    let framer_b = Recording::with_user(b"otherfrag");
+    let id_b = join_recording(&door, &leg_b, &framer_b);
+    let (entered, inside) = std::sync::mpsc::channel();
+    let (release, resume) = std::sync::mpsc::channel();
+    let resume = std::sync::Mutex::new(resume);
+    framer.observe(Arc::new(move |bytes| {
+        if bytes == b"occupied" {
+            entered.send(()).unwrap();
+            resume.lock().unwrap().recv().unwrap();
+        }
+    }));
+    let holder = {
+        let door = Arc::clone(&door);
+        std::thread::spawn(move || {
+            door.emit(
+                id,
+                SESSION_CHANNEL,
+                b"occupied",
+                true,
+                false,
+                Instant::now(),
+            )
+        })
+    };
+    inside.recv_timeout(FRAMER_PARK_WAIT).expect("parked emit");
+    let wake = Arc::new(WriteWake::default());
+    let waker = Waker::from(Arc::clone(&wake));
+    let mut cx = Context::from_waker(&waker);
+    let mut active_cancelled = Box::pin(CallerEnd::write(&caller, b"cancelled active waiter"));
+    let active_cancel_poll = active_cancelled.as_mut().poll(&mut cx);
+    let mut first = Box::pin(CallerEnd::write(&caller, b"first"));
+    let first_poll = first.as_mut().poll(&mut cx);
+    let mut cancelled = Box::pin(CallerEnd::write(&caller, b"cancelled"));
+    let cancel_poll = cancelled.as_mut().poll(&mut cx);
+    let mut last = Box::pin(CallerEnd::write_text(&caller, b"last"));
+    let last_poll = last.as_mut().poll(&mut cx);
+    drop(active_cancelled);
+    let first_retry = if first_poll.is_pending() {
+        first.as_mut().poll(&mut cx)
+    } else {
+        first_poll
+    };
+    let first_repeated = if first_retry.is_pending() {
+        first.as_mut().poll(&mut cx)
+    } else {
+        first_retry
+    };
+    drop(cancelled);
+    let other = door.emit(
+        id_b,
+        SESSION_CHANNEL,
+        b"healthy",
+        true,
+        false,
+        Instant::now(),
+    );
+    let other_bytes = framer_b.emitted();
+    release.send(()).unwrap();
+    let held = holder.join().unwrap();
+    let notified = wake.0.load(std::sync::atomic::Ordering::SeqCst);
+    let first_result = match first_poll {
+        Poll::Ready(ok) => ok,
+        Poll::Pending => first.await,
+    };
+    let last_result = match last_poll {
+        Poll::Ready(ok) => ok,
+        Poll::Pending => last.await,
+    };
+    let emitted = framer.emitted();
+    pairing.close();
+    door.leave(id_b);
+
+    assert!(active_cancel_poll.is_pending());
+    assert!(first_poll.is_pending() && cancel_poll.is_pending() && last_poll.is_pending());
+    assert!(first_retry.is_pending() && first_repeated.is_pending());
+    assert!(other && held && first_result && last_result);
+    assert_eq!(other_bytes, vec![b"healthy".to_vec()]);
+    assert!(notified > 0, "availability wakes the pending writer");
+    assert_eq!(
+        emitted,
+        vec![b"occupied".to_vec(), b"first".to_vec(), b"last".to_vec()]
+    );
+}
+
+#[tokio::test]
+async fn closing_a_busy_caller_wakes_the_unaccepted_write_without_emitting_it() {
+    use busbar_kernel::plane_driver::CallerEnd;
+    use busbar_test_kit::root_door_fixtures::datagram_order::Recording;
+    use std::future::Future;
+    use std::task::{Context, Waker};
+
+    let (door, leg, pairing, _rx) = leg(8);
+    let framer = Recording::new();
+    let id = join_recording(&door, &leg, &framer);
+    leg.take(
+        vec![got(SESSION_CHANNEL, b"label: events\r\n", true)],
+        Instant::now(),
+    );
+    tokio::task::yield_now().await;
+    let caller = caller_for(leg);
+    let (entered, inside) = std::sync::mpsc::channel();
+    let (release, resume) = std::sync::mpsc::channel();
+    let resume = std::sync::Mutex::new(resume);
+    framer.observe(Arc::new(move |bytes| {
+        if bytes == b"occupied" {
+            entered.send(()).unwrap();
+            resume.lock().unwrap().recv().unwrap();
+        }
+    }));
+    let holder = {
+        let door = Arc::clone(&door);
+        std::thread::spawn(move || {
+            door.emit(
+                id,
+                SESSION_CHANNEL,
+                b"occupied",
+                true,
+                false,
+                Instant::now(),
+            )
+        })
+    };
+    inside.recv_timeout(FRAMER_PARK_WAIT).expect("parked emit");
+    let wake = Arc::new(WriteWake::default());
+    let waker = Waker::from(Arc::clone(&wake));
+    let mut cx = Context::from_waker(&waker);
+    let mut write = Box::pin(CallerEnd::write(&caller, b"never accepted"));
+    let before = write.as_mut().poll(&mut cx);
+    let mut queued = Box::pin(CallerEnd::write(&caller, b"also never accepted"));
+    let queued_before = queued.as_mut().poll(&mut cx);
+    pairing.close();
+    let notified = wake.0.load(std::sync::atomic::Ordering::SeqCst);
+    let after = if before.is_pending() {
+        write.as_mut().poll(&mut cx)
+    } else {
+        before
+    };
+    let queued_after = if queued_before.is_pending() {
+        queued.as_mut().poll(&mut cx)
+    } else {
+        queued_before
+    };
+    drop(write);
+    drop(queued);
+    release.send(()).unwrap();
+    let _ = holder.join().unwrap();
+    assert!(before.is_pending());
+    assert!(notified > 0, "close wakes without waiting for the framer");
+    assert_eq!(after, std::task::Poll::Ready(false));
+    assert!(queued_before.is_pending());
+    assert_eq!(queued_after, std::task::Poll::Ready(false));
+    assert_eq!(framer.emitted(), vec![b"occupied".to_vec()]);
+}
+
+#[tokio::test]
+async fn caller_write_publishes_the_framers_emitted_channel_output_once() {
+    use busbar_kernel::plane_driver::CallerEnd;
+    use busbar_test_kit::root_door_fixtures::datagram_order::Recording;
+    let (door, leg, pairing, mut rx) = leg(8);
+    let framer = Recording::new();
+    join_recording(&door, &leg, &framer);
+    framer.echo_emits();
+    leg.take(
+        vec![got(SESSION_CHANNEL, b"label: events\r\n", true)],
+        Instant::now(),
+    );
+    let caller = caller_for(leg);
+    assert!(CallerEnd::write(&caller, b"echo").await);
+    let received = rx.try_recv();
+    let extra = rx.try_recv();
+    pairing.close();
+    assert_eq!(received.unwrap(), b"echo");
+    assert!(extra.is_err());
+}
+
+#[tokio::test]
+async fn refusal_of_an_accepted_early_message_closes_before_later_messages_cross() {
+    use busbar_kernel::plane_driver::CallerEnd;
+    use busbar_test_kit::root_door_fixtures::datagram_order::Recording;
+
+    let (door, leg, pairing, _rx) = leg(8);
+    let framer = Recording::new();
+    join_recording(&door, &leg, &framer);
+    let caller = caller_for(Arc::clone(&leg));
+    assert!(CallerEnd::write(&caller, b"first accepted").await);
+    assert!(CallerEnd::write(&caller, b"later accepted").await);
+    framer.refuse_emits();
+    leg.take(
+        vec![got(SESSION_CHANNEL, b"label: events\r\n", true)],
+        Instant::now(),
+    );
+    // This live write waits behind the early drainer, so its result also observes
+    // completion of the already accepted messages without a timed assertion.
+    let later = CallerEnd::write(&caller, b"after refusal").await;
+    let closed = pairing.closed();
+    let emitted = framer.emitted();
+    pairing.close();
+
+    assert!(closed, "accepted custody failure ends the session");
+    assert!(!later);
+    assert_eq!(emitted, vec![b"first accepted".to_vec()]);
 }

@@ -99,6 +99,44 @@ pub(super) fn seal(
         .collect()
 }
 
+#[test]
+fn an_undecodable_audit_record_refuses_the_chain_window_without_reclassifying_the_journal() {
+    use tracing_subscriber::layer::SubscriberExt as _;
+    let scratch = Scratch::new("undecodable-window");
+    let mut book = open(&scratch.0);
+    let sealed = seal(&mut book, 1..=1);
+    assert_eq!(book.chain_at().audit_window(1, 2), Some(sealed));
+
+    let mut next = inputs(2);
+    next.usage.lines.push(busbar_kernel_audit::UsageLine {
+        class: busbar_contract::MeterClassId::new("unregistered-window-class"),
+        quantity: 3,
+        source: busbar_contract::caps::QuantitySource::Count,
+        estimated: false,
+    });
+    book.seal_unit(
+        next,
+        busbar_kernel::test_support::tokens::pass(),
+        &busbar_kernel::test_support::tokens::grant::<DurableWrite>(),
+    )
+    .expect("the complete record is journalled");
+    assert!(
+        book.chain().expect("read chain").is_ok(),
+        "the journal still verifies"
+    );
+    let captured = busbar_kernel::test_support::warn_capture::WarnCapture::default();
+    let window = tracing::subscriber::with_default(
+        tracing_subscriber::registry().with(captured.clone()),
+        || book.chain_at().audit_window(1, 2),
+    );
+    assert!(
+        window.is_none(),
+        "an unreadable audit record must not produce a partial successful window"
+    );
+    assert!(captured.contains("does not decode"));
+    assert!(!captured.contains("unregistered-window-class"));
+}
+
 /// AFTER A RESTART THE HEAD READ ANSWERS WITH THE CHAIN'S TIP, and every anchor survives.
 ///
 /// The restarted book continues the chain at position four. Its head read used to answer

@@ -44,7 +44,7 @@
 //!
 //! A fetch that fails, a document that does not parse, and a document that fails validation all
 //! answer `Ok(None)` from [`CimdStore::get_client`] — the same answer an unregistered `client_id`
-//! gets — with the reason at `warn` for the operator. Mapping them to [`StorageError`] instead
+//! gets — with the reason at `debug` for operator diagnostics. Mapping them to [`StorageError`] instead
 //! would turn an attacker-supplied URL into a 500 an attacker can mint, and would make the
 //! refusal distinguishable from "no such client", which is an oracle.
 //!

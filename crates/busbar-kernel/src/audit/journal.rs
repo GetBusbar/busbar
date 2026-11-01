@@ -347,11 +347,31 @@ impl<R: ChainedRecord> Journal<R> {
         if bodies.is_empty() {
             return Ok(Chain::new());
         }
-        let records: Vec<R> = bodies
-            .iter()
-            .map(|body| read(body))
-            .collect::<RecordStoreResult<_>>()
-            .map_err(JournalError::Store)?;
+        let mut records = Vec::with_capacity(bodies.len());
+        let mut unreadable = None;
+        for body in &bodies {
+            match read(body) {
+                Ok(record) => records.push(record),
+                Err(error) => {
+                    crate::diagnostics::diag_error!(
+                        crate::diagnostics::PLANE_JOURNAL_ROW_UNREADABLE,
+                        scope = %scope,
+                        error = %error,
+                        "a persisted journal record could NOT be reframed on resume; it is being \
+                         SKIPPED while the decodable records retain their original chain links. \
+                         The unreadable evidence is reported here, never silently discarded."
+                    );
+                    unreadable = Some(error);
+                }
+            }
+        }
+        // A nonempty store with no decodable tail cannot establish a next sequence. Preserve the
+        // refusal in that case rather than inventing a fresh chain over unreadable evidence.
+        if records.is_empty() {
+            if let Some(error) = unreadable {
+                return Err(JournalError::Store(error));
+            }
+        }
         Ok(match Chain::from_persisted(&records) {
             Ok(chain) => chain,
             Err(brk) => {

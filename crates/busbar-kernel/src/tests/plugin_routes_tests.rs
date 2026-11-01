@@ -624,6 +624,35 @@ fn under_cap_request_headers_carry_no_marker() {
     );
 }
 
+#[test]
+fn non_text_request_headers_mark_the_projection_incomplete() {
+    let mut headers = HeaderMap::new();
+    headers.insert("x-readable", axum::http::HeaderValue::from_static("kept"));
+    headers.insert(
+        "x-unreadable",
+        axum::http::HeaderValue::from_bytes(&[0xff]).unwrap(),
+    );
+    let projected = project_request_headers(&headers);
+    assert!(projected
+        .iter()
+        .any(|(k, v)| k == "x-readable" && v == "kept"));
+    assert!(!projected.iter().any(|(k, _)| k == "x-unreadable"));
+    assert!(projected
+        .iter()
+        .any(|(k, v)| { k == PLUGIN_REQUEST_HEADERS_TRUNCATED_MARKER && v == "true" }));
+
+    // Authorization is intentionally excluded, regardless of its encoding.
+    headers.remove("x-unreadable");
+    headers.insert(
+        "authorization",
+        axum::http::HeaderValue::from_bytes(&[0xff]).unwrap(),
+    );
+    assert_eq!(
+        project_request_headers(&headers),
+        vec![("x-readable".to_string(), "kept".to_string())]
+    );
+}
+
 /// The RESPONSE direction: a plugin response over the header cap reaches an axum [`Response`] — this
 /// relay leaves the process to an EXTERNAL client, so the OWNER PRINCIPLE forbids a truncate-and-relay
 /// fallback. The whole response is REJECTED (502), never partially relayed.

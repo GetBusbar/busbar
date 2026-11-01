@@ -65,6 +65,48 @@ fn an_entry_round_trips_through_its_parts_and_its_commit_is_written_last() {
 }
 
 #[test]
+fn malformed_void_records_are_reported_without_changing_accepted_entries_or_voids() {
+    let first = EntryKey::new(5, [2; 8], 0);
+    let second = EntryKey::new(6, [2; 8], 0);
+    let valid = VoidRecord {
+        voided: first.hex(),
+        voider: 3,
+        at_ms: 9,
+        actor: "op".to_string(),
+        why: "void".to_string(),
+    };
+    let mut records = entry(first).records().unwrap();
+    records.push(valid.record().unwrap());
+    let bad = VoidRecord {
+        voider: 4,
+        ..valid.clone()
+    };
+    records.push((
+        bad.record_key(),
+        RecordBytes::new(b"private-malformed-body".to_vec()).unwrap(),
+    ));
+    let mismatch = VoidRecord {
+        voided: second.hex(),
+        voider: 5,
+        ..valid.clone()
+    };
+    let (_, value) = mismatch.record().unwrap();
+    let key = VoidRecord {
+        voider: 5,
+        ..valid.clone()
+    }
+    .record_key();
+    records.push((key, value));
+    let scanned = Scanned::of(records);
+    assert_eq!(scanned.entries, vec![entry(first)]);
+    assert_eq!(scanned.voids, vec![valid]);
+    assert_eq!(scanned.unreadable.len(), 2);
+    assert!(scanned.unreadable.iter().all(|(key, why)| {
+        *key == first && !why.contains("private-malformed-body") && !why.contains(&second.hex())
+    }));
+}
+
+#[test]
 fn a_void_is_its_own_record_under_the_voided_key_and_the_ff_tag() {
     let key = EntryKey::new(5, [2; 8], 0);
     let void = VoidRecord {
@@ -83,4 +125,25 @@ fn a_void_is_its_own_record_under_the_voided_key_and_the_ff_tag() {
     let scanned = Scanned::of(records);
     assert_eq!(scanned.voids, vec![void]);
     assert_eq!(scanned.entries.len(), 1);
+}
+
+#[test]
+fn saving_a_spool_does_not_reuse_another_writers_staged_file() {
+    let dir = std::env::temp_dir().join(format!(
+        "card-spool-stage-{}-{}",
+        std::process::id(),
+        hex::encode(boot_rand())
+    ));
+    std::fs::create_dir(&dir).unwrap();
+    let staged = dir.join(format!("{PENDING_FILE}.tmp"));
+    let other = b"another writer has not renamed this yet";
+    std::fs::write(&staged, other).unwrap();
+    let e = entry(EntryKey::new(5, [2; 8], 0));
+    let spool = Spool {
+        pending: vec![SpooledWrite::of(&e.key, &e.records().unwrap())],
+    };
+    spool.save(&dir).unwrap();
+    assert_eq!(Spool::load(&dir).unwrap(), spool);
+    assert_eq!(std::fs::read(staged).unwrap(), other);
+    std::fs::remove_dir_all(dir).unwrap();
 }

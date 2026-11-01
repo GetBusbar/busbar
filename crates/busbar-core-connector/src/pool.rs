@@ -129,6 +129,8 @@ impl<T> std::hash::Hash for Same<T> {
 struct Entry {
     line: Arc<Line>,
     idle: Option<Instant>,
+    /// An idle freshness probe owns the line, with no shard lock held.
+    checking: bool,
 }
 
 type Shard = Mutex<HashMap<PoolKey, Vec<Entry>>>;
@@ -271,6 +273,7 @@ impl Pools {
             .push(Entry {
                 line: Arc::clone(line),
                 idle: None,
+                checking: false,
             });
     }
 
@@ -279,8 +282,8 @@ impl Pools {
     /// line met on the way is dropped from the pool, and closed when nobody holds it.
     ///
     /// An idle line is read for freshness with NO LOCK HELD (`BUSBAR-1.6.0.md` §11: no plugin code
-    /// runs under a host lock; reading it drives its connection): it is taken out of the pool while
-    /// it is read, and put back where it was, lent, when it is fresh.
+    /// runs under a host lock; reading it drives its connection): its entry stays claimed while
+    /// it is read, so retirement can remove it, and it is lent only if that entry survives.
     pub(crate) fn lend(&self, shard: usize, key: &PoolKey) -> Option<Arc<Line>> {
         if !self.keeps() {
             return None;
@@ -302,6 +305,9 @@ impl Pools {
                 let mut i = below.min(entries.len());
                 while i > 0 {
                     i -= 1;
+                    if entries[i].checking {
+                        continue;
+                    }
                     let (idle, users) = (entries[i].idle, entries[i].line.users());
                     match idle {
                         None if users == 0 => spent.push(entries.remove(i).line),
@@ -313,7 +319,8 @@ impl Pools {
                         }
                         None => {}
                         Some(since) if now.duration_since(since) < timeout => {
-                            claimed = Some((i, entries.remove(i).line));
+                            entries[i].checking = true;
+                            claimed = Some((i, Arc::clone(&entries[i].line)));
                             break;
                         }
                         Some(_) => spent.push(entries.remove(i).line),
@@ -330,18 +337,27 @@ impl Pools {
                 };
                 claimed
             };
-            if idle.fresh() {
-                idle.lend();
+            let fresh = idle.fresh();
+            {
                 let mut map = self.shards[shard].lock().expect("pool");
-                let entries = map.entry(key.clone()).or_default();
-                entries.insert(
-                    at.min(entries.len()),
-                    Entry {
-                        line: Arc::clone(&idle),
-                        idle: None,
-                    },
-                );
-                break Some(idle);
+                if let Some(entries) = map.get_mut(key) {
+                    if let Some(i) = entries
+                        .iter()
+                        .position(|e| e.checking && Arc::ptr_eq(&e.line, &idle))
+                    {
+                        if fresh {
+                            entries[i].checking = false;
+                            entries[i].idle = None;
+                            idle.lend();
+                            break Some(idle);
+                        }
+                        // `idle` still owns the line: removing the entry cannot drop its driver.
+                        entries.remove(i);
+                    }
+                    if entries.is_empty() {
+                        map.remove(key);
+                    }
+                }
             }
             spent.push(idle);
             below = at;
@@ -366,26 +382,26 @@ impl Pools {
         let mut spent = Vec::new();
         {
             let mut map = self.shards[shard].lock().expect("pool");
-            let entries = map.entry(key.clone()).or_default();
-            let at = entries.iter().position(|e| Arc::ptr_eq(&e.line, line));
             if line.users() > 0 {
                 return;
             }
+            let Some(entries) = map.get_mut(key) else {
+                // Every dial is held before release. Missing membership means it was removed
+                // (including by instance retirement), so this last holder must close it.
+                drop(map);
+                line.close();
+                self.reap_if_due(now);
+                return;
+            };
+            let at = entries.iter().position(|e| Arc::ptr_eq(&e.line, line));
             let keep = line.reusable();
             match (at, keep) {
                 (Some(i), true) => {
                     entries[i].idle = Some(now);
                     self.idled(now);
                 }
-                (None, true) => {
-                    entries.push(Entry {
-                        line: Arc::clone(line),
-                        idle: Some(now),
-                    });
-                    self.idled(now);
-                }
                 (Some(i), false) => spent.push(entries.remove(i).line),
-                (None, false) => spent.push(Arc::clone(line)),
+                (None, _) => spent.push(Arc::clone(line)),
             }
             // The idle time ran out, or past the budget: the oldest idle lines go.
             let timeout = self.posture.idle_timeout;

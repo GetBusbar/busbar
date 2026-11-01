@@ -68,8 +68,8 @@ fn usage() -> &'static str {
     "busbar-plugin-pack - package + sign a busbar plugin tarball
 
 USAGE:
-    busbar-plugin-pack pack --lib <cdylib> --name <name> --alias <alias> --kind <store|auth|hook|secret|export>
-                            [--version <semver>] --publisher <publisher> --out <file.tar.gz>
+    busbar-plugin-pack pack --lib <cdylib> --name <name> --alias <alias> --kind <store|auth|hook|secret|export|plane|transport>
+                            [--version <semver>] [--abi-version <number>] --publisher <publisher> --out <file.tar.gz>
                             [--description <text>] [--homepage <url>] [--license <spdx>]
                             [--needs-prompt <no|ro|rw>] [--needs-user <no|ro>]
                             [--settings-schema-file <path.json>] [--schema-derived]
@@ -168,16 +168,43 @@ fn parse_flags(args: &[String]) -> Result<Flags, String> {
     let mut it = args.iter();
     while let Some(a) = it.next() {
         if a == "--allow-unsigned" {
+            if allow_unsigned {
+                return Err("--allow-unsigned was supplied more than once".into());
+            }
             allow_unsigned = true;
             continue;
         }
         if a == "--schema-derived" {
+            if schema_derived {
+                return Err("--schema-derived was supplied more than once".into());
+            }
             schema_derived = true;
             continue;
         }
         let Some(name) = a.strip_prefix("--") else {
             return Err(format!("unexpected argument '{a}'"));
         };
+        if !matches!(
+            name,
+            "lib"
+                | "name"
+                | "alias"
+                | "kind"
+                | "version"
+                | "publisher"
+                | "out"
+                | "abi-version"
+                | "description"
+                | "homepage"
+                | "license"
+                | "needs-prompt"
+                | "needs-user"
+                | "settings-schema-file"
+                | "declares-file"
+                | FORMER_NAME
+        ) {
+            return Err(format!("unknown flag --{name}"));
+        }
         let Some(v) = it.next() else {
             return Err(format!("--{name} requires a value"));
         };
@@ -185,7 +212,12 @@ fn parse_flags(args: &[String]) -> Result<Flags, String> {
             former_names.push(v.clone());
             continue;
         }
-        map.insert(name.to_string(), v.clone());
+        if name == "needs-user" && parse_need_level(v)? == NeedLevel::Rw {
+            return Err("--needs-user is no|ro; caller identity cannot be rewritten".into());
+        }
+        if map.insert(name.to_string(), v.clone()).is_some() {
+            return Err(format!("--{name} was supplied more than once"));
+        }
     }
     Ok(Flags {
         map,

@@ -2424,10 +2424,126 @@ fn a_replayed_read_reply_writes_its_piece_and_bytes_again() {
         table.script.lock().unwrap().is_empty(),
         "every piece was read from the far end once"
     );
+    let mut short = [0xEE; 4];
+    let (out, untouched) = read_reply(&p, 1, stream, &mut short);
+    assert_eq!(out.outcome, RawOutcome::of(Outcome::Failed));
+    assert_eq!((out.needed_bytes, out.len), (16, 0));
+    assert_eq!(short, [0xEE; 4], "a short replay writes no bytes");
+    assert_eq!(
+        untouched,
+        ReplyPiece::default(),
+        "nor a descriptor with invalid spans"
+    );
+    let invalid = ReplyIn {
+        head: head_of::<ReplyIn>(service::READ_REPLY, 1),
+        stream,
+        piece: std::ptr::null_mut(),
+        buf: again.as_mut_ptr(),
+        len: again.len(),
+    };
+    assert_eq!(
+        call(&p, CONN_SLOTS.read_reply, &invalid).outcome,
+        RawOutcome::of(Outcome::Fault)
+    );
+    again.fill(0);
+    let (retried, retried_piece) = read_reply(&p, 1, stream, &mut again);
+    assert!(ready(&retried));
+    assert_eq!(retried_piece, h);
+    assert_eq!(&again[..16], b"x: y\r\nFine By Me");
     drop(super::forget(p.instance(), T));
     let mut fresh = [0_u8; 64];
     let (_, gone) = read_reply(&p, 1, stream, &mut fresh);
     assert_ne!(gone, h, "a forgotten ticket's read is not replayed");
+}
+
+#[test]
+fn a_members_auth_failure_and_refusal_keep_their_causes() {
+    use busbar_contract::abi::host::conn::connector::{CAUSE_AUTH_FAILED, CAUSE_AUTH_REFUSED};
+    struct AnswerAuth {
+        failed: bool,
+        now: bool,
+    }
+    impl AnswerAuth {
+        fn answer(&self) -> Fields {
+            if self.failed {
+                Fields::Failed
+            } else {
+                Fields::Refused
+            }
+        }
+    }
+    impl OutboundAuth for AnswerAuth {
+        fn open_outbound(&self, _: &str, _: &[u8], _: &serde_json::Value) -> Result<u64, String> {
+            Ok(1)
+        }
+        fn fields_now(&self, _: u64, _: &FieldsRequest) -> Option<Fields> {
+            self.now.then(|| self.answer())
+        }
+        fn fields(&self, _: u64, _: FieldsRequest, _: u64) -> Box<dyn Fielding> {
+            Box::new(AnswerLater {
+                failed: self.failed,
+                pended: false,
+            })
+        }
+    }
+    struct AnswerLater {
+        failed: bool,
+        pended: bool,
+    }
+    impl std::future::Future for AnswerLater {
+        type Output = Fields;
+        fn poll(
+            mut self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Fields> {
+            if !self.pended {
+                self.pended = true;
+                return std::task::Poll::Pending;
+            }
+            std::task::Poll::Ready(if self.failed {
+                Fields::Failed
+            } else {
+                Fields::Refused
+            })
+        }
+    }
+    impl Fielding for AnswerLater {
+        fn settled(&mut self) -> Option<Fields> {
+            None
+        }
+    }
+    for now in [true, false] {
+        for failed in [false, true] {
+            let table = Arc::new(Scripted {
+                framed: true,
+                auth: Some(Arc::new(AnswerAuth { failed, now })),
+                ..Scripted::default()
+            });
+            let dispatcher =
+                crate::dispatch::Dispatcher::new(crate::dispatch::DispatchConfig::default());
+            let p = bound_over_by(&table, dispatcher.adopter());
+            let stream = whole_request(&p, 0);
+            let mut buf = [0; 16];
+            if !now {
+                assert_eq!(
+                    read_reply(&p, 3, stream, &mut buf).0.outcome,
+                    RawOutcome::of(Outcome::Pending)
+                );
+            }
+            let (out, _) = read_reply(&p, 3, stream, &mut buf);
+            let (outcome, cause, error) = if failed {
+                (Outcome::Failed, CAUSE_AUTH_FAILED, ConnError::AuthFailed)
+            } else {
+                (Outcome::Refused, CAUSE_AUTH_REFUSED, ConnError::AuthRefused)
+            };
+            assert_eq!((out.outcome, out.value), (RawOutcome::of(outcome), cause));
+            assert_eq!(error_text(&out), error.text());
+            assert!(
+                table.opened.lock().unwrap().is_empty(),
+                "no unauthorized connector open"
+            );
+        }
+    }
 }
 
 /// One raw `READ` of `stream` into `buf` under handle `seq`.

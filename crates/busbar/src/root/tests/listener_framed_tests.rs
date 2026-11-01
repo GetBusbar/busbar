@@ -17,6 +17,433 @@ use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
 use super::{data_framer, DataFramer, DATA_LINE, DATA_SCHEME};
 
+fn custody_conn(
+    router: Router,
+) -> (
+    tokio::io::DuplexStream,
+    super::Conn<tokio::io::DuplexStream>,
+) {
+    use busbar_core_connector::framer::{Established, Framing};
+    let framer = found(Arc::new(H1Accept::new(true))).unwrap();
+    let established = Established {
+        scheme: Established::scheme_of(false),
+        ..Established::default()
+    };
+    let (framing, _) = Framing::begin_lent(
+        Arc::clone(framer.door()),
+        busbar_contract::abi::transport::SIDE_ACCEPT,
+        "",
+        &established,
+        framer.guests(),
+    )
+    .unwrap();
+    let (client, server) = tokio::io::duplex(1024);
+    let (tx, ops) = tokio::sync::mpsc::unbounded_channel();
+    (
+        client,
+        super::Conn {
+            io: crate::root::listener::Lingering(Some(server)),
+            framing: Some(framing),
+            framer,
+            router,
+            secured: false,
+            established,
+            timeout: Duration::from_secs(30),
+            out: Default::default(),
+            read_done: false,
+            ended: false,
+            heads: Default::default(),
+            inflows: Default::default(),
+            tasks: tokio::task::JoinSet::new(),
+            ops,
+            tx,
+            pending: Default::default(),
+            full: Default::default(),
+            deadline: None,
+            session: None,
+            agreed: 0,
+            stopping: false,
+            failed: false,
+            first_byte: None,
+        },
+    )
+}
+
+fn custody_piece(
+    stream: u64,
+    bytes: Vec<u8>,
+    fields: bool,
+    end: bool,
+) -> busbar_core_connector::framer::Got {
+    busbar_core_connector::framer::Got {
+        stream,
+        bytes,
+        fields,
+        end,
+        end_of_frame: true,
+        status_code: None,
+        handoff: false,
+        status_class: 0,
+        fault: 0,
+        retry_after_secs: None,
+        declared_len: None,
+        text: false,
+        reason: None,
+        failed: false,
+    }
+}
+
+fn custody_head(conn: &mut super::Conn<tokio::io::DuplexStream>, stream: u64, target: &str) {
+    conn.heads.insert(
+        stream,
+        busbar_core_connector::framer::Head {
+            stream,
+            method: Some(b"POST".to_vec()),
+            target: Some(target.as_bytes().to_vec()),
+            ..Default::default()
+        },
+    );
+    conn.piece(custody_piece(stream, Vec::new(), true, false));
+}
+
+#[tokio::test]
+async fn an_unread_body_is_refused_at_the_existing_limit_without_refusing_its_sibling() {
+    let _publishing = anonymous_policy().await;
+    let router = Router::new()
+        .route(
+            "/stall",
+            axum::routing::post(|body: axum::body::Body| async move {
+                std::future::pending::<()>().await;
+                drop(body);
+                "done"
+            }),
+        )
+        .route(
+            "/fast",
+            axum::routing::post(|body: axum::body::Body| async move {
+                axum::body::to_bytes(body, usize::MAX).await.unwrap()
+            }),
+        );
+    let (_client, mut conn) = custody_conn(router);
+    custody_head(&mut conn, 3, "/stall");
+    custody_head(&mut conn, 5, "/fast");
+    let limit = busbar_kernel::config::limits::installed().map_or(
+        busbar_kernel::config::limits::DEFAULT_REQUEST_BODY_MAX_BYTES,
+        |limits| limits.request_body_max_bytes,
+    );
+    assert!(limit > 0, "the fixture uses the resolved finite default");
+    let mut remaining = limit;
+    while remaining != 0 {
+        let count = remaining.min(super::READ_CHUNK);
+        conn.piece(custody_piece(3, vec![b'x'; count], false, false));
+        remaining -= count;
+    }
+    assert!(conn.pending.is_empty(), "exactly the ceiling is accepted");
+    conn.piece(custody_piece(3, vec![b'x'], false, false));
+    conn.piece(custody_piece(3, vec![b'y'], false, false));
+    assert_eq!(
+        conn.pending
+            .iter()
+            .filter(|(stream, op)| *stream == 3
+                && matches!(
+                    op,
+                    super::Op::Refuse {
+                        status: super::BODY_LIMIT_REFUSAL,
+                        ..
+                    }
+                ))
+            .count(),
+        1
+    );
+    assert!(
+        conn.inflows[&3].body.is_none(),
+        "the oversized queue releases its sender"
+    );
+    assert!(
+        conn.inflows[&5].body.is_some(),
+        "the sibling remains readable"
+    );
+    assert!(
+        !conn.failed,
+        "one oversized stream does not fail the multiplexed connection"
+    );
+    let (done, said) = tokio::sync::oneshot::channel();
+    conn.pending.push_back((
+        3,
+        super::Op::Head {
+            status: 200,
+            fields: Vec::new(),
+            end: false,
+            done,
+        },
+    ));
+    conn.apply_front();
+    conn.apply_front();
+    assert!(
+        !said.await.unwrap_or(false),
+        "a late success cannot follow the size refusal"
+    );
+    conn.piece(custody_piece(5, b"sibling".to_vec(), false, true));
+    let mut answer = Vec::new();
+    loop {
+        let (stream, op) = conn.ops.recv().await.expect("the sibling answers");
+        match (stream, op) {
+            (5, super::Op::Head { status, done, .. }) => {
+                assert_eq!(status, 200);
+                let _ = done.send(true);
+            }
+            (5, super::Op::Data { bytes, end, done }) => {
+                answer.extend_from_slice(&bytes);
+                let _ = done.send(true);
+                if end {
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    assert_eq!(
+        answer, b"sibling",
+        "the other stream still delivers its body and answer"
+    );
+    conn.tasks.abort_all();
+}
+
+#[tokio::test]
+async fn a_full_session_pipe_stops_socket_reads_until_its_reader_takes_a_message() {
+    let _publishing = anonymous_policy().await;
+    let (mut client, mut conn) = custody_conn(Router::new());
+    let (from_caller, mut received) = tokio::sync::mpsc::channel(1);
+    let (_to, to_caller) = tokio::sync::mpsc::channel(1);
+    conn.session = Some(super::Session::over(
+        3,
+        busbar_kernel::plane_routes::SessionPipe {
+            from_caller,
+            to_caller,
+        },
+    ));
+    conn.piece(custody_piece(3, b"first".to_vec(), false, false));
+    conn.piece(custody_piece(3, b"second".to_vec(), false, false));
+    let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+    conn.pump_session(&mut cx);
+    client.write_all(b"x").await.unwrap();
+    assert!(
+        !conn.read(&mut cx),
+        "the full switched pipe must hold the next socket read"
+    );
+    assert_eq!(received.recv().await.unwrap(), b"first");
+    conn.pump_session(&mut cx);
+    assert_eq!(received.recv().await.unwrap(), b"second");
+    assert!(
+        conn.read(&mut cx),
+        "consumption releases socket backpressure"
+    );
+    conn.session = None;
+    assert!(
+        received.recv().await.is_none(),
+        "dropping the session retires every sender without a detached bridge task"
+    );
+}
+
+#[tokio::test]
+async fn switched_messages_use_the_existing_body_ceiling_before_reassembly() {
+    let _publishing = anonymous_policy().await;
+    let (_client, mut conn) = custody_conn(Router::new());
+    let (from_caller, _received) = tokio::sync::mpsc::channel(1);
+    let (_to, to_caller) = tokio::sync::mpsc::channel(1);
+    conn.session = Some(super::Session::over(
+        3,
+        busbar_kernel::plane_routes::SessionPipe {
+            from_caller,
+            to_caller,
+        },
+    ));
+    let limit = busbar_kernel::config::limits::installed().map_or(
+        busbar_kernel::config::limits::DEFAULT_REQUEST_BODY_MAX_BYTES,
+        |l| l.request_body_max_bytes,
+    );
+    let mut piece = custody_piece(3, vec![0; limit], false, false);
+    piece.end_of_frame = false;
+    conn.piece(piece);
+    assert!(!conn.failed);
+    conn.piece(custody_piece(3, vec![0], false, false));
+    assert!(
+        conn.failed,
+        "the next fragment cannot grow past the configured message bound"
+    );
+}
+
+#[tokio::test]
+async fn a_terminal_session_piece_delivers_its_payload_before_closing_the_pipe() {
+    let _publishing = anonymous_policy().await;
+    let (mut client, mut conn) = custody_conn(Router::new());
+    let (from_caller, mut received) = tokio::sync::mpsc::channel(1);
+    let (_to, to_caller) = tokio::sync::mpsc::channel(1);
+    conn.session = Some(super::Session::over(
+        3,
+        busbar_kernel::plane_routes::SessionPipe {
+            from_caller,
+            to_caller,
+        },
+    ));
+    conn.piece(custody_piece(3, b"last".to_vec(), false, true));
+    client
+        .write_all(b"POST /stall HTTP/1.1\r\nhost: fixture\r\ncontent-length: 0\r\n\r\n")
+        .await
+        .unwrap();
+    let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+    assert!(
+        conn.poll(&mut cx).is_ready(),
+        "EOF ends both legs after delivering the terminal payload"
+    );
+    assert!(conn.session.is_none());
+    assert!(conn.framing.is_none());
+    assert!(
+        conn.inflows.is_empty(),
+        "queued bytes cannot become a new request after session EOF"
+    );
+    assert_eq!(received.recv().await.unwrap(), b"last");
+    assert!(received.recv().await.is_none());
+}
+
+#[tokio::test]
+async fn a_session_that_drops_its_reader_ends_without_waiting_for_its_writer() {
+    let _publishing = anonymous_policy().await;
+    let (mut client, mut conn) = custody_conn(Router::new());
+    let (from_caller, received) = tokio::sync::mpsc::channel(1);
+    let (_writer_still_alive, to_caller) = tokio::sync::mpsc::channel(1);
+    conn.session = Some(super::Session::over(
+        3,
+        busbar_kernel::plane_routes::SessionPipe {
+            from_caller,
+            to_caller,
+        },
+    ));
+    drop(received);
+    conn.piece(custody_piece(3, b"unread".to_vec(), false, false));
+    client
+        .write_all(b"POST /stall HTTP/1.1\r\nhost: fixture\r\ncontent-length: 0\r\n\r\n")
+        .await
+        .unwrap();
+    let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+    assert!(
+        conn.poll(&mut cx).is_ready(),
+        "failed delivery is terminal independently of the outgoing sender"
+    );
+    assert!(conn.session.is_none());
+    assert!(conn.framing.is_none());
+    assert!(
+        conn.inflows.is_empty(),
+        "failed delivery closes before ingesting a queued request"
+    );
+}
+
+/// The accepting fixture with an explicit terminal answer at the refusal crossing.
+struct RefuseAnswer {
+    inner: H1Accept,
+    outcome: busbar_contract::abi::mechanism::call::Outcome,
+}
+
+impl FramerDoor for RefuseAnswer {
+    fn facts(&self) -> &busbar_core_connector::framer::DoorFacts {
+        self.inner.facts()
+    }
+    fn accepts(&self) -> bool {
+        true
+    }
+    fn instance(&self) -> Option<u64> {
+        self.inner.instance()
+    }
+    fn cross(
+        &self,
+        call: busbar_core_connector::framer::Call<'_>,
+    ) -> busbar_core_connector::framer::Crossed {
+        use busbar_contract::abi::mechanism::call::Outcome;
+        use busbar_core_connector::framer::{Call, Crossed};
+        if matches!(&call, Call::Refuse(..)) && self.outcome != Outcome::Ready {
+            return Crossed {
+                outcome: self.outcome,
+                error: Some(b"refusal rendering failed".to_vec()),
+            };
+        }
+        self.inner.cross(call)
+    }
+}
+
+#[tokio::test]
+async fn a_failed_refusal_ends_the_connection_and_a_rendered_refusal_keeps_it_live() {
+    use busbar_contract::abi::mechanism::call::Outcome;
+    use busbar_core_connector::framer::{Established, Framing};
+    let _publishing = anonymous_policy().await;
+    for outcome in [Outcome::Ready, Outcome::Refused, Outcome::Failed] {
+        for head_sent in [false, true] {
+            let door: Arc<dyn FramerDoor> = Arc::new(RefuseAnswer {
+                inner: H1Accept::new(true),
+                outcome,
+            });
+            let framer = data_framer(Arc::new(move |scheme| {
+                (scheme == DATA_SCHEME).then(|| Arc::clone(&door))
+            }))
+            .unwrap();
+            let established = Established {
+                scheme: Established::scheme_of(false),
+                ..Established::default()
+            };
+            let (framing, _) = Framing::begin_lent(
+                Arc::clone(framer.door()),
+                busbar_contract::abi::transport::SIDE_ACCEPT,
+                "",
+                &established,
+                framer.guests(),
+            )
+            .unwrap();
+            let (_client, server) = tokio::io::duplex(1024);
+            let (tx, ops) = tokio::sync::mpsc::unbounded_channel();
+            let mut conn = super::Conn {
+                io: crate::root::listener::Lingering(Some(server)),
+                framing: Some(framing),
+                framer,
+                router: Router::new(),
+                secured: false,
+                established,
+                timeout: Duration::from_secs(30),
+                out: Default::default(),
+                read_done: false,
+                ended: false,
+                heads: Default::default(),
+                inflows: Default::default(),
+                tasks: tokio::task::JoinSet::new(),
+                ops,
+                tx,
+                pending: Default::default(),
+                full: Default::default(),
+                deadline: None,
+                session: None,
+                agreed: 0,
+                stopping: false,
+                failed: false,
+                first_byte: None,
+            };
+            conn.pending.push_back((
+                3,
+                super::Op::Refuse {
+                    status: 400,
+                    head_sent,
+                },
+            ));
+            conn.apply_front();
+            assert_eq!(
+                conn.failed,
+                outcome != Outcome::Ready,
+                "{outcome:?}, head_sent={head_sent}"
+            );
+            let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+            assert_eq!(conn.poll(&mut cx).is_ready(), outcome != Outcome::Ready);
+            assert_eq!(conn.framing.is_none(), outcome != Outcome::Ready);
+        }
+    }
+}
+
 async fn anonymous_policy() -> tokio::sync::MutexGuard<'static, ()> {
     use busbar_contract::abi::auth::AuthPoints;
     use busbar_contract::abi::transport::route::{METHOD_ANY, PATH_CONTAINS};

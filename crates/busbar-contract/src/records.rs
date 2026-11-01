@@ -35,6 +35,9 @@
 //! kind's table, and the two must never be spelled the same. The api shim re-exports these under their original names for staged back-compat until
 //! it retires (W5.b). No I/O, no engine state: pure data.
 
+/// Atomic correction vocabulary for the existing raw usage ledger.
+pub mod correction;
+
 /// A kind-tagged scope reference — e.g. `{ kind: "pool", value: "fast" }`. The generic
 /// admission-topology substrate: everywhere busbar used
 /// to name "which pool" with a bare `String`, it now names "which scope, of what kind" with this
@@ -1189,6 +1192,24 @@ pub trait RecordStore: Send + Sync + 'static {
     /// reads as the empty ledger. NO dollar field crosses this seam: spend is derived at read time
     /// from `ledger x rate_card`.
     fn get_usage(&self, bucket_id: &str, window_start: u64) -> RecordStoreResult<UsageLedger>;
+
+    /// Atomically compare raw pre-states and commit every replacement with its applied receipt.
+    /// After an unknown result the caller must retain and replay the exact operation id/body.
+    ///
+    /// # Errors
+    /// Unsupported by default, before effects. No read-modify-write fallback is safe here.
+    fn apply_usage_correction(
+        &self,
+        request: &correction::Request,
+    ) -> RecordStoreResult<correction::Decision> {
+        let _ = request;
+        Err(RecordStoreError("usage corrections unsupported".into()))
+    }
+
+    /// Whether this implementation supplies atomic raw-usage correction acceptance.
+    fn supports_usage_correction(&self) -> bool {
+        false
+    }
 
     /// Write-behind ABSOLUTE set of a bucket's window ledger. SETS (replaces) the whole
     /// requests + per-model token record. Single-writer semantics only: with multiple busbar nodes

@@ -308,12 +308,13 @@ impl Presented {
             case.get("lines").is_none() || case.get("carriers").is_none(),
             "conformance.json: an auth case names its field lines once, as `carriers` or `lines`"
         );
-        let lines = case
-            .get("lines")
-            .unwrap_or(&case["carriers"])
-            .as_object()
-            .cloned()
-            .unwrap_or_default();
+        let lines = match case.get("lines").or_else(|| case.get("carriers")) {
+            None => serde_json::Map::new(),
+            Some(v) => v
+                .as_object()
+                .expect("conformance.json: auth lines/carriers must be an object")
+                .clone(),
+        };
         let body = case_text(case, "body");
         assert!(
             at_body || body.is_none(),
@@ -1190,9 +1191,15 @@ fn inbound_and_login(s: &Subject, leg: Leg, k: &serde_json::Value, st: &Stated) 
     if login {
         // 2: the call, then the release of the lease its answer is held under (a `'static`
         // answer holds none: `begin_crossings` 1).
-        let begun = lg["begin_crossings"].as_u64().unwrap_or(2);
+        let crossings = |key: &str, default| match lg.get(key) {
+            None => default,
+            Some(v) => v
+                .as_u64()
+                .expect("conformance.json: login crossings must be a u64"),
+        };
+        let begun = crossings("begin_crossings", 2);
         r.line("begin_login", begun, || begin_login(&p, &lg["begin"]));
-        let pinned = lg["complete_crossings"].as_u64().unwrap_or(1);
+        let pinned = crossings("complete_crossings", 1);
         r.line("complete_login submitted", pinned, || {
             complete_submitted(&p, &d, &lg["complete"])
         });
@@ -1360,14 +1367,19 @@ fn expected_verdict(case: &serde_json::Value) -> String {
 }
 
 fn never_echoed(k: &serde_json::Value) -> Vec<String> {
-    k["never_echoed"]
-        .as_array()
-        .map(|a| {
-            a.iter()
-                .filter_map(|v| v.as_str().map(String::from))
-                .collect()
-        })
-        .unwrap_or_default()
+    match k.get("never_echoed") {
+        None => Vec::new(),
+        Some(v) => v
+            .as_array()
+            .expect("conformance.json: never_echoed must be an array")
+            .iter()
+            .map(|v| {
+                v.as_str()
+                    .expect("conformance.json: never_echoed entries must be strings")
+                    .to_string()
+            })
+            .collect(),
+    }
 }
 
 /// THE KIND'S CONTRACT over the fold, so two equal folds of failures cannot pass: every verdict is

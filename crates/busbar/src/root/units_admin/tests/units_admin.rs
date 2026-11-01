@@ -112,6 +112,12 @@ fn the_door_answers_the_published_releases_own_bytes() {
     ));
     let cell: serde_json::Value = serde_json::from_str(GOLDEN).expect("the golden cell parses");
     let answer = door_answer();
+    assert!(
+        answer.headers.iter().any(|(name, value)| {
+            name.eq_ignore_ascii_case("www-authenticate") && value == "Bearer"
+        }),
+        "an unidentified admin caller receives the supported authentication challenge"
+    );
 
     assert_eq!(
         u64::from(answer.status),
@@ -977,8 +983,11 @@ fn the_refusal_the_loop_hands_back_is_the_frozen_envelope_byte_for_byte() {
     );
     assert_eq!(
         absent.headers,
-        vec![("content-type".to_string(), "application/json".to_string())],
-        "the refused caller is told the envelope is JSON, and told nothing else"
+        vec![
+            ("content-type".to_string(), "application/json".to_string()),
+            ("www-authenticate".to_string(), "Bearer".to_string()),
+        ],
+        "the refused caller receives the JSON envelope and supported authentication challenge"
     );
 }
 

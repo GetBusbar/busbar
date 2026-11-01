@@ -2012,7 +2012,7 @@ pub(crate) fn run(w: Arc<Worker>, rx: Receiver<Msg>, env: Arc<Env>) {
     // Made before the lock guard, so every return lets the guard go first and this second.
     let _let_go = LetGo::arm();
     // Inside the process's runtime once it is known, for the rest of this worker's life.
-    let mut entered: Option<tokio::runtime::EnterGuard<'static>> = None;
+    let mut entered = None;
     let mut st = w.lock();
     loop {
         // What the last turn let go under the lock is dropped with it released (§11.13 M1).
@@ -2024,7 +2024,6 @@ pub(crate) fn run(w: Arc<Worker>, rx: Receiver<Msg>, env: Arc<Env>) {
         }
         if entered.is_none() {
             if let Some(handle) = env.runtime.get() {
-                let handle: &'static tokio::runtime::Handle = Box::leak(Box::new(handle.clone()));
                 entered = Some(handle.enter());
             }
         }

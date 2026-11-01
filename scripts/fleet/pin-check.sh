@@ -30,6 +30,8 @@
 set -euo pipefail
 
 SRC='https://github.com/GetBusbar/busbar'
+# Include the [patch] alias emitted and maintained by repin.sh.
+CORE_SOURCE_PATTERN='https://(www\.)?github\.com/GetBusbar/busbar(\.git)?'
 # The transport framer repos (their sources in a lock).
 FRAMER_SRC='https://github.com/GetBusbar/busbar-transport-'
 
@@ -37,8 +39,10 @@ lock_sources() {  # lock_sources <Cargo.lock>: "<name> <source>" per package wit
   awk '/^\[\[package\]\]/{n=""} /^name = /{gsub(/"/,"",$3); n=$3} /^source = /{gsub(/"/,"",$3); if (n!="") print n, $3}' "$1"
 }
 
-check() {
-  local root="$1" fail=0
+check() (
+  local root="$1" fail=0 block_tmp=""
+  trap 'if [ -n "$block_tmp" ]; then rm -f -- "$block_tmp"; fi' EXIT
+  root="$(cd "$root" && pwd -P)" || return 1
   err() { echo "::error::pin-check: $*" >&2; fail=1; }
   workflows() {  # every busbar reusable workflow a workflow takes is taken at the pin
     if [ -d "$1/.github/workflows" ]; then
@@ -76,15 +80,15 @@ check() {
       else
         revs="$revs $r"
       fi
-    done < <(grep -E "git *= *\"${SRC}(\.git)?\"" "$root/$m" || true)
+    done < <(grep -E "git *= *\"${CORE_SOURCE_PATTERN}\"" "$root/$m" || true)
     # A path dependency must stay inside the repo.
     while IFS= read -r line; do
       local p dir abs
       p="$(printf '%s' "$line" | sed -E 's/.*path *= *"([^"]+)".*/\1/')"
       dir="$(dirname "$root/$m")"
-      abs="$(cd "$dir" 2>/dev/null && cd "$(dirname "$p")" 2>/dev/null && pwd)/$(basename "$p")" || abs=""
+      abs="$(cd "$dir" 2>/dev/null && cd -- "$p" 2>/dev/null && pwd -P)" || abs=""
       case "$abs" in
-        "$(cd "$root" && pwd)"/*) ;;
+        "$root"|"$root"/*) ;;
         *) err "$m names a path dependency outside the repo (a sibling checkout builds whatever sits beside it, not the pin): $line" ;;
       esac
     done < <(grep -E '^[^#]*path *= *"' "$root/$m" | grep -vE '^\s*(path|name) *= *"[^"]*"\s*$' || true)
@@ -102,7 +106,7 @@ check() {
   if [ -f "$root/Cargo.lock" ]; then
     # busbar's own source exactly (`<SRC>?`): another GetBusbar repo (a transport framer a networked
     # plugin's conformance host takes as a dev-dependency) is its own source at its own rev.
-    if grep -E "^source = \"git\+${SRC}\?" "$root/Cargo.lock" | grep -vqF "?rev=${pin}#${pin}\""; then
+    if grep -E "^source = \"git\+${CORE_SOURCE_PATTERN}\?" "$root/Cargo.lock" | grep -vqF "?rev=${pin}#${pin}\""; then
       err "Cargo.lock resolves a busbar source other than rev=${pin}"
     fi
     # Each transport framer at the source busbar's own lock at the pin records for it.
@@ -116,8 +120,9 @@ check() {
       # read the lock from the checked-out commit itself.
       if [ -z "${PIN_CHECK_BUSBAR_LOCK:-}" ] && [ ! -f "$block" ] \
         && git -C "$busbar_root" cat-file -e HEAD:dist/default/Cargo.lock 2>/dev/null; then
-        block="$(mktemp)"
-        git -C "$busbar_root" show HEAD:dist/default/Cargo.lock > "$block"
+        block_tmp="$(mktemp)" || return 1
+        block="$block_tmp"
+        git -C "$busbar_root" show HEAD:dist/default/Cargo.lock > "$block" || return 1
       fi
       if [ ! -f "$block" ]; then
         err "Cargo.lock resolves a transport framer, and busbar's Cargo.lock at the pin is not at $block to hold it to"
@@ -140,7 +145,7 @@ check() {
 
   [ "$fail" = 0 ] && echo "pin-check: ok — busbar ${pin} ${ver} (${#manifests[@]} manifest(s), Cargo.lock, workflows)"
   return "$fail"
-}
+)
 
 selftest() {
   local tmp rc=0 ran=0 pin=0123456789abcdef0123456789abcdef01234567 other=89abcdef0123456789abcdef0123456789abcdef

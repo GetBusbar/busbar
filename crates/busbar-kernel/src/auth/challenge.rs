@@ -79,6 +79,7 @@ impl ChallengeError {
 /// `description` is optional and advisory. It never carries the reason a token failed in any detail
 /// a caller could use to probe — "the audience does not match" is safe (the caller knows its own
 /// token's audience), "no key with id 7fa3" is not.
+/// An absent credential receives discovery metadata without error advice (RFC 6750 §3.1).
 pub fn www_authenticate(
     error: ChallengeError,
     resource_metadata: &str,
@@ -93,7 +94,7 @@ pub fn www_authenticate(
     if let Some(code) = error.code() {
         params.push(format!("error=\"{code}\""));
     }
-    if let Some(d) = description {
+    if let Some(d) = description.filter(|_| error != ChallengeError::Absent) {
         params.push(format!("error_description=\"{}\"", quoted(d)));
     }
     // RFC 6750 §3.1: `scope` names what WOULD have been sufficient. Only meaningful alongside
@@ -139,10 +140,12 @@ pub fn refuse(
     scope: Option<&str>,
 ) -> Response {
     let challenge = www_authenticate(error, resource_metadata, Some(description), scope);
-    let body = serde_json::json!({
+    let mut body = serde_json::json!({
         "error": error.code().unwrap_or("unauthorized"),
-        "error_description": description,
     });
+    if error != ChallengeError::Absent {
+        body["error_description"] = serde_json::json!(description);
+    }
     let mut resp = (error.status(), axum::Json(body)).into_response();
     // A header value that will not build is a programming error in the value we constructed, not a
     // caller-triggerable condition — `quoted` has already removed everything that could make one

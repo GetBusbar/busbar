@@ -239,11 +239,17 @@ fn staked_key(request: &ApprovalRequest<'_>) -> String {
 /// header whose grammar is `name=value; name=value`, and a general-purpose parser would be a
 /// dependency and an attack surface for a `split(';')`.
 pub(crate) fn session_id(headers: &http::HeaderMap) -> Option<String> {
-    let raw = headers.get(http::header::COOKIE)?.to_str().ok()?;
-    raw.split(';')
-        .filter_map(|pair| pair.split_once('='))
-        .find(|(name, _)| name.trim() == SESSION_COOKIE)
-        .map(|(_, value)| value.trim().to_string())
+    for raw in headers.get_all(http::header::COOKIE) {
+        let raw = raw.to_str().ok()?;
+        if let Some((_, value)) = raw
+            .split(';')
+            .filter_map(|pair| pair.split_once('='))
+            .find(|(name, _)| name.trim() == SESSION_COOKIE)
+        {
+            return Some(value.trim().to_string());
+        }
+    }
+    None
 }
 
 /// The subject resolver `oauth-as` calls at the authorization endpoint.

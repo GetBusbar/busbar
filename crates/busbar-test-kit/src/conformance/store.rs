@@ -779,13 +779,18 @@ fn contract(fold: &Fold, i: &Inputs<'_>) {
     ] {
         assert_eq!(at(label), "= None", "{label}");
     }
-    for label in ["delete absent", "relive plain"] {
+    for label in ["delete absent", "relive plain", "append e2 fork"] {
         assert!(
             at(label).starts_with("! "),
             "refused: {label}: {}",
             at(label)
         );
     }
+    assert_eq!(
+        at("list ev t1"),
+        "= [\"1\", \"2\"]",
+        "a refused sequence fork leaves both original events intact"
+    );
     assert!(
         at("cred c9 (live slot)").starts_with("! "),
         "a live slot is not taken twice"

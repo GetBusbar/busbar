@@ -50,6 +50,99 @@ fn mint() -> OpId {
     )
 }
 
+mod readiness_cleanup {
+    use std::ffi::c_void;
+    use std::sync::{Arc, Mutex, OnceLock, Weak};
+
+    use busbar_contract::abi::mechanism::call::{OutHead, Outcome, RawOutcome};
+    use busbar_contract::abi::mechanism::door::{Door, DoorFn, DoorParts};
+    use busbar_contract::abi::sdk::conn::Host;
+
+    use crate::both_ways::store_fixture::MemoryStore;
+    use crate::store_v3::wrap::{Hooks, Wrapped};
+
+    static BACKING: Mutex<Option<Weak<MemoryStore>>> = Mutex::new(None);
+
+    struct Tracked;
+    impl Hooks for Tracked {
+        fn open(_: &[u8], _: Option<Host>) -> Result<Arc<MemoryStore>, String> {
+            let store = Arc::new(MemoryStore::new());
+            *BACKING.lock().unwrap() = Some(Arc::downgrade(&store));
+            Ok(store)
+        }
+    }
+
+    mod tracked {
+        busbar_contract::store_door!(super::Wrapped<super::Tracked>, "ready-cleanup", "0", 64);
+    }
+
+    extern "C" fn fail(_: *mut c_void, _: *const c_void, out: *mut c_void) -> RawOutcome {
+        let answer = RawOutcome::of(Outcome::Failed);
+        // SAFETY: READY lends a writable OutHead for this crossing.
+        unsafe { (*out.cast::<OutHead>()).outcome = answer };
+        answer
+    }
+
+    extern "C" fn failing_door() -> &'static Door {
+        static DOOR: OnceLock<usize> = OnceLock::new();
+        let ptr = *DOOR.get_or_init(|| {
+            // SAFETY: the macro's permanent statement and ops, with a READY slot that obeys
+            // its declared frame. This permanent door is shared by every admission.
+            Box::into_raw(Box::new(unsafe {
+                Door::__from_parts(DoorParts {
+                    ready: Some(fail),
+                    ..tracked::door().parts()
+                })
+            })) as usize
+        });
+        // SAFETY: DOOR holds the permanent allocation initialized above.
+        unsafe { &*(ptr as *const Door) }
+    }
+
+    #[test]
+    fn an_opened_store_is_closed_when_readiness_fails() {
+        for (door, fails) in [
+            (failing_door as DoorFn, true),
+            (tracked::door as DoorFn, false),
+        ] {
+            let d = super::dispatcher();
+            let row = super::LinkedRow::of(door).unwrap();
+            let plugin = super::load_linked::<super::Store>(
+                &row,
+                super::Bind {
+                    instance: Arc::from("ready-cleanup"),
+                    max_inflight_cap: 64,
+                    sink: Arc::new(super::NoSink),
+                    dispatcher: d.adopter(),
+                    conns: crate::dispatch::ConnTable::NoNeeds,
+                },
+            )
+            .unwrap();
+            let result = super::LoadedStore::open(plugin, d, b"{}", super::mint);
+            let backing = BACKING
+                .lock()
+                .unwrap()
+                .take()
+                .expect("OPEN created the store");
+            if fails {
+                assert!(result.unwrap_err().contains("ready failed: Failed"));
+                assert!(
+                    backing.upgrade().is_none(),
+                    "failed READY must close OPEN's instance"
+                );
+            } else {
+                let store = result.unwrap();
+                assert!(
+                    backing.upgrade().is_some(),
+                    "successful OPEN retains its store"
+                );
+                drop(store);
+                assert!(backing.upgrade().is_none(), "normal drop closes the store");
+            }
+        }
+    }
+}
+
 fn run<T>(f: impl std::future::Future<Output = T>) -> T {
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -105,6 +198,7 @@ fn the_memory_store_states_its_facts_in_its_tail() {
             durable_plane: false,
             fork_refusal: true,
             record_transaction: false,
+            usage_correction: false,
             secret_refs: Vec::new(),
             credential_rewrap: false,
         }

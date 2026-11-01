@@ -171,7 +171,13 @@ fn from_record(record: &JournalRecord) -> Option<Amendment> {
 /// sealed on a chain it could not rebuild, is not silently spliced into the history.
 fn linked_run(records: &[JournalRecord]) -> (Vec<Amendment>, usize) {
     let (mut run, mut set_aside) = (Vec::<Amendment>::new(), 0);
-    for amendment in records.iter().filter_map(from_record) {
+    for record in records {
+        let Some(amendment) = from_record(record) else {
+            if BodyReader::new(&record.body).text() == Some(AMENDMENT) {
+                set_aside += 1;
+            }
+            continue;
+        };
         let (prev, next) = run.last().map_or((String::new(), 1), |a| {
             (a.hash.clone(), a.seq.saturating_add(1))
         });

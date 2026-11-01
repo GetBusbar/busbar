@@ -493,7 +493,13 @@ impl Subject {
                 serde_json::Value::Null => String::new(),
                 other => other.to_string(),
             };
-            let status = u32::try_from(e["status"].as_u64().unwrap_or(200)).unwrap_or(200);
+            let status = match e.get("status") {
+                None => 200,
+                Some(v) => v
+                    .as_u64()
+                    .and_then(|n| u32::try_from(n).ok())
+                    .expect("conformance.json: far-end status must fit a u32"),
+            };
             table.serve(url, e["cert_pem"].as_str(), status, &body);
         }
         Some(Arc::new(table))
@@ -1806,14 +1812,19 @@ pub fn both_ways(s: &Subject) {
     // Networked: its needs are SERVED by the suite's table (it dials a real endpoint); a door whose
     // needs the suite cannot serve binds as a probe and dials nothing.
     let networked = s.conns(&dispatcher()).is_some();
-    let dialing: Vec<String> = s.inputs["dialing_steps"]
-        .as_array()
-        .map(|a| {
-            a.iter()
-                .filter_map(|v| v.as_str().map(str::to_owned))
-                .collect()
-        })
-        .unwrap_or_default();
+    let dialing: Vec<String> = match s.inputs.get("dialing_steps") {
+        None => Vec::new(),
+        Some(v) => v
+            .as_array()
+            .expect("conformance.json: dialing_steps must be an array")
+            .iter()
+            .map(|v| {
+                v.as_str()
+                    .expect("conformance.json: dialing_steps entries must be strings")
+                    .to_owned()
+            })
+            .collect(),
+    };
     let mut folds = Vec::new();
     for leg in [Leg::Linked, Leg::Dropped] {
         let mut f = fold(s, leg);

@@ -34,6 +34,17 @@ use crate::datagram::{Across, DatagramFraming, Leg, LegSink, Pairing};
 use crate::framer::Got;
 use crate::udp::{ReadyPort, MAX_DATAGRAM};
 
+#[cfg(test)]
+thread_local! {
+    static AFTER_WRITE_TAKE: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+pub(crate) fn after_next_write_take(hook: impl FnOnce() + 'static) {
+    AFTER_WRITE_TAKE.with(|slot| *slot.borrow_mut() = Some(Box::new(hook)));
+}
+
 /// The most datagrams one drive reads before it yields.
 const READS_PER_DRIVE: usize = 256;
 /// The channel messages a leg holds for a reader that has not read them, at which it stops
@@ -53,25 +64,33 @@ pub(crate) fn take_ready(
     ready: &Mutex<VecDeque<(Vec<u8>, bool)>>,
     buf: &mut [u8],
 ) -> Option<(usize, bool)> {
-    // The lock is let go before the rest is put back: held through an `if let`, the put-back's
-    // second lock on the same thread would never be granted.
-    let next = lock(ready).pop_front();
+    // The same guard owns the pop and any suffix put-back: another reader cannot take the next
+    // message in between, and no second lock on this thread can wedge the reader.
+    let mut queue = lock(ready);
+    let next = queue.pop_front();
     let (bytes, end) = next?;
+    #[cfg(test)]
+    tests::after_ready_pop();
     let n = bytes.len().min(buf.len());
     buf[..n].copy_from_slice(&bytes[..n]);
     if n < bytes.len() {
-        lock(ready).push_front((bytes[n..].to_vec(), end));
+        queue.push_front((bytes[n..].to_vec(), end));
     }
+    drop(queue);
     Some((n, end && n == bytes.len()))
 }
 
 /// Where the composed open stands.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug)]
 enum Phase {
     /// The exchange is in flight: `ok` once its head said whether it succeeded; the body so far.
     Exchanging { ok: Option<bool>, answer: Vec<u8> },
+    /// The completed description is crossing the framer; readers wait for its result.
+    Settling(Vec<Waker>),
     /// The far end answered and the leg is attached: reads are its channel messages.
     Running,
+    /// A consumed drive failure remains the reader's answer.
+    Failed(ConnError),
     /// The leg is over.
     Over,
 }
@@ -272,11 +291,11 @@ impl UpstreamLeg {
         // BACK-PRESSURE: at the queue's bound the port is not drained; the reader's next read
         // takes a message and drives again.
         let room = MAX_READY.saturating_sub(lock(&self.ready).len());
-        let pieces = self.turn(
+        self.turn(
             (),
             |held, ()| {
                 held.miss(&missed);
-                Ok(Vec::new())
+                Ok(())
             },
             |()| Err(ConnError::Closed),
             |f, ()| {
@@ -312,10 +331,12 @@ impl UpstreamLeg {
                     }
                     None => *timer = None,
                 }
-                Ok(pieces)
+                drop(timer);
+                // Publish before the association comes home: a concurrent wait/read must not
+                // cross the next datagram and deliver it ahead of these older pieces.
+                self.take(pairing, pieces, now)
             },
-        )?;
-        self.take(pairing, pieces, now)
+        )
     }
 }
 
@@ -391,6 +412,21 @@ impl LegSink for UpstreamLeg {
     }
 }
 
+#[derive(Default)]
+struct Gather {
+    bytes: Vec<u8>,
+    /// A final write owns the message outside this mutex, until it is emitted or restored.
+    writing: bool,
+}
+
+struct Writing<'a>(&'a Mutex<Gather>);
+
+impl Drop for Writing<'_> {
+    fn drop(&mut self) {
+        lock(self.0).writing = false;
+    }
+}
+
 /// A held session's upstream leg, as the connection table holds it.
 pub(crate) struct Dialled {
     leg: Arc<UpstreamLeg>,
@@ -399,7 +435,7 @@ pub(crate) struct Dialled {
     /// The composed open's bound: the association must be keyed by then.
     due: Option<Instant>,
     /// A message being written, gathered until its end.
-    gather: Mutex<Vec<u8>>,
+    gather: Mutex<Gather>,
 }
 
 impl Dialled {
@@ -429,7 +465,7 @@ impl Dialled {
                 answer: Vec::new(),
             }),
             due,
-            gather: Mutex::new(Vec::new()),
+            gather: Mutex::new(Gather::default()),
         }
     }
 
@@ -485,10 +521,24 @@ impl Dialled {
             }
             (PieceKind::Completion, Some(true)) => {
                 let description = std::mem::take(answer);
-                *phase = Phase::Over;
+                *phase = Phase::Settling(Vec::new());
                 drop(phase);
-                self.settle(&description)?;
-                *lock(&self.phase) = Phase::Running;
+                if let Err(error) = self.settle(&description) {
+                    return Err(self.fail(error));
+                }
+                let missed = {
+                    let mut phase = lock(&self.phase);
+                    match &mut *phase {
+                        Phase::Settling(missed) => {
+                            let missed = std::mem::take(missed);
+                            *phase = Phase::Running;
+                            missed
+                        }
+                        Phase::Failed(error) => return Err(*error),
+                        _ => return Err(ConnError::Closed),
+                    }
+                };
+                wake(missed);
                 Ok(None)
             }
             _ => Ok(Some(piece)),
@@ -498,7 +548,7 @@ impl Dialled {
     /// The far end's description settles the association; its lines must mirror the caller's.
     fn settle(&self, description: &[u8]) -> Result<(), ConnError> {
         let now = Instant::now();
-        let pieces = self.leg.turn(
+        self.leg.turn(
             (),
             // Out: nothing else drives the association while its exchange is in flight.
             |_, ()| Err(ConnError::Pending),
@@ -508,10 +558,9 @@ impl Dialled {
                     .rendezvous(description, now)
                     .map_err(|_| ConnError::Fault)?;
                 self.leg.flush(f);
-                Ok(y.pieces)
+                self.leg.take(&self.pairing, y.pieces, now)
             },
         )?;
-        self.leg.take(&self.pairing, pieces, now)?;
         let leg: Arc<dyn LegSink> = Arc::clone(&self.leg) as Arc<dyn LegSink>;
         if self.pairing.attach(leg).is_err() {
             self.leg.close();
@@ -528,9 +577,7 @@ impl Dialled {
     ///
     /// The leg closed, its association failed, or it was not keyed within the open's bound.
     pub(crate) fn read(&self, waker: &Waker, buf: &mut [u8]) -> Result<Piece, ConnError> {
-        if *lock(&self.phase) == Phase::Over {
-            return Err(ConnError::Closed);
-        }
+        self.running(waker)?;
         let mut cx = Context::from_waker(waker);
         loop {
             if let Some((n, end)) = take_ready(&self.leg.ready, buf) {
@@ -553,9 +600,7 @@ impl Dialled {
                 return Err(ConnError::Timeout);
             }
             if let Err(e) = self.leg.drive(&self.pairing, &mut cx, self.due) {
-                *lock(&self.phase) = Phase::Over;
-                self.pairing.close();
-                return Err(e);
+                return Err(self.fail(e));
             }
             if lock(&self.leg.ready).is_empty() {
                 return Err(ConnError::Pending);
@@ -571,64 +616,132 @@ impl Dialled {
     pub(crate) fn write(&self, bytes: &[u8], end: bool, text: bool) -> Result<usize, ConnError> {
         match &*lock(&self.phase) {
             Phase::Running => {}
-            Phase::Exchanging { .. } => return Err(ConnError::Pending),
+            Phase::Exchanging { .. } | Phase::Settling(_) => return Err(ConnError::Pending),
+            Phase::Failed(error) => return Err(*error),
             Phase::Over => return Err(ConnError::Closed),
         }
         let mut gather = lock(&self.gather);
+        if gather.writing {
+            return Err(ConnError::Pending);
+        }
         // A message is bounded as a write is (THE DESIGN §5, writes are back-pressured): one
         // gathered past the bound is refused, and what was gathered of it is let go.
-        if gather.len().saturating_add(bytes.len()) > crate::compose::WRITE_BUFFER_BYTES {
-            gather.clear();
+        if gather.bytes.len().saturating_add(bytes.len()) > crate::compose::WRITE_BUFFER_BYTES {
+            gather.bytes.clear();
             return Err(ConnError::Refused);
         }
-        gather.extend_from_slice(bytes);
+        // Pending takes none of this call's bytes. Earlier accepted parts stay gathered until
+        // a channel is named and the caller re-offers this final part.
+        let stream = if end {
+            Some((*lock(&self.leg.channel)).ok_or(ConnError::Pending)?)
+        } else {
+            None
+        };
+        gather.bytes.extend_from_slice(bytes);
         if !end {
             return Ok(bytes.len());
         }
-        let message = std::mem::take(&mut *gather);
+        gather.writing = true;
+        let message = std::mem::take(&mut gather.bytes);
         drop(gather);
-        let stream = (*lock(&self.leg.channel)).ok_or(ConnError::Pending)?;
+        let writing = Writing(&self.gather);
+        #[cfg(test)]
+        {
+            let hook = AFTER_WRITE_TAKE.with(|slot| slot.borrow_mut().take());
+            if let Some(hook) = hook {
+                hook();
+            }
+        }
+        let stream = stream.expect("an ending write checked its channel");
         let now = Instant::now();
-        let pieces = self.leg.turn(
-            message,
+        self.leg.turn(
+            (message, writing),
             // Out: nothing is taken; the gathered message is as it was before these bytes, and the
             // caller re-offers them after its next read or wait.
-            |_, mut message| {
+            |_, (mut message, _writing)| {
                 message.truncate(message.len() - bytes.len());
-                *lock(&self.gather) = message;
+                lock(&self.gather).bytes = message;
                 Err(ConnError::Pending)
             },
             |_| Err(ConnError::Closed),
-            |f, message| {
+            |f, (message, _writing)| {
                 let y = f
                     .emit(stream, &message, true, text, now)
                     .map_err(|_| ConnError::Fault)?;
                 self.leg.flush(f);
-                Ok(y.pieces)
+                self.leg
+                    .take(&self.pairing, y.pieces, now)
+                    .map_err(|error| self.fail(error))
             },
         )?;
-        self.leg.take(&self.pairing, pieces, now)?;
         Ok(bytes.len())
     }
 
     /// Whether a read would answer now (a message waits, or the leg is over).
     pub(crate) fn ready(&self, waker: &Waker) -> bool {
-        if !lock(&self.leg.ready).is_empty() || *lock(&self.phase) == Phase::Over {
+        match self.running(waker) {
+            Err(ConnError::Pending) => return false,
+            Err(_) => return true,
+            Ok(()) => {}
+        }
+        if !lock(&self.leg.ready).is_empty() {
             return true;
         }
-        if self.exchanging() {
-            return false;
-        }
         let mut cx = Context::from_waker(waker);
-        self.leg.drive(&self.pairing, &mut cx, self.due).is_err()
-            || !lock(&self.leg.ready).is_empty()
+        if let Err(error) = self.leg.drive(&self.pairing, &mut cx, self.due) {
+            self.fail(error);
+            return true;
+        }
+        !lock(&self.leg.ready).is_empty()
+    }
+
+    /// A settling crossing owns progress; its completion or close wakes every waiting reader.
+    fn running(&self, waker: &Waker) -> Result<(), ConnError> {
+        match &mut *lock(&self.phase) {
+            Phase::Running => Ok(()),
+            Phase::Settling(missed) => {
+                if !missed.iter().any(|w| w.will_wake(waker)) {
+                    missed.push(waker.clone());
+                }
+                Err(ConnError::Pending)
+            }
+            Phase::Exchanging { .. } => Err(ConnError::Pending),
+            Phase::Failed(error) => Err(*error),
+            Phase::Over => Err(ConnError::Closed),
+        }
+    }
+
+    /// Retain a consumed failure before closing either leg, with no phase lock held at a crossing.
+    fn fail(&self, error: ConnError) -> ConnError {
+        let (error, missed) = {
+            let mut phase = lock(&self.phase);
+            match &*phase {
+                Phase::Over => return ConnError::Closed,
+                Phase::Failed(error) => return *error,
+                _ => {}
+            }
+            let old = std::mem::replace(&mut *phase, Phase::Failed(error));
+            let missed = match old {
+                Phase::Settling(missed) => missed,
+                _ => Vec::new(),
+            };
+            (error, missed)
+        };
+        self.pairing.close();
+        self.leg.close();
+        wake(missed);
+        error
     }
 
     /// The session's connection closed: the pairing closes, and with it both legs, once.
     pub(crate) fn close(&self) {
-        *lock(&self.phase) = Phase::Over;
+        let missed = match std::mem::replace(&mut *lock(&self.phase), Phase::Over) {
+            Phase::Settling(missed) => missed,
+            _ => Vec::new(),
+        };
         self.pairing.close();
         self.leg.close();
+        wake(missed);
     }
 }
 

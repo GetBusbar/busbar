@@ -506,6 +506,52 @@ async fn test_oversized_body_413_reshaped_to_json_not_plain_text() {
     );
 }
 
+#[tokio::test]
+async fn native_api_oversized_body_keeps_413_and_the_code_envelope() {
+    use http_body_util::BodyExt as _;
+    use tower::ServiceExt as _;
+
+    let handle = std::sync::Arc::new(crate::state::AppHandle::new(
+        crate::test_support::TestApp::new().build(),
+    ));
+    let router = axum::Router::new()
+        .route(
+            "/api/body-cap-probe",
+            axum::routing::post(|_body: axum::body::Bytes| async { "buffered" }),
+        )
+        .layer(axum::extract::DefaultBodyLimit::max(64))
+        .layer(axum::middleware::from_fn_with_state(
+            handle,
+            reshape_body_limit_413,
+        ));
+    let response = router
+        .oneshot(
+            axum::http::Request::builder()
+                .method("POST")
+                .uri("/api/body-cap-probe")
+                .body(axum::body::Body::from(vec![b'x'; 65]))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), axum::http::StatusCode::PAYLOAD_TOO_LARGE);
+    assert_eq!(
+        response.headers()[axum::http::header::CONTENT_TYPE],
+        "application/json"
+    );
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(
+        value["error"]["code"],
+        busbar_contract::protocol::KIND_REQUEST_TOO_LARGE
+    );
+    assert_eq!(
+        value["error"]["message"],
+        "request body exceeds the maximum allowed size"
+    );
+    assert!(value["error"].get("type").is_none());
+}
+
 /// A non-413 response (or a 413 a handler already shaped as JSON) must pass through
 /// `reshape_oversized_413` untouched — the layer only rewrites the bare-text body-limit reject.
 #[tokio::test]

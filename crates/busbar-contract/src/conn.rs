@@ -975,7 +975,18 @@ impl<T> ConnSlab<T> {
     ///
     /// [`ConnError::UndeclaredNeed`] when `owner` never declared `need`.
     pub fn insert(&self, owner: InstanceId, need: NeedId, state: T) -> Result<ConnId, ConnError> {
-        self.check_need(owner, need)?;
+        let declared = self
+            .declared
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !declared.contains(&(owner, need)) {
+            drop(declared);
+            return Err(ConnError::UndeclaredNeed);
+        }
+        // Keep admission until the entry is committed: forget either removes the declaration
+        // first, refusing this insert, or collects the committed entry for the host to close.
+        #[cfg(test)]
+        tests::insert_admitted();
         let mut entries = self.lock();
         let state = Arc::new(state);
         let free = entries.iter().position(|e| matches!(e, Entry::Free { .. }));
@@ -1002,6 +1013,8 @@ impl<T> ConnSlab<T> {
                 (entries.len() - 1, 0)
             }
         };
+        drop(entries);
+        drop(declared);
         Ok(ConnId((u64::from(generation) << 32) | (index as u64 + 1)))
     }
 

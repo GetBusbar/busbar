@@ -633,10 +633,6 @@ pub struct Instance {
     /// [`DispatchConfig::quarantine_after`](super::DispatchConfig::quarantine_after)th quarantines
     /// it ([`Instance::faulted`]).
     pub(crate) breaches: AtomicU32,
-    /// The ticket-less calls the watchdog has already counted as breaches: every call id below
-    /// this one (ids are minted in order, and a call stays hung on the list until it returns, so
-    /// each is counted once, not once per scan).
-    pub(crate) ticketless_counted: AtomicU64,
     /// `close` of an OPEN instance answered READY, or any `close` answered FAULT: every later op
     /// answers FAULT without a crossing. (Closing a half-open box frees the box; the instance never
     /// opened, so it is not closed.)
@@ -654,8 +650,8 @@ pub struct Instance {
     /// the op pends.
     #[doc(hidden)]
     pub resumes: AtomicU64,
-    /// The ticket-less crossings in progress, for the watchdog: `id -> (started, slot)`.
-    pub(crate) calls: Mutex<HashMap<u64, (Instant, u32)>>,
+    /// The ticket-less crossings in progress: `id -> (started, slot, breach_counted)`.
+    pub(crate) calls: Mutex<HashMap<u64, (Instant, u32, bool)>>,
     next_call: AtomicU64,
     inflight: AtomicU32,
     /// Ops in flight that a reload drain waits for: every op but WriteBehind.
@@ -943,14 +939,16 @@ impl Instance {
         }
     }
 
-    pub(crate) fn lock_calls(&self) -> std::sync::MutexGuard<'_, HashMap<u64, (Instant, u32)>> {
+    pub(crate) fn lock_calls(
+        &self,
+    ) -> std::sync::MutexGuard<'_, HashMap<u64, (Instant, u32, bool)>> {
         self.calls.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     /// `cross`, a ticket-less crossing of `s`, listed in [`Instance::calls`] while it runs.
     fn watched<R>(&self, s: u32, cross: impl FnOnce() -> R) -> R {
         let id = self.next_call.fetch_add(1, Ordering::Relaxed);
-        self.lock_calls().insert(id, (Instant::now(), s));
+        self.lock_calls().insert(id, (Instant::now(), s, false));
         let crossed = cross();
         self.lock_calls().remove(&id);
         crossed
@@ -2483,7 +2481,6 @@ impl<K: Kind> Plugin<K> {
                 opened: AtomicBool::new(false),
                 faulted: AtomicBool::new(false),
                 breaches: AtomicU32::new(0),
-                ticketless_counted: AtomicU64::new(0),
                 closed: AtomicBool::new(false),
                 gate: AtomicU32::new(0),
                 crossings: AtomicU64::new(0),

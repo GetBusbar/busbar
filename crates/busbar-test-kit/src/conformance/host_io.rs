@@ -96,6 +96,14 @@ impl SuiteIo {
         lock(&self.inner).handles.len()
     }
 
+    /// Whether no handle except the script's own listener remains.
+    pub(super) fn holds_only(&self, listener: Option<u64>) -> bool {
+        lock(&self.inner)
+            .handles
+            .keys()
+            .all(|handle| Some(*handle) == listener)
+    }
+
     fn admitted(&self, ticket: Ticket, want: &Admit) -> IoResult<()> {
         if lock(&self.inner).admitted.get(&ticket) == Some(want) {
             Ok(())

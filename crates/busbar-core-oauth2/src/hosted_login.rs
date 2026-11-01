@@ -500,11 +500,14 @@ fn clear_cookie() -> String {
 
 /// Read the login cookie's raw value from the request `Cookie` header.
 fn read_cookie(req: &Request<Body>) -> Option<String> {
-    let raw = req.headers().get(header::COOKIE)?.to_str().ok()?;
-    for part in raw.split(';') {
-        let part = part.trim();
-        if let Some(v) = part.strip_prefix(&format!("{LOGIN_COOKIE}=")) {
-            return Some(v.to_string());
+    let prefix = format!("{LOGIN_COOKIE}=");
+    for raw in req.headers().get_all(header::COOKIE) {
+        let raw = raw.to_str().ok()?;
+        for part in raw.split(';') {
+            let part = part.trim();
+            if let Some(v) = part.strip_prefix(&prefix) {
+                return Some(v.to_string());
+            }
         }
     }
     None

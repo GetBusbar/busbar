@@ -22,6 +22,7 @@
 //! the answers and what is recorded are [`dedupe`]'s; the store keeps the log.
 
 pub mod conditional;
+pub mod correction;
 pub mod door;
 // The `op_id` dedupe: the state machine and the body a store records.
 pub mod dedupe;
@@ -93,6 +94,26 @@ pub trait StoreSlots: Sized + Send + Sync + 'static {
 
     /// Explicit opt-in to the atomic conditional-record protocol. Never enabled by default.
     const RECORD_TRANSACTION: bool = false;
+
+    /// Explicit opt-in to atomic raw-usage corrections; ordinary additive writes cannot emulate it.
+    const USAGE_CORRECTION: bool = false;
+
+    /// Compare the live key, complete metering selection and exact usage rows against one
+    /// pre-state, then commit every replacement with its applied-only receipt atomically.
+    /// Receipt lookup precedes predicates; unknown outcomes require exact id/body replay.
+    ///
+    /// # Errors
+    /// Unsupported by default. Operation-id body conflicts remain `OpRefused::Conflict`.
+    fn apply_usage_correction(
+        &self,
+        cx: &mut Op<'_>,
+        request: &correction::Request,
+    ) -> Step<OpResult<correction::Decision>> {
+        let _ = (cx, request);
+        Step::Ready(Err(OpRefused::Refused(
+            "usage corrections unsupported".into(),
+        )))
+    }
 
     /// Compare all predicates against one pre-state, then atomically mutate records and record
     /// the applied receipt. Condition conflicts write neither rows nor receipts. Ambiguous

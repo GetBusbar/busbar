@@ -1630,7 +1630,10 @@ pub fn compose_egress(
         routes: sealed,
         stream_ceiling_secs,
         stated_ceiling_secs: facts.stream_ceiling_secs,
-        error_body_max: busbar_kernel::plane_driver::DEFAULT_ERROR_BODY_MAX,
+        error_body_max: busbar_kernel::config::limits::installed().map_or(
+            busbar_kernel::plane_driver::DEFAULT_ERROR_BODY_MAX,
+            |limits| limits.upstream_error_body_max_bytes,
+        ),
     })
 }
 

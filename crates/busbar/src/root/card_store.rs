@@ -304,7 +304,7 @@ pub struct Scanned {
     pub voids: Vec<VoidRecord>,
     /// Keys with parts and no matching commit: never READY, ignored.
     pub uncommitted: Vec<EntryKey>,
-    /// Committed entries whose value does not read, by key and reason.
+    /// Committed entries or VOID records whose value does not read, by key and reason.
     pub unreadable: Vec<(EntryKey, String)>,
 }
 
@@ -320,10 +320,15 @@ impl Scanned {
             };
             let rest = &key[ENTRY_KEY_LEN..];
             if rest.len() == 9 && rest[0] == VOID_TAG {
-                if let Ok(void) = serde_json::from_slice::<VoidRecord>(value.as_slice()) {
-                    if void.voided == entry_key.hex() {
-                        scanned.voids.push(void);
-                    }
+                match serde_json::from_slice::<VoidRecord>(value.as_slice()) {
+                    Ok(void) if void.voided == entry_key.hex() => scanned.voids.push(void),
+                    Ok(_) => scanned.unreadable.push((
+                        entry_key,
+                        "a VOID record names a different entry than its store key".to_string(),
+                    )),
+                    Err(_) => scanned
+                        .unreadable
+                        .push((entry_key, "a VOID record does not decode".to_string())),
                 }
                 continue;
             }
@@ -501,6 +506,16 @@ impl SpooledWrite {
 }
 
 impl Spool {
+    /// Change the latest spool as one local filesystem operation. Store callbacks run outside
+    /// this operation. The shared lock also covers overlapping books for one data directory.
+    pub(crate) fn update(dir: &Path, edit: impl FnOnce(&mut Self)) -> Result<(), String> {
+        static UPDATING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _updating = UPDATING.lock().unwrap_or_else(|p| p.into_inner());
+        let mut spool = Self::load(dir)?;
+        edit(&mut spool);
+        spool.save(dir)
+    }
+
     /// The spool's file under `dir`.
     #[must_use]
     pub fn path(dir: &Path) -> PathBuf {
@@ -530,18 +545,41 @@ impl Spool {
     /// The disk refused a step.
     pub fn save(&self, dir: &Path) -> Result<(), String> {
         use std::io::Write as _;
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
         let path = Self::path(dir);
-        let tmp = dir.join(format!("{PENDING_FILE}.tmp"));
         let bytes = serde_json::to_vec(self).map_err(|e| e.to_string())?;
         let step = |e: std::io::Error| format!("{}: {e}", path.display());
-        let mut file = std::fs::File::create(&tmp).map_err(step)?;
-        file.write_all(&bytes).map_err(step)?;
-        file.sync_all().map_err(step)?;
-        std::fs::rename(&tmp, &path).map_err(step)?;
-        if let Ok(d) = std::fs::File::open(dir) {
-            let _ = d.sync_all();
+        let (tmp, mut file) = loop {
+            let tmp = dir.join(format!(
+                "{PENDING_FILE}.{}.{}.tmp",
+                std::process::id(),
+                NEXT_TEMP.fetch_add(1, Ordering::Relaxed)
+            ));
+            match std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&tmp)
+            {
+                Ok(file) => break (tmp, file),
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(e) => return Err(step(e)),
+            }
+        };
+        let result = (|| {
+            file.write_all(&bytes).map_err(step)?;
+            file.sync_all().map_err(step)?;
+            drop(file);
+            std::fs::rename(&tmp, &path).map_err(step)?;
+            if let Ok(d) = std::fs::File::open(dir) {
+                let _ = d.sync_all();
+            }
+            Ok(())
+        })();
+        if result.is_err() {
+            let _ = std::fs::remove_file(tmp);
         }
-        Ok(())
+        result
     }
 
     /// Whether nothing is spooled.

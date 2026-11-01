@@ -498,16 +498,31 @@ impl App {
     /// THE ADMIN CACHE FLUSH: every data-chain position and every external admin module (or only
     /// the one `module` names) refreshed, so each auth plugin drops the verified credentials it
     /// caches inside itself; the sum of the entries they report (THE DESIGN 11.11 R3). The
-    /// operator credential caches nothing.
-    pub fn flush_verified_credentials(&self, module: Option<&str>) -> u64 {
-        let admin: u64 = self
+    /// operator credential caches nothing. Every selected module is attempted; any failure is
+    /// returned after both chains are refreshed. Successful refreshes cannot be rolled back.
+    pub fn flush_verified_credentials(&self, module: Option<&str>) -> Result<u64, String> {
+        let mut flushed = 0;
+        let mut failure = None;
+        for (_, instance) in self
             .admin_modules
             .modules
             .iter()
             .filter(|(name, _)| module.is_none_or(|m| m == name.as_str()))
-            .map(|(_, m)| m.calls.refresh().unwrap_or(0))
-            .sum();
-        self.auth.flush_verified(module) + admin
+        {
+            match instance.calls.refresh() {
+                Ok(count) => flushed += count,
+                Err(error) => {
+                    failure.get_or_insert(error);
+                }
+            }
+        }
+        match self.auth.flush_verified(module) {
+            Ok(count) => flushed += count,
+            Err(error) => {
+                failure.get_or_insert(error);
+            }
+        }
+        failure.map_or(Ok(flushed), Err)
     }
 }
 

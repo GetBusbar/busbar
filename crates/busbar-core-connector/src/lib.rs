@@ -1226,7 +1226,7 @@ impl Connector {
             .map(|n| Arc::clone(&n.door))
             .ok_or(ConnError::Refused)?;
         endpoint::named(target).map_err(|_| ConnError::Refused)?;
-        let located = framer::locate(door.as_ref(), target).map_err(|_| ConnError::Refused)?;
+        let located = self.located(&door, target).ok_or(ConnError::Refused)?;
         endpoint::named(&located.authority).map_err(|_| ConnError::Refused)?;
         if !scheme_admits(egress_class, located.secure) {
             return Err(ConnError::Refused);
@@ -1477,7 +1477,17 @@ impl Connector {
             .ride_on(&door)
             .ok_or(ConnError::Refused)
             .and_then(|(framer, via)| {
-                Listening::bind(framer, &via, bind, tls, alpn, limits).map_err(|_| ConnError::Fault)
+                Listening::bind(framer, &via, bind, tls, alpn, limits).map_err(|error| {
+                    // A carrier's failure text may echo settings. The host logs its own typed
+                    // I/O cause at the producer; this boundary identifies the affected need.
+                    tracing::warn!(
+                        owner = owner.0,
+                        need = need.0,
+                        kind = ?error.kind(),
+                        "inbound listener bind failed"
+                    );
+                    ConnError::Fault
+                })
             });
         match bound {
             Ok(l) => {
@@ -2907,7 +2917,20 @@ impl Conns for Connector {
             true,
             require_secure,
         )?;
-        self.slab.insert(caller, need, held)
+        let rejected = held
+            .line()
+            .map(|(line, stream)| (line, stream, held.pooled.clone()));
+        let inserted = self.slab.insert(caller, need, held);
+        if inserted.is_err() {
+            if let Some((line, stream, pooled)) = rejected {
+                line.leave(stream, false);
+                match pooled {
+                    Some((shard, key)) => self.pools.drop_line(shard, &key, &line),
+                    None => line.close(),
+                }
+            }
+        }
+        inserted
     }
 
     /// A write is taken whole, short, or (no room under
@@ -2933,6 +2956,11 @@ impl Conns for Connector {
         if !self.settle(&held, None)? {
             if let Some(j) = held.judging.lock().expect("judging").as_mut() {
                 // Held until the judgement answers, under the same cap a connection's buffer has.
+                // An empty frame still carries end/text, but spends no payload room. Hold it
+                // once, then backpressure until judgement wakes the caller to drain and retry.
+                if j.early.last().is_some_and(|(bytes, _, _)| bytes.is_empty()) {
+                    return Err(ConnError::Pending);
+                }
                 let held_bytes: usize = j.early.iter().map(|(b, _, _)| b.len()).sum();
                 let take = bytes
                     .len()

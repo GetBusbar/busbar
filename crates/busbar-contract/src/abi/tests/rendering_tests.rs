@@ -349,8 +349,9 @@ fn with_tail<T>(kind: KindCode, t: &T) -> Result<Vec<u8>, RenderError> {
         kind_tail: core::ptr::from_ref(t).cast::<KindTailHead>(),
         ..statement("tail-plugin", "1.0.0", 1)
     };
-    // SAFETY: every list the Statement and `t` state is a `'static` array of its stated count, or
-    // NULL with none (a NULL list with a count is bounded before it is read).
+    // SAFETY: the Statement and tail fixtures' strings and arrays remain live for this synchronous
+    // render, of their stated counts, or NULL with none. Deliberately malformed NULL/count pairs in
+    // refusal tests are bounded before they are read. The renderer retains no fixture pointers.
     unsafe { render(&st) }
 }
 
@@ -567,6 +568,680 @@ fn every_kind_renders_its_tail_facts_not_only_its_size() {
         &|| with_tail(KindCode::Transport, &t0),
         &|| with_tail(KindCode::Transport, &t1),
     );
+}
+
+/// These are identity checks on the public rendering, not a second encoder: changing a declared
+/// grant, route or transport fact must not leave the bytes signed at admission unchanged. Comparing
+/// each variant with the others also detects two independent facts folded into the same value.
+fn distinct_tail_renderings<T>(kind: KindCode, cases: &[(&str, T)]) {
+    let mut seen = Vec::new();
+    for (name, tail) in cases {
+        let bytes = with_tail(kind, tail).expect("the live tail renders");
+        let decoded = read(&bytes).expect("the public reader accepts the rendering");
+        for (previous, prior_bytes, prior_tail) in &seen {
+            assert_ne!(
+                &bytes, prior_bytes,
+                "{kind:?}: {name} collided with {previous}"
+            );
+            assert_ne!(
+                &decoded.kind_tail, prior_tail,
+                "{kind:?}: {name} changed no tail fact from {previous}"
+            );
+        }
+        seen.push((*name, bytes, decoded.kind_tail));
+    }
+}
+
+#[test]
+fn store_durability_and_fork_refusal_are_independent_signed_facts() {
+    use crate::abi::store::StoreTail;
+    let base: StoreTail = zeroed_tail();
+    distinct_tail_renderings(
+        KindCode::Store,
+        &[
+            ("neither", base),
+            (
+                "durable plane",
+                StoreTail {
+                    durable_plane: 1,
+                    ..base
+                },
+            ),
+            (
+                "fork refusal",
+                StoreTail {
+                    fork_refusal: 1,
+                    ..base
+                },
+            ),
+            (
+                "both",
+                StoreTail {
+                    durable_plane: 1,
+                    fork_refusal: 1,
+                    ..base
+                },
+            ),
+        ],
+    );
+}
+
+#[test]
+fn hook_prompt_and_user_grants_and_route_auth_are_independent_signed_facts() {
+    use crate::abi::hook::{self, Route, Tail};
+    let base: Tail = zeroed_tail();
+    distinct_tail_renderings(
+        KindCode::Hook,
+        &[
+            ("no grants", base),
+            (
+                "tap",
+                Tail {
+                    kind_class: hook::CLASS_TAP,
+                    ..base
+                },
+            ),
+            (
+                "prompt read",
+                Tail {
+                    prompt_access: hook::PROMPT_RO,
+                    ..base
+                },
+            ),
+            (
+                "prompt write",
+                Tail {
+                    prompt_access: hook::PROMPT_RW,
+                    ..base
+                },
+            ),
+            (
+                "user read",
+                Tail {
+                    user_access: hook::USER_RO,
+                    ..base
+                },
+            ),
+            (
+                "prompt and user read",
+                Tail {
+                    prompt_access: hook::PROMPT_RO,
+                    user_access: hook::USER_RO,
+                    ..base
+                },
+            ),
+            (
+                "infallible",
+                Tail {
+                    infallible: 1,
+                    ..base
+                },
+            ),
+        ],
+    );
+    let route = Route {
+        path: abi_str("/hooks/example/run"),
+        method: abi_str("GET"),
+        auth: hook::ROUTE_AUTH_NONE,
+        _reserved: 0,
+    };
+    let routes = [
+        ("public", route),
+        (
+            "key required",
+            Route {
+                auth: hook::ROUTE_AUTH_KEY,
+                ..route
+            },
+        ),
+        (
+            "admin required",
+            Route {
+                auth: hook::ROUTE_AUTH_ADMIN,
+                ..route
+            },
+        ),
+        (
+            "another path",
+            Route {
+                path: abi_str("/hooks/example/new"),
+                ..route
+            },
+        ),
+        (
+            "another method",
+            Route {
+                method: abi_str("PUT"),
+                ..route
+            },
+        ),
+    ];
+    let mut tails = vec![("no route", base)];
+    for (name, route) in &routes {
+        tails.push((
+            *name,
+            Tail {
+                routes: route,
+                routes_len: 1,
+                ..base
+            },
+        ));
+    }
+    distinct_tail_renderings(KindCode::Hook, &tails);
+    let ordered = [routes[0].1, routes[3].1];
+    let reversed = [routes[3].1, routes[0].1];
+    distinct_tail_renderings(
+        KindCode::Hook,
+        &[
+            (
+                "one route",
+                Tail {
+                    routes: ordered.as_ptr(),
+                    routes_len: 1,
+                    ..base
+                },
+            ),
+            (
+                "two routes",
+                Tail {
+                    routes: ordered.as_ptr(),
+                    routes_len: 2,
+                    ..base
+                },
+            ),
+            (
+                "reversed routes",
+                Tail {
+                    routes: reversed.as_ptr(),
+                    routes_len: 2,
+                    ..base
+                },
+            ),
+        ],
+    );
+}
+
+#[test]
+fn export_streams_and_route_fields_are_independent_signed_facts() {
+    use crate::abi::export::{self, Route, Tail};
+    let base: Tail = zeroed_tail();
+    let streams = [1, 2];
+    let reversed = [2, 1];
+    distinct_tail_renderings(
+        KindCode::Export,
+        &[
+            ("no streams", base),
+            (
+                "one stream",
+                Tail {
+                    streams: streams.as_ptr(),
+                    streams_len: 1,
+                    ..base
+                },
+            ),
+            (
+                "two streams",
+                Tail {
+                    streams: streams.as_ptr(),
+                    streams_len: 2,
+                    ..base
+                },
+            ),
+            (
+                "reversed streams",
+                Tail {
+                    streams: reversed.as_ptr(),
+                    streams_len: 2,
+                    ..base
+                },
+            ),
+        ],
+    );
+    let route = Route {
+        path: abi_str("/exports/example/run"),
+        method: abi_str("GET"),
+        auth: export::ROUTE_AUTH_NONE,
+        _reserved: 0,
+    };
+    let routes = [
+        ("public", route),
+        (
+            "key required",
+            Route {
+                auth: export::ROUTE_AUTH_KEY,
+                ..route
+            },
+        ),
+        (
+            "admin required",
+            Route {
+                auth: export::ROUTE_AUTH_ADMIN,
+                ..route
+            },
+        ),
+        (
+            "another path",
+            Route {
+                path: abi_str("/exports/example/new"),
+                ..route
+            },
+        ),
+        (
+            "another method",
+            Route {
+                method: abi_str("PUT"),
+                ..route
+            },
+        ),
+    ];
+    let mut tails = vec![("no route", base)];
+    for (name, route) in &routes {
+        tails.push((
+            *name,
+            Tail {
+                routes: route,
+                routes_len: 1,
+                ..base
+            },
+        ));
+    }
+    distinct_tail_renderings(KindCode::Export, &tails);
+    let ordered = [routes[0].1, routes[3].1];
+    let reversed = [routes[3].1, routes[0].1];
+    distinct_tail_renderings(
+        KindCode::Export,
+        &[
+            (
+                "one route",
+                Tail {
+                    routes: ordered.as_ptr(),
+                    routes_len: 1,
+                    ..base
+                },
+            ),
+            (
+                "two routes",
+                Tail {
+                    routes: ordered.as_ptr(),
+                    routes_len: 2,
+                    ..base
+                },
+            ),
+            (
+                "reversed routes",
+                Tail {
+                    routes: reversed.as_ptr(),
+                    routes_len: 2,
+                    ..base
+                },
+            ),
+        ],
+    );
+}
+
+#[test]
+fn transport_role_framing_and_handoff_facts_cannot_share_a_rendering() {
+    use crate::abi::transport::{self, TransportTail};
+    let base: TransportTail = zeroed_tail();
+    let first = [abi_str("first"), abi_str("second")];
+    let reversed = [abi_str("second"), abi_str("first")];
+    distinct_tail_renderings(
+        KindCode::Transport,
+        &[
+            ("absent", base),
+            (
+                "carrier",
+                TransportTail {
+                    role: transport::ROLE_CARRIER,
+                    ..base
+                },
+            ),
+            (
+                "framer",
+                TransportTail {
+                    role: transport::ROLE_FRAMER,
+                    ..base
+                },
+            ),
+            (
+                "datagram",
+                TransportTail {
+                    framing: transport::FRAMING_DATAGRAM,
+                    ..base
+                },
+            ),
+            (
+                "decodes payload",
+                TransportTail {
+                    facts: transport::FACT_DECODES_PAYLOAD,
+                    ..base
+                },
+            ),
+            (
+                "handshake bound",
+                TransportTail {
+                    handshake_max_steps: 1,
+                    ..base
+                },
+            ),
+            (
+                "compose one",
+                TransportTail {
+                    composes_over: first.as_ptr(),
+                    composes_over_len: 1,
+                    ..base
+                },
+            ),
+            (
+                "compose two",
+                TransportTail {
+                    composes_over: first.as_ptr(),
+                    composes_over_len: 2,
+                    ..base
+                },
+            ),
+            (
+                "compose reversed",
+                TransportTail {
+                    composes_over: reversed.as_ptr(),
+                    composes_over_len: 2,
+                    ..base
+                },
+            ),
+            (
+                "upgrade one",
+                TransportTail {
+                    upgrades_to: first.as_ptr(),
+                    upgrades_to_len: 1,
+                    ..base
+                },
+            ),
+            (
+                "upgrade two",
+                TransportTail {
+                    upgrades_to: first.as_ptr(),
+                    upgrades_to_len: 2,
+                    ..base
+                },
+            ),
+            (
+                "upgrade reversed",
+                TransportTail {
+                    upgrades_to: reversed.as_ptr(),
+                    upgrades_to_len: 2,
+                    ..base
+                },
+            ),
+            (
+                "handoff from",
+                TransportTail {
+                    handoff_from: abi_str("first"),
+                    ..base
+                },
+            ),
+            (
+                "handoff to",
+                TransportTail {
+                    handoff_to: abi_str("first"),
+                    ..base
+                },
+            ),
+            (
+                "handoff binding",
+                TransportTail {
+                    handoff_binding_fact: abi_str("first"),
+                    ..base
+                },
+            ),
+            (
+                "handshake frame",
+                TransportTail {
+                    handshake_frame_kind: abi_str("first"),
+                    ..base
+                },
+            ),
+            (
+                "frame stride",
+                TransportTail {
+                    frame_piece_size: transport::FRAME_PIECE_SIZE,
+                    ..base
+                },
+            ),
+        ],
+    );
+}
+
+#[test]
+fn transport_claims_keep_selector_status_and_session_facts_distinct() {
+    use crate::abi::transport::{self, Claim, TransportTail};
+    let base: TransportTail = zeroed_tail();
+    let facts = [abi_str("one"), abi_str("two")];
+    let reversed = [abi_str("two"), abi_str("one")];
+    let claims = [
+        ("empty claim", Claim::ZERO),
+        (
+            "selector",
+            Claim {
+                selector_forms: abi_str("one"),
+                ..Claim::ZERO
+            },
+        ),
+        (
+            "egress selector",
+            Claim {
+                egress_selector_forms: abi_str("one"),
+                ..Claim::ZERO
+            },
+        ),
+        (
+            "status namespace",
+            Claim {
+                status_namespace: abi_str("one"),
+                ..Claim::ZERO
+            },
+        ),
+        (
+            "one fact",
+            Claim {
+                facts: facts.as_ptr(),
+                facts_len: 1,
+                ..Claim::ZERO
+            },
+        ),
+        (
+            "two facts",
+            Claim {
+                facts: facts.as_ptr(),
+                facts_len: 2,
+                ..Claim::ZERO
+            },
+        ),
+        (
+            "reversed facts",
+            Claim {
+                facts: reversed.as_ptr(),
+                facts_len: 2,
+                ..Claim::ZERO
+            },
+        ),
+        (
+            "session",
+            Claim {
+                session: 1,
+                ..Claim::ZERO
+            },
+        ),
+        (
+            "session bound",
+            Claim {
+                session_bound: 1,
+                ..Claim::ZERO
+            },
+        ),
+        (
+            "unit trigger",
+            Claim {
+                unit0_trigger: transport::UNIT0_FIRST_BYTES,
+                ..Claim::ZERO
+            },
+        ),
+        (
+            "status point",
+            Claim {
+                status_at: transport::STATUS_AT_FIRST_FRAME,
+                ..Claim::ZERO
+            },
+        ),
+    ];
+    let mut tails = vec![("no claims", base)];
+    for (name, claim) in &claims {
+        tails.push((
+            *name,
+            TransportTail {
+                claim_rows: claim,
+                claim_rows_len: 1,
+                ..base
+            },
+        ));
+    }
+    distinct_tail_renderings(KindCode::Transport, &tails);
+    let ordered = [claims[1].1, claims[2].1];
+    let reversed = [claims[2].1, claims[1].1];
+    distinct_tail_renderings(
+        KindCode::Transport,
+        &[
+            (
+                "one claim",
+                TransportTail {
+                    claim_rows: ordered.as_ptr(),
+                    claim_rows_len: 1,
+                    ..base
+                },
+            ),
+            (
+                "two claims",
+                TransportTail {
+                    claim_rows: ordered.as_ptr(),
+                    claim_rows_len: 2,
+                    ..base
+                },
+            ),
+            (
+                "reversed claims",
+                TransportTail {
+                    claim_rows: reversed.as_ptr(),
+                    claim_rows_len: 2,
+                    ..base
+                },
+            ),
+        ],
+    );
+}
+
+#[test]
+fn transport_status_fault_and_setting_rows_keep_every_declared_fact() {
+    use crate::abi::transport::{self, FaultRow, SettingDecl, StatusRow, TransportTail};
+    let base: TransportTail = zeroed_tail();
+    let status = StatusRow {
+        claim: 1,
+        lo: 400,
+        hi: 499,
+        class: transport::STATUS_CALLER_FAULT as u32,
+    };
+    let statuses = [
+        ("status", status),
+        ("status claim", StatusRow { claim: 0, ..status }),
+        ("status low", StatusRow { lo: 401, ..status }),
+        ("status high", StatusRow { hi: 498, ..status }),
+        (
+            "status class",
+            StatusRow {
+                class: transport::STATUS_FAR_END_FAULT as u32,
+                ..status
+            },
+        ),
+    ];
+    let fault = FaultRow {
+        claim: 1,
+        lo: 400,
+        hi: 499,
+        fault: transport::FAULT_CALLER as u32,
+    };
+    let faults = [
+        ("fault", fault),
+        ("fault claim", FaultRow { claim: 0, ..fault }),
+        ("fault low", FaultRow { lo: 401, ..fault }),
+        ("fault high", FaultRow { hi: 498, ..fault }),
+        (
+            "fault class",
+            FaultRow {
+                fault: transport::FAULT_TRANSIENT as u32,
+                ..fault
+            },
+        ),
+    ];
+    let setting = SettingDecl {
+        path: abi_str("limit"),
+        kind: transport::SETTING_COUNT,
+        default: abi_str("10"),
+        ..SettingDecl::ZERO
+    };
+    let settings = [
+        ("setting", setting),
+        (
+            "setting path",
+            SettingDecl {
+                path: abi_str("other"),
+                ..setting
+            },
+        ),
+        (
+            "setting kind",
+            SettingDecl {
+                kind: transport::SETTING_TEXT,
+                ..setting
+            },
+        ),
+        (
+            "setting default",
+            SettingDecl {
+                default: abi_str("11"),
+                ..setting
+            },
+        ),
+    ];
+    let mut tails = vec![("no rows", base)];
+    for (name, row) in &statuses {
+        tails.push((
+            *name,
+            TransportTail {
+                status_rows: row,
+                status_rows_len: 1,
+                ..base
+            },
+        ));
+    }
+    for (name, row) in &faults {
+        tails.push((
+            *name,
+            TransportTail {
+                fault_rows: row,
+                fault_rows_len: 1,
+                ..base
+            },
+        ));
+    }
+    for (name, row) in &settings {
+        tails.push((
+            *name,
+            TransportTail {
+                settings: row,
+                settings_len: 1,
+                ..base
+            },
+        ));
+    }
+    distinct_tail_renderings(KindCode::Transport, &tails);
 }
 
 /// A PLANE'S COMMAND-LINE HELP READS BACK FROM ITS RENDERING, with no library (audit busbar-src r4

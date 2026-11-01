@@ -26,6 +26,7 @@
 //! EPHEMERAL: every counter, key and credential is lost with the handle. Poison-recovering locks
 //! (the governance surface must never panic on a request).
 
+use busbar_contract::records::correction;
 use busbar_contract::records::{
     AuditRecord, CredentialMeta, CredentialSecret, MeteringDelta, MeteringRow, PlaneDisposition,
     PlaneRecord, PlaneRecordRef, PlaneSelector, RecordStore as Store,
@@ -473,12 +474,37 @@ impl Store for MemoryStore {
         ledger: &UsageLedger,
     ) -> StoreResult<()> {
         // Write-behind ABSOLUTE set (memory is authoritative in the engine; this is durability only).
+        if correction::reserved_bucket(bucket_id) {
+            return Err(StoreError("reserved usage correction bucket".into()));
+        }
         self.usage()
             .insert((bucket_id.to_string(), window_start), ledger.clone());
         Ok(())
     }
 
+    fn supports_usage_correction(&self) -> bool {
+        true
+    }
+
+    fn apply_usage_correction(
+        &self,
+        request: &correction::Request,
+    ) -> StoreResult<correction::Decision> {
+        self.v3_apply_usage_correction(request).map_err(|error| {
+            StoreError(match error {
+                busbar_contract::abi::sdk::store::OpRefused::Conflict => {
+                    "usage correction operation id conflict".to_string()
+                }
+                busbar_contract::abi::sdk::store::OpRefused::Failed(reason)
+                | busbar_contract::abi::sdk::store::OpRefused::Refused(reason) => reason,
+            })
+        })
+    }
+
     fn add_usage(&self, bucket_id: &str, window_start: u64, delta: &UsageDelta) -> StoreResult<()> {
+        if correction::reserved_bucket(bucket_id) {
+            return Err(StoreError("reserved usage correction bucket".into()));
+        }
         // ADDITIVE accumulate under the write lock (atomic within this process), floored at 0.
         let mut usage = self.usage();
         let u = usage
@@ -957,3 +983,6 @@ pub use v3::door;
 pub use v3::MACRO_DOOR;
 
 mod v3;
+
+#[cfg(test)]
+mod correction_tests;

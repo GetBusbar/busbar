@@ -19,6 +19,7 @@ python3 -I - "$MCI" "$tenant" "$repo" "$from" "$head" "$t" <<'PY'
 import base64, json, subprocess, sys, tarfile, io, os
 mci, tenant, repo, frm, head, out = sys.argv[1:]
 buf, offset, got_head = b"", 0, None
+artifact = None
 while True:
     req = {"repo": repo, "from": frm, "check": "conformance", "offset": offset}
     if head:
@@ -29,12 +30,20 @@ while True:
         sys.exit(f"import: modernci artifact refused: {r.stderr.strip() or r.stdout.strip()}")
     d = json.loads(r.stdout)
     got_head = d["head"]
+    if head and got_head != head:
+        sys.exit(f"import: ModernCI answered head {got_head}, not {head}")
+    identity = (got_head, d["sha"])
+    if not all(identity):
+        sys.exit("import: ModernCI answered without an artifact head and sha")
+    if artifact is None:
+        artifact = identity
+    elif identity != artifact:
+        sys.exit(f"import: ModernCI changed artifact from {artifact} to {identity} between pages")
+    # Keep the caller's selector: adding head would switch a measurement to a judged result.
     buf += base64.b64decode(d["data"])
     if not d.get("next"):
         break
     offset = d["next"]
-if head and got_head != head:
-    sys.exit(f"import: ModernCI answered head {got_head}, not {head}")
 n = 0
 with tarfile.open(fileobj=io.BytesIO(buf), mode="r:gz") as tf:
     for m in tf.getmembers():

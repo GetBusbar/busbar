@@ -26,6 +26,8 @@ type Claims = BTreeMap<(String, String), u64>;
 /// What a test runs at each scan, on the thread that scans.
 type ScanProbe = Arc<Mutex<Option<Arc<dyn Fn() + Send + Sync>>>>;
 
+type PutProbe = Arc<Mutex<Option<Arc<dyn Fn() -> Option<StoreFailure> + Send + Sync>>>>;
+
 /// The double. Cheap to clone; every clone is the same store.
 #[derive(Clone, Default)]
 pub(crate) struct RecordSlots {
@@ -37,6 +39,7 @@ pub(crate) struct RecordSlots {
     budget: Arc<AtomicUsize>,
     puts: Arc<AtomicUsize>,
     probe: ScanProbe,
+    put_probe: PutProbe,
     /// Keep every put and answer it FAILED: a store that committed and lost the ack.
     lost_acks: Arc<AtomicBool>,
 }
@@ -67,6 +70,11 @@ impl RecordSlots {
     /// From now on, run `probe` at the start of every scan, on the thread that scans.
     pub(crate) fn on_scan(&self, probe: impl Fn() + Send + Sync + 'static) {
         *self.probe.lock().unwrap_or_else(|p| p.into_inner()) = Some(Arc::new(probe));
+    }
+
+    /// Run before a put, without holding any fixture lock.
+    pub(crate) fn on_put(&self, probe: impl Fn() -> Option<StoreFailure> + Send + Sync + 'static) {
+        *self.put_probe.lock().unwrap_or_else(|p| p.into_inner()) = Some(Arc::new(probe));
     }
 
     /// Take the next `n` puts, then refuse every one after until [`Self::refuse`] says otherwise:
@@ -162,6 +170,14 @@ impl StoreCalls for RecordSlots {
         key: &'a [u8],
         value: &'a RecordBytes,
     ) -> StoreCall<'a, ()> {
+        let probe = self
+            .put_probe
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone();
+        if let Some(failure) = probe.and_then(|probe| probe()) {
+            return Box::pin(async move { Err(failure) });
+        }
         let refused = self.refuses_put();
         if !refused {
             self.rows

@@ -6,6 +6,73 @@
 use super::*;
 use crate::sign::{sign, SigningKey};
 
+#[test]
+fn two_linked_rows_cannot_claim_one_canonical_name() {
+    let first = renamed("hook", "acme-one", "one", &[]);
+    for mut second in [
+        first.clone(),
+        renamed("hook", "acme-one", "another-alias", &[]),
+        renamed("auth", "acme-one", "auth-alias", &[]),
+    ] {
+        second.version = "2.0.0".into();
+        let error = PluginRegistry::empty()
+            .link(vec![
+                LinkedPlugin::door_raw(first.clone(), unopened_door),
+                LinkedPlugin::door_raw(second, unopened_door),
+            ])
+            .expect_err("a canonical name has one linked owner");
+        assert!(error.contains("acme-one"), "{error}");
+    }
+    let registry = PluginRegistry::empty()
+        .link(vec![LinkedPlugin::door_raw(first.clone(), unopened_door)])
+        .unwrap();
+    assert!(
+        registry
+            .link(vec![LinkedPlugin::door_raw(first, unopened_door)])
+            .is_err(),
+        "repeated link calls obey the same rule"
+    );
+    let distinct = PluginRegistry::empty()
+        .link(vec![
+            LinkedPlugin::door_raw(renamed("hook", "acme-one", "one", &[]), unopened_door),
+            LinkedPlugin::door_raw(renamed("hook", "acme-two", "two", &[]), unopened_door),
+        ])
+        .unwrap();
+    assert!(distinct.resolve("one").is_some());
+    assert!(distinct.resolve("two").is_some());
+}
+
+#[cfg(unix)]
+#[test]
+fn discovery_reports_unreadable_archive_entries_without_hiding_them() {
+    use std::os::unix::ffi::OsStringExt;
+    use std::os::unix::fs::symlink;
+    let dir = tmpdir("discover-unreadable-entry");
+    let unrelated = dir.join(std::ffi::OsString::from_vec(b"notes-\xff.txt".to_vec()));
+    std::fs::write(&unrelated, b"not a plugin").unwrap();
+    assert!(discover(&dir).unwrap().is_empty());
+    let non_utf8 = dir.join(std::ffi::OsString::from_vec(b"plugin-\xff.tar.gz".to_vec()));
+    std::fs::write(&non_utf8, b"archive bytes").unwrap();
+    assert!(discover(&dir).unwrap_err().contains("UTF-8"));
+    std::fs::remove_file(non_utf8).unwrap();
+    let dangling = dir.join("missing.tgz");
+    symlink(dir.join("absent"), &dangling).unwrap();
+    let error = discover(&dir).unwrap_err();
+    assert!(error.contains("missing.tgz"), "{error}");
+    std::fs::remove_file(dangling).unwrap();
+    let valid = dir.join("valid.tar.gz");
+    std::fs::write(&valid, b"archive bytes").unwrap();
+    std::fs::create_dir(dir.join("directory.tar.gz")).unwrap();
+    for name in [".tar.gz", ".tgz"] {
+        std::fs::write(dir.join(name), b"archive bytes").unwrap();
+    }
+    assert_eq!(
+        discover(&dir).unwrap(),
+        [dir.join(".tar.gz"), dir.join(".tgz"), valid]
+    );
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
 fn key(seed: u8) -> SigningKey {
     SigningKey::from_bytes(&[seed; 32])
 }

@@ -414,3 +414,42 @@ fn a_line_no_request_can_match_is_refused_at_seal() {
         "route.field.name"
     );
 }
+
+#[test]
+fn field_predicate_codes_are_judged_before_a_guest_line_is_sealed() {
+    use busbar_contract::abi::mechanism::check::Rule;
+
+    let seal = |op, value: &[u8]| {
+        GuestList::seal(vec![line(
+            "predicate",
+            with_field(
+                route(METHOD_GET, PATH_EXACT, "/predicate"),
+                op,
+                "authorization",
+                value,
+            ),
+        )])
+    };
+    for op in [0, FIELD_VALUE_PREFIX + 1, u32::MAX] {
+        for value in [b"".as_slice(), b"Bearer ".as_slice()] {
+            let Err(GuestRefusal::Malformed(bad)) = seal(op, value) else {
+                panic!("an unknown predicate code must refuse the line: {op}");
+            };
+            assert_eq!(bad.0.claimant, Claimant::Plane("predicate".into()));
+            assert_eq!(bad.1.rule, Rule::UnknownCode);
+            assert_eq!(bad.1.field, "route.field.op");
+        }
+    }
+    assert!(seal(FIELD_PRESENT, b"").is_ok());
+    assert!(seal(FIELD_VALUE_PREFIX, b"Bearer ").is_ok());
+    for (op, value) in [
+        (FIELD_PRESENT, b"Bearer ".as_slice()),
+        (FIELD_VALUE_PREFIX, b""),
+    ] {
+        let Err(GuestRefusal::Malformed(bad)) = seal(op, value) else {
+            panic!("a known predicate with the wrong value shape must refuse");
+        };
+        assert_eq!(bad.1.rule, Rule::Contradiction);
+        assert_eq!(bad.1.field, "route.field.value");
+    }
+}

@@ -102,24 +102,22 @@ fn ticketless(pool: &Pool) {
         .collect();
     drop(adopted);
     for inst in live {
-        // Each hung call is ONE breach, however many scans see it hung: only calls at or above
-        // the instance's counted mark are new.
-        let from = inst.ticketless_counted.load(Ordering::Acquire);
-        let fresh: Vec<u64> = inst
-            .lock_calls()
-            .iter()
-            .filter(|&(&id, &(started, s))| {
-                id >= from && started.elapsed() > pool.env.budgets.of(s, DeadlineClass::Call)
-            })
-            .map(|(&id, _)| id)
-            .collect();
-        let Some(&last) = fresh.iter().max() else {
-            continue;
+        // Budgets differ by slot, so call-id order is not deadline order. Mark each live call
+        // under the same lock that removes it on return; its mark dies with the call.
+        let fresh = {
+            let mut calls = inst.lock_calls();
+            let mut fresh = 0;
+            for (started, slot, counted) in calls.values_mut() {
+                if !*counted && started.elapsed() > pool.env.budgets.of(*slot, DeadlineClass::Call)
+                {
+                    *counted = true;
+                    fresh += 1;
+                }
+            }
+            fresh
         };
-        inst.ticketless_counted
-            .fetch_max(last + 1, Ordering::AcqRel);
         let mut quarantined = false;
-        for _ in &fresh {
+        for _ in 0..fresh {
             quarantined = breach(pool, &inst);
         }
         if quarantined {

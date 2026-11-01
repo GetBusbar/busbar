@@ -7,6 +7,116 @@ const A: InstanceId = InstanceId(1);
 const B: InstanceId = InstanceId(2);
 const NEED: NeedId = NeedId(0);
 
+thread_local! {
+    static INSERT_ADMITTED: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+pub(super) fn insert_admitted() {
+    let callback = INSERT_ADMITTED.with(|slot| slot.borrow_mut().take());
+    if let Some(callback) = callback {
+        callback();
+    }
+}
+
+#[test]
+fn forgetting_includes_an_insert_already_admitted_for_the_owner() {
+    use std::sync::{mpsc, Barrier};
+
+    let s = Arc::new(slab());
+    let original = s.insert(A, NEED, "original").unwrap();
+    let other = s.insert(B, NEED, "other owner").unwrap();
+    let release = Arc::new(Barrier::new(2));
+    let (admitted, admission) = mpsc::channel();
+    let inserting = {
+        let s = Arc::clone(&s);
+        let release = Arc::clone(&release);
+        std::thread::spawn(move || {
+            INSERT_ADMITTED.with(|slot| {
+                *slot.borrow_mut() = Some(Box::new(move || {
+                    admitted.send(()).unwrap();
+                    release.wait();
+                }));
+            });
+            s.insert(A, NEED, "racing insert")
+        })
+    };
+    admission.recv().unwrap();
+    // Select a feasible schedule without depending on the scheduler or a timeout. When
+    // admission is available, forget completes before this insert can reach its entry.
+    // Otherwise forget races the admitted insert as soon as the barrier releases it.
+    let early = s.declared.try_lock().ok().map(|guard| {
+        drop(guard);
+        s.forget(A)
+    });
+    let retiring = early.is_none().then(|| {
+        let s = Arc::clone(&s);
+        std::thread::spawn(move || s.forget(A))
+    });
+    release.wait();
+    let inserted = inserting.join().unwrap();
+    let retired = match early {
+        Some(ids) => ids,
+        None => retiring.unwrap().join().unwrap(),
+    };
+    for id in &retired {
+        s.remove(A, *id).unwrap();
+    }
+    // Reclaim an orphan before asserting so the regression's failing path cleans up too.
+    if let Ok(id) = inserted {
+        let _ = s.remove(A, id);
+    }
+    assert!(retired.contains(&original));
+    let inserted = inserted.expect("the admitted insert completes");
+    assert!(
+        retired.contains(&inserted),
+        "forget must return an admitted connection for the host to close"
+    );
+    assert_eq!(s.get(A, inserted).unwrap_err(), ConnError::Closed);
+    assert_eq!(s.insert(A, NEED, "late"), Err(ConnError::UndeclaredNeed));
+    assert_eq!(*s.get(B, other).unwrap().1, "other owner");
+}
+
+#[test]
+fn rejected_and_removed_states_are_dropped_outside_slab_guards() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Weak;
+
+    struct State {
+        slab: Weak<ConnSlab<State>>,
+        dropped: Arc<AtomicUsize>,
+        unlocked: Arc<AtomicUsize>,
+    }
+
+    impl Drop for State {
+        fn drop(&mut self) {
+            let slab = self.slab.upgrade().unwrap();
+            if slab.check_need(A, NEED) == Err(ConnError::UndeclaredNeed)
+                && slab.forget(A).is_empty()
+            {
+                self.unlocked.fetch_add(1, Ordering::SeqCst);
+            }
+            self.dropped.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    let s: Arc<ConnSlab<State>> = Arc::new(ConnSlab::default());
+    let dropped = Arc::new(AtomicUsize::new(0));
+    let unlocked = Arc::new(AtomicUsize::new(0));
+    let state = || State {
+        slab: Arc::downgrade(&s),
+        dropped: Arc::clone(&dropped),
+        unlocked: Arc::clone(&unlocked),
+    };
+    s.declare(A, NEED);
+    let conn = s.insert(A, NEED, state()).unwrap();
+    assert_eq!(s.forget(A), vec![conn]);
+    drop(s.remove(A, conn).unwrap());
+    assert_eq!(s.insert(A, NEED, state()), Err(ConnError::UndeclaredNeed));
+    assert_eq!(dropped.load(Ordering::SeqCst), 2);
+    assert_eq!(unlocked.load(Ordering::SeqCst), 2);
+}
+
 fn slab() -> ConnSlab<&'static str> {
     let s = ConnSlab::default();
     s.declare(A, NEED);

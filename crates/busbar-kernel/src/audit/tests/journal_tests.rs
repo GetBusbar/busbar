@@ -647,3 +647,108 @@ fn a_chain_another_node_advanced_is_continued_after_a_refused_write() {
         restored.chain_breaks
     );
 }
+
+fn append_unreadable_resume_row(store: &MockStore) {
+    store
+        .append_plane_record(
+            PlaneRecord {
+                kind: KIND_NEUTRAL.to_string(),
+                id: "unreadable-resume-row".to_string(),
+                parent: Some("acme".to_string()),
+                seq: 99,
+                ts: 0,
+                disposition: busbar_contract::records::PlaneDisposition::Active,
+                body: b"{ not a neutral body".to_vec(),
+            }
+            .view(),
+        )
+        .unwrap();
+}
+
+#[test]
+fn a_failed_append_resumes_past_a_row_boot_already_reported_unreadable() {
+    use tracing_subscriber::layer::SubscriberExt as _;
+    let store = Arc::new(MockStore::new());
+    let before: Journal<NeutralRec> = Journal::new(usize::MAX);
+    before.set_sink(store.clone());
+    write_neutral(&before, "acme", b"|one");
+    write_neutral(&before, "acme", b"|two");
+    append_unreadable_resume_row(&store);
+    let resumed: Journal<NeutralRec> = Journal::new(usize::MAX);
+    resumed.set_sink(store.clone());
+    let restored = resumed
+        .restore_scoped(KIND_NEUTRAL, store.as_ref(), &neutral_reframe)
+        .unwrap();
+    assert_eq!(restored.unreadable, 1);
+    assert!(restored.chain_breaks.is_empty());
+    store.set_failing(true);
+    assert!(resumed
+        .append_scoped(
+            KIND_NEUTRAL,
+            "acme",
+            NeutralInput {
+                content: b"|three".to_vec()
+            },
+            &neutral_reframe,
+        )
+        .is_err());
+    store.set_failing(false);
+    let capture = DiagCapture::default();
+    let third = {
+        let subscriber = tracing_subscriber::registry().with(capture.clone());
+        let _guard = tracing::subscriber::set_default(subscriber);
+        write_neutral(&resumed, "acme", b"|three")
+    };
+    assert_eq!(
+        third.seq, 3,
+        "continue the decodable tail without a fresh-chain fork"
+    );
+    assert!(resumed.take_resume_breaks().is_empty());
+    let restored = Journal::<NeutralRec>::new(usize::MAX)
+        .restore_scoped(KIND_NEUTRAL, store.as_ref(), &neutral_reframe)
+        .unwrap();
+    assert_eq!(restored.records, 3);
+    assert_eq!(restored.unreadable, 1);
+    assert!(restored.chain_breaks.is_empty());
+    assert!(capture
+        .0
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|line| line.contains("BUSBAR-2046")));
+}
+
+#[test]
+fn unreadable_resume_rows_do_not_hide_a_decodable_chain_break() {
+    let store = Arc::new(MockStore::new());
+    let journal: Journal<NeutralRec> = Journal::new(usize::MAX);
+    journal.set_sink(store.clone());
+    write_neutral(&journal, "acme", b"|one");
+    write_neutral(&journal, "acme", b"|two");
+    store.tamper_first_neutral();
+    append_unreadable_resume_row(&store);
+    journal.forget("acme");
+    let next = write_neutral(&journal, "acme", b"|three");
+    assert_eq!(next.seq, 3);
+    assert!(!journal.take_resume_breaks().is_empty());
+}
+
+#[test]
+fn an_entirely_unreadable_resume_never_invents_a_new_chain() {
+    let store = Arc::new(MockStore::new());
+    append_unreadable_resume_row(&store);
+    let journal: Journal<NeutralRec> = Journal::new(usize::MAX);
+    journal.set_sink(store.clone());
+    journal.forget("acme");
+    assert!(journal
+        .append_scoped(
+            KIND_NEUTRAL,
+            "acme",
+            NeutralInput {
+                content: b"|replacement".to_vec()
+            },
+            &neutral_reframe,
+        )
+        .is_err());
+    assert_eq!(store.rows.lock().unwrap().len(), 1);
+}

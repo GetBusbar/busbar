@@ -141,3 +141,34 @@ fn the_recorded_reload_miss_carries_no_url_userinfo_or_query() {
         }]
     );
 }
+
+#[test]
+fn fatal_fetch_errors_redact_the_same_url_as_reload_errors() {
+    let dir = tmpdir();
+    for url in [
+        SECRET_URL,
+        "https://user:pw-boot@plugins.example.test/x.tar.gz#fragment-boot",
+        "https://plugins.example.test/plain.tar.gz",
+    ] {
+        let spec = FetchSpec {
+            url: url.to_owned(),
+            sha256: None,
+            filename: "x.tar.gz".to_owned(),
+        };
+        let errors = fetch_plugins(&dir, &[spec.clone()], true, &refusing).unwrap_err();
+        let reload = fetch_plugins(&dir, &[spec], false, &refusing).unwrap();
+        let [FetchOutcome::Warned { error, .. }] = reload.as_slice() else {
+            panic!("one recorded reload refusal");
+        };
+        assert_eq!(
+            errors,
+            [error.clone()],
+            "boot and reload expose the same diagnosis"
+        );
+        for secret in ["pw-H10-s3cr3t", "q-H10-tok", "pw-boot", "fragment-boot"] {
+            assert!(!errors[0].contains(secret));
+        }
+        assert!(!dir.join("x.tar.gz").exists());
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}

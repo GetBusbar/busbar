@@ -27,6 +27,7 @@ import argparse
 import importlib.util
 import json
 import os
+import shutil
 import sys
 import tempfile
 
@@ -67,38 +68,41 @@ def main(argv=None) -> int:
     ctx.target, ctx.spec, ctx.targets = a.target, spec, targets
     ctx.contract_rows = declared
     ctx.repo_root = ROOT
-    ctx.work = tempfile.mkdtemp(prefix="busbar-linking-proof-")
     ctx.image = a.image
     ctx.packaged_from = a.packaged_from
     ctx.dropin_plugin = os.path.abspath(a.dropin_plugin) if a.dropin_plugin else ""
     ctx.archive = os.path.abspath(a.archive) if a.archive else ""
-    unpack_error = None
-    if spec.get("kind") != "image":
-        unpack = os.path.join(ctx.work, "unpack")
-        os.makedirs(unpack, exist_ok=True)
-        try:
-            va.extract_archive(ctx.archive, unpack)
-        except Exception as exc:  # a missing or broken archive fails every row, never skips one
-            unpack_error = "the archive could not be unpacked: %s" % exc
-        ctx.exe = os.path.join(unpack, spec["exe"])
-        if os.path.exists(ctx.exe):
-            os.chmod(ctx.exe, 0o755)
+    ctx.work = tempfile.mkdtemp(prefix="busbar-linking-proof-")
+    try:
+        unpack_error = None
+        if spec.get("kind") != "image":
+            unpack = os.path.join(ctx.work, "unpack")
+            os.makedirs(unpack, exist_ok=True)
+            try:
+                va.extract_archive(ctx.archive, unpack)
+            except Exception as exc:  # a missing or broken archive fails every row, never skips one
+                unpack_error = "the archive could not be unpacked: %s" % exc
+            ctx.exe = os.path.join(unpack, spec["exe"])
+            if os.path.exists(ctx.exe):
+                os.chmod(ctx.exe, 0o755)
 
-    failed = []
-    for rid in want:
-        try:
-            if unpack_error:
-                raise va.RowFailure(unpack_error)
-            note = va.CHECKS[rid](ctx)
-            print("PASS %-30s %s" % (rid, note))
-        except Exception as exc:  # RowFailure, AssertionError, or a crash: all are FAIL
-            failed.append(rid)
-            print("FAIL %-30s %s" % (rid, exc))
-    if failed:
-        print("\nlinking-proof: %s FAILED %s" % (a.target, failed))
-        return 1
-    print("\nlinking-proof: %s holds %s" % (a.target, want))
-    return 0
+        failed = []
+        for rid in want:
+            try:
+                if unpack_error:
+                    raise va.RowFailure(unpack_error)
+                note = va.CHECKS[rid](ctx)
+                print("PASS %-30s %s" % (rid, note))
+            except Exception as exc:  # RowFailure, AssertionError, or a crash: all are FAIL
+                failed.append(rid)
+                print("FAIL %-30s %s" % (rid, exc))
+        if failed:
+            print("\nlinking-proof: %s FAILED %s" % (a.target, failed))
+            return 1
+        print("\nlinking-proof: %s holds %s" % (a.target, want))
+        return 0
+    finally:
+        shutil.rmtree(ctx.work)
 
 
 if __name__ == "__main__":

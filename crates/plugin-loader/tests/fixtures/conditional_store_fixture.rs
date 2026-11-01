@@ -18,6 +18,7 @@ use busbar_contract::abi::mechanism::lifecycle::*;
 use busbar_contract::abi::mechanism::ticket::{HostCtx, Ticket, WakeFn};
 use busbar_contract::abi::sdk::door::{AbiIn, AbiOut, RawSlot};
 use busbar_contract::abi::sdk::store::conditional::{self, Decision};
+use busbar_contract::abi::sdk::store::correction;
 use busbar_contract::abi::store::*;
 
 pub const NAME: &str = "conditional-store-witness";
@@ -333,8 +334,104 @@ const TAIL: StoreTail = StoreTail {
     },
     ..StoreTail::ZERO
 };
-const CAP: [u8; extensions::entry_len(conditional::CAPABILITY, b"1")] =
-    extensions::entry(conditional::CAPABILITY, b"1");
+busbar_contract::statement_extensions!(CAP: [
+    (conditional::CAPABILITY, b"1"),
+    (correction::CAPABILITY, correction::CAPABILITY_VALUE),
+]);
+
+struct Correction;
+impl RawSlot for Correction {
+    type In = AddUsageBatchIn;
+    type Out = OutHead;
+    unsafe fn call(instance: *mut c_void, input: &AddUsageBatchIn, out: &mut OutHead) -> Outcome {
+        // SAFETY: the dispatcher retains the immutable input and instance for this crossing.
+        let state = unsafe { state(instance) };
+        let encoded = unsafe { input.head.extensions.bytes() };
+        let candidate = correction::intent(encoded).unwrap().unwrap();
+        let mut data = state.data.lock().unwrap();
+        data.tx_calls += 1;
+        data.class = input.head.deadline_class;
+        data.deadline = input.head.deadline_ns;
+        if input.op_id != candidate.op_id
+            || input.cells_len != 0
+            || data.class != DeadlineClass::WriteBehind as u8
+            || data.deadline != 0
+        {
+            return Outcome::Fault;
+        }
+        let same = data.first.as_ref().is_none_or(|first| first == encoded);
+        data.same &= same;
+        if data.first.is_none() {
+            data.first = Some(encoded.to_vec());
+        }
+        if state.mode == "hold" && !data.finished {
+            data.pending = Some((input.head.host, input.head.ticket));
+            return Outcome::Pending;
+        }
+        if state.mode == "pending" && data.tx_calls == 1 {
+            out.wake_at_ns = 1;
+            return Outcome::Pending;
+        }
+        if state.mode == "op-id-conflict" {
+            out.error = AbiStr {
+                ptr: DIAG_OPID_CONFLICT.as_ptr(),
+                len: DIAG_OPID_CONFLICT.len(),
+            };
+            return Outcome::Refused;
+        }
+        let decision = if state.mode == "conflict" {
+            correction::Decision::ConditionConflict
+        } else {
+            correction::Decision::Applied
+        };
+        if decision == correction::Decision::Applied && data.writes == 0 {
+            data.writes = 1;
+            data.receipts = 1;
+        }
+        if state.mode == "failed-once" && data.tx_calls == 1 {
+            const LOST_REPLY: &str = "lost correction commit reply";
+            out.error = AbiStr {
+                ptr: LOST_REPLY.as_ptr(),
+                len: LOST_REPLY.len(),
+            };
+            return Outcome::Failed;
+        }
+        if state.mode == "missing" {
+            return Outcome::Ready;
+        }
+        let result_candidate = if state.mode == "wrong-digest" {
+            let mut changed = candidate.clone();
+            changed.usage[0].replacement.requests += 1;
+            changed
+        } else if state.mode == "wrong-id" {
+            let mut changed = candidate.clone();
+            changed.op_id = OpId::from_parts(0xc0de, 99);
+            changed
+        } else {
+            candidate
+        };
+        let mut result = correction::encode_result(&result_candidate, decision);
+        if state.mode == "malformed" {
+            result.pop();
+        }
+        let mut bytes = if state.mode == "duplicate-result" {
+            extensions::encode(&[(correction::RESULT, &result), (correction::RESULT, &result)])
+        } else {
+            extensions::encode(&[(correction::RESULT, &result)])
+        };
+        if state.mode == "trailing-result" {
+            bytes.push(0);
+        }
+        data.lease(bytes, out, state.mode != "unleased");
+        if state.mode == "wrong-format" {
+            out.extensions.fmt = BLOB_JSON;
+        }
+        if state.mode == "wrong-flags" {
+            out.extensions.flags = 1;
+        }
+        Outcome::Ready
+    }
+}
 
 macro_rules! witness_door {
     ($extensions:expr) => {
@@ -365,7 +462,7 @@ macro_rules! witness_door {
                 purge_plane_records_before: Refuse<KindBeforeIn, CountOut>, delete_plane_record: Refuse<KindIdIn, OutHead>,
                 redeem_plane_token: Refuse<TokenIn, VerdictOut>, plane_token_live: Refuse<TokenIn, VerdictOut>,
                 record_put: Refuse<RecordPutIn, OutHead>, record_get: Get, record_scan: Refuse<RecordScanIn, HostListOut>,
-                add_usage_batch: Refuse<AddUsageBatchIn, OutHead>, add_metering_batch: Refuse<OpBlobsIn, OutHead>,
+                add_usage_batch: Correction, add_metering_batch: Refuse<OpBlobsIn, OutHead>,
             },
         }
     };
@@ -373,12 +470,7 @@ macro_rules! witness_door {
 
 pub mod negotiated {
     use super::*;
-    witness_door!(Blob {
-        ptr: CAP.as_ptr(),
-        len: CAP.len(),
-        fmt: BLOB_OCTETS,
-        flags: 0
-    });
+    witness_door!(CAP);
 }
 pub mod legacy {
     use super::*;

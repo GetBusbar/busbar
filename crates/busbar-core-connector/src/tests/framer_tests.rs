@@ -1090,6 +1090,74 @@ fn a_short_locate_within_the_hosts_bound_is_asked_again_with_room() {
     );
 }
 
+struct LocatedCounts {
+    inner: TestDoor,
+    authority_written: u64,
+    name_written: u64,
+    has_name: bool,
+}
+
+impl FramerDoor for LocatedCounts {
+    fn facts(&self) -> &DoorFacts {
+        self.inner.facts()
+    }
+
+    fn cross(&self, call: Call<'_>) -> Crossed {
+        match call {
+            Call::Locate(_, out) => {
+                out.authority_written = self.authority_written;
+                out.name_written = self.name_written;
+                out.has_name = u32::from(self.has_name);
+                Crossed {
+                    outcome: Outcome::Ready,
+                    error: None,
+                }
+            }
+            other => self.inner.cross(other),
+        }
+    }
+}
+
+#[test]
+fn a_ready_locate_cannot_claim_text_outside_the_hosts_buffers() {
+    for count in [257, u64::MAX] {
+        for name in [false, true] {
+            let door = LocatedCounts {
+                inner: TestDoor::identity("bytes"),
+                authority_written: if name { 0 } else { count },
+                name_written: if name { count } else { 0 },
+                has_name: name,
+            };
+            let fault = locate(&door, "127.0.0.1:443").expect_err("invalid written count");
+            assert_eq!(fault.outcome, Outcome::Fault);
+            assert!(fault
+                .error
+                .contains(if name { "name" } else { "authority" }));
+            assert!(
+                accept_offer(&door).is_err(),
+                "accepting locate validates the same answer"
+            );
+        }
+    }
+    for count in [0, 256] {
+        for has_name in [false, true] {
+            let door = LocatedCounts {
+                inner: TestDoor::identity("bytes"),
+                authority_written: count,
+                name_written: if has_name { count } else { 0 },
+                has_name,
+            };
+            let located = locate(&door, "127.0.0.1:443").unwrap();
+            assert_eq!(located.authority.len(), usize::try_from(count).unwrap());
+            assert_eq!(
+                located.name.as_ref().map(String::len),
+                has_name.then_some(count as usize)
+            );
+            assert!(accept_offer(&door).unwrap().is_empty());
+        }
+    }
+}
+
 #[test]
 fn an_adopted_framing_keeps_pending_emits_on_their_own_tickets() {
     let door = Arc::new(PendingDoor::new(TestDoor::identity("bytes"), 1));

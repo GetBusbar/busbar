@@ -3,8 +3,14 @@
 
 use super::*;
 
+#[path = "pool_retirement_tests.rs"]
+mod pool_retirement_tests;
+
 const OWNER: InstanceId = InstanceId(1);
 const OTHER: InstanceId = InstanceId(2);
+
+#[path = "final_insert_retirement_tests.rs"]
+mod final_insert_retirement_tests;
 
 /// The literal judge over a guard that allowlists the loopback far ends these tests dial, and the
 /// private address the scheme-rule test names (the destination guard refuses both by default), so
@@ -542,6 +548,187 @@ fn writes_held_for_a_pending_judgement_are_capped() {
         Ok(0),
         "an empty write still passes"
     );
+    assert_eq!(
+        c.write(OWNER, id, b"", false, true),
+        Err(ConnError::Pending),
+        "the empty frame must drain before another write is accepted"
+    );
+    c.close(OWNER, id).unwrap();
+}
+
+/// An empty pending write keeps its message flags; a blocked writer waits for judgement and
+/// retries without duplicating either the held frame or the unaccepted write.
+#[test]
+fn a_pending_empty_write_backpressures_until_judgement_and_preserves_frames() {
+    use crate::framer::{Call, Crossed, DoorFacts};
+    use busbar_contract::abi::transport::EMIT_TEXT;
+
+    struct RecordingDoor {
+        door: TestDoor,
+        emits: Mutex<Vec<(usize, bool, bool)>>,
+    }
+
+    impl FramerDoor for RecordingDoor {
+        fn facts(&self) -> &DoorFacts {
+            self.door.facts()
+        }
+
+        fn cross(&self, call: Call<'_>) -> Crossed {
+            if let Call::Emit(i, _) = &call {
+                self.emits.lock().unwrap().push((
+                    i.len,
+                    i.end_of_frame != 0,
+                    i.flags & EMIT_TEXT != 0,
+                ));
+            }
+            self.door.cross(call)
+        }
+    }
+
+    worker().block_on(async {
+        for (end, text) in [(false, false), (false, true), (true, false), (true, true)] {
+            let (listener, far) = far_end().await;
+            let peer = tokio::spawn(async move {
+                use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut bytes = [0; 4];
+                socket.read_exact(&mut bytes).await.unwrap();
+                assert_eq!(&bytes, b"head");
+                socket.write_all(b"ok").await.unwrap();
+            });
+            let door = Arc::new(RecordingDoor {
+                door: TestDoor::new("frames", &["frames"], &["bytes"], Default::default()),
+                emits: Mutex::new(Vec::new()),
+            });
+            let view = Transports::new(vec![
+                Entry {
+                    door: door.clone(),
+                    alpn: Vec::new(),
+                },
+                Entry {
+                    door: Arc::new(TestDoor::identity("bytes")),
+                    alpn: Vec::new(),
+                },
+            ])
+            .unwrap();
+            let answer = Arc::new(Mutex::new(None::<crate::Judged>));
+            let answering = Arc::clone(&answer);
+            let judge = move |_: &str, _: u32, done: crate::Judged| {
+                *answering.lock().unwrap() = Some(done);
+                None
+            };
+            let wakes = Arc::new(Mutex::new(Vec::new()));
+            let waking = Arc::clone(&wakes);
+            let c = Connector::serving(
+                view,
+                Arc::new(judge),
+                None,
+                Arc::new(move |owner, ticket| {
+                    waking.lock().unwrap().push((owner, ticket));
+                }),
+            );
+            c.declare_over(OWNER, NeedId(0), "frames").unwrap();
+            let id = c
+                .open(
+                    OWNER,
+                    NeedId(0),
+                    &OpenDesc {
+                        target: &far,
+                        ..OpenDesc::default()
+                    },
+                )
+                .unwrap();
+            assert_eq!(c.write(OWNER, id, b"head", false, false), Ok(4));
+            assert_eq!(c.write(OWNER, id, b"", end, text), Ok(0));
+            assert_eq!(
+                c.write(OWNER, id, b"", !end, !text),
+                Err(ConnError::Pending)
+            );
+            assert_eq!(
+                c.write(OWNER, id, b"unaccepted", true, true),
+                Err(ConnError::Pending)
+            );
+            assert_eq!(c.wait(OWNER, &[id], 41), Err(ConnError::Pending));
+            assert!(wakes.lock().unwrap().is_empty());
+            answer.lock().unwrap().take().unwrap()(Ok(far.parse().unwrap()));
+            assert_eq!(*wakes.lock().unwrap(), vec![(OWNER, 41)]);
+            assert_eq!(c.write(OWNER, id, b"", !end, !text), Ok(0));
+            let reply = tokio::time::timeout(Duration::from_secs(5), async {
+                let mut reply = Vec::new();
+                while reply.len() < 2 {
+                    let mut bytes = [0; 2];
+                    let piece = std::future::poll_fn(|cx| c.poll_read(OWNER, id, cx, &mut bytes))
+                        .await
+                        .unwrap();
+                    assert!(piece.len > 0, "the peer answers before closing");
+                    reply.extend_from_slice(&bytes[..piece.len]);
+                }
+                reply
+            })
+            .await
+            .unwrap();
+            assert_eq!(reply, b"ok");
+            assert_eq!(
+                *door.emits.lock().unwrap(),
+                vec![(4, false, false), (0, end, text), (0, !end, !text)]
+            );
+            assert_eq!(*door.door.handed.lock().unwrap(), b"head");
+            c.close(OWNER, id).unwrap();
+            peer.await.unwrap();
+        }
+    });
+}
+
+/// A blocked empty-write caller is also woken on refusal and can close the held connection.
+#[test]
+fn a_pending_empty_write_wakes_on_refusal_and_closes() {
+    let answer = Arc::new(Mutex::new(None::<crate::Judged>));
+    let answering = Arc::clone(&answer);
+    let judge = move |_: &str, _: u32, done: crate::Judged| {
+        *answering.lock().unwrap() = Some(done);
+        None
+    };
+    let wakes = Arc::new(Mutex::new(Vec::new()));
+    let waking = Arc::clone(&wakes);
+    let view = Transports::new(vec![Entry {
+        door: Arc::new(TestDoor::identity("bytes")),
+        alpn: Vec::new(),
+    }])
+    .unwrap();
+    let c = Connector::serving(
+        view,
+        Arc::new(judge),
+        None,
+        Arc::new(move |owner, ticket| {
+            waking.lock().unwrap().push((owner, ticket));
+        }),
+    );
+    c.declare_over(OWNER, NeedId(0), "bytes").unwrap();
+    let id = c
+        .open(
+            OWNER,
+            NeedId(0),
+            &OpenDesc {
+                target: "upstream.test:80",
+                ..OpenDesc::default()
+            },
+        )
+        .unwrap();
+    assert_eq!(c.write(OWNER, id, b"", true, true), Ok(0));
+    assert_eq!(
+        c.write(OWNER, id, b"", false, false),
+        Err(ConnError::Pending)
+    );
+    assert_eq!(c.wait(OWNER, &[id], 42), Err(ConnError::Pending));
+    answer.lock().unwrap().take().unwrap()(Err(DEST_PLAINTEXT));
+    assert_eq!(*wakes.lock().unwrap(), vec![(OWNER, 42)]);
+    assert_eq!(c.wait(OWNER, &[id], 42), Ok(0));
+    assert_eq!(
+        c.write(OWNER, id, b"", false, false),
+        Err(ConnError::Refused)
+    );
+    c.close(OWNER, id).unwrap();
+    assert!(c.write(OWNER, id, b"", false, false).is_err());
 }
 
 /// A need dials a hostname through the kernel's one judge, over the plugin's own table. Its one
@@ -1466,6 +1653,133 @@ fn a_configured_mint_endpoint_takes_loopback_plaintext_and_nothing_else_in_plain
             Err(ConnError::Refused),
             "open-web refuses every plaintext endpoint"
         );
+    });
+}
+
+#[test]
+fn a_host_bind_failure_keeps_its_cause_without_echoing_the_configured_input() {
+    let cap = crate::warn_capture::WarnCapture::default();
+    tracing::subscriber::with_default(cap.clone(), || {
+        worker().block_on(async {
+            let c = literal_connector();
+            c.declare_over(OWNER, NeedId(0), "bytes").unwrap();
+            let limits = crate::listen::AcceptLimits::default();
+            assert_eq!(
+                c.listen(
+                    OWNER,
+                    NeedId(0),
+                    "user:bind-secret@127.0.0.1:1",
+                    None,
+                    limits
+                ),
+                Err(ConnError::Fault)
+            );
+            assert!(cap.contains("not an ip:port bind address"));
+            assert!(cap.contains("inbound listener bind failed"));
+            assert!(!cap.contains("bind-secret"));
+            assert!(!cap.contains("user:"));
+            c.listen(OWNER, NeedId(0), "127.0.0.1:0", None, limits)
+                .expect("a failed bind leaves the need able to retry");
+            assert_eq!(cap.count("host listener bind failed"), 1);
+            assert_eq!(cap.count("inbound listener bind failed"), 1);
+            c.forget(OWNER);
+        });
+    });
+}
+
+#[cfg(unix)]
+#[test]
+fn an_address_in_use_keeps_the_actual_host_os_cause() {
+    let cap = crate::warn_capture::WarnCapture::default();
+    tracing::subscriber::with_default(cap.clone(), || {
+        worker().block_on(async {
+            let occupied = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let address = occupied.local_addr().unwrap().to_string();
+            let c = literal_connector();
+            c.declare_over(OWNER, NeedId(0), "bytes").unwrap();
+            let limits = crate::listen::AcceptLimits::default();
+            assert_eq!(
+                c.listen(OWNER, NeedId(0), &address, None, limits),
+                Err(ConnError::Fault)
+            );
+            let cause = std::io::Error::from_raw_os_error(libc::EADDRINUSE).to_string();
+            assert!(
+                cap.contains(&cause),
+                "the actual bind error must remain diagnosable"
+            );
+            drop(occupied);
+            c.listen(OWNER, NeedId(0), &address, None, limits).unwrap();
+            c.forget(OWNER);
+        });
+    });
+}
+
+struct FailingBindCarrier {
+    inner: TestDoor,
+    fail: std::sync::atomic::AtomicBool,
+}
+
+impl FramerDoor for FailingBindCarrier {
+    fn facts(&self) -> &crate::framer::DoorFacts {
+        self.inner.facts()
+    }
+
+    fn cross(&self, call: crate::framer::Call<'_>) -> crate::framer::Crossed {
+        self.inner.cross(call)
+    }
+
+    fn side(&self) -> Option<Box<dyn crate::carrier::Side>> {
+        self.inner.side()
+    }
+
+    fn carry(
+        &self,
+        side: &dyn crate::carrier::Side,
+        resume: bool,
+        call: crate::carrier::Carry<'_>,
+    ) -> crate::framer::Crossed {
+        if matches!(call, crate::carrier::Carry::Listen(..))
+            && self.fail.swap(false, std::sync::atomic::Ordering::SeqCst)
+        {
+            return crate::framer::Crossed {
+                outcome: busbar_contract::abi::mechanism::call::Outcome::Failed,
+                error: Some(b"carrier echoed credential carrier-secret-value".to_vec()),
+            };
+        }
+        self.inner.carry(side, resume, call)
+    }
+}
+
+#[test]
+fn a_carrier_bind_failure_identifies_the_need_without_printing_its_failure_text() {
+    let cap = crate::warn_capture::WarnCapture::default();
+    tracing::subscriber::with_default(cap.clone(), || {
+        worker().block_on(async {
+            let view = View::of(vec![Entry {
+                door: Arc::new(FailingBindCarrier {
+                    inner: TestDoor::identity("bytes"),
+                    fail: std::sync::atomic::AtomicBool::new(true),
+                }),
+                alpn: Vec::new(),
+            }])
+            .unwrap();
+            let c = Connector::serving(view, loopback_literals(), None, Arc::new(|_, _| {}));
+            c.declare_over(OWNER, NeedId(0), "bytes").unwrap();
+            let limits = crate::listen::AcceptLimits::default();
+            assert_eq!(
+                c.listen(OWNER, NeedId(0), "127.0.0.1:0", None, limits),
+                Err(ConnError::Fault)
+            );
+            assert_eq!(cap.count("inbound listener bind failed"), 1);
+            assert!(cap.contains("owner=1"));
+            assert!(cap.contains("need=0"));
+            assert!(!cap.contains("carrier-secret-value"));
+            assert!(!cap.contains("carrier echoed"));
+            assert_eq!(cap.count("host listener bind failed"), 0);
+            c.listen(OWNER, NeedId(0), "127.0.0.1:0", None, limits)
+                .unwrap();
+            c.forget(OWNER);
+        });
     });
 }
 
@@ -3723,6 +4037,84 @@ fn pinned_need(transport: &str, class: u32) -> ReadNeed {
     need.transport = transport.to_owned();
     need.egress_class = class;
     need
+}
+
+/// A carrier answers its carried operations, but does not serve a framer's locate slot.
+struct CarrierWithoutLocate(TestDoor);
+
+impl FramerDoor for CarrierWithoutLocate {
+    fn facts(&self) -> &crate::framer::DoorFacts {
+        self.0.facts()
+    }
+
+    fn cross(&self, call: crate::framer::Call<'_>) -> crate::framer::Crossed {
+        if matches!(call, crate::framer::Call::Locate(..)) {
+            return crate::framer::Crossed {
+                outcome: busbar_contract::abi::mechanism::call::Outcome::Refused,
+                error: Some(b"a carrier does not locate".to_vec()),
+            };
+        }
+        self.0.cross(call)
+    }
+
+    fn side(&self) -> Option<Box<dyn crate::carrier::Side>> {
+        self.0.side()
+    }
+
+    fn carry(
+        &self,
+        side: &dyn crate::carrier::Side,
+        resume: bool,
+        call: crate::carrier::Carry<'_>,
+    ) -> crate::framer::Crossed {
+        self.0.carry(side, resume, call)
+    }
+}
+
+#[test]
+fn a_pinned_carrier_need_uses_the_same_authority_as_its_dial() {
+    worker().block_on(async {
+        let (listening, far) = far_end().await;
+        let door = Arc::new(CarrierWithoutLocate(TestDoor::identity("bytes")));
+        assert_eq!(
+            door.facts().role,
+            busbar_contract::abi::transport::ROLE_CARRIER
+        );
+        assert!(crate::framer::locate(door.as_ref(), &far).is_err());
+        let view = View::of(vec![Entry {
+            door,
+            alpn: Vec::new(),
+        }])
+        .unwrap();
+        let c = Connector::serving(view, loopback_literals(), None, Arc::new(|_, _| {}));
+        let need = pinned_need("bytes", crate::DEFAULT_CLASS);
+        for (id, target) in [(0, far.clone()), (1, format!("bytes://{far}"))] {
+            assert_eq!(
+                DeclaredConns::declare(&c, OWNER, NeedId(id), &need, Some(&target), None),
+                Ok(())
+            );
+            assert_eq!(DeclaredConns::declared(&c, OWNER, NeedId(id)), Some(Ok(())));
+            let conn = c.open(OWNER, NeedId(id), &OpenDesc::default()).unwrap();
+            let (_peer, _) = listening.accept().await.unwrap();
+            c.close(OWNER, conn).unwrap();
+        }
+        // The carrier branch must still meet the existing target and class judgements.
+        for (id, target, class) in [
+            (2, "bytes://127.0.0.1:1/path", crate::DEFAULT_CLASS),
+            (3, "bytes://169.254.169.254:80", crate::DEFAULT_CLASS),
+            (4, "bytes://127.0.0.1:1", EGRESS_OPEN_WEB),
+        ] {
+            let need = pinned_need("bytes", class);
+            assert_eq!(
+                DeclaredConns::declare(&c, OWNER, NeedId(id), &need, Some(target), None),
+                Err(ConnError::Refused)
+            );
+            assert_eq!(
+                DeclaredConns::declared(&c, OWNER, NeedId(id)),
+                Some(Err(ConnError::Refused))
+            );
+        }
+    });
 }
 
 /// RED (1.5.5: a request-log webhook target that is not `https://` was refused when the sink was
