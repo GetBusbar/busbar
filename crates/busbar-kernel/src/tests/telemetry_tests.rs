@@ -739,6 +739,47 @@ fn an_exited_threads_bank_is_released_and_its_counts_survive() {
     );
 }
 
+#[test]
+fn off_metrics_releases_exited_banks_and_preserves_preinstall_counts() {
+    const CHILD: &str = "BUSBAR_TEST_OFFLINE_BANK_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        let name = concat!(
+            module_path!(),
+            "::off_metrics_releases_exited_banks_and_preserves_preinstall_counts"
+        );
+        let (_, test_name) = name.split_once("::").expect("the crate prefix");
+        let output = std::process::Command::new(std::env::current_exe().expect("test binary"))
+            .args(["--exact", test_name, "--nocapture"])
+            .env(CHILD, "1")
+            .output()
+            .expect("run this test with a fresh process recorder");
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+    assert!(!crate::snapshot::retaining());
+    let slot = counter_slot("offline_bank_custody_total", &[]);
+    let bank = std::thread::spawn(move || {
+        slot.add(17);
+        this_threads_bank()
+    })
+    .join()
+    .expect("the offline emitter exits");
+    assert!(
+        bank.upgrade().is_none(),
+        "offline telemetry has no maintenance thread to reap this bank"
+    );
+    crate::snapshot::init();
+    assert_eq!(metric_sum("offline_bank_custody_total", &[]), 17.0);
+    slot.add(3);
+    assert_eq!(metric_sum("offline_bank_custody_total", &[]), 20.0);
+    assert_eq!(metric_sum("offline_bank_custody_total", &[]), 20.0);
+}
+
 /// F25 row 379: rehomed from the retired engine crate's src/engine/tests/ingress_integration_tests.rs::
 /// test_finish_outcome_mapping_503_is_exhausted. A served unit that ends 503 is counted on
 /// `busbar_requests_total` under `outcome="exhausted"` (a pool ran dry), through the end-of-unit

@@ -742,6 +742,42 @@ struct ThreadBank {
     hists: [OnceLock<HistChunk>; HIST_CHUNKS],
 }
 
+struct LocalBank(Arc<ThreadBank>);
+
+impl std::ops::Deref for LocalBank {
+    type Target = ThreadBank;
+
+    fn deref(&self) -> &ThreadBank {
+        &self.0
+    }
+}
+
+impl Drop for LocalBank {
+    fn drop(&mut self) {
+        if crate::snapshot::retaining() {
+            return;
+        }
+        // An offline process has no maintenance drain. Keep cumulative counts in the
+        // slot table before releasing this exited thread's storage. A simultaneous
+        // recorder install/flush observes either the bank or its retired totals.
+        let reg = registry();
+        let _flush = reg.flush_lock.lock().unwrap_or_else(|p| p.into_inner());
+        reg.threads
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .retain(|bank| !Arc::ptr_eq(bank, &self.0));
+        let descs = reg.counters.descs.read().unwrap_or_else(|p| p.into_inner());
+        for (i, desc) in descs.iter().enumerate() {
+            if let Some(chunk) = self.counters[i / COUNTER_CHUNK].get() {
+                desc.retired.fetch_add(
+                    chunk[i % COUNTER_CHUNK].load(Ordering::Relaxed),
+                    Ordering::Relaxed,
+                );
+            }
+        }
+    }
+}
+
 fn new_counter_chunk() -> Box<[AtomicU64]> {
     (0..COUNTER_CHUNK).map(|_| AtomicU64::new(0)).collect()
 }
@@ -770,14 +806,14 @@ thread_local! {
     /// next burst, and banked emission is reachable from them (`translation`, via a cross-protocol
     /// body large enough to be offloaded) — a registry that only grew kept one bank per thread that
     /// ever emitted, for the process's life, and walked every one of them on every flush.
-    static BANK: Arc<ThreadBank> = {
+    static BANK: LocalBank = {
         let bank = Arc::new(ThreadBank::new());
         registry()
             .threads
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .push(bank.clone());
-        bank
+        LocalBank(bank)
     };
 }
 
@@ -1086,7 +1122,7 @@ pub fn flush_to_recorder() {
 #[cfg(test)]
 pub(crate) fn this_threads_bank() -> std::sync::Weak<dyn std::any::Any + Send + Sync> {
     BANK.with(|bank| {
-        let bank: Arc<dyn std::any::Any + Send + Sync> = bank.clone();
+        let bank: Arc<dyn std::any::Any + Send + Sync> = bank.0.clone();
         Arc::downgrade(&bank)
     })
 }

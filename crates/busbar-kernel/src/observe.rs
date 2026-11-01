@@ -97,7 +97,17 @@ pub(crate) const MAX_LABEL_SETS_PER_SERIES: usize = 32;
 /// One plugin's registered series and, per series, the label sets seen under it.
 #[derive(Default)]
 struct Budget {
-    series: std::collections::HashMap<String, std::collections::HashSet<u64>>,
+    series: std::collections::HashMap<String, SeriesBudget>,
+}
+
+struct SeriesBudget {
+    kind: String,
+    labels: std::collections::HashSet<u64>,
+}
+
+enum MetricRefusal {
+    Cardinality,
+    Type,
 }
 
 /// The host's cardinality ledger, keyed by the plugin the HOST attributed the sample to.
@@ -155,34 +165,55 @@ fn fingerprint_pairs(labels: Option<&std::collections::BTreeMap<String, String>>
 /// REFUSAL, not silent truncation. The plugin has already answered, so there is no status to refuse
 /// it with: [`fold_metrics`] says so in the operator's log instead, and the operator learns that
 /// telemetry is being dropped, which is the thing a silent cap never tells them.
+#[cfg(test)]
 pub(crate) fn admits_cardinality(plugin: &str, series: &str, label_fingerprint: u64) -> bool {
+    admit_metric(plugin, series, "", label_fingerprint).is_ok()
+}
+
+fn admit_metric(
+    plugin: &str,
+    series: &str,
+    kind: &str,
+    label_fingerprint: u64,
+) -> Result<(), MetricRefusal> {
     let mut guard = LEDGER.write().unwrap_or_else(|e| e.into_inner());
     let ledger = guard.get_or_insert_with(std::collections::HashMap::new);
+    if !kind.is_empty()
+        && ledger
+            .values()
+            .filter_map(|budget| budget.series.get(series))
+            .any(|held| !held.kind.is_empty() && held.kind != kind)
+    {
+        return Err(MetricRefusal::Type);
+    }
     // `entry` costs a `String` per call even when the plugin is already known. That is the honest
     // price of the borrow checker here — a `get_mut`-then-`insert` pair that avoided it is the
     // `map_entry` anti-pattern, and the two-branch version that satisfies both does not borrow-check
     // — and it is affordable: this runs on a telemetry fold, never on the request path.
     let budget = ledger.entry(plugin.to_string()).or_default();
     match budget.series.get_mut(series) {
-        Some(sets) => {
-            if sets.contains(&label_fingerprint) {
-                return true;
+        Some(held) => {
+            if held.labels.contains(&label_fingerprint) {
+                return Ok(());
             }
-            if sets.len() >= MAX_LABEL_SETS_PER_SERIES {
-                return false;
+            if held.labels.len() >= MAX_LABEL_SETS_PER_SERIES {
+                return Err(MetricRefusal::Cardinality);
             }
-            sets.insert(label_fingerprint);
-            true
+            held.labels.insert(label_fingerprint);
+            Ok(())
         }
         None => {
             if budget.series.len() >= MAX_SERIES_PER_PLUGIN {
-                return false;
+                return Err(MetricRefusal::Cardinality);
             }
             budget.series.insert(
                 series.to_string(),
-                std::iter::once(label_fingerprint).collect(),
+                SeriesBudget {
+                    kind: kind.to_string(),
+                    labels: std::iter::once(label_fingerprint).collect(),
+                },
             );
-            true
+            Ok(())
         }
     }
 }
@@ -305,12 +336,19 @@ fn fold_metrics(grants: &dyn Grants, plugin: &str, raw: &[serde_json::Value]) {
         }
         // THE SECOND QUESTION (see `admits_cardinality`). A name check bounds what a series may be
         // CALLED; only this bounds how many there are, and a Prometheus registry never shrinks.
-        if !admits_cardinality(plugin, &m.name, fingerprint_pairs(m.labels.as_ref())) {
+        if let Err(refusal) = admit_metric(
+            plugin,
+            &m.name,
+            &m.kind,
+            fingerprint_pairs(m.labels.as_ref()),
+        ) {
             // The plugin has already answered, so there is no status to refuse it with — say so in
             // the operator's log instead, ONCE per plugin, because the whole failure mode is a
             // plugin emitting without limit and a per-sample line would be the same flood in
             // another channel.
-            warn_cardinality_once(plugin, &m.name);
+            if matches!(refusal, MetricRefusal::Cardinality) {
+                warn_cardinality_once(plugin, &m.name);
+            }
             continue;
         }
         let labels = labels_for((!granted).then_some(plugin), &m);

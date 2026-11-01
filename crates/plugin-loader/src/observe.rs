@@ -566,7 +566,7 @@ pub fn grant_series(
         }
         let owner = grants
             .iter()
-            .find(|(p, g)| *p != plugin && g.series.contains(d));
+            .find(|(p, g)| *p != plugin && g.series.iter().any(|held| held.name == d.name));
         if let Some((owner, _)) = owner {
             return Err(format!(
                 "plugin '{plugin}' declares the series '{}', already granted to plugin '{owner}'",
