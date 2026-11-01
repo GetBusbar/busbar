@@ -808,21 +808,27 @@ impl Default for Buffers {
     }
 }
 
-/// The host's monotonic clock, nanoseconds since this process first read it (never `0`: a framer
-/// states "no deadline" as `0`).
+/// The one instant every host-clock reading ([`now_ns`]) and every instant it names
+/// ([`instant_of`]) is measured from, fixed the first time either is used.
+static EPOCH: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+
+/// The host's monotonic clock, nanoseconds since this process first read it, plus one (never `0`:
+/// a framer states "no deadline" as `0`).
 #[must_use]
 pub fn now_ns() -> u64 {
-    static EPOCH: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
     let epoch = *EPOCH.get_or_init(Instant::now);
-    u64::try_from(epoch.elapsed().as_nanos()).unwrap_or(u64::MAX) + 1
+    u64::try_from(epoch.elapsed().as_nanos())
+        .unwrap_or(u64::MAX)
+        .saturating_add(1)
 }
 
-/// The host's monotonic instant `ns` names.
+/// The host's monotonic instant `ns` names: the exact inverse of [`now_ns`], so one reading names
+/// the same instant however often and whenever it is mapped (a deadline the framer stated from a
+/// reading at or before the caller's `now` is due at that `now`).
 #[must_use]
 pub fn instant_of(ns: u64) -> Instant {
-    let now = now_ns();
-    let from_now = std::time::Duration::from_nanos(ns.saturating_sub(now));
-    Instant::now() + from_now
+    let epoch = *EPOCH.get_or_init(Instant::now);
+    epoch + std::time::Duration::from_nanos(ns.saturating_sub(1))
 }
 
 fn unix_ns() -> u64 {
@@ -2671,3 +2677,7 @@ impl Drop for Framing {
 #[cfg(test)]
 #[path = "tests/framer_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "tests/framer_deadline_tests.rs"]
+mod deadline_tests;
