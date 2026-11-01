@@ -127,6 +127,8 @@ url = "2"
 idna_adapter = "=1.1.0"
 idna = { version = "1.1.0", default-features = false, features = ["alloc", "compiled_data"] }
 zeroize = "1"
+stringprep = "=0.1.5"
+unicode-normalization = "0.1.25"
 
 # Plugins that name busbar-contract by git resolve to this tree, so exactly one copy links.
 [patch.'https://github.com/GetBusbar/busbar']

@@ -111,6 +111,75 @@ fn pg_messages_are_whole() {
 }
 
 #[test]
+fn pg_scram_applies_saslprep_before_deriving_the_proof() {
+    let proof = |password: &str| {
+        cred(password)
+            .pg_scram_sha256("n=,r=abc", "r=abcdef,s=QUJD,i=4096", b"n,,")
+            .expect("SCRAM")
+            .0
+    };
+    // RFC 4013 section 3: mapping, NFKC and case-sensitive matching.
+    for (input, normalized) in [
+        ("I\u{00ad}X", "IX"),
+        ("a\u{00a0}b", "a b"),
+        ("\u{00aa}", "a"),
+        ("\u{2168}", "IX"),
+        ("\u{0627}\u{00ad}\u{0628}", "\u{0627}\u{0628}"),
+        ("\u{2f868}", "\u{2136a}"),
+        (
+            "\u{0627}\u{00ad}\u{2132}\u{0628}",
+            "\u{0627}\u{2132}\u{0628}",
+        ),
+    ] {
+        assert_eq!(proof(input).wire(), proof(normalized).wire());
+    }
+    assert_ne!(proof("USER").wire(), proof("user").wire());
+}
+
+#[test]
+fn pg_scram_raw_fallback_uses_the_original_bytes_not_a_partly_mapped_password() {
+    use base64::Engine as _;
+    use ring::{hmac, pbkdf2};
+    for bytes in [
+        &b"a\xffb"[..],
+        "\u{00ad}".as_bytes(),
+        "I\u{00ad}\u{0007}X".as_bytes(),
+        "a\u{e000}b".as_bytes(),
+        "a\u{0221}b".as_bytes(),
+        "\u{1d2c}".as_bytes(),
+        "\u{0627}\u{00ad}\u{1885}\u{0628}".as_bytes(),
+        "a\u{0627}b".as_bytes(),
+        "\u{0627}1".as_bytes(),
+    ] {
+        let c = Cred::captured(Zeroizing::new(bytes.to_vec()));
+        let (_, link) = c
+            .pg_scram_sha256("n=,r=abc", "r=abcdef,s=QUJD,i=4096", b"n,,")
+            .expect("PostgreSQL accepts original bytes when SASLprep fails");
+        // Independent primitive oracle for RFC 5802 ServerSignature, on the raw input.
+        let mut salted = Zeroizing::new([0_u8; 32]);
+        pbkdf2::derive(
+            pbkdf2::PBKDF2_HMAC_SHA256,
+            std::num::NonZeroU32::new(4096).unwrap(),
+            b"ABC",
+            bytes,
+            &mut salted[..],
+        );
+        let server_key = hmac::sign(
+            &hmac::Key::new(hmac::HMAC_SHA256, &salted[..]),
+            b"Server Key",
+        );
+        let signature = hmac::sign(
+            &hmac::Key::new(hmac::HMAC_SHA256, server_key.as_ref()),
+            b"n=,r=abc,r=abcdef,s=QUJD,i=4096,c=biws,r=abcdef",
+        );
+        assert!(link.verify(&format!(
+            "v={}",
+            base64::engine::general_purpose::STANDARD.encode(signature.as_ref())
+        )));
+    }
+}
+
+#[test]
 fn mysql_scrambles_match_the_server_algorithms() {
     let c = cred("s3cr3t-pw");
     let nonce: Vec<u8> = (1..=20).collect();
