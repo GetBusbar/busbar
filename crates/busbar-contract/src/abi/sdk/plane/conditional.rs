@@ -879,6 +879,198 @@ mod tests {
     }
 
     #[test]
+    fn inspection_cannot_append_to_an_existing_conditional_output() {
+        use crate::abi::mechanism::call::{OutHead, Outcome};
+        use crate::abi::mechanism::inspection::{
+            InspectionError, InspectionQuery, InspectionRequest,
+        };
+        use crate::abi::sdk::{life::Leases, Out};
+        let request = Request {
+            capability: cap(),
+            candidate: ConditionalCandidate {
+                correlation: 18,
+                predicates: Vec::new(),
+                mutations: Vec::new(),
+                chains: Vec::new(),
+            },
+        };
+        let observation = Observation {
+            capability: cap(),
+            correlation: 19,
+            kind: 0,
+            scope: b"scope".to_vec(),
+        };
+        let inspection = InspectionRequest {
+            ticket: cap().ticket,
+            epoch: cap().epoch,
+            id: 20,
+            query: InspectionQuery::Work {
+                reference: b"work".to_vec(),
+            },
+        };
+        for observe in [false, true] {
+            let leases = Leases::default();
+            // SAFETY: OutHead contains only integers and raw pointers, all valid when zero.
+            let mut out: OutHead = unsafe { std::mem::zeroed() };
+            if observe {
+                Out::new(&mut out)
+                    .conditional_observation(&leases, &observation)
+                    .unwrap();
+            } else {
+                Out::new(&mut out)
+                    .conditional_request(&leases, &request)
+                    .unwrap();
+            }
+            let original = (out.extensions.ptr, out.lease);
+            assert_eq!(
+                Out::new(&mut out).inspection_request(&leases, &inspection),
+                Err(InspectionError::Busy)
+            );
+            assert_eq!((out.extensions.ptr, out.lease), original);
+            assert_eq!(leases.release(out.lease), Outcome::Ready);
+        }
+    }
+
+    #[test]
+    fn settlement_ack_writer_owns_its_lease_and_refuses_mixed_or_changed_identity() {
+        use crate::abi::mechanism::call::{OutHead, Outcome, BLOB_OCTETS, BLOB_SECRET};
+        use crate::abi::sdk::{life::Leases, Out};
+        let request = Request {
+            capability: cap(),
+            candidate: ConditionalCandidate {
+                correlation: 18,
+                predicates: Vec::new(),
+                mutations: Vec::new(),
+                chains: Vec::new(),
+            },
+        };
+        let settlement = read_settlement(
+            &encode_settlement(
+                &request,
+                &ConditionalResult {
+                    correlation: 18,
+                    decision: Ok(Decision::Applied),
+                },
+            )
+            .unwrap(),
+        )
+        .unwrap()
+        .unwrap();
+        let leases = Leases::default();
+        let holders = crate::abi::sdk::out::Holders::default();
+        // SAFETY: OutHead contains only integers and raw pointers, all valid when zero.
+        let mut out: OutHead = unsafe { std::mem::zeroed() };
+        Out::new(&mut out).lease_secret(
+            |o| &o.extensions,
+            &leases,
+            extensions::encode(&[("unrelated", b"kept secret")]),
+            BLOB_OCTETS,
+        );
+        assert_eq!(
+            Out::witnessed(&mut out, &holders).conditional_settlement_ack(&leases, &settlement),
+            Ok(())
+        );
+        assert!(crate::abi::sdk::out::holders_live(&holders));
+        let (pointer, lease) = (out.extensions.ptr, out.lease);
+        assert_eq!(out.extensions.flags, BLOB_SECRET);
+        // SAFETY: the SDK lease retains every byte until release below.
+        let bytes = unsafe { std::slice::from_raw_parts(out.extensions.ptr, out.extensions.len) };
+        assert_eq!(
+            extensions::get(bytes, "unrelated"),
+            Some(b"kept secret".as_slice())
+        );
+        assert!(read_settlement_ack(bytes)
+            .unwrap()
+            .unwrap()
+            .matches(&request)
+            .unwrap());
+        assert_eq!(
+            Out::new(&mut out).conditional_settlement_ack(&leases, &settlement),
+            Ok(())
+        );
+        assert_eq!((out.extensions.ptr, out.lease), (pointer, lease));
+        let mut changed = settlement.clone();
+        changed.request_digest[0] ^= 1;
+        assert!(Out::new(&mut out)
+            .conditional_settlement_ack(&leases, &changed)
+            .is_err());
+        assert!(Out::new(&mut out)
+            .conditional_request(&leases, &request)
+            .is_err());
+        let observation = Observation {
+            capability: cap(),
+            correlation: 19,
+            kind: 0,
+            scope: b"scope".to_vec(),
+        };
+        assert!(Out::new(&mut out)
+            .conditional_observation(&leases, &observation)
+            .is_err());
+        let inspection = crate::abi::mechanism::inspection::InspectionRequest {
+            ticket: cap().ticket,
+            epoch: cap().epoch,
+            id: 20,
+            query: crate::abi::mechanism::inspection::InspectionQuery::Work {
+                reference: b"work".to_vec(),
+            },
+        };
+        assert_eq!(
+            Out::new(&mut out).inspection_request(&leases, &inspection),
+            Err(crate::abi::mechanism::inspection::InspectionError::Busy)
+        );
+        assert_eq!((out.extensions.ptr, out.lease), (pointer, lease));
+        assert_eq!(leases.release(lease), Outcome::Ready);
+        assert_eq!(leases.release(lease), Outcome::Refused);
+        drop(leases);
+        assert!(!crate::abi::sdk::out::holders_live(&holders));
+        for key in [
+            INTENT,
+            OBSERVE,
+            RESULT,
+            OBSERVED,
+            CAPABILITY,
+            SETTLEMENT,
+            crate::abi::mechanism::inspection::EXT_REQUEST,
+        ] {
+            let leases = Leases::default();
+            // SAFETY: the same pointer/integer-only output frame.
+            let mut out: OutHead = unsafe { std::mem::zeroed() };
+            Out::new(&mut out).lease(
+                |o| &o.extensions,
+                &leases,
+                extensions::encode(&[(key, b"occupied")]),
+                BLOB_OCTETS,
+            );
+            let original = (out.extensions.ptr, out.lease);
+            assert!(Out::new(&mut out)
+                .conditional_settlement_ack(&leases, &settlement)
+                .is_err());
+            assert_eq!((out.extensions.ptr, out.lease), original);
+            assert_eq!(leases.release(out.lease), Outcome::Ready);
+        }
+        let mut invalid = settlement;
+        invalid.result.correlation = 0;
+        // SAFETY: an empty output frame, no memory borrowed from it.
+        let mut empty: OutHead = unsafe { std::mem::zeroed() };
+        assert!(Out::new(&mut empty)
+            .conditional_settlement_ack(&Leases::default(), &invalid)
+            .is_err());
+        assert_eq!(empty.extensions.len, 0);
+        assert_eq!(empty.lease, 0);
+        let leases = Leases::default();
+        assert_eq!(
+            Out::new(&mut empty).inspection_request(&leases, &inspection),
+            Ok(())
+        );
+        let original = (empty.extensions.ptr, empty.lease);
+        assert!(Out::new(&mut empty)
+            .conditional_settlement_ack(&leases, &changed)
+            .is_err());
+        assert_eq!((empty.extensions.ptr, empty.lease), original);
+        assert_eq!(leases.release(empty.lease), Outcome::Ready);
+    }
+
+    #[test]
     fn observations_preserve_scope_and_life_and_are_distinct_from_commit_receipts() {
         let request = Observation {
             capability: cap(),
@@ -919,7 +1111,7 @@ mod tests {
         // The allocation witness's own controls reserve IDs 1..=7 in this test binary.
         let secret = marked_key::<32>(0);
         let before = freed_unzeroed(0);
-        for observation_first in [false, true] {
+        for helper in 0..3 {
             let leases = Leases::default();
             // SAFETY: OutHead contains only integers and raw pointers, all valid when zero.
             let mut out: OutHead = unsafe { std::mem::zeroed() };
@@ -944,12 +1136,22 @@ mod tests {
                 kind: 0,
                 scope: b"scope".to_vec(),
             };
-            let put = |out: &mut OutHead| {
-                if observation_first {
-                    Out::new(out).conditional_observation(&leases, &observation)
-                } else {
-                    Out::new(out).conditional_request(&leases, &request)
-                }
+            let settlement = read_settlement(
+                &encode_settlement(
+                    &request,
+                    &ConditionalResult {
+                        correlation: 2,
+                        decision: Ok(Decision::Applied),
+                    },
+                )
+                .unwrap(),
+            )
+            .unwrap()
+            .unwrap();
+            let put = |out: &mut OutHead| match helper {
+                0 => Out::new(out).conditional_request(&leases, &request),
+                1 => Out::new(out).conditional_observation(&leases, &observation),
+                _ => Out::new(out).conditional_settlement_ack(&leases, &settlement),
             };
             assert_eq!(put(&mut out), Ok(()));
             let pointer = out.extensions.ptr;
@@ -970,6 +1172,11 @@ mod tests {
             changed.scope.push(b'x');
             assert!(Out::new(&mut out)
                 .conditional_observation(&leases, &changed)
+                .is_err());
+            let mut changed = settlement.clone();
+            changed.request_digest[0] ^= 1;
+            assert!(Out::new(&mut out)
+                .conditional_settlement_ack(&leases, &changed)
                 .is_err());
             assert_eq!((out.extensions.ptr, out.lease), (pointer, lease));
             assert_eq!(leases.release(lease), Outcome::Ready);

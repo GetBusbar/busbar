@@ -664,6 +664,23 @@ impl<'a, T: AbiOut> Out<'a, T> {
             // still live for this call, and the bounded nonempty range was checked above.
             unsafe { std::slice::from_raw_parts(ext.ptr, ext.len) }
         };
+        use crate::abi::sdk::plane::conditional as wire;
+        for key in [
+            wire::INTENT,
+            wire::OBSERVE,
+            wire::RESULT,
+            wire::OBSERVED,
+            wire::CAPABILITY,
+            wire::SETTLEMENT,
+            wire::SETTLEMENT_ACK,
+        ] {
+            if wire::entry(existing, key)
+                .map_err(|_| InspectionError::Invalid)?
+                .is_some()
+            {
+                return Err(InspectionError::Busy);
+            }
+        }
         if let Some(held) = inspection::read_request(existing)? {
             return if held == *request {
                 Ok(())
@@ -721,6 +738,20 @@ impl<'a, T: AbiOut> Out<'a, T> {
         self.conditional_extension(leases, wire::OBSERVE, wire::encode_observation(request)?)
     }
 
+    /// Lease an exact outcome-only settlement acknowledgement. Return PENDING from DRIVE/TICK
+    /// with no ordinary output. Retain the original journal and ACK marker until the next valid
+    /// same-instance driver input no longer carries this sticky settlement; SHORT does not ACK.
+    pub fn conditional_settlement_ack(
+        &mut self,
+        leases: &Leases,
+        settlement: &crate::abi::sdk::plane::conditional::Settlement,
+    ) -> Result<(), &'static str> {
+        use crate::abi::sdk::plane::conditional as wire;
+        let encoded = wire::encode_settlement_ack(settlement);
+        wire::read_settlement_ack(&encoded)?;
+        self.conditional_extension(leases, wire::SETTLEMENT_ACK, encoded)
+    }
+
     fn conditional_extension(
         &mut self,
         leases: &Leases,
@@ -748,6 +779,8 @@ impl<'a, T: AbiOut> Out<'a, T> {
             wire::RESULT,
             wire::OBSERVED,
             wire::CAPABILITY,
+            wire::SETTLEMENT,
+            wire::SETTLEMENT_ACK,
         ] {
             if let Some(value) = wire::entry(prior, other)? {
                 if other != key || wire::entry(&encoded, key)? != Some(value) {
