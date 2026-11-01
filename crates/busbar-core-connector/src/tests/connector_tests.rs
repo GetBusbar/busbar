@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use super::*;
+use busbar_contract::abi::host::service::DEST_PLAINTEXT;
 
 #[path = "fanout_waker_tests.rs"]
 mod fanout_waker_tests;
