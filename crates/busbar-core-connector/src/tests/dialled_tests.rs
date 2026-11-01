@@ -10,6 +10,9 @@ use std::time::Duration;
 
 use super::{take_ready, Messages};
 
+#[path = "dialled_read_wake_tests.rs"]
+mod read_wake_tests;
+
 fn ready_messages(pieces: &[(&[u8], bool)]) -> Messages {
     let mut messages = Messages::default();
     for (bytes, end) in pieces {

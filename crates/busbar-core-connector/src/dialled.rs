@@ -165,7 +165,7 @@ struct Held {
     presented: bool,
     /// The drives that found it out, woken when it is back.
     missed: Option<Waker>,
-    /// An ordinary read found exclusive or continuation custody busy.
+    /// An ordinary read owes another drive once exclusive and continuation custody return.
     drive_waiting: bool,
     /// A completed producer batch must reach the FIFO before another ordinary crossing.
     publishing: bool,
@@ -505,7 +505,11 @@ impl UpstreamLeg {
                     cx.waker().wake_by_ref();
                 }
                 if yielded.is_some() {
-                    lock(&self.framing).publishing = true;
+                    let mut held = lock(&self.framing);
+                    held.publishing = true;
+                    // A ready receive did not register port interest. Even a LINE-only batch
+                    // owes the reader another drive, after this producer's final continuation.
+                    held.drive_waiting = true;
                 }
                 Ok(yielded)
             },
@@ -531,14 +535,14 @@ impl UpstreamLeg {
     ) -> Result<Option<Yielded>, ConnError> {
         for _ in 0..READS_PER_DRIVE {
             if room == 0 {
-                break;
+                return Ok(None);
             }
             let generation = pairing.storage_generation();
             if !f.prepare_output() {
                 if !pairing.wait_storage(cx.waker(), generation) {
                     return Err(ConnError::Fault);
                 }
-                break;
+                return Ok(None);
             }
             match self.port.poll_recv_from(cx, buf) {
                 Poll::Ready(Ok((n, from))) => {
@@ -557,10 +561,13 @@ impl UpstreamLeg {
                 Poll::Ready(Err(_)) => f.release_output_reservation(),
                 Poll::Pending => {
                     f.release_output_reservation();
-                    break;
+                    return Ok(None);
                 }
             }
         }
+        // The fairness bound can stop on Complete or per-datagram errors without ever polling
+        // Pending. Return custody first, then wake the reader once to drain or arm the port.
+        lock(&self.framing).drive_waiting = true;
         Ok(None)
     }
 }
