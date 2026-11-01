@@ -1566,6 +1566,8 @@ impl Owed<'_> {
 struct Out {
     /// An incremental producer between batches. It remains exclusively out until completion.
     continuing: Option<DatagramFraming>,
+    /// The completed batch must reach publication before the next producer step.
+    publishing: bool,
     owed: VecDeque<Owed<'static>>,
     /// Removed while out: its holder finishes it as it brings it back.
     closing: bool,
@@ -1777,6 +1779,10 @@ pub struct PortAssociations {
 #[derive(Debug)]
 pub(crate) struct BusyIngress;
 
+#[path = "raw_ingress.rs"]
+mod raw_ingress;
+pub use raw_ingress::RawIngress;
+
 /// An association out of the map. Only an unwind drops it still holding the framing: the
 /// association is then no longer carried, and its framing finished with no lock held.
 struct Taken<'p> {
@@ -1805,6 +1811,20 @@ impl Drop for Taken<'_> {
 }
 
 impl PortAssociations {
+    /// Release a checked batch's publication barrier, waking its producer outside the lock.
+    pub fn published(&self, id: u64) {
+        let emission = {
+            let mut assocs = self.lock();
+            if let Some(out) = assocs.out.get_mut(&id) {
+                out.publishing = false;
+            }
+            assocs.emissions.get(&id).cloned()
+        };
+        if let Some(emission) = emission {
+            emission.ready.notify_waiters();
+            emission.wake.wake();
+        }
+    }
     /// Wait before accepting/copying a busy application write. The returned permit keeps
     /// source writers ordered while the independent publication actor crosses its producer.
     pub async fn emission_ready(&self, id: u64) -> Option<tokio::sync::OwnedSemaphorePermit> {
@@ -1827,8 +1847,8 @@ impl PortAssociations {
         }
     }
 
-    /// The serving caller's incremental datagram path. The existing raw busy-ingress queue
-    /// remains unchanged; checked LINE/CHANNEL output uses the pairing's publication account.
+    /// The trusted queued incremental path. Newly received network datagrams use
+    /// [`Self::raw_datagram`]; already accepted/trusted operations keep queued custody.
     pub fn datagram_incremental(
         &self,
         from: SocketAddr,
@@ -1958,10 +1978,12 @@ impl PortAssociations {
             assocs.forget(id);
             drop(assocs);
             drop(taken.framing.take());
-            return Ok(vec![(
-                id,
-                result.and_then(|_| Err(fault("the association closed during its producer"))),
-            )]);
+            let answer = match result {
+                Ok(LineStep::Batch { yielded, .. }) => Ok(yielded),
+                Err(error) => Err(error),
+                Ok(_) => Err(fault("the association closed during its producer")),
+            };
+            return Ok(vec![(id, answer)]);
         }
         let yielded = match result.expect("the producer result was checked") {
             LineStep::Batch { yielded, .. } => yielded,
@@ -1981,6 +2003,11 @@ impl PortAssociations {
         };
         let pending = f.continuing() || assocs.out.get(&id).is_some_and(|out| !out.owed.is_empty());
         if pending {
+            assocs
+                .out
+                .get_mut(&id)
+                .expect("the producer's routing record")
+                .publishing = true;
             assocs
                 .out
                 .get_mut(&id)
@@ -2024,6 +2051,9 @@ impl PortAssociations {
             if let Some(out) = assocs.out.get_mut(&id) {
                 if out.closing {
                     return std::task::Poll::Ready(Err(fault("the association is closing")));
+                }
+                if out.publishing {
+                    return std::task::Poll::Pending;
                 }
                 match out.continuing.take() {
                     Some(f) => {
@@ -2110,9 +2140,11 @@ impl PortAssociations {
             emission.order.close();
             emission.ready.notify_waiters();
             emission.wake.wake();
-            return std::task::Poll::Ready(
-                result.and_then(|_| Err(fault("the association closed during publication"))),
-            );
+            return std::task::Poll::Ready(match result {
+                Ok(batch @ LineStep::Batch { .. }) => Ok(batch),
+                Err(error) => Err(error),
+                Ok(_) => Err(fault("the association closed during publication")),
+            });
         }
         if matches!(result, Ok(LineStep::Complete)) {
             let out = assocs
@@ -2126,6 +2158,7 @@ impl PortAssociations {
                     taken.framing.take().expect("the producer owns its framing"),
                 );
             } else {
+                out.publishing = true;
                 out.continuing = taken.framing.take();
                 result = Ok(LineStep::Batch {
                     yielded: Yielded {
@@ -2136,6 +2169,11 @@ impl PortAssociations {
                 });
             }
         } else {
+            assocs
+                .out
+                .get_mut(&id)
+                .expect("the producer's routing record")
+                .publishing = matches!(result, Ok(LineStep::Batch { .. }));
             assocs
                 .out
                 .get_mut(&id)
@@ -2877,6 +2915,7 @@ impl Pairing {
             return Err("the session already has an upstream leg".into());
         }
         st.upstream = Some(upstream);
+        st.publications.waiting_attachment = false;
         drop(st);
         self.published.notify_waiters();
         Ok(())

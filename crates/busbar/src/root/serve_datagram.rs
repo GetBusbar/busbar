@@ -166,6 +166,13 @@ impl ClaimDoor {
         if self.closed.swap(true, Ordering::AcqRel) {
             return;
         }
+        let raw_busy_dropped = self.assocs.raw_busy_dropped();
+        if raw_busy_dropped != 0 {
+            tracing::info!(
+                raw_busy_dropped,
+                "datagram claim door closed after raw ingress readiness drops"
+            );
+        }
         let legs = std::mem::take(&mut *lock(&self.legs));
         self.joined.notify_one();
         for leg in legs.into_values() {
@@ -191,6 +198,14 @@ impl ClaimDoor {
             match (leg, answer) {
                 (Some(leg), Ok(y)) => leg.yielded_batch(y, now),
                 (Some(leg), Err(_)) => leg.failed(),
+                (None, Ok(yielded)) => {
+                    if let Some(pairing) = yielded.producer.pairing() {
+                        pairing.close();
+                        // A READY batch arriving after removal is explicit cancelled output;
+                        // keep its original stream identity until that classification finishes.
+                        let _cancelled = pairing.publish(Leg::Caller, yielded, now);
+                    }
+                }
                 (None, _) => {}
             }
         }
@@ -240,10 +255,10 @@ impl ClaimDoor {
             };
             let now = Instant::now();
             let answered = match woke {
-                Woke::Read(Ok((datagram, from))) => {
-                    self.assocs
-                        .datagram_incremental(from, &datagram, now, &|to, d| self.send(to, d))
-                }
+                Woke::Read(Ok((datagram, from))) => self
+                    .assocs
+                    .raw_datagram(from, &datagram, now, &|to, d| self.send(to, d))
+                    .into_answered(),
                 // A per-datagram error (an unreachable far end reported back): the port stands.
                 Woke::Read(Err(_)) => Vec::new(),
                 Woke::Joined => Vec::new(),
@@ -386,6 +401,17 @@ impl Drop for HeldInputs {
 
 struct Draining(Arc<CallerLeg>);
 
+struct CallerPublication<'a>(&'a CallerLeg);
+
+impl Drop for CallerPublication<'_> {
+    fn drop(&mut self) {
+        let id = *lock(&self.0.id);
+        if let Some((door, id)) = self.0.door.upgrade().zip(id) {
+            door.assocs.published(id);
+        }
+    }
+}
+
 impl Drop for Draining {
     fn drop(&mut self) {
         let (unfinished, closed) = {
@@ -439,6 +465,7 @@ impl CallerLeg {
         now: Instant,
     ) {
         let Some(pairing) = lock(&self.pairing).clone() else {
+            self.failed();
             return;
         };
         let session = pairing.publish(Leg::Caller, yielded, now);
@@ -464,6 +491,7 @@ impl CallerLeg {
     }
 
     fn take_batch(&self, session: SessionBatch, _now: Instant) -> Result<(), String> {
+        let _publication = CallerPublication(self);
         let mut owners = session.owners.into_iter();
         for g in session.pieces {
             let owner = owners.next().unwrap_or_else(|| session.custody.clone());
@@ -866,7 +894,7 @@ impl Stated for DatagramCaller {
 /// the session's caller side, and what joins the door once the unit is admitted ([`Joining`]).
 pub(super) struct Opened {
     /// The framer's own description: the unit's answer body.
-    pub(super) description: bytes::Bytes,
+    pub(super) description: Description,
     /// The session's caller side.
     pub(super) caller: DatagramCaller,
     /// The plane's head, once it states one.
@@ -875,14 +903,32 @@ pub(super) struct Opened {
     pub(super) joining: Joining,
 }
 
-struct Description {
+pub(super) struct Description {
     bytes: Vec<u8>,
     _custody: Custody,
 }
 
-impl AsRef<[u8]> for Description {
-    fn as_ref(&self) -> &[u8] {
-        &self.bytes
+impl Description {
+    pub(super) fn into_body(self) -> axum::body::Body {
+        struct Delivered {
+            bytes: Vec<u8>,
+            _custody: busbar_core_connector::publication::ReaderCustody,
+            _transfer: busbar_core_connector::publication::Transfer,
+        }
+        impl AsRef<[u8]> for Delivered {
+            fn as_ref(&self) -> &[u8] {
+                &self.bytes
+            }
+        }
+        // This becomes an independent HTTP transfer only after the plane's opening head is
+        // available. Before then its allocation remains charged without promising progress.
+        let custody = self._custody.reader();
+        let transfer = custody.copying();
+        axum::body::Body::from(bytes::Bytes::from_owner(Delivered {
+            bytes: self.bytes,
+            _custody: custody,
+            _transfer: transfer,
+        }))
     }
 }
 
@@ -936,10 +982,10 @@ impl Opened {
             };
             // Bytes owns the original allocation and reservation through actual HTTP-body
             // consumption; no uncharged clone of the opening description is made.
-            let answer = bytes::Bytes::from_owner(Description {
+            let answer = Description {
                 bytes: answer,
                 _custody: custody,
-            });
+            };
             leg.take_batch(session, now)?;
             let (head_tx, head) = oneshot::channel();
             Ok(Opened {
@@ -1002,3 +1048,7 @@ mod tests;
 #[cfg(test)]
 #[path = "tests/datagram_line_budget.rs"]
 mod line_budget_tests;
+
+#[cfg(test)]
+#[path = "tests/raw_udp_ingress.rs"]
+mod raw_udp_ingress_tests;

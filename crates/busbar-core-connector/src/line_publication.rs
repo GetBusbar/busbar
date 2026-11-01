@@ -45,6 +45,7 @@ pub(super) struct PublicationState {
     inputs: Queue,
     recall: [bool; 2],
     running: bool,
+    pub(super) waiting_attachment: bool,
     outcome: PublicationOutcome,
     retained_input: usize,
 }
@@ -242,7 +243,10 @@ impl Pairing {
             if state.closed {
                 return false;
             }
-            let progress = self.memory.progress(generation, state.publications.running);
+            let progress = self.memory.progress(
+                generation,
+                state.publications.running && !state.publications.waiting_attachment,
+            );
             if matches!(progress, crate::publication::Progress::Exhausted) {
                 state.closed = true;
                 state.bridge.stop();
@@ -292,9 +296,11 @@ impl Pairing {
             if state.closed {
                 return Err(SubmitError::Closed);
             }
-            let attempt = self
-                .memory
-                .input(bytes, state.publications.running, source_leg);
+            let attempt = self.memory.input(
+                bytes,
+                state.publications.running && !state.publications.waiting_attachment,
+                source_leg,
+            );
             if matches!(
                 attempt,
                 Err(crate::publication::ReservationError::Exhausted)
@@ -460,7 +466,12 @@ impl Pairing {
     /// Queue checked output in FIFO order. No framer callback runs before this method returns;
     /// the scheduler crosses one producer batch at a time after its association is returned.
     pub fn publish(self: &Arc<Self>, leg: Leg, mut yielded: Yielded, now: Instant) -> SessionBatch {
-        if self.memory.limit().is_some() && !yielded.custody.tracked() {
+        let owns_storage = yielded.pieces.capacity() != 0
+            || yielded.heads.capacity() != 0
+            || yielded.wire.capacity() != 0
+            || yielded.interim.capacity() != 0
+            || yielded.flow.capacity() != 0;
+        if self.memory.limit().is_some() && !yielded.custody.tracked() && owns_storage {
             // An opening batch or legacy caller transfers existing owned storage into the
             // pairing here. Reserve its actual capacities before parsing/copying any heads.
             let credit = yielded
@@ -639,6 +650,15 @@ impl Pairing {
         outcome.original_cancelled_bytes = outcome.original_bytes - outcome.original_handed_bytes;
     }
 
+    fn awaiting_attachment(&self) -> bool {
+        let mut state = self.lock();
+        if state.closed || state.upstream.is_some() {
+            return false;
+        }
+        state.publications.waiting_attachment = true;
+        true
+    }
+
     async fn drive_publication(self: &Arc<Self>) {
         let mut current: Option<Job> = None;
         loop {
@@ -695,10 +715,13 @@ impl Pairing {
                 )
             };
             let Some(sink) = sink else {
-                if leg == Leg::Upstream && !self.closed() {
+                if leg == Leg::Upstream {
                     // A settled dial publishes its heads before attaching. Retain its output
                     // until successful attach instead of racing that admission boundary.
-                    attached.await;
+                    if self.awaiting_attachment() {
+                        self.memory.progress_changed();
+                        attached.await;
+                    }
                     continue;
                 }
                 if let Some(job) = current.take() {
@@ -708,7 +731,8 @@ impl Pairing {
                 return;
             };
             if current.as_ref().is_some_and(|job| job.unpaired.is_some()) {
-                if self.lock().upstream.is_none() {
+                if self.awaiting_attachment() {
+                    self.memory.progress_changed();
                     attached.await;
                     continue;
                 }
@@ -718,6 +742,7 @@ impl Pairing {
                 return;
             }
             let input = current.as_ref().map(|job| &job.across);
+            self.lock().publications.waiting_attachment = false;
             let text = current.as_ref().is_some_and(|job| job.text);
             let mut crossing = Crossing {
                 pairing: self,

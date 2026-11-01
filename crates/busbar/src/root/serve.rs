@@ -4636,7 +4636,7 @@ impl DataRoutes {
                 // A plane that states none within the open's bound is the open's failure: its
                 // session ends, and the caller is refused, never answered without the plane.
                 match serve_datagram::plane_head(head, OPEN_HEAD_WAIT).await {
-                    Some((status, fields)) => stated((status, fields), Body::from(description)),
+                    Some((status, fields)) => stated((status, fields), description.into_body()),
                     None => {
                         let unit = *admitted_unit
                             .lock()

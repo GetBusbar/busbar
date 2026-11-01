@@ -74,6 +74,15 @@ impl Memory {
         lock(&self.state).generation
     }
 
+    pub(crate) fn progress_changed(&self) {
+        {
+            let mut state = lock(&self.state);
+            state.generation = state.generation.wrapping_add(1);
+        }
+        self.changed.notify_waiters();
+        self.wake.wake();
+    }
+
     pub(crate) fn progress(&self, generation: u64, pending: bool) -> Progress {
         let state = lock(&self.state);
         if state.closed {
@@ -266,6 +275,14 @@ impl PartialEq for ProducerCustody {
 impl Eq for ProducerCustody {}
 
 impl ProducerCustody {
+    /// Recover the host publication owner after concurrent association removal. The owner is
+    /// weak here, so a producer cannot keep an otherwise retired connection alive.
+    #[must_use]
+    pub fn pairing(&self) -> Option<Arc<crate::datagram::Pairing>> {
+        let memory = self.0.as_ref()?.memory.as_ref()?;
+        let pairing = lock(&memory.observer).upgrade();
+        pairing
+    }
     pub(crate) fn prepend(&mut self, previous: Self) {
         if let Some(producer) = &mut self.0 {
             Arc::get_mut(producer)

@@ -836,6 +836,9 @@ impl Dialled {
                 Ok(y)
             },
         )?;
+        // Keep admission in flight through attach, including a receiver wake between
+        // publishing negotiated heads and installing the upstream leg.
+        let admission = (yielded.producer.clone(), yielded.custody.clone());
         self.leg.take(&self.pairing, yielded, now)?;
         let leg: Arc<dyn LegSink> = Arc::clone(&self.leg) as Arc<dyn LegSink>;
         if self.pairing.attach(leg).is_err() {
@@ -843,6 +846,7 @@ impl Dialled {
             self.pairing.close();
             return Err(ConnError::Refused);
         }
+        drop(admission);
         Ok(())
     }
 

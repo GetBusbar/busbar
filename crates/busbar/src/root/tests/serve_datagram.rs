@@ -1151,6 +1151,60 @@ async fn an_unknown_caller_crossing_is_cancelled_without_claiming_its_bytes_were
     assert!(pairing.closed());
 }
 
+#[tokio::test]
+async fn a_ready_caller_batch_after_reentrant_close_records_taken_input_and_cancelled_line_output()
+{
+    use busbar_core_connector::datagram::{Across, Leg, LegSink};
+    use busbar_kernel::plane_driver::CallerEnd;
+    use busbar_test_kit::root_door_fixtures::datagram_order::Recording;
+    struct Downstream(std::sync::atomic::AtomicUsize);
+    impl LegSink for Downstream {
+        fn line(&self, _: Across, _: Instant) {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+        fn close(&self) {}
+    }
+    let (door, leg, pair, _rx) = leg(8);
+    let framer = Recording::new();
+    join_recording(&door, &leg, &framer);
+    pair.sort(
+        Leg::Caller,
+        vec![got(11, b"kind: feedback\r\n", true)],
+        Instant::now(),
+    );
+    pair.sort(
+        Leg::Upstream,
+        vec![got(21, b"kind: feedback\r\n", true)],
+        Instant::now(),
+    );
+    let downstream = Arc::new(Downstream(std::sync::atomic::AtomicUsize::new(0)));
+    pair.attach(Arc::clone(&downstream) as Arc<dyn LegSink>)
+        .unwrap();
+    leg.take(
+        vec![got(SESSION_CHANNEL, b"label: events\r\n", true)],
+        Instant::now(),
+    );
+    framer.echo_emits_on(11);
+    let closing = Arc::downgrade(&pair);
+    framer.observe(Arc::new(move |_| closing.upgrade().unwrap().close()));
+    let caller = caller_for(leg);
+    let bytes = b"taken once";
+    assert!(!CallerEnd::write(&caller, bytes).await);
+    let outcome = pair.published().await;
+    assert!(outcome.failure.is_some());
+    assert_eq!(outcome.original_bytes, bytes.len() as u64);
+    assert_eq!(outcome.original_handed_bytes, bytes.len() as u64);
+    assert_eq!(outcome.original_cancelled_bytes, 0);
+    assert_eq!(outcome.original_uncertain_bytes, 0);
+    assert_eq!(outcome.accepted_frames, 1);
+    assert_eq!(outcome.handed_frames, 0);
+    assert_eq!(outcome.cancelled_frames, 1);
+    assert_eq!(outcome.cancelled_bytes, bytes.len() as u64);
+    assert_eq!(downstream.0.load(std::sync::atomic::Ordering::SeqCst), 0);
+    assert_eq!(framer.emitted(), vec![bytes.to_vec()]);
+    assert!(door.assocs.is_empty());
+}
+
 #[derive(Clone)]
 struct ExhaustionDiagnostic(Arc<std::sync::atomic::AtomicUsize>);
 
