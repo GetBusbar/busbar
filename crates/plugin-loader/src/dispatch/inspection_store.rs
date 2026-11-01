@@ -41,6 +41,7 @@ impl ServiceStore {
                 inspections: HashMap::new(),
                 conditionals: HashMap::new(),
                 conditional_units: HashMap::new(),
+                retirement: HashMap::new(),
             });
             let receipt = match held.inspections.get_mut(&caller) {
                 Some(kept) if !kept.cancelled => {

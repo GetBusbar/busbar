@@ -3152,6 +3152,23 @@ fn drive_names_its_ready_sessions_under_the_short_buffer_rule() {
     );
 }
 
+#[test]
+fn pending_drive_names_ready_sessions_while_other_work_waits() {
+    let mut out: PlaneDriveOut = z();
+    out.sessions_written = 2;
+    assert_eq!(check_drive(Pending, &out, 2), Ok(()));
+    assert_eq!(
+        check_drive(Pending, &out, 1),
+        f(Rule::OverCap, "drive.sessions")
+    );
+    out.sessions_written = 0;
+    out.sessions_needed = 3;
+    assert_eq!(
+        check_drive(Pending, &out, 2),
+        f(Rule::NeededNotFailed, "drive.sessions")
+    );
+}
+
 /// RED (ARCHITECT ruling 2026-10-01, a money invariant): the overdraft ceiling and a stale slice
 /// are kernel-only money verdicts. A plane that names either code is answering malformed, never
 /// carrying the verdict: its tail row is refused, and the code decodes to no reason.

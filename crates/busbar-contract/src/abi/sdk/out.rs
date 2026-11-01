@@ -709,6 +709,46 @@ impl<'a, T: AbiOut> Out<'a, T> {
         Ok(())
     }
 
+    /// Acknowledge explicitly consumed terminal service results on this driver. The bytes are
+    /// leased until host validation; the guest waits for the next capability before reusing IDs.
+    pub fn completion_ack(
+        &mut self,
+        leases: &Leases,
+        ack: &crate::abi::sdk::completion_retirement::Acknowledgement,
+    ) -> Result<(), crate::abi::sdk::completion_retirement::Error> {
+        use crate::abi::mechanism::call::{BLOB_OCTETS, BLOB_SECRET};
+        use crate::abi::sdk::completion_retirement::{self as wire, Error};
+        let ext = self.head().extensions;
+        if ext.len > crate::abi::mechanism::check::HARD_MAX_BYTES as usize
+            || (ext.len != 0 && (ext.ptr.is_null() || ext.fmt != BLOB_OCTETS))
+        {
+            return Err(Error::Invalid);
+        }
+        let prior = if ext.len == 0 {
+            &[][..]
+        } else {
+            // SAFETY: prior SDK output writers retain these bytes for this answer.
+            unsafe { std::slice::from_raw_parts(ext.ptr, ext.len) }
+        };
+        if let Some(previous) = wire::read_ack(prior)? {
+            return if previous == *ack {
+                Ok(())
+            } else {
+                Err(Error::Invalid)
+            };
+        }
+        let bytes = wire::append_ack(prior, ack)?;
+        self.held_by(&leases.alive);
+        let mut blob = if ext.flags & BLOB_SECRET != 0 {
+            leases.secret_blob(self.head(), bytes, BLOB_OCTETS)
+        } else {
+            leases.blob(self.head(), bytes, BLOB_OCTETS)
+        };
+        blob.flags = ext.flags;
+        self.head().extensions = blob;
+        Ok(())
+    }
+
     /// For a PENDING answer: resume this op no later than `mono_ns` on the host's monotonic clock
     /// (`clock.now`'s `mono_ns`) even if nothing wakes it — the host's timer, never earlier than
     /// `mono_ns` (a wake may still resume it sooner: see `abi::sdk::conn::not_before`).

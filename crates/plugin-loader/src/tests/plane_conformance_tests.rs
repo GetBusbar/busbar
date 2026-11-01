@@ -300,6 +300,354 @@ mod door {
         Frame::new(i, o)
     }
 
+    #[derive(Default)]
+    struct PendingDriveServices {
+        immediate: std::sync::atomic::AtomicBool,
+        waiting: std::sync::Mutex<Vec<busbar_contract::services::Later>>,
+        calls: std::sync::atomic::AtomicUsize,
+        releases: std::sync::atomic::AtomicUsize,
+    }
+
+    impl crate::services_double::ServicesDouble for PendingDriveServices {
+        fn records_get(
+            &self,
+            _: &busbar_contract::services::Caller,
+            kind: &str,
+            key: &[u8],
+            later: busbar_contract::services::Later,
+        ) -> busbar_contract::services::Ran {
+            assert_eq!((kind, key), ("last", b"drive".as_slice()));
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if self.immediate.load(std::sync::atomic::Ordering::SeqCst) {
+                return busbar_contract::services::Ran::Now(drive_completed());
+            }
+            self.waiting.lock().unwrap().push(later);
+            busbar_contract::services::Ran::Later
+        }
+
+        fn entitlement_check(
+            &self,
+            _: &busbar_contract::services::Caller,
+            _: Option<u64>,
+            target: &str,
+        ) -> crate::dispatch::Stored {
+            assert_eq!(target, "door:drive-release");
+            self.releases
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            crate::dispatch::Stored::ready(busbar_contract::abi::host::service::ENTITLED)
+        }
+    }
+
+    fn pending_drive_plugin(
+        dropped: bool,
+        settings: &'static [u8],
+    ) -> (
+        crate::dispatch::Dispatcher,
+        Plugin<Plane>,
+        Arc<crate::services_double::Double<PendingDriveServices>>,
+    ) {
+        let services = Arc::new(crate::services_double::Double(
+            PendingDriveServices::default(),
+        ));
+        let dispatcher = crate::dispatch::Dispatcher::with_services(
+            crate::dispatch::DispatchConfig::default(),
+            services.clone(),
+        );
+        let binding = Bind {
+            dispatcher: dispatcher.adopter(),
+            ..bind()
+        };
+        let plugin = if dropped {
+            let path = crate::both_ways::example_cdylib("plane_door_plugin");
+            load_dropped::<Plane>(&path, &rendering_of(plug::door).unwrap(), binding).unwrap()
+        } else {
+            load_linked::<Plane>(&LinkedRow::of(plug::door).unwrap(), binding).unwrap()
+        };
+        let mut open = open_frame(1);
+        open.input.open.settings = octets(settings);
+        assert_eq!(plugin.call(life::OPEN, &mut open).outcome, Outcome::Ready);
+        (dispatcher, plugin, services)
+    }
+
+    fn drive_tick(
+        dispatcher: &crate::dispatch::Dispatcher,
+        plugin: &Plugin<Plane>,
+        ticket: busbar_contract::abi::mechanism::ticket::Ticket,
+        now_ns: u64,
+    ) -> u64 {
+        let mut frame: Frame<TickIn, TickOut> = Frame::new(z(), z());
+        frame.input.head = in_head();
+        frame.input.now_ns = now_ns;
+        frame.out.head = out_head();
+        let reply = dispatcher
+            .submit(
+                plugin,
+                ticket,
+                life::TICK,
+                frame,
+                busbar_contract::abi::mechanism::call::DeadlineClass::Call,
+                0,
+            )
+            .wait(std::time::Duration::from_secs(5))
+            .unwrap();
+        assert_eq!(reply.outcome, Outcome::Ready);
+        reply.frame.unwrap().out.next_tick_ns
+    }
+
+    fn drive_until(mut done: impl FnMut() -> bool) {
+        let end = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !done() {
+            assert!(
+                std::time::Instant::now() < end,
+                "the driver did not make progress"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+    }
+
+    fn drive_completed() -> crate::dispatch::Stored {
+        let mut result = crate::dispatch::Stored::ready(busbar_contract::abi::host::service::FOUND);
+        result.bytes = b"completed".to_vec();
+        result
+            .spans
+            .push(busbar_contract::abi::host::service::ItemSpan {
+                key: busbar_contract::abi::mechanism::call::Span::ZERO,
+                value: busbar_contract::abi::mechanism::call::Span { offset: 0, len: 9 },
+            });
+        result
+    }
+
+    #[test]
+    fn pending_drive_delivers_sessions_and_keeps_service_custody_linked_and_dropped() {
+        use std::sync::atomic::Ordering::SeqCst;
+        for dropped in [false, true] {
+            let (dispatcher, plugin, services) = pending_drive_plugin(dropped, plug::PENDING_DRIVE);
+            let driver = dispatcher.driver(&plugin, 0).unwrap();
+            let mut piece = Piece::new();
+            assert_eq!(
+                piece.call(&plugin, FROM_CALLER, b"hi", (0, b"")).0,
+                Outcome::Ready
+            );
+            crate::dispatch::ticket::host_wake(plugin.inner.ctx(), driver);
+            drive_until(|| plugin.inner.driven.answers() == 1);
+            drive_tick(&dispatcher, &plugin, driver, 0);
+            assert_eq!(plugin.inner.driven.drain(), vec![5], "dropped={dropped}");
+            assert_eq!(dispatcher.services().held.held(driver), 1);
+            assert_eq!(dispatcher.services().held(), 1);
+            assert_eq!(services.0.releases.load(SeqCst), 1);
+
+            // A spurious wake and another TICK cannot replay a different service operation
+            // under the held handle, or reuse the previous answer's session count or lease.
+            crate::dispatch::ticket::host_wake(plugin.inner.ctx(), driver);
+            drive_until(|| plugin.inner.driven.answers() == 2);
+            assert_eq!(
+                drive_tick(&dispatcher, &plugin, driver, plug::DRIVE_RESUMES),
+                1
+            );
+            assert!(plugin.inner.driven.drain().is_empty());
+            assert_eq!(services.0.calls.load(SeqCst), 1);
+            assert_eq!(services.0.releases.load(SeqCst), 2);
+            assert_eq!(dispatcher.services().held.held(driver), 1);
+
+            assert_eq!(
+                piece.call(&plugin, FROM_CALLER, b"hi", (0, b"")).0,
+                Outcome::Ready
+            );
+            let later = services.0.waiting.lock().unwrap().pop().unwrap();
+            later(drive_completed());
+            assert_eq!(
+                plugin
+                    .inner
+                    .driven
+                    .answered_after(2, std::time::Duration::from_secs(5)),
+                Some(Outcome::Ready)
+            );
+            drive_tick(&dispatcher, &plugin, driver, plug::DRIVE_RESTART);
+            assert_eq!(plugin.inner.driven.drain(), vec![5]);
+            assert_eq!(dispatcher.services().held.held(driver), 0);
+            assert_eq!(dispatcher.services().held(), 0);
+            assert_eq!(services.0.releases.load(SeqCst), 3);
+
+            // Cancel a caller operation through the actual worker. Its session must not
+            // reappear when a still-live driver advances independent pending work.
+            let session = dispatcher.mint(0).unwrap();
+            let mut frame: Frame<OnPieceIn, OnPieceOut> = Frame::new(z(), z());
+            frame.input.head = in_head();
+            frame.input.from = FROM_CALLER;
+            frame.input.stream = 5;
+            frame.input.bytes = octets(b"pending-session");
+            frame.out.head = out_head();
+            let reply = dispatcher.submit(
+                &plugin,
+                session,
+                slot::ON_PIECE,
+                frame,
+                busbar_contract::abi::mechanism::call::DeadlineClass::Call,
+                0,
+            );
+            drive_until(|| dispatcher.is_pending(session));
+            dispatcher.drop_client(session);
+            let cancelled = reply.wait(std::time::Duration::from_secs(5)).unwrap();
+            assert_eq!(cancelled.disposition, Some(CANCEL_ABORTED));
+            dispatcher.recycle(session);
+
+            // The next cycle really issues again. Recycling cancels its result custody;
+            // a late completion may neither resurrect the driver nor emit a session.
+            crate::dispatch::ticket::host_wake(plugin.inner.ctx(), driver);
+            drive_until(|| plugin.inner.driven.answers() == 4);
+            drive_tick(&dispatcher, &plugin, driver, 0);
+            assert_eq!(services.0.calls.load(SeqCst), 2);
+            assert_eq!(services.0.releases.load(SeqCst), 4);
+            assert!(plugin.inner.driven.drain().is_empty());
+            let late = services.0.waiting.lock().unwrap().pop().unwrap();
+            dispatcher.recycle(driver);
+            let barrier = dispatcher.mint(0).unwrap();
+            drive_tick(&dispatcher, &plugin, barrier, 0);
+            assert_eq!(dispatcher.services().held(), 0);
+            assert_eq!(dispatcher.services().held.held(driver), 0);
+            late(drive_completed());
+            drive_tick(&dispatcher, &plugin, barrier, 0);
+            assert_eq!(plugin.inner.driven.answers(), 4);
+            assert!(plugin.inner.driven.drain().is_empty());
+            dispatcher.recycle(barrier);
+        }
+    }
+
+    #[test]
+    fn malformed_pending_drive_is_fault_and_releases_its_answer_linked_and_dropped() {
+        use std::sync::atomic::Ordering::SeqCst;
+        for dropped in [false, true] {
+            for settings in [plug::PENDING_DRIVE_OVER_CAP, plug::PENDING_DRIVE_NEEDED] {
+                let (dispatcher, plugin, services) = pending_drive_plugin(dropped, settings);
+                let driver = dispatcher.driver(&plugin, 0).unwrap();
+                let mut piece = Piece::new();
+                assert_eq!(
+                    piece.call(&plugin, FROM_CALLER, b"hi", (0, b"")).0,
+                    Outcome::Ready
+                );
+                crate::dispatch::ticket::host_wake(plugin.inner.ctx(), driver);
+                assert_eq!(
+                    plugin
+                        .inner
+                        .driven
+                        .answered_after(0, std::time::Duration::from_secs(5)),
+                    Some(Outcome::Fault)
+                );
+                drive_until(|| services.0.releases.load(SeqCst) == 1);
+                assert!(plugin.inner.driven.drain().is_empty());
+                assert_eq!(services.0.calls.load(SeqCst), 1);
+                dispatcher.recycle(driver);
+            }
+        }
+    }
+
+    #[test]
+    fn completed_result_ack_is_checked_and_confirmed_before_lease_release_linked_and_dropped() {
+        use std::sync::atomic::Ordering::SeqCst;
+        for dropped in [false, true] {
+            for settings in [plug::ACK_PENDING, plug::ACK_READY] {
+                let (dispatcher, plugin, services) = pending_drive_plugin(dropped, settings);
+                services.0.immediate.store(true, SeqCst);
+                let driver = dispatcher.driver(&plugin, 0).unwrap();
+                crate::dispatch::ticket::host_wake(plugin.inner.ctx(), driver);
+                // The ACK itself must wake the confirmation crossing; there is no I/O wake.
+                drive_until(|| {
+                    plugin.inner.driven.answers() == 2 && services.0.releases.load(SeqCst) == 2
+                });
+                assert_eq!(
+                    plugin
+                        .inner
+                        .driven
+                        .answered_after(1, std::time::Duration::from_secs(5)),
+                    Some(Outcome::Ready)
+                );
+                assert_eq!(services.0.calls.load(SeqCst), 1);
+                assert_eq!(dispatcher.services().held(), 0);
+                assert_eq!(dispatcher.services().held.held(driver), 0);
+                dispatcher.recycle(driver);
+            }
+        }
+    }
+
+    #[test]
+    fn rejected_main_answers_never_consume_completed_result_custody_linked_and_dropped() {
+        use std::sync::atomic::Ordering::SeqCst;
+        for dropped in [false, true] {
+            for settings in [
+                plug::ACK_FAILED,
+                plug::ACK_SHORT,
+                plug::ACK_MALFORMED,
+                plug::ACK_WRONG_OWNER,
+                plug::ACK_WRONG_NONCE,
+            ] {
+                let (dispatcher, plugin, services) = pending_drive_plugin(dropped, settings);
+                services.0.immediate.store(true, SeqCst);
+                let driver = dispatcher.driver(&plugin, 0).unwrap();
+                crate::dispatch::ticket::host_wake(plugin.inner.ctx(), driver);
+                assert_eq!(
+                    plugin
+                        .inner
+                        .driven
+                        .answered_after(0, std::time::Duration::from_secs(5)),
+                    Some(Outcome::Fault),
+                    "{settings:?}, dropped={dropped}"
+                );
+                drive_until(|| services.0.releases.load(SeqCst) == 1);
+                assert_eq!(
+                    dispatcher.services().held(),
+                    1,
+                    "rejected ACK preserves the original result"
+                );
+                assert_eq!(services.0.calls.load(SeqCst), 1);
+                assert!(plugin.inner.driven.drain().is_empty());
+                dispatcher.recycle(driver);
+            }
+        }
+    }
+
+    #[test]
+    fn cancel_cannot_ack_a_drivers_result_linked_and_dropped() {
+        use std::sync::atomic::Ordering::SeqCst;
+        for dropped in [false, true] {
+            let (dispatcher, plugin, services) = pending_drive_plugin(dropped, plug::ACK_CANCEL);
+            services.0.immediate.store(true, SeqCst);
+            let driver = dispatcher.driver(&plugin, 0).unwrap();
+            crate::dispatch::ticket::host_wake(plugin.inner.ctx(), driver);
+            drive_until(|| {
+                plugin.inner.driven.answers() == 1 && services.0.releases.load(SeqCst) == 1
+            });
+            assert_eq!(dispatcher.services().held(), 1);
+            let session = dispatcher.mint(0).unwrap();
+            let mut frame: Frame<OnPieceIn, OnPieceOut> = Frame::new(z(), z());
+            frame.input.head = in_head();
+            frame.out.head = out_head();
+            frame.input.from = FROM_CALLER;
+            frame.input.stream = 5;
+            frame.input.bytes = octets(b"pending-session");
+            let reply = dispatcher.submit(
+                &plugin,
+                session,
+                slot::ON_PIECE,
+                frame,
+                busbar_contract::abi::mechanism::call::DeadlineClass::Call,
+                0,
+            );
+            drive_until(|| dispatcher.is_pending(session));
+            dispatcher.drop_client(session);
+            assert_eq!(
+                reply
+                    .wait(std::time::Duration::from_secs(5))
+                    .unwrap()
+                    .outcome,
+                Outcome::Fault
+            );
+            drive_until(|| services.0.releases.load(SeqCst) == 2);
+            assert_eq!(dispatcher.services().held(), 1);
+            dispatcher.recycle(session);
+            dispatcher.recycle(driver);
+        }
+    }
+
     /// A zeroed `on_piece` frame over the host's buffers.
     struct Piece {
         reply: [u8; 64],

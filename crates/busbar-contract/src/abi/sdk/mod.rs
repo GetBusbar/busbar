@@ -16,6 +16,7 @@
 #![allow(unsafe_op_in_unsafe_fn)]
 
 pub mod boundary;
+pub mod completion_retirement;
 /// Rust-only codec and typed facts for negotiated main-call host inspection.
 /// Re-exported as `abi::mechanism::inspection`; no C layout or generated-header declaration.
 pub mod inspection_wire;

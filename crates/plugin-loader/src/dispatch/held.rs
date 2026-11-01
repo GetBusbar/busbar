@@ -25,8 +25,15 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use arc_swap::ArcSwap;
 use busbar_contract::abi::mechanism::ticket::{CompletionHandle, Ticket};
+use busbar_contract::abi::sdk::completion_retirement::{Domain, Handle};
 
 use super::ticket::decode;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct Issued {
+    caller: usize,
+    handle: Handle,
+}
 
 /// One driver ticket's handles in its current cycle.
 #[derive(Debug, Default)]
@@ -34,11 +41,11 @@ struct Cycle {
     /// A `tick` crossing of a kept cycle is in progress: a handle in `issued` is refused.
     refusing: bool,
     /// Every handle issued in the cycle before the crossing in progress.
-    issued: HashSet<u32>,
+    issued: HashSet<Issued>,
     /// The handles the crossing in progress issued.
-    fresh: HashSet<u32>,
+    fresh: HashSet<Issued>,
     /// The handles whose last call answered PENDING: one per held exchange.
-    pending: HashSet<u32>,
+    pending: HashSet<Issued>,
     /// One inspection per issuing instance, outside the completion-handle namespace.
     inspections: HashSet<usize>,
     conditionals: HashSet<usize>,
@@ -61,7 +68,7 @@ impl Held {
 
     /// Whether `ticket` is tracked, read without the lock. A driver ticket is tracked from before
     /// it is handed out until it is recycled, so no call on it races its tracking.
-    fn tracks(&self, ticket: Ticket) -> bool {
+    pub(crate) fn tracks(&self, ticket: Ticket) -> bool {
         let drivers = self.drivers.load();
         !drivers.is_empty() && drivers.contains(&ticket)
     }
@@ -174,7 +181,7 @@ impl Held {
 
     /// A call under `h` is about to be served: `false` when it reuses a handle another exchange
     /// issued in a kept cycle (refused, as a fault, and nothing runs).
-    pub(crate) fn call(&self, h: CompletionHandle) -> bool {
+    pub(crate) fn call(&self, caller: usize, domain: Domain, h: CompletionHandle) -> bool {
         if !self.tracks(h.ticket) {
             return true;
         }
@@ -182,24 +189,76 @@ impl Held {
         let Some(c) = all.get_mut(&h.ticket) else {
             return true;
         };
-        if c.refusing && c.issued.contains(&h.seq) {
+        let key = Issued {
+            caller,
+            handle: Handle { domain, seq: h.seq },
+        };
+        if (c.refusing && c.issued.contains(&key))
+            || c.issued.iter().chain(c.fresh.iter()).any(|old| {
+                old.caller == caller && old.handle.seq == h.seq && old.handle.domain != domain
+            })
+        {
             return false;
         }
-        c.fresh.insert(h.seq);
+        c.fresh.insert(key);
         true
     }
 
     /// The call under `h` answered: PENDING (`pending`) or anything else.
-    pub(crate) fn answered(&self, h: CompletionHandle, pending: bool) {
+    pub(crate) fn answered(
+        &self,
+        caller: usize,
+        domain: Domain,
+        h: CompletionHandle,
+        pending: bool,
+    ) {
         if !self.tracks(h.ticket) {
             return;
         }
         if let Some(c) = self.lock().get_mut(&h.ticket) {
+            let key = Issued {
+                caller,
+                handle: Handle { domain, seq: h.seq },
+            };
             if pending {
-                c.pending.insert(h.seq);
+                c.pending.insert(key);
             } else {
-                c.pending.remove(&h.seq);
+                c.pending.remove(&key);
             }
         }
+    }
+
+    /// The caller already holds the exact result-owner locks. Validate the complete batch
+    /// before detaching any entry; no callback or payload destructor runs under these locks.
+    pub(crate) fn retire(
+        &self,
+        ticket: Ticket,
+        caller: usize,
+        handles: &[Handle],
+        detach: impl FnOnce(),
+    ) -> Result<(), ()> {
+        let mut all = self.lock();
+        let cycle = all.get_mut(&ticket).ok_or(())?;
+        for handle in handles {
+            let key = Issued {
+                caller,
+                handle: *handle,
+            };
+            if cycle.pending.contains(&key)
+                || !(cycle.issued.contains(&key) || cycle.fresh.contains(&key))
+            {
+                return Err(());
+            }
+        }
+        detach();
+        for handle in handles {
+            let key = Issued {
+                caller,
+                handle: *handle,
+            };
+            cycle.issued.remove(&key);
+            cycle.fresh.remove(&key);
+        }
+        Ok(())
     }
 }

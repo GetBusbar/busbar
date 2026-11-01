@@ -73,6 +73,7 @@ impl ServiceStore {
             inspections: HashMap::new(),
             conditionals: HashMap::new(),
             conditional_units: HashMap::new(),
+            retirement: HashMap::new(),
         });
         if held
             .conditional_units

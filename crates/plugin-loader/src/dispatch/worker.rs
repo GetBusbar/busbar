@@ -828,7 +828,7 @@ pub(crate) struct Current {
     parked: bool,
 }
 
-/// THE NAMES A DRIVER TICKET'S READY `drive` ANSWERED (a plane's ready sessions), held for the
+/// THE NAMES A DRIVER TICKET'S READY OR PENDING `drive` ANSWERED (a plane's ready sessions), held for the
 /// host until it collects them ([`Driven::take`]): each once, at most [`Driven::HELD`] at a time
 /// (a plane that names more before the host collects is told nothing new until it wakes again).
 #[derive(Debug, Default)]
@@ -1782,7 +1782,7 @@ impl Worker {
                     self.cross(st, &inst, slot::DRIVE, heads, budget, framing.clone())?;
                 let _drive_lease = UnhandedLease::new(&inst, framing, c.lease);
                 env.services.held.leave(ticket);
-                if c.outcome == Outcome::Ready {
+                if matches!(c.outcome, Outcome::Ready | Outcome::Pending) {
                     inst.driven.name(frame.named());
                 }
                 inst.driven.answer(c.outcome);

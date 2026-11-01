@@ -116,8 +116,23 @@ pub const HANDLE_REBOUND: &str =
 
 #[derive(Debug)]
 enum Entry {
-    Running,
-    Done { stored: Stored, shorts: u8 },
+    Running {
+        invocation: u64,
+    },
+    Done {
+        invocation: u64,
+        stored: Stored,
+        shorts: u8,
+        delivered: bool,
+    },
+}
+
+impl Entry {
+    fn invocation(&self) -> u64 {
+        match self {
+            Self::Running { invocation } | Self::Done { invocation, .. } => *invocation,
+        }
+    }
 }
 
 /// What a handle is bound to: the service's index and the fingerprint of the request it was first
@@ -177,6 +192,7 @@ struct Held {
     inspections: HashMap<usize, inspection_store::Kept>,
     conditionals: HashMap<(usize, u64), conditional_store::Kept>,
     conditional_units: HashMap<usize, Result<Option<u64>, ()>>,
+    retirement: HashMap<usize, (HostCtx, u64, [u8; 32])>,
 }
 
 impl Held {
@@ -185,6 +201,7 @@ impl Held {
             && self.inspections.is_empty()
             && self.conditionals.is_empty()
             && self.conditional_units.is_empty()
+            && self.retirement.is_empty()
     }
 }
 
@@ -243,15 +260,28 @@ impl ServiceStore {
     }
 
     /// Store a pended service's result; `false` when the handle is not running under `epoch`.
-    fn complete(&self, h: CompletionHandle, issue: Issue, epoch: u64, stored: Stored) -> bool {
+    fn complete(
+        &self,
+        h: CompletionHandle,
+        issue: Issue,
+        epoch: u64,
+        invocation: u64,
+        stored: Stored,
+    ) -> bool {
         let mut map = self.lock(h.ticket);
         match map
             .get_mut(&h.ticket)
             .filter(|held| held.epoch == epoch)
             .and_then(|held| held.entries.get_mut(&issue))
         {
-            Some((_, e @ Entry::Running)) => {
-                *e = Entry::Done { stored, shorts: 0 };
+            Some((_, e)) if matches!(e, Entry::Running { invocation: current } if *current == invocation) =>
+            {
+                *e = Entry::Done {
+                    invocation,
+                    stored,
+                    shorts: 0,
+                    delivered: false,
+                };
                 true
             }
             _ => false,
@@ -269,6 +299,7 @@ impl ServiceStore {
             let entries = std::mem::take(&mut h.entries);
             let inspections = std::mem::take(&mut h.inspections);
             h.conditional_units.clear();
+            h.retirement.clear();
             let mut removed = Vec::new();
             let mut wakes = Vec::new();
             for (key, mut kept) in std::mem::take(&mut h.conditionals) {
@@ -322,6 +353,7 @@ impl ServiceStore {
                 inspections: HashMap::new(),
                 conditionals: HashMap::new(),
                 conditional_units: HashMap::new(),
+                retirement: HashMap::new(),
             })
             .entries
             .insert(
@@ -329,8 +361,10 @@ impl ServiceStore {
                 (
                     Bound { op: 0, req: 0 },
                     Entry::Done {
+                        invocation: epoch,
                         stored: Stored::ready(1),
                         shorts: 0,
+                        delivered: true,
                     },
                 ),
             );
@@ -358,6 +392,7 @@ pub struct Completer {
     handle: CompletionHandle,
     /// The epoch of the op that issued `handle`.
     epoch: u64,
+    invocation: u64,
 }
 
 impl std::fmt::Debug for Completer {
@@ -377,7 +412,7 @@ impl Completer {
             return;
         };
         let issue = Issue::of(&self.waking, self.handle.seq);
-        if store.complete(self.handle, issue, self.epoch, stored) {
+        if store.complete(self.handle, issue, self.epoch, self.invocation, stored) {
             self.waking.wake(self.handle.ticket);
         }
     }
@@ -619,12 +654,16 @@ pub(crate) fn serve_with(
     }
     // A driver ticket's tick may not reuse a handle another exchange issued in a kept cycle
     // (`super::held`): it would read that exchange's kept answer.
-    if !store.held.call(h) {
+    let caller = Issue::of(route, h.seq).caller;
+    let domain = busbar_contract::abi::sdk::completion_retirement::Domain::Host;
+    if !store.held.call(caller, domain, h) {
         return Answered::fault();
     }
     let bound = Bound { op: head.op, req };
     let a = serve_kept(store, route, h, bound, put, body);
-    store.held.answered(h, a.outcome == Outcome::Pending);
+    store
+        .held
+        .answered(caller, domain, h, a.outcome == Outcome::Pending);
     a
 }
 
@@ -651,6 +690,7 @@ fn serve_kept(
             inspections: HashMap::new(),
             conditionals: HashMap::new(),
             conditional_units: HashMap::new(),
+            retirement: HashMap::new(),
         });
         let epoch = held.epoch;
         match held.entries.entry(issue) {
@@ -660,12 +700,13 @@ fn serve_kept(
             }
             std::collections::hash_map::Entry::Occupied(_) => None,
             std::collections::hash_map::Entry::Vacant(v) => {
-                v.insert((bound, Entry::Running));
-                Some(epoch)
+                let invocation = store.epochs.fetch_add(1, Ordering::Relaxed) + 1;
+                v.insert((bound, Entry::Running { invocation }));
+                Some((epoch, invocation))
             }
         }
     };
-    let Some(epoch) = fresh else {
+    let Some((epoch, invocation)) = fresh else {
         return rebound(route);
     };
     let completer = Completer {
@@ -673,6 +714,7 @@ fn serve_kept(
         waking: route.clone(),
         handle: h,
         epoch,
+        invocation,
     };
     let ran = body(Some(completer));
     // What it ran to is stored and redeemed under one lock.
@@ -681,13 +723,19 @@ fn serve_kept(
         .get_mut(&h.ticket)
         .filter(|held| held.epoch == epoch)
         .and_then(|held| held.entries.get_mut(&issue))
+        .filter(|(_, entry)| entry.invocation() == invocation)
     else {
         // Forgotten under the call: its ticket was recycled.
         return Answered::fault();
     };
     if let Ran::Now(stored) = ran {
-        if matches!(e, Entry::Running) {
-            *e = Entry::Done { stored, shorts: 0 };
+        if matches!(e, Entry::Running { invocation: current } if *current == invocation) {
+            *e = Entry::Done {
+                invocation,
+                stored,
+                shorts: 0,
+                delivered: false,
+            };
         }
     }
     // SAFETY: the caller's contract.
@@ -704,13 +752,23 @@ unsafe fn redeem(
     put: impl FnOnce(&Stored) -> Result<Answered, Answered>,
 ) -> Answered {
     match e {
-        Entry::Running => Answered::bare(Outcome::Pending, ""),
-        Entry::Done { stored, shorts } => {
+        Entry::Running { .. } => Answered::bare(Outcome::Pending, ""),
+        Entry::Done {
+            stored,
+            shorts,
+            delivered,
+            ..
+        } => {
+            *delivered = false;
             if *shorts >= 2 {
                 return Answered::bare(Outcome::Fault, SECOND_SHORT);
             }
             match put(stored) {
-                Ok(a) => a,
+                Ok(a) => {
+                    *delivered =
+                        a.outcome != Outcome::Pending && a.needed_bytes == 0 && a.needed_items == 0;
+                    a
+                }
                 Err(short) => {
                     *shorts += 1;
                     if *shorts >= 2 {
@@ -2578,6 +2636,8 @@ service! {
     }
 }
 
+#[path = "completion_store.rs"]
+mod completion_store;
 #[path = "inspection_store.rs"]
 mod inspection_store;
 

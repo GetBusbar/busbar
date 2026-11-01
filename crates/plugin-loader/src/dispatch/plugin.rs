@@ -1536,6 +1536,12 @@ impl Instance {
             Ok(loan) => loan,
             Err(()) => return Crossed::host(Outcome::Refused),
         };
+        // SAFETY: the host owns the frame; this final input loan restores prior extensions.
+        let completion_input =
+            match unsafe { super::completion_retirement::prepare(self.wake, s, input) } {
+                Ok(loan) => loan,
+                Err(()) => return Crossed::host(Outcome::Fault),
+            };
         // The deadline of the op this crossing is, for the host services it calls (`auth.call`).
         // SAFETY: the host's own `in`, led by its head, live for the crossing.
         let _deadline = super::services::op_deadline(unsafe { &*input });
@@ -1800,6 +1806,22 @@ impl Instance {
             if outcome == Outcome::Ready {
                 self.opened.store(true, Ordering::Release);
             }
+        }
+        // No result retirement precedes an output validation that could still reject this
+        // crossing. The exact ACK is copied while its answer lease remains live.
+        // SAFETY: the validated answer is still under its lease.
+        if unsafe {
+            super::completion_retirement::answer(
+                self.wake,
+                s,
+                outcome,
+                &head,
+                completion_input.as_ref(),
+            )
+        }
+        .is_err()
+        {
+            return Crossed::host(Outcome::Fault).unread(head.lease);
         }
         // THE LEASE ON ANY OUTCOME (export ABI defect 6): only a READY (or PENDING) answer hands
         // its lease to the caller; a lease another outcome names is the host's to release.

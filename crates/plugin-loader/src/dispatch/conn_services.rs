@@ -218,12 +218,18 @@ fn held(wake: &InstanceWake, h: CompletionHandle, run: impl FnOnce() -> Answered
         .get()
         .and_then(std::sync::Weak::upgrade)
         .and_then(|r| r.store());
-    if store.as_ref().is_some_and(|s| !s.held.call(h)) {
+    let caller = std::ptr::from_ref(wake) as usize;
+    let domain = busbar_contract::abi::sdk::completion_retirement::Domain::Connector;
+    if store
+        .as_ref()
+        .is_some_and(|s| !s.held.call(caller, domain, h))
+    {
         return Answered::fault();
     }
     let a = run();
     if let Some(s) = store {
-        s.held.answered(h, a.outcome == Outcome::Pending);
+        s.held
+            .answered(caller, domain, h, a.outcome == Outcome::Pending);
     }
     a
 }
@@ -512,7 +518,11 @@ service!(read, slot, service::READ, IoIn, |id, table, st, head, i| {
             // A ticketed read keeps the bytes it wrote, stored with its answer.
             let read =
                 (!head.handle.ticket.is_none() && n > 0).then(|| Wrote::Raw(buf[..n].into()));
-            Kept { answer, read }
+            Kept {
+                answer,
+                read,
+                delivered: false,
+            }
         }
         Err(ConnError::Closed) => Answered::ready(0, 0).into(),
         Err(ConnError::Pending) if head.handle.ticket.is_none() => Answered::bare(
@@ -729,6 +739,7 @@ service!(
         Kept {
             answer: Answered::ready(0, 0),
             read,
+            delivered: false,
         }
     }
 );
@@ -771,9 +782,10 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 /// re-call runs the op again on the same ticket, and the buffers it lends hold whatever its last
 /// run left there: its kept reads, written again, are the far end's reply as the first run read
 /// it. They are forgotten with the ticket's other answers ([`forget`]).
-struct Kept {
+pub(crate) struct Kept {
     answer: Answered,
     read: Option<Wrote>,
+    delivered: bool,
 }
 
 /// What a ticketed read wrote into the caller's memory, kept for its replay.
@@ -800,7 +812,11 @@ struct KeptFacts {
 
 impl From<Answered> for Kept {
     fn from(answer: Answered) -> Self {
-        Self { answer, read: None }
+        Self {
+            answer,
+            read: None,
+            delivered: false,
+        }
     }
 }
 
@@ -824,10 +840,10 @@ impl ConnState {
             return run().answer;
         }
         if let Some(k) = lock(&self.kept)
-            .get(&h.ticket)
-            .and_then(|issued| issued.get(&h.seq))
+            .get_mut(&h.ticket)
+            .and_then(|issued| issued.get_mut(&h.seq))
         {
-            return match (replay, &k.read) {
+            let answer = match (replay, &k.read) {
                 (Some(input), Some(Wrote::Reply(piece, bytes))) => {
                     replay_read(input, *piece, bytes);
                     k.answer
@@ -836,10 +852,15 @@ impl ConnState {
                 (Some(input), Some(Wrote::Facts(f))) => self.replay_facts(input, k.answer, f),
                 _ => k.answer,
             };
+            k.delivered = answer.outcome != Outcome::Pending
+                && answer.needed_bytes == 0
+                && answer.needed_items == 0;
+            return answer;
         }
-        let k = run();
+        let mut k = run();
         let a = k.answer;
         if a.outcome != Outcome::Pending {
+            k.delivered = a.needed_bytes == 0 && a.needed_items == 0;
             lock(&self.kept)
                 .entry(h.ticket)
                 .or_default()
@@ -891,6 +912,43 @@ impl ConnState {
             .remove(&ticket)
             .map_or(0, |issued| issued.len());
         (kept, closes)
+    }
+
+    /// Hold connector ownership through the caller's remaining validation and detachment.
+    /// The returned payloads are dropped only after the caller releases every owner lock.
+    pub(crate) fn retire(
+        &self,
+        ticket: Ticket,
+        handles: &[busbar_contract::abi::sdk::completion_retirement::Handle],
+        detach: impl FnOnce() -> Result<(), ()>,
+    ) -> Result<Vec<Kept>, ()> {
+        use busbar_contract::abi::sdk::completion_retirement::Domain;
+        let mut all = lock(&self.kept);
+        for handle in handles {
+            let entry = all
+                .get(&ticket)
+                .and_then(|entries| entries.get(&handle.seq));
+            match handle.domain {
+                Domain::Connector if !entry.is_some_and(|kept| kept.delivered) => return Err(()),
+                Domain::Host if entry.is_some() => return Err(()),
+                _ => {}
+            }
+        }
+        let mut removed = Vec::with_capacity(handles.len());
+        detach()?;
+        if let Some(entries) = all.get_mut(&ticket) {
+            for handle in handles.iter().filter(|h| h.domain == Domain::Connector) {
+                removed.push(
+                    entries
+                        .remove(&handle.seq)
+                        .expect("validated connector result"),
+                );
+            }
+            if entries.is_empty() {
+                all.remove(&ticket);
+            }
+        }
+        Ok(removed)
     }
 }
 
@@ -1564,7 +1622,11 @@ extern "C" fn read_reply(ctx: HostCtx, input: *const c_void, out: *mut ServiceOu
                     read = Some(Wrote::Reply(p, buf[..n].into()));
                 }
             }
-            Kept { answer, read }
+            Kept {
+                answer,
+                read,
+                delivered: false,
+            }
         },
     )
 }
@@ -1795,3 +1857,130 @@ service!(
 #[cfg(test)]
 #[path = "../tests/conn_services_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+mod retirement_tests {
+    use super::*;
+    use busbar_contract::abi::sdk::completion_retirement::{Acknowledgement, Domain, Handle};
+
+    #[test]
+    fn consumed_read_bytes_retire_while_another_operation_stays_pending() {
+        let store = super::super::services::ServiceStore::default();
+        let wake = Box::leak(Box::<InstanceWake>::default());
+        let caller = std::ptr::from_ref(wake) as usize;
+        let ticket = Ticket {
+            slot: 1,
+            generation: 2,
+        };
+        store.held.track(ticket);
+        let owner = HostCtx { handle: 9 };
+        let pending = CompletionHandle {
+            ticket,
+            seq: 3,
+            ..CompletionHandle::ZERO
+        };
+        assert!(store.held.call(caller, Domain::Connector, pending));
+        store
+            .held
+            .answered(caller, Domain::Connector, pending, true);
+        let handle = CompletionHandle {
+            ticket,
+            seq: 4,
+            ..CompletionHandle::ZERO
+        };
+        for byte in [1, 2, 3] {
+            let capability = store.retirement_input(caller, owner, ticket).unwrap();
+            assert!(store.held.call(caller, Domain::Connector, handle));
+            let answer = wake.conn_state.kept(handle, None, || Kept {
+                answer: Answered::ready(0, 4),
+                read: Some(Wrote::Raw(vec![byte; 4].into())),
+                delivered: false,
+            });
+            store.held.answered(
+                caller,
+                Domain::Connector,
+                handle,
+                answer.outcome == Outcome::Pending,
+            );
+            assert_eq!(lock(&wake.conn_state.kept).get(&ticket).unwrap().len(), 1);
+            store
+                .retire_results(
+                    wake,
+                    &Acknowledgement {
+                        capability,
+                        handles: vec![Handle {
+                            domain: Domain::Connector,
+                            seq: 4,
+                        }],
+                    },
+                )
+                .unwrap();
+            assert!(lock(&wake.conn_state.kept).get(&ticket).is_none());
+            assert_eq!(
+                store.held.held(ticket),
+                1,
+                "the independent operation is still pending"
+            );
+        }
+    }
+
+    #[test]
+    fn a_short_replay_cannot_retire_its_required_full_result() {
+        let store = super::super::services::ServiceStore::default();
+        let wake = Box::leak(Box::<InstanceWake>::default());
+        let caller = std::ptr::from_ref(wake) as usize;
+        let ticket = Ticket {
+            slot: 1,
+            generation: 2,
+        };
+        store.held.track(ticket);
+        let capability = store
+            .retirement_input(caller, HostCtx { handle: 9 }, ticket)
+            .unwrap();
+        let handle = CompletionHandle {
+            ticket,
+            seq: 4,
+            ..CompletionHandle::ZERO
+        };
+        assert!(store.held.call(caller, Domain::Connector, handle));
+        wake.conn_state.kept(handle, None, || Kept {
+            answer: Answered::ready(0, 4),
+            read: Some(Wrote::Raw(b"data".to_vec().into())),
+            delivered: false,
+        });
+        let mut input = IoIn {
+            head: ServiceHead::ZERO,
+            stream: 1,
+            buf: std::ptr::null_mut(),
+            len: 0,
+        };
+        let answer = wake
+            .conn_state
+            .kept(handle, Some(std::ptr::from_ref(&input).cast()), || {
+                panic!("a replay cannot read twice")
+            });
+        assert_eq!(answer.needed_bytes, 4);
+        store
+            .held
+            .answered(caller, Domain::Connector, handle, false);
+        let ack = Acknowledgement {
+            capability,
+            handles: vec![Handle {
+                domain: Domain::Connector,
+                seq: 4,
+            }],
+        };
+        assert_eq!(store.retire_results(wake, &ack), Err(()));
+        let mut bytes = [0; 4];
+        input.buf = bytes.as_mut_ptr();
+        input.len = bytes.len();
+        let answer = wake
+            .conn_state
+            .kept(handle, Some(std::ptr::from_ref(&input).cast()), || {
+                panic!("the full replay still reads once")
+            });
+        assert_eq!(answer.outcome, Outcome::Ready);
+        assert_eq!(&bytes, b"data");
+        store.retire_results(wake, &ack).unwrap();
+    }
+}
