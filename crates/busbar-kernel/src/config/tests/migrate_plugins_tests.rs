@@ -91,6 +91,47 @@ fn yaml(text: &str) -> serde_yaml::Value {
 }
 
 #[test]
+fn unavailable_plugin_pins_report_unmergeable_plugins_shapes() {
+    for plugins in ["plugins: opaque", "plugins: { fetch: opaque }"] {
+        let raw = format!("{plugins}\nidentity-providers:\n  missing:\n    module: elsewhere\n");
+        let out = migrate_config_with(&raw, &Stub).expect("migrates");
+        assert_eq!(doc(&out.yaml)["plugins"], yaml(plugins)["plugins"]);
+        assert!(
+            out.todos
+                .iter()
+                .any(|t| t.contains("plugins") && t.contains("pin")),
+            "{:?}",
+            out.todos
+        );
+        assert!(!out
+            .changes
+            .iter()
+            .any(|t| t.contains("plugins.fetch: added")));
+    }
+}
+
+#[test]
+fn composite_yaml_keys_do_not_become_null_plugin_settings() {
+    let raw = "store:\n  module: stub\n  settings:\n    ? [private, key]\n    : retained\n";
+    let out = migrate_config_with(raw, &Stub).unwrap();
+    assert_eq!(
+        doc(&out.yaml)["store"]["settings"],
+        yaml(raw)["store"]["settings"]
+    );
+    assert!(out.todos.iter().any(|t| t.contains("store.settings")));
+    assert!(!out.todos.iter().any(|t| t.contains("private")));
+    for section in ["providers", "witness_own", "witness_shared"] {
+        let host = Witness::new(Plane::Migrates);
+        let raw = format!("pools: {{}}\n{section}:\n  ? [private, key]\n  : retained\n");
+        let (after, _, todos) = run(&raw, &host);
+        assert_eq!(after, yaml(&raw));
+        assert!(host.handed.borrow().is_none());
+        assert!(todos.iter().any(|t| t.contains(section)));
+        assert!(!todos.iter().any(|t| t.contains("private")));
+    }
+}
+
+#[test]
 fn core_writes_back_the_plugins_own_migration_and_applies_only_its_needs() {
     let out = migrate_config_with(CONFIG, &Stub).expect("migrates");
     let d = doc(&out.yaml);

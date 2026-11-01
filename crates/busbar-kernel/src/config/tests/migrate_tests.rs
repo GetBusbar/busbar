@@ -5,6 +5,214 @@
 
 use super::*;
 
+#[test]
+fn migrate_keeps_explicit_empty_admin_chain_distinct_from_absence() {
+    for auth in ["null", "{}"] {
+        let (_, doc) = migrate_to_value(&format!("auth: {auth}\nadmin_auth: []\n"));
+        assert!(dig(&doc, &["auth", "admin_auth"])
+            .unwrap()
+            .as_sequence()
+            .unwrap()
+            .is_empty());
+    }
+    let (_, doc) = migrate_to_value("auth: {}\n");
+    assert!(dig(&doc, &["auth", "admin_auth"]).is_none());
+}
+
+#[test]
+fn migrate_preserves_admin_values_when_auth_cannot_accept_them() {
+    for raw in [
+        "auth: opaque\nadmin_auth: [test-idp-double]\n",
+        "auth: { admin_auth: opaque }\nadmin_auth: [test-idp-double]\n",
+        "auth: opaque\ngovernance: { admin_token: '${ADMIN_TOKEN}' }\n",
+        "auth: { admin_auth: opaque }\ngovernance: { admin_token: '${ADMIN_TOKEN}' }\n",
+    ] {
+        let original: serde_yaml::Value = serde_yaml::from_str(raw).unwrap();
+        let (out, doc) = migrate_to_value(raw);
+        for (key, value) in original.as_mapping().unwrap() {
+            assert_eq!(doc.as_mapping().unwrap().get(key), Some(value));
+        }
+        assert!(!out.todos.is_empty());
+        assert!(!out
+            .changes
+            .iter()
+            .any(|s| s.contains("governance.admin_token")));
+    }
+}
+
+#[test]
+fn migrate_preserves_unrecognized_pool_sections_and_destinations() {
+    for raw in [
+        "tool_pools: [unread]\n",
+        "agent_pools: opaque\n",
+        "tool_pools: [MIGRATION_PRIVATE_SENTINEL]\n",
+        "agent_pools: MIGRATION_PRIVATE_SENTINEL\n",
+        "auth: { upstream_credentials: caller }\npools: [unread]\n",
+        "global_hooks: [screen]\npools: [unread]\n",
+        "hooks: { screen: { socket: /tmp/screen, global: true } }\npools: opaque\n",
+        "global_hooks: [screen]\npools: { hooks: opaque }\n",
+        "hooks: { screen: { socket: /tmp/screen, global: true } }\npools: { hooks: opaque }\n",
+        "tool_pools: { x: { members: [a] } }\ntools: opaque\n",
+        "tool_pools: { x: { members: [a] } }\ntools: { pools: opaque }\n",
+        "agent_pools: { x: { members: [a] } }\nagents: opaque\n",
+        "agent_pools: { x: { members: [a] } }\nagents: { pools: opaque }\n",
+    ] {
+        let original: serde_yaml::Value = serde_yaml::from_str(raw).unwrap();
+        let (out, doc) = migrate_to_value(raw);
+        for (key, value) in original.as_mapping().unwrap() {
+            assert_eq!(
+                doc.as_mapping().unwrap().get(key),
+                Some(value),
+                "{}",
+                out.yaml
+            );
+        }
+        assert!(!out.todos.is_empty());
+        assert!(!out
+            .changes
+            .iter()
+            .chain(&out.todos)
+            .chain(&out.warnings)
+            .any(|line| line.contains("MIGRATION_PRIVATE_SENTINEL")));
+    }
+}
+
+#[test]
+fn migrate_preserves_unrecognized_role_entries_and_budget_groups() {
+    for role in ["opaque", "{ rpm_limit: 3, future_cap: 7 }"] {
+        let raw = format!("auth: {{ chain: [test-idp-double] }}\ngroup_map: {{ staff: {role} }}\n");
+        let original: serde_yaml::Value = serde_yaml::from_str(&raw).unwrap();
+        let (out, doc) = migrate_to_value(&raw);
+        assert_eq!(dig(&doc, &["group_map"]), dig(&original, &["group_map"]));
+        assert!(out.todos.iter().any(|t| t.contains("group_map")));
+        assert!(dig(&doc, &["auth", "role_bindings", "test-idp-double", "staff"]).is_none());
+    }
+    for group in ["opaque", "{ max_budget_cents: 3, future_cap: 7 }"] {
+        let raw = format!("governance: {{ budget_groups: {{ staff: {group} }} }}\n");
+        let original: serde_yaml::Value = serde_yaml::from_str(&raw).unwrap();
+        let (out, doc) = migrate_to_value(&raw);
+        assert_eq!(dig(&doc, &["governance"]), dig(&original, &["governance"]));
+        assert!(out.todos.iter().any(|t| t.contains("budget_groups")));
+        assert!(dig(&doc, &["groups"]).is_none());
+    }
+}
+
+#[test]
+fn migrate_preserves_non_string_export_keys() {
+    let raw = "export:\n  7: { module: unknown-sink, settings: { keep: original } }\n";
+    let original: serde_yaml::Value = serde_yaml::from_str(raw).unwrap();
+    let (out, doc) = migrate_to_value(raw);
+    assert_eq!(dig(&doc, &["export"]), dig(&original, &["export"]));
+    assert!(out.todos.iter().any(|t| t.contains("export")));
+}
+
+#[test]
+fn migrate_optional_null_auth_preserves_top_level_admin_chain() {
+    let (_, doc) = migrate_to_value(
+        "auth: null\nadmin_auth: [test-idp-double]\nproviders: {}\nmodels: {}\npools: {}\n",
+    );
+    assert_eq!(
+        dig(&doc, &["auth", "admin_auth"]).and_then(|v| v.as_sequence()),
+        Some(&vec![serde_yaml::Value::from("test-idp-double")])
+    );
+    assert!(dig(&doc, &["admin_auth"]).is_none());
+    let (_, again) = migrate_to_value(&serde_yaml::to_string(&doc).unwrap());
+    assert_eq!(doc, again);
+}
+
+#[test]
+fn migrate_optional_null_auth_preserves_governance_admin_token() {
+    let op = crate::config::operator_provider();
+    for top_chain in [String::new(), format!("admin_auth: [{op}]\n")] {
+        let raw = format!(
+            "auth: null\n{top_chain}governance:\n  admin_token: ${{MIGRATION_ADMIN_TOKEN}}\n\
+             providers: {{}}\nmodels: {{}}\npools: {{}}\n"
+        );
+        let (_, doc) = migrate_to_value(&raw);
+        assert_eq!(
+            dig(&doc, &["auth", "admin_auth"]).and_then(|v| v.as_sequence()),
+            Some(&vec![serde_yaml::Value::from(op)])
+        );
+        assert_eq!(
+            dig(&doc, &["identity-providers", op, "token", "env"]).and_then(|v| v.as_str()),
+            Some("MIGRATION_ADMIN_TOKEN")
+        );
+        assert!(dig(&doc, &["governance"]).is_none());
+        let (_, again) = migrate_to_value(&serde_yaml::to_string(&doc).unwrap());
+        assert_eq!(doc, again);
+    }
+}
+
+#[test]
+fn migrate_identity_providers_preserves_conflicting_typed_fields() {
+    let op = crate::config::operator_provider();
+    for (key, module, data, admin) in [
+        ("max_admin_scope", "test-idp-double", "read-only", "full"),
+        ("max_admin_scope", "test-idp-double", "full", "read-only"),
+        ("token", op, "{ env: DATA_TOKEN }", "{ env: ADMIN_TOKEN }"),
+    ] {
+        let raw = format!(
+            "auth:\n  chain: [{{ {module}: {{ {key}: {data}, settings: {{}} }} }}]\n\
+             \x20 admin_auth: [{{ {module}: {{ {key}: {admin}, settings: {{}} }} }}]\n\
+             providers: {{}}\nmodels: {{}}\npools: {{}}\n"
+        );
+        let (out, doc) = migrate_to_value(&raw);
+        let original: serde_yaml::Value = serde_yaml::from_str(&raw).unwrap();
+        let admin_name = format!("{module}-admin");
+        for (chain, name) in [("chain", module), ("admin_auth", admin_name.as_str())] {
+            let original_entry = &dig(&original, &["auth", chain])
+                .unwrap()
+                .as_sequence()
+                .unwrap()[0];
+            assert_eq!(
+                dig(&doc, &["auth", chain]).and_then(|v| v.as_sequence()),
+                Some(&vec![serde_yaml::Value::from(name)])
+            );
+            assert_eq!(
+                dig(&doc, &["identity-providers", name, key]),
+                dig(original_entry, &[module, key])
+            );
+            assert_eq!(
+                dig(&doc, &["identity-providers", name, "settings"]),
+                dig(original_entry, &[module, "settings"])
+            );
+        }
+        assert!(out.todos.iter().any(|t| t.contains(&admin_name)));
+        assert!(!out.todos.iter().any(|t| t.contains("ADMIN_TOKEN")));
+        let (_, again) = migrate_to_value(&serde_yaml::to_string(&doc).unwrap());
+        assert_eq!(doc, again);
+    }
+}
+
+#[test]
+fn migrate_identity_providers_still_deduplicates_equal_and_complementary_fields() {
+    let op = crate::config::operator_provider();
+    for admin in [
+        "max_admin_scope: full, token: { env: SHARED_TOKEN }",
+        "max_admin_scope: full",
+    ] {
+        let raw = format!(
+            "auth:\n  chain: [{{ {op}: {{ token: {{ env: SHARED_TOKEN }} }} }}]\n\
+             \x20 admin_auth: [{{ {op}: {{ {admin} }} }}]\n\
+             providers: {{}}\nmodels: {{}}\npools: {{}}\n"
+        );
+        let (_, doc) = migrate_to_value(&raw);
+        assert_eq!(
+            dig(&doc, &["auth", "admin_auth"]).and_then(|v| v.as_sequence()),
+            Some(&vec![serde_yaml::Value::from(op)])
+        );
+        assert_eq!(
+            dig(&doc, &["identity-providers", op, "token", "env"]).and_then(|v| v.as_str()),
+            Some("SHARED_TOKEN")
+        );
+        assert_eq!(
+            dig(&doc, &["identity-providers", op, "max_admin_scope"]).and_then(|v| v.as_str()),
+            Some("full")
+        );
+        assert!(dig(&doc, &["identity-providers", &format!("{op}-admin")]).is_none());
+    }
+}
+
 /// A representative 1.4.x config exercising every deterministic transform at once.
 const LEGACY_14X: &str = r#"
 listen: "0.0.0.0:8080"

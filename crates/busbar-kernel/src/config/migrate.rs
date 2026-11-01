@@ -380,7 +380,7 @@ pub fn migrate_config_with(
     // Runs AFTER migrate_governance/migrate_auth: both may have populated `auth.admin_auth` (the
     // governance.admin_token secret ref), and this folds the 1.4.x TOP-LEVEL `admin_auth:` list in
     // on top, letting the token-bearing entry win over a bare duplicate.
-    migrate_admin_auth(&mut root, &mut changes);
+    migrate_admin_auth(&mut root, &mut changes, &mut todos);
     // 1.5.2 scope collapse: rewrite any retired `hooks-register`/`mint` admin scope to `full`
     // (loud per-site warning). Runs after the auth/admin_auth folds so every scope site exists.
     migrate_dropped_scopes(&mut root, &mut warnings);
@@ -417,7 +417,7 @@ pub fn migrate_config_with(
     // pass sees the final `module:` of each one.
     super::migrate_export::migrate_export_projection(&mut root, &mut changes, &mut todos);
     migrate_admin_require_mtls(&mut root, &mut changes);
-    migrate_pools_upstream_credentials(&mut root, &mut changes);
+    migrate_pools_upstream_credentials(&mut root, &mut changes, &mut todos);
     migrate_identity_providers(&mut root, &mut changes, &mut todos);
     // 1.5.3: the first-party Valkey store plugin's rename to Valkey. Independent of every
     // migration above (it touches only `store.module`), so its position in this list is free; it runs
@@ -826,7 +826,18 @@ fn migrate_dropped_scopes(root: &mut Mapping, warnings: &mut Vec<String>) {
 /// `deny_unknown_fields`. Bare names carry over as bare entries; when `migrate_governance` already
 /// produced an operator-credential entry (bearing the `governance.admin_token` secret ref), the
 /// token-bearing entry WINS and the bare duplicate is skipped.
-fn migrate_admin_auth(root: &mut Mapping, changes: &mut Vec<String>) {
+fn migrate_admin_auth(root: &mut Mapping, changes: &mut Vec<String>, todos: &mut Vec<String>) {
+    if root.contains_key(Value::from("admin_auth"))
+        && root.get(Value::from("auth")).is_some_and(|auth| {
+            (!auth.is_null() && !auth.is_mapping())
+                || auth
+                    .get("admin_auth")
+                    .is_some_and(|list| !list.is_sequence())
+        })
+    {
+        todos.push("admin_auth: could not merge into malformed auth or auth.admin_auth; both values were left unchanged for manual migration".into());
+        return;
+    }
     let Some(top) = take(root, "admin_auth") else {
         return;
     };
@@ -834,10 +845,13 @@ fn migrate_admin_auth(root: &mut Mapping, changes: &mut Vec<String>) {
         Value::Sequence(s) => s,
         other => vec![other],
     };
-    let Value::Mapping(auth) = root
+    let auth = root
         .entry("auth".into())
-        .or_insert_with(|| Value::Mapping(Mapping::new()))
-    else {
+        .or_insert_with(|| Value::Mapping(Mapping::new()));
+    if auth.is_null() {
+        *auth = Value::Mapping(Mapping::new());
+    }
+    let Value::Mapping(auth) = auth else {
         return;
     };
     let mut list = take(auth, "admin_auth")
@@ -852,9 +866,7 @@ fn migrate_admin_auth(root: &mut Mapping, changes: &mut Vec<String>) {
             None => list.push(name),
         }
     }
-    if !list.is_empty() {
-        auth.insert("admin_auth".into(), Value::Sequence(list));
-    }
+    auth.insert("admin_auth".into(), Value::Sequence(list));
     changes.push(
         "top-level admin_auth -> auth.admin_auth (1.5.0 nests the admin chain under auth)".into(),
     );
@@ -996,6 +1008,38 @@ fn migrate_governance(root: &mut Mapping, changes: &mut Vec<String>, todos: &mut
         Taken::Got(m) => m,
         Taken::Absent | Taken::Malformed => return,
     };
+    if gov.contains_key(Value::from("admin_token"))
+        && root.get(Value::from("auth")).is_some_and(|auth| {
+            (!auth.is_null() && !auth.is_mapping())
+                || auth
+                    .get("admin_auth")
+                    .is_some_and(|list| !list.is_sequence())
+        })
+    {
+        root.insert("governance".into(), Value::Mapping(gov));
+        todos.push("governance.admin_token: could not merge into malformed auth or auth.admin_auth; governance and auth were left unchanged for manual migration".into());
+        return;
+    }
+    if gov
+        .get(Value::from("budget_groups"))
+        .and_then(Value::as_mapping)
+        .is_some_and(|groups| {
+            groups.values().any(|group| {
+                group.as_mapping().is_none_or(|fields| {
+                    fields.keys().any(|key| {
+                        !matches!(
+                            key.as_str(),
+                            Some("parent" | "max_budget_cents" | "budget_period")
+                        )
+                    })
+                })
+            })
+        })
+    {
+        root.insert("governance".into(), Value::Mapping(gov));
+        todos.push("governance.budget_groups: an entry is not a mapping or contains unrecognized fields; governance was left unchanged for manual migration".into());
+        return;
+    }
 
     // 1.4.x's ONLY durable governance backend was SQLite at `governance.db_path` (default
     // "busbar-governance.db") -- `GovernanceCfg` never had a `store` module-selector field (verified
@@ -1155,6 +1199,9 @@ fn migrate_governance(root: &mut Mapping, changes: &mut Vec<String>, todos: &mut
         let auth = root
             .entry("auth".into())
             .or_insert_with(|| Value::Mapping(Mapping::new()));
+        if auth.is_null() {
+            *auth = Value::Mapping(Mapping::new());
+        }
         if let Value::Mapping(auth) = auth {
             let secret_ref: Value = match token.as_str() {
                 Some(s) if s.starts_with("${") && s.ends_with('}') => {
@@ -1425,6 +1472,29 @@ fn migrate_auth(
         );
         return;
     };
+    if gm.values().any(|binding| {
+        binding.as_mapping().is_none_or(|fields| {
+            fields.keys().any(|key| {
+                !matches!(
+                    key.as_str(),
+                    Some(
+                        "allowed_pools"
+                            | "budget_group"
+                            | "group"
+                            | "admin_scope"
+                            | "rpm_limit"
+                            | "tpm_limit"
+                            | "max_budget_cents"
+                            | "budget_period"
+                    )
+                )
+            })
+        })
+    }) {
+        root.insert("group_map".into(), Value::Mapping(gm));
+        todos.push("group_map: a role is not a mapping or contains unrecognized fields; the group_map was left unchanged for manual migration".into());
+        return;
+    }
     let mut bindings = Mapping::new();
     let mut generated_groups: Mapping = Mapping::new();
     {
@@ -1670,6 +1740,23 @@ fn uniq_def_name(defs: &Mapping, base: &str) -> String {
 ///
 /// A config already in the new shape (a `hooks:` map of `module:` defs) passes through untouched.
 fn migrate_hooks_block(root: &mut Mapping, changes: &mut Vec<String>, todos: &mut Vec<String>) {
+    let needs_all_pools = root.contains_key(Value::from("global_hooks"))
+        || root
+            .get(Value::from(Kind::Hook.root()))
+            .and_then(Value::as_mapping)
+            .is_some_and(|hooks| {
+                hooks
+                    .values()
+                    .any(|hook| hook.get("global").and_then(Value::as_bool) == Some(true))
+            });
+    if needs_all_pools
+        && root.get(Value::from("pools")).is_some_and(|pools| {
+            !pools.is_mapping() || pools.get("hooks").is_some_and(|hooks| !hooks.is_sequence())
+        })
+    {
+        todos.push("pools or pools.hooks: has an incompatible shape; global hook definitions and attachments were left unchanged because their all-pools references cannot be merged".into());
+        return;
+    }
     // Take-on-match (see `Taken`): a `hooks:` that is not a mapping stays EXACTLY where the operator
     // wrote it, with a TODO, instead of being lifted out and dropped.
     let hooks_src = match take_mapping(root, Kind::Hook.root(), "", todos) {
@@ -1855,7 +1942,16 @@ fn migrate_unified_pools(root: &mut Mapping, changes: &mut Vec<String>, todos: &
     // The unreleased per-plane pool sections, by the section their pools move under.
     let mut moving: Vec<(String, &'static str, Value, Value)> = Vec::new();
     for (old, section) in [("tool_pools", sections[0]), ("agent_pools", sections[1])] {
-        if let Some(Value::Mapping(folded)) = take(root, old) {
+        if root
+            .get(Value::from(old))
+            .is_some_and(|value| !value.is_mapping())
+        {
+            todos.push(format!(
+                "{old}: is not a mapping; it was left unchanged for manual migration"
+            ));
+            continue;
+        }
+        if let Taken::Got(folded) = take_mapping(root, old, "", todos) {
             for (name, def) in folded {
                 moving.push((old.to_string(), section, name, def));
             }
@@ -1890,6 +1986,13 @@ fn migrate_unified_pools(root: &mut Mapping, changes: &mut Vec<String>, todos: &
     let mut left: Vec<(String, Value, Value)> = Vec::new();
     for (old, section, name, def) in moving {
         let n = name.as_str().unwrap_or("?").to_string();
+        if root.get(Value::from(section)).is_some_and(|dest| {
+            !dest.is_mapping() || dest.get(pools_key).is_some_and(|pools| !pools.is_mapping())
+        }) {
+            todos.push(format!("{old}: could not move into malformed {section} or {section}.{pools_key}; source and destination were left unchanged for manual migration"));
+            left.push((old, name, def));
+            continue;
+        }
         if !matches!(root.get(Value::from(section)), Some(Value::Mapping(_))) {
             root.insert(section.into(), Value::Mapping(Mapping::new()));
         }
@@ -2343,7 +2446,24 @@ fn migrate_admin_require_mtls(root: &mut Mapping, changes: &mut Vec<String>) {
 /// default. IDEMPOTENT: no `auth.upstream_credentials` ⇒ nothing to move. An existing
 /// `pools.upstream_credentials` WINS (it is already the new grammar, so it is the operator's most
 /// recent statement of intent) and the retired key is dropped with a named change entry.
-fn migrate_pools_upstream_credentials(root: &mut Mapping, changes: &mut Vec<String>) {
+fn migrate_pools_upstream_credentials(
+    root: &mut Mapping,
+    changes: &mut Vec<String>,
+    todos: &mut Vec<String>,
+) {
+    if root
+        .get(Value::from("pools"))
+        .is_some_and(|pools| !pools.is_mapping())
+    {
+        if root
+            .get(Value::from("auth"))
+            .and_then(|auth| auth.get("upstream_credentials"))
+            .is_some()
+        {
+            todos.push("auth.upstream_credentials: could not move into non-mapping pools; both values were left unchanged for manual migration".into());
+        }
+        return;
+    }
     let Some(Value::Mapping(auth)) = root.get_mut(Value::from("auth")) else {
         return;
     };
@@ -2353,9 +2473,6 @@ fn migrate_pools_upstream_credentials(root: &mut Mapping, changes: &mut Vec<Stri
     let pools = root
         .entry("pools".into())
         .or_insert_with(|| Value::Mapping(Mapping::new()));
-    if !matches!(pools, Value::Mapping(_)) {
-        *pools = Value::Mapping(Mapping::new());
-    }
     if let Value::Mapping(pm) = pools {
         if pm.contains_key(Value::from("upstream_credentials")) {
             changes.push(
@@ -2498,7 +2615,7 @@ fn migrate_identity_providers(
         .collect();
 
     // Lift one inline entry into a definition, REUSING the existing definition for that module when
-    // one is already present AND its settings AGREE (the dedupe). Returns the NAME the site should
+    // one is already present AND its carried fields AGREE (the dedupe). Returns the NAME the site should
     // now reference. `site` names where the entry came from (`chain` / `admin_auth` / `methods`) and
     // is used only to name a SPLIT definition deterministically.
     //
@@ -2527,6 +2644,18 @@ fn migrate_identity_providers(
                 .and_then(|d| d.get(Value::from("settings")))
                 .cloned()
         };
+        let compatible = |name: &str| {
+            let existing = defs.get(Value::from(name)).and_then(Value::as_mapping);
+            ["max_admin_scope", "token", "settings"].iter().all(|key| {
+                match (
+                    existing.and_then(|d| d.get(Value::from(*key))),
+                    body.get(Value::from(*key)),
+                ) {
+                    (Some(old), Some(new)) => old == new,
+                    _ => true,
+                }
+            })
+        };
         // Every definition already standing for this module, in insertion order.
         let candidates: Vec<String> = by_module
             .iter()
@@ -2543,8 +2672,14 @@ fn migrate_identity_providers(
         let reuse = if may_split {
             candidates
                 .iter()
-                .find(|n| want.is_none() || settings_of(defs, n).as_ref() == want)
-                .or_else(|| candidates.iter().find(|n| settings_of(defs, n).is_none()))
+                .find(|n| {
+                    compatible(n) && (want.is_none() || settings_of(defs, n).as_ref() == want)
+                })
+                .or_else(|| {
+                    candidates
+                        .iter()
+                        .find(|n| compatible(n) && settings_of(defs, n).is_none())
+                })
                 .cloned()
         } else {
             candidates.first().cloned()
@@ -2588,16 +2723,30 @@ fn migrate_identity_providers(
         defs.insert(Value::from(name.as_str()), Value::Mapping(def));
         by_module.push((module.to_string(), name.clone()));
         if split {
+            let settings_conflict = candidates.iter().all(|name| {
+                matches!((settings_of(defs, name).as_ref(), want),
+                    (Some(old), Some(new)) if old != new)
+            });
+            let field = if settings_conflict {
+                "`settings:`"
+            } else {
+                "typed fields"
+            };
+            let values = if settings_conflict {
+                "settings"
+            } else {
+                "fields"
+            };
             changes.push(format!(
                 "auth.{site} entry `{module}: {{ … }}` -> a SECOND identity-providers.{name} \
-                 definition (its `settings:` differ from the existing `{module}` definition, so the \
+                 definition (its {field} differ from the existing `{module}` definition, so the \
                  two were NOT deduped)"
             ));
             todos.push(format!(
                 "identity-providers.{name}: `{module}` was configured on more than one auth plane \
-                 with DIFFERENT `settings:`, so the migrator kept BOTH — `{name}` carries the \
-                 `auth.{site}` settings and is referenced from there; the other definition keeps \
-                 the settings of the site that declared it first. Nothing was lost; rename them to \
+                 with DIFFERENT {field}, so the migrator kept BOTH — `{name}` carries the \
+                 `auth.{site}` {values} and is referenced from there; the other definition keeps \
+                 the {values} of the site that declared it first. Nothing was lost; rename them to \
                  whatever your `role_bindings:` should key off, or collapse them if the difference \
                  was accidental."
             ));

@@ -166,7 +166,13 @@ pub(super) fn migrate_export_projection(
     };
     let mut out = Mapping::new();
     for key in export.keys().cloned().collect::<Vec<_>>() {
-        let name = key.as_str().unwrap_or_default().to_string();
+        let Some(name) = key.as_str().map(str::to_string) else {
+            if let Some(value) = export.get(&key) {
+                out.insert(key, value.clone());
+            }
+            todos.push("export: an instance name is not a string; its definition was left unchanged for manual migration".into());
+            continue;
+        };
         match take_mapping(&mut export, &name, Kind::Export.root(), todos) {
             // Left EXACTLY as written, in place, with the TODO already pushed by `take_mapping`.
             Taken::Malformed => {

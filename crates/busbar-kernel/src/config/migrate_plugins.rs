@@ -217,6 +217,19 @@ pub(super) fn migrate_over(
     }
 }
 
+fn migration_json(
+    value: Option<&Value>,
+    path: &str,
+    ledger: &mut Ledger<'_>,
+) -> Result<serde_json::Value, ()> {
+    match value {
+        None => Ok(serde_json::Value::Null),
+        Some(value) => serde_json::to_value(value).map_err(|_| {
+            ledger.todos.push(format!("{path}: cannot be represented as plugin JSON; the original YAML was preserved and the affected plugin migration was not called"));
+        }),
+    }
+}
+
 /// Every plugin section the configuration selects, in document order: the store, each named
 /// instance of the named-map kinds, and each plane's sections (with the ones it consumes,
 /// read-only).
@@ -227,10 +240,6 @@ fn sites(
     ledger: &mut Ledger<'_>,
 ) -> Vec<Site> {
     let mut out = Vec::new();
-    let json = |v: Option<&Value>| -> serde_json::Value {
-        v.and_then(|v| serde_json::to_value(v).ok())
-            .unwrap_or(serde_json::Value::Null)
-    };
     for kind in [
         Kind::Store,
         Kind::Secret,
@@ -245,12 +254,18 @@ fn sites(
         };
         if kind == Kind::Store {
             if let Some(module) = section.get(Value::from("module")).and_then(Value::as_str) {
+                let path = format!("{key}.settings");
+                let Ok(settings) =
+                    migration_json(section.get(Value::from("settings")), &path, ledger)
+                else {
+                    continue;
+                };
                 out.push(Site {
-                    path: format!("{key}.settings"),
+                    path,
                     at: vec![key.to_string(), "settings".to_string()],
                     kind: word.to_string(),
                     module: module.to_string(),
-                    settings: json(section.get(Value::from("settings"))),
+                    settings,
                     read_only: Vec::new(),
                 });
             }
@@ -263,22 +278,30 @@ fn sites(
             let Some(module) = entry.get(Value::from("module")).and_then(Value::as_str) else {
                 continue;
             };
+            let path = format!("{key}.{name}.settings");
+            let Ok(settings) = migration_json(entry.get(Value::from("settings")), &path, ledger)
+            else {
+                continue;
+            };
             out.push(Site {
-                path: format!("{key}.{name}.settings"),
+                path,
                 at: vec![key.to_string(), name.to_string(), "settings".to_string()],
                 kind: word.to_string(),
                 module: module.to_string(),
-                settings: json(entry.get(Value::from("settings"))),
+                settings,
                 read_only: Vec::new(),
             });
         }
     }
-    let mut providers: Option<Option<serde_json::Value>> = None;
-    for plane in planes {
+    let mut providers: Option<Result<Option<serde_json::Value>, ()>> = None;
+    'planes: for plane in planes {
         let mut sections = serde_json::Map::new();
         for s in &plane.owns {
             if let Some(v) = root.get(Value::from(*s)) {
-                sections.insert((*s).to_string(), json(Some(v)));
+                let Ok(value) = migration_json(Some(v), s, ledger) else {
+                    continue 'planes;
+                };
+                sections.insert((*s).to_string(), value);
             }
         }
         // A plane none of whose own sections is written is not configured: nothing to migrate.
@@ -291,11 +314,21 @@ fn sites(
                 continue;
             }
             let value = if *s == Kind::Transport.root() {
-                providers
+                match providers
                     .get_or_insert_with(|| merged_providers(root, host, ledger))
                     .clone()
+                {
+                    Ok(value) => value,
+                    Err(()) => continue 'planes,
+                }
             } else {
-                root.get(Value::from(*s)).map(|v| json(Some(v)))
+                match root.get(Value::from(*s)) {
+                    None => None,
+                    Some(v) => match migration_json(Some(v), s, ledger) {
+                        Ok(value) => Some(value),
+                        Err(()) => continue 'planes,
+                    },
+                }
             };
             if let Some(v) = value {
                 sections.insert((*s).to_string(), v);
@@ -323,11 +356,12 @@ fn merged_providers(
     root: &Mapping,
     host: &dyn MigrateHost,
     ledger: &mut Ledger<'_>,
-) -> Option<serde_json::Value> {
+) -> Result<Option<serde_json::Value>, ()> {
     let key = Kind::Transport.root();
     let deployment = root
         .get(Value::from(key))
-        .and_then(|v| serde_json::to_value(v).ok());
+        .map(|value| migration_json(Some(value), key, ledger))
+        .transpose()?;
     let catalog = match host.providers_catalog() {
         Ok(catalog) => catalog,
         Err(why) => {
@@ -341,10 +375,10 @@ fn merged_providers(
         }
     };
     let Some(mut merged) = catalog else {
-        return deployment;
+        return Ok(deployment);
     };
     let Some(serde_json::Value::Object(entries)) = deployment else {
-        return Some(serde_json::Value::Object(merged));
+        return Ok(Some(serde_json::Value::Object(merged)));
     };
     for (name, entry) in entries {
         let entry = match (merged.remove(&name), entry) {
@@ -355,7 +389,7 @@ fn merged_providers(
         };
         merged.insert(name, entry);
     }
-    Some(serde_json::Value::Object(merged))
+    Ok(Some(serde_json::Value::Object(merged)))
 }
 
 /// The sections a plane's migration is handed and may answer: the one that declares it and the
@@ -768,12 +802,14 @@ fn pin_unserved(
             .entry(Value::from("plugins"))
             .or_insert_with(|| Value::Mapping(Mapping::new()));
         let Value::Mapping(plugins) = plugins else {
+            ledger.todos.push("plugins: is not a mapping; required plugin pins could not be added. The original value was preserved; fix plugins and re-run migration".into());
             return;
         };
         let list = plugins
             .entry(Value::from("fetch"))
             .or_insert_with(|| Value::Sequence(Vec::new()));
         let Value::Sequence(list) = list else {
+            ledger.todos.push("plugins.fetch: is not a list; required plugin pins could not be added. The original value was preserved; fix plugins.fetch and re-run migration".into());
             return;
         };
         let mut entry = Mapping::new();
