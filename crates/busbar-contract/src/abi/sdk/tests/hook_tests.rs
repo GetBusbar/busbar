@@ -957,8 +957,10 @@ fn red_the_content_body_a_hook_sees_is_the_hosts_own_bytes() {
 
 // ── pending on the far end (THE DESIGN, the plugin ABI: Ready|Pending(wake)) ─────────────────────
 
-/// How often the scripted connector's ESTABLISH was entered.
-static ESTABLISHED: AtomicU32 = AtomicU32::new(0);
+thread_local! {
+    /// Calls on this test thread: the fixture invokes ESTABLISH synchronously.
+    static ESTABLISHED: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
 /// What the scripted far end answers once the established stream completes.
 const DOWN: &str = "the far end is down";
 
@@ -972,7 +974,12 @@ extern "C" fn establish_pends(
     // SAFETY: every service `in` leads with a `ServiceHead`; `out` is the SDK's, live for the call.
     let (head, out) = unsafe { (*input.cast::<ServiceHead>(), &mut *out) };
     assert_eq!((head.op, head.handle.seq), (service::ESTABLISH, 0));
-    let o = if ESTABLISHED.fetch_add(1, Ordering::SeqCst).is_multiple_of(2) {
+    let entered = ESTABLISHED.with(|calls| {
+        let entered = calls.get();
+        calls.set(entered + 1);
+        entered
+    });
+    let o = if entered.is_multiple_of(2) {
         Outcome::Pending
     } else {
         out.error = AbiStr {
@@ -1040,6 +1047,7 @@ const TICKET: Ticket = Ticket {
 /// starts over, and a ticket-less call cannot pend at all.
 #[test]
 fn red_a_hook_waiting_on_its_exchange_pends_and_resumes_on_the_wake() {
+    ESTABLISHED.set(0);
     let tables = HostTables {
         size: std::mem::size_of::<HostTables>() as u32,
         _reserved: 0,
@@ -1066,7 +1074,7 @@ fn red_a_hook_waiting_on_its_exchange_pends_and_resumes_on_the_wake() {
         (0, 0),
         "PENDING writes nothing"
     );
-    assert_eq!(ESTABLISHED.load(Ordering::SeqCst), 1);
+    assert_eq!(ESTABLISHED.get(), 1);
 
     input.head.flags = FLAG_RESUME;
     let mut out: DecideOut = zeroed();
@@ -1075,7 +1083,7 @@ fn red_a_hook_waiting_on_its_exchange_pends_and_resumes_on_the_wake() {
         Outcome::Failed
     );
     assert_eq!(error_text(&out.head), DOWN);
-    assert_eq!(ESTABLISHED.load(Ordering::SeqCst), 2);
+    assert_eq!(ESTABLISHED.get(), 2);
 
     // A ticket-less `decide` is answered at once: its exchange cannot pend.
     let mut none = frame.input();
@@ -1683,6 +1691,7 @@ impl HookOpen for OpenUnsendable {
 /// build the request; the op answers it as the builder's, nothing sent, with no side channel.
 #[test]
 fn red_a_request_the_builder_refuses_answers_the_builders_text() {
+    ESTABLISHED.set(0);
     let tables = HostTables {
         size: std::mem::size_of::<HostTables>() as u32,
         _reserved: 0,
@@ -1698,7 +1707,6 @@ fn red_a_request_the_builder_refuses_answers_the_builders_text() {
     let frame = frame_with(caps(4, 64));
     let mut input = frame.input();
     input.head.ticket = TICKET;
-    let before = ESTABLISHED.load(Ordering::SeqCst);
     let mut out: DecideOut = zeroed();
     assert_eq!(
         call::<Decide<OpenUnsendable>>(p, slot::DECIDE, &input, &mut out),
@@ -1708,11 +1716,7 @@ fn red_a_request_the_builder_refuses_answers_the_builders_text() {
         error_text(&out.head),
         "unbuilt: the projection does not serialise"
     );
-    assert_eq!(
-        ESTABLISHED.load(Ordering::SeqCst),
-        before,
-        "nothing was sent"
-    );
+    assert_eq!(ESTABLISHED.get(), 0, "nothing was sent");
     closed::<OpenUnsendable>(p);
 }
 
