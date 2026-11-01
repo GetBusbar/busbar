@@ -523,13 +523,15 @@ impl Pairing {
             let mut piece_custody = piece_custody.into_iter();
             for piece in pieces {
                 let owner = piece_custody.next().unwrap_or_else(|| custody.clone());
+                // Only payload is a LINE frame: the same predicate `Bridge::sort` crosses by, so
+                // a field block, a failed stream's reason or a stream's end is never counted
+                // accepted here and never queued there (a handed job would be uncounted).
                 let line = state
                     .bridge
                     .lines(leg)
                     .iter()
                     .any(|(stream, _)| *stream == piece.stream)
-                    && !piece.fields
-                    && !piece.ends_stream();
+                    && is_line_payload(&piece);
                 let bytes = piece.bytes.len() as u64;
                 if line {
                     state.publications.outcome.accepted_frames += 1;
