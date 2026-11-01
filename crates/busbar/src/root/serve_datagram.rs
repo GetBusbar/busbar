@@ -21,6 +21,7 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 use std::time::Instant;
 
@@ -29,6 +30,7 @@ use busbar_core_connector::datagram::{
 };
 use busbar_core_connector::framer::Got;
 use busbar_core_connector::udp::{ReadyPort, MAX_DATAGRAM};
+use busbar_kernel::detached::{self, DetachedTasks};
 use busbar_kernel::plane_driver::{CallerEnd, HeadFields, SessionCaller};
 use tokio::sync::{mpsc, oneshot, Notify};
 
@@ -102,11 +104,22 @@ impl ClaimDoors {
 pub struct ClaimDoor {
     port: ReadyPort,
     runtime: tokio::runtime::Handle,
+    detached: Option<Arc<DetachedTasks>>,
+    shutdown: Option<tokio::sync::watch::Receiver<bool>>,
+    closed: AtomicBool,
     assocs: PortAssociations,
     legs: Mutex<HashMap<u64, Arc<CallerLeg>>>,
     /// Woken when an association joins, or a writer ran what the port's task queued for an
     /// association it had out, so the port's task keeps its clock.
     joined: Notify,
+}
+
+struct Serving(Arc<ClaimDoor>);
+
+impl Drop for Serving {
+    fn drop(&mut self) {
+        self.0.close();
+    }
 }
 
 impl std::fmt::Debug for ClaimDoor {
@@ -125,12 +138,37 @@ impl ClaimDoor {
         let door = Arc::new(ClaimDoor {
             port,
             runtime: tokio::runtime::Handle::current(),
+            detached: detached::worker_detached(),
+            shutdown: detached::worker_shutdown(),
+            closed: AtomicBool::new(false),
             assocs: PortAssociations::new(),
             legs: Mutex::new(HashMap::new()),
             joined: Notify::new(),
         });
-        tokio::spawn(Arc::clone(&door).run());
+        door.spawn(Arc::clone(&door).run());
         door
+    }
+
+    fn spawn<F>(&self, future: F) -> tokio::task::JoinHandle<F::Output>
+    where
+        F: std::future::Future + Send + 'static,
+        F::Output: Send + 'static,
+    {
+        match &self.detached {
+            Some(tracker) => tracker.spawn_on(&self.runtime, future),
+            None => self.runtime.spawn(future),
+        }
+    }
+
+    fn close(&self) {
+        if self.closed.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        let legs = std::mem::take(&mut *lock(&self.legs));
+        self.joined.notify_one();
+        for leg in legs.into_values() {
+            leg.failed();
+        }
     }
 
     /// The port's own address: the one candidate every association on it advertises.
@@ -157,10 +195,24 @@ impl ClaimDoor {
     }
 
     /// THE PORT'S TASK: every datagram read and handed to the association it belongs to, the
-    /// associations' clock kept, what each yields handed to its leg; until the door is dropped.
-    async fn run(self: Arc<Self>) {
+    /// associations' clock kept, what each yields handed to its leg; until shutdown or cancellation.
+    fn run(self: Arc<Self>) -> impl std::future::Future<Output = ()> + Send + 'static {
+        // Ownership is captured before scheduling, including cancellation before first poll.
+        let guard = Serving(self);
+        async move {
+            let serving = guard;
+            serving.0.run_loop().await;
+        }
+    }
+
+    async fn run_loop(&self) {
+        let shutdown = detached::shutdown_fired(self.shutdown.clone());
+        tokio::pin!(shutdown);
         let mut buf = vec![0_u8; MAX_DATAGRAM];
         loop {
+            if self.closed.load(Ordering::Acquire) {
+                return;
+            }
             let deadline = self.assocs.deadline();
             let read = std::future::poll_fn(|cx| {
                 self.port
@@ -179,6 +231,7 @@ impl ClaimDoor {
                 Joined,
             }
             let woke = tokio::select! {
+                () = &mut shutdown => return,
                 got = read => Woke::Read(got),
                 () = sleep => Woke::Clock,
                 () = self.joined.notified() => Woke::Joined,
@@ -207,6 +260,11 @@ impl ClaimDoor {
             leg.bind(id);
             lock(&self.legs).insert(id, Arc::clone(leg));
         })?;
+        // A shutdown can retire the existing legs while admission is publishing this one.
+        // Once add_with releases the port map, retire a late association through its pairing.
+        if self.closed.load(Ordering::Acquire) {
+            leg.failed();
+        }
         self.joined.notify_one();
         Ok(id)
     }
@@ -250,8 +308,9 @@ impl ClaimDoor {
 
     /// Stop carrying association `id`: its framing finishes as it drops.
     fn leave(&self, id: u64) {
-        lock(&self.legs).remove(&id);
+        let gone = lock(&self.legs).remove(&id);
         self.assocs.remove(id);
+        drop(gone);
     }
 }
 
@@ -276,18 +335,22 @@ struct Outbound {
     closed: bool,
 }
 
-struct Draining<'a>(&'a CallerLeg);
+struct Draining(Arc<CallerLeg>);
 
-impl Drop for Draining<'_> {
+impl Drop for Draining {
     fn drop(&mut self) {
-        let unfinished = {
+        let (unfinished, closed) = {
             let mut out = lock(&self.0.outbound);
-            std::mem::take(&mut out.draining)
+            (std::mem::take(&mut out.draining), out.closed)
         };
+        if closed {
+            return;
+        }
         if unfinished {
             self.0.failed();
+        } else {
+            self.0.released.notify_waiters();
         }
-        self.0.released.notify_waiters();
     }
 }
 
@@ -334,7 +397,7 @@ impl CallerLeg {
                 if release {
                     match self.door.upgrade() {
                         Some(door) => {
-                            door.runtime.spawn(Arc::clone(self).release());
+                            door.spawn(Arc::clone(self).release());
                         }
                         None => self.failed(),
                     }
@@ -344,9 +407,8 @@ impl CallerLeg {
             if g.stream == 0 || g.bytes.is_empty() {
                 continue;
             }
-            let sent = lock(&self.to_session)
-                .as_ref()
-                .is_some_and(|tx| tx.try_send(g.bytes).is_ok());
+            let to_session = lock(&self.to_session).clone();
+            let sent = to_session.is_some_and(|tx| tx.try_send(g.bytes).is_ok());
             if !sent {
                 // A plane that does not keep up with its caller ends the session.
                 self.failed();
@@ -357,8 +419,24 @@ impl CallerLeg {
 
     /// Drain accepted early messages before later writers; no host lock crosses the framer
     /// or the pairing's callbacks.
-    async fn release(self: Arc<Self>) {
-        let _draining = Draining(&self);
+    fn release(self: Arc<Self>) -> impl std::future::Future<Output = ()> + Send + 'static {
+        let guard = Draining(self);
+        let shutdown = guard
+            .0
+            .door
+            .upgrade()
+            .and_then(|door| door.shutdown.clone());
+        async move {
+            let draining = guard;
+            tokio::select! {
+                biased;
+                () = detached::shutdown_fired(shutdown) => {},
+                () = draining.0.release_held() => {},
+            }
+        }
+    }
+
+    async fn release_held(&self) {
         loop {
             let next = {
                 let mut out = lock(&self.outbound);
@@ -451,14 +529,20 @@ impl LegSink for CallerLeg {
     }
 
     fn close(&self) {
-        {
+        let abandoned = {
             let mut out = lock(&self.outbound);
+            if out.closed {
+                return;
+            }
             out.closed = true;
-            out.held.clear();
-        }
+            out.draining = false;
+            std::mem::take(&mut out.held)
+        };
+        drop(abandoned);
         self.writes.close();
         self.released.notify_waiters();
-        lock(&self.to_session).take();
+        let to_session = lock(&self.to_session).take();
+        drop(to_session);
         let id = lock(&self.id).take();
         if let (Some(door), Some(id)) = (self.door.upgrade(), id) {
             door.leave(id);

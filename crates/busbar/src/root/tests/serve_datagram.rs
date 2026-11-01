@@ -402,6 +402,316 @@ impl std::task::Wake for WriteWake {
     }
 }
 
+/// Worker registration belongs to the serving thread, never the publishing callback thread.
+/// A separate current-thread reactor also lets cancellation precede every task's first poll.
+struct ControlledDoor {
+    door: Arc<ClaimDoor>,
+    leg: Arc<CallerLeg>,
+    pairing: Arc<Pairing>,
+    _rx: mpsc::Receiver<Vec<u8>>,
+    framer: Arc<busbar_test_kit::root_door_fixtures::datagram_order::Recording>,
+    id: u64,
+    tracker: Arc<busbar_kernel::detached::DetachedTasks>,
+    shutdown: tokio::sync::watch::Sender<bool>,
+    stop: Option<tokio::sync::oneshot::Sender<()>>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl ControlledDoor {
+    fn new(poll_tasks: bool) -> Self {
+        let tracker = busbar_kernel::detached::DetachedTasks::new();
+        let serving_tracker = Arc::clone(&tracker);
+        let (shutdown, shutdown_rx) = tokio::sync::watch::channel(false);
+        let (stop, stopped) = tokio::sync::oneshot::channel();
+        let (ready, fixture) = std::sync::mpsc::channel();
+        let thread = std::thread::spawn(move || {
+            busbar_kernel::detached::set_worker_detached(serving_tracker);
+            busbar_kernel::detached::set_worker_shutdown(shutdown_rx);
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            {
+                let _entered = runtime.enter();
+                let (door, leg, pairing, rx) = leg(8);
+                let framer = busbar_test_kit::root_door_fixtures::datagram_order::Recording::new();
+                let id = join_recording(&door, &leg, &framer);
+                assert!(ready.send((door, leg, pairing, rx, framer, id)).is_ok());
+            }
+            if poll_tasks {
+                runtime.block_on(async {
+                    let _ = stopped.await;
+                });
+            } else {
+                let _ = stopped.blocking_recv();
+            }
+            // Dropping this reactor cancels even futures it never polled.
+            drop(runtime);
+        });
+        let (door, leg, pairing, rx, framer, id) = fixture
+            .recv_timeout(FRAMER_PARK_WAIT)
+            .expect("serving reactor ready");
+        Self {
+            door,
+            leg,
+            pairing,
+            _rx: rx,
+            framer,
+            id,
+            tracker,
+            shutdown,
+            stop: Some(stop),
+            thread: Some(thread),
+        }
+    }
+
+    fn publish_channel(&self) {
+        let leg = Arc::clone(&self.leg);
+        std::thread::spawn(move || {
+            assert!(tokio::runtime::Handle::try_current().is_err());
+            assert!(busbar_kernel::detached::worker_detached().is_none());
+            assert!(busbar_kernel::detached::worker_shutdown().is_none());
+            leg.take(
+                vec![got(SESSION_CHANNEL, b"label: events\r\n", true)],
+                Instant::now(),
+            );
+        })
+        .join()
+        .unwrap();
+    }
+
+    fn assert_tracked(&self) {
+        use std::future::Future;
+        let wake = std::task::Waker::from(Arc::new(WriteWake::default()));
+        let mut cx = std::task::Context::from_waker(&wake);
+        assert!(Box::pin(self.tracker.drained())
+            .as_mut()
+            .poll(&mut cx)
+            .is_pending());
+    }
+
+    fn stop(&mut self) {
+        if let Some(stop) = self.stop.take() {
+            let _ = stop.send(());
+        }
+        if let Some(thread) = self.thread.take() {
+            thread.join().unwrap();
+        }
+    }
+}
+
+impl Drop for ControlledDoor {
+    fn drop(&mut self) {
+        self.stop();
+    }
+}
+
+#[tokio::test]
+async fn ordinary_thread_publication_uses_the_serving_tracker_and_reactor_in_fifo_order() {
+    use busbar_kernel::plane_driver::CallerEnd;
+
+    let mut control = ControlledDoor::new(true);
+    control.assert_tracked(); // The port's receive loop itself owns shutdown custody.
+    let caller = caller_for(Arc::clone(&control.leg));
+    assert!(CallerEnd::write(&caller, b"first").await);
+    assert!(CallerEnd::write_text(&caller, b"second").await);
+    control.publish_channel();
+    assert!(
+        tokio::time::timeout(FRAMER_PARK_WAIT, CallerEnd::write(&caller, b"last"),)
+            .await
+            .unwrap()
+    );
+    let emitted = control.framer.emitted();
+    control.shutdown.send(true).unwrap();
+    tokio::time::timeout(FRAMER_PARK_WAIT, control.tracker.drained())
+        .await
+        .expect("tracked port and early drainer retired");
+    control.stop();
+
+    assert_eq!(
+        emitted,
+        vec![b"first".to_vec(), b"second".to_vec(), b"last".to_vec()]
+    );
+    assert!(control.pairing.closed());
+    assert!(!CallerEnd::write(&caller, b"after shutdown").await);
+}
+
+#[tokio::test]
+async fn shutdown_retires_a_blocked_accepted_drainer_and_wakes_the_later_writer() {
+    use busbar_kernel::plane_driver::CallerEnd;
+    use std::future::Future;
+    use std::task::{Context, Poll, Waker};
+
+    let mut control = ControlledDoor::new(true);
+    let caller = caller_for(Arc::clone(&control.leg));
+    assert!(CallerEnd::write(&caller, b"first").await);
+    assert!(CallerEnd::write(&caller, b"second").await);
+    let (entered, inside) = std::sync::mpsc::channel();
+    let (release, resume) = std::sync::mpsc::channel();
+    let resume = std::sync::Mutex::new(resume);
+    control.framer.observe(Arc::new(move |bytes| {
+        if bytes == b"occupied" {
+            entered.send(()).unwrap();
+            resume.lock().unwrap().recv().unwrap();
+        }
+    }));
+    let holder = {
+        let door = Arc::clone(&control.door);
+        let id = control.id;
+        std::thread::spawn(move || {
+            door.emit(
+                id,
+                SESSION_CHANNEL,
+                b"occupied",
+                true,
+                false,
+                Instant::now(),
+            )
+        })
+    };
+    inside
+        .recv_timeout(FRAMER_PARK_WAIT)
+        .expect("framer borrowed");
+    control.publish_channel();
+    let parked = tokio::time::timeout(FRAMER_PARK_WAIT, async {
+        loop {
+            // Rendezvous with the real pending Emit: its first accepted item has left the queue.
+            if lock(&control.leg.outbound).held.len() == 1 {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await;
+    let wake = Arc::new(WriteWake::default());
+    let waker = Waker::from(Arc::clone(&wake));
+    let mut cx = Context::from_waker(&waker);
+    let mut later = Box::pin(CallerEnd::write(&caller, b"never accepted"));
+    let before = later.as_mut().poll(&mut cx);
+    control.shutdown.send(true).unwrap();
+    // Shutdown must finish independently of the ordinary thread still borrowing the framer.
+    let drained = tokio::time::timeout(FRAMER_PARK_WAIT, control.tracker.drained()).await;
+    let after = later.as_mut().poll(&mut cx);
+    let notified = wake.0.load(std::sync::atomic::Ordering::SeqCst);
+    release.send(()).unwrap();
+    let _ = holder.join().unwrap();
+    control.stop();
+
+    assert!(
+        parked.is_ok(),
+        "first accepted message waited for the borrowed framer"
+    );
+    assert!(
+        drained.is_ok(),
+        "accepted drainer is tracked and shutdown-aware"
+    );
+    assert!(before.is_pending());
+    assert!(notified > 0);
+    assert_eq!(after, Poll::Ready(false));
+    assert!(control.pairing.closed());
+    assert!(lock(&control.leg.outbound).held.is_empty());
+    assert!(!lock(&control.leg.outbound).draining);
+    assert_eq!(control.framer.emitted(), vec![b"occupied".to_vec()]);
+}
+
+#[tokio::test]
+async fn unpolled_runtime_cancellation_releases_accepted_drainer_custody() {
+    use busbar_kernel::plane_driver::CallerEnd;
+
+    let mut control = ControlledDoor::new(false);
+    let caller = caller_for(Arc::clone(&control.leg));
+    assert!(CallerEnd::write(&caller, b"first").await);
+    assert!(CallerEnd::write(&caller, b"second").await);
+    control.publish_channel();
+    control.assert_tracked(); // Synchronous reservations, although neither task has been polled.
+    assert!(lock(&control.leg.outbound).draining);
+    assert_eq!(lock(&control.leg.outbound).held.len(), 2);
+    control.stop();
+    tokio::time::timeout(FRAMER_PARK_WAIT, control.tracker.drained())
+        .await
+        .expect("unpolled task reservations released");
+
+    assert!(control.pairing.closed());
+    assert!(lock(&control.leg.outbound).held.is_empty());
+    assert!(!lock(&control.leg.outbound).draining);
+    assert!(control.framer.emitted().is_empty());
+    assert!(!CallerEnd::write(&caller, b"after cancellation").await);
+}
+
+#[tokio::test]
+async fn admission_finishing_after_shutdown_retires_its_new_pairing_and_association() {
+    let mut control = ControlledDoor::new(true);
+    control.shutdown.send(true).unwrap();
+    tokio::time::timeout(FRAMER_PARK_WAIT, control.tracker.drained())
+        .await
+        .expect("serving loop retired");
+    let (tx, mut rx) = mpsc::channel(8);
+    let leg = CallerLeg::new(&control.door, tx);
+    let pairing = Pairing::new(
+        Arc::clone(&leg) as Arc<dyn busbar_core_connector::datagram::LegSink>,
+        control.door.local(),
+    );
+    *lock(&leg.pairing) = Some(Arc::clone(&pairing));
+    let framer = busbar_test_kit::root_door_fixtures::datagram_order::Recording::new();
+    join_recording(&control.door, &leg, &framer);
+    control.stop();
+
+    assert!(pairing.closed());
+    assert!(control.door.assocs.is_empty());
+    assert!(lock(&control.door.legs).is_empty());
+    assert!(!leg.write(b"after shutdown", false).await);
+    assert!(rx.recv().await.is_none());
+}
+
+#[tokio::test]
+async fn session_delivery_and_close_allow_the_receiver_waker_to_reenter_the_leg() {
+    struct Reenter {
+        leg: std::sync::Weak<CallerLeg>,
+        locked: std::sync::atomic::AtomicBool,
+        wakes: std::sync::atomic::AtomicUsize,
+    }
+    impl std::task::Wake for Reenter {
+        fn wake(self: Arc<Self>) {
+            self.wake_by_ref();
+        }
+
+        fn wake_by_ref(self: &Arc<Self>) {
+            self.wakes.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let leg = self.leg.upgrade().unwrap();
+            if leg.to_session.try_lock().is_err() || leg.outbound.try_lock().is_err() {
+                self.locked.store(true, std::sync::atomic::Ordering::SeqCst);
+                return;
+            }
+            // A real receiver wake can synchronously end the session that published it.
+            leg.failed();
+        }
+    }
+
+    for deliver in [true, false] {
+        let (_door, leg, pairing, mut rx) = leg(8);
+        let wake = Arc::new(Reenter {
+            leg: Arc::downgrade(&leg),
+            locked: std::sync::atomic::AtomicBool::new(false),
+            wakes: std::sync::atomic::AtomicUsize::new(0),
+        });
+        let waker = std::task::Waker::from(Arc::clone(&wake));
+        let mut cx = std::task::Context::from_waker(&waker);
+        assert!(rx.poll_recv(&mut cx).is_pending());
+        if deliver {
+            leg.take(vec![got(SESSION_CHANNEL, b"piece", false)], Instant::now());
+        } else {
+            pairing.close();
+        }
+        assert!(wake.wakes.load(std::sync::atomic::Ordering::SeqCst) > 0);
+        assert!(!wake.locked.load(std::sync::atomic::Ordering::SeqCst));
+        assert!(pairing.closed());
+        if deliver {
+            assert_eq!(rx.try_recv().unwrap(), b"piece");
+        }
+        assert!(rx.recv().await.is_none());
+    }
+}
+
 #[tokio::test]
 async fn early_drain_wakes_the_next_writer_after_cancel_without_overtaking_accepted_messages() {
     use busbar_kernel::plane_driver::CallerEnd;
