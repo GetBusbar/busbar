@@ -21,3 +21,22 @@ rustflags = ["-C", "target-feature=+crt-static"]
 
 [target.aarch64-pc-windows-msvc]
 rustflags = ["-C", "target-feature=+crt-static"]
+
+# Qualified first-party builds use the official aws-lc-sys vendored, static AWS-LC.
+# Target-suffixed inputs take precedence upstream, so force both forms for each release target.
+# An explicit AWS_LC_SYS_SYSTEM_DIR remains a contradictory input and is refused upstream.
+# Cargo discovers this file from its invocation directory; dependency checkouts do not impose it
+# on consumer roots. Plugin and generated-workspace build roots must carry these [env] settings.
+[env]
+AWS_LC_SYS_USE_SYSTEM = { value = "0", force = true }
+AWS_LC_SYS_STATIC = { value = "1", force = true }
+AWS_LC_SYS_USE_SYSTEM_x86_64_unknown_linux_gnu = { value = "0", force = true }
+AWS_LC_SYS_STATIC_x86_64_unknown_linux_gnu = { value = "1", force = true }
+AWS_LC_SYS_USE_SYSTEM_aarch64_unknown_linux_gnu = { value = "0", force = true }
+AWS_LC_SYS_STATIC_aarch64_unknown_linux_gnu = { value = "1", force = true }
+AWS_LC_SYS_USE_SYSTEM_x86_64_apple_darwin = { value = "0", force = true }
+AWS_LC_SYS_STATIC_x86_64_apple_darwin = { value = "1", force = true }
+AWS_LC_SYS_USE_SYSTEM_aarch64_apple_darwin = { value = "0", force = true }
+AWS_LC_SYS_STATIC_aarch64_apple_darwin = { value = "1", force = true }
+AWS_LC_SYS_USE_SYSTEM_x86_64_pc_windows_msvc = { value = "0", force = true }
+AWS_LC_SYS_STATIC_x86_64_pc_windows_msvc = { value = "1", force = true }
