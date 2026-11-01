@@ -67,8 +67,8 @@ pub trait SessionCaller: CallerEnd {
 }
 
 /// A caller piece and opaque ownership that follows its allocation through the session pump.
-/// Custody is retained even after the piece is consumed, until the pump replaces or drops the
-/// allocation, including any crossing that still borrows it after the session ends.
+/// A successful crossing retires the consumed allocation before any record/output waits or the
+/// next read. A crossing that still borrows it after the session ends retains its custody.
 #[derive(Default)]
 pub struct SessionInput {
     /// The piece's allocation. Declared first so it is dropped before its custody owner.
