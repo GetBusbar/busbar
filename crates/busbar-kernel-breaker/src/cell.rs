@@ -520,7 +520,7 @@ impl BreakerCell {
         // above, but defense in depth) — never wrap `now + duration`, which would land
         // `cooldown_until` in the past and instantly re-ready a tripped cell.
         self.cooldown_until
-            .store(now_time.saturating_add(duration), Ordering::Release);
+            .fetch_max(now_time.saturating_add(duration), Ordering::Release);
         self.breaker_state.store(ST_OPEN, Ordering::Release);
         // Release any in-flight probe back to Open: a failed half-open probe routes here, and
         // without this the flag would stay true forever, permanently wedging the cell HalfOpen.
@@ -671,7 +671,7 @@ impl BreakerCell {
                     // asked, not the escalating backoff a real trip earns.
                     if cfg.honor_retry_after {
                         if let Some(asked) = retry_after {
-                            self.cooldown_until.store(
+                            self.cooldown_until.fetch_max(
                                 now_time.saturating_add(asked.min(max_honored_retry_after_secs)),
                                 Ordering::Release,
                             );
@@ -686,7 +686,7 @@ impl BreakerCell {
                         max_honored_retry_after_secs,
                     );
                     self.cooldown_until
-                        .store(now_time.saturating_add(duration), Ordering::Release);
+                        .fetch_max(now_time.saturating_add(duration), Ordering::Release);
                     FailureEffect::Benched
                 }
             }

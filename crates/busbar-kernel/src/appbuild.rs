@@ -986,10 +986,10 @@ pub fn build_app_from_config(
         pool_inputs.len()
     );
     for p in &pool_inputs {
-        let agg: usize = p
+        let agg: u128 = p
             .members
             .iter()
-            .map(|m| lane_inputs[m.lane_idx].max_concurrent)
+            .map(|m| lane_inputs[m.lane_idx].max_concurrent as u128)
             .sum();
         eprintln!(
             "  pool /{} = [{}] aggregate {}",

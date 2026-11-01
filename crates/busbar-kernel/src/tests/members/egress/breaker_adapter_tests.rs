@@ -368,6 +368,22 @@ fn probe_release_crosses_the_seam() {
     let epoch = admit
         .probe_epoch
         .expect("an expired cooldown re-admits via a probe");
-    // Released without ever completing the dispatch: does not panic, does not wedge the cell.
+    assert_eq!(
+        breaker.try_admit("pool", DestinationId::new(5), 100_000),
+        Err(Unavailable::ProbeInFlight)
+    );
+    // Release without completing dispatch; the next caller must win a new single-flight probe.
     breaker.release_probe("pool", DestinationId::new(5), epoch, 100_000);
+    let next = breaker
+        .try_admit("pool", DestinationId::new(5), 100_000)
+        .expect("release returns the cell to probe-winnable Open");
+    let next_epoch = next
+        .probe_epoch
+        .expect("release preserves the recovery probe requirement");
+    assert_ne!(next_epoch, epoch, "the next caller owns a fresh probe");
+    assert_eq!(
+        breaker.try_admit("pool", DestinationId::new(5), 100_000),
+        Err(Unavailable::ProbeInFlight)
+    );
+    breaker.release_probe("pool", DestinationId::new(5), next_epoch, 100_000);
 }

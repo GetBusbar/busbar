@@ -155,6 +155,83 @@ fn retry_after_is_honored_as_a_floor_under_the_computed_cooldown() {
     assert_eq!(duration, 86_400);
 }
 
+#[test]
+fn closed_failure_feedback_never_shortens_an_already_armed_wait() {
+    for bench in [false, true] {
+        for retry in [None, Some(0), Some(1)] {
+            let cell = BreakerCell::new();
+            let mut cfg = consecutive_cfg(1, 5);
+            cfg.trip.consecutive_n = 100;
+            cfg.bench_below_trip_threshold = bench;
+            let effect = if bench {
+                FailureEffect::Benched
+            } else {
+                FailureEffect::Nothing
+            };
+            assert_eq!(cell.record_failure(NOW, &cfg, Some(300), 600), effect);
+            assert_eq!(cell.cooldown_until(), NOW + 300);
+            assert_eq!(cell.record_failure(NOW + 1, &cfg, retry, 600), effect);
+            assert_eq!(cell.state(), BreakerState::Closed);
+            assert_eq!(
+                cell.cooldown_until(),
+                NOW + 300,
+                "bench={bench}, retry={retry:?}"
+            );
+            assert_eq!((cell.streak(), cell.err_count()), (2, 2));
+
+            // A Closed success resets the streak but keeps the requested wait; explicit recovery
+            // still clears it. These are the existing policies, separate from failed feedback.
+            assert!(!cell.record_success(NOW + 2));
+            assert_eq!(cell.streak(), 0);
+            assert_eq!(cell.cooldown_until(), NOW + 300);
+            assert!(matches!(cell.acquire(NOW + 299), ProbeAdmit::Denied(_)));
+            assert_eq!(cell.acquire(NOW + 300), ProbeAdmit::ReadyNoProbe);
+            cell.close();
+            assert_eq!(cell.cooldown_until(), 0);
+            assert_eq!(cell.acquire(NOW + 301), ProbeAdmit::ReadyNoProbe);
+            assert_eq!(cell.err_count(), 2);
+        }
+    }
+}
+
+#[test]
+fn closed_failure_feedback_still_extends_a_wait_when_the_new_deadline_is_later() {
+    for bench in [false, true] {
+        let cell = BreakerCell::new();
+        let mut cfg = consecutive_cfg(1, 5);
+        cfg.trip.consecutive_n = 100;
+        cfg.bench_below_trip_threshold = bench;
+        cell.record_failure(NOW, &cfg, Some(200), 600);
+        cell.record_failure(NOW + 1, &cfg, Some(400), 600);
+        assert_eq!(cell.cooldown_until(), NOW + 401);
+        assert!(matches!(cell.acquire(NOW + 400), ProbeAdmit::Denied(_)));
+        assert_eq!(cell.acquire(NOW + 401), ProbeAdmit::ReadyNoProbe);
+    }
+}
+
+#[test]
+fn a_threshold_crossing_failure_keeps_the_previous_requested_wait() {
+    for bench in [false, true] {
+        let cell = BreakerCell::new();
+        let mut cfg = consecutive_cfg(1, 5);
+        cfg.trip.consecutive_n = 2;
+        cfg.bench_below_trip_threshold = bench;
+        assert!(!cell.record_failure(NOW, &cfg, Some(300), 600).tripped());
+        assert_eq!(cell.cooldown_until(), NOW + 300);
+        assert!(cell.record_failure(NOW + 1, &cfg, None, 600).tripped());
+        assert_eq!(cell.state(), BreakerState::Open { until: NOW + 300 });
+        assert!(matches!(cell.acquire(NOW + 299), ProbeAdmit::Denied(_)));
+        assert!(matches!(cell.acquire(NOW + 300), ProbeAdmit::ProbeWon(_)));
+        assert!(cell.record_success(NOW + 300));
+        assert_eq!(cell.state(), BreakerState::Closed);
+        assert_eq!(
+            cell.cooldown_until(),
+            0,
+            "successful recovery still clears the wait"
+        );
+    }
+}
+
 /// THE TRIP IS A FUNCTION OF THE `now` IT WAS HANDED, not of the wall clock underneath it.
 ///
 /// A unit crate answers from its arguments. The cooldown's jitter seed used to mix
