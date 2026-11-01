@@ -374,8 +374,8 @@ pub(crate) struct PieceBufs {
     arena: Vec<u8>,
     /// The caller's body, kept for every attempt.
     body: bytes::Bytes,
-    /// The far end's current piece.
-    input: Vec<u8>,
+    /// The current piece and its allocation custody, kept together through pending crossings.
+    input: SessionInput,
     /// The current attempt's member.
     member: Vec<u8>,
     /// The pool the current attempt's member was picked from.
@@ -400,8 +400,11 @@ pub(crate) struct PieceBufs {
 }
 
 /// The far end's piece becomes the input the plane is lent: its bytes are moved, never copied.
-pub(crate) fn lend_piece(input: &mut Vec<u8>, piece: &mut FarPiece) {
-    *input = std::mem::take(&mut piece.bytes);
+pub(crate) fn lend_piece(input: &mut SessionInput, piece: &mut FarPiece) {
+    *input = SessionInput {
+        bytes: std::mem::take(&mut piece.bytes),
+        custody: None,
+    };
 }
 
 impl PieceBufs {
@@ -416,7 +419,7 @@ impl PieceBufs {
             fields: Vec::new(),
             arena: Vec::new(),
             body,
-            input: Vec::new(),
+            input: SessionInput::default(),
             member: Vec::new(),
             pool: Vec::new(),
             resolved: Vec::new(),
@@ -519,7 +522,7 @@ pub(super) fn operator_name(key: &[u8]) -> &[u8] {
 fn frame(bufs: &mut PieceBufs, p: &Piece, unit: u64) -> (OnPieceIn, OnPieceOut) {
     let bytes = match p.src {
         Src::Body => &bufs.body[..],
-        Src::Input => &bufs.input[..],
+        Src::Input => &bufs.input.bytes[..],
         Src::None => &[][..],
     };
     let (member, pool) = if p.attempt_no == 0 {
@@ -1461,8 +1464,8 @@ impl<S: AttemptSteps, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
     async fn push(&self, run: &mut Pumping<'_>, mut piece: Piece, toward: &mut Toward<'_>) -> Step {
         // A far-end piece that carries none of the far end's bytes (a cut or a trailer): what the
         // plane writes for it is its own framing, not the answer's content.
-        let framing =
-            piece.from == FROM_FAR_END && (piece.src != Src::Input || run.bufs.input.is_empty());
+        let framing = piece.from == FROM_FAR_END
+            && (piece.src != Src::Input || run.bufs.input.bytes.is_empty());
         loop {
             let (done, out, cause) = run.cross(&piece).await;
             if let Some(cause) = cause {
@@ -1750,7 +1753,7 @@ fn route_policy_fields(
 /// pieces and push.
 #[path = "session.rs"]
 mod session;
-pub use session::SessionCaller;
+pub use session::{SessionCaller, SessionInput};
 
 #[cfg(test)]
 #[allow(unsafe_code)]

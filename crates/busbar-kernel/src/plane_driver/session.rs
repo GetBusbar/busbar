@@ -52,6 +52,29 @@ pub trait SessionCaller: CallerEnd {
     /// The caller's next piece; `None` once the caller's side has ended. Cancel-safe: a read
     /// dropped before it resolved loses no piece.
     fn read(&self) -> impl Future<Output = Option<Vec<u8>>> + Send + '_;
+
+    /// The caller's next piece with an optional owner that must outlive its bytes allocation.
+    /// Has the same cancel-safety requirement as [`Self::read`]. Forwarding callers must forward
+    /// this method too when their inner caller supplies custody.
+    fn read_owned(&self) -> impl Future<Output = Option<SessionInput>> + Send + '_ {
+        async move {
+            self.read().await.map(|bytes| SessionInput {
+                bytes,
+                custody: None,
+            })
+        }
+    }
+}
+
+/// A caller piece and opaque ownership that follows its allocation through the session pump.
+/// Custody is retained even after the piece is consumed, until the pump replaces or drops the
+/// allocation, including any crossing that still borrows it after the session ends.
+#[derive(Default)]
+pub struct SessionInput {
+    /// The piece's allocation. Declared first so it is dropped before its custody owner.
+    pub bytes: Vec<u8>,
+    /// Optional allocation custody; the kernel neither inspects nor clones it.
+    pub custody: Option<Arc<dyn Send + Sync>>,
 }
 
 /// Why a side stops before its own end.
@@ -140,7 +163,7 @@ enum Next {
     /// `drive` named the session: collect its output.
     Collect,
     /// The caller's piece; `None` once its side ended.
-    Caller(Option<Vec<u8>>),
+    Caller(Option<SessionInput>),
 }
 
 impl PlaneDriver {
@@ -292,7 +315,7 @@ impl<S: crate::plane_driver::DriverSteps + Sync, F: FarEnd, C: SessionCaller>
                         Next::Halt(halt.ok().and_then(|h| *h).unwrap_or(Halt::Cause(ReasonCode::ClientGone)))
                     }
                     () = told.notified() => Next::Collect,
-                    read = self.caller.read() => Next::Caller(read),
+                    read = self.caller.read_owned() => Next::Caller(read),
                 }
             })
             .await;
