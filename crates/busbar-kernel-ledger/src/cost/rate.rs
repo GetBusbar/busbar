@@ -348,7 +348,7 @@ impl RateCard {
     /// [`representable_nano_rate`] — the one conversion — and never again.
     ///
     /// A configured value the card cannot represent ([`representable_nano_rate`] answers `None`)
-    /// lands as an UNPRICED cell of its lane and is listed in [`Self::refused_cells`] — never as a
+    /// lands as an UNPRICED cell of its lane and is listed among the card's refused cells — never as a
     /// cell priced at zero (item 22).
     pub fn from_micro_rates(
         entries: impl IntoIterator<Item = (LaneClass, f64)>,
@@ -540,7 +540,7 @@ impl RateCard {
     /// (billing off, #42) — or names no lane: a correction cannot switch a plane's billing on, which
     /// would turn every unit it serves into a refusal for the classes the correction is silent about.
     ///
-    /// A corrected cell is priced, so it leaves [`Self::refused_cells`] of the card it lands on;
+    /// A corrected cell is priced, so it leaves the list of refused cells on the card it lands on;
     /// every refused cell the correction does not name stays listed.
     pub fn corrected(
         &self,
@@ -585,7 +585,7 @@ impl RateCard {
     /// digest of the card it was sealed over (#79), and a restart rebuilds it over that card and no
     /// other.
     ///
-    /// [`Self::refused_cells`] is not in it. That list is boot validation's report about the
+    /// The list of refused cells is not in it. That list is boot validation's report about the
     /// configuration, and every cell on it is already an unpriced cell of the card.
     #[must_use]
     pub fn digest(&self) -> [u8; 32] {
@@ -655,7 +655,7 @@ impl RateCard {
     /// no second denomination a rate could be derived through).
     ///
     /// A value the card cannot represent leaves the cell UNPRICED (and records it in
-    /// [`Self::refused_cells`]) — it never sets a zero the operator did not configure (item 22).
+    /// the list of refused cells) — it never sets a zero the operator did not configure (item 22).
     fn place_rate(&mut self, cell: LaneClass, nanos_per_unit: Option<u64>) {
         self.present = true;
         let slot = self

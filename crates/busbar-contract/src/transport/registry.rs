@@ -41,7 +41,7 @@ pub mod facts {
     /// The peer's source address as the bottom layer saw it.
     pub const PEER: &str = "peer";
 
-    /// Every reserved key, for the registration check and the boot cell that walks them.
+    /// Every reserved key, for callers checking declarations and the boot cell that walks them.
     pub const RESERVED: &[&str] = &[PATH, METHOD, AUTHORITY, ALPN, SNI, PEER];
 
     /// Whether a key is one the kernel reserves.
@@ -52,9 +52,8 @@ pub mod facts {
 
     /// The first reserved key a transport publishes without having declared it.
     ///
-    /// Run at registration, over the transport's own `TRANSPORT_FACTS` and the keys it actually
-    /// writes. A reserved key published but not declared is a value a plane reads and no boot check
-    /// knows about, which is the failure this module exists to make impossible.
+    /// Compares the supplied declaration and publication lists. Contract tests use this helper
+    /// to check reserved fact declarations; transport registration does not invoke it.
     #[must_use]
     pub fn undeclared<'a>(declared: &[&'a str], published: &[&'a str]) -> Option<&'a str> {
         published

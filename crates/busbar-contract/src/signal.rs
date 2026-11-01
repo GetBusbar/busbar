@@ -188,7 +188,7 @@ type SignalBagInner = smallvec::SmallVec<[(Signal, SignalValue); 4]>;
 /// The signal bag a projection (`RoutingRequest`, `Candidate`, and the response stage tap's
 /// request projection) carries. `#[serde(flatten)]`-compatible: [`SignalBag`]
 /// implements [`Serialize`] as a MAP keyed by [`Signal::name`], so on the wire its entries render
-/// as flat top-level keys alongside the projection's own fields (`{"breaker_state": ...}` sits next
+/// as flat top-level keys alongside the projection's own fields (`{"candidate_breaker_state": ...}` sits next
 /// to `request_id`, not nested under a `signals` key) — and an EMPTY bag serializes as zero
 /// additional keys, i.e. `#[serde(flatten)]` on an empty bag is byte-identical to the field not
 /// existing at all. Default (no signals declared anywhere) never allocates: `SmallVec::new()` is a
