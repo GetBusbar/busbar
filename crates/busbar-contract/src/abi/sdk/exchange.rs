@@ -384,6 +384,16 @@ impl Exchange {
             .then(|| u16::try_from(self.code).unwrap_or(0))
     }
 
+    /// The response fields still owned by this exchange after its reply head was read; `None`
+    /// before a head. They remain available after a later body read fails, including a reply
+    /// past [`REPLY_OVER_BOUND`]. The borrow cannot outlive the exchange, which wipes its fields
+    /// on drop. A successful [`exchange`] transfers them into its returned [`ExchangeResponse`],
+    /// leaving this slice empty.
+    #[must_use]
+    pub fn reply_fields(&self) -> Option<&[(Vec<u8>, Vec<u8>)]> {
+        self.head_seen.then_some(self.reply.fields.as_slice())
+    }
+
     /// Land this exchange's dial only on an address of `within`, the set the plugin's
     /// `dest.judge` judged (`Judged::within`): a name that resolves elsewhere at dial time is
     /// refused before the request leaves.
