@@ -563,6 +563,11 @@ struct Refreshing {
 /// accepting it. Ordinary fixture URLs retain the SDK's synchronous refresh behavior.
 pub struct Refresh;
 
+const PENDING_REFRESH_PATH_MARKER: &str = "/pending-refresh";
+const REFUSED_REFRESH_PATH_MARKER: &str = "pending-refresh-refuse";
+const REFRESH_PROBE_FIELD: &str = "refresh_probe";
+const CANDIDATE_EXCHANGES: usize = 2;
+
 impl SafeSlot for Refresh {
     type In = RefreshIn;
     type Out = OutHead;
@@ -580,7 +585,7 @@ impl SafeSlot for Refresh {
             Ok(settings) => settings,
             Err(error) => return out.fail(error),
         };
-        if !settings.url.contains("/pending-refresh") {
+        if !settings.url.contains(PENDING_REFRESH_PATH_MARKER) {
             return <busbar_contract::abi::sdk::life::Refresh<Webhook> as SafeSlot>::call(
                 instance, input, out,
             );
@@ -597,13 +602,13 @@ impl SafeSlot for Refresh {
         let Some(host) = h.host() else {
             return Outcome::Refused;
         };
-        while pending.probe < 2 {
+        while pending.probe < CANDIDATE_EXCHANGES {
             let mut connector = host.connector_from(instance.ticket(), pending.issued);
             let mut exchange = match pending.exchange.take() {
                 Some(exchange) => exchange,
                 None => match Exchange::request(request(
                     &pending.settings,
-                    format!("{{\"refresh_probe\":{}}}", pending.probe).as_bytes(),
+                    format!("{{\"{REFRESH_PROBE_FIELD}\":{}}}", pending.probe).as_bytes(),
                 )) {
                     Ok(exchange) => exchange,
                     Err(error) => return out.fail(Refusal::failed(error.to_string())),
@@ -627,7 +632,7 @@ impl SafeSlot for Refresh {
                 Poll::Ready(Err(error)) => return out.fail(Refusal::failed(error.to_string())),
             }
         }
-        if pending.settings.url.contains("pending-refresh-refuse") {
+        if pending.settings.url.contains(REFUSED_REFRESH_PATH_MARKER) {
             return out.fail(Refusal::refused(
                 "the neutral fixture refused its checked candidate",
             ));

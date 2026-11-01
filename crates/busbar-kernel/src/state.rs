@@ -962,6 +962,7 @@ impl AppHandle {
                 );
             }
         }
+        crate::export::plugin::queue_refresh(&next.export_defs, next.config_version);
         self.current.store(next.clone());
         // RETIRE the OUTGOING generation's engine host (App-retype WEDGE 2f). The active health probers
         // hold a `Weak<dyn EngineHost>` to the composition-root-owned host of the snapshot they were

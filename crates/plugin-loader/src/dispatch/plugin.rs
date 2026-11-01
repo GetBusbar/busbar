@@ -477,6 +477,7 @@ pub(crate) fn quarantine_crossing() -> bool {
     // instance for the whole span.
     let inst = unsafe { &*p };
     inst.revoke();
+    inst.wake.exports.wake_waiters(inst.wake);
     inst.let_go_held();
     tracing::warn!(
         plugin = %inst.name,
@@ -542,6 +543,7 @@ impl Instance {
         if let Some((id, table)) = self.wake.conn.get() {
             super::conn_services::purge(*id, table);
         }
+        self.wake.exports.clear();
         let io = self
             .wake
             .route
@@ -581,6 +583,7 @@ pub(crate) fn quarantine(wake: &'static InstanceWake, why: &'static str) {
         return;
     };
     inst.revoke();
+    inst.wake.exports.wake_waiters(inst.wake);
     inst.let_go_held();
     tracing::warn!(plugin = %inst.name, "{why}");
 }
@@ -731,6 +734,61 @@ struct LogBudget {
 /// The gate bit `close` holds.
 const CLOSING: u32 = 1 << 31;
 
+const EXPORT_BINDINGS_KEY: &str = "busbar.export.ticket-bindings";
+const EXPORT_BINDINGS_VERSION: &[u8] = b"1";
+static EXPORT_BINDINGS: [u8; busbar_contract::abi::mechanism::extensions::entry_len(
+    EXPORT_BINDINGS_KEY,
+    EXPORT_BINDINGS_VERSION,
+)] = busbar_contract::abi::mechanism::extensions::entry(
+    EXPORT_BINDINGS_KEY,
+    EXPORT_BINDINGS_VERSION,
+);
+
+struct ExportExtensions {
+    input: *mut InHead,
+    original: Blob,
+    _bytes: Option<zeroize::Zeroizing<Vec<u8>>>,
+}
+
+impl ExportExtensions {
+    /// # Safety
+    /// `input` is the host's live, exclusive frame for this crossing, including its extensions.
+    unsafe fn install(input: *mut InHead) -> Self {
+        // SAFETY: the caller's host-owned frame and its lent extension bytes.
+        let original = unsafe { (*input).extensions };
+        let original_bytes = unsafe { blob_bytes(original) };
+        let bytes = (!original_bytes.is_empty()).then(|| {
+            let mut bytes = EXPORT_BINDINGS.to_vec();
+            bytes.extend_from_slice(original_bytes);
+            zeroize::Zeroizing::new(bytes)
+        });
+        let extended = bytes
+            .as_ref()
+            .map(|bytes| bytes.as_slice())
+            .unwrap_or(&EXPORT_BINDINGS);
+        // SAFETY: the bytes are static or owned by this guard until the original blob is restored.
+        unsafe {
+            (*input).extensions = super::lifecycle::blob(
+                extended,
+                busbar_contract::abi::mechanism::call::BLOB_OCTETS,
+                0,
+            );
+        }
+        Self {
+            input,
+            original,
+            _bytes: bytes,
+        }
+    }
+}
+
+impl Drop for ExportExtensions {
+    fn drop(&mut self) {
+        // SAFETY: the frame outlives its crossing guard. Restore before the lent bytes are freed.
+        unsafe { (*self.input).extensions = self.original };
+    }
+}
+
 /// An `open`'s crossing, armed with the instance pointer: dropped armed (the host's judgement did
 /// not end the `open` READY or PENDING), it leaves the pointer at `live`, whichever way the
 /// crossing returned: the box the plugin still holds (it answered READY or PENDING, so it freed
@@ -827,6 +885,14 @@ impl Instance {
     /// back; one counted after it was submitted after `close` was admitted, and meets the closing
     /// instance's own refusal.
     pub(crate) fn acquire(&self, s: u32) -> Option<u32> {
+        // Refresh owns the lifecycle exclusion, and cancellation/release retire existing work.
+        // None needs a new delivery permit: pending deliveries may fill the entire export bound
+        // and must still resume or be cancelled while settings are replaced.
+        if self.kind == KindCode::Export
+            && matches!(s, slot::REFRESH | slot::CANCEL | slot::RELEASE)
+        {
+            return Some(0);
+        }
         let close = s == slot::CLOSE;
         if close && self.unit_ops.load(Ordering::SeqCst) != 0 {
             return None;
@@ -836,7 +902,7 @@ impl Instance {
             .inflight
             .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
                 let fits = if close { n == 0 } else { n < self.cap };
-                fits.then_some(n + want)
+                n.checked_add(want).filter(|_| fits)
             })
             .ok()
             .map(|_| want)?;
@@ -906,6 +972,24 @@ impl Instance {
             .is_ok()
     }
 
+    pub(crate) fn export_admission(
+        &self,
+        op: u32,
+        ticket: Ticket,
+    ) -> Result<Option<super::export_bindings::Admission>, ()> {
+        if self.kind != KindCode::Export
+            || self.faulted.load(Ordering::Acquire)
+            || matches!(op, slot::CANCEL | slot::CLOSE | slot::RELEASE)
+        {
+            return Ok(None);
+        }
+        self.wake
+            .exports
+            .admit(self.wake, op, ticket)
+            .map(Some)
+            .ok_or(())
+    }
+
     /// Declare each need whose `target_from` or `trust_from` names a config path, with what that
     /// path resolves to in `settings` (the settings `open` or `refresh` hands the plugin), before
     /// the plugin sees them: the target it is pinned to, and the operator CA PEM its connections
@@ -923,7 +1007,16 @@ impl Instance {
     /// table refused (a CA that is no trust anchor): an `open` fails with it rather than serve
     /// connections that can never verify. Every refusal is audited either way.
     fn declare_targeted(&self, settings: Blob, owned: Option<&[u8]>) -> Option<String> {
-        let (instance, table) = self.wake.conn.get()?;
+        self.declare_targeted_on(settings, owned, self.wake.conn.get())
+    }
+
+    fn declare_targeted_on(
+        &self,
+        settings: Blob,
+        owned: Option<&[u8]>,
+        connection: Option<&(InstanceId, Arc<dyn busbar_contract::conn::DeclaredConns>)>,
+    ) -> Option<String> {
+        let (instance, table) = connection?;
         let mut trust_refused = None;
         let bytes: &[u8] = if settings.ptr.is_null() {
             &[]
@@ -1084,8 +1177,17 @@ impl Instance {
     /// not bound, and `disk.append` refuses it. A refresh re-binds, so a changed path moves the
     /// file.
     fn bind_destinations(&self, settings: Blob) {
+        let bound = self.destinations(settings);
+        *self
+            .wake
+            .bound
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = bound;
+    }
+
+    fn destinations(&self, settings: Blob) -> Vec<busbar_contract::services::DiskDest> {
         let Some(keys) = self.wake.destinations.get() else {
-            return;
+            return Vec::new();
         };
         let bytes: &[u8] = if settings.ptr.is_null() {
             &[]
@@ -1102,8 +1204,7 @@ impl Instance {
             .get(busbar_contract::services::DISK_KEEP_KEY)
             .and_then(serde_json::Value::as_u64)
             .map(|n| u32::try_from(n).unwrap_or(u32::MAX));
-        let bound = keys
-            .iter()
+        keys.iter()
             .filter_map(|key| {
                 let path = doc.get(key)?.as_str()?;
                 (!path.is_empty() && !path.contains('\0')).then(|| {
@@ -1119,12 +1220,50 @@ impl Instance {
                     }
                 })
             })
-            .collect();
-        *self
-            .wake
-            .bound
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = bound;
+            .collect()
+    }
+
+    fn export_generation(
+        &self,
+        settings: Blob,
+        initial: bool,
+    ) -> Result<Arc<super::export_bindings::Generation>, String> {
+        let conn = match self.wake.conn.get() {
+            Some((owner, table)) => {
+                let owner = if initial {
+                    *owner
+                } else {
+                    super::handle::mint(self.wake)
+                        .map(super::handle::instance_id)
+                        .map_err(|error| error.to_string())?
+                };
+                Some((owner, table.clone()))
+            }
+            None => None,
+        };
+        let generation = Arc::new(super::export_bindings::Generation {
+            conn,
+            destinations: self.destinations(settings),
+        });
+        if let Some((owner, table)) = &generation.conn {
+            for (index, need) in self
+                .needs
+                .iter()
+                .enumerate()
+                .filter(|(_, need)| !from_settings(need))
+            {
+                let id = NeedId(index as u32);
+                if table.declared(*owner, id).is_none() {
+                    table
+                        .declare(*owner, id, need, None, None)
+                        .map_err(|error| crate::observe::conn_reason(error).to_string())?;
+                }
+            }
+        }
+        if let Some(error) = self.declare_targeted_on(settings, None, generation.conn.as_ref()) {
+            return Err(error);
+        }
+        Ok(generation)
     }
 
     pub(crate) fn leave_lifecycle(&self) {
@@ -1226,12 +1365,42 @@ impl Instance {
             } else {
                 Outcome::Fault
             };
+            if self.kind == KindCode::Export && s == slot::REFRESH {
+                // SAFETY: the caller owns a checked frame whose first field is InHead.
+                self.wake
+                    .exports
+                    .finish_refresh(self.wake, unsafe { (*input).ticket });
+            }
             return Crossed::host(o);
         }
+        let _extensions =
+            if self.kind == KindCode::Export && s == busbar_contract::abi::export::slot::DELIVER {
+                // SAFETY: this crossing owns the input until the guard restores its original blob.
+                Some(unsafe { ExportExtensions::install(input) })
+            } else {
+                None
+            };
         // SAFETY: the caller's contract.
         let crossed = unsafe { self.cross_gated(s, input, out, out_size) };
         if s != slot::CANCEL && matches!(crossed.outcome, Outcome::Ready | Outcome::Pending) {
             failure.scope = None;
+        }
+        if self.kind == KindCode::Export {
+            if s == slot::REFRESH {
+                // SAFETY: the checked frame is live for the crossing.
+                let ticket = unsafe { (*input).ticket };
+                if crossed.outcome == Outcome::Pending {
+                    self.wake.exports.pending_refresh(ticket);
+                } else {
+                    self.wake.exports.finish_refresh(self.wake, ticket);
+                }
+            } else if s == slot::CANCEL {
+                // SAFETY: every kind's checked cancellation frame starts with CancelIn.
+                let ticket = unsafe {
+                    (*input.cast::<busbar_contract::abi::mechanism::lifecycle::CancelIn>()).ticket
+                };
+                self.wake.exports.finish_refresh(self.wake, ticket);
+            }
         }
         // A `close` that answered FAULT may already have freed the instance (a teardown that
         // failed after its memory went): the host treats it as closed, never crossing into the
@@ -1249,6 +1418,10 @@ impl Instance {
             self.ptr.store(std::ptr::null_mut(), Ordering::Release);
         }
         self.leave_gate(s, shut);
+        if shut && self.kind == KindCode::Export {
+            self.wake.exports.clear();
+            self.wake.exports.wake_waiters(self.wake);
+        }
         let ended = !matches!(crossed.outcome, Outcome::Ready | Outcome::Pending);
         if s == slot::OPEN && ended && self.half_open() && !self.faulted.load(Ordering::Acquire) {
             self.close_half_open();
@@ -1320,6 +1493,7 @@ impl Instance {
                 unsafe { self.cross(slot::CANCEL, input, out, out_size) }
             })
         });
+        drop(self.wake.exports.forget(self.wake, ticket));
         crossed.map_or(Outcome::Fault, |c| c.outcome)
     }
 
@@ -1439,6 +1613,7 @@ impl Instance {
         }
         // A trust anchor the open's settings name that the connection table refused.
         let mut trust_refused = None;
+        let mut proposed_binding = None;
         if s == slot::OPEN {
             // Every `open`, of every kind, is lent the host's reason buffer: a failed open has no
             // instance to hold its reason. The same buffer is re-lent on a resume.
@@ -1459,8 +1634,17 @@ impl Instance {
             let owned = (self.kind == KindCode::Plane
                 && unsafe { (*input).size } as usize >= size_of::<PlaneOpenIn>())
             .then(|| unsafe { blob_bytes((*input.cast::<PlaneOpenIn>()).owned) });
-            trust_refused = self.declare_targeted(settings, owned);
-            self.bind_destinations(settings);
+            if self.kind == KindCode::Export {
+                if !resumed {
+                    match self.export_generation(settings, true) {
+                        Ok(binding) => proposed_binding = Some(binding),
+                        Err(error) => trust_refused = Some(error),
+                    }
+                }
+            } else {
+                trust_refused = self.declare_targeted(settings, owned);
+                self.bind_destinations(settings);
+            }
         }
         if s == slot::READY {
             // `ready` is handed the same host tables `open` was.
@@ -1478,9 +1662,30 @@ impl Instance {
             // SAFETY: the host's own extensions blob, live for the crossing it is handed to.
             let owned = unsafe { blob_bytes(extensions) };
             let owned = busbar_contract::abi::mechanism::extensions::get(owned, EXT_OWNED);
-            // A refresh's refusals are audited; the instance it refreshes stays open.
-            let _ = self.declare_targeted(settings, owned);
-            self.bind_destinations(settings);
+            if self.kind == KindCode::Export {
+                if resumed {
+                    proposed_binding = self.wake.exports.staged(ticket);
+                    if proposed_binding.is_none() {
+                        return Crossed::host(Outcome::Fault);
+                    }
+                } else {
+                    match self.export_generation(settings, false) {
+                        Ok(binding) => {
+                            // A ticket-less call cannot legally pend and has no later ticket
+                            // cleanup. Its local candidate lasts only through this crossing.
+                            if !ticket.is_none() {
+                                self.wake.exports.stage(ticket, binding.clone());
+                            }
+                            proposed_binding = Some(binding);
+                        }
+                        Err(error) => trust_refused = Some(error),
+                    }
+                }
+            } else {
+                // Other kinds retain their existing lifecycle binding contract.
+                let _ = self.declare_targeted(settings, owned);
+                self.bind_destinations(settings);
+            }
         }
         // THE HOST ZEROES THE WHOLE `out` BEFORE EVERY CALL, RESUME included (FAULT = 0, every
         // tail field absent), then states its size: the plugin writes at most min(out.size, own).
@@ -1545,6 +1750,19 @@ impl Instance {
         // The deadline of the op this crossing is, for the host services it calls (`auth.call`).
         // SAFETY: the host's own `in`, led by its head, live for the crossing.
         let _deadline = super::services::op_deadline(unsafe { &*input });
+        let binding_ticket = if s == slot::CANCEL {
+            // SAFETY: the kind's cancel frame starts with the mechanism CancelIn.
+            unsafe {
+                (*input.cast::<busbar_contract::abi::mechanism::lifecycle::CancelIn>()).ticket
+            }
+        } else {
+            ticket
+        };
+        let binding = proposed_binding.clone().or_else(|| {
+            (self.kind == KindCode::Export)
+                .then(|| self.wake.exports.pin(binding_ticket))
+                .flatten()
+        });
         // From here an `open` that does not end READY or PENDING, FAULT included, leaves no
         // instance published: the SDK frees a half-open box on any answer but READY/PENDING, so a
         // pointer kept to it would hand a later crossing freed memory; a box the plugin still
@@ -1573,8 +1791,10 @@ impl Instance {
                 let _acting = super::worker::acting_for(acting);
                 let _unit = super::services::serving(unit);
                 let _ticket = super::services::crossing(ticket);
-                with_crossing(Some(self), || {
-                    enter_lifecycle((self.op_name)(s), op, instance, input, output)
+                super::export_bindings::crossing(binding.clone(), || {
+                    with_crossing(Some(self), || {
+                        enter_lifecycle((self.op_name)(s), op, instance, input, output)
+                    })
                 })
             });
             match routed {
@@ -1584,8 +1804,10 @@ impl Instance {
                 Err(_) => return Crossed::host(Outcome::Fault),
             }
         } else {
-            with_crossing(Some(self), || {
-                op(instance, input.cast_const().cast(), out.cast())
+            super::export_bindings::crossing(binding, || {
+                with_crossing(Some(self), || {
+                    op(instance, input.cast_const().cast(), out.cast())
+                })
             })
         };
         if s == slot::OPEN
@@ -1822,6 +2044,11 @@ impl Instance {
         .is_err()
         {
             return Crossed::host(Outcome::Fault).unread(head.lease);
+        }
+        if outcome == Outcome::Ready || (s == slot::OPEN && outcome == Outcome::Pending) {
+            if let Some(binding) = proposed_binding {
+                self.wake.exports.publish(binding);
+            }
         }
         // THE LEASE ON ANY OUTCOME (export ABI defect 6): only a READY (or PENDING) answer hands
         // its lease to the caller; a lease another outcome names is the host's to release.
@@ -2506,6 +2733,17 @@ impl<K: Kind> Plugin<K> {
         if lifecycle && !inst.enter_lifecycle() {
             return Called::from(Crossed::host(Outcome::Refused));
         }
+        let admission = if resume {
+            Ok(None)
+        } else {
+            inst.export_admission(s, ticket)
+        };
+        let Ok(_admission) = admission else {
+            if lifecycle {
+                inst.leave_lifecycle();
+            }
+            return Called::from(Crossed::host(Outcome::Refused));
+        };
         let Some(units) = inst.acquire(s) else {
             if lifecycle {
                 inst.leave_lifecycle();

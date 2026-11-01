@@ -13,8 +13,8 @@
 //! came in by.
 //!
 //! From there an instance is an ordinary sink: `resolve_export` accepts its `module:` because the
-//! axis holds it, [`open`] opens it once at boot (restart-to-apply, the posture every built-in PUSH
-//! sink has), its projection is resolved against the streams the sink DECLARED, and the host feeds
+//! axis holds it, [`open`] opens it at boot and committed configuration changes refresh its
+//! settings in place. Its projection is resolved against the streams the sink DECLARED, and the host feeds
 //! it exactly as it feeds a built-in — the payload built to the sink's own projection, off the
 //! request path, bounded and shed under pressure (the export kind's property 3), each hand-off
 //! recorded as an access amendment. Its declared routes join the route table under the confinement
@@ -345,6 +345,77 @@ pub fn open(cfg: &ExportCfg) -> Result<(), String> {
     // What a span CALLSITE's interest is depends on which sinks exist (`super::traces::layer`).
     tracing::callsite::rebuild_interest_cache();
     Ok(())
+}
+
+#[derive(Default)]
+struct Refreshes {
+    running: bool,
+    version: Option<u64>,
+    next: Option<(crate::config::ExportDefs, u64)>,
+}
+
+static REFRESHES: std::sync::Mutex<Refreshes> = std::sync::Mutex::new(Refreshes {
+    running: false,
+    version: None,
+    next: None,
+});
+
+/// Record the committed configuration while its transaction is serialized. No plugin is called.
+pub(crate) fn queue_refresh(defs: &crate::config::ExportDefs, generation: u64) {
+    let mut queued = REFRESHES.lock().unwrap_or_else(|p| p.into_inner());
+    if queued.version.is_none_or(|version| generation > version) {
+        queued.version = Some(generation);
+        queued.next = Some((defs.clone(), generation));
+    }
+}
+
+/// Drain committed settings after the config transaction has released its guard. Concurrent
+/// commits replace the queued generation; the running caller applies the newest one next.
+pub(crate) fn refresh_pending() {
+    {
+        let mut queued = REFRESHES.lock().unwrap_or_else(|p| p.into_inner());
+        if queued.running {
+            return;
+        }
+        queued.running = true;
+    }
+    loop {
+        let next = {
+            let mut queued = REFRESHES.lock().unwrap_or_else(|p| p.into_inner());
+            let next = queued.next.take();
+            if next.is_none() {
+                queued.running = false;
+            }
+            next
+        };
+        let Some((defs, generation)) = next else {
+            return;
+        };
+        refresh(&defs, generation);
+    }
+}
+
+fn refresh(defs: &crate::config::ExportDefs, generation: u64) {
+    let Some(axis) = axis() else {
+        return;
+    };
+    for sink in sinks() {
+        let Some(def) = defs
+            .get(&sink.name)
+            .filter(|def| def.module.trim() == sink.module)
+        else {
+            continue;
+        };
+        let refreshed = sink_settings(axis, &sink.module, &def.settings)
+            .and_then(|settings| sink.sink.refresh(settings.as_value(), generation));
+        if let Err(error) = refreshed {
+            tracing::warn!(
+                instance = %sink.name,
+                error = %error,
+                "export refresh refused; the prior settings remain active"
+            );
+        }
+    }
 }
 
 /// RECORD EVERY HAND-OFF TO THE OPENED SINKS ON `amendments`, the node's amendment journal: set

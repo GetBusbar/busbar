@@ -337,6 +337,7 @@ const STALL_TARGET: &str = "stall.example";
 type Verdict = (Result<(), ConnError>, String);
 type OnForget = Arc<dyn Fn(InstanceId) + Send + Sync>;
 type OnDeclare = Arc<dyn Fn(&str) + Send + Sync>;
+type OnOpen = Arc<dyn Fn(&str) + Send + Sync>;
 
 /// THE HOST'S CONNECTION TABLE, as this binary stands it: every need declared on it is recorded
 /// (its egress class, its scheme, the target its `target_from` resolved to), a need whose target is
@@ -362,6 +363,7 @@ struct Far {
     forgotten: Mutex<Vec<InstanceId>>,
     on_forget: Mutex<Option<OnForget>>,
     on_declare: Mutex<Option<OnDeclare>>,
+    on_open: Mutex<Option<OnOpen>>,
     owners: Mutex<Vec<(InstanceId, String)>>,
 }
 
@@ -489,6 +491,10 @@ impl Conns for Far {
         } else {
             desc.target.to_string()
         };
+        let callback = self.on_open.lock().unwrap().clone();
+        if let Some(callback) = callback {
+            callback(&target);
+        }
         if target.contains(UNREACHABLE_TARGET) {
             return Err(ConnError::Timeout);
         }

@@ -1162,6 +1162,9 @@ fn destination(route: &Waking, key: &str) -> Option<busbar_contract::services::D
     if !wake.destinations.get()?.iter().any(|k| k == key) {
         return None;
     }
+    if let Some(binding) = super::export_bindings::current() {
+        return binding.destinations.iter().find(|d| d.key == key).cloned();
+    }
     let bound = wake
         .bound
         .read()
@@ -2589,7 +2592,14 @@ extern "C" fn need_admit(ctx: HostCtx, input: *const c_void, out: *mut ServiceOu
             // SAFETY: the head covered a `NeedAdmitIn`.
             let i = unsafe { input.cast::<svc::NeedAdmitIn>().read_unaligned() };
             let need = busbar_contract::conn::NeedId(i.need);
-            let verdict = super::conn_services::armed(ctx)
+            let armed = super::conn_services::armed(ctx);
+            let binding = super::export_bindings::current();
+            let verdict = armed
+                .and_then(|original| {
+                    binding
+                        .as_ref()
+                        .map_or(Some(original), |binding| binding.conn.as_ref())
+                })
                 .and_then(|(instance, table)| table.declared(*instance, need))
                 .unwrap_or(Err(busbar_contract::conn::ConnError::UndeclaredNeed));
             match verdict {

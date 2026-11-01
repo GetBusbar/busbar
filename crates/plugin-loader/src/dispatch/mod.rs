@@ -51,6 +51,7 @@ pub(crate) mod call;
 pub(crate) mod completion_retirement;
 pub(crate) mod conditional;
 pub mod conn_services;
+pub(crate) mod export_bindings;
 pub mod framing_context;
 pub mod handle;
 pub(crate) mod held;

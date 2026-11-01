@@ -290,8 +290,18 @@ impl Shared {
             while let Poll::Ready(Some(())) = inflight.poll_next_unpin(cx) {}
             *self.flusher.lock().unwrap_or_else(|p| p.into_inner()) = Some(cx.waker().clone());
             if self.stop.load(Ordering::Acquire) {
-                // Closing: what is still queued is shed (its holds drop with it).
-                self.lock().clear();
+                // Closing: accepted but undelivered lines are shed. Their holds may run host
+                // cleanup, so neither observability nor their destruction runs under the queue lock.
+                let shed = { std::mem::take(&mut *self.lock()) };
+                if !shed.is_empty() {
+                    tracing::warn!(
+                        plugin = %self.plugin.name(),
+                        lines = shed.len(),
+                        "queued export lines are shed while the instance stops"
+                    );
+                    fold_shed_lines(self.dispatcher.observing(), self.plugin.name(), shed.len());
+                }
+                drop(shed);
                 return if inflight.is_empty() || self.abandon.load(Ordering::Acquire) {
                     Poll::Ready(())
                 } else {
@@ -540,6 +550,40 @@ fn lower(families: &[Family]) -> Lowered {
 }
 
 impl ExportCalls for ExportInstance {
+    fn refresh(&self, settings: &serde_json::Value, generation: u64) -> Result<(), String> {
+        let settings = Arc::new(zeroize::Zeroizing::new(
+            serde_json::to_vec(settings).map_err(|error| error.to_string())?,
+        ));
+        let ticket = (0..self.shared.dispatcher.workers().max(1))
+            .find_map(|worker| self.shared.dispatcher.mint(worker))
+            .ok_or_else(|| "no ticket could be minted for an export refresh".to_string())?;
+        let _minted = Minted(&self.shared.dispatcher, ticket);
+        let frame = Frame::new(
+            busbar_contract::abi::mechanism::lifecycle::RefreshIn {
+                head: in_head(),
+                generation,
+                settings: blob(&settings, BLOB_JSON),
+                secrets: std::ptr::null(),
+                secrets_len: 0,
+            },
+            out_head(),
+        );
+        let done = futures::executor::block_on(self.shared.dispatcher.submit_lent(
+            &self.shared.plugin,
+            ticket,
+            lc::REFRESH,
+            frame,
+            DeadlineClass::Call,
+            0,
+            settings,
+        ));
+        release(&self.shared.plugin, done.lease);
+        match done.outcome {
+            Outcome::Ready => Ok(()),
+            outcome => Err(why(outcome, done.error)),
+        }
+    }
+
     fn streams(&self) -> &[u8] {
         &self.shared.facts.streams
     }
@@ -685,9 +729,14 @@ impl ExportCalls for ExportInstance {
 /// Count one SHED line for the export instance `name` on each counter it was GRANTED as its shed
 /// counter at open, folded under its name through the ONE observability path every envelope takes.
 fn fold_shed(observing: &crate::observe::Observing, name: &str) {
+    fold_shed_lines(observing, name, 1);
+}
+
+/// Report an already counted group of shed lines through the same granted counter as one line.
+fn fold_shed_lines(observing: &crate::observe::Observing, name: &str, lines: usize) {
     let metrics = crate::observe::shed_series(name)
         .into_iter()
-        .map(|n| serde_json::json!({"name": n, "type": "counter", "value": 1}))
+        .map(|n| serde_json::json!({"name": n, "type": "counter", "value": lines}))
         .collect();
     let report = busbar_contract::abi::mechanism::observe::Envelope {
         result: (),
