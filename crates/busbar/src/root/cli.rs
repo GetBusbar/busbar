@@ -56,7 +56,7 @@ const OPTION_HELP: &str = "--help";
 const OPTION_HELP_SHORT: &str = "-h";
 const OPTION_CONFIG: &str = "--config";
 const OPTION_CONFIG_SHORT: &str = "-c";
-const OPTION_PROVIDERS: &str = "--providers";
+pub(super) const OPTION_PROVIDERS: &str = "--providers";
 const OPTION_CONFIG_ASSIGNMENT: &str = "--config=";
 const OPTION_PROVIDERS_ASSIGNMENT: &str = "--providers=";
 

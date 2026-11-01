@@ -93,12 +93,15 @@ fn die(msg: impl std::fmt::Display) -> ! {
     std::process::exit(1);
 }
 
+/// Operator option that quarantines persisted configuration overlays at boot.
+const OPTION_SAFE_MODE: &str = "--safe-mode";
+
 /// Whether `--safe-mode` was passed: quarantines the persisted overlay entirely (both
 /// `validate_config_command` and `run()` read this the same way, so it's factored once here rather
 /// than duplicated). Takes the arg iterator as a parameter (instead of calling `std::env::args()`
 /// itself) so it's unit-testable against a synthetic arg list.
 fn safe_mode_requested(mut args: impl Iterator<Item = String>) -> bool {
-    args.any(|a| a == "--safe-mode")
+    args.any(|a| a == OPTION_SAFE_MODE)
 }
 
 /// Whether a flag a plane declares was passed (its `Flags:` rows, `root::cli::help_rows`), the plane
