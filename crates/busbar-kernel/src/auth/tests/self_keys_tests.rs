@@ -1629,15 +1629,14 @@ async fn self_mint_mode_policy_gates_exchange_login_and_refresh_before_mutation(
                 );
             }
             let gov = gov();
-            let dir = tempfile::tempdir().unwrap();
-            let overlay = dir.path().join("overlay.json");
+            let overlay = crate::test_support::TestOverlayStore::new();
             let app = crate::test_support::TestApp::new()
                 .idp_chain()
                 .governance(gov.clone())
                 .group("team", GroupCfg::default())
                 .role_bindings(bindings("test-idp-module", "idp-user", Some("team")))
                 .mint_policy(policy)
-                .overlay_path(overlay.clone())
+                .overlay_backend(overlay.backend())
                 .build();
             let handle = Arc::new(crate::state::AppHandle::new(app));
             let before = handle.load();
@@ -1654,7 +1653,9 @@ async fn self_mint_mode_policy_gates_exchange_login_and_refresh_before_mutation(
                 assert_eq!(anonymous.status(), axum::http::StatusCode::UNAUTHORIZED);
                 assert!(Arc::ptr_eq(&before, &handle.load()));
                 assert!(gov.all_keys().unwrap().is_empty());
-                assert!(!overlay.exists());
+                assert!(overlay.read_bytes().is_none());
+                assert_eq!(overlay.stored_record_count(), 0);
+                assert!(overlay.candidates().is_empty());
                 let response = crate::auth::exchange::exchange(
                     axum::extract::State(handle.clone()),
                     axum::http::Request::builder()
@@ -1712,9 +1713,15 @@ async fn self_mint_mode_policy_gates_exchange_login_and_refresh_before_mutation(
                     .load()
                     .groups_registry
                     .contains_key("user:idp:subject"));
-                assert!(
-                    overlay.exists(),
-                    "the allowed mint really provisions its group"
+                let persisted: crate::config::overlay::OverlayDoc = serde_json::from_slice(
+                    &overlay
+                        .read_bytes()
+                        .expect("the allowed mint persists its group in Store"),
+                )
+                .expect("Store holds a valid overlay document");
+                assert_eq!(
+                    persisted.groups["user:idp:subject"].parent.as_deref(),
+                    Some("team")
                 );
             } else {
                 assert!(gov.all_keys().unwrap().is_empty(), "no binding was written");
@@ -1723,7 +1730,19 @@ async fn self_mint_mode_policy_gates_exchange_login_and_refresh_before_mutation(
                     "no group snapshot swap"
                 );
                 assert!(!before.groups_registry.contains_key("user:idp:subject"));
-                assert!(!overlay.exists(), "no group overlay was persisted");
+                assert!(
+                    overlay.read_bytes().is_none(),
+                    "no group overlay was persisted"
+                );
+                assert_eq!(
+                    overlay.stored_record_count(),
+                    0,
+                    "no Store records were staged"
+                );
+                assert!(
+                    overlay.candidates().is_empty(),
+                    "no Store transaction was attempted"
+                );
             }
         }
     }
