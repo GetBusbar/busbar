@@ -898,6 +898,7 @@ impl<T: VerifyPlugin + OutboundPlugin> SafeSlot for VerifyBoth<T> {
         verify_answer(
             h.life().plugin(),
             &verify_op(&instance, h.host()),
+            h.leases(),
             input,
             out,
         )

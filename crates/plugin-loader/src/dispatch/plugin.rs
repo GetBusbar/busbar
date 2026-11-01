@@ -234,7 +234,8 @@ impl std::fmt::Debug for Bind {
 }
 
 /// THE ONE RE-CALL a SHORT answer earns: consumed by [`Plugin::recall`], and neither `Clone` nor
-/// `Copy`, so it cannot be spent twice.
+/// `Copy`, so it cannot be spent twice. Dropping a negotiated token returns its retained answer
+/// to the originating instance, even when the caller abandons the recall.
 ///
 /// ```compile_fail
 /// fn twice<K: busbar_plugin_loader::dispatch::Kind>(
@@ -249,12 +250,96 @@ impl std::fmt::Debug for Bind {
 ///     let _ = p.recall(r, 4, f); // use of moved value: a token is spent once
 /// }
 /// ```
-#[derive(Debug, PartialEq, Eq)]
 pub struct Recall {
     /// The instance that answered short.
     instance: usize,
     /// The op that answered short.
     slot: u32,
+    ticket: Ticket,
+    kept: Option<RecallLease>,
+}
+
+impl std::fmt::Debug for Recall {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Recall")
+            .field("instance", &self.instance)
+            .field("slot", &self.slot)
+            .field("ticket", &self.ticket)
+            .finish_non_exhaustive()
+    }
+}
+impl PartialEq for Recall {
+    fn eq(&self, other: &Self) -> bool {
+        (
+            self.instance,
+            self.slot,
+            self.ticket,
+            self.kept.as_ref().map(|k| k.id),
+        ) == (
+            other.instance,
+            other.slot,
+            other.ticket,
+            other.kept.as_ref().map(|k| k.id),
+        )
+    }
+}
+impl Eq for Recall {}
+
+struct RecallLease {
+    instance: Arc<Instance>,
+    framing: Option<Arc<dyn busbar_contract::framing_scope::FramingScope>>,
+    id: u64,
+}
+impl Drop for RecallLease {
+    fn drop(&mut self) {
+        let _scope = super::framing_context::enter(self.framing.clone());
+        self.instance.release_unread(self.id);
+    }
+}
+
+/// Temporarily lend the host-owned recall reference, preserving all caller extensions.
+pub(crate) struct RecallInput {
+    head: *mut InHead,
+    prior: Blob,
+    _bytes: zeroize::Zeroizing<Vec<u8>>,
+}
+impl RecallInput {
+    /// # Safety
+    /// `head` and its extension bytes are exclusively held and live through this guard.
+    pub(crate) unsafe fn new(head: *mut InHead, lease: u64) -> Result<Self, ()> {
+        use busbar_contract::abi::mechanism::call::BLOB_OCTETS;
+        let prior = unsafe { (*head).extensions };
+        let mut bytes = zeroize::Zeroizing::new(
+            busbar_contract::abi::sdk::auth_door::short_reply::encode(lease),
+        );
+        if prior.len > busbar_contract::abi::mechanism::check::HARD_MAX_BYTES as usize - bytes.len()
+            || (prior.len != 0 && (prior.ptr.is_null() || prior.fmt != BLOB_OCTETS))
+        {
+            return Err(());
+        }
+        bytes.extend_from_slice(unsafe { blob_bytes(prior) });
+        unsafe {
+            (*head).extensions = Blob {
+                ptr: bytes.as_ptr(),
+                len: bytes.len(),
+                fmt: BLOB_OCTETS,
+                flags: prior.flags,
+            };
+        }
+        Ok(Self {
+            head,
+            prior,
+            _bytes: bytes,
+        })
+    }
+}
+impl Drop for RecallInput {
+    fn drop(&mut self) {
+        // SAFETY: this guard owns the temporary head assignment and precedes frame destruction.
+        unsafe {
+            (*self.head).extensions = self.prior;
+        }
+    }
 }
 
 /// What one ticket-less call answered, copied out of the plugin's memory.
@@ -298,6 +383,8 @@ pub(crate) struct Crossed {
     pub(crate) wake_at_ns: u64,
     /// A FAILED answer the kind calls short ([`Kind::short`]).
     pub(crate) short: bool,
+    /// Negotiated immutable SHORT storage; private host custody, never public Done.lease.
+    pub(crate) short_lease: u64,
     /// `cancel`'s `CancelOut.disposition`, when the op ended through `cancel`.
     pub(crate) disposition: Option<u32>,
     /// The record writes that `cancel` carried (a plane's, SEAM-L(r)).
@@ -315,6 +402,7 @@ impl Crossed {
             lease: 0,
             wake_at_ns: 0,
             short: false,
+            short_lease: 0,
             disposition: None,
             cancel_writes: Vec::new(),
             unread: 0,
@@ -1629,6 +1717,24 @@ impl Instance {
             }
         }
         let short = outcome == Outcome::Failed && (self.short)(&answer);
+        let Some(reply_extensions) =
+            (unsafe { validate::lent(head.extensions.ptr, head.extensions.len) })
+        else {
+            return Crossed::host(Outcome::Fault).unread(head.lease);
+        };
+        let short_lease =
+            match busbar_contract::abi::sdk::auth_door::short_reply::decode(reply_extensions) {
+                Ok(Some(lease))
+                    if short
+                        && head.extensions.fmt
+                            == busbar_contract::abi::mechanism::call::BLOB_OCTETS
+                        && lease == head.lease =>
+                {
+                    lease
+                }
+                Ok(None) => 0,
+                _ => return Crossed::host(Outcome::Fault).unread(head.lease),
+            };
         // An `open` that completed hands back the buffer it was lent, holding its reason.
         let reason = if s == slot::OPEN && outcome != Outcome::Pending {
             // SAFETY: `refuse` checked the frame holds an `OpenOut`.
@@ -1694,13 +1800,18 @@ impl Instance {
             outcome,
             error,
             lease: if handed { head.lease } else { 0 },
-            unread: if handed { 0 } else { head.lease },
+            unread: if handed || short_lease != 0 {
+                0
+            } else {
+                head.lease
+            },
             wake_at_ns: if outcome == Outcome::Pending {
                 head.wake_at_ns
             } else {
                 0
             },
             short,
+            short_lease,
             disposition: None,
             cancel_writes: Vec::new(),
         }
@@ -2275,7 +2386,8 @@ impl<K: Kind> Plugin<K> {
 
     /// THE ONE RE-CALL of a SHORT answer, spending its [`Recall`] token, with the caller's bigger
     /// buffers in `frame`. REFUSED without a crossing when the token is another instance's or
-    /// another op's; a second short answer is FAULT (the short-buffer rule on `OutHead`).
+    /// another op's; a second short answer is FAULT (the short-buffer rule on `OutHead`). An
+    /// inline token preserves its original ticket and service epoch.
     pub fn recall<I: InFrame, O: OutFrame>(
         &self,
         token: Recall,
@@ -2285,7 +2397,18 @@ impl<K: Kind> Plugin<K> {
         if token.instance != self.instance_id() || token.slot != s {
             return Called::from(Crossed::host(Outcome::Refused));
         }
-        let called = self.call_on(s, frame, Ticket::NONE, false);
+        let _reference = match token.kept.as_ref() {
+            Some(kept) => match unsafe { RecallInput::new(frame.heads().0, kept.id) } {
+                Ok(reference) => Some(reference),
+                Err(()) => return Called::from(Crossed::host(Outcome::Refused)),
+            },
+            None => None,
+        };
+        let called = if token.ticket.is_none() {
+            self.call_on(s, frame, token.ticket, false)
+        } else {
+            self.call_inline(token.ticket, true, s, frame)
+        };
         if called.recall.is_some() {
             return Called::from(Crossed::host(Outcome::Fault));
         }
@@ -2383,6 +2506,12 @@ impl<K: Kind> Plugin<K> {
         let token = crossed.short.then(|| Recall {
             instance: self.instance_id(),
             slot: s,
+            ticket,
+            kept: (crossed.short_lease != 0).then(|| RecallLease {
+                instance: Arc::clone(&self.inner),
+                framing: super::framing_context::current(),
+                id: crossed.short_lease,
+            }),
         });
         Called {
             recall: token,

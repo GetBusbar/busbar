@@ -28,6 +28,9 @@ struct State {
     cancels: AtomicU64,
     release_scopes: Mutex<Vec<Option<Identity>>>,
     probe: Mutex<Option<Probe>>,
+    extensions: Mutex<std::collections::HashMap<u64, Box<[u8]>>>,
+    entered: AtomicBool,
+    unblock: AtomicBool,
 }
 struct LeaseKind;
 impl Kind for LeaseKind {
@@ -59,6 +62,7 @@ crate::dispatch_tests::c_abi! {
         let present = state.leases.lock().unwrap().remove(&input.lease);
         let outcome = if present { Outcome::Ready } else { Outcome::Refused };
         if present {
+            state.extensions.lock().unwrap().remove(&input.lease);
             state.release_scopes.lock().unwrap().push(super::super::framing_context::current().map(|s| (s.owner(), s.leg(), s.listener(), s.connection())));
             let probe = state.probe.lock().unwrap().clone();
             if let Some(probe) = probe { probe(); }
@@ -75,6 +79,28 @@ crate::dispatch_tests::c_abi! {
             1 if !resumed => { issued(state, &mut out.head); Outcome::Pending }
             2 if !resumed => Outcome::Pending,
             3 => { issued(state, &mut out.head); out.next_tick_ns = 99; Outcome::Failed }
+            4 | 6 => {
+                if input.now_ns == 6 {
+                    state.entered.store(true, Ordering::Release);
+                    while !state.unblock.load(Ordering::Acquire) { std::thread::yield_now(); }
+                }
+                let prior = unsafe { super::super::plugin::blob_bytes(input.head.extensions) };
+                match busbar_contract::abi::sdk::auth_door::short_reply::decode(prior).unwrap() {
+                    Some(lease) => {
+                        assert!(state.leases.lock().unwrap().contains(&lease));
+                        state.commits.fetch_add(1, Ordering::SeqCst);
+                        Outcome::Ready
+                    }
+                    None => {
+                        issued(state, &mut out.head);
+                        let bytes = busbar_contract::abi::sdk::auth_door::short_reply::encode(out.head.lease).into_boxed_slice();
+                        out.head.extensions = busbar_contract::abi::mechanism::call::Blob { ptr: bytes.as_ptr(), len: bytes.len(), fmt: busbar_contract::abi::mechanism::call::BLOB_OCTETS, flags: 0 };
+                        state.extensions.lock().unwrap().insert(out.head.lease, bytes);
+                        out.next_tick_ns = 99;
+                        Outcome::Failed
+                    }
+                }
+            }
             _ => { issued(state, &mut out.head); state.commits.fetch_add(1, Ordering::SeqCst); Outcome::Ready }
         };
         out.head.outcome = RawOutcome::of(outcome);
@@ -329,6 +355,189 @@ fn short_recall_and_second_short_release_exactly_once_each() {
     assert_eq!(state.released.load(Ordering::SeqCst), 2);
     assert!(state.leases.lock().unwrap().is_empty());
     d.recycle(ticket);
+}
+
+#[test]
+fn negotiated_short_is_private_and_other_tickets_do_not_consume_it() {
+    let (d, p, ptr) = rig();
+    let state = unsafe { &*ptr };
+    let first = d.mint(0).unwrap();
+    let other = d.mint(0).unwrap();
+    for ticket in [first, other] {
+        let done = d
+            .submit(&p, ticket, slot::TICK, frame(4), DeadlineClass::Call, 0)
+            .wait(WAIT)
+            .unwrap();
+        assert!(done.short);
+        assert_eq!(done.lease, 0);
+    }
+    assert_eq!(state.leases.lock().unwrap().len(), 2);
+    assert_eq!(state.released.load(Ordering::SeqCst), 0);
+    for (count, ticket) in [other, first].into_iter().enumerate() {
+        let done = d
+            .submit(&p, ticket, slot::TICK, frame(4), DeadlineClass::Call, 0)
+            .wait(WAIT)
+            .unwrap();
+        assert_eq!(done.outcome, Outcome::Ready);
+        assert_eq!(done.lease, 0);
+        until(|| state.released.load(Ordering::SeqCst) == count as u64 + 1);
+        d.recycle(ticket);
+    }
+    assert_eq!(state.commits.load(Ordering::SeqCst), 2);
+    assert!(state.leases.lock().unwrap().is_empty());
+}
+
+#[test]
+fn an_old_unread_short_cannot_retire_a_new_answer_on_the_same_ticket() {
+    let (d, p, ptr) = rig();
+    let state = unsafe { &*ptr };
+    let ticket = d.mint(0).unwrap();
+    let old = d.submit(&p, ticket, slot::TICK, frame(4), DeadlineClass::Call, 0);
+    until(|| old.slot.lock().settled);
+    assert_eq!(
+        d.submit(&p, ticket, slot::TICK, frame(4), DeadlineClass::Call, 0)
+            .wait(WAIT)
+            .unwrap()
+            .outcome,
+        Outcome::Ready
+    );
+    until(|| state.released.load(Ordering::SeqCst) == 1);
+    assert!(
+        d.submit(&p, ticket, slot::TICK, frame(4), DeadlineClass::Call, 0)
+            .wait(WAIT)
+            .unwrap()
+            .short
+    );
+    drop(old);
+    assert_eq!(state.released.load(Ordering::SeqCst), 1);
+    assert_eq!(state.leases.lock().unwrap().len(), 1);
+    assert_eq!(
+        d.submit(&p, ticket, slot::TICK, frame(4), DeadlineClass::Call, 0)
+            .wait(WAIT)
+            .unwrap()
+            .outcome,
+        Outcome::Ready
+    );
+    until(|| state.released.load(Ordering::SeqCst) == 2);
+    assert!(state.leases.lock().unwrap().is_empty());
+    d.recycle(ticket);
+}
+
+#[test]
+fn a_second_short_retires_the_saved_answer_and_the_new_failed_lease() {
+    let (d, p, ptr) = rig();
+    let state = unsafe { &*ptr };
+    let ticket = d.mint(0).unwrap();
+    assert!(
+        d.submit(&p, ticket, slot::TICK, frame(4), DeadlineClass::Call, 0)
+            .wait(WAIT)
+            .unwrap()
+            .short
+    );
+    let done = d
+        .submit(&p, ticket, slot::TICK, frame(3), DeadlineClass::Call, 0)
+        .wait(WAIT)
+        .unwrap();
+    assert_eq!(done.outcome, Outcome::Fault);
+    assert_eq!(done.lease, 0);
+    until(|| state.released.load(Ordering::SeqCst) == 2);
+    assert!(state.leases.lock().unwrap().is_empty());
+    d.recycle(ticket);
+}
+
+#[test]
+fn unread_short_or_ticket_abandon_returns_once_outside_locks() {
+    for end in ["unread", "drop-client", "recycle"] {
+        let (d, p, ptr) = rig();
+        let state = unsafe { &*ptr };
+        let ticket = d.mint(0).unwrap();
+        let scope = d.framing_context(p.instance().0, 73, 0).unwrap();
+        let expected = (p.instance().0, scope.leg(), 73, scope.connection());
+        let reply = super::super::framing_context::with_context(Some(scope), || {
+            d.submit(&p, ticket, slot::TICK, frame(4), DeadlineClass::Call, 0)
+        });
+        until(|| reply.slot.lock().settled);
+        assert_eq!(state.released.load(Ordering::SeqCst), 0);
+        let slot = reply.slot.clone();
+        let worker = d.worker(0).unwrap();
+        let unlocked = Arc::new(AtomicBool::new(false));
+        let saw = unlocked.clone();
+        *state.probe.lock().unwrap() = Some(Arc::new(move || {
+            let start = Instant::now();
+            while start.elapsed() < Duration::from_millis(200) {
+                if let (Ok(a), Ok(b)) = (slot.v.try_lock(), worker.state.try_lock()) {
+                    drop((a, b));
+                    saw.store(true, Ordering::Release);
+                    break;
+                }
+                std::thread::yield_now();
+            }
+        }));
+        match end {
+            "drop-client" => d.drop_client(ticket),
+            "recycle" => d.recycle(ticket),
+            _ => {}
+        }
+        if end == "unread" {
+            drop(reply);
+        } else {
+            // The unread completion is still alive: the ticket owner must retire independently.
+            until(|| state.released.load(Ordering::SeqCst) == 1);
+            drop(reply);
+        }
+        until(|| state.released.load(Ordering::SeqCst) == 1);
+        assert!(unlocked.load(Ordering::Acquire), "{end}");
+        assert_eq!(*state.release_scopes.lock().unwrap(), vec![Some(expected)]);
+        assert!(state.leases.lock().unwrap().is_empty());
+        *state.probe.lock().unwrap() = None;
+        if end != "recycle" {
+            d.recycle(ticket);
+        }
+    }
+}
+
+#[test]
+fn replacing_a_worker_retires_completed_and_late_short_storage() {
+    for late in [false, true] {
+        let (d, p, ptr) = rig();
+        let state = unsafe { &*ptr };
+        // Always unblock a crossing on unwind, before Dispatcher joins its threads.
+        struct Unblock<'a>(&'a AtomicBool);
+        impl Drop for Unblock<'_> {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::Release);
+            }
+        }
+        let unblock = Unblock(&state.unblock);
+        let ticket = d.mint(0).unwrap();
+        let reply = d.submit(
+            &p,
+            ticket,
+            slot::TICK,
+            frame(if late { 6 } else { 4 }),
+            DeadlineClass::Call,
+            0,
+        );
+        if late {
+            until(|| state.entered.load(Ordering::Acquire));
+        } else {
+            assert!(reply.wait(WAIT).unwrap().short);
+        }
+        let worker = d.worker(0).unwrap();
+        // The watchdog's actual retirement operation, applied while the fixture's crossing
+        // is either complete or explicitly held; retired entries drop after the lock.
+        let gone = {
+            let mut st = worker.lock();
+            st.dead = true;
+            Worker::fault_all(&mut st)
+        };
+        drop(gone);
+        drop(unblock);
+        until(|| state.released.load(Ordering::SeqCst) == 1);
+        assert!(state.leases.lock().unwrap().is_empty());
+        drop(reply);
+        assert_eq!(state.released.load(Ordering::SeqCst), 1);
+    }
 }
 
 #[test]

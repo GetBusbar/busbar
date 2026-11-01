@@ -551,6 +551,7 @@ impl Buffers {
             .get(..y.pieces_len as usize)
             .ok_or_else(|| bad("pieces"))?;
         let first_piece = into.pieces.len();
+        let first_interim = into.interim.len();
         for p in pieces {
             if p.flags & PIECE_WRITABLE != 0 {
                 // A STREAM WRITABLE AGAIN: always an empty piece with no other flag, ending no
@@ -637,13 +638,37 @@ impl Buffers {
             if !fits {
                 return Err(bad("head slots of the other side"));
             }
-            // A dialled answer's reason rides its stream's head: the first field-block piece of
-            // the stream in this answer.
             if let Some(reason) = head.reason.clone() {
-                if let Some(g) = into.pieces[first_piece..]
+                if let Some(index) =
+                    busbar_contract::abi::transport::check::head_piece_index(h, pieces)
+                {
+                    let interim = pieces[index].flags & PIECE_INTERIM != 0;
+                    let preceding = pieces[..index]
+                        .iter()
+                        .filter(|p| {
+                            if interim {
+                                p.flags & PIECE_INTERIM != 0
+                            } else {
+                                p.flags & (PIECE_INTERIM | PIECE_WRITABLE) == 0
+                            }
+                        })
+                        .count();
+                    let target = if interim {
+                        &mut into.interim[first_interim..]
+                    } else {
+                        &mut into.pieces[first_piece..]
+                    };
+                    if let Some(g) = target.get_mut(preceding) {
+                        g.reason = Some(reason);
+                    }
+                    if interim {
+                        continue;
+                    }
+                } else if let Some(g) = into.pieces[first_piece..]
                     .iter_mut()
                     .find(|g| g.stream == head.stream && g.fields)
                 {
+                    // Preserve a lone legacy head whose words were not adjacent to its piece.
                     g.reason = Some(reason);
                 }
             }

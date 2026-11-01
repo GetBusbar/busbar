@@ -1102,3 +1102,177 @@ fn a_resumed_ingest_preserves_its_stream_writable_signal() {
     assert!(!framing.parked());
     assert_eq!(door.host.calls(), 1);
 }
+
+fn reasoned_head_buffers(rows: &[(u64, u16, bool, &[u8])]) -> (Buffers, FramerOut) {
+    let mut buffers = Buffers::default();
+    buffers.frame.clear();
+    buffers.pieces.clear();
+    buffers.heads.clear();
+    for &(stream, code, interim, reason) in rows {
+        let offset = buffers.frame.len() as u64;
+        buffers.frame.extend_from_slice(reason);
+        buffers.heads.push(HeadSlots {
+            stream,
+            reason: FrameSpan {
+                offset,
+                len: reason.len() as u64,
+            },
+            ..HeadSlots::default()
+        });
+        let offset = buffers.frame.len() as u64;
+        let fields = b"x-sensitive-marker: retained\r\n";
+        buffers.frame.extend_from_slice(fields);
+        buffers.pieces.push(FramePiece {
+            stream,
+            offset,
+            len: fields.len() as u64,
+            code: u32::from(code),
+            flags: PIECE_FIELDS
+                | PIECE_HAS_CODE
+                | PIECE_END_OF_FRAME
+                | if interim { PIECE_INTERIM } else { 0 },
+            ..EMPTY_PIECE
+        });
+    }
+    let mut out: FramerOut = blank_out();
+    out.yielded.frame_len = buffers.frame.len() as u64;
+    out.yielded.pieces_len = buffers.pieces.len() as u32;
+    out.yielded.heads_len = buffers.heads.len() as u32;
+    (buffers, out)
+}
+
+#[test]
+fn informational_reasons_stay_on_their_pieces_and_never_become_terminal_heads() {
+    for terminal in [101, 200] {
+        let (mut buffers, out) = reasoned_head_buffers(&[
+            (7, 100, true, b"Continue"),
+            (8, 103, true, b"Other hints"),
+            (7, 103, true, b"Early hints"),
+            (8, 200, false, b"Other ready"),
+            (7, terminal, false, b"Final response"),
+        ]);
+        let mut yielded = Yielded::default();
+        assert!(buffers.take(&out, &mut yielded).unwrap());
+        assert_eq!(
+            yielded
+                .heads
+                .iter()
+                .map(|h| (h.stream, h.reason.as_deref()))
+                .collect::<Vec<_>>(),
+            vec![
+                (8, Some(b"Other ready".as_slice())),
+                (7, Some(b"Final response".as_slice()))
+            ]
+        );
+        assert_eq!(
+            yielded
+                .interim
+                .iter()
+                .map(|p| (p.stream, p.status_code, p.reason.as_deref()))
+                .collect::<Vec<_>>(),
+            vec![
+                (7, Some(100), Some(b"Continue".as_slice())),
+                (8, Some(103), Some(b"Other hints".as_slice())),
+                (7, Some(103), Some(b"Early hints".as_slice()))
+            ]
+        );
+        assert_eq!(
+            yielded
+                .pieces
+                .iter()
+                .map(|p| (p.stream, p.status_code, p.reason.as_deref()))
+                .collect::<Vec<_>>(),
+            vec![
+                (8, Some(200), Some(b"Other ready".as_slice())),
+                (
+                    7,
+                    Some(u32::from(terminal)),
+                    Some(b"Final response".as_slice())
+                )
+            ]
+        );
+        assert!(yielded
+            .interim
+            .iter()
+            .chain(&yielded.pieces)
+            .all(|p| p.bytes == b"x-sensitive-marker: retained\r\n"));
+    }
+}
+
+#[test]
+fn informational_only_answer_does_not_publish_a_terminal_head_before_the_next_yield() {
+    let (mut buffers, out) = reasoned_head_buffers(&[(7, 103, true, b"Early hints")]);
+    let mut yielded = Yielded::default();
+    assert!(buffers.take(&out, &mut yielded).unwrap());
+    assert!(yielded.heads.is_empty());
+    assert!(yielded.pieces.is_empty());
+    assert_eq!(
+        yielded.interim[0].reason.as_deref(),
+        Some(b"Early hints".as_slice())
+    );
+    let (mut buffers, out) = reasoned_head_buffers(&[(7, 101, false, b"Switching Protocols")]);
+    assert!(buffers.take(&out, &mut yielded).unwrap());
+    assert_eq!(yielded.heads.len(), 1);
+    assert_eq!(yielded.pieces[0].status_code, Some(101));
+    assert_eq!(
+        yielded.pieces[0].reason.as_deref(),
+        Some(b"Switching Protocols".as_slice())
+    );
+    assert_eq!(
+        yielded.interim[0].reason.as_deref(),
+        Some(b"Early hints".as_slice())
+    );
+}
+
+#[test]
+fn split_informational_fields_keep_their_stream_state_and_original_reason_across_yields() {
+    let (mut buffers, mut out) = reasoned_head_buffers(&[(7, 103, true, b"Early hints")]);
+    let start = buffers.pieces[0].offset as usize;
+    buffers.frame.truncate(start);
+    buffers.frame.extend_from_slice(b"x-sensitive-marker: ");
+    buffers.pieces[0].len = (buffers.frame.len() - start) as u64;
+    buffers.pieces[0].flags &= !PIECE_END_OF_FRAME;
+    out.yielded.frame_len = buffers.frame.len() as u64;
+    out.yielded.flags = YIELD_MORE;
+    let mut yielded = Yielded::default();
+    assert!(!buffers.take(&out, &mut yielded).unwrap());
+    assert!(yielded.heads.is_empty());
+    buffers.frame = b"retained\r\n".to_vec();
+    buffers.pieces = vec![FramePiece {
+        stream: 7,
+        offset: 0,
+        len: buffers.frame.len() as u64,
+        code: 103,
+        flags: PIECE_FIELDS | PIECE_HAS_CODE | PIECE_INTERIM | PIECE_CONTINUED | PIECE_END_OF_FRAME,
+        ..EMPTY_PIECE
+    }];
+    buffers.heads.clear();
+    out.yielded.frame_len = buffers.frame.len() as u64;
+    out.yielded.heads_len = 0;
+    assert!(!buffers.take(&out, &mut yielded).unwrap());
+    assert_eq!(
+        yielded.interim[0].reason.as_deref(),
+        Some(b"Early hints".as_slice())
+    );
+    assert_eq!(yielded.interim[1].reason, None);
+    assert_eq!(
+        yielded
+            .interim
+            .iter()
+            .flat_map(|p| p.bytes.iter().copied())
+            .collect::<Vec<_>>(),
+        b"x-sensitive-marker: retained\r\n"
+    );
+    let (terminal, terminal_out) =
+        reasoned_head_buffers(&[(7, 101, false, b"Switching Protocols")]);
+    buffers.frame = terminal.frame;
+    buffers.pieces = terminal.pieces;
+    buffers.heads = terminal.heads;
+    assert!(buffers.take(&terminal_out, &mut yielded).unwrap());
+    assert_eq!(yielded.heads.len(), 1);
+    assert_eq!(yielded.pieces[0].status_code, Some(101));
+    assert_eq!(
+        yielded.pieces[0].reason.as_deref(),
+        Some(b"Switching Protocols".as_slice())
+    );
+}

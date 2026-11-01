@@ -1599,3 +1599,140 @@ fn an_agreed_protocol_past_the_offer_is_refused() {
         f(Rule::IndexOutOfRange, "framer.agreed")
     );
 }
+
+/// An actual framer answer with each reason immediately before its own field piece, as the SDK
+/// sink writes it. The metadata, rather than the numeric status alone, says which head is interim.
+fn response_heads(rows: &[(u64, u16, bool)]) -> (Vec<u8>, Vec<FramePiece>, Vec<HeadSlots>) {
+    let mut frame = Vec::new();
+    let mut pieces = Vec::new();
+    let mut heads = Vec::new();
+    for &(stream, code, interim) in rows {
+        let reason = format!("reason {code}");
+        let reason_offset = frame.len() as u64;
+        frame.extend_from_slice(reason.as_bytes());
+        heads.push(HeadSlots {
+            stream,
+            reason: FrameSpan {
+                offset: reason_offset,
+                len: reason.len() as u64,
+            },
+            ..HeadSlots::default()
+        });
+        let offset = frame.len() as u64;
+        let fields = b"x-sensitive-marker: retained\r\n";
+        frame.extend_from_slice(fields);
+        pieces.push(FramePiece {
+            stream,
+            code: u32::from(code),
+            flags: PIECE_FIELDS
+                | PIECE_HAS_CODE
+                | PIECE_END_OF_FRAME
+                | if interim { PIECE_INTERIM } else { 0 },
+            ..piece(offset, fields.len() as u64)
+        });
+    }
+    (frame, pieces, heads)
+}
+
+fn response_heads_answer(
+    frame: &mut [u8],
+    pieces: &mut [FramePiece],
+    heads: &mut [HeadSlots],
+) -> Result<(), Fault> {
+    let mut input: FramingIn = z();
+    input.sink = FramerSink {
+        frame: frame.as_mut_ptr(),
+        frame_cap: frame.len(),
+        pieces: pieces.as_mut_ptr(),
+        pieces_cap: pieces.len(),
+        heads: heads.as_mut_ptr(),
+        heads_cap: heads.len(),
+        ..z()
+    };
+    let mut out: FramerOut = z();
+    out.yielded.frame_len = frame.len() as u64;
+    out.yielded.pieces_len = pieces.len() as u32;
+    out.yielded.heads_len = heads.len() as u32;
+    answer(
+        slot::TIMER,
+        Ready,
+        &input,
+        std::mem::size_of_val(&input),
+        &out,
+        std::mem::size_of_val(&out),
+    )
+}
+
+#[test]
+fn informational_head_slots_then_terminal_head_cross_the_actual_framer_answer() {
+    for terminal in [101, 200] {
+        let (mut frame, mut pieces, mut heads) =
+            response_heads(&[(7, 100, true), (7, 103, true), (7, terminal, false)]);
+        let original = frame.clone();
+        assert_eq!(
+            response_heads_answer(&mut frame, &mut pieces, &mut heads),
+            Ok(())
+        );
+        assert_eq!(frame, original, "head and field bytes are retained exactly");
+        assert_eq!(pieces[2].code, u32::from(terminal));
+        assert_eq!(
+            pieces[2].flags & PIECE_INTERIM,
+            0,
+            "101 is an upgrade head, not interim"
+        );
+    }
+}
+
+#[test]
+fn interleaved_informational_heads_do_not_consume_another_streams_terminal_slot() {
+    let (mut frame, mut pieces, mut heads) = response_heads(&[
+        (7, 100, true),
+        (8, 103, true),
+        (7, 103, true),
+        (8, 200, false),
+        (7, 101, false),
+    ]);
+    assert_eq!(
+        response_heads_answer(&mut frame, &mut pieces, &mut heads),
+        Ok(())
+    );
+}
+
+#[test]
+fn terminal_duplicates_and_unflagged_informational_numbers_remain_refused() {
+    for rows in [
+        vec![(7, 101, false), (7, 200, false)],
+        vec![(7, 200, false), (7, 103, true)],
+        vec![(7, 103, false), (7, 200, false)],
+    ] {
+        let (mut frame, mut pieces, mut heads) = response_heads(&rows);
+        assert_eq!(
+            response_heads_answer(&mut frame, &mut pieces, &mut heads),
+            f(Rule::Contradiction, "framer.head.stream_twice")
+        );
+    }
+}
+
+#[test]
+fn an_interim_head_must_match_its_own_piece_and_cannot_be_reused() {
+    let (mut frame, mut pieces, mut heads) = response_heads(&[(7, 103, true), (7, 200, false)]);
+    pieces[0].stream = 8;
+    assert_eq!(
+        response_heads_answer(&mut frame, &mut pieces, &mut heads),
+        f(Rule::Contradiction, "framer.head.stream_twice")
+    );
+    pieces[0].stream = 7;
+    heads[1] = heads[0];
+    assert_eq!(
+        response_heads_answer(&mut frame, &mut pieces, &mut heads),
+        f(Rule::Contradiction, "framer.head.stream_twice")
+    );
+    let mut out: FramerOut = z();
+    out.yielded.frame_len = frame.len() as u64;
+    out.yielded.heads_len = heads.len() as u32;
+    assert_eq!(
+        check_head_slots(&out, &heads, heads.len() as u64),
+        f(Rule::Contradiction, "framer.head.stream_twice"),
+        "the public API without piece metadata stays strict"
+    );
+}

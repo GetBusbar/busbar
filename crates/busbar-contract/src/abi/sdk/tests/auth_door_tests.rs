@@ -59,6 +59,15 @@ mod plugin {
             // Named whatever the verdict, from a `const` list: no verify allocates it.
             const STRIPS: &[Strip] = &[strip_field("x-alt")];
             let verdict = match r.credential().or_else(|| r.line("X-Alt")) {
+                Some(b"mutable") => Verdict::Identity(VerifiedIdentity {
+                    subject: format!(
+                        "judgment-{}",
+                        self.flushes
+                            .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+                            + 1
+                    ),
+                    ..VerifiedIdentity::default()
+                }),
                 Some(b"good") => Verdict::Identity(VerifiedIdentity {
                     subject: "alice".into(),
                     name: Some("Alice".into()),
@@ -465,6 +474,121 @@ fn an_identity_that_does_not_fit_is_the_short_answer_and_writes_nothing() {
         (Outcome::Failed, 25, 2)
     );
     check(o, &out, &input, &host).expect("legal");
+}
+
+#[test]
+fn a_short_verdict_reference_is_instance_and_ticket_bound_and_expires_on_release() {
+    use crate::abi::mechanism::lifecycle::ReleaseIn;
+    for ticket in [
+        Ticket::NONE,
+        Ticket {
+            slot: 7,
+            generation: 3,
+        },
+    ] {
+        let (_, opened) = open(b"\"ok\"");
+        let (_, other) = open(b"\"ok\"");
+        let mut small = Host::new(0, 0);
+        // SAFETY: VerifyIn's wire fields admit zero; heads and all lent buffers are filled below.
+        let mut input: VerifyIn = unsafe { std::mem::zeroed() };
+        input.head = head::<VerifyIn>(slot::VERIFY);
+        input.head.ticket = ticket;
+        input.point = POINT_HEAD;
+        input.credential = blob(b"mutable", BLOB_OCTETS, BLOB_SECRET);
+        input.out_buf = small.out_buf();
+        input.strip = small.strips.as_mut_ptr();
+        input.strip_cap = small.strips.len() as u32;
+        let fresh_out = || {
+            // SAFETY: IdentifyOut's wire fields admit zero.
+            let mut out: IdentifyOut = unsafe { std::mem::zeroed() };
+            out.head = out_head(size_of::<IdentifyOut>());
+            out
+        };
+        let mut short = fresh_out();
+        assert_eq!(
+            cross(ops().verify, opened.instance, &input, &mut short),
+            Outcome::Failed
+        );
+        assert_ne!(short.head.lease, 0);
+        // Copy the negotiated reference while its lease is live, exactly as the host does.
+        let reference = unsafe {
+            std::slice::from_raw_parts(short.head.extensions.ptr, short.head.extensions.len)
+        }
+        .to_vec();
+        let mut full = Host::new(short.needed_bytes as usize, short.needed_groups as usize);
+        input.out_buf = full.out_buf();
+        input.strip = full.strips.as_mut_ptr();
+        input.strip_cap = full.strips.len() as u32;
+        input.head.extensions = blob(&reference, BLOB_OCTETS, 0);
+        input.head.ticket = Ticket {
+            slot: 7,
+            generation: 4,
+        };
+        assert_eq!(
+            cross(ops().verify, opened.instance, &input, &mut fresh_out()),
+            Outcome::Refused
+        );
+        input.head.ticket = ticket;
+        assert_eq!(
+            cross(ops().verify, other.instance, &input, &mut fresh_out()),
+            Outcome::Refused
+        );
+        let unknown =
+            crate::abi::mechanism::extensions::encode(&[("busbar.sdk.short-reply", &[2; 9])]);
+        input.head.extensions = blob(&unknown, BLOB_OCTETS, 0);
+        assert_eq!(
+            cross(ops().verify, opened.instance, &input, &mut fresh_out()),
+            Outcome::Refused
+        );
+        input.head.extensions = blob(&reference, BLOB_OCTETS, 0);
+        let mut recalled = fresh_out();
+        assert_eq!(
+            cross(ops().verify, opened.instance, &input, &mut recalled),
+            Outcome::Ready
+        );
+        assert_eq!(
+            full.text(recalled.identity.subject).as_deref(),
+            Some("judgment-1")
+        );
+        let release = ReleaseIn {
+            head: head::<ReleaseIn>(life::RELEASE),
+            lease: short.head.lease,
+        };
+        assert_eq!(
+            cross(
+                ops().head.release,
+                opened.instance,
+                &release,
+                &mut out_head(size_of::<OutHead>())
+            ),
+            Outcome::Ready
+        );
+        assert_eq!(
+            cross(ops().verify, opened.instance, &input, &mut fresh_out()),
+            Outcome::Refused
+        );
+        input.head.extensions = absent();
+        let mut next = fresh_out();
+        assert_eq!(
+            cross(ops().verify, opened.instance, &input, &mut next),
+            Outcome::Ready
+        );
+        assert_eq!(
+            full.text(next.identity.subject).as_deref(),
+            Some("judgment-2")
+        );
+        for instance in [opened.instance, other.instance] {
+            assert_eq!(
+                cross(
+                    ops().head.close,
+                    instance,
+                    &head::<InHead>(life::CLOSE),
+                    &mut out_head(size_of::<OutHead>())
+                ),
+                Outcome::Ready
+            );
+        }
+    }
 }
 
 #[test]

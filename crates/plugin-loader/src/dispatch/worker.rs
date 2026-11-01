@@ -297,18 +297,21 @@ pub struct Done<I, O> {
 struct Queued<I, O> {
     done: Done<I, O>,
     lease: UnhandedLease,
+    short: UnhandedShort,
 }
 impl<I, O> Queued<I, O> {
     fn unleased(done: Done<I, O>) -> Self {
         Self {
             done,
             lease: UnhandedLease(None),
+            short: UnhandedShort(None),
         }
     }
     fn take(mut self) -> Done<I, O> {
         if let Some(lease) = self.lease.0.as_mut() {
             lease.id = 0;
         }
+        self.short.0 = None;
         self.done
     }
 }
@@ -316,6 +319,43 @@ impl<I, O> Queued<I, O> {
 /// An unhanded answer returns to its originating instance and captured framing Scope.
 /// Worker-owned destruction uses the existing LET_GO list, never a callback under a lock.
 struct UnhandedLease(Option<LeaseReturn>);
+
+/// The entry and unread completion share release-once custody. Consuming the completion
+/// leaves the entry responsible; abandoning it retires only this reply's storage.
+pub(crate) struct ShortLease {
+    id: AtomicU64,
+    instance: Arc<Instance>,
+    framing: Option<Arc<dyn busbar_contract::framing_scope::FramingScope>>,
+}
+impl ShortLease {
+    fn release(&self) {
+        let id = self.id.swap(0, Ordering::AcqRel);
+        if id != 0 {
+            drop_after_lock(Box::new(LeaseReturn {
+                instance: Arc::clone(&self.instance),
+                framing: self.framing.clone(),
+                id,
+            }));
+        }
+    }
+}
+impl Drop for ShortLease {
+    fn drop(&mut self) {
+        self.release();
+        hold_past_lock(&self.instance);
+        if let Some(framing) = self.framing.take() {
+            drop_after_lock(Box::new(framing));
+        }
+    }
+}
+struct UnhandedShort(Option<Arc<ShortLease>>);
+impl Drop for UnhandedShort {
+    fn drop(&mut self) {
+        if let Some(short) = self.0.take() {
+            short.release();
+        }
+    }
+}
 impl UnhandedLease {
     fn new(
         instance: &Arc<Instance>,
@@ -554,7 +594,7 @@ impl<I, O> Drop for Reply<I, O> {
 pub(crate) trait Job: Send {
     fn heads(&mut self) -> (*mut InHead, *mut OutHead, u32);
     /// Deliver the answer with the frame; `false` when the caller already had one (detached).
-    fn finish(self: Box<Self>, c: Crossed) -> bool;
+    fn finish(self: Box<Self>, c: Crossed, short: Option<Arc<ShortLease>>) -> bool;
 }
 
 /// Boxed once at submit, the frame inline: its address is stable from the first crossing to the
@@ -584,7 +624,7 @@ impl<I: InFrame, O: OutFrame> Job for JobOf<I, O> {
         self.frame.heads()
     }
 
-    fn finish(self: Box<Self>, c: Crossed) -> bool {
+    fn finish(self: Box<Self>, c: Crossed, short: Option<Arc<ShortLease>>) -> bool {
         let lease = UnhandedLease::new(&self.instance, self.framing.clone(), c.lease);
         self.reply.put(Queued {
             done: Done {
@@ -598,6 +638,7 @@ impl<I: InFrame, O: OutFrame> Job for JobOf<I, O> {
                 cancel_writes: c.cancel_writes,
             },
             lease,
+            short: UnhandedShort(short),
         })
     }
 }
@@ -918,6 +959,8 @@ pub(crate) struct Entry {
     recycle_when_idle: bool,
     /// The op whose last answer was SHORT: its next answer on this ticket is the one re-call.
     short_slot: Option<u32>,
+    /// Immutable negotiated SHORT storage belongs to this live ticket until recall or abandon.
+    short_reply: Option<UnhandedShort>,
     next: Option<Action>,
     pub(crate) current: Option<Current>,
     pub(crate) queue: VecDeque<(Meta, Box<dyn Job>)>,
@@ -1246,6 +1289,8 @@ impl Worker {
             Msg::DropClient(t) => {
                 if let Some((idx, e)) = self.entry(st, t) {
                     e.client_dropped = true;
+                    e.short_reply = None;
+                    e.short_slot = None;
                     let (keep, gone): (VecDeque<_>, VecDeque<_>) = std::mem::take(&mut e.queue)
                         .into_iter()
                         .partition(|(m, _)| m.class == DeadlineClass::WriteBehind);
@@ -1301,6 +1346,7 @@ impl Worker {
         e.client_dropped = false;
         e.recycle_when_idle = false;
         e.short_slot = None;
+        e.short_reply = None;
         e.next = None;
         e.driver = None;
         // A slot whose counter is spent is RETIRED: never handed out again, so no generation of
@@ -1340,16 +1386,32 @@ impl Worker {
         e.latched = false;
         // THE ONE RE-CALL: a short answer may be re-asked once on this ticket; short twice is FAULT.
         let recall = e.short_slot.take() == Some(cur.meta.slot);
+        e.short_reply = None;
         if c.short && recall {
             let _lease = UnhandedLease::new(&cur.meta.instance, cur.meta.framing.clone(), c.lease);
+            let _short =
+                UnhandedLease::new(&cur.meta.instance, cur.meta.framing.clone(), c.short_lease);
             c = Crossed::host(Outcome::Fault);
         } else if c.short {
             e.short_slot = Some(cur.meta.slot);
+            let lease = std::mem::take(&mut c.short_lease);
+            if lease != 0 {
+                let owner = Arc::new(ShortLease {
+                    instance: Arc::clone(&cur.meta.instance),
+                    framing: cur.meta.framing.clone(),
+                    id: AtomicU64::new(lease),
+                });
+                if !e.client_dropped && !e.recycle_when_idle {
+                    e.short_reply = Some(UnhandedShort(Some(owner)));
+                }
+            }
         }
         let mut cur = cur;
         cur.meta.give_back();
         if let Some(job) = cur.job {
-            if !job.finish(c) {
+            let short = e.short_reply.as_ref().and_then(|owner| owner.0.clone());
+            if !job.finish(c, short) {
+                e.short_reply = None;
                 env.stats.write_behind_late.fetch_add(1, Ordering::Relaxed);
             }
         }
@@ -1477,6 +1539,9 @@ impl Worker {
             if crossed.lease != 0 {
                 instance.release_unread(crossed.lease);
             }
+            if crossed.short_lease != 0 {
+                instance.release_unread(crossed.short_lease);
+            }
             None
         } else {
             Some((st, crossed))
@@ -1504,6 +1569,18 @@ impl Worker {
                 let Some((meta, mut job)) = e.queue.pop_front() else {
                     return Some(st);
                 };
+                if e.short_reply
+                    .as_ref()
+                    .and_then(|owner| owner.0.as_ref())
+                    .is_some_and(|kept| {
+                        kept.id.load(Ordering::Acquire) == 0
+                            || e.short_slot != Some(meta.slot)
+                            || !Arc::ptr_eq(&kept.instance, &meta.instance)
+                    })
+                {
+                    e.short_reply = None;
+                    e.short_slot = None;
+                }
                 // A tick on a driver ticket whose held set is full waits for a slot (parked); one
                 // of a kept cycle may not reuse a handle the cycle issued (`super::held`).
                 let (mut full, mut kept_cycle) = (false, false);
@@ -1778,7 +1855,26 @@ impl Worker {
         let framing = cur.meta.framing.clone();
         let mut job = cur.job.take()?;
         let heads = job.heads();
+        let reference = st.entries[idx as usize]
+            .short_reply
+            .as_ref()
+            .and_then(|owner| owner.0.as_ref())
+            .map(|kept| kept.id.load(Ordering::Acquire))
+            .filter(|&id| id != 0);
+        // SAFETY: `job` exclusively owns this frame until after the guard restores its head.
+        let _reference = match reference {
+            Some(lease) => match unsafe { super::plugin::RecallInput::new(heads.0, lease) } {
+                Ok(reference) => Some(reference),
+                Err(()) => {
+                    st.entries[idx as usize].current.as_mut()?.job = Some(job);
+                    self.end(&mut st, idx, Crossed::host(Outcome::Refused), env);
+                    return Some(st);
+                }
+            },
+            None => None,
+        };
         let (mut st, c) = self.cross(st, inst, s, heads, budget, framing)?;
+        drop(_reference);
         let e = &mut st.entries[idx as usize];
         let Some(cur) = e.current.as_mut() else {
             return Some(st);

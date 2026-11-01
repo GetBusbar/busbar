@@ -304,6 +304,16 @@ impl Leases {
         self.fresh(Lease::Kept(Box::new(owned)))
     }
 
+    /// Borrow typed shared storage without running caller code or dropping it under the lock.
+    pub(crate) fn shared<T: Send + Sync + 'static>(&self, lease: u64) -> Option<std::sync::Arc<T>> {
+        let held = self.lock();
+        held.range((lease, 0)..=(lease, u32::MAX))
+            .find_map(|(_, part)| match part {
+                Lease::Kept(owned) => owned.downcast_ref::<std::sync::Arc<T>>().cloned(),
+                _ => None,
+            })
+    }
+
     /// Release `lease` and every part chained under it: READY when it was held, REFUSED when it
     /// was not (a host bug). Only the SDK's `release` slot calls it: a body that released a lease
     /// the host is still copying would free memory under it.
