@@ -15,6 +15,25 @@ use super::*;
 /// A 1.5.3 named-definition section, read off the frozen list (no literal here).
 const NAMED: &str = busbar_kernel::config::plane_sections::NAMED_MAP_SECTIONS[3];
 
+#[test]
+fn an_admin_capture_stays_one_encoded_path_segment() {
+    for (name, encoded) in [
+        ("plain-name_1", "plain-name_1"),
+        ("a/b", "a%2Fb"),
+        ("a?b#c", "a%3Fb%23c"),
+        ("%2F", "%252F"),
+        ("a b", "a%20b"),
+        ("café", "caf%C3%A9"),
+    ] {
+        let path = filled("/fleet/{name}/health", name);
+        assert_eq!(path, format!("/fleet/{encoded}/health"));
+        let uri: axum::http::Uri = path.parse().expect("a valid encoded path");
+        assert!(uri.query().is_none());
+        assert_eq!(uri.path().split('/').count(), 4);
+        assert_eq!(crate::observability::percent_decode(encoded), name);
+    }
+}
+
 /// A registration as a door states one: a named-definition section `fleet`, a pin and a cadence,
 /// and a `validate` that refuses an entry without `url` in its own value-rule words and anything
 /// that is not a mapping as a shape refusal.

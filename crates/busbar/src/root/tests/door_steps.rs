@@ -8688,6 +8688,66 @@ fn a_registration_members_anchors_reach_and_binding_hold_on_every_need_it_rides(
     );
 }
 
+#[test]
+fn the_configured_error_body_cap_reaches_both_egress_constructors() {
+    use crate::root::model_egress::{LiveApp, ModelPools, ModelServing};
+    use busbar_kernel::config::limits::{BuildScope, LimitsResolved};
+    use std::sync::Arc;
+
+    let facts = super::door_facts("error-cap", &[], &[], &[], "audit", Vec::new());
+    let section = serde_yaml::from_str("{}").expect("empty section");
+    let pools = DoorPools::of(&section, TOOL_CALL_SECTION_KEY).expect("empty pools");
+    let serving = ModelServing {
+        pools: ModelPools::default(),
+        lanes: Default::default(),
+        app: LiveApp::fixed(busbar_kernel::test_support::TestApp::new().build()),
+    };
+    let build = || {
+        let caller = busbar_contract::conn::InstanceId(7);
+        let conns: Arc<dyn busbar_contract::conn::PollConns> = Arc::new(Sealing::default());
+        let routes = Default::default();
+        let journal: Arc<dyn busbar_kernel_egress::ports::Journal> =
+            Arc::new(crate::root::plane_node::NodeEndPost::new(Arc::new(
+                crate::root::plane_node::Node::new(),
+            )));
+        let clock: Arc<dyn busbar_kernel_egress::ports::Clock> =
+            Arc::new(crate::root::egress_ports::NodeClock::new());
+        let ordinary = super::compose_egress(
+            &facts,
+            &pools,
+            caller,
+            Arc::clone(&conns),
+            &routes,
+            Arc::clone(&journal),
+            Arc::clone(&clock),
+            1,
+        )
+        .expect("ordinary egress");
+        let (models, _) = crate::root::model_egress::compose(
+            &facts, &serving, caller, conns, &routes, journal, clock, 1,
+        )
+        .expect("model egress");
+        (ordinary, models)
+    };
+
+    let mut limits = LimitsResolved::default();
+    limits.upstream_error_body_max_bytes = 17;
+    let _outer = BuildScope::enter(&limits);
+    let first = build();
+    {
+        limits.upstream_error_body_max_bytes = 29;
+        let _candidate = BuildScope::enter(&limits);
+        let next = build();
+        assert_eq!((next.0.error_body_max, next.1.error_body_max), (29, 29));
+    }
+    let restored = build();
+    assert_eq!(
+        (restored.0.error_body_max, restored.1.error_body_max),
+        (17, 17)
+    );
+    assert_eq!((first.0.error_body_max, first.1.error_body_max), (17, 17));
+}
+
 /// THE MODEL-SHAPED GUARD on the counter label rule: a section shaped as the model plane's is (a
 /// `models` map, a named pool over two of its entries) yields, when its plane STATES its attempts'
 /// labels, exactly the `(pool, lane)` pairs 1.5.5 counted (the golden cells

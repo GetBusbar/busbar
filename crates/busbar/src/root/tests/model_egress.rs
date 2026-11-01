@@ -5,6 +5,39 @@
 use super::*;
 use busbar_kernel::test_support::{LaneSpec, TestApp};
 
+#[test]
+fn queue_depth_counts_waiters_from_overlapping_egress_generations() {
+    use busbar_kernel::plane_driver::route_tables::{ConfigTables, EngineTablesView};
+    use busbar_kernel_egress::ports::Telemetry as _;
+    let app = TestApp::new().build();
+    let make = || ModelTelemetry {
+        app: LiveApp::fixed(Arc::clone(&app)),
+        queued: crate::root::egress_ports::WalkTelemetry::default(),
+        reservoirs: Arc::new(HashMap::new()),
+    };
+    let previous = make();
+    let current = make();
+    let tables = ConfigTables::default();
+    let pool = "model-telemetry-overlapping-generations";
+    previous.queued(pool, 1);
+    current.queued(pool, 1);
+    let both = tables.queued_depth(pool);
+    previous.queued(pool, -1);
+    let remaining = tables.queued_depth(pool);
+    current.queued(pool, -1);
+    let empty = tables.queued_depth(pool);
+    drop(previous);
+    drop(current);
+    assert_eq!(both, 2, "the old and new egress each still have a waiter");
+    assert_eq!(remaining, 1, "ending the old wait must retain the new one");
+    assert_eq!(empty, 0, "balanced completion removes every waiter");
+    assert_eq!(
+        tables.queued_depth(pool),
+        0,
+        "dropping drained handles changes nothing"
+    );
+}
+
 /// The served breaker port over `app`'s lane store, each of `pools` a cell under the default ladder.
 fn cells_over(app: Arc<busbar_kernel::state::App>, pools: &[&str]) -> WalkCells {
     cells_routing(LiveApp::fixed(app), pools, &[])

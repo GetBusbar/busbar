@@ -189,6 +189,19 @@ pub fn set_pool_queued_depth(pool: &str, depth: u64) {
         .insert(pool.to_string(), depth);
 }
 
+/// Account for a balanced wait entry/exit across all live egress generations of `pool`.
+/// Updating the shared count avoids publishing a local snapshot after a newer one.
+pub fn change_pool_queued_depth(pool: &str, delta: i64) {
+    let mut queued = QUEUED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let depth = queued.entry(pool.to_string()).or_default();
+    *depth = depth.saturating_add_signed(delta);
+    if *depth == 0 {
+        queued.remove(pool);
+    }
+}
+
 impl EngineTablesView for ConfigTables {
     fn pools(&self) -> Vec<(&str, Vec<usize>)> {
         self.pools

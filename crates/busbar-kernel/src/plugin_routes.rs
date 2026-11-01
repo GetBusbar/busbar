@@ -566,7 +566,7 @@ async fn plugin_route_dispatch(
 ///
 /// A plugin route may drive an auth/governance/routing decision (this module's own framing treats
 /// plugins as potentially hostile/buggy, but the DECISION-MAKER here is the plugin — an incomplete
-/// header set handed to it silently is itself audit-relevant). So an over-cap header set is never
+/// header set handed to it silently is itself audit-relevant). So an over-cap or non-text header set is never
 /// quietly cut: [`PLUGIN_REQUEST_HEADERS_TRUNCATED_MARKER`] is appended so the plugin can see, in-band,
 /// that what it was handed is incomplete, `busbar_plugin_request_headers_truncated_total` counts the
 /// occurrence, and a warning names the route. The request is still SERVED (not fail-closed) — unlike
@@ -576,17 +576,19 @@ async fn plugin_route_dispatch(
 /// concern; failing closed instead lives with [`relay_response`], where the withheld data would
 /// otherwise reach an external client.
 fn project_request_headers(headers: &HeaderMap) -> Vec<(String, String)> {
+    let mut non_text = false;
     let mut projected: Vec<(String, String)> = headers
         .iter()
         .filter(|(name, _)| name.as_str() != "authorization")
-        .filter_map(|(name, value)| {
-            value
-                .to_str()
-                .ok()
-                .map(|v| (name.as_str().to_string(), v.to_string()))
+        .filter_map(|(name, value)| match value.to_str() {
+            Ok(value) => Some((name.as_str().to_string(), value.to_string())),
+            Err(_) => {
+                non_text = true;
+                None
+            }
         })
         .collect();
-    if projected.len() > MAX_PLUGIN_HEADERS {
+    if non_text || projected.len() > MAX_PLUGIN_HEADERS {
         metrics::counter!(crate::snapshot::PLUGIN_REQUEST_HEADERS_TRUNCATED_TOTAL).increment(1);
         // Per-request on a client whose header count is legitimately high (proxies/CDNs/tracing
         // headers), so an unlatched warn spams. The PLUGIN_REQUEST_HEADERS_TRUNCATED_TOTAL counter
@@ -594,7 +596,8 @@ fn project_request_headers(headers: &HeaderMap) -> Vec<(String, String)> {
         tracing::debug!(
             header_count = projected.len(),
             cap = MAX_PLUGIN_HEADERS,
-            "inbound request header count exceeded the plugin-route cap; truncating the projection \
+            non_text,
+            "inbound request headers cannot be fully projected; truncating the projection \
              forwarded to the plugin and marking it with {PLUGIN_REQUEST_HEADERS_TRUNCATED_MARKER} so \
              the plugin cannot mistake an incomplete header set for a complete one"
         );

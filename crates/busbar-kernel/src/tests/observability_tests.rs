@@ -5,6 +5,17 @@
 
 use super::*;
 
+#[test]
+fn percent_decoding_preserves_components_that_would_be_invalid_utf8() {
+    for encoded in ["%FF", "%C3", "ok%20%FF", "%E2%82"] {
+        assert_eq!(percent_decode(encoded), encoded);
+    }
+    assert_eq!(percent_decode("%E2%82%AC"), "€");
+    assert_eq!(percent_decode("%2541"), "%41");
+    assert_eq!(percent_decode("naïve%20x"), "naïve x");
+    assert_eq!(percent_decode("%Q1%"), "%Q1%");
+}
+
 /// A span-name capture layer, standing in for the OTLP export layer: it records exactly the
 /// spans a layer at its position would export.
 #[derive(Clone, Default)]

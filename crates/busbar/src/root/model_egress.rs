@@ -738,11 +738,8 @@ impl busbar_kernel_egress::ports::Telemetry for ModelTelemetry {
 
     fn queued(&self, pool: &str, delta: i64) {
         busbar_kernel_egress::ports::Telemetry::queued(&self.queued, pool, delta);
-        // The scrape's pool-queue gauge reads the depth the kernel's tables report.
-        busbar_kernel::plane_driver::route_tables::set_pool_queued_depth(
-            pool,
-            u64::try_from(self.queued.depth(pool)).unwrap_or(0),
-        );
+        // Balanced deltas include waits still held by a previous egress generation.
+        busbar_kernel::plane_driver::route_tables::change_pool_queued_depth(pool, delta);
     }
 }
 
@@ -879,7 +876,10 @@ pub fn compose(
             routes: sealed,
             stream_ceiling_secs,
             stated_ceiling_secs: facts.stream_ceiling_secs,
-            error_body_max: busbar_kernel::plane_driver::DEFAULT_ERROR_BODY_MAX,
+            error_body_max: busbar_kernel::config::limits::installed().map_or(
+                busbar_kernel::plane_driver::DEFAULT_ERROR_BODY_MAX,
+                |limits| limits.upstream_error_body_max_bytes,
+            ),
         },
         shown,
     ))
