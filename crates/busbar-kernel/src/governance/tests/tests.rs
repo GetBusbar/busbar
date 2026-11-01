@@ -141,6 +141,9 @@ fn vk_prefixed_principal_id_cannot_alias_a_virtual_key_bucket() {
 }
 use super::*;
 
+#[path = "ordinary_flush_unknown_cases.rs"]
+mod ordinary_flush_unknown_cases;
+
 fn sample_key(id: &str, hash: &str) -> VirtualKey {
     VirtualKey {
         id: id.to_string(),

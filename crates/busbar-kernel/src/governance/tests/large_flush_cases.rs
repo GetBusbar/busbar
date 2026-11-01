@@ -23,12 +23,16 @@ enum Reply {
 #[derive(Default)]
 struct ChunkStore {
     inner: MemoryStore,
+    legacy: bool,
     replies: std::sync::Mutex<VecDeque<Reply>>,
     batches: std::sync::Mutex<Vec<Batch>>,
     before_batch: std::sync::Mutex<Option<Box<dyn FnOnce() + Send>>>,
     before_delete: std::sync::Mutex<Option<Box<dyn FnOnce() + Send>>>,
 }
 impl RecordStore for ChunkStore {
+    fn supports_usage_batch_deduped(&self) -> bool {
+        !self.legacy
+    }
     fn put_key(&self, key: &VirtualKey) -> RecordStoreResult<()> {
         self.inner.put_key(key)
     }
@@ -189,6 +193,28 @@ fn ordinary_small_unknown_commit_keeps_paired_rows_and_later_accrual_exact() {
 }
 
 #[test]
+fn ordinary_small_plain_only_unknown_commit_replays_once() {
+    let (store, gov, key, now) = setup("vk_small_plain_unknown_flush");
+    {
+        let mut cells = gov.budget.write(&key.id);
+        let cell = cells
+            .entry(key.id.clone())
+            .or_insert_with(|| BudgetCell::fresh(0));
+        cell.accrue(MODEL, 0, &toks(CONCURRENT_INPUT, 0));
+        cell.dirty = true;
+        cell.last_touch = now;
+    }
+    store.replies.lock().unwrap().push_back(Reply::LoseAfter);
+    assert_eq!(gov.flush_budgets(), 0);
+    gov.flush_budgets();
+    assert_eq!(input(store.as_ref(), &key.id, 0), CONCURRENT_INPUT);
+    assert_eq!(dated_input(store.as_ref(), &key.id, 0), 0);
+    let batches = store.batches.lock().unwrap();
+    assert_eq!(batches[0], batches[1]);
+    assert_eq!(batches[0].1.len(), 1, "zero dated body is omitted");
+}
+
+#[test]
 fn ordinary_small_unwind_after_commit_keeps_custody_until_next_tick() {
     let (store, gov, key, now) = setup("vk_small_cancelled_flush");
     accrue_dated(&gov, &key, CONCURRENT_INPUT, now);
@@ -217,6 +243,29 @@ fn ordinary_small_zero_net_debt_does_not_enter_store() {
     accrue_dated(&gov, &key, 0, now);
     assert_eq!(gov.flush_budgets(), 0);
     assert!(store.batches.lock().unwrap().is_empty());
+    assert!(gov.budget_flushes.lock().unwrap().is_empty());
+}
+
+#[test]
+fn ordinary_small_flush_preserves_explicit_legacy_store_support() {
+    let store = Arc::new(ChunkStore {
+        legacy: true,
+        ..ChunkStore::default()
+    });
+    let key = key("vk_small_legacy_flush", None);
+    store.put_key(&key).unwrap();
+    let gov = GovState::new(store.clone(), None).unwrap();
+    accrue_dated(&gov, &key, CONCURRENT_INPUT, crate::store::now());
+    assert_eq!(gov.flush_budgets(), 1);
+    assert_eq!(input(store.as_ref(), &key.id, 0), CONCURRENT_INPUT);
+    assert_eq!(dated_input(store.as_ref(), &key.id, 0), CONCURRENT_INPUT);
+    let batches = store.batches.lock().unwrap();
+    assert_eq!(
+        batches.len(),
+        2,
+        "legacy ordinary API keeps its separate row calls"
+    );
+    assert_ne!(batches[0].0, batches[1].0);
     assert!(gov.budget_flushes.lock().unwrap().is_empty());
 }
 

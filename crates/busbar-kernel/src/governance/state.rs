@@ -2563,22 +2563,19 @@ impl GovState {
     /// the shared store reflects the TRUE FLEET TOTAL. Runs OFF the request hot path (the periodic
     /// flusher + the graceful-shutdown arm).
     ///
-    /// Under each shard lock, snapshot every dirty cell's DELTA since its last acknowledged flush
-    /// (current - flushed baseline) and clear its dirty flag; then OFF the lock, `add_usage`
-    /// (atomic accumulate in the store) each delta and advance the cell's acked baseline on
-    /// success. With N nodes sharing one store, each node's deltas SUM into the durable record —
-    /// where the old absolute `put_usage` overwrite made the record whichever node flushed last.
+    /// Under each shard lock, transfer each dirty cell's raw delta to a retained flight. Stores
+    /// advertising provided-ID batches receive its plain and dated rows atomically, under one
+    /// immutable identity and body retained until acknowledgement, including across errors or
+    /// caller unwind. New accrual stays beyond the capture watermarks. All store calls run off
+    /// the shard lock, and each node's deltas add to the shared fleet total.
     ///
     /// A ROLLED WINDOW'S DELTA ([`BudgetCell::roll`]) is drained with the cell and written under the
     /// window it was earned in, never the cell's current one.
     ///
-    /// On a store error, log, RE-MARK the cell dirty, and do NOT advance the baseline, so the
-    /// unacked delta is retried next tick (at-least-once: an ack lost after the write landed can
-    /// double-count at most one flush interval — the honest trade for fleet additivity; the
-    /// in-memory admission cap is unaffected). A rolled window's failed delta is parked back under
-    /// its window, so a store outage across a boundary is retried, not dropped. Snapshotting under
-    /// the lock but writing off it keeps the hot-path lock hold O(dirty). Returns the number of
-    /// deltas flushed.
+    /// Legacy stores that do not advertise this capability retain the historical ordinary
+    /// additive path: an unknown commit result can duplicate that delta on retry, and plain and
+    /// dated rows are separately acknowledged. No unknown provided-ID operation falls back to
+    /// that path. Returns the number of acknowledged nonzero batches plus legacy snapshots.
     pub fn flush_budgets(&self) -> usize {
         self.flush_budgets_inner(false)
     }
@@ -2592,17 +2589,16 @@ impl GovState {
 
     fn flush_budgets_inner(&self, shutdown: bool) -> usize {
         let mut unresolved_corrections = self.retry_usage_corrections();
-        // Establish long-lived custody before entering any potentially pending chunk call. The
-        // ordinary snapshot vector is built afterwards, so cancellation of this driver cannot
-        // strand unrelated short-lived legacy snapshots prepared by this invocation.
+        // Establish long-lived custody before entering any potentially pending store call. The
+        // legacy snapshot vector is built afterwards, so an unwind cannot strand those snapshots.
         for mut map in self.budget.write_all() {
             for (id, cell) in map.iter_mut() {
                 if cell.dirty {
-                    let _ = self.capture_large_budget_flushes(id, cell);
+                    let _ = self.capture_budget_flushes(id, cell);
                 }
             }
         }
-        let (mut flushed, chunk_errors) = self.resume_large_budget_flushes();
+        let (mut flushed, chunk_errors) = self.resume_budget_flushes();
         unresolved_corrections.extend(chunk_errors);
         /// The baselines a live cell's delta was taken against: they become the acked baseline on
         /// success.
@@ -2628,16 +2624,26 @@ impl GovState {
         // time (the `write_all` iterator acquires each guard lazily), so a concurrent charge
         // blocks only on the single shard the snapshot currently holds, not the whole map.
         let mut dirty: Vec<DirtySnap> = Vec::new();
-        let mut new_large = Vec::new();
+        let mut new_flights = Vec::new();
         for mut map in self.budget.write_all() {
             for (id, cell) in map.iter_mut() {
                 if !cell.dirty || self.budget_bucket_deleting(id) {
                     continue;
                 }
-                // Accrual or a roll may have enlarged debt since the first capture pass. Give it
-                // an owner under this same shard guard; drive these flights only after every
-                // ordinary snapshot below has been consumed.
-                new_large.extend(self.capture_large_budget_flushes(id, cell));
+                // Accrual or a roll may have added debt since the first pass. Give it an owner
+                // under this same shard guard; drive it after all legacy snapshots are consumed.
+                new_flights.extend(self.capture_budget_flushes(id, cell));
+                if self.store.supports_usage_batch_deduped() {
+                    let correcting = cell.correction.is_some();
+                    cell.mutate(|cell| {
+                        cell.dirty = correcting
+                            || !ExactUsageDelta::of(cell, false).is_zero()
+                            || !ExactUsageDelta::of(cell, true).is_zero()
+                            || !cell.rolled.is_empty()
+                            || !cell.rolled_eras.is_empty();
+                    });
+                    continue;
+                }
                 let reserved_window = cell.correction.as_ref().map(|branch| branch.window);
                 let mut rolled = BTreeMap::<u64, (UsageDelta, UsageDelta)>::new();
                 let mut drained_plain = std::collections::BTreeSet::new();
@@ -2816,7 +2822,7 @@ impl GovState {
                 last_error = error.map(|error| error.to_string());
             }
         }
-        let (late_flushed, late_errors) = self.resume_budget_flush_list(new_large);
+        let (late_flushed, late_errors) = self.resume_budget_flush_list(new_flights);
         flushed += late_flushed;
         failed += late_errors.len();
         if let Some(error) = late_errors.last() {
@@ -2841,8 +2847,8 @@ impl GovState {
                 failed,
                 flushed,
                 error = last_error.as_deref().unwrap_or(""),
-                "budget flush: {failed} bucket(s) failed to persist this tick; re-marked dirty and \
-                 will retry next tick (per-bucket detail at debug)"
+                "budget flush: {failed} bucket(s) failed to persist this tick; retained for \
+                 retry next tick (per-bucket detail at debug)"
             );
         }
         flushed

@@ -254,9 +254,10 @@ impl GovState {
             .contains(bucket)
     }
 
-    /// Called with this bucket's shard held. Transfer exact debt only when a single legacy delta
-    /// cannot represent it. Small ordinary writes retain their established path.
-    pub(super) fn capture_large_budget_flushes(
+    /// Called with this bucket's shard held. Capable stores give every nonzero outbound delta
+    /// retained custody. Legacy stores retain their ordinary path for representable debt;
+    /// oversized debt still requires the existing exact batch primitive.
+    pub(super) fn capture_budget_flushes(
         &self,
         bucket: &str,
         cell: &mut BudgetCell,
@@ -296,7 +297,9 @@ impl GovState {
                 dated.merge(&current_dated);
             }
             requires_chunks |= plain.signed().is_none() || dated.signed().is_none();
-            if !requires_chunks {
+            if (plain.is_zero() && dated.is_zero())
+                || (!requires_chunks && !self.store.supports_usage_batch_deduped())
+            {
                 continue;
             }
             let flight = Arc::new(BudgetFlushFlight {
@@ -441,7 +444,7 @@ impl GovState {
         }
     }
 
-    pub(super) fn resume_large_budget_flushes(&self) -> (usize, Vec<String>) {
+    pub(super) fn resume_budget_flushes(&self) -> (usize, Vec<String>) {
         let flights: Vec<_> = self
             .budget_flushes
             .lock()
