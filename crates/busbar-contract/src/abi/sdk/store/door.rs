@@ -52,7 +52,8 @@ use crate::abi::store::{
     LeasedListOut, LeasedStrListOut, ListPlaneRecordsIn, OpBlobsIn, PlaneRecordRow, PutUsageIn,
     RecordEntry, RecordGetIn, RecordPutIn, RecordScanIn, StoreTail, TokenIn, U64In,
     UpsertPlaneRecordIn, VerdictOut, WindowIn, ABSENT, CANCEL_UNKNOWN, DIAG_OPID_CONFLICT,
-    DISPOSITION_TERMINAL, FOUND, SELECT_ALL, SELECT_PARENT, VERDICT_NO, VERDICT_YES,
+    DISPOSITION_TERMINAL, FOUND, RETENTION_USAGE_WINDOWS, SELECT_ALL, SELECT_PARENT, VERDICT_NO,
+    VERDICT_YES,
 };
 use crate::bounded::MAX_RECORD_BYTES;
 use crate::kinds::RecordBytes;
@@ -255,8 +256,8 @@ impl<B: StoreSlots> Served<B> {
 }
 
 /// THE STORE'S LIFECYCLE is the SDK's one ([`Life`]): `validate` is the store's own parse, a
-/// `refresh` applies nothing (a store holds its settings for its lifetime; a reload opens a new
-/// instance), it asks for no tick and drives nothing, and a cancelled op's disposition is not
+/// `refresh` is refused naming the restart (a store holds its settings for its lifetime; a reload
+/// opens a new instance), it asks for no tick and drives nothing, and a cancelled op's disposition is not
 /// known here (the kernel re-issues it under the same `op_id` and dedupe settles it).
 impl<B: StoreSlots> Life for Served<B> {
     const CANCEL: u32 = CANCEL_UNKNOWN;
@@ -271,8 +272,13 @@ impl<B: StoreSlots> Life for Served<B> {
     }
 
     /// The store opens on its settings and the host tables `open` was handed.
-    fn open_on(settings: &[u8], _: &[&[u8]], _: u64, host: Option<&Host>) -> Result<Self, Refusal> {
-        B::open(settings, host.copied())
+    fn open_on(
+        settings: &[u8],
+        secrets: &[&[u8]],
+        _: u64,
+        host: Option<&Host>,
+    ) -> Result<Self, Refusal> {
+        B::open_with_secrets(settings, secrets, host.copied())
             .map(Self::new)
             .map_err(Refusal::failed)
     }
@@ -314,10 +320,19 @@ impl<B: StoreSlots> Life for Served<B> {
         }
     }
 
+    /// REFUSED, naming the restart: the host never refreshes a store (`abi::mechanism::lifecycle`,
+    /// "which kinds the host refreshes"), so a READY here would claim settings were applied that
+    /// were not. A changed store section is applied by a restart (or a reload that opens a fresh
+    /// instance over it).
     fn refresh(&self, _: &[u8], _: &[&[u8]], _: u64) -> Result<Refreshed, Refusal> {
-        Ok(Refreshed::default())
+        Err(Refusal::refused(REFRESH_REFUSAL))
     }
 }
+
+/// What a store's `refresh` answers: a store applies changed settings only when it is opened anew.
+pub const REFRESH_REFUSAL: &str =
+    "a store applies changed settings only when it is opened anew: restart busbar (or reload the \
+     store) to apply them";
 
 /// What a store slot reads its instance through: the backend, the store's error-text ring and the
 /// SDK's one lease table, all held by the instance's [`Held`].
@@ -788,6 +803,30 @@ slot!(
 slot!(
     /// `put_credential` (slot 8).
     PutCredential(BlobIn, OutHead) |s, i, o, cx| {
+        let extensions = i.field(|i| &i.head.extensions).bytes();
+        if let Some(version) = crate::abi::mechanism::extensions::get(extensions, super::rewrap::INTENT) {
+            if version != b"1" {
+                return refused(s, o, Text::render(format_args!("unsupported credential rewrap intent")));
+            }
+            let record = i.field(|i| &i.record);
+            if record.fmt() != BLOB_JSON || record.flags() & BLOB_SECRET == 0 {
+                return refused(s, o, Text::render(format_args!("credential rewrap requires a secret JSON record")));
+            }
+            let request = match serde_json::from_slice::<super::rewrap::Request>(record.bytes()) {
+                Ok(request) if request.version == 1 => request,
+                _ => return refused(s, o, Text::render(format_args!("invalid credential rewrap request"))),
+            };
+            return match step!(o, s.store.rewrap_credential(cx, &request.expected, &request.replacement)) {
+                Ok(applied) => {
+                    let value: &[u8] = if applied { b"applied" } else { b"conflict" };
+                    let bytes = crate::abi::mechanism::extensions::encode(&[(super::rewrap::RESULT, value)]).into_boxed_slice();
+                    o.extensions = blob_over(&bytes, BLOB_OCTETS, false);
+                    o.lease = s.lease(Leased { bytes: vec![bytes], _blobs: Box::new([]), _strs: Box::new([]), secret: false });
+                    Outcome::Ready
+                }
+                Err(e) => failed(s, o, e.0),
+            };
+        }
         match json::<CredentialSecret>(i.field(|i| &i.record)) {
             Ok(c) => done(s, o, step!(o, s.store.put_credential(cx, &c))),
             Err(e) => refused(s, o, e),
@@ -929,6 +968,16 @@ slot!(
     /// rule is refused, never guessed.
     PurgePlaneRecordsBefore(KindBeforeIn, CountOut) |s, i, o, cx| {
         let kind = match text_of(i.field(|i| &i.kind)) { Ok(t) => t, Err(e) => return refused(s, o, e) };
+        // The usage ledger's purge rides this slot under its own code, `kind` empty.
+        if i.retention == RETENTION_USAGE_WINDOWS {
+            if !kind.is_empty() {
+                return refused(s, o, Text::render(format_args!("a usage-window purge names no kind")));
+            }
+            return match step!(o, s.store.purge_usage_before(cx, i.before)) {
+                Ok(n) => { o.count = n; Outcome::Ready }
+                Err(e) => failed(s, o, e.0),
+            };
+        }
         let Some(retention) = Retention::from_code(i.retention) else {
             return refused(s, o, Text::render(format_args!("retention {} is not a retention rule", i.retention)));
         };

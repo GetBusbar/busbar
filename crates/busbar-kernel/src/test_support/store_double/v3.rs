@@ -19,7 +19,9 @@ use busbar_contract::abi::sdk::conn::Host;
 use busbar_contract::abi::sdk::store::{OpRefused, OpResult, Scanned, SyncStore, Tail};
 use busbar_contract::abi::store::{OpId, OP_ID_RETENTION_SECS};
 use busbar_contract::kinds::RecordBytes;
-use busbar_contract::records::{MeteringDelta, PlaneRecordRef, RecordStore, UsageDelta};
+use busbar_contract::records::{
+    MeteringDelta, PlaneRecordRef, RecordStore, RecordStoreResult, UsageDelta,
+};
 
 use super::{now, MemoryStore, NAME};
 
@@ -29,11 +31,16 @@ const SECRET_REFS: &[busbar_contract::abi::mechanism::call::AbiStr] =
         super::SECRET_REF_PATHS[0],
     )];
 
+busbar_contract::statement_extensions!(REWRAP_EXTENSIONS: [
+    (busbar_contract::abi::sdk::store::rewrap::INTENT, b"1")
+]);
+
 busbar_contract::store_door!(
     MemoryStore,
     NAME,
     env!("CARGO_PKG_VERSION"),
     1024,
+    extensions: REWRAP_EXTENSIONS,
     secret_refs: SECRET_REFS
 );
 
@@ -251,5 +258,12 @@ impl SyncStore for MemoryStore {
 
     fn add_metering_batch(&self, op: OpId, deltas: &[MeteringDelta]) -> OpResult<()> {
         self.v3_add_metering_batch(op, deltas)
+    }
+
+    fn purge_usage_before(&self, before: u64) -> RecordStoreResult<u64> {
+        let mut usage = self.usage();
+        let was = usage.len();
+        usage.retain(|(_, window_start), _| *window_start == 0 || *window_start >= before);
+        Ok((was - usage.len()) as u64)
     }
 }

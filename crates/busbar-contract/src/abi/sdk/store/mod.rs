@@ -26,6 +26,7 @@ pub mod door;
 // The `op_id` dedupe: the state machine and the body a store records.
 pub mod dedupe;
 pub mod fork;
+pub mod rewrap;
 pub mod wire;
 // A record's fields as a backend stores them: scope columns, storable integers, counters.
 pub mod column;
@@ -43,6 +44,10 @@ pub use op::{Checkout, Op, Services, Step};
 // A store that never pends, served whole over its `RecordStore`.
 mod sync_store;
 pub use sync_store::SyncStore;
+
+/// What a store that does not implement [`StoreSlots::purge_usage_before`] answers.
+pub const PURGE_USAGE_UNSUPPORTED: &str =
+    "this store does not purge usage windows (StoreSlots::purge_usage_before is not implemented)";
 
 /// What `record_scan` answers: `(key, record)` in key order.
 pub type Scanned = Vec<(Vec<u8>, RecordBytes)>;
@@ -113,13 +118,50 @@ pub trait StoreSlots: Sized + Send + Sync + 'static {
     /// The store's own refusal text, carried verbatim to the operator.
     fn validate(settings: &[u8]) -> Result<(), String>;
 
-    /// Open an instance from the operator's settings (the section's JSON), with the host tables
+    /// Open an instance from the operator's settings (the section's JSON) and the host tables
     /// `open` was handed (`OpenIn.host`; `None` when none): its connector is reached per op through
-    /// [`Op`].
+    /// [`Op`]. THE 1.6.0-dev.2 SHAPE, kept so a store built against it still compiles; a store that
+    /// reads a declared secret implements [`StoreSlots::open_with_secrets`] instead (the settings
+    /// it is handed no longer carry a declared secret). Defaulted to a refusal naming that method,
+    /// so a store implements exactly one of the two.
     ///
     /// # Errors
     /// A text naming why the settings do not open a store, carried verbatim to the operator.
-    fn open(settings: &[u8], host: Option<Host>) -> Result<Self, String>;
+    #[deprecated(
+        note = "implement `open_with_secrets`: a declared secret is lent there, not in the settings"
+    )]
+    fn open(settings: &[u8], host: Option<Host>) -> Result<Self, String> {
+        let _ = (settings, host);
+        Err(
+            "this store implements neither `StoreSlots::open_with_secrets` nor `StoreSlots::open`"
+                .to_string(),
+        )
+    }
+
+    /// Open an instance from the operator's settings, its resolved `secrets` and the host tables
+    /// `open` was handed: what the door calls.
+    ///
+    /// THE DECLARED SECRETS (`OpenIn.secrets`), as every kind's `open` takes them: one entry per
+    /// Statement `secret_refs` key, in that order (a key the operator left unset is an empty
+    /// entry), then each wildcard path's matches, whose places in `settings` hold a
+    /// `{"$secret": <index>}` marker (`busbar_contract::secret_fields`). The host takes each
+    /// declared key OUT of `settings`, so a DSN password is read here and never from the settings.
+    /// The bytes are lent for the call: a store that keeps one copies it.
+    ///
+    /// DEFAULTED to [`StoreSlots::open`] over the settings as lent (the declared secrets taken
+    /// out), so a store built against the older shape opens as before when it declares none.
+    ///
+    /// # Errors
+    /// A text naming why the settings do not open a store, carried verbatim to the operator.
+    fn open_with_secrets(
+        settings: &[u8],
+        secrets: &[&[u8]],
+        host: Option<Host>,
+    ) -> Result<Self, String> {
+        let _ = secrets;
+        #[allow(deprecated)]
+        Self::open(settings, host)
+    }
 
     /// THE CONNECT STEP of `open` (ARCHITECT ruling 2026-10-03 on Q-L16-2): what the store reaches
     /// before the host counts it opened (its backend's first round trip, a schema check: a backend
@@ -293,6 +335,20 @@ pub trait StoreSlots: Sized + Send + Sync + 'static {
         secret: &CredentialSecret,
     ) -> Step<RecordStoreResult<()>>;
 
+    /// Update-only envelope CAS, carried by slot 8 with explicit rewrap intent. See
+    /// [`crate::records::RecordStore::rewrap_credential`]. No ordinary PUT fallback is safe.
+    fn rewrap_credential(
+        &self,
+        cx: &mut Op<'_>,
+        expected: &CredentialSecret,
+        replacement: &str,
+    ) -> Step<RecordStoreResult<bool>> {
+        let _ = (cx, expected, replacement);
+        Step::Ready(Err(crate::records::RecordStoreError(
+            "this Store does not support credential rewrap CAS".into(),
+        )))
+    }
+
     /// `put_key_with_credential` (slot 9): both, atomically.
     ///
     /// # Errors
@@ -341,12 +397,11 @@ pub trait StoreSlots: Sized + Send + Sync + 'static {
     /// The store's refusal, as the 1.5.5 op set states it.
     fn list_audit(&self, cx: &mut Op<'_>) -> Step<RecordStoreResult<Vec<AuditRecord>>>;
 
-    /// `add_denylist` (slot 14).
+    /// `add_denylist` (slot 14): deny the principal `id`, saying why.
     ///
     /// # Errors
     /// The store's refusal, as the 1.5.5 op set states it.
-    fn add_denylist(&self, cx: &mut Op<'_>, sub: &str, reason: &str)
-        -> Step<RecordStoreResult<()>>;
+    fn add_denylist(&self, cx: &mut Op<'_>, id: &str, reason: &str) -> Step<RecordStoreResult<()>>;
 
     /// `list_denylist` (slot 15).
     ///
@@ -438,6 +493,24 @@ pub trait StoreSlots: Sized + Send + Sync + 'static {
             Retention::Age => self.purge_plane_records_before(cx, kind, before),
             Retention::TerminalOnly => Step::Ready(Ok(0)),
         }
+    }
+
+    /// THE USAGE LEDGER'S PURGE: slot 22 under
+    /// [`RETENTION_USAGE_WINDOWS`](crate::abi::store::RETENTION_USAGE_WINDOWS). Remove every usage
+    /// window whose `window_start` is nonzero and earlier than `before`; never the all-time window
+    /// `0`. Answers how many windows went. The kernel calls it past its own window horizon, so a
+    /// durable store's ledger is bounded (a store that kept every window grew without bound).
+    ///
+    /// # Errors
+    /// The store's refusal, as the 1.5.5 op set states it.
+    ///
+    /// DEFAULTED to a refusal saying so (a store built before this method purges nothing): the
+    /// kernel then warns that this store's usage windows are not purged. Never a pretended count.
+    fn purge_usage_before(&self, cx: &mut Op<'_>, before: u64) -> Step<RecordStoreResult<u64>> {
+        let _ = (cx, before);
+        Step::Ready(Err(crate::records::RecordStoreError(
+            PURGE_USAGE_UNSUPPORTED.to_string(),
+        )))
     }
 
     /// `delete_plane_record` (slot 23); absent is `Ok`.

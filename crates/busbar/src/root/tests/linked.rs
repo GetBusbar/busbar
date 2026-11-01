@@ -436,3 +436,121 @@ fn the_admin_compiled_in_hooks_are_the_linked_hook_rows() {
         "a build that links a hook row prints it"
     );
 }
+
+mod blocked_disk_resolver {
+    use busbar_contract::abi::mechanism::call::Outcome;
+    use busbar_contract::abi::sdk::life::{Held, Life, Refusal};
+    use busbar_contract::abi::sdk::{Instance, Lent, Out, SafeSlot};
+    use busbar_contract::abi::secret::{ResolveIn, ResolveOut};
+    use std::sync::mpsc::{Receiver, Sender};
+    use std::sync::Mutex;
+
+    pub static HOLD: Mutex<Option<(Sender<()>, Receiver<()>)>> = Mutex::new(None);
+    pub struct Source;
+    impl Life for Source {
+        const CANCEL: u32 = busbar_contract::abi::secret::cancel::ABORTED;
+        fn open(_: &[u8], _: &[&[u8]], _: u64) -> Result<Self, Refusal> {
+            Ok(Self)
+        }
+    }
+    pub struct Resolve;
+    impl SafeSlot for Resolve {
+        type In = ResolveIn;
+        type Out = ResolveOut;
+        type State = Held<Source>;
+        fn call(
+            _: Instance<'_, Held<Source>>,
+            input: Lent<'_, ResolveIn>,
+            mut out: Out<'_, ResolveOut>,
+        ) -> Outcome {
+            let hold = HOLD.lock().unwrap().take().expect("one controlled resolve");
+            let _ = hold.0.send(());
+            let _ = hold.1.recv();
+            busbar_contract::abi::sdk::cred::resolved(
+                input,
+                &mut out,
+                busbar_contract::abi::sdk::cred::Held::new(b"resolved".to_vec()),
+            )
+        }
+    }
+    busbar_contract::plugin_door! {
+        ops: busbar_contract::abi::secret::Ops,
+        statement: busbar_contract::abi::sdk::door::statement("blocked-disk-source", "0", 1),
+        lifecycle: life(Source),
+        kind_ops: { resolve: busbar_contract::abi::sdk::Safe<Resolve> },
+    }
+}
+
+#[test]
+fn a_loaded_blocking_disk_resolver_leaves_the_roots_append_lane_running() {
+    use crate::root::loader::secret_calls::SecretRows;
+    use busbar_contract::abi::mechanism::call::Outcome;
+    use busbar_contract::config_time::ConfigScope;
+    use busbar_contract::secret::SecretAxis;
+    use busbar_contract::services::{DiskDest, DiskRotate};
+
+    let (entered_tx, entered) = std::sync::mpsc::channel();
+    let (release, released) = std::sync::mpsc::channel();
+    *blocked_disk_resolver::HOLD.lock().unwrap() = Some((entered_tx, released));
+    struct Release(Option<std::sync::mpsc::Sender<()>>);
+    impl Drop for Release {
+        fn drop(&mut self) {
+            if let Some(tx) = self.0.take() {
+                let _ = tx.send(());
+            }
+        }
+    }
+    let release = Release(Some(release));
+    let mut rows =
+        SecretRows::new(crate::root::dispatch::dispatcher, || None).with_disk_lane(super::disk_run);
+    rows.link(blocked_disk_resolver::door).unwrap();
+    rows.declare_linked(blocked_disk_resolver::door, r#"{"disk":true}"#)
+        .unwrap();
+    let source = rows.shared("blocked-disk-source").unwrap();
+    let resolver =
+        std::thread::spawn(move || source.resolve_at_config(b"{}", &ConfigScope::config_time()));
+    let held = entered.recv_timeout(std::time::Duration::from_secs(10));
+    let path = std::env::temp_dir().join(format!(
+        "busbar-resolver-append-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let (done_tx, done) = std::sync::mpsc::channel();
+    let submitted = super::disk_lane().submit(
+        DiskDest {
+            key: "controlled-resolver".into(),
+            path: path.display().to_string(),
+            rotate_at: None,
+            rotate: DiskRotate::Truncate,
+        },
+        b"still-appending\n".to_vec(),
+        Box::new(move |report| {
+            let _ = done_tx.send(report);
+        }),
+    );
+    let completed_while_blocked = done.recv_timeout(std::time::Duration::from_secs(2));
+    // Cleanup precedes all assertions, including the baseline shared-worker RED.
+    drop(release);
+    let resolved = resolver.join().unwrap();
+    if completed_while_blocked.is_err() {
+        let _ = done.recv_timeout(std::time::Duration::from_secs(10));
+    }
+    let bytes = std::fs::read(&path);
+    let _ = std::fs::remove_file(&path);
+    held.expect("the loaded secret source entered its blocking resolve");
+    assert!(
+        submitted.is_ok(),
+        "the append queue admits while resolve is blocked"
+    );
+    assert_eq!(
+        completed_while_blocked
+            .expect("append and its completion proceed before the resolver returns")
+            .outcome,
+        Outcome::Ready
+    );
+    assert!(resolved.is_ok(), "the released fixture resolves normally");
+    assert_eq!(bytes.unwrap(), b"still-appending\n");
+}

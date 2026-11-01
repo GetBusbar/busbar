@@ -1062,7 +1062,7 @@ impl<P: HookOpen> Life for HookLife<P> {
         })
     }
 
-    /// Re-open the hook over the new settings; the old one serves until the swap.
+    /// Re-open the hook over the new settings; pending operations retain their original hook.
     fn refresh(
         &self,
         settings: &[u8],
@@ -1070,7 +1070,11 @@ impl<P: HookOpen> Life for HookLife<P> {
         generation: u64,
     ) -> Result<Refreshed, Refusal> {
         let hook = opened::<P>(settings, secrets, generation)?;
-        *self.hook.write().unwrap_or_else(PoisonError::into_inner) = hook;
+        let old = std::mem::replace(
+            &mut *self.hook.write().unwrap_or_else(PoisonError::into_inner),
+            hook,
+        );
+        drop(old);
         Ok(Refreshed::default())
     }
 }

@@ -79,7 +79,7 @@ unsafe impl OutFrame for VerdictOut {}
 
 /// What a store states in its Statement ([`store::StoreTail`] and the `MARK_EPHEMERAL` mark), read
 /// once at bind: the instance's [`Kind::context`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StoreFacts {
     /// What it holds is lost on restart.
     pub ephemeral: bool,
@@ -89,6 +89,11 @@ pub struct StoreFacts {
     pub fork_refusal: bool,
     /// Negotiated version-one conditional record transaction support.
     pub record_transaction: bool,
+    /// The settings paths the Statement declares secret (`secret_refs`): taken out of the settings
+    /// and lent to `open` as `OpenIn.secrets`, as every other kind's are.
+    pub secret_refs: Vec<String>,
+    /// Explicit slot-8 envelope CAS capability, read from the Statement extensions.
+    pub credential_rewrap: bool,
 }
 
 /// The store's tail, read from the Statement: a whole [`store::StoreTail`] whose flags are `0` or
@@ -103,6 +108,18 @@ fn store_facts(st: &Statement) -> Result<StoreFacts, String> {
         1 => Ok(true),
         n => Err(format!("the store tail's {name} is {n}, not 0 or 1")),
     };
+    // SAFETY: the loader's Statement check ran on `st`: every Statement list is its stated count of
+    // `'static` entries, and the rendering bounds each list and string before it reads it.
+    let rendering = unsafe { busbar_contract::abi::mechanism::rendering::render(st) }
+        .map_err(|e| e.to_string())?;
+    let secret_refs = busbar_contract::abi::mechanism::rendering::read(&rendering)
+        .map_err(|e| {
+            format!(
+                "the store Statement rendering does not read back: byte {} is not {}",
+                e.at, e.what
+            )
+        })?
+        .secret_refs;
     Ok(StoreFacts {
         // One Statement: `ephemeral` is the Statement's mark, not a tail fact.
         ephemeral: st.marks & busbar_contract::abi::mechanism::door::MARK_EPHEMERAL != 0,
@@ -115,6 +132,15 @@ fn store_facts(st: &Statement) -> Result<StoreFacts, String> {
             // Statement extensions are static plugin memory; `lent` also checks the pointer.
             && unsafe { crate::dispatch::validate::lent(st.extensions.ptr, st.extensions.len) }
                 .is_some_and(busbar_contract::abi::sdk::store::conditional::supported),
+        secret_refs,
+        credential_rewrap: {
+            // SAFETY: the checked Statement owns its static extension bytes.
+            let bytes = unsafe { crate::dispatch::plugin::blob_bytes(st.extensions) };
+            busbar_contract::abi::mechanism::extensions::get(
+                bytes,
+                busbar_contract::abi::sdk::store::rewrap::INTENT,
+            ) == Some(b"1".as_slice())
+        },
     })
 }
 

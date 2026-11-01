@@ -53,6 +53,30 @@ pub trait SyncStore: RecordStore + Sized + Send + Sync + 'static {
     /// Why the settings do not open a store.
     fn open(settings: &[u8], host: Option<Host>) -> Result<Self, String>;
 
+    /// [`StoreSlots::open_with_secrets`], defaulting to opening without declared secrets.
+    ///
+    /// # Errors
+    /// Why the settings do not open a store.
+    fn open_with_secrets(
+        settings: &[u8],
+        secrets: &[&[u8]],
+        host: Option<Host>,
+    ) -> Result<Self, String> {
+        let _ = secrets;
+        Self::open(settings, host)
+    }
+
+    /// [`StoreSlots::purge_usage_before`], refused when the backend does not implement it.
+    ///
+    /// # Errors
+    /// The backend's refusal.
+    fn purge_usage_before(&self, before: u64) -> RecordStoreResult<u64> {
+        let _ = before;
+        Err(crate::records::RecordStoreError(
+            super::PURGE_USAGE_UNSUPPORTED.to_string(),
+        ))
+    }
+
     /// [`StoreSlots::append_plane_record_op`].
     ///
     /// # Errors
@@ -128,7 +152,16 @@ impl<T: SyncStore> StoreSlots for T {
         <T as SyncStore>::open(settings, host)
     }
 
+    fn open_with_secrets(
+        settings: &[u8],
+        secrets: &[&[u8]],
+        host: Option<Host>,
+    ) -> Result<Self, String> {
+        <T as SyncStore>::open_with_secrets(settings, secrets, host)
+    }
+
     extra! {
+        purge_usage_before(before: u64) -> RecordStoreResult<u64>;
         append_plane_record_op(op: OpId, record: PlaneRecordRef<'_>) -> OpResult<()>;
         record_put(schema: &str, key: &[u8], value: &[u8]) -> Result<(), String>;
         record_get(schema: &str, key: &[u8]) -> Result<Option<RecordBytes>, String>;
@@ -147,6 +180,7 @@ impl<T: SyncStore> StoreSlots for T {
         put_usage(bucket_id: &str, window_start: u64, ledger: &UsageLedger) -> ();
         list_metering(bucket: u64) -> Vec<MeteringRow>;
         put_credential(secret: &CredentialSecret) -> ();
+        rewrap_credential(expected: &CredentialSecret, replacement: &str) -> bool;
         put_key_with_credential(key: &VirtualKey, secret: &CredentialSecret) -> ();
         list_credentials(key_id: &str) -> Vec<CredentialMeta>;
         revoke_credential(id: &str, reason: &str) -> ();

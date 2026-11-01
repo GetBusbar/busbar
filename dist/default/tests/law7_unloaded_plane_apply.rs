@@ -25,7 +25,7 @@
 //! RED before the fix: no rule judged the document, so the parse refused the section as an unknown
 //! field, without saying the plane was not loaded or that a restart takes it.
 #![cfg(unix)]
-#![cfg(linked_every_plane)]
+#![cfg(linked_every_plane_door)]
 
 mod common;
 
