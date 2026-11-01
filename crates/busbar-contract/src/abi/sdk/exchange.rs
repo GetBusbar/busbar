@@ -48,7 +48,7 @@ pub const REPLY_OVER_BOUND: &str = "the reply passed the exchange's bound";
 pub type SealedField = (usize, Vec<u8>, crate::abi::sdk::cred::Seal);
 
 /// ONE REQUEST, as [`exchange`] sends it through a framed need.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Clone, Default, PartialEq, Eq)]
 pub struct Request {
     /// The method.
     pub method: Vec<u8>,
@@ -64,6 +64,18 @@ pub struct Request {
     pub timeout_ms: u64,
 }
 
+impl std::fmt::Debug for Request {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Request")
+            .field("method_len", &self.method.len())
+            .field("target_len", &self.target.len())
+            .field("fields_len", &self.fields.len())
+            .field("body_len", &self.body.len())
+            .field("timeout_ms", &self.timeout_ms)
+            .finish()
+    }
+}
+
 impl Zeroize for Request {
     fn zeroize(&mut self) {
         self.method.zeroize();
@@ -75,7 +87,7 @@ impl Zeroize for Request {
 }
 
 /// The far end's reply to an [`exchange`].
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Clone, Default, PartialEq, Eq)]
 pub struct ExchangeResponse {
     /// The code: the reply's status, or the transport's result code.
     pub status: u16,
@@ -88,6 +100,17 @@ pub struct ExchangeResponse {
     pub body: Vec<u8>,
 }
 
+impl std::fmt::Debug for ExchangeResponse {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ExchangeResponse")
+            .field("status", &self.status)
+            .field("reason_len", &self.reason.as_ref().map(Vec::len))
+            .field("fields_len", &self.fields.len())
+            .field("body_len", &self.body.len())
+            .finish()
+    }
+}
+
 impl Zeroize for ExchangeResponse {
     fn zeroize(&mut self) {
         self.status.zeroize();
@@ -98,12 +121,21 @@ impl Zeroize for ExchangeResponse {
 }
 
 /// What became of what a [`send_and_ack`] sent: the transport's code and the peer's text.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Clone, Default, PartialEq, Eq)]
 pub struct Ack {
     /// The transport's result code.
     pub code: u32,
     /// The peer's text, exactly as sent; empty when none.
     pub reason: Vec<u8>,
+}
+
+impl std::fmt::Debug for Ack {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Ack")
+            .field("code", &self.code)
+            .field("reason_len", &self.reason.len())
+            .finish()
+    }
 }
 
 impl Zeroize for Ack {
@@ -115,7 +147,6 @@ impl Zeroize for Ack {
 
 /// What is sent: a framed request's head bytes and descriptors, or raw bytes. The bytes wipe on
 /// drop; the descriptors (`repr(C)`) hold spans and a timeout, never a byte of the request.
-#[derive(Debug)]
 enum Sending {
     Framed {
         /// The head's method, target and field block, one after another.
@@ -129,11 +160,46 @@ enum Sending {
     Raw(Zeroizing<Vec<u8>>),
 }
 
+impl std::fmt::Debug for Sending {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Framed {
+                head,
+                body,
+                timeout_ms,
+                ..
+            } => f
+                .debug_struct("Framed")
+                .field("head_len", &head.len())
+                .field("body_len", &body.len())
+                .field("timeout_ms", timeout_ms)
+                .finish(),
+            Self::Raw(bytes) => f
+                .debug_struct("Raw")
+                .field("bytes_len", &bytes.len())
+                .finish(),
+        }
+    }
+}
+
+impl std::fmt::Debug for Exchange {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Exchange")
+            .field("sending", &self.sending)
+            .field("buffer_len", &self.buf.len())
+            .field("reply", &*self.reply)
+            .field("code", &self.code)
+            .field("head_seen", &self.head_seen)
+            .field("applied", &self.applied)
+            .field("sealed_fields_len", &self.sealed_lines.len())
+            .finish()
+    }
+}
+
 /// An [`exchange`]'s (or a [`send_and_ack`]'s) state across its op's PENDING entries: what it sends
 /// (a pending write reads it), the read buffer and the descriptor slot (a pending read writes
 /// them) and the reply so far. Parked on the ticket. Every byte it holds of the request or the
 /// reply wipes on drop.
-#[derive(Debug)]
 pub struct Exchange {
     sending: Sending,
     /// The read buffer: each piece's bytes are wiped once applied, the whole of it on drop.
