@@ -142,6 +142,15 @@ pub struct BufferCaps {
 }
 
 impl BufferCaps {
+    /// The host's default plane-driver buffer policy, preserved from the existing driver.
+    pub const DEFAULT: BufferCaps = BufferCaps {
+        reply: 16 * 1024,
+        units: 8,
+        records: 16,
+        fields: 32,
+        arena: 4096,
+    };
+
     /// No buffers at all.
     pub const EMPTY: BufferCaps = BufferCaps {
         reply: 0,
@@ -154,13 +163,7 @@ impl BufferCaps {
 
 impl Default for BufferCaps {
     fn default() -> Self {
-        BufferCaps {
-            reply: 16 * 1024,
-            units: 8,
-            records: 16,
-            fields: 32,
-            arena: 4096,
-        }
+        Self::DEFAULT
     }
 }
 
