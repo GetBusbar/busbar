@@ -60,6 +60,187 @@ fn exact_paths_lend_in_order_and_are_taken_out_as_today() {
 }
 
 #[test]
+fn resolved_exact_array_secrets_leave_settings_and_lend_in_statement_order() {
+    let declared = paths(&["servers.1.token", "servers.0.token"]);
+    let mut block = json!({"servers": [
+        {"token": {"env": "FIRST"}, "name": "a"},
+        {"token": {"env": "SECOND"}, "name": "b"}
+    ]});
+    crate::secret_fields::resolve_declared(&mut block, &declared, "acme", |field, r| {
+        assert!(matches!(field, "servers.1.token" | "servers.0.token"));
+        Ok(format!("resolved:{}", r.describe()))
+    })
+    .expect("declared numeric array paths resolve");
+    let first = block["servers"][0]["token"]
+        .as_str()
+        .unwrap()
+        .as_bytes()
+        .to_vec();
+    let second = block["servers"][1]["token"]
+        .as_str()
+        .unwrap()
+        .as_bytes()
+        .to_vec();
+    let out = lent(&mut block, &["servers.1.token", "servers.0.token"]);
+    assert_eq!(out, vec![second, first]);
+    assert_eq!(block, json!({"servers": [{"name": "a"}, {"name": "b"}]}));
+}
+
+#[test]
+fn exact_array_references_lend_before_resolution_without_remaining_in_settings() {
+    let mut block = json!({"servers": [{"token": {"env": "T"}}]});
+    assert_eq!(
+        crate::secret_fields::declared_references(&block, "servers.0.token"),
+        vec![at(&["servers", "0", "token"])]
+    );
+    assert_eq!(
+        lent(&mut block, &["servers.0.token"]),
+        vec![b"R:T".to_vec()]
+    );
+    assert_eq!(block, json!({"servers": [{}]}));
+}
+
+#[test]
+fn exact_terminal_array_slots_keep_neighboring_indices_and_wildcard_order() {
+    let mut block = json!({
+        "tokens": ["a", "b", "c", "d"],
+        "nested": [[{"env": "N"}]],
+        "other": "visible"
+    });
+    let out = lent(
+        &mut block,
+        &["tokens.*", "tokens.1", "tokens.3", "nested.0.0", "absent"],
+    );
+    assert_eq!(
+        out,
+        vec![
+            b"b".to_vec(),
+            b"d".to_vec(),
+            b"R:N".to_vec(),
+            Vec::new(),
+            b"a".to_vec(),
+            b"c".to_vec()
+        ]
+    );
+    assert_eq!(
+        block,
+        json!({
+            "tokens": [{SECRET_MARKER: 4}, null, {SECRET_MARKER: 5}, null],
+            "nested": [[null]],
+            "other": "visible"
+        })
+    );
+    let mut root = json!([{"env": "A"}, {"env": "B"}, "visible"]);
+    assert_eq!(
+        lent(&mut root, &["0", "1"]),
+        vec![b"R:A".to_vec(), b"R:B".to_vec()]
+    );
+    assert_eq!(root, json!([null, null, "visible"]));
+}
+
+#[test]
+fn exact_numeric_object_keys_remain_keys_when_nested_in_arrays() {
+    let mut block = json!({"0": {"01": "a"}, "list": [{"0": "b", "01": "c"}]});
+    assert_eq!(
+        lent(&mut block, &["0.01", "list.0.01", "list.0.0"]),
+        vec![b"a".to_vec(), b"c".to_vec(), b"b".to_vec()]
+    );
+    assert_eq!(block, json!({"0": {}, "list": [{}]}));
+}
+
+#[test]
+fn keeping_exact_array_secrets_lends_the_same_positions_without_changing_settings() {
+    let original = json!({"list": [{"token": "a"}, "b"]});
+    let mut block = original.clone();
+    let out = lend(
+        &mut block,
+        &paths(&["list.1", "list.0.token", "list.2"]),
+        true,
+        |_, v| {
+            Ok::<_, String>(
+                v.and_then(|v| v.as_str().map(str::as_bytes).map(Vec::from))
+                    .unwrap_or_default(),
+            )
+        },
+        |_, _| -> Result<Vec<u8>, String> { panic!("no wildcard path") },
+    )
+    .expect("exact fields lend");
+    assert_eq!(out, vec![b"b".to_vec(), b"a".to_vec(), Vec::new()]);
+    assert_eq!(block, original);
+}
+
+#[test]
+fn missing_or_invalid_array_paths_lend_unset_without_changing_settings() {
+    let original = json!({"list": [{"token": "visible"}], "scalar": 7});
+    let mut block = original.clone();
+    let out = lend(
+        &mut block,
+        &paths(&[
+            "list.9.token",
+            "list.nope",
+            "list.184467440737095516160",
+            "scalar.0",
+            "missing.0",
+        ]),
+        false,
+        |_, value| {
+            assert!(value.is_none(), "unset exact path");
+            Ok::<_, String>(Vec::<u8>::new())
+        },
+        |_, _| -> Result<Vec<u8>, String> { panic!("no wildcard path") },
+    )
+    .expect("unset exact fields lend empty");
+    assert!(out.iter().all(Vec::is_empty));
+    assert_eq!(block, original);
+}
+
+#[test]
+fn failing_an_array_secret_lend_wipes_material_already_lent() {
+    use std::{cell::RefCell, rc::Rc};
+    use zeroize::Zeroize;
+
+    struct Held(Rc<RefCell<Vec<u8>>>);
+    impl Zeroize for Held {
+        fn zeroize(&mut self) {
+            self.0.borrow_mut().as_mut_slice().zeroize();
+        }
+    }
+
+    let observed = Rc::new(RefCell::new(Vec::new()));
+    let mut block = json!({"tokens": ["material", {"invalid": true}], "ordinary": "visible"});
+    let material_ptr = block["tokens"][0].as_str().unwrap().as_ptr();
+    let result = lend(
+        &mut block,
+        &paths(&["tokens.0", "tokens.1"]),
+        false,
+        |path, value| -> Result<Held, &'static str> {
+            if path == "tokens.0" {
+                let Some(Value::String(material)) = value else {
+                    panic!("first array slot lends its material");
+                };
+                assert_eq!(
+                    material.as_ptr(),
+                    material_ptr,
+                    "the string allocation moves"
+                );
+                *observed.borrow_mut() = material.into_bytes();
+                Ok(Held(observed.clone()))
+            } else {
+                assert_eq!(value, Some(json!({"invalid": true})));
+                Err("invalid reference")
+            }
+        },
+        |_, _| -> Result<Held, &'static str> { panic!("no wildcard path") },
+    );
+    assert!(matches!(result, Err("invalid reference")));
+    assert_eq!(*observed.borrow(), vec![0; b"material".len()]);
+    assert_eq!(
+        block,
+        json!({"tokens": [null, null], "ordinary": "visible"})
+    );
+}
+
+#[test]
 fn wildcard_matches_lend_after_the_exact_ones_in_document_order_behind_markers() {
     let mut block = json!({
         "token": {"env": "T"},

@@ -111,6 +111,80 @@ mod plain {
     );
 }
 
+mod aliased_inbound {
+    const ALIASES: &[busbar_contract::abi::mechanism::door::Rewrite] =
+        &[busbar_contract::abi::sdk::door::alias("request-signature")];
+    const TAIL: &busbar_contract::abi::auth::AuthTail =
+        &busbar_contract::abi::sdk::auth_door::verify_tail(
+            0,
+            busbar_contract::abi::auth::AuthPoints::HEAD_BODY,
+        );
+    busbar_contract::auth_verify_door!(
+        super::Fixture,
+        super::stating("aliased-inbound", TAIL, super::MARKS).with_rewrites(ALIASES)
+    );
+}
+
+mod outbound_only {
+    use busbar_contract::abi::auth::{AuthTail, StyleDecl, CAP_OUTBOUND, POINT_HEAD};
+    const STYLES: &[StyleDecl] = &[StyleDecl {
+        name: busbar_contract::abi::sdk::door::abi_str("request-signature"),
+        flags: 0,
+        points: POINT_HEAD,
+    }];
+    const TAIL: &AuthTail = &AuthTail {
+        caps: CAP_OUTBOUND,
+        ..AuthTail::EMPTY
+    }
+    .with_styles(STYLES);
+    busbar_contract::auth_verify_door!(super::Fixture, super::stating("outbound-only", TAIL, &[]));
+}
+
+#[test]
+fn inbound_style_uses_declared_aliases_and_points_without_opening() {
+    let rows = linking(&[("aliased-inbound", aliased_inbound::door)]);
+    let style = rows.inbound_style("request-signature").unwrap();
+    assert_eq!(style.module, "aliased-inbound");
+    assert!(style.names.iter().any(|name| name == "aliased-inbound"));
+    assert!(style.names.iter().any(|name| name == "request-signature"));
+    assert_eq!(
+        style.points,
+        busbar_contract::abi::auth::AuthPoints::HEAD_BODY
+    );
+    assert!(rows.inbound_style("undeclared-style").is_none());
+    assert!(rows.bound.lock().unwrap().is_empty());
+}
+
+#[test]
+fn inbound_default_cannot_select_operator_or_host_credential_reader() {
+    let rows = linking(&[
+        ("plain", plain::door),
+        ("operator-row", operator_row::door),
+        ("issuing-reader", issuing_reader::door),
+        ("outbound-only", outbound_only::door),
+    ]);
+    assert!(rows.inbound_style("plain").is_some());
+    assert!(rows.inbound_style("operator-row").is_none());
+    assert!(rows.inbound_style("issuing-reader").is_none());
+    assert!(rows.inbound_style("outbound-only").is_none());
+    assert!(rows.inbound_style("request-signature").is_none());
+    assert!(rows.bound.lock().unwrap().is_empty());
+}
+
+#[test]
+fn dropped_inbound_style_is_read_from_signed_manifest_without_loading() {
+    let rows = dropping("manifest-inbound", aliased_inbound::door);
+    let style = rows.inbound_style("request-signature").unwrap();
+    assert_eq!(style.module, "busbar-auth-manifest-inbound");
+    assert!(style.names.iter().any(|name| name == "manifest-inbound"));
+    assert!(style.names.iter().any(|name| name == "request-signature"));
+    assert_eq!(
+        style.points,
+        busbar_contract::abi::auth::AuthPoints::HEAD_BODY
+    );
+    assert!(rows.bound.lock().unwrap().is_empty());
+}
+
 mod markless_default {
     busbar_contract::auth_verify_door!(
         super::Fixture,

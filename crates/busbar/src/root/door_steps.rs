@@ -1654,6 +1654,12 @@ pub fn compose_egress(
 /// is swapped in.
 #[derive(Debug)]
 pub struct DoorConfig {
+    /// Effective physical listener settings of this candidate, before publication.
+    pub listeners: Result<crate::root::boot::ListenerNeeds, String>,
+    /// Effective root binds, independent of the boot catalog used by the early projection.
+    pub root_binds: Result<Vec<crate::root::loader::boot::InboundBind>, String>,
+    /// The ordered configured data auth positions, resolved against this candidate's opened auths.
+    pub data_chain: Vec<String>,
     /// The kernel-owned sections, and beside them every plane section the configuration carries RAW
     /// (a door plane's other owned sections among them: a config apply hands a plane its owned
     /// sections from here, as boot hands them from the document's sections).
@@ -1672,6 +1678,13 @@ pub fn door_config(cfg: &busbar_kernel::config::RootCfg) -> Arc<dyn std::any::An
         sections.entry(key).or_insert(value);
     }
     Arc::new(DoorConfig {
+        listeners: crate::root::boot::configured_listener_needs(cfg, &sections),
+        root_binds: crate::root::boot::configured_root_binds(cfg),
+        data_chain: cfg
+            .auth
+            .as_ref()
+            .map(|auth| auth.chain.iter().map(|entry| entry.name.clone()).collect())
+            .unwrap_or_default(),
         sections,
         providers: provider_routes(
             &cfg.providers,
@@ -1679,6 +1692,17 @@ pub fn door_config(cfg: &busbar_kernel::config::RootCfg) -> Arc<dyn std::any::An
         ),
         model_pools: crate::root::model_egress::ModelPools::of(cfg),
     })
+}
+
+/// The same effective listener projection used by every built candidate, before boot builds its App.
+pub fn listener_needs(
+    cfg: &busbar_kernel::config::RootCfg,
+) -> Result<crate::root::boot::ListenerNeeds, String> {
+    let mut sections = kernel_sections(cfg);
+    for (key, value) in raw_sections(cfg) {
+        sections.entry(key).or_insert(value);
+    }
+    crate::root::boot::configured_listener_needs(cfg, &sections)
 }
 
 /// EVERY PLANE SECTION `cfg` CARRIES RAW, by section key, as written: each is its plane's resource
@@ -1751,6 +1775,7 @@ pub fn owned_anchors_refusal<P: AsRef<str>>(
 /// one destination guard, which hears each committed configuration's destinations through them.
 #[derive(Default)]
 pub struct Rules {
+    listeners: std::sync::OnceLock<Arc<crate::root::serve::ListenerPlan>>,
     /// The owned trust anchors the composed door planes name, held as each plane is composed.
     owned_anchors: Mutex<Vec<&'static str>>,
     /// The declaring sections of the door planes the boot bound but did not open (their section
@@ -1779,6 +1804,15 @@ impl std::fmt::Debug for Rules {
 }
 
 impl Rules {
+    /// Hold boot's physical topology; every later candidate is judged before publication.
+    pub fn hold_listeners(
+        &self,
+        listeners: Arc<crate::root::serve::ListenerPlan>,
+    ) -> Result<(), String> {
+        self.listeners
+            .set(listeners)
+            .map_err(|_| "listener topology was already installed".into())
+    }
     /// The rules of a boot whose destination guard is `guard`: it re-reads its metadata lists at
     /// every configuration commit, the boot's own build included, as 1.5.5 re-read them at every
     /// reload.
@@ -1881,6 +1915,12 @@ pub fn unloaded_plane_refusal(
 }
 
 impl busbar_kernel::appbuild::RootRules for Rules {
+    fn check_built(&self, app: &App) -> Result<(), String> {
+        match self.listeners.get() {
+            Some(listeners) => listeners.check(app),
+            None => Ok(()),
+        }
+    }
     fn unloaded_plane_refusal(&self, keys: &[&str]) -> Option<String> {
         unloaded_plane_refusal(
             &self
@@ -2712,10 +2752,20 @@ impl busbar_contract::conn::Conns for PresentingConns {
         need: busbar_contract::conn::NeedId,
         desc: &busbar_contract::conn::OpenDesc<'_>,
     ) -> Result<busbar_contract::conn::ConnId, busbar_contract::conn::ConnError> {
+        self.open_with_security(caller, need, desc, false)
+    }
+
+    fn open_with_security(
+        &self,
+        caller: busbar_contract::conn::InstanceId,
+        need: busbar_contract::conn::NeedId,
+        desc: &busbar_contract::conn::OpenDesc<'_>,
+        require_secure: bool,
+    ) -> Result<busbar_contract::conn::ConnId, busbar_contract::conn::ConnError> {
         let target = busbar_kernel_egress::trust::net::strip_userinfo(desc.target);
         let led = self.userinfo.leading(desc.fields);
         let fields = led.as_deref().unwrap_or(desc.fields);
-        self.inner.open(
+        self.inner.open_with_security(
             caller,
             need,
             &busbar_contract::conn::OpenDesc {
@@ -2723,6 +2773,7 @@ impl busbar_contract::conn::Conns for PresentingConns {
                 fields,
                 ..desc.clone()
             },
+            require_secure,
         )
     }
 

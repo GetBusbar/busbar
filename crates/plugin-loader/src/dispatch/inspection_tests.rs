@@ -538,14 +538,17 @@ fn secret_input_flags_survive_pending_resume_short_replay_and_cancel() {
 
 #[test]
 fn every_secret_input_copy_is_wiped_on_cancel_epoch_end_and_owner_drop() {
-    use alloc_counter::{freed_unzeroed, marked_key};
+    use alloc_counter::{watch_initialized_payload, InitializedPayloadProbe};
     use busbar_contract::abi::mechanism::{call::BLOB_SECRET, extensions};
-    // The mounted allocator's own controls reserve IDs 1..=7; this control owns ID 0.
-    let secret = marked_key::<32>(0);
-    let before = freed_unzeroed(0);
+    let secret = [0xA7; 32];
     for end in 0..3 {
+        // SAFETY: every registered input allocation remains on this thread until destruction.
+        let probe = unsafe { InitializedPayloadProbe::start().expect("open the memory observer") };
         let (route, wake, mut input) = input_route();
         let prior = zeroize::Zeroizing::new(extensions::encode(&[("unrelated", &secret)]));
+        // SAFETY: the owned Vec's initialized slice begins at its allocation base.
+        unsafe { watch_initialized_payload(&prior) };
+        let mut expected_lengths = vec![prior.len()];
         input.extensions = Blob {
             ptr: prior.as_ptr(),
             len: prior.len(),
@@ -554,6 +557,8 @@ fn every_secret_input_copy_is_wiped_on_cancel_epoch_end_and_owner_drop() {
         };
         for _ in 0..3 {
             let loan = unsafe { prepare(wake, slot::TICK, &mut input, None) }.unwrap();
+            assert!(loan.is_some(), "the crossing must copy the secret input");
+            expected_lengths.push(input.extensions.len);
             drop(loan);
         }
         match end {
@@ -567,12 +572,51 @@ fn every_secret_input_copy_is_wiped_on_cancel_epoch_end_and_owner_drop() {
         }
         drop(route);
         drop(prior);
+        let observations = probe.finish();
+        assert!(
+            !observations.reentered,
+            "OS memory reader reentered the allocator"
+        );
+        assert_eq!(
+            observations
+                .payloads
+                .iter()
+                .map(|record| record.len)
+                .collect::<Vec<_>>(),
+            expected_lengths,
+            "observe the original input and every prepared copy, including temporary allocations"
+        );
+        for record in &observations.payloads {
+            assert!(record.freed, "secret allocation was not freed: {record:?}");
+            #[cfg(target_os = "linux")]
+            {
+                assert_eq!(record.read_error, None, "OS memory read failed: {record:?}");
+                assert!(
+                    record.complete_read,
+                    "OS memory read was incomplete: {record:?}"
+                );
+                assert_eq!(record.bytes_read, record.len);
+                assert!(
+                    record.wiped,
+                    "every copied secret allocation must be wiped: {record:?}"
+                );
+            }
+            #[cfg(not(target_os = "linux"))]
+            {
+                assert_eq!(record.read_error, Some(std::io::ErrorKind::Unsupported));
+                assert!(!record.complete_read);
+                assert_eq!(record.bytes_read, 0);
+            }
+        }
     }
-    assert_eq!(
-        freed_unzeroed(0),
-        before,
-        "every copied secret allocation must be wiped, including composition temporaries"
-    );
+    #[cfg(not(target_os = "linux"))]
+    eprintln!("Input copies and frees checked; memory proof requires Linux /proc/self/mem");
+}
+
+pub(super) fn watch_input_copy(bytes: &[u8]) {
+    // SAFETY: prepare passes only the base initialized prefix of its owned Vec. An active probe
+    // requires that input loan to stay on its thread through destruction; outside one this is a no-op.
+    unsafe { alloc_counter::watch_initialized_payload(bytes) }
 }
 
 #[test]

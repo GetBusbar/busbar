@@ -1894,3 +1894,463 @@ fn operation_context_follows_pending_custody_and_retires_without_slot_reuse() {
         SEEN.with(|seen| seen.borrow_mut().clear());
     }
 }
+
+fn canonical_envelope(
+    mut projection: serde_json::Value,
+    op: &str,
+    extra: Option<&serde_json::Map<String, serde_json::Value>>,
+) -> Vec<u8> {
+    let object = projection
+        .as_object_mut()
+        .expect("a hook projection is an object");
+    if let Some(extra) = extra {
+        object.extend(extra.clone());
+    }
+    object.remove("op");
+    let mut out = Vec::new();
+    out.push(b'{');
+    for (index, (name, value)) in object.iter().enumerate() {
+        if index != 0 {
+            out.push(b',');
+        }
+        serde_json::to_writer(&mut out, name).unwrap();
+        out.push(b':');
+        serde_json::to_writer(&mut out, value).unwrap();
+    }
+    if !object.is_empty() {
+        out.push(b',');
+    }
+    out.extend_from_slice(b"\"op\":");
+    serde_json::to_writer(&mut out, op).unwrap();
+    out.push(b'}');
+    out
+}
+
+#[test]
+fn direct_decide_and_transform_envelopes_keep_the_canonical_wire_bytes() {
+    for (prompt, user) in [(false, false), (true, false), (false, true), (true, true)] {
+        for op in [OP_DECIDE, OP_TRANSFORM] {
+            let tags = tags();
+            let mut candidates = candidates(&tags);
+            candidates[0]
+                .signals
+                .push(Signal::CandidateErrorRate, SignalValue::F64(0.75));
+            let budget = budget();
+            let context = RoutingContext {
+                pool: "pool-a",
+                budget_remaining: Some(7),
+                budget: &budget,
+            };
+            let mut request = request(prompt, user);
+            request
+                .signals
+                .push(Signal::RequestTotalChars, SignalValue::U64(33));
+            let frame = DecideFrame::first(DecideView::build(&request, &candidates, &context));
+            let input = frame.input();
+            let decoded = Decoded::of(lend(&input));
+            let mut out = b"caller prefix:".to_vec();
+            decoded.write_projection(op, None, &mut out).unwrap();
+            let expected = canonical_envelope(decoded.projection_json(op), op, None);
+            assert_eq!(
+                &out[b"caller prefix:".len()..],
+                expected,
+                "prompt={prompt} user={user}"
+            );
+            let extra = json!({
+                "z": {"z": 2, "a": 1},
+                "a": ["é", "escaped \" quote"],
+                "op": "must not win",
+                "context": {"replacement": true}
+            });
+            let extra = extra.as_object().unwrap();
+            let mut overlaid = Vec::new();
+            decoded
+                .write_projection(op, Some(extra), &mut overlaid)
+                .unwrap();
+            assert_eq!(
+                overlaid,
+                canonical_envelope(decoded.projection_json(op), op, Some(extra))
+            );
+        }
+    }
+}
+
+#[test]
+fn direct_notify_envelopes_keep_request_candidate_routing_and_response_stage_bytes() {
+    for prompt in [false, true] {
+        let request = request(prompt, false);
+        for stage in [
+            None,
+            Some(HookStageProjection {
+                at: "candidate",
+                model: None,
+                attempt_number: None,
+                remaining_candidates: Some(0),
+                previous_failure: None,
+                outcome: None,
+                status: None,
+            }),
+            Some(HookStageProjection {
+                at: "routing",
+                model: Some("m1"),
+                attempt_number: Some(2),
+                remaining_candidates: Some(1),
+                previous_failure: Some("upstream 503"),
+                outcome: None,
+                status: None,
+            }),
+            Some(HookStageProjection {
+                at: "response",
+                model: Some("m1"),
+                attempt_number: None,
+                remaining_candidates: None,
+                previous_failure: None,
+                outcome: Some("rejected_by_gate"),
+                status: Some(403),
+            }),
+        ] {
+            let frame = NotifyFrame::build(&request, stage.as_ref(), prompt);
+            let input = frame.input();
+            let tap = DecodedTap::of(lend(&input));
+            let mut out = Vec::new();
+            tap.write_projection(OP_NOTIFY, None, &mut out).unwrap();
+            assert_eq!(
+                out,
+                canonical_envelope(tap.projection_json(), OP_NOTIFY, None)
+            );
+        }
+    }
+}
+
+#[test]
+fn hook_resuming_requires_the_actual_parked_continuation_even_on_the_same_cancelled_ticket() {
+    thread_local! {
+        static ENTRIES: RefCell<Vec<(u8, bool)>> = const { RefCell::new(Vec::new()) };
+    }
+    fn entry(kind: u8, op: &Op<'_>) -> bool {
+        let resuming = op.resuming();
+        ENTRIES.with(|entries| entries.borrow_mut().push((kind, resuming)));
+        resuming
+    }
+    struct Waiting;
+    impl Hook for Waiting {
+        fn decide(&self, _: &Decoded<'_>, op: &Op<'_>) -> Poll<Verdict> {
+            if entry(0, op) {
+                Poll::Ready(Verdict::Abstain)
+            } else {
+                Poll::Pending
+            }
+        }
+        fn transform(&self, _: &Decoded<'_>, op: &Op<'_>) -> Poll<RewriteVerdict> {
+            if entry(1, op) {
+                Poll::Ready(RewriteVerdict::Abstain)
+            } else {
+                Poll::Pending
+            }
+        }
+        fn notify(&self, _: &DecodedTap<'_>, op: &Op<'_>) -> Poll<()> {
+            if entry(2, op) {
+                Poll::Ready(())
+            } else {
+                Poll::Pending
+            }
+        }
+    }
+    struct OpenWaiting;
+    impl HookOpen for OpenWaiting {
+        fn open(_: &str) -> Result<Box<dyn Hook>, String> {
+            Ok(Box::new(Waiting))
+        }
+    }
+    let instance = opened_with::<OpenWaiting>(&zeroed());
+    let decide_frame = frame_with(caps(4, 64));
+    let request = request(false, false);
+    let notify_frame = NotifyFrame::build(&request, None, false);
+    for kind in 0..3 {
+        let run = |flags| {
+            if kind == 2 {
+                let mut input = notify_frame.input();
+                input.head.ticket = TICKET;
+                input.head.flags = flags;
+                call::<Notify<OpenWaiting>>(instance, slot::NOTIFY, &input, &mut zeroed())
+            } else {
+                let mut input = decide_frame.input();
+                input.head.ticket = TICKET;
+                input.head.flags = flags;
+                if kind == 0 {
+                    call::<Decide<OpenWaiting>>(instance, slot::DECIDE, &input, &mut zeroed())
+                } else {
+                    call::<Transform<OpenWaiting>>(instance, slot::TRANSFORM, &input, &mut zeroed())
+                }
+            }
+        };
+        assert_eq!(run(0), Outcome::Pending, "fresh entry");
+        assert_eq!(run(FLAG_RESUME), Outcome::Ready, "restored pending entry");
+        assert_eq!(run(0), Outcome::Pending, "another fresh entry");
+        let mut cancel: CancelIn = zeroed();
+        cancel.ticket = TICKET;
+        let mut out: CancelOut = zeroed();
+        assert_eq!(
+            call::<life::Cancel<HookLife<OpenWaiting>>>(instance, CANCEL, &cancel, &mut out),
+            Outcome::Ready
+        );
+        assert_eq!(out.disposition, cancel::ABORTED);
+        assert_eq!(
+            run(FLAG_RESUME),
+            Outcome::Pending,
+            "cancel removed the continuation despite the stale flag"
+        );
+        assert_eq!(
+            run(0),
+            Outcome::Pending,
+            "fresh entry discards a same-ticket continuation"
+        );
+        assert_eq!(
+            run(FLAG_RESUME),
+            Outcome::Ready,
+            "only the new continuation resumes"
+        );
+        let seen = ENTRIES.with(|entries| std::mem::take(&mut *entries.borrow_mut()));
+        assert_eq!(
+            seen,
+            [
+                (kind, false),
+                (kind, true),
+                (kind, false),
+                (kind, false),
+                (kind, false),
+                (kind, true)
+            ]
+        );
+    }
+    closed::<OpenWaiting>(instance);
+}
+
+#[test]
+fn bounded_op_failures_keep_the_earlier_head_and_head_only_ops_never_read_a_body() {
+    use crate::abi::host::conn::connector::{
+        ReplyIn, ReplyPiece, REPLY_BODY, REPLY_END, REPLY_HEAD,
+    };
+    use crate::abi::sdk::exchange::{ExchangeFailure, ExchangeResponse, REPLY_OVER_BOUND};
+    use crate::abi::sdk::test_support::fake::{self, FakeHost, FakeService, ServiceCall};
+    use crate::abi::sdk::test_support::far::Far;
+    use crate::abi::transport::FrameSpan;
+
+    struct Probe {
+        status: u16,
+        limit: usize,
+        head_only: bool,
+        fail_before_head: bool,
+        fail_body: bool,
+        reads: HashMap<u32, usize>,
+        built: u32,
+        answer: Option<Result<ExchangeResponse, ExchangeFailure>>,
+    }
+    thread_local! {
+        static PROBE: RefCell<Option<Probe>> = const { RefCell::new(None) };
+    }
+    const REASON: &[u8] = b"nonstandard secret-reason";
+    const FIELDS: &[u8] = b"x-proof: sensitive-head\r\n";
+    struct ReadReply;
+    impl FakeService for ReadReply {
+        type In = ReplyIn;
+        fn serve(call: &mut ServiceCall<ReplyIn>) -> Outcome {
+            PROBE.with(|probe| {
+                let mut probe = probe.borrow_mut();
+                let probe = probe.as_mut().unwrap();
+                let next = probe.reads.len();
+                let index = *probe
+                    .reads
+                    .entry(call.input().head.handle.seq)
+                    .or_insert(next);
+                if (probe.fail_before_head && index == 0) || (probe.fail_body && index == 1) {
+                    call.set_error("the scripted reply read failed");
+                    return Outcome::Failed;
+                }
+                let mut piece = ReplyPiece::default();
+                let head;
+                let bytes: &[u8] = match index {
+                    0 => {
+                        piece.kind = REPLY_HEAD;
+                        piece.code = u32::from(probe.status);
+                        piece.reason = FrameSpan {
+                            offset: 0,
+                            len: REASON.len() as u64,
+                        };
+                        piece.fields = FrameSpan {
+                            offset: REASON.len() as u64,
+                            len: FIELDS.len() as u64,
+                        };
+                        head = [REASON, FIELDS].concat();
+                        &head
+                    }
+                    1 => {
+                        piece.kind = REPLY_BODY;
+                        &[b'a'; 60]
+                    }
+                    2 => {
+                        piece.kind = REPLY_BODY;
+                        &[b'b'; 41]
+                    }
+                    _ => {
+                        piece.kind = REPLY_END;
+                        &[]
+                    }
+                };
+                assert!(call.fill_lent(|i| &i.buf, bytes));
+                call.put(|i| &i.piece, piece);
+                Outcome::Ready
+            })
+        }
+    }
+    struct Bounded;
+    impl Hook for Bounded {
+        fn decide(&self, _: &Decoded<'_>, op: &Op<'_>) -> Poll<Verdict> {
+            let (limit, head_only) = PROBE.with(|probe| {
+                let probe = probe.borrow();
+                let probe = probe.as_ref().unwrap();
+                (probe.limit, probe.head_only)
+            });
+            match op.exchange_sealed_bounded_with_head(
+                0,
+                Some("http://far.example"),
+                limit,
+                head_only,
+                || {
+                    PROBE.with(|probe| probe.borrow_mut().as_mut().unwrap().built += 1);
+                    Ok((
+                        Request {
+                            method: b"POST".to_vec(),
+                            target: b"/".to_vec(),
+                            ..Request::default()
+                        },
+                        Vec::new(),
+                    ))
+                },
+            ) {
+                Poll::Pending => Poll::Pending,
+                Poll::Ready(answer) => {
+                    PROBE.with(|probe| probe.borrow_mut().as_mut().unwrap().answer = Some(answer));
+                    Poll::Ready(Verdict::Abstain)
+                }
+            }
+        }
+    }
+    struct OpenBounded;
+    impl HookOpen for OpenBounded {
+        fn open(_: &str) -> Result<Box<dyn Hook>, String> {
+            Ok(Box::new(Bounded))
+        }
+    }
+    for (status, limit, head_only, fail_before_head, fail_body) in [
+        (503, 100, false, false, false),
+        (302, 100, false, false, false),
+        (200, 100, false, false, false),
+        (200, 0, true, false, false),
+        (503, 0, true, false, false),
+        (200, 100, false, true, false),
+        (503, 100, false, false, true),
+        (200, 101, false, false, false),
+    ] {
+        let far = Far::answering(status, b"unused by the scripted read override");
+        let host = FakeHost::new()
+            .far()
+            .serve(fake::conn::READ_REPLY, ReadReply);
+        PROBE.with(|probe| {
+            *probe.borrow_mut() = Some(Probe {
+                status,
+                limit,
+                head_only,
+                fail_before_head,
+                fail_body,
+                reads: HashMap::new(),
+                built: 0,
+                answer: None,
+            })
+        });
+        let mut open: OpenIn = zeroed();
+        open.host = host.tables_for_tests();
+        let instance = opened_with::<OpenBounded>(&open);
+        let frame = frame_with(caps(4, 64));
+        let mut input = frame.input();
+        input.head.ticket = TICKET;
+        let mut entries = 0;
+        loop {
+            entries += 1;
+            assert!(entries < 40, "the bounded operation never completed");
+            let outcome =
+                call::<Decide<OpenBounded>>(instance, slot::DECIDE, &input, &mut zeroed());
+            if outcome != Outcome::Pending {
+                assert_eq!(outcome, Outcome::Ready);
+                break;
+            }
+            input.head.flags = FLAG_RESUME;
+            // Resumed calls cannot raise the original bound or change head-only behavior.
+            PROBE.with(|probe| {
+                let mut probe = probe.borrow_mut();
+                let probe = probe.as_mut().unwrap();
+                probe.limit = usize::MAX;
+                probe.head_only = !head_only;
+            });
+        }
+        let probe = PROBE.with(|probe| probe.borrow_mut().take().unwrap());
+        assert!(entries > 1, "connector operations actually pended");
+        assert_eq!(probe.built, 1, "one builder across all resumed entries");
+        let answer = probe.answer.expect("the hook retained the typed result");
+        if head_only {
+            let reply = answer.expect("the head completes the operation");
+            assert_eq!(reply.status, status);
+            assert_eq!(reply.reason.as_deref(), Some(REASON));
+            assert!(reply.body.is_empty());
+            assert_eq!(probe.reads.len(), 1, "the body was never requested");
+        } else if limit == 101 {
+            let reply = answer.expect("the body exactly meets the limit");
+            assert_eq!(reply.body.len(), 101);
+        } else {
+            let failure = answer.expect_err("the bounded reply fails");
+            if fail_before_head {
+                assert!(
+                    failure.head().is_none(),
+                    "no invented reply head before one arrives"
+                );
+            } else {
+                let head = failure
+                    .head()
+                    .expect("the earlier head survives the failure");
+                assert_eq!(head.status, status);
+                assert_eq!(head.reason.as_deref(), Some(REASON));
+                assert_eq!(
+                    head.fields,
+                    [(b"x-proof".to_vec(), b"sensitive-head".to_vec())]
+                );
+                assert!(
+                    head.body.is_empty(),
+                    "partial body is not exposed through the head"
+                );
+                let debug = format!("{failure:?}");
+                assert!(!debug.contains("secret-reason"));
+                assert!(!debug.contains("sensitive-head"));
+            }
+            let expected = if fail_before_head || fail_body {
+                "the scripted reply read failed"
+            } else {
+                REPLY_OVER_BOUND
+            };
+            assert_eq!(
+                failure.cause(),
+                &OpFailure::Conn(ConnFailure::Failed(expected.to_owned()))
+            );
+            assert_eq!(
+                failure.into_cause(),
+                OpFailure::Conn(ConnFailure::Failed(expected.to_owned()))
+            );
+        }
+        assert_eq!(far.posts(), 1);
+        assert_eq!(
+            far.held(),
+            0,
+            "failure and head-only paths close the stream"
+        );
+        closed::<OpenBounded>(instance);
+    }
+}

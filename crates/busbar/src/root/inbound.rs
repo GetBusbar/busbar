@@ -19,9 +19,9 @@
 //! and the generation's app, and publishes the generation the loader verifies refs against. A
 //! listener's table is keyed by the identity of the instance that serves it: today the data
 //! listener is served by the root's own data door (identity `0`, which no plugin presents), so its
-//! table is installed under `0`; the transport bound to it holds its own identity's table once it
-//! accepts there (`boot::refuse_inbound` still refuses that binding). The legacy data door and its
-//! own verify are untouched: one serving path at a time.
+//! table is installed under `0`; each accepting transport registration receives the selected
+//! physical listener's policy over that same App. The registration and admitted request retain
+//! their selected generation while later configuration candidates are checked before publication.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -307,20 +307,35 @@ fn published() -> &'static arc_swap::ArcSwapOption<Published> {
     ONE.get_or_init(arc_swap::ArcSwapOption::empty)
 }
 
-/// A data listener registration shared by its accept loop and live connections.
+/// Select one listener's routes from an immutable published generation. The selection must be
+/// deterministic for that generation and keep its application snapshot. It runs outside locks.
+pub type ListenerPolicy =
+    Arc<dyn Fn(&kin::Listener) -> Result<kin::Listener, String> + Send + Sync>;
+
+/// A listener registration shared by its accept loop and live connections.
 /// The cache owns only route rows; policy Apps stay with the published snapshot and units.
 pub(in crate::root) struct ListenerRegistration {
     owner: u64,
     id: u64,
+    select: Option<ListenerPolicy>,
     rows: Mutex<Option<StreamPolicy>>,
     installed: AtomicU64,
 }
 
 impl ListenerRegistration {
     pub(in crate::root) fn new(owner: u64, id: u64) -> Arc<Self> {
+        Self::with_policy(owner, id, None)
+    }
+
+    pub(in crate::root) fn with_policy(
+        owner: u64,
+        id: u64,
+        select: Option<ListenerPolicy>,
+    ) -> Arc<Self> {
         let registration = Arc::new(Self {
             owner,
             id,
+            select,
             rows: Mutex::new(None),
             installed: AtomicU64::new(0),
         });
@@ -329,6 +344,26 @@ impl ListenerRegistration {
             .unwrap_or_else(PoisonError::into_inner)
             .insert((owner, id), Arc::downgrade(&registration));
         registration
+    }
+
+    fn selected(&self, snapshot: &Published) -> Result<kin::Listener, String> {
+        match &self.select {
+            Some(select) => {
+                let listener = select(&snapshot.listener)?;
+                if !Arc::ptr_eq(&listener.app, &snapshot.listener.app) {
+                    return Err("listener policy changed its published application".into());
+                }
+                Ok(listener)
+            }
+            None => Ok(snapshot.listener.clone()),
+        }
+    }
+
+    pub(in crate::root) fn validate(&self) -> Result<(), String> {
+        let snapshot = published()
+            .load_full()
+            .ok_or_else(|| "listener policy has not been published".to_owned())?;
+        self.selected(&snapshot).map(|_| ())
     }
 
     pub(in crate::root) fn guests(&self) -> Option<Arc<busbar_core_connector::framer::GuestLines>> {
@@ -351,10 +386,17 @@ impl ListenerRegistration {
                 .as_ref()
                 .filter(|policy| policy.policy.generation == snapshot.generation)
                 .cloned();
+            let selected = if cached.is_none()
+                || self.installed.load(Ordering::Acquire) < snapshot.generation
+            {
+                Some(self.selected(&snapshot).ok()?)
+            } else {
+                None
+            };
             let candidate = match cached {
                 Some(policy) => policy,
                 None => {
-                    let mut listener = snapshot.listener.clone();
+                    let mut listener = selected.as_ref()?.clone();
                     listener.ids = listener
                         .guests
                         .lines()
@@ -431,7 +473,7 @@ impl ListenerRegistration {
                 }
             };
             if self.installed.load(Ordering::Acquire) < snapshot.generation {
-                let mut listener = snapshot.listener.clone();
+                let mut listener = selected?;
                 listener.ids = policy
                     .policy
                     .lines
@@ -519,6 +561,7 @@ pub fn publish(app: &Arc<busbar_kernel::state::App>) -> Option<u64> {
         door_refusals,
         ids,
         signed_ingress: kin::signed_by_dialect(),
+        scope: None,
     };
     let snapshot = Arc::new(Published {
         generation,

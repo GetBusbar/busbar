@@ -573,6 +573,14 @@ pub trait RootRules: Send + Sync {
     /// The refusal, in the words the operator reads.
     fn check(&self, cfg: &config::RootCfg) -> Result<(), String>;
 
+    /// Judge the completed candidate before it can be persisted or published.
+    ///
+    /// # Errors
+    /// The candidate cannot be served by this process's listeners.
+    fn check_built(&self, _app: &App) -> Result<(), String> {
+        Ok(())
+    }
+
     /// THE PLANES `cfg` WRITES THAT THIS PROCESS CANNOT SERVE UNTIL IT RESTARTS: the declaring
     /// sections `cfg` writes whose plane the composition root did not open at boot. A door plane is
     /// opened, driven and ticked once, at boot (Law 7 selection, BUSBAR-1.6.0.md l.547), so an
@@ -1074,7 +1082,7 @@ pub fn build_app_from_config(
     // it. Every hook `plugin:` ref opens through the axis. Built once and cloned into each resolver
     // and onto `App` (for the control-plane reads + scrape). A 1.5.5 JSON hook plugin in the
     // registry refuses the build here, naming the rebuild.
-    let hook_env = hooks::HookEnv::new(plugin_registry.clone(), secret_resolver.clone())?;
+    let mut hook_env = hooks::HookEnv::new(plugin_registry.clone(), secret_resolver.clone())?;
 
     // FAIL-CLOSED: resolve every hook's SecretRef settings ONCE, up front, so an unresolvable
     // hook secret aborts boot/reload here — matching the store path (above) and the auth chain
@@ -1082,6 +1090,7 @@ pub fn build_app_from_config(
     // silently dropped from the routing chain by `resolve_pool_gates`/`resolve_on_error_chain`
     // (fail-OPEN), letting traffic the gate was configured to restrict/reject flow unfiltered.
     hook_env.preresolve_hook_secrets(&cfg.hooks)?;
+    let hook_route_decls = hook_env.route_decls(&cfg.hooks)?;
 
     // The store's SecretRefs are resolved only on the BOOT arm (`prior == None`), because the store
     // backend is reused across a hot reload. So a `PUT /config/settings` naming an unresolvable ref
@@ -1526,9 +1535,9 @@ pub fn build_app_from_config(
     // and 404s), while ADDING it needs a RESTART. `boot_route_paths` below is what remembers which
     // paths the router actually has, so a config mutation can SAY so instead of
     // reporting success for a route that will keep 404ing.
-    let plugin_routes = std::sync::Arc::new(crate::plugin_routes::build_route_table(
-        crate::export::route_decls(&cfg_export),
-    )?);
+    let mut route_decls = crate::export::route_decls(&cfg_export);
+    route_decls.extend(hook_route_decls);
+    let plugin_routes = std::sync::Arc::new(crate::plugin_routes::build_route_table(route_decls)?);
     // Seeded ONCE, on a fresh boot (`prior == None`) from the table that is about to be mounted;
     // every rebuild inherits the boot value unchanged. Deliberately NOT recomputed per rebuild — a
     // recomputed set would say every newly declared path is already mounted, which is the exact
@@ -1926,6 +1935,7 @@ pub fn build_app_from_config(
             .map(|section| (*section).to_string())
             .collect(),
     };
+    rules.check_built(&app)?;
     // PRUNE the verify-on-call gates to the subjects THIS generation still fronts. `flights` and
     // `drift_latch` are per-subject coordination CARRIED across every apply (above); without a prune
     // they leak one dead entry per server/agent an operator ever removed. Done here, on the same

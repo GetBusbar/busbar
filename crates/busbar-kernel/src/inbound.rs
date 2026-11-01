@@ -413,6 +413,28 @@ pub struct Listener {
     pub ids: Vec<u64>,
     /// Whether a request's path is answered by a dialect that signs ([`signed_by_dialect`]).
     pub signed_ingress: SignedIngress,
+    /// Physical claimant resolution. Absent only for the original root listener API.
+    pub scope: Option<ListenerScope>,
+}
+
+/// Host-only route ownership retained with one listener generation.
+#[derive(Clone)]
+pub struct ListenerScope {
+    /// Resolve the selected claimant's own audience, never another listener's path match.
+    pub admission: Arc<
+        dyn Fn(&App, &Head) -> Option<crate::plane_driver::dispatch::PlaneAdmission> + Send + Sync,
+    >,
+    /// Whether the root's legacy fallback surface is physically present.
+    pub legacy_fallback: bool,
+}
+
+impl Listener {
+    fn admission(&self, head: &Head) -> Option<crate::plane_driver::dispatch::PlaneAdmission> {
+        self.scope.as_ref().map_or_else(
+            || self.app.planes.admission_for(&head.target).cloned(),
+            |scope| (scope.admission)(&self.app, head),
+        )
+    }
 }
 
 impl std::fmt::Debug for Listener {
@@ -516,6 +538,10 @@ struct ReplayAdmission {
 }
 
 impl RequestAdmission {
+    pub(crate) fn plane_admission(&self) -> Option<crate::plane_driver::dispatch::PlaneAdmission> {
+        self.inner.table.listener.admission(&self.inner.original)
+    }
+
     pub(crate) fn app(&self) -> Arc<App> {
         Arc::clone(&self.inner.table.listener.app)
     }
@@ -1062,6 +1088,7 @@ fn signed_then_keys(
     head: &Head,
     signed: Option<SignedAnswer>,
     now: u64,
+    expected_aud: Option<&str>,
 ) -> (
     Judged,
     Option<VerifiedIdentity>,
@@ -1106,7 +1133,7 @@ fn signed_then_keys(
             Verified::Overloaded => return (Judged::Overloaded, None, named, None),
         }
     }
-    let (judged, identity, strips, resolved) = keys_judged(app, gov, head, now);
+    let (judged, identity, strips, resolved) = keys_judged(app, gov, head, now, expected_aud);
     named.extend(strips);
     (judged, identity, named, resolved)
 }
@@ -1119,6 +1146,7 @@ fn keys_judged(
     gov: Option<&crate::governance::GovState>,
     head: &Head,
     now: u64,
+    expected_aud: Option<&str>,
 ) -> (
     Judged,
     Option<VerifiedIdentity>,
@@ -1132,10 +1160,6 @@ fn keys_judged(
         .iter()
         .map(|c| Strip::field(c.as_str().to_string()))
         .collect();
-    let expected_aud = app
-        .planes
-        .admission_for(&head.target)
-        .map(|admission| admission.audience.as_str());
     match crate::auth::keys_arm_verdict(
         gov,
         candidate
@@ -2203,12 +2227,7 @@ impl Inbound {
                 let keys = positions
                     .iter()
                     .find(|p| matches!(p.kind, PositionKind::Keys));
-                let signed_reader = (table
-                    .listener
-                    .app
-                    .planes
-                    .admission_for(&head.target)
-                    .is_none()
+                let signed_reader = (table.listener.admission(&head).is_none()
                     && (table.doors.signed_ingress(&head.target)
                         || (table.listener.signed_ingress)(&table.listener.app, &head.target)))
                 .then(|| {
@@ -2469,7 +2488,17 @@ impl Inbound {
         let (judged, identity, strips, resolved) = match judging {
             Judging::Nothing => (Judged::Denied, None, Vec::new(), None),
             Judging::Keys(head, signed) => {
-                signed_then_keys(&table.listener.app, gov, head, signed, now)
+                let admission = table.listener.admission(head);
+                signed_then_keys(
+                    &table.listener.app,
+                    gov,
+                    head,
+                    signed,
+                    now,
+                    admission
+                        .as_ref()
+                        .map(|admission| admission.audience.as_str()),
+                )
             }
             Judging::Answer(a) => {
                 let (judged, identity) = match a.verified {
@@ -2709,42 +2738,54 @@ impl Inbound {
             .map(Head::path_and_query)
             .unwrap_or_else(|| path.clone());
         let app = &table.listener.app;
-        let resp = match r.cause {
-            REFUSE_NO_ROUTE => crate::router::fallback_error_response(
-                &app.planes,
-                &path,
-                StatusCode::NOT_FOUND,
-                busbar_contract::protocol::ERR_TYPE_NOT_FOUND,
-                "the requested resource was not found",
-            ),
-            REFUSE_METHOD_MISS => crate::router::fallback_error_response(
-                &app.planes,
-                &path,
-                StatusCode::METHOD_NOT_ALLOWED,
-                busbar_contract::protocol::ERR_TYPE_INVALID_REQUEST,
-                "method not allowed for this resource",
-            ),
-            REFUSE_OVER_GATE => crate::router::fallback_error_response(
-                &app.planes,
-                &path,
-                StatusCode::PAYLOAD_TOO_LARGE,
-                busbar_contract::protocol::KIND_REQUEST_TOO_LARGE,
-                "request body exceeds the maximum allowed size",
-            ),
-            REFUSE_STOPPED | REFUSE_CHECK_FAILED if overloaded => {
-                crate::auth::verifier_unavailable_response()
-            }
-            REFUSE_STOPPED | REFUSE_CHECK_FAILED => {
-                let method = head
-                    .as_ref()
-                    .and_then(|h| axum::http::Method::from_bytes(h.method.as_bytes()).ok());
-                let door = method
-                    .and_then(|m| table.doors.door_refusal(&path, &m).cloned())
-                    .map(|refuse| (refuse, target));
-                crate::auth::unauthorized_with_completion_taps(app, &path, door.as_ref())
-            }
-            _ => return Err(CAUSE_UNKNOWN),
+        let respond = || {
+            Ok(match r.cause {
+                REFUSE_NO_ROUTE => crate::router::fallback_error_response(
+                    &app.planes,
+                    &path,
+                    StatusCode::NOT_FOUND,
+                    busbar_contract::protocol::ERR_TYPE_NOT_FOUND,
+                    "the requested resource was not found",
+                ),
+                REFUSE_METHOD_MISS => crate::router::fallback_error_response(
+                    &app.planes,
+                    &path,
+                    StatusCode::METHOD_NOT_ALLOWED,
+                    busbar_contract::protocol::ERR_TYPE_INVALID_REQUEST,
+                    "method not allowed for this resource",
+                ),
+                REFUSE_OVER_GATE => crate::router::fallback_error_response(
+                    &app.planes,
+                    &path,
+                    StatusCode::PAYLOAD_TOO_LARGE,
+                    busbar_contract::protocol::KIND_REQUEST_TOO_LARGE,
+                    "request body exceeds the maximum allowed size",
+                ),
+                REFUSE_STOPPED | REFUSE_CHECK_FAILED if overloaded => {
+                    crate::auth::verifier_unavailable_response()
+                }
+                REFUSE_STOPPED | REFUSE_CHECK_FAILED => {
+                    let method = head
+                        .as_ref()
+                        .and_then(|h| axum::http::Method::from_bytes(h.method.as_bytes()).ok());
+                    let door = method
+                        .and_then(|m| table.doors.door_refusal(&path, &m).cloned())
+                        .map(|refuse| (refuse, target));
+                    crate::auth::unauthorized_with_completion_taps(app, &path, door.as_ref())
+                }
+                _ => return Err(CAUSE_UNKNOWN),
+            })
         };
+        let resp = if table
+            .listener
+            .scope
+            .as_ref()
+            .is_none_or(|scope| scope.legacy_fallback)
+        {
+            respond()
+        } else {
+            crate::router::private_listener_scope(respond)
+        }?;
         let refusal = Refusal::of(resp);
         if let Some(u) = unit {
             self.exit(u.id);

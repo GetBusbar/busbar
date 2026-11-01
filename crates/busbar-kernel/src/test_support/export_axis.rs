@@ -422,6 +422,8 @@ pub(crate) fn lines_scrape_routes() -> Vec<crate::plugin_routes::RouteDecl> {
         .iter()
         .map(|route| crate::plugin_routes::RouteDecl {
             owner: "metrics".into(),
+            source_instance: "metrics".into(),
+            dispatch_available: true,
             kind: crate::plugin_routes::RouteKind::Export,
             route: route.clone(),
             scrape: true,

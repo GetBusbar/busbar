@@ -146,8 +146,12 @@ pub(crate) unsafe fn prepare(
     // conversion can leave an ordinary temporary or reallocated buffer containing the secret.
     let mut bytes = zeroize::Zeroizing::new(Vec::with_capacity(len));
     bytes.extend_from_slice(prior);
+    #[cfg(test)]
+    tests::watch_input_copy(&bytes);
     bytes.extend_from_slice(&capability_bytes);
     bytes.extend_from_slice(receipt_bytes);
+    #[cfg(test)]
+    tests::watch_input_copy(&bytes);
     let bytes = Arc::new(bytes);
     head.extensions = Blob {
         ptr: bytes.as_ptr(),

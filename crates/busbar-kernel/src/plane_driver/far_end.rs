@@ -1466,6 +1466,7 @@ impl EgressFarEnd<'_> {
                 sealed.join(",").into_bytes(),
             ));
         }
+        let require_secure = auth.iter().any(|f| f.require_secure);
         drop(auth);
         let borrowed: Vec<(&str, &[u8])> = head
             .0
@@ -1490,7 +1491,7 @@ impl EgressFarEnd<'_> {
                 .upstream_attempt_stated(&pool, destination, stated.as_ref());
         }
         // 3. The connector: the judged, pinned dial and the framer's encode.
-        let opened = e.conns.open(
+        let opened = e.conns.open_with_security(
             e.caller,
             need,
             &OpenDesc {
@@ -1515,6 +1516,7 @@ impl EgressFarEnd<'_> {
                 // session's caller leg) applies to this open.
                 unit: self.route.unit.get(),
             },
+            require_secure,
         );
         let now_ms = e.clock.now_millis();
         let now_us = e.clock.now_micros();

@@ -645,7 +645,7 @@ impl Constraint {
 
 /// THE PLANE'S PROJECTION of a unit's request, owned: what every hook payload of the unit is
 /// built from.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Projection {
     /// The pool the plane names (the walk's, when it names one, wins).
     pub pool: String,
@@ -681,7 +681,46 @@ pub struct Projection {
     pub rewrite_not_applicable: bool,
 }
 
+impl Default for Projection {
+    fn default() -> Self {
+        Self::empty(String::new(), String::new())
+    }
+}
+
+impl Drop for Projection {
+    fn drop(&mut self) {
+        use zeroize::Zeroize as _;
+        self.pool.zeroize();
+        self.dialect.zeroize();
+        self.system.zeroize();
+        self.turns.zeroize();
+        self.end_user.zeroize();
+        self.rewritten.zeroize();
+        self.session.zeroize();
+        self.projected.zeroize();
+    }
+}
+
 impl Projection {
+    fn empty(pool: String, dialect: String) -> Self {
+        Self {
+            pool,
+            dialect,
+            message_count: 0,
+            total_chars: 0,
+            max_tokens: None,
+            has_tools: false,
+            stream: false,
+            system: None,
+            turns: Vec::new(),
+            end_user: None,
+            rewritten: None,
+            session: None,
+            projected: None,
+            rewrite_not_applicable: false,
+        }
+    }
+
     /// The prompt view, under the content ceiling.
     fn prompt(&self) -> PromptProjection<'_> {
         content_capped(PromptProjection {
@@ -1563,11 +1602,9 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
             // and the taps read no document (`.ok()`, `:170`, `:1330`). Only a configured rewrite
             // made it the shared 500. The gates and the policy judge the zeroed view, the request
             // proceeding.
-            Err(Stopped::Unparseable { .. }) => Projection {
-                pool: walk_pool.clone(),
-                dialect: hooks.dialect.clone(),
-                ..Projection::default()
-            },
+            Err(Stopped::Unparseable { .. }) => {
+                Projection::empty(walk_pool.clone(), hooks.dialect.clone())
+            }
             // A request the plane cannot read is the request's failure where a hook must judge
             // it (a rewrite, a gate, a route policy); a tap only observes, and observes the zeroed
             // shape (the previous release's stage capture), the request proceeding.
@@ -1576,18 +1613,11 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
                     && hooks.gates.is_empty()
                     && hooks.policy.is_none() =>
             {
-                Projection {
-                    pool: walk_pool.clone(),
-                    dialect: hooks.dialect.clone(),
-                    ..Projection::default()
-                }
+                Projection::empty(walk_pool.clone(), hooks.dialect.clone())
             }
             Err(stopped) => {
                 // The unit's response taps still see it, in the zeroed shape.
-                let zeroed = Projection {
-                    dialect: hooks.dialect.clone(),
-                    ..Projection::default()
-                };
+                let zeroed = Projection::empty(String::new(), hooks.dialect.clone());
                 self.lock().hooked = Some((hooks, zeroed));
                 return Err(stopped);
             }
@@ -2202,15 +2232,12 @@ impl SessionStage {
     fn view(&self, system: Option<String>, turns: Vec<(String, String)>) -> Projection {
         let total_chars = turns.iter().map(|(_, t)| t.chars().count()).sum::<usize>()
             + system.as_deref().map_or(0, |s| s.chars().count());
-        Projection {
-            pool: self.pool.clone(),
-            dialect: self.dialect.clone(),
-            message_count: turns.len(),
-            total_chars,
-            system,
-            turns,
-            ..Projection::default()
-        }
+        let mut view = Projection::empty(self.pool.clone(), self.dialect.clone());
+        view.message_count = turns.len();
+        view.total_chars = total_chars;
+        view.system = system;
+        view.turns = turns;
+        view
     }
 
     /// Run `job` over the unit's hooks on the stage's runtime and answer through `done`.

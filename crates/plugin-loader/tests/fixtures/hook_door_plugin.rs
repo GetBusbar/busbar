@@ -44,6 +44,23 @@ use busbar_contract::abi::sdk::{Instance, Lent, Out, SafeSlot};
 /// The fixture's hook tail: a gate that asks for neither the prompt nor the user view.
 pub const TAIL: &Tail = &busbar_contract::abi::sdk::hook::tail(CLASS_GATE, PROMPT_NO, USER_NO);
 
+pub const ROUTE_PATH: &str = "/hooks/receiver/feedback";
+pub const ROUTED_TAIL: &Tail =
+    &busbar_contract::abi::sdk::hook::tail(CLASS_GATE, PROMPT_NO, USER_NO).with_routes(&[
+        busbar_contract::abi::hook::Route {
+            path: busbar_contract::abi::mechanism::call::AbiStr {
+                ptr: ROUTE_PATH.as_ptr(),
+                len: ROUTE_PATH.len(),
+            },
+            method: busbar_contract::abi::mechanism::call::AbiStr {
+                ptr: b"POST".as_ptr(),
+                len: 4,
+            },
+            auth: busbar_contract::abi::hook::ROUTE_AUTH_KEY,
+            _reserved: 0,
+        },
+    ]);
+
 /// The conforming door's Statement name.
 pub const NAME: &str = "both-ways-hook";
 /// The broken door's Statement name.
@@ -65,7 +82,7 @@ pub const MAX_INFLIGHT: u32 = 8;
 
 /// The instance: the most messages a request may carry before it is rejected, how long its
 /// `decide` sleeps first, and the session whose requests it rejects, if any.
-pub struct Gate(AtomicU64, u64, Option<Vec<u8>>, bool);
+pub struct Gate(AtomicU64, u64, Option<Vec<u8>>, bool, String);
 
 impl Life for Gate {
     const CANCEL: u32 = cancel::ABORTED;
@@ -99,7 +116,18 @@ impl Gate {
             .get("hold_for_cap_test")
             .and_then(serde_json::Value::as_bool)
             .unwrap_or(false);
-        Ok(Gate(AtomicU64::new(over), sleep_ms, session, controlled))
+        let headers = settings
+            .get("serve_headers")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("valid")
+            .to_owned();
+        Ok(Gate(
+            AtomicU64::new(over),
+            sleep_ms,
+            session,
+            controlled,
+            headers,
+        ))
     }
 
     fn over(settings: &serde_json::Map<String, serde_json::Value>) -> Result<u64, Refusal> {
@@ -231,6 +259,93 @@ impl SafeSlot for DecidePanics {
 /// version acknowledged.
 pub struct Configure;
 
+pub struct Serve;
+
+impl SafeSlot for Serve {
+    type In = busbar_contract::abi::hook::ServeIn;
+    type Out = busbar_contract::abi::hook::ServeOut;
+    type State = Held<Gate>;
+
+    fn call(
+        instance: Instance<'_, Held<Gate>>,
+        input: Lent<'_, Self::In>,
+        mut out: Out<'_, Self::Out>,
+    ) -> Outcome {
+        let Some(held) = instance.get() else {
+            return Outcome::Refused;
+        };
+        if held.life().1 > 0 {
+            std::thread::sleep(std::time::Duration::from_millis(held.life().1));
+        }
+        if input.field(|i| &i.query).bytes() == b"lease-count" {
+            let count = held.leases().held().to_string().into_bytes();
+            out.set(|o| &o.status_code, 200);
+            out.lease(
+                |o| &o.body,
+                held.leases(),
+                count,
+                busbar_contract::abi::mechanism::call::BLOB_OCTETS,
+            );
+            return Outcome::Ready;
+        }
+        let mut echoed = input.field(|i| &i.method).bytes().to_vec();
+        echoed.push(b' ');
+        echoed.extend_from_slice(input.field(|i| &i.path).bytes());
+        echoed.push(b'?');
+        echoed.extend_from_slice(input.field(|i| &i.query).bytes());
+        echoed.push(b'\n');
+        echoed.extend_from_slice(input.field(|i| &i.body).bytes());
+        out.set(|o| &o.status_code, 202);
+        out.lease(
+            |o| &o.body,
+            held.leases(),
+            echoed,
+            busbar_contract::abi::mechanism::call::BLOB_OCTETS,
+        );
+        use busbar_contract::abi::mechanism::call::AbiStr;
+        const NAME: AbiStr = AbiStr {
+            ptr: b"x-fixture".as_ptr(),
+            len: 9,
+        };
+        const VALUE: AbiStr = AbiStr {
+            ptr: b"present".as_ptr(),
+            len: 7,
+        };
+        const VALID: &[AbiStr] = &[NAME, VALUE];
+        const ODD: &[AbiStr] = &[NAME];
+        const NULL: &[AbiStr] = &[
+            NAME,
+            AbiStr {
+                ptr: std::ptr::null(),
+                len: 1,
+            },
+        ];
+        const OVERLONG: &[AbiStr] = &[
+            NAME,
+            AbiStr {
+                ptr: b"x".as_ptr(),
+                len: busbar_contract::abi::mechanism::call::MAX_TEXT + 1,
+            },
+        ];
+        const NON_UTF8: &[AbiStr] = &[
+            NAME,
+            AbiStr {
+                ptr: b"\xff".as_ptr(),
+                len: 1,
+            },
+        ];
+        let headers = match held.life().4.as_str() {
+            "odd" => ODD,
+            "null" => NULL,
+            "overlong" => OVERLONG,
+            "utf8" => NON_UTF8,
+            _ => VALID,
+        };
+        out.list(|o| &o.headers_out, |o| &o.headers_out_len, headers);
+        Outcome::Ready
+    }
+}
+
 impl SafeSlot for Configure {
     type In = ConfigureIn;
     type Out = ConfigureOut;
@@ -280,6 +395,12 @@ macro_rules! hook_door {
         >);
     };
     (@statement $statement:expr, $decide:ty, $configure:ty) => {
+        hook_door!(@statement $statement, $decide, $configure, super::Refuse<
+            busbar_contract::abi::hook::ServeIn,
+            busbar_contract::abi::hook::ServeOut,
+        >);
+    };
+    (@statement $statement:expr, $decide:ty, $configure:ty, $serve:ty) => {
         busbar_contract::plugin_door! {
             ops: busbar_contract::abi::hook::Ops,
             statement: $statement,
@@ -303,10 +424,7 @@ macro_rules! hook_door {
                     busbar_contract::abi::mechanism::call::InHead,
                     busbar_contract::abi::hook::DescribeOut,
                 >>,
-                serve: busbar_contract::abi::sdk::Safe<super::Refuse<
-                    busbar_contract::abi::hook::ServeIn,
-                    busbar_contract::abi::hook::ServeOut,
-                >>,
+                serve: busbar_contract::abi::sdk::Safe<$serve>,
             },
         }
     };
@@ -323,12 +441,19 @@ macro_rules! hook_door {
 
 /// The conforming hook plugin's door.
 pub mod conforming {
-    hook_door!(super::NAME, super::Decide);
+    hook_door!(@statement busbar_contract::abi::sdk::hook::statement_with_tail(
+        busbar_contract::abi::sdk::door::statement(super::NAME, "1.6.0", super::MAX_INFLIGHT),
+        super::ROUTED_TAIL,
+    ), super::Decide, super::Refuse<busbar_contract::abi::hook::ConfigureIn,
+        busbar_contract::abi::hook::ConfigureOut>, super::Serve);
 }
 
 /// The broken hook plugin's door.
 pub mod broken {
-    hook_door!(super::BROKEN_NAME, super::DecideBroken);
+    hook_door!(@statement busbar_contract::abi::sdk::hook::statement_with_tail(
+        busbar_contract::abi::sdk::door::statement(super::BROKEN_NAME, "1.6.0", super::MAX_INFLIGHT),
+        super::ROUTED_TAIL,
+    ), super::DecideBroken);
 }
 
 /// The conforming plugin whose `decide` answers an order.

@@ -1176,6 +1176,7 @@ async fn resource_after_inbound(s: &Subject, token: &str, scheme: &str, proofs: 
                 door_refusals: Vec::new(),
                 ids: vec![10],
                 signed_ingress: Arc::new(|_, _| false),
+                scope: None,
             },
         )
         .unwrap();

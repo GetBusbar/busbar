@@ -464,6 +464,16 @@ pub trait AuthAxis: Send + Sync {
         Vec::new()
     }
 
+    /// The inbound style of an ordinary identity-provider module. The host's Rust convention
+    /// uses the declared module key and its Statement aliases as inbound style names; these are
+    /// independent of the auth tail's outbound `StyleDecl`s. Operator credentials and readers
+    /// of host-held credentials are not defaults: their authority requires the configured chain.
+    /// Read without opening an instance. None when the module declares no such inbound style.
+    fn inbound_style(&self, module: &str) -> Option<InboundStyle> {
+        let _ = module;
+        None
+    }
+
     /// THE HOST'S DEFAULT INBOUND STYLE's carriers: the carrier marks of the one auth row whose
     /// Statement states [`FACT_DEFAULT_INBOUND_STYLE`](crate::abi::auth::FACT_DEFAULT_INBOUND_STYLE),
     /// in the Statement's order; none when no row states it. Where the credential sits on every line
@@ -515,6 +525,17 @@ pub trait AuthAxis: Send + Sync {
     fn outbound_styles(&self) -> Vec<DeclaredStyle> {
         Vec::new()
     }
+}
+
+/// Host-owned metadata for one ordinary inbound verifier, read from its admitted Statement.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InboundStyle {
+    /// The canonical module key, distinct from an operator-configured provider name.
+    pub module: String,
+    /// The module key and its declared aliases. These never name outbound styles implicitly.
+    pub names: Vec<String>,
+    /// The points its inbound verifier requires.
+    pub points: crate::abi::auth::AuthPoints,
 }
 
 /// ONE OUTBOUND STYLE an auth row declares ([`AuthAxis::outbound_styles`]): its name and its
@@ -656,6 +677,8 @@ pub struct AuthField {
     /// `abi::auth::FIELD_SENSITIVE`, as the plugin stated it: the h2 encoding the field asks for.
     /// Logging never reads it: every auth field's value is withheld, marked or not.
     pub sensitive: bool,
+    /// The credential requires host-secured delivery; never discard this before opening.
+    pub require_secure: bool,
 }
 
 /// Every auth field's value is withheld, whatever its `sensitive` bit says: a field whose
@@ -666,13 +689,17 @@ impl std::fmt::Debug for AuthField {
             .field("name", &String::from_utf8_lossy(&self.name))
             .field("value", &"<redacted>")
             .field("sensitive", &self.sensitive)
+            .field("require_secure", &self.require_secure)
             .finish()
     }
 }
 
 impl PartialEq for AuthField {
     fn eq(&self, other: &Self) -> bool {
-        self.name == other.name && self.value == other.value && self.sensitive == other.sensitive
+        self.name == other.name
+            && self.value == other.value
+            && self.sensitive == other.sensitive
+            && self.require_secure == other.require_secure
     }
 }
 

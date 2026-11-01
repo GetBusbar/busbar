@@ -370,6 +370,401 @@ pub fn discover(registry: &PluginRegistry) -> Result<Vec<Candidate>, String> {
     discovered(registry, |_| true)
 }
 
+/// The linked and admitted dropped-in candidates whose inbound needs boot can serve.
+pub fn listener_candidates(linked: &Linked) -> Result<Vec<Candidate>, String> {
+    listener_candidates_from(linked, dropped_registry())
+}
+
+fn listener_candidates_from(
+    linked: &Linked,
+    registry: Option<&PluginRegistry>,
+) -> Result<Vec<Candidate>, String> {
+    let mut candidates = registry.map(discover).transpose()?.unwrap_or_default();
+    // Plane doors and export sinks are loaded from the immutable boot registry and retained.
+    // A same-name upload does not replace their code or Statement. Hooks reopen from the
+    // candidate registry, so their declarations follow that candidate instead.
+    candidates.retain(|candidate| !matches!(candidate.kind, KindCode::Plane | KindCode::Export));
+    candidates.extend(
+        dropped_registry()
+            .map(|registry| discovered(registry, |kind| matches!(kind, "plane" | "export")))
+            .transpose()?
+            .unwrap_or_default(),
+    );
+    for door in linked.plane_doors.iter().chain(linked.hook_doors) {
+        let candidate = Candidate::linked(*door)?;
+        let former: Vec<_> = candidate
+            .aliases
+            .iter()
+            .chain(std::iter::once(&candidate.name))
+            .flat_map(|name| busbar_kernel::config::migration_table::former_names(name))
+            .collect();
+        let candidate = candidate.answering(former);
+        if !candidates
+            .iter()
+            .any(|c| c.kind == candidate.kind && c.name == candidate.name)
+        {
+            candidates.push(candidate);
+        }
+    }
+    Ok(candidates)
+}
+
+/// A declared inbound need and the physical listener on which it is served.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ListenerNeed {
+    /// The selected instance name; planes use their canonical door name.
+    pub instance: String,
+    /// The canonical declaring module, retained for boot-dispatch provenance.
+    pub module: String,
+    /// The declaring kind.
+    pub kind: KindCode,
+    /// The index in the Statement's needs.
+    pub need: u32,
+    /// The selected framing scheme.
+    pub transport: String,
+    /// The declared default authentication style, used only without an operator chain.
+    pub auth: String,
+    /// The physical bind's setting name.
+    pub at: String,
+}
+
+/// Physical binds and the declarations assigned to them.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ListenerNeeds {
+    /// Root binds followed by additional plugin binds.
+    pub binds: Vec<InboundBind>,
+    /// Assignments, including needs sharing the root data bind.
+    pub needs: Vec<ListenerNeed>,
+}
+
+/// Project only listener settings from the resolved candidate configuration. No plugin's other
+/// settings or resolved credentials are retained in this plan.
+pub fn configured_listener_needs(
+    cfg: &busbar_kernel::config::RootCfg,
+    sections: &std::collections::BTreeMap<&'static str, serde_yaml::Value>,
+) -> Result<ListenerNeeds, String> {
+    listener_projection(
+        listener_candidates(&crate::LINKED)?,
+        &cfg.hooks,
+        &cfg.export_defs,
+        sections,
+        configured_root_binds(cfg)?,
+    )
+}
+
+/// Root bindings use the effective resolved settings, including defaults.
+pub fn configured_root_binds(
+    cfg: &busbar_kernel::config::RootCfg,
+) -> Result<Vec<InboundBind>, String> {
+    let doc = serde_json::json!({"tls": serde_json::to_value(&cfg.tls).map_err(|e| e.to_string())?,
+        "admin_tls": serde_json::to_value(&cfg.admin_tls).map_err(|e| e.to_string())?});
+    Ok(root_binds(
+        &doc,
+        &RootListens {
+            listen: &cfg.listen,
+            admin_listen: &cfg.admin_listen,
+        },
+    ))
+}
+
+/// Read the same candidate registry that opened the App's hooks and auths. New or replaced
+/// Statements cannot inherit the boot catalog's older listener declarations.
+pub fn candidate_listener_needs(
+    app: &busbar_kernel::state::App,
+    sections: &std::collections::BTreeMap<&'static str, serde_yaml::Value>,
+    root: Vec<InboundBind>,
+) -> Option<Result<ListenerNeeds, String>> {
+    let registry = super::loader::rows::registry_of(app.hook_env.registry.as_ref())?;
+    Some(
+        listener_candidates_from(&crate::LINKED, Some(registry)).and_then(|candidates| {
+            listener_projection(
+                candidates,
+                &app.hook_registry,
+                &app.export_defs,
+                sections,
+                root,
+            )
+        }),
+    )
+}
+
+fn listener_projection(
+    candidates: Vec<Candidate>,
+    hooks: &std::collections::HashMap<String, busbar_kernel::config::HookCfg>,
+    exports: &busbar_kernel::config::ExportDefs,
+    sections: &std::collections::BTreeMap<&'static str, serde_yaml::Value>,
+    root: Vec<InboundBind>,
+) -> Result<ListenerNeeds, String> {
+    use serde_json::{Map, Value};
+    fn insert_path(map: &mut Map<String, Value>, path: &[&str], value: Value) {
+        if let Some((first, rest)) = path.split_first() {
+            if rest.is_empty() {
+                map.insert((*first).into(), value);
+            } else {
+                let next = map
+                    .entry((*first).to_string())
+                    .or_insert_with(|| Value::Object(Map::new()));
+                if let Some(next) = next.as_object_mut() {
+                    insert_path(next, rest, value);
+                }
+            }
+        }
+    }
+    fn settings(
+        candidate: &Candidate,
+        mut block: impl FnMut(&[&str]) -> Result<Option<Value>, String>,
+    ) -> Result<Value, String> {
+        let mut out = Map::new();
+        for need in &candidate.needs {
+            if need.direction != busbar_contract::abi::host::conn::connector::DIRECTION_INBOUND {
+                continue;
+            }
+            let path: Vec<_> = need.target_from.split('.').collect();
+            if let Some(block) = block(&path)? {
+                insert_path(&mut out, &path, block);
+            }
+        }
+        Ok(Value::Object(out))
+    }
+    fn json_block(source: Option<&Map<String, Value>>, path: &[&str]) -> Option<Value> {
+        let (first, rest) = path.split_first()?;
+        rest.iter()
+            .try_fold(source?.get(*first)?, |value, part| value.get(*part))
+            .cloned()
+    }
+    let mut uses = Uses::default();
+    uses.roots.extend(sections.keys().map(|s| (*s).to_string()));
+    uses.modules.extend(
+        hooks
+            .iter()
+            .map(|(name, hook)| (KindCode::Hook, name.clone(), hook.plugin.clone())),
+    );
+    uses.modules.extend(
+        exports
+            .iter()
+            .map(|(name, export)| (KindCode::Export, name.clone(), export.module.clone())),
+    );
+    let selected = select(&uses, &candidates);
+    let mut doc = Map::new();
+    for selection in &selected {
+        let candidate = &candidates[selection.candidate];
+        if !candidate
+            .needs
+            .iter()
+            .any(|n| n.direction == busbar_contract::abi::host::conn::connector::DIRECTION_INBOUND)
+        {
+            continue;
+        }
+        let (root, settings) = match candidate.kind {
+            KindCode::Plane => (
+                None,
+                settings(candidate, |path| {
+                    let block = sections
+                        .get(selection.instance.as_str())
+                        .and_then(|source| {
+                            path.iter().try_fold(source, |value, part| value.get(*part))
+                        });
+                    block
+                        .map(serde_json::to_value)
+                        .transpose()
+                        .map_err(|e| e.to_string())
+                })?,
+            ),
+            KindCode::Hook => (
+                Some("hooks"),
+                settings(candidate, |path| {
+                    Ok(json_block(
+                        hooks.get(&selection.instance).map(|hook| &hook.settings),
+                        path,
+                    ))
+                })?,
+            ),
+            KindCode::Export => (
+                Some("export"),
+                settings(candidate, |path| {
+                    Ok(json_block(
+                        exports
+                            .get(&selection.instance)
+                            .map(|export| &export.settings),
+                        path,
+                    ))
+                })?,
+            ),
+            _ => continue,
+        };
+        if let Some(root) = root {
+            insert_path(&mut doc, &[root, &selection.instance, "settings"], settings);
+        } else {
+            doc.insert(selection.instance.clone(), settings);
+        }
+    }
+    let doc = Value::Object(doc);
+    listener_needs(&doc, &candidates, &selected, root)
+}
+
+/// Collect the listeners with their consumers before any socket opens. The explicit `listen`
+/// selector uses the effective root data bind only when the instance has no relative `listen`
+/// setting. A present malformed relative block is still refused by the ordinary bind parser.
+pub fn listener_needs(
+    doc: &serde_json::Value,
+    candidates: &[Candidate],
+    selected: &[Selected],
+    root: Vec<InboundBind>,
+) -> Result<ListenerNeeds, String> {
+    use busbar_contract::abi::host::conn::connector::{DIRECTION_INBOUND, DIRECTION_OUTBOUND};
+    let mut binds = root;
+    let mut shared = Vec::new();
+    for selection in selected {
+        let candidate = &candidates[selection.candidate];
+        let mut physical = candidate.clone();
+        for (index, need) in candidate.needs.iter().enumerate() {
+            if need.direction != DIRECTION_INBOUND {
+                continue;
+            }
+            if !matches!(
+                candidate.kind,
+                KindCode::Plane | KindCode::Hook | KindCode::Export
+            ) {
+                return Err(format!(
+                    "{}: {:?} inbound need {index} has no SERVE consumer",
+                    selection.instance, candidate.kind
+                ));
+            }
+            let settings = match candidate.kind {
+                KindCode::Plane => doc.get(&selection.instance),
+                KindCode::Hook => doc
+                    .get("hooks")
+                    .and_then(|v| v.get(&selection.instance))
+                    .and_then(|v| v.get("settings")),
+                KindCode::Export => doc
+                    .get("export")
+                    .and_then(|v| v.get(&selection.instance))
+                    .and_then(|v| v.get("settings")),
+                _ => None,
+            };
+            if need.target_from == "listen" && settings.and_then(|v| v.get("listen")).is_none() {
+                let bind = binds
+                    .iter()
+                    .find(|b| b.owner == BindOwner::Root && b.at == "listen")
+                    .ok_or_else(|| {
+                        format!(
+                            "{}: inbound need {index} names an unavailable root listen bind",
+                            selection.instance
+                        )
+                    })?;
+                shared.push(ListenerNeed {
+                    module: candidate.name.clone(),
+                    instance: if candidate.kind == KindCode::Plane {
+                        candidate.name.clone()
+                    } else {
+                        selection.instance.clone()
+                    },
+                    kind: candidate.kind,
+                    need: u32::try_from(index)
+                        .map_err(|_| "inbound need index does not fit u32")?,
+                    transport: need.transport.clone(),
+                    auth: need.auth.clone(),
+                    at: bind.at.clone(),
+                });
+                physical.needs[index].direction = DIRECTION_OUTBOUND;
+            }
+        }
+        // Parse each declaration independently, then consolidate compatible physical binds.
+        // The loader's ordinary collector deliberately rejects collisions; here a declaration
+        // naming an existing listener contributes a line instead of opening that address twice.
+        for index in 0..physical.needs.len() {
+            if physical.needs[index].direction != DIRECTION_INBOUND {
+                continue;
+            }
+            let mut one = physical.clone();
+            for (other, need) in one.needs.iter_mut().enumerate() {
+                if other != index {
+                    need.direction = DIRECTION_OUTBOUND;
+                }
+            }
+            let mut parsed = inbound(
+                doc,
+                &[one],
+                &[Selected {
+                    candidate: 0,
+                    instance: selection.instance.clone(),
+                }],
+                Vec::new(),
+            )?;
+            let mut bind = parsed.pop().ok_or("inbound declaration produced no bind")?;
+            let declared = &candidate.needs[index];
+            let settings = match candidate.kind {
+                KindCode::Plane => doc.get(&selection.instance),
+                KindCode::Hook => doc
+                    .get("hooks")
+                    .and_then(|v| v.get(&selection.instance))
+                    .and_then(|v| v.get("settings")),
+                KindCode::Export => doc
+                    .get("export")
+                    .and_then(|v| v.get(&selection.instance))
+                    .and_then(|v| v.get("settings")),
+                _ => None,
+            };
+            let block = settings.and_then(|settings| {
+                declared
+                    .target_from
+                    .split('.')
+                    .try_fold(settings, |v, key| v.get(key))
+            });
+            let collision = binds.iter().find(|old| {
+                bind.listen.port() != 0
+                    && old.listen.port() == bind.listen.port()
+                    && (old.listen.ip() == bind.listen.ip()
+                        || old.listen.ip().is_unspecified()
+                        || bind.listen.ip().is_unspecified())
+            });
+            let at = if let Some(old) = collision {
+                if old.at == "admin_listen"
+                    || old.listen != bind.listen
+                    || (old.owner != BindOwner::Root
+                        || block.is_some_and(|b| b.get("tls").is_some()))
+                        && old.tls != bind.tls
+                    || (old.owner != BindOwner::Root
+                        || block.is_some_and(|b| b.get("max_conns").is_some()))
+                        && old.max_conns != bind.max_conns
+                {
+                    return Err(format!(
+                        "{}: inbound declaration is incompatible with physical listener {}",
+                        bind.at, old.at
+                    ));
+                }
+                old.at.clone()
+            } else {
+                if candidate.kind == KindCode::Plane {
+                    if let BindOwner::Need { instance, .. } = &mut bind.owner {
+                        *instance = candidate.name.clone();
+                    }
+                }
+                let at = bind.at.clone();
+                binds.push(bind);
+                at
+            };
+            shared.push(ListenerNeed {
+                module: candidate.name.clone(),
+                instance: if candidate.kind == KindCode::Plane {
+                    candidate.name.clone()
+                } else {
+                    selection.instance.clone()
+                },
+                kind: candidate.kind,
+                need: u32::try_from(index).map_err(|_| "inbound need index does not fit u32")?,
+                transport: declared.transport.clone(),
+                auth: declared.auth.clone(),
+                at,
+            });
+        }
+    }
+    Ok(ListenerNeeds {
+        binds,
+        needs: shared,
+    })
+}
+
 /// [`discover`] over the admitted plugins whose manifest kind `keep` accepts.
 fn discovered(
     registry: &PluginRegistry,
@@ -514,8 +909,7 @@ pub fn stages(
 ) -> Result<Stages, String> {
     let uses = Uses::of(doc);
     let selected = select(&uses, &candidates);
-    refuse_inbound(&candidates, &selected)?;
-    let inbound = inbound(doc, &candidates, &selected, root)?;
+    let inbound = listener_needs(doc, &candidates, &selected, root)?.binds;
     for s in &selected {
         let c = &candidates[s.candidate];
         let facts =
@@ -544,52 +938,6 @@ pub fn stages(
         selected,
         inbound,
     })
-}
-
-/// NO ACCEPTED CONNECTION HAS A CONSUMER YET (ARCHITECT ruling 2026-09-30): a selected plugin
-/// that declares an inbound need is refused, naming the need, rather than bound and closed. The
-/// driver binding that serves an accepted connection removes this refusal.
-///
-/// # Errors
-///
-/// The first selected instance with an inbound need.
-fn refuse_inbound(candidates: &[Candidate], selected: &[Selected]) -> Result<(), String> {
-    use busbar_contract::abi::host::conn::connector::DIRECTION_INBOUND;
-    for s in selected {
-        let Some(c) = candidates.get(s.candidate) else {
-            continue;
-        };
-        if let Some((i, n)) = c
-            .needs
-            .iter()
-            .enumerate()
-            .find(|(_, n)| n.direction == DIRECTION_INBOUND)
-        {
-            return Err(format!(
-                "{} ({}): inbound need {i} over `{}` cannot be served by this build (nothing \
-                 serves an accepted connection yet); remove the plugin from the configuration",
-                s.instance, c.name, n.transport
-            ));
-        }
-    }
-    Ok(())
-}
-
-/// BOOT'S HALF OF [`refuse_inbound`]: the configuration at `path` over the dropped-in plugins
-/// `registry` admitted, discovered and selected as `--validate` does, refused the same way.
-///
-/// # Errors
-///
-/// A Statement that does not read back, or a selected plugin with an inbound need.
-pub fn refuse_unserved_inbound(
-    path: &std::path::Path,
-    registry: &PluginRegistry,
-) -> Result<(), String> {
-    let doc = document(path)
-        .map(|d| d.value().clone())
-        .unwrap_or_default();
-    let candidates = discover(registry)?;
-    refuse_inbound(&candidates, &select(&Uses::of(&doc), &candidates))
 }
 
 /// THE PLUGINS DROPPED INTO THE CONFIGURED `plugins.dir`, scanned ONCE before any axis is installed —

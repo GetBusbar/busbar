@@ -22,6 +22,19 @@ pub(crate) const HEADER_SERVER_TIMING: &str = "server-timing";
 /// with the const; overflow/conversion fallbacks that happen to produce u64::MAX are NOT this.
 pub(crate) const NO_UPSTREAM_RTT: u64 = u64::MAX;
 
+tokio::task_local! {
+    // A router's physical ownership, retained across its middleware and handler future.
+    static PHYSICAL_REFUSER: Option<crate::plane_routes::PlaneRefuseByPathFn>;
+}
+
+pub(crate) fn is_private_listener() -> bool {
+    PHYSICAL_REFUSER.try_with(|_| ()).is_ok()
+}
+
+pub(crate) fn private_listener_scope<T>(f: impl FnOnce() -> T) -> T {
+    PHYSICAL_REFUSER.sync_scope(None, f)
+}
+
 /// Render a native ingress error envelope (`application/json`) for the fallback handlers, in the
 /// dialect the path is spoken in — attaching the `x-amzn-*` headers when that dialect is Bedrock,
 /// so the response is indistinguishable from a real vendor 404/405, and answering in JSON-RPC on a
@@ -39,6 +52,14 @@ pub fn fallback_error_response(
     kind: &str,
     message: &str,
 ) -> axum::response::Response {
+    if is_private_listener() {
+        return crate::ingress::native::native_error(
+            crate::plane_driver::dispatch::Ingress::Fallback(None),
+            status,
+            kind,
+            message,
+        );
+    }
     // The NATIVE-API root speaks the frozen admin envelope for EVERY response — including unmatched
     // paths and wrong methods, which previously fell through to the vendor-native shaping below and
     // leaked `{error:{type}}` bodies onto a surface that promises `{error:{code}}`.
@@ -82,7 +103,8 @@ pub(crate) fn kernel_refusal_response(
     message: &str,
 ) -> axum::response::Response {
     use crate::admin::gate::API_ROOT;
-    let native_api = path == API_ROOT || path.starts_with(&format!("{API_ROOT}/"));
+    let native_api =
+        !is_private_listener() && (path == API_ROOT || path.starts_with(&format!("{API_ROOT}/")));
     if !native_api {
         let refusal = busbar_kernel::plane_routes::KernelRefusal {
             reason,
@@ -91,7 +113,10 @@ pub(crate) fn kernel_refusal_response(
             path,
             target,
         };
-        if let Some(rendered) = handle.door_refusal(&refusal) {
+        let rendered = PHYSICAL_REFUSER
+            .try_with(|render| render.as_ref().and_then(|render| render(&refusal)))
+            .unwrap_or_else(|_| handle.door_refusal(&refusal));
+        if let Some(rendered) = rendered {
             return rendered;
         }
     }
@@ -123,6 +148,22 @@ pub(crate) async fn method_not_allowed_handler(
         axum::http::StatusCode::METHOD_NOT_ALLOWED,
         busbar_contract::protocol::ERR_TYPE_INVALID_REQUEST,
         "method not allowed for this resource",
+    )
+}
+
+async fn private_not_found(
+    axum::extract::State(handle): axum::extract::State<std::sync::Arc<state::AppHandle>>,
+    uri: axum::http::Uri,
+) -> axum::response::Response {
+    kernel_refusal_response(
+        &handle,
+        &handle.snapshot().planes,
+        busbar_contract::caps::ReasonCode::NoDestination,
+        uri.path(),
+        target_of(&uri),
+        axum::http::StatusCode::NOT_FOUND,
+        busbar_contract::protocol::ERR_TYPE_NOT_FOUND,
+        "the requested resource was not found",
     )
 }
 
@@ -414,6 +455,23 @@ pub(crate) fn base_data_router(
     Router<std::sync::Arc<state::AppHandle>>,
     crate::core_routes::CoreRouteTable,
 ) {
+    base_data_router_scoped(plugin_routes, plane_slots, oauth_as, doors, sessions, true)
+}
+
+fn base_data_router_scoped(
+    plugin_routes: &crate::plugin_routes::PluginRouteTable,
+    plane_slots: &std::collections::BTreeMap<
+        &'static str,
+        std::sync::Arc<dyn std::any::Any + Send + Sync>,
+    >,
+    oauth_as: Option<&std::sync::Arc<dyn std::any::Any + Send + Sync>>,
+    doors: Vec<busbar_kernel::plane_routes::PlaneRouteSpec>,
+    sessions: Vec<busbar_kernel::plane_routes::PlaneSessionSpec>,
+    root_surface: bool,
+) -> (
+    Router<std::sync::Arc<state::AppHandle>>,
+    crate::core_routes::CoreRouteTable,
+) {
     use busbar_contract::abi::mechanism::route::{RouteAuth, RouteMethod};
     // A door plane whose claim is the whole tree (`/` and every path under it) claims the
     // convenience surfaces' paths too, so the kernel mounts none of its own there.
@@ -421,48 +479,53 @@ pub(crate) fn base_data_router(
     // EVERY core route is mounted through `CoreRouter::route`, which takes the handler and the
     // admission bar in ONE act (`core_routes`): a route the auth middleware knows nothing about is
     // not a thing this function can produce.
-    let router = crate::core_routes::CoreRouter::new()
-        .route("/stats", RouteMethod::Get, RouteAuth::Key, endpoints::stats)
-        // The liveness probe is the one always-open core route: a probe must not require a caller
-        // token. Declared here rather than asserted by the middleware, so the openness belongs to
-        // the route and travels with whichever router mounts it.
-        .route(
-            crate::auth::HEALTHZ_PATH,
-            RouteMethod::Get,
-            RouteAuth::None,
-            endpoints::healthz,
-        );
-    // `/metrics` and `/metrics/hooks` are not core routes (owner law 2026-09-27: "the kernel owns
-    // no route that exists for one plugin"): they are the scrape sink's own listener needs, mounted
-    // through the plugin route registration (`mount_plugin_routes` below) and answered by its
-    // `serve` over the host snapshot service (`crate::export::scrape`).
-    let router = router
-        // busbar's OWN API keeps explicit routes (it is not a protocol dialect): discovery,
-        // health/metrics/stats above, and the named/adhoc conveniences below.
-        // Token exchange (1.5.2): a verified IdP identity mints its own self-serve key. DATA plane
-        // only, and declared `RouteAuth::None` because the handler runs the auth chain ITSELF (it
-        // needs the identified principal to self-scope the minted key). The declaration is what
-        // confines that bypass to this router: the admin plane, which does not mount the route,
-        // does not inherit its bypass.
-        .route(
-            crate::auth::exchange::AUTH_TOKEN_PATH,
-            RouteMethod::Get,
-            RouteAuth::None,
-            crate::auth::login::seam::browser,
-        )
-        .route(
-            crate::auth::exchange::AUTH_TOKEN_PATH,
-            RouteMethod::Post,
-            RouteAuth::None,
-            crate::auth::exchange::exchange,
-        );
+    let router = if root_surface {
+        let router = crate::core_routes::CoreRouter::new()
+            .route("/stats", RouteMethod::Get, RouteAuth::Key, endpoints::stats)
+            // The liveness probe is the one always-open core route: a probe must not require a caller
+            // token. Declared here rather than asserted by the middleware, so the openness belongs to
+            // the route and travels with whichever router mounts it.
+            .route(
+                crate::auth::HEALTHZ_PATH,
+                RouteMethod::Get,
+                RouteAuth::None,
+                endpoints::healthz,
+            );
+        // `/metrics` and `/metrics/hooks` are not core routes (owner law 2026-09-27: "the kernel owns
+        // no route that exists for one plugin"): they are the scrape sink's own listener needs, mounted
+        // through the plugin route registration (`mount_plugin_routes` below) and answered by its
+        // `serve` over the host snapshot service (`crate::export::scrape`).
+        router
+            // busbar's OWN API keeps explicit routes (it is not a protocol dialect): discovery,
+            // health/metrics/stats above, and the named/adhoc conveniences below.
+            // Token exchange (1.5.2): a verified IdP identity mints its own self-serve key. DATA plane
+            // only, and declared `RouteAuth::None` because the handler runs the auth chain ITSELF (it
+            // needs the identified principal to self-scope the minted key). The declaration is what
+            // confines that bypass to this router: the admin plane, which does not mount the route,
+            // does not inherit its bypass.
+            .route(
+                crate::auth::exchange::AUTH_TOKEN_PATH,
+                RouteMethod::Get,
+                RouteAuth::None,
+                crate::auth::login::seam::browser,
+            )
+            .route(
+                crate::auth::exchange::AUTH_TOKEN_PATH,
+                RouteMethod::Post,
+                RouteAuth::None,
+                crate::auth::exchange::exchange,
+            )
+    } else {
+        crate::core_routes::CoreRouter::new()
+    };
     // The list-models discovery surface (`GET /v1/models`, `GET /v1beta/models`) is no kernel
     // route: the plane that claims it as a CATALOG route renders it, unit-less, over the names
     // `endpoints::catalog_names` computes (ARCHITECT ruling 2026-10-16, 3b C).
     // THE CONVENIENCE SURFACES hand their unit to a body-model arrival, so they are mounted only
     // where a plane registered one and no door plane claims the whole tree (a plane served through
     // its door parses these paths itself).
-    let router = if crate::ingress::arrival::any_body_ingress() && !door_claims_root {
+    let router = if root_surface && crate::ingress::arrival::any_body_ingress() && !door_claims_root
+    {
         router
             .route(
                 "/{name}/v1/messages",
@@ -551,8 +614,8 @@ pub(crate) fn base_data_router(
     // unregistered seam (only busbar-core's own test binary) behaves exactly as `None` did before
     // the extraction — this binary never configures `oauth_as:` either, so the two states agree.
     let router = match crate::oauth_as::seam::seam() {
-        Some(seam) => (seam.mount)(router, oauth_as),
-        None => router,
+        Some(seam) if root_surface => (seam.mount)(router, oauth_as),
+        _ => router,
     };
     // PLUGIN HTTP ROUTES: the collision-checked, namespace-confined `none`/`key`-auth
     // routes an export/hook plugin declared. Reserved HERE — BEFORE the catch-all fallback below —
@@ -565,12 +628,16 @@ pub(crate) fn base_data_router(
         router.map_router(|r| crate::plugin_routes::mount_plugin_routes(r, plugin_routes, false));
     router
         .map_router(|r| {
-            r
+            let r = if root_surface {
                 // A path no claimed row owns: the kernel's own 404 (`ingress::protocol_dispatch`).
                 // A plane matches its own claimed routes; the kernel identifies no protocol here.
                 // A fallback claims no path, so it declares no route: it takes the normal
                 // data-plane bar like any unclaimed path always has.
-                .fallback(ingress::protocol_dispatch)
+                r.fallback(ingress::protocol_dispatch)
+            } else {
+                r.fallback(private_not_found)
+            };
+            r
                 // Wrong-method hits on a VALID path (axum's built-in 405) get the same
                 // native-envelope treatment as the 404 fallback above.
                 .method_not_allowed_fallback(method_not_allowed_handler)
@@ -1222,13 +1289,38 @@ pub fn build_split_routers_serving_doors(
 ) -> (Router, Router, std::sync::Arc<state::AppHandle>) {
     // Capture the plugin route table before `app` moves into the handle.
     let plugin_routes = app.plugin_routes.clone();
+    build_split_routers_serving_listener(
+        app,
+        &plugin_routes,
+        doors,
+        sessions,
+        refusals,
+        request_body_max_bytes,
+        max_inbound_concurrent,
+        server_timing_enabled,
+    )
+}
+
+/// Build the root pair with data plugin mounts projected to its physical guest list.
+#[allow(clippy::too_many_arguments)]
+pub fn build_split_routers_serving_listener(
+    app: std::sync::Arc<state::App>,
+    data_plugins: &crate::plugin_routes::PluginRouteTable,
+    doors: Vec<crate::plane_routes::PlaneRouteSpec>,
+    sessions: Vec<crate::plane_routes::PlaneSessionSpec>,
+    refusals: Vec<crate::plane_routes::PlaneRefusalSpec>,
+    request_body_max_bytes: usize,
+    max_inbound_concurrent: usize,
+    server_timing_enabled: bool,
+) -> (Router, Router, std::sync::Arc<state::AppHandle>) {
+    let plugin_routes = app.plugin_routes.clone();
     let plane_slots = app.plane_slots.clone();
     let oauth_as = app.oauth_as.clone();
     let handle = std::sync::Arc::new(state::AppHandle::new(app));
     // DATA plane: protocols + health/metrics/stats + the `none`/`key`-auth plugin routes, NO admin
     // mount and NO admin-auth plugin routes (those are physically absent from the data listener).
     let (data, data_core_routes) = base_data_router(
-        &plugin_routes,
+        data_plugins,
         &plane_slots,
         oauth_as.as_ref(),
         doors,
@@ -1264,6 +1356,43 @@ pub fn build_split_routers_serving_doors(
         server_timing_enabled,
     );
     (data, admin, handle)
+}
+
+/// Mount one additional physical data listener on the process's existing application handle.
+/// Publication, history and admitted snapshots are shared with the root listeners.
+#[allow(clippy::too_many_arguments)]
+pub fn build_data_router_on(
+    handle: &std::sync::Arc<state::AppHandle>,
+    plugins: &crate::plugin_routes::PluginRouteTable,
+    doors: Vec<busbar_kernel::plane_routes::PlaneRouteSpec>,
+    sessions: Vec<busbar_kernel::plane_routes::PlaneSessionSpec>,
+    refusals: Vec<busbar_kernel::plane_routes::PlaneRefusalSpec>,
+    refuse_by_path: Option<busbar_kernel::plane_routes::PlaneRefuseByPathFn>,
+    request_body_max_bytes: usize,
+    max_inbound_concurrent: usize,
+    server_timing_enabled: bool,
+) -> Router {
+    let (data, core_routes) = base_data_router_scoped(
+        plugins,
+        &std::collections::BTreeMap::new(),
+        None,
+        doors,
+        sessions,
+        false,
+    );
+    let data = apply_common_layers(
+        data,
+        core_routes.with_door_refusals(refusals),
+        handle,
+        request_body_max_bytes,
+        server_timing_enabled,
+    );
+    apply_inbound_concurrency_limit(data, max_inbound_concurrent).layer(axum::middleware::from_fn(
+        move |request: axum::extract::Request, next: axum::middleware::Next| {
+            let refuse = refuse_by_path.clone();
+            async move { PHYSICAL_REFUSER.scope(refuse, next.run(request)).await }
+        },
+    ))
 }
 
 /// Project the resolved `auth:` block onto [`state::App::auth_scope_caps`] — the per-PROVIDER admin

@@ -51,6 +51,8 @@ fn decl(
 ) -> RouteDecl {
     RouteDecl {
         owner: owner.to_string(),
+        source_instance: owner.to_string(),
+        dispatch_available: true,
         kind,
         route: Route {
             path: path.to_string(),

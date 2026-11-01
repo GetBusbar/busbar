@@ -58,6 +58,21 @@ pub trait HookCalls: Send + Sync {
     /// The instance's plugin name (its Statement's).
     fn name(&self) -> &str;
 
+    /// Routes declared by this instance's Statement, before host confinement and auth checks.
+    fn routes(&self) -> &[crate::abi::mechanism::route::Route] {
+        &[]
+    }
+
+    /// Serve an owned, already authenticated request on the dispatcher. The request remains
+    /// lent through every pending poll and cancellation, and the response is copied before release.
+    fn serve(
+        &self,
+        _request: crate::abi::mechanism::endpoint::EndpointRequest,
+        _budget: Duration,
+    ) -> Pending<Result<crate::abi::mechanism::endpoint::EndpointResponse, String>> {
+        Box::pin(async { Err("this hook serves no routes".into()) })
+    }
+
     /// `decide` over `frame`, with the one short re-call; bounded by `budget`.
     fn decide(&self, frame: Arc<DecideFrame>, budget: Duration) -> Pending<Answered<DecideOut>>;
 
@@ -116,6 +131,16 @@ pub type Probed = (Option<HookFacts>, Vec<String>);
 /// it once; the kernel probes and opens hook instances through it and names nothing behind it.
 /// The hook kind has no cross-instance `check` op, so the axis has no `check`.
 pub trait HookAxis: Send + Sync {
+    /// Validated routes stated by this module, without opening an instance. Legacy axes serve none.
+    fn routes(
+        &self,
+        _module: &str,
+        _instance: &str,
+        _settings: &serde_json::Value,
+    ) -> Result<Vec<crate::abi::mechanism::route::Route>, String> {
+        Ok(Vec::new())
+    }
+
     /// `None` when no `kind: hook` row names `module`; else what [`Probed`] states, asked while the
     /// configuration is resolved (`instance` names the configured hook in any refusal).
     fn probe(&self, module: &str, instance: &str, settings: &serde_json::Value) -> Option<Probed>;

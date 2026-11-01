@@ -409,8 +409,8 @@ pub struct Flagged {
 /// and each per-kind value. A kind's SDK implements it over its author trait; a plugin names it
 /// through its kind's door macro.
 pub trait Life: Send + Sync + Sized + 'static {
-    /// The kind's `cancel` disposition (its own vocabulary, `abi/<kind>/`): the SDK's ops never
-    /// pend, so a cancel finds nothing in flight.
+    /// The kind's default `cancel` disposition (its own vocabulary, `abi/<kind>/`).
+    /// [`Life::cancel`] may override it while releasing state owned by the lifecycle.
     const CANCEL: u32;
 
     /// The kind's `drive` answer: the SDK holds no driver ticket. READY unless the kind states
@@ -485,6 +485,15 @@ pub trait Life: Send + Sync + Sized + 'static {
     /// `retire` of `generation`: nothing held per generation unless the kind says so.
     fn retire(&self, generation: u64) {
         let _ = generation;
+    }
+
+    /// Release state this lifecycle keeps outside the SDK's parked continuation for `ticket`.
+    /// The ticket is the canceled operation's full identity, not the CANCEL crossing's head.
+    /// Extract owned state under its lock and drop it after unlocking; cleanup may call the host.
+    /// The SDK drops the ticket's parked continuation after this callback returns.
+    fn cancel(&self, ticket: Ticket) -> u32 {
+        let _ = ticket;
+        Self::CANCEL
     }
 
     /// `tick` at `now_ns`: the next tick wanted, `0` = none.
@@ -847,10 +856,10 @@ life_slot!(
 );
 
 life_slot!(
-    /// `cancel`: [`Life::CANCEL`] (the SDK drops what the cancelled ticket parked,
-    /// `abi::sdk::safe`).
-    Cancel(CancelIn => CancelOut) |_, _, out| {
-        out.set(|o| &o.disposition, L::CANCEL);
+    /// `cancel`: [`Life::cancel`], then the SDK drops what the canceled ticket parked.
+    Cancel(CancelIn => CancelOut) |instance, input, out| {
+        let disposition = instance.get().map_or(L::CANCEL, |h| h.life.cancel(input.ticket));
+        out.set(|o| &o.disposition, disposition);
         Outcome::Ready
     }
 );

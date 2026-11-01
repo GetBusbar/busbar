@@ -357,7 +357,8 @@ pub use appbuild::{
 };
 pub use preflight::plugins_preflight;
 pub use router::{
-    build_router, build_split_routers_serving, build_split_routers_serving_doors,
+    build_data_router_on, build_router, build_split_routers_serving,
+    build_split_routers_serving_doors, build_split_routers_serving_listener,
     build_split_routers_serving_sessions, build_split_routers_with_limits, fallback_error_response,
     REQUEST_ACTIVITY_TICKS,
 };

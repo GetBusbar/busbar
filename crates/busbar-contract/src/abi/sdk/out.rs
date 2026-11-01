@@ -847,7 +847,21 @@ impl<'a, T: AbiOut> Out<'a, T> {
             .ok_or(wire::INVALID)?;
         let mut bytes = Vec::with_capacity(len);
         bytes.extend_from_slice(prior);
+        #[cfg(test)]
+        // SAFETY: this owned initialized Vec stays on the probe's thread through lease release.
+        if ext.flags & BLOB_SECRET != 0 {
+            unsafe {
+                crate::alloc_counter::watch_initialized_payload(&bytes);
+            }
+        }
         bytes.extend_from_slice(&encoded);
+        #[cfg(test)]
+        // SAFETY: include the initialized appended bytes without observing spare capacity.
+        if ext.flags & BLOB_SECRET != 0 {
+            unsafe {
+                crate::alloc_counter::watch_initialized_payload(&bytes);
+            }
+        }
         self.held_by(&leases.alive);
         let mut blob = if ext.flags & BLOB_SECRET != 0 {
             leases.secret_blob(self.head(), bytes, BLOB_OCTETS)
@@ -1055,6 +1069,11 @@ impl<'a, T: AbiOut> Out<'a, T> {
         bytes: Vec<u8>,
         fmt: u32,
     ) {
+        #[cfg(test)]
+        // SAFETY: this owned initialized Vec stays on the probe's thread through lease release.
+        unsafe {
+            crate::alloc_counter::watch_initialized_payload(&bytes);
+        }
         self.held_by(&leases.alive);
         let blob = leases.secret_blob(self.head(), bytes, fmt);
         self.put(pick, blob);

@@ -75,6 +75,8 @@ pub const RENDERING_MAGIC_TAIL_SIZE_ONLY: &[u8; 8] = b"BBSTMT01";
 /// Why a Statement does not render.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RenderError {
+    /// A string or blob has a nonzero length and a NULL pointer; the field.
+    NullWithCount(&'static str),
     /// One of the rendering's lengths or counts was above `u32::MAX`; the field.
     TooLong(&'static str),
     /// A kind tail list or string that is not read: NULL with a count, above
@@ -86,6 +88,7 @@ pub enum RenderError {
 impl core::fmt::Display for RenderError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
+            Self::NullWithCount(field) => write!(f, "{field} is NULL with a nonzero length"),
             Self::TooLong(field) => write!(f, "{field} is too long"),
             Self::Tail(fault) => {
                 write!(f, "the kind tail's {} breaks {:?}", fault.field, fault.rule)
@@ -118,8 +121,11 @@ impl Out {
         len: usize,
         field: &'static str,
     ) -> Result<(), RenderError> {
+        if len > 0 && ptr.is_null() {
+            return Err(RenderError::NullWithCount(field));
+        }
         self.len(len, field)?;
-        if len > 0 && !ptr.is_null() {
+        if len > 0 {
             // SAFETY: the caller's contract.
             self.0
                 .extend_from_slice(unsafe { core::slice::from_raw_parts(ptr, len) });
@@ -158,6 +164,7 @@ unsafe fn items<'a, T>(ptr: *const T, len: usize) -> &'a [T] {
 ///
 /// # Errors
 ///
+/// [`RenderError::NullWithCount`], naming a string or blob with a length but no bytes;
 /// [`RenderError::TooLong`], naming the field whose length or count does not fit a `u32`;
 /// [`RenderError::Tail`], naming the kind tail's list or string that is not read.
 ///

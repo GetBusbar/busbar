@@ -9,7 +9,8 @@
 //!
 //! * **Lending** ([`lend`]). Each exact path's value is taken out of the settings and lent, one
 //!   entry per path in the Statement's order (an unset one lends empty bytes), as hosts always
-//!   have. Then each wildcard path's matches, in document order, are lent after them: every string
+//!   have. An object key is removed; an array slot becomes null to preserve the other indices.
+//!   Then each wildcard path's matches, in document order, are lent after them: every string
 //!   or secret reference it matches is lent and replaced in the settings by the marker
 //!   `{"$secret": <index into the lent secrets>}`, which the SDK's
 //!   [`crate::abi::sdk::cred::settings_lent`] reads back.
@@ -327,16 +328,21 @@ fn at_mut_ref<'v>(v: &'v Value, at: &[String]) -> Option<&'v Value> {
     })
 }
 
-/// Remove and answer the value at the exact `.`-separated `path` of `v`, if set.
+/// Remove and answer the value at the exact `.`-separated `path` of `v`, if set. An array
+/// position becomes null so taking one secret cannot change another declared path's index.
 fn take_path(v: &mut Value, path: &str) -> Option<Value> {
     let (parent, last) = match path.rsplit_once('.') {
         Some((head, last)) => (
-            head.split('.').try_fold(&mut *v, |v, k| v.get_mut(k))?,
+            at_mut(v, &head.split('.').map(str::to_owned).collect::<Vec<_>>())?,
             last,
         ),
         None => (v, path),
     };
-    parent.as_object_mut()?.remove(last)
+    match parent {
+        Value::Object(m) => m.remove(last),
+        Value::Array(a) => a.get_mut(last.parse::<usize>().ok()?).map(Value::take),
+        _ => None,
+    }
 }
 
 /// Every position under `v` that `segs` names and that holds a string or a reference, in

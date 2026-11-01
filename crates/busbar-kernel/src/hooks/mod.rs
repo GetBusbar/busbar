@@ -131,6 +131,7 @@ pub struct HookEnv {
     /// every `kind: hook` row, compiled in or dropped in, opened on the hook kind's ABI over the
     /// process's one dispatcher. `None` = this build installs no axis: no hook opens.
     axis: Option<std::sync::Arc<dyn busbar_contract::hook_calls::HookAxis>>,
+    route_calls: Arc<std::collections::HashMap<String, RouteCalls>>,
     /// The secret resolver used to turn any SecretRef-typed hook setting (e.g. a `licenseKey`) into
     /// its raw value BEFORE the settings cross the ABI at open/configure (ADR-0010). Shared with the
     /// store/auth open paths; the same fail-closed resolver. Held behind the NEUTRAL
@@ -169,6 +170,7 @@ impl HookEnv {
         Ok(HookEnv {
             registry,
             axis,
+            route_calls: Arc::new(std::collections::HashMap::new()),
             secret_resolver,
             banner_seen: std::sync::Arc::new(std::sync::Mutex::new(
                 std::collections::HashSet::new(),
@@ -187,6 +189,7 @@ impl HookEnv {
         HookEnv {
             registry,
             axis: Some(axis),
+            route_calls: Arc::new(std::collections::HashMap::new()),
             secret_resolver,
             banner_seen: std::sync::Arc::new(std::sync::Mutex::new(
                 std::collections::HashSet::new(),
@@ -210,6 +213,14 @@ impl HookEnv {
         name: &str,
         timeout_ms: u64,
     ) -> Result<Arc<dyn RoutingPolicy>, String> {
+        if let Some(opened) = self.route_calls.get(name).filter(|opened| {
+            opened.module == module && opened.resolved.as_value() == settings.as_value()
+        }) {
+            return Ok(crate::plane_driver::hooks::policy::HookPolicy::policy(
+                opened.calls.clone(),
+                name,
+            ));
+        }
         let axis = self
             .axis
             .as_ref()
@@ -223,6 +234,63 @@ impl HookEnv {
         Ok(crate::plane_driver::hooks::policy::HookPolicy::policy(
             calls, name,
         ))
+    }
+
+    /// Open route-bearing configured hooks once for this candidate generation. The same calls
+    /// back its policy and its HTTP dispatcher; the old App retains its own calls across reload.
+    pub(crate) fn route_decls(
+        &mut self,
+        hooks: &std::collections::HashMap<String, crate::config::HookCfg>,
+    ) -> Result<Vec<crate::plugin_routes::RouteDecl>, String> {
+        let Some(axis) = self.axis.as_ref() else {
+            return Ok(Vec::new());
+        };
+        let mut names: Vec<_> = hooks.keys().collect();
+        names.sort();
+        let mut calls = std::collections::HashMap::new();
+        let mut declarations = Vec::new();
+        for name in names {
+            let hook = &hooks[name];
+            let resolved = self.resolve_hook_settings(&hook.plugin, &hook.settings)?;
+            let routes = axis.routes(&hook.plugin, name, resolved.as_value())?;
+            if routes.is_empty() {
+                continue;
+            }
+            let budget = policy_timeout(hook.timeout_ms);
+            let opened = axis.open(&hook.plugin, name, resolved.as_value(), budget)?;
+            if opened.routes() != routes.as_slice() {
+                return Err(format!(
+                    "hook '{name}' route declarations changed while opening"
+                ));
+            }
+            let dispatch: Arc<dyn crate::plugin_routes::PluginHttpDispatch> = Arc::new(HookHttp {
+                calls: opened.clone(),
+                budget,
+            });
+            for route in opened.routes() {
+                declarations.push(crate::plugin_routes::RouteDecl {
+                    owner: name.clone(),
+                    source_instance: name.clone(),
+                    dispatch_available: true,
+                    kind: crate::plugin_routes::RouteKind::Hook,
+                    route: route.clone(),
+                    scrape: false,
+                    persistent: false,
+                    dispatch: dispatch.clone(),
+                });
+            }
+            calls.insert(
+                name.clone(),
+                RouteCalls {
+                    module: hook.plugin.clone(),
+                    definition: ResolvedSettings::from_map(hook.settings.clone()),
+                    resolved,
+                    calls: opened,
+                },
+            );
+        }
+        self.route_calls = Arc::new(calls);
+        Ok(declarations)
     }
 
     /// Resolve a hook's opaque `settings:` map — substituting any SecretRef-typed value (e.g. a
@@ -321,6 +389,40 @@ impl HookEnv {
                 })?;
         }
         Ok(())
+    }
+}
+
+struct RouteCalls {
+    module: String,
+    definition: ResolvedSettings,
+    resolved: ResolvedSettings,
+    calls: Arc<dyn busbar_contract::hook_calls::HookCalls>,
+}
+
+struct HookHttp {
+    calls: Arc<dyn busbar_contract::hook_calls::HookCalls>,
+    budget: std::time::Duration,
+}
+
+impl crate::plugin_routes::PluginHttpDispatch for HookHttp {
+    fn handle_http(
+        &self,
+        request: &busbar_contract::abi::mechanism::endpoint::EndpointRequest,
+    ) -> busbar_contract::abi::mechanism::endpoint::EndpointResponse {
+        // Plugin route dispatch invokes this arm on a Tokio blocking thread.
+        match tokio::runtime::Handle::current()
+            .block_on(self.calls.serve(request.clone(), self.budget))
+        {
+            Ok(response) => response,
+            Err(why) => {
+                tracing::warn!(hook = self.calls.name(), error = %why, "hook route failed");
+                busbar_contract::abi::mechanism::endpoint::EndpointResponse {
+                    status: 502,
+                    headers: Vec::new(),
+                    body: Vec::new(),
+                }
+            }
+        }
     }
 }
 
@@ -867,6 +969,16 @@ fn gate_transport_named(
     env: &HookEnv,
     _settings_version: u64,
 ) -> Option<(Arc<dyn RoutingPolicy>, ResolvedSettings)> {
+    if let Some(opened) = env
+        .route_calls
+        .get(name)
+        .filter(|opened| opened.module == hook.plugin && &*opened.definition == &hook.settings)
+    {
+        return Some((
+            crate::plane_driver::hooks::policy::HookPolicy::policy(opened.calls.clone(), name),
+            opened.resolved.clone(),
+        ));
+    }
     // ONE load per distinct resolution, and that load is SINGLE-FLIGHT. See [`resolution`] for why
     // this is a correctness fix and not a cache for speed's sake. A hook carrying a `SecretRef` is
     // deliberately NOT eligible (`key` returns `None`) and re-resolves on every call, exactly as

@@ -54,18 +54,36 @@ use crate::abi::auth::{
     OpenOutboundOut, OutboundReadyIn, OutboundReadyOut, StyleDecl, VerifyIn, EXT_SCOPE,
     FIELD_QUERY, FIELD_SENSITIVE, MODE_OWN, MODE_PASSTHROUGH,
 };
-use crate::abi::mechanism::call::{Blob, OutHead, Outcome, Span, BLOB_ABSENT};
+use crate::abi::mechanism::call::{Blob, OutHead, Outcome, Span, BLOB_ABSENT, BLOB_OCTETS};
 use crate::abi::mechanism::door::KindTailHead;
+use crate::abi::mechanism::extensions;
 use crate::abi::mechanism::lifecycle::{CancelIn, CancelOut, DriveIn, TickIn, TickOut};
 use crate::abi::mechanism::ticket::Ticket;
 use crate::abi::sdk::auth_door::{verify_answer, verify_op, VerifyPlugin};
 use crate::abi::sdk::conn::Host;
+use crate::abi::sdk::cred::{Parts, SealedWrite};
 use crate::abi::sdk::door::{AbiIn, AbiOut};
 use crate::abi::sdk::exchange::Op;
 use crate::abi::sdk::lent::{HostBuf, Lent};
 use crate::abi::sdk::life::{Counted, Held, Life, Refreshed, Refusal};
 use crate::abi::sdk::out::Out;
 use crate::abi::sdk::safe::{Instance, SafeSlot};
+
+/// Versioned sealed-field custody handshake in the existing call extensions. In a request,
+/// value `[1]` promises that the host preserves the reply's secure-connection requirement until
+/// the actual connector sends the fields. In a READY reply, `[1]` requires that connection to
+/// be secured. It does not assert that any current connection is secure.
+pub const EXT_SEALED_FIELDS: &str = "auth.sealed_fields";
+
+/// The version-one custody capability (request) or secure-connection requirement (reply).
+pub const SEALED_FIELDS_V1: &[u8] = &[1];
+
+const SEALED_FIELDS_EXTENSION: [u8; extensions::entry_len(EXT_SEALED_FIELDS, SEALED_FIELDS_V1)] =
+    extensions::entry(EXT_SEALED_FIELDS, SEALED_FIELDS_V1);
+
+/// A secure credential cannot be returned to a host that would lose its wire requirement.
+pub const SEALED_FIELDS_UNSUPPORTED: &str =
+    "auth fields: the host does not preserve sealed credential connection requirements";
 
 /// A present blob's bytes; `None` when absent.
 fn present(b: Lent<'_, Blob>) -> Option<&[u8]> {
@@ -256,6 +274,8 @@ pub struct FieldsWriter<'a> {
     spans: HostBuf<'a, FieldSpan>,
     staged: Zeroizing<Vec<u8>>,
     fields: Vec<Staged>,
+    secure: bool,
+    sealed_supported: bool,
     stray: bool,
     diags: Diags,
 }
@@ -276,6 +296,11 @@ impl<'a> FieldsWriter<'a> {
             spans: input.fields(),
             staged: Zeroizing::new(Vec::new()),
             fields: Vec::new(),
+            secure: false,
+            sealed_supported: extensions::get(
+                input.field(|i| &i.head.extensions).bytes(),
+                EXT_SEALED_FIELDS,
+            ) == Some(SEALED_FIELDS_V1),
             stray: false,
             diags: Diags::default(),
         }
@@ -302,6 +327,20 @@ impl<'a> FieldsWriter<'a> {
             value: value.len(),
             flags,
         });
+    }
+
+    /// Stage public and sealed pieces as one field without exposing its value to the plugin.
+    /// Sealed fields are always sensitive. Every piece's secure-connection requirement is kept
+    /// for the host connector; a host without version-one custody support is refused before any
+    /// field is copied to its buffers. `flags` otherwise follows [`FieldsWriter::push`].
+    pub fn push_sealed(&mut self, name: &[u8], value: Parts, flags: u32) {
+        if flags & !(FIELD_SENSITIVE | FIELD_QUERY) != 0 {
+            self.stray = true;
+            return;
+        }
+        let value = SealedWrite::new(value);
+        self.secure |= value.secure_required();
+        self.push(name, &value.buf, flags | FIELD_SENSITIVE);
     }
 
     /// How many fields are staged.
@@ -335,6 +374,9 @@ impl<'a> FieldsWriter<'a> {
     fn write(mut self, out: &mut Out<'_, FieldsOut>) -> Outcome {
         if self.stray {
             return Outcome::Fault;
+        }
+        if self.secure && !self.sealed_supported {
+            return out.fail(Refusal::refused(SEALED_FIELDS_UNSUPPORTED));
         }
         let count = self.fields.len();
         let bytes = self.staged.len();
@@ -783,7 +825,19 @@ impl<T: OutboundPlugin, L: HoldsOutbound<T>> SafeSlot for FieldsSlot<T, L> {
                 "fields waits on its exchange: it is answered on a ticket, not on the spot",
             )),
             Poll::Pending => Outcome::Pending,
-            Poll::Ready(FieldsAnswer::Ready) => writer.write(&mut out),
+            Poll::Ready(FieldsAnswer::Ready) => {
+                let secure = writer.secure;
+                let outcome = writer.write(&mut out);
+                if outcome == Outcome::Ready && secure {
+                    out.lent_blob(
+                        |o| &o.head.extensions,
+                        &SEALED_FIELDS_EXTENSION,
+                        BLOB_OCTETS,
+                        &instance.generation(),
+                    );
+                }
+                outcome
+            }
             Poll::Ready(FieldsAnswer::Refused) => out.fail(Refusal::refused(REFUSED_UNSAID)),
             Poll::Ready(FieldsAnswer::RefusedBecause(why)) => out.fail(Refusal::refused(why)),
             Poll::Ready(FieldsAnswer::Failed(why)) => out.fail(Refusal::failed(why)),

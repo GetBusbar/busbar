@@ -1250,6 +1250,7 @@ impl TestApp {
             name.to_string(),
             crate::auth::login::LoginMethod {
                 module: calls,
+                inbound_style: None,
                 has_button,
                 issuer: None,
                 login_kind,

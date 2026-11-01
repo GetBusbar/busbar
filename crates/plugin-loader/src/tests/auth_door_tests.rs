@@ -942,6 +942,7 @@ mod outbound {
                 name: b"authorization".to_vec(),
                 value: Secret::new(b"Bearer k".to_vec()),
                 sensitive: false,
+                require_secure: false,
             }]))
         );
         let other = auth_rows.serving("other", &serde_json::json!({}));

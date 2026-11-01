@@ -2103,6 +2103,7 @@ fn bearer() -> Fields {
         name: b"authorization".to_vec(),
         value: Secret::new(b"Bearer member".to_vec()),
         sensitive: true,
+        require_secure: false,
     }])
 }
 
@@ -2604,6 +2605,7 @@ impl busbar_contract::auth_calls::OutboundAuth for ByHandle {
                 name: b"authorization".to_vec(),
                 value: format!("Bearer h{handle}").into_bytes().into(),
                 sensitive: true,
+                require_secure: false,
             },
         ]))
     }
@@ -3375,4 +3377,63 @@ fn a_quiet_open_is_not_audited() {
     let p = bound_labelled(&[], &table, label);
     assert_eq!(open_with(&p, br"{}"), Outcome::Ready);
     assert!(refused_for(label).is_empty());
+}
+
+struct ProtectedAuth(bool);
+
+fn protected_fields() -> Fields {
+    let Fields::Ready(mut fields) = bearer() else {
+        unreachable!()
+    };
+    fields[0].require_secure = true;
+    Fields::Ready(fields)
+}
+
+impl OutboundAuth for ProtectedAuth {
+    fn open_outbound(&self, _: &str, _: &[u8], _: &serde_json::Value) -> Result<u64, String> {
+        Ok(1)
+    }
+    fn fields_now(&self, _: u64, _: &FieldsRequest) -> Option<Fields> {
+        self.0.then(protected_fields)
+    }
+    fn fields(&self, _: u64, _: FieldsRequest, _: u64) -> Box<dyn Fielding> {
+        Box::new(ProtectedReply)
+    }
+}
+
+struct ProtectedReply;
+impl std::future::Future for ProtectedReply {
+    type Output = Fields;
+    fn poll(
+        self: std::pin::Pin<&mut Self>,
+        _: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Fields> {
+        std::task::Poll::Ready(protected_fields())
+    }
+}
+impl Fielding for ProtectedReply {
+    fn settled(&mut self) -> Option<Fields> {
+        Some(protected_fields())
+    }
+}
+
+#[test]
+fn a_members_protected_fields_never_open_on_a_table_without_secure_custody() {
+    for now in [true, false] {
+        let table = Arc::new(Scripted {
+            framed: true,
+            auth: Some(Arc::new(ProtectedAuth(now))),
+            ..Scripted::default()
+        });
+        let dispatcher =
+            crate::dispatch::Dispatcher::new(crate::dispatch::DispatchConfig::default());
+        let p = bound_over_by(&table, dispatcher.adopter());
+        let stream = whole_request(&p, 0);
+        let mut buf = [0; 64];
+        let _ = read_reply(&p, 3, stream, &mut buf);
+        assert!(
+            table.opened.lock().unwrap().is_empty(),
+            "protected field escaped through the raw open"
+        );
+    }
 }

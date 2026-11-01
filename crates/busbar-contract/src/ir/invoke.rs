@@ -23,6 +23,7 @@ use crate::operation::OpVerb;
 use serde_json::Value;
 
 /// A CALL TO ONE NAMED TARGET. The request half of the `Invoke` operation.
+/// Owned request strings, including JSON member names and extras, are wiped when dropped.
 #[derive(Debug, Clone, PartialEq)]
 pub struct InvokeReq {
     /// THE TOOL BEING CALLED, in the caller's vocabulary — the name as PUBLISHED, which is not
@@ -38,6 +39,36 @@ pub struct InvokeReq {
     /// Unmodelled request members, kept keyed so a cross-protocol hop cannot leak a source-only
     /// key into a foreign dialect. Same discipline as chat's `extra`.
     pub extra: SourceScopedExtra,
+}
+
+impl Drop for InvokeReq {
+    fn drop(&mut self) {
+        use zeroize::Zeroize as _;
+        self.tool.zeroize();
+        wipe_request_json(&mut self.arguments);
+        for (mut source, members) in std::mem::take(&mut self.extra) {
+            source.zeroize();
+            for (mut name, mut value) in members {
+                name.zeroize();
+                wipe_request_json(&mut value);
+            }
+        }
+    }
+}
+
+fn wipe_request_json(value: &mut Value) {
+    use zeroize::Zeroize as _;
+    match value {
+        Value::String(text) => text.zeroize(),
+        Value::Array(items) => items.iter_mut().for_each(wipe_request_json),
+        Value::Object(members) => {
+            for (mut name, mut value) in std::mem::take(members) {
+                name.zeroize();
+                wipe_request_json(&mut value);
+            }
+        }
+        _ => {}
+    }
 }
 
 /// WHAT ONE TOOL CALL PRODUCED. The response half.

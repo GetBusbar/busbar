@@ -1107,11 +1107,12 @@ mod tests {
     fn output_helpers_preserve_secret_extensions_and_release_every_copy_wiped() {
         use crate::abi::mechanism::call::{OutHead, Outcome, BLOB_OCTETS, BLOB_SECRET};
         use crate::abi::sdk::{life::Leases, Out};
-        use crate::alloc_counter::{freed_unzeroed, marked_key};
-        // The allocation witness's own controls reserve IDs 1..=7 in this test binary.
-        let secret = marked_key::<32>(0);
-        let before = freed_unzeroed(0);
+        use crate::alloc_counter::InitializedPayloadProbe;
+        let secret = [0xA7; 32];
         for helper in 0..3 {
+            // SAFETY: every registered owned blob stays on this thread through lease release.
+            let probe =
+                unsafe { InitializedPayloadProbe::start().expect("open the memory observer") };
             let leases = Leases::default();
             // SAFETY: OutHead contains only integers and raw pointers, all valid when zero.
             let mut out: OutHead = unsafe { std::mem::zeroed() };
@@ -1121,6 +1122,7 @@ mod tests {
                 extensions::encode(&[("unrelated", &secret)]),
                 BLOB_OCTETS,
             );
+            let mut expected_lengths = vec![out.extensions.len];
             let request = Request {
                 capability: cap(),
                 candidate: ConditionalCandidate {
@@ -1154,6 +1156,7 @@ mod tests {
                 _ => Out::new(out).conditional_settlement_ack(&leases, &settlement),
             };
             assert_eq!(put(&mut out), Ok(()));
+            expected_lengths.push(out.extensions.len);
             let pointer = out.extensions.ptr;
             let lease = out.lease;
             assert_eq!(out.extensions.flags, BLOB_SECRET);
@@ -1182,11 +1185,44 @@ mod tests {
             assert_eq!(leases.release(lease), Outcome::Ready);
             assert_eq!(leases.release(lease), Outcome::Refused);
             drop(leases);
+            let observations = probe.finish();
+            assert!(
+                !observations.reentered,
+                "OS memory reader reentered the allocator"
+            );
+            assert_eq!(
+                observations
+                    .payloads
+                    .iter()
+                    .map(|record| record.len)
+                    .collect::<Vec<_>>(),
+                expected_lengths,
+                "observe the original secret blob and every composed copy, including temporaries"
+            );
+            for record in &observations.payloads {
+                assert!(record.freed, "secret allocation was not freed: {record:?}");
+                #[cfg(target_os = "linux")]
+                {
+                    assert_eq!(record.read_error, None, "OS memory read failed: {record:?}");
+                    assert!(
+                        record.complete_read,
+                        "OS memory read was incomplete: {record:?}"
+                    );
+                    assert_eq!(record.bytes_read, record.len);
+                    assert!(
+                        record.wiped,
+                        "original and composed secret blobs must be wiped: {record:?}"
+                    );
+                }
+                #[cfg(not(target_os = "linux"))]
+                {
+                    assert_eq!(record.read_error, Some(std::io::ErrorKind::Unsupported));
+                    assert!(!record.complete_read);
+                    assert_eq!(record.bytes_read, 0);
+                }
+            }
         }
-        assert_eq!(
-            freed_unzeroed(0),
-            before,
-            "original and composed secret blobs must be wiped before release frees them"
-        );
+        #[cfg(not(target_os = "linux"))]
+        eprintln!("Secret blobs and frees checked; memory proof requires Linux /proc/self/mem");
     }
 }

@@ -87,11 +87,15 @@ fn app(provider: &Arc<Provider>) -> Arc<busbar_kernel::state::App> {
 }
 
 fn stage(provider: &Provider) {
+    stage_at(provider, "/");
+}
+
+fn stage_at(provider: &Provider, path: &str) {
     let guests = GuestList::seal(vec![Line {
         route: Route {
             methods: METHOD_POST,
             path_form: PATH_CONTAINS,
-            path: "/".into(),
+            path: path.into(),
             fields: Vec::new(),
             rung: 0,
         },
@@ -182,4 +186,135 @@ async fn a_live_listener_reloads_new_requests_and_pins_the_old_requests_app() {
         released_app,
         "ending the connection releases the old policy App"
     );
+}
+
+#[tokio::test]
+async fn a_need_listener_uses_its_selected_policy_across_reload_without_changing_the_data_list() {
+    fn hand_in(
+        framing: &Framing,
+        listener: &listener_framed::DataFramer,
+        provider: &Provider,
+        yielded: busbar_core_connector::framer::Yielded,
+    ) -> u32 {
+        let piece = yielded
+            .pieces
+            .first()
+            .expect("fixture emitted its request ticket");
+        let slot = u32::from_le_bytes(piece.bytes[..4].try_into().unwrap());
+        let ticket_generation = u32::from_le_bytes(piece.bytes[4..8].try_into().unwrap());
+        let scope = framing.scope().unwrap();
+        let id = *provider.units.lock().unwrap().last().unwrap();
+        let (secret, generation, line) = inbound::host().unit_secret(scope.owner(), id).unwrap();
+        let unit = crate::root::loader::dispatch::auth_handle::mint_unit_ref(
+            secret,
+            generation,
+            scope.owner(),
+            line,
+            id,
+        )
+        .unwrap();
+        inbound::host()
+            .hand_in(busbar_kernel::inbound::HandIn {
+                owner: scope.owner(),
+                generation,
+                auth: listener.guests().unwrap().lines()[line as usize].auth.id,
+                unit,
+                line,
+                conn: scope.connection(),
+                stream: piece.stream,
+                framing: Some(scope.leg()),
+                head: busbar_kernel::inbound::Head {
+                    method: "POST".into(),
+                    target: format!("/tickets/{slot}/{ticket_generation}"),
+                    authority: "fixture".into(),
+                    query: None,
+                    fields: Vec::new(),
+                },
+            })
+            .unwrap()
+            .0
+    }
+
+    let _publishing = crate::root::PUBLISHING.lock().await;
+    let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
+    assert!(inbound::install(&dispatcher));
+    let plugin =
+        crate::root::test_plugins::linked_transport(scoped_mux::door, bind_on(&dispatcher));
+    let door: Arc<dyn FramerDoor> =
+        Arc::new(Dispatched::open_on(plugin, &TransportSettings::default(), dispatcher).unwrap());
+    let resolver: FramerFor =
+        Arc::new(move |scheme| (scheme == DATA_SCHEME).then(|| Arc::clone(&door)));
+    let data = listener_framed::data_framer(Arc::clone(&resolver)).unwrap();
+    let selected = listener_framed::listener_framer(
+        resolver,
+        DATA_SCHEME,
+        Arc::new(|published| {
+            let mut listener = published.clone();
+            let mut line = listener.guests.lines()[0].clone();
+            line.route.path = "/tickets/".into();
+            line.claimant = Claimant::Need("inbound-fixture".into(), 0);
+            listener.guests = GuestList::seal(vec![line]).unwrap();
+            Ok(listener)
+        }),
+    )
+    .unwrap();
+    let before = provider("need-before");
+    let old_app = app(&before);
+    let old = Arc::downgrade(&old_app);
+    stage_at(&before, "/data-only/");
+    inbound::publish(&old_app).unwrap();
+    selected.validate_policy().unwrap();
+    drop(old_app);
+    let (mut framing, _) = Framing::begin_lent(
+        Arc::clone(selected.door()),
+        SIDE_ACCEPT,
+        "",
+        &Established {
+            scheme: Established::scheme_of(false),
+            ..Established::default()
+        },
+        selected.guests(),
+    )
+    .unwrap();
+    let yielded = framing.ingest(&[5], false).unwrap();
+    assert_eq!(
+        hand_in(&framing, &selected, &before, yielded),
+        busbar_contract::abi::host::service::FLOW_CONTINUE
+    );
+    let first = identities(&before);
+    assert_eq!(first, vec![Some(before.name.into())]);
+    let after = provider("need-after");
+    stage_at(&after, "/data-only/");
+    let next = app(&after);
+    for _ in 0..3 {
+        inbound::publish(&next).unwrap();
+    }
+    let yielded = framing.ingest(&[7], false).unwrap();
+    assert_eq!(
+        hand_in(&framing, &selected, &after, yielded),
+        busbar_contract::abi::host::service::FLOW_CONTINUE
+    );
+    assert_eq!(identities(&after), vec![Some(after.name.into())]);
+    assert_eq!(identities(&before), first);
+    assert!(old.upgrade().is_some());
+    let (mut ordinary, _) = Framing::begin_lent(
+        Arc::clone(data.door()),
+        SIDE_ACCEPT,
+        "",
+        &Established {
+            scheme: Established::scheme_of(false),
+            ..Established::default()
+        },
+        data.guests(),
+    )
+    .unwrap();
+    let yielded = ordinary.ingest(&[11], false).unwrap();
+    assert_eq!(
+        hand_in(&ordinary, &data, &after, yielded),
+        busbar_contract::abi::host::service::FLOW_STOP,
+        "the data listener does not acquire the other listener's route"
+    );
+    ordinary.finish(CLOSE_NORMAL);
+    framing.finish(CLOSE_NORMAL);
+    assert!(old.upgrade().is_none());
 }

@@ -336,6 +336,11 @@ struct Claim {
 // mount seam without naming a core type; core re-exports it here so its own call sites are unchanged.
 
 impl PlaneDispatch {
+    /// Admission declared by one physical claimant's plane, independent of other planes' paths.
+    pub fn admission_of(&self, key: &str) -> Option<&PlaneAdmission> {
+        self.admissions.get(key)
+    }
+
     /// Declare the admission facts for `plane`. Independent of [`Self::mount`] so the two can be set
     /// in either order, but WITHOUT a mount this is inert: [`Self::admission_for`] resolves a path
     /// through the mount first, so admission facts alone never claim a path.

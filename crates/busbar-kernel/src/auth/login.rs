@@ -40,6 +40,7 @@ use crate::state::{App, AppHandle};
 /// secret for it and runs no hop.
 pub(crate) struct LoginMethod {
     pub(crate) module: Arc<dyn AuthCalls>,
+    pub(crate) inbound_style: Option<busbar_contract::auth_calls::InboundStyle>,
     /// `true` ⇒ this method has a `browser_login` block and renders a button (and accepts `begin`).
     pub(crate) has_button: bool,
     /// The OIDC issuer from the method's opaque settings, used only to infer a button icon/label.
@@ -54,6 +55,65 @@ pub(crate) struct LoginMethod {
 /// method/module name. Built on boot AND reload in `build_app_from_config`.
 pub(crate) struct LoginMethods {
     pub(crate) methods: IndexMap<String, LoginMethod>,
+}
+
+/// A configured provider belonging to one completed application candidate. Listener tables keep
+/// these calls beside that App, so a later reload cannot replace the verifier or its settings.
+pub struct InboundAuthProvider {
+    /// The operator's identity-provider name, used for identity and grant lookup.
+    pub provider: String,
+    /// The backing plugin's canonical declared name.
+    pub module: String,
+    /// The instance already opened with this candidate's settings and secret resolver.
+    pub calls: Arc<dyn AuthCalls>,
+    /// The verifier's declared inbound point set.
+    pub points: busbar_contract::abi::auth::AuthPoints,
+}
+
+impl App {
+    /// Resolve a declared inbound default only after the caller has applied operator-chain
+    /// precedence. A style names an ordinary verifier's declared module key or Statement alias,
+    /// never a provider name or an outbound style. No provider is opened by this lookup.
+    pub fn inbound_default_auth(&self, style: &str) -> Result<Option<InboundAuthProvider>, String> {
+        self.login_methods.inbound_default_auth(style)
+    }
+}
+
+impl LoginMethods {
+    fn inbound_default_auth(&self, style: &str) -> Result<Option<InboundAuthProvider>, String> {
+        if style.is_empty() {
+            return Ok(None);
+        }
+        let mut matching = self.methods.iter().filter_map(|(provider, method)| {
+            let declared = method.inbound_style.as_ref()?;
+            declared
+                .names
+                .iter()
+                .any(|name| name == style)
+                .then_some((provider, method, declared))
+        });
+        let Some((provider, method, declared)) = matching.next() else {
+            return Err(format!(
+                "inbound auth style '{style}' has no configured ordinary identity provider"
+            ));
+        };
+        if let Some((other, _, _)) = matching.next() {
+            return Err(format!(
+                "inbound auth style '{style}' is ambiguous between identity providers '{provider}' and '{other}'"
+            ));
+        }
+        if crate::config::is_builtin_identity_module(provider) {
+            return Err(format!(
+                "inbound auth style '{style}' selects identity provider '{provider}', whose name is reserved for a configured host auth position"
+            ));
+        }
+        Ok(Some(InboundAuthProvider {
+            provider: provider.clone(),
+            module: declared.module.clone(),
+            calls: Arc::clone(&method.module),
+            points: declared.points,
+        }))
+    }
 }
 
 // ── the login budget (the anonymous-flood class) ─────────────────────────────────────────────────
@@ -309,6 +369,18 @@ impl LoginMethods {
             // every string in it as it drops.
             drop(resolved);
             let calls = opened.map_err(&refused)?;
+            let inbound_style = axis.inbound_style(&mc.module);
+            if inbound_style.as_ref().is_some_and(|style| {
+                style.points != calls.inbound_points()
+                    || calls.facts()
+                        & (busbar_contract::abi::auth::FACT_OPERATOR
+                            | busbar_contract::abi::auth::FACT_READS_CREDENTIALS)
+                        != 0
+            }) {
+                return Err(refused(
+                    "the opened verifier disagrees with its inbound style".into(),
+                ));
+            }
             // The plugin's login kind, as its tail states it (read without a `begin_login`).
             // A plugin whose tail states no login serves only the headless method; a
             // `browser_login` button needs one that logs in.
@@ -332,6 +404,7 @@ impl LoginMethods {
                 name.clone(),
                 LoginMethod {
                     module: calls,
+                    inbound_style,
                     has_button,
                     issuer,
                     login_kind,

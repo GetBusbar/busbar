@@ -111,6 +111,10 @@ pub trait PluginHttpDispatch: Send + Sync {
 pub struct RouteDecl {
     /// The declaring plugin's config name (the namespace root for confinement + the collision owner).
     pub owner: String,
+    /// The configured instance whose listener settings govern this route, independent of namespace.
+    pub source_instance: String,
+    /// An opened dispatcher exists; false marks a declaration awaiting a restart to open it.
+    pub dispatch_available: bool,
     /// The declaring plugin's kind (drives the confinement rule).
     pub kind: RouteKind,
     /// The declared route.
@@ -124,10 +128,36 @@ pub struct RouteDecl {
 }
 
 /// A registered, collision-checked, confinement-validated route entry.
+#[derive(Clone)]
 struct Registered {
+    kind: RouteKind,
     auth: RouteAuth,
     owner: String,
+    source_instance: String,
+    dispatch_available: bool,
+    persistent: bool,
     dispatch: Arc<dyn PluginHttpDispatch>,
+}
+
+/// A read-only route policy of the completed application candidate.
+#[derive(Debug, Clone, Copy)]
+pub struct RouteDescriptor<'a> {
+    /// The declaring instance.
+    pub owner: &'a str,
+    /// The exact configuration instance for placement (the boot instance for retained routes).
+    pub source_instance: &'a str,
+    /// Whether this candidate has an opened dispatcher for the declaration.
+    pub dispatch_available: bool,
+    /// This exact route retains its boot dispatcher after configuration removal.
+    pub persistent: bool,
+    /// The declaring kind.
+    pub kind: RouteKind,
+    /// The exact registered path.
+    pub path: &'a str,
+    /// The registered method.
+    pub method: RouteMethod,
+    /// The declared authentication policy.
+    pub auth: RouteAuth,
 }
 
 /// The live plugin route table: the {path, method} → owning-plugin index the mounted handler and the
@@ -147,6 +177,52 @@ pub struct PluginRouteTable {
 }
 
 impl PluginRouteTable {
+    /// Project boot mounts to one physical listener; dispatch still reads the pinned App table.
+    pub fn for_listener(&self, guests: &crate::guest::GuestList) -> Self {
+        let mut by_path = HashMap::new();
+        for (path, entries) in &self.by_path {
+            let entries: Vec<_> = entries.iter().filter(|(method, registered)| {
+                guests.lines().iter().any(|line| {
+                    matches!(&line.claimant, crate::guest::Claimant::Need(owner, _) if owner == &registered.source_instance)
+                        && line.route.path == *path
+                        && line.route.methods & busbar_contract::abi::transport::route::method_bit(method.as_str()) != 0
+                        && registered.auth != RouteAuth::Admin
+                })
+            }).cloned().collect();
+            if !entries.is_empty() {
+                by_path.insert(path.clone(), entries);
+            }
+        }
+        Self {
+            by_path,
+            persistent: self.persistent.clone(),
+        }
+    }
+
+    /// The actual candidate's route ownership and policy, without its dispatch handles.
+    pub fn descriptors(&self) -> Vec<RouteDescriptor<'_>> {
+        let mut routes: Vec<_> = self
+            .by_path
+            .iter()
+            .flat_map(|(path, entries)| {
+                entries
+                    .iter()
+                    .map(move |(method, registered)| RouteDescriptor {
+                        path,
+                        method: *method,
+                        auth: registered.auth,
+                        owner: &registered.owner,
+                        source_instance: &registered.source_instance,
+                        dispatch_available: registered.dispatch_available,
+                        persistent: registered.persistent,
+                        kind: registered.kind,
+                    })
+            })
+            .collect();
+        routes.sort_by_key(|route| (route.path, route.method.as_str()));
+        routes
+    }
+
     /// The EMPTY table — used by test harnesses that build an `App` with no exporters. Production
     /// builds the table from the built-in exporters (`crate::export::route_decls`), so this is
     /// test-only now.
@@ -284,8 +360,12 @@ pub fn build_route_table(decls: Vec<RouteDecl>) -> Result<PluginRouteTable, Stri
         entries.push((
             decl.route.method,
             Registered {
+                kind: decl.kind,
                 auth: decl.route.auth,
                 owner: decl.owner,
+                source_instance: decl.source_instance,
+                dispatch_available: decl.dispatch_available,
+                persistent: decl.persistent,
                 dispatch: decl.dispatch,
             },
         ));

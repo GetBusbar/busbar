@@ -420,6 +420,7 @@ impl HostServices for NotInstalled {
 /// kernel serves it through, the snapshot its `open` published (its claims and admin routes), and
 /// what its units are served by: its tail's facts, the pools its section states, its money steps
 /// and its egress.
+#[derive(Clone)]
 pub struct ServedPlane {
     /// The instance's label.
     pub instance: String,
@@ -828,7 +829,7 @@ impl std::fmt::Debug for ServedPlane {
 }
 
 /// EVERY DOOR PLANE THIS PROCESS SERVES, composed once after the first app is built.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct Served {
     /// In the order the planes were bound.
     pub planes: Vec<ServedPlane>,
@@ -970,11 +971,41 @@ pub fn compose_served(
     host: Option<busbar_kernel::plane_driver::GenerationHost>,
     tables: &ServeTables,
 ) -> Result<Served, String> {
+    compose_served_checked(
+        gov,
+        doors,
+        dispatcher,
+        late,
+        sections,
+        public_url,
+        reach,
+        host,
+        tables,
+        &|_| datagram_binds(doors, sections),
+    )
+}
+
+/// Compose the complete boot candidate, checking its actual routes before a claim door binds.
+#[allow(clippy::too_many_arguments)]
+pub fn compose_served_checked(
+    gov: Option<Arc<busbar_kernel::governance::GovState>>,
+    doors: &[(String, DoorPlane)],
+    dispatcher: &Arc<Dispatcher>,
+    late: &LateServices,
+    sections: &BTreeMap<&'static str, serde_yaml::Value>,
+    public_url: Option<&str>,
+    reach: &crate::root::door_steps::DoorReach<'_>,
+    host: Option<busbar_kernel::plane_driver::GenerationHost>,
+    tables: &ServeTables,
+    check: &dyn Fn(&Served) -> Result<Vec<crate::root::loader::boot::InboundBind>, String>,
+) -> Result<Served, String> {
     let Some(gov) = gov else {
         if !doors.is_empty() {
             tracing::warn!("door planes stay unopened: no governance book to settle on");
         }
-        return Ok(Served::default());
+        let served = Served::default();
+        check(&served)?;
+        return Ok(served);
     };
     let post = Arc::new(crate::root::plane_node::NodeEndPost::new(
         crate::root::plane_node::node(),
@@ -1007,11 +1038,11 @@ pub fn compose_served(
         tables,
     )?;
     served.post = Some(post);
+    let binds = check(&served)?;
     // THE CLAIM DOORS (row 132, ARCHITECT seam ruling (d)): each served plane's inbound need whose
     // settings block states a `listen` binds there, and the ones a datagram framer answers become
     // claim doors (`serve_datagram::ClaimDoors::bind`). The connector is read only when something
     // binds: by now boot has installed it.
-    let binds = datagram_binds(doors, sections)?;
     if !binds.is_empty() {
         served.claim_doors = serve_datagram::ClaimDoors::bind(&binds, |t| {
             crate::root::connector::the().framer_for(t)
@@ -2264,7 +2295,7 @@ pub const NEST_UNREAD: &str = "the nested unit's reply could not be read";
 /// parent's principal and generation, its hold cell accruing against the parent's, its whole reply
 /// buffered and handed back. The kernel never learns what the child is.
 pub struct DoorNests {
-    routes: std::sync::Weak<DataRoutes>,
+    routes: Vec<std::sync::Weak<DataRoutes>>,
     runtime: tokio::runtime::Handle,
 }
 
@@ -2274,9 +2305,14 @@ impl busbar_kernel::host_services::NestRoute for DoorNests {
         nest: busbar_kernel::host_services::Nest,
         done: busbar_kernel::host_services::NestDone,
     ) {
-        let Some(routes) = self.routes.upgrade() else {
+        let Some((routes, bound)) = self
+            .routes
+            .iter()
+            .filter_map(std::sync::Weak::upgrade)
+            .find_map(|routes| routes.parent_of(&nest).map(|bound| (routes, bound)))
+        else {
             done(busbar_kernel::host_services::NestReply::Unserved(
-                NEST_UNSERVED,
+                NEST_PARENT_GONE,
             ));
             return;
         };
@@ -2286,12 +2322,6 @@ impl busbar_kernel::host_services::NestRoute for DoorNests {
         // runs as a child unit whose parent has exited (BUSBAR-1.6.0.md, `work.*` row note). The
         // child holds the parent's frame and hold cell for its whole run; whether that cell is still
         // live is read at the child's accrual and at its exit, never here.
-        let Some(bound) = routes.parent_of(&nest) else {
-            done(busbar_kernel::host_services::NestReply::Unserved(
-                NEST_PARENT_GONE,
-            ));
-            return;
-        };
         drop(
             self.runtime
                 .spawn(async move { done(routes.nested(nest, bound).await) }),
@@ -2360,9 +2390,6 @@ pub fn data_mounts(
     upgrades: &[&str],
     offers: &[TransportOffer],
 ) -> Result<DataMounts, String> {
-    if served.planes.iter().all(|p| p.snapshot.claims.is_empty()) {
-        return Ok((Vec::new(), Vec::new(), Vec::new(), None));
-    }
     door_mounts(
         served,
         || crate::root::kernel::ROOT_CARD.pin(),
@@ -2376,6 +2403,40 @@ pub fn data_mounts(
         busbar_kernel::plane_routes::pair_door_refusals(&m.routes, &m.sessions, &m.refusals)?;
         Ok((m.routes, m.sessions, m.refusals, m.refuse_by_path))
     })
+}
+
+/// Build boot's routes and validate their physical listener policies against its completed App.
+#[allow(clippy::too_many_arguments)]
+pub fn data_mounts_with_listeners(
+    served: Served,
+    app: &busbar_kernel::state::App,
+    plan: &ListenerPlan,
+    at: &str,
+    data_chain: &[ChainAuth],
+    core: &[(String, RouteMethod, RouteAuth)],
+    upgrades: &[&str],
+    offers: &[TransportOffer],
+) -> Result<DataMounts, String> {
+    let mounts = door_mounts_planned(
+        served,
+        || crate::root::kernel::ROOT_CARD.pin(),
+        data_chain,
+        core,
+        upgrades,
+        offers,
+        Some((plan, app, at)),
+    )?;
+    busbar_kernel::plane_routes::pair_door_refusals(
+        &mounts.routes,
+        &mounts.sessions,
+        &mounts.refusals,
+    )?;
+    Ok((
+        mounts.routes,
+        mounts.sessions,
+        mounts.refusals,
+        mounts.refuse_by_path,
+    ))
 }
 
 /// ONE DATA REQUEST on a door plane's claim, as its route handed it over: the credentials the auth
@@ -2424,6 +2485,811 @@ fn line_auth(flags: u32, data_chain: &[ChainAuth]) -> busbar_kernel::guest::Line
 /// ONE DATA-CHAIN AUTH as a guest-list line holds it: its provider name and the points its
 /// instance declares it is called at (THE DESIGN §6, "Auth points and guest lists").
 pub type ChainAuth = (String, busbar_contract::abi::auth::AuthPoints);
+
+#[cfg(test)]
+#[path = "tests/listener_plan.rs"]
+mod listener_plan_tests;
+
+fn listener_method_bits(method: RouteMethod) -> u32 {
+    busbar_contract::abi::transport::route::method_bit(method.as_str())
+        | if method == RouteMethod::Get {
+            busbar_contract::abi::transport::route::METHOD_HEAD
+        } else {
+            0
+        }
+}
+
+/// The process's physical listeners and its boot-mounted plane routes. Application candidates
+/// supply their own plugin routes, auth instances and limits when each list is sealed.
+#[derive(Debug)]
+pub struct ListenerPlan {
+    initial: crate::root::boot::ListenerNeeds,
+    planes: std::sync::OnceLock<Vec<ListenerPlaneLine>>,
+    plane_sections: std::sync::OnceLock<std::collections::HashMap<String, (&'static str, bool)>>,
+    plane_keys: std::sync::OnceLock<std::collections::HashMap<String, String>>,
+    offers: Vec<TransportOffer>,
+    framers: std::collections::HashMap<String, (u64, bool)>,
+    refusals: Mutex<std::collections::HashMap<String, Vec<PlaneRefusalSpec>>>,
+    nests: Mutex<Vec<std::sync::Weak<DataRoutes>>>,
+    mounted: std::sync::OnceLock<Vec<(String, busbar_kernel::guest::GuestList)>>,
+    plugin_mounts: std::sync::OnceLock<Vec<(String, RouteMethod, bool)>>,
+}
+
+#[derive(Debug)]
+struct ListenerPlaneLine {
+    line: busbar_kernel::guest::Line,
+    transport: String,
+    root_only: bool,
+}
+
+impl ListenerPlan {
+    /// Freeze the physical binds selected at boot.
+    pub fn new(
+        initial: crate::root::boot::ListenerNeeds,
+        offers: Vec<TransportOffer>,
+        framer_for: &FramerFor,
+    ) -> Self {
+        let framers = offers
+            .iter()
+            .filter_map(|(scheme, _)| {
+                let door = framer_for(scheme)?;
+                let facts = door.facts();
+                if facts.role != busbar_contract::abi::transport::ROLE_FRAMER || !door.accepts() {
+                    return None;
+                }
+                Some((
+                    (*scheme).to_string(),
+                    (door.instance().filter(|id| *id != 0)?, facts.datagram),
+                ))
+            })
+            .collect();
+        Self {
+            initial,
+            planes: std::sync::OnceLock::new(),
+            plane_sections: std::sync::OnceLock::new(),
+            plane_keys: std::sync::OnceLock::new(),
+            offers,
+            framers,
+            refusals: Mutex::default(),
+            nests: Mutex::default(),
+            mounted: std::sync::OnceLock::new(),
+            plugin_mounts: std::sync::OnceLock::new(),
+        }
+    }
+
+    /// The listeners to bind. Root admin remains on its existing separate router.
+    pub fn binds(&self) -> &[crate::root::loader::boot::InboundBind] {
+        &self.initial.binds
+    }
+
+    /// Record each boot router's refusal ownership before accepting requests.
+    pub fn hold_refusals(&self, at: &str, refusals: Vec<PlaneRefusalSpec>) {
+        self.refusals
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(at.to_string(), refusals);
+    }
+
+    /// Aliases served by one datagram framer share its already-bound claim door.
+    pub fn share_claim_doors(&self, served: &mut Served) {
+        for need in &self.initial.needs {
+            if !self
+                .framers
+                .get(&need.transport)
+                .is_some_and(|(_, datagram)| *datagram)
+            {
+                continue;
+            }
+            if let Some(bind) = self.initial.binds.iter().find(|bind| bind.at == need.at) {
+                if let Some(door) = served.claim_doors.get(&bind.transport) {
+                    served.claim_doors.insert(&need.transport, door);
+                }
+            }
+        }
+    }
+
+    /// The completed candidate's route and admission partition for one physical listener.
+    pub fn guests(
+        &self,
+        app: &busbar_kernel::state::App,
+        at: &str,
+    ) -> Result<busbar_kernel::guest::GuestList, String> {
+        self.lists(app)?
+            .into_iter()
+            .find(|(name, _)| name == at)
+            .map(|(_, guests)| guests)
+            .ok_or_else(|| format!("listener {at} has no guest list"))
+    }
+
+    /// Stream binds share the existing DataFramer path; plane datagrams keep their claim doors.
+    pub fn stream_binds(&self) -> impl Iterator<Item = &crate::root::loader::boot::InboundBind> {
+        self.initial.binds.iter().filter(|bind| {
+            self.framers
+                .get(&bind.transport)
+                .is_some_and(|(_, datagram)| !datagram)
+        })
+    }
+
+    /// Capture boot's route shapes, then judge the completed boot App before any listener serves.
+    pub fn mount_planes(
+        &self,
+        served: &Served,
+        app: &busbar_kernel::state::App,
+        upgrades: &[&str],
+    ) -> Result<(), String> {
+        use busbar_contract::abi::transport::route::PATH_EXACT;
+        use busbar_kernel::guest::{Claimant, Line, LineAuth, Route};
+        let cfg = self.config(app)?;
+        let chain: Vec<_> = cfg
+            .data_chain
+            .iter()
+            .map(|name| (name.clone(), app.auth.position_points(name)))
+            .collect();
+        let mut lines = Vec::new();
+        for plane in &served.planes {
+            for (rung, claim) in plane.snapshot.claims.iter().enumerate() {
+                if !routed(claim) || lines::carrier() == Some(claim.carrier.as_str()) {
+                    continue;
+                }
+                let rung = u32::try_from(rung).map_err(|_| "plane claim index does not fit u32")?;
+                lines.push(ListenerPlaneLine {
+                    line: claim_line(&plane.instance, rung, claim, &chain, upgrades, &self.offers)?
+                        .0,
+                    transport: claim.carrier.clone(),
+                    root_only: false,
+                });
+            }
+            for (rung, route) in plane
+                .snapshot
+                .admin_routes
+                .iter()
+                .enumerate()
+                .filter(|(_, route)| route.flags & busbar_contract::abi::plane::ROUTE_PUBLIC != 0)
+            {
+                let method = METHODS
+                    .into_iter()
+                    .find(|method| method.as_str().eq_ignore_ascii_case(&route.verb))
+                    .ok_or_else(|| {
+                        format!(
+                            "{}: unsupported public route method {}",
+                            plane.instance, route.verb
+                        )
+                    })?;
+                lines.push(ListenerPlaneLine {
+                    line: Line {
+                        route: Route {
+                            methods: listener_method_bits(method),
+                            path_form: PATH_EXACT,
+                            path: route.target.clone(),
+                            fields: Vec::new(),
+                            rung: u32::try_from(plane.snapshot.claims.len() + rung)
+                                .map_err(|_| "plane route index does not fit u32")?,
+                        },
+                        claimant: Claimant::Plane(plane.instance.clone()),
+                        dialect: 0,
+                        auth: LineAuth::None,
+                        upgrade: None,
+                        offered: crate::root::doors::offers_unstated(),
+                    },
+                    transport: crate::root::listener::framed::DATA_SCHEME.into(),
+                    root_only: true,
+                });
+            }
+        }
+        self.plane_keys
+            .set(
+                served
+                    .planes
+                    .iter()
+                    .map(|plane| (plane.instance.clone(), plane.live.plugin.name().to_string()))
+                    .collect(),
+            )
+            .map_err(|_| "plane listener keys were already mounted")?;
+        self.plane_sections
+            .set(
+                served
+                    .planes
+                    .iter()
+                    .map(|plane| {
+                        (
+                            plane.instance.clone(),
+                            (
+                                plane.live.served_facts.section,
+                                plane.live.served_facts.fallback,
+                            ),
+                        )
+                    })
+                    .collect(),
+            )
+            .map_err(|_| "plane listener sections were already mounted")?;
+        self.planes
+            .set(lines)
+            .map_err(|_| "plane listener routes were already mounted")?;
+        self.check(app)?;
+        self.freeze_mounts(app)
+    }
+
+    fn freeze_mounts(&self, app: &busbar_kernel::state::App) -> Result<(), String> {
+        self.mounted
+            .set(self.lists(app)?)
+            .map_err(|_| "listener mounts were already frozen")?;
+        self.plugin_mounts
+            .set(
+                app.plugin_routes
+                    .descriptors()
+                    .into_iter()
+                    .map(|route| {
+                        (
+                            route.path.to_string(),
+                            route.method,
+                            route.auth == RouteAuth::Admin,
+                        )
+                    })
+                    .collect(),
+            )
+            .map_err(|_| "plugin mounts were already frozen")?;
+        Ok(())
+    }
+
+    /// The current candidate's root data list, already checked by RootRules before publication.
+    pub fn data_guests(
+        &self,
+        app: &busbar_kernel::state::App,
+    ) -> Result<busbar_kernel::guest::GuestList, String> {
+        self.lists(app)?
+            .into_iter()
+            .find(|(at, _)| at == "listen")
+            .map(|(_, guests)| guests)
+            .ok_or_else(|| "the root data listener is unavailable".into())
+    }
+
+    fn config<'a>(
+        &self,
+        app: &'a busbar_kernel::state::App,
+    ) -> Result<&'a crate::root::door_steps::DoorConfig, String> {
+        app.config_projection
+            .as_ref()
+            .and_then(|c| c.downcast_ref())
+            .ok_or_else(|| "listener candidate has no root configuration projection".into())
+    }
+
+    fn needs(
+        &self,
+        app: &busbar_kernel::state::App,
+    ) -> Result<crate::root::boot::ListenerNeeds, String> {
+        let cfg = self.config(app)?;
+        crate::root::boot::candidate_listener_needs(app, &cfg.sections, cfg.root_binds.clone()?)
+            // Non-loader PluginRows are used by standalone kernel test environments. Their
+            // explicitly supplied projection remains the source of their synthetic declarations.
+            .unwrap_or_else(|| cfg.listeners.clone())
+    }
+
+    /// Validate the completed application before any persist or swap.
+    pub fn check(&self, app: &busbar_kernel::state::App) -> Result<(), String> {
+        let lists = self.lists(app)?;
+        self.check_mounts(app, &lists)?;
+        for (_, guests) in lists {
+            self.auths(app, &guests)?;
+        }
+        Ok(())
+    }
+
+    fn check_mounts(
+        &self,
+        app: &busbar_kernel::state::App,
+        lists: &[(String, busbar_kernel::guest::GuestList)],
+    ) -> Result<(), String> {
+        use busbar_kernel::guest::{Claimant, Line, Matched};
+        let same_owner = |a: &Line, b: &Line| match (&a.claimant, &b.claimant) {
+            // Plugin mounts resolve their dispatcher from the admitted App. A config rename
+            // can therefore keep a path on the same physical listener without a stale handler.
+            (Claimant::Need(..), Claimant::Need(..)) => true,
+            _ => a.claimant == b.claimant && a.route.rung == b.route.rung,
+        };
+        for route in app.plugin_routes.descriptors() {
+            if !route.dispatch_available
+                && self
+                    .plugin_mounts
+                    .get()
+                    .is_none_or(|mounted| mounted.iter().any(|(path, _, _)| path == route.path))
+            {
+                return Err(format!("{}: the candidate has no opened SERVE dispatcher for this mounted route; restart required", route.path));
+            }
+        }
+        if let Some(mounted) = self.plugin_mounts.get() {
+            for route in app.plugin_routes.descriptors() {
+                if mounted.iter().any(|(path, _, _)| path == route.path)
+                    && !mounted.iter().any(|(path, method, admin)| {
+                        path == route.path
+                            && *method == route.method
+                            && *admin == (route.auth == RouteAuth::Admin)
+                    })
+                {
+                    return Err(format!("{}: changing a mounted plugin method or physical admin placement requires a restart", route.path));
+                }
+            }
+        }
+        let Some(mounted) = self.mounted.get() else {
+            return Ok(());
+        };
+        for (at, guests) in lists {
+            for line in guests.lines() {
+                let same_route = |old: &Line| {
+                    same_owner(old, line)
+                        && old.route.path == line.route.path
+                        && old.route.path_form == line.route.path_form
+                        && old.route.methods & line.route.methods != 0
+                };
+                let prior: Vec<_> = mounted
+                    .iter()
+                    .filter(|(_, old)| old.lines().iter().any(same_route))
+                    .collect();
+                if !prior.is_empty() && !prior.iter().any(|(old_at, _)| old_at == at) {
+                    return Err(format!(
+                        "{}: moving a mounted route to listener {at} requires a restart",
+                        line.route.path
+                    ));
+                }
+                // A new exact plugin path can otherwise fall through a boot-static plane's
+                // wildcard handler, even after that plane was removed from candidate admission.
+                if matches!(line.claimant, Claimant::Need(..)) {
+                    if let Some((_, old)) = mounted.iter().find(|(old_at, _)| old_at == at) {
+                        for method in METHODS {
+                            if line.route.methods & listener_method_bits(method) == 0 {
+                                continue;
+                            }
+                            if let Matched::Line(previous) =
+                                old.matched(method.as_str(), &line.route.path, &[])
+                            {
+                                if !same_owner(previous, line) {
+                                    return Err(format!("{}: changing a boot-mounted route owner on listener {at} requires a restart", line.route.path));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn auths(
+        &self,
+        app: &busbar_kernel::state::App,
+        guests: &busbar_kernel::guest::GuestList,
+    ) -> Result<
+        std::collections::HashMap<String, Arc<dyn busbar_contract::auth_calls::AuthCalls>>,
+        String,
+    > {
+        let declared = self.needs(app)?;
+        let mut auths = std::collections::HashMap::new();
+        for name in guests
+            .lines()
+            .iter()
+            .filter_map(|line| match &line.auth {
+                busbar_kernel::guest::LineAuth::Chain(names, _) => Some(names),
+                busbar_kernel::guest::LineAuth::None => None,
+            })
+            .flatten()
+        {
+            let calls = app
+                .auth
+                .position_calls(name)
+                .or_else(|| {
+                    declared
+                        .needs
+                        .iter()
+                        .chain(&self.initial.needs)
+                        .filter_map(|need| app.inbound_default_auth(&need.auth).ok().flatten())
+                        .find(|default| default.provider == *name)
+                        .map(|default| default.calls)
+                })
+                .ok_or_else(|| format!("listener candidate has no opened auth provider {name}"))?;
+            auths.insert(name.clone(), calls);
+        }
+        Ok(auths)
+    }
+
+    fn lists(
+        &self,
+        app: &busbar_kernel::state::App,
+    ) -> Result<Vec<(String, busbar_kernel::guest::GuestList)>, String> {
+        use crate::root::loader::boot::BindOwner;
+        use busbar_contract::abi::mechanism::KindCode;
+        use busbar_contract::abi::transport::route::{PATH_EXACT, PATH_PATTERN};
+        use busbar_kernel::guest::{Claimant, GuestList, Line, LineAuth, Route};
+        let cfg = self.config(app)?;
+        let next = self.needs(app)?;
+        let physical_bind = |at: &str| {
+            let proposed = next.binds.iter().find(|bind| bind.at == at);
+            self.initial
+                .binds
+                .iter()
+                .find(|old| {
+                    proposed.is_some_and(|bind| {
+                        old.listen == bind.listen
+                            && old.tls == bind.tls
+                            && old.max_conns == bind.max_conns
+                            && (old.at == bind.at || bind.listen.port() != 0)
+                    })
+                })
+                .or_else(|| {
+                    self.initial
+                        .binds
+                        .iter()
+                        .find(|old| old.at == at && proposed.is_none())
+                })
+        };
+        for bind in &next.binds {
+            if physical_bind(&bind.at).is_none() {
+                return Err(format!(
+                    "{}: changing or adding a physical listener requires a restart",
+                    bind.at
+                ));
+            }
+        }
+        let mut datagram_claims = std::collections::HashMap::new();
+        for need in &next.needs {
+            if need.kind == KindCode::Plane && self.planes.get().is_some_and(|lines|
+                !lines.iter().any(|route| matches!(&route.line.claimant, Claimant::Plane(owner) if owner == &need.instance)
+                    && !route.root_only && (route.transport == need.transport || route.line.upgrade.is_some()))) {
+                return Err(format!("{}: inbound need {} has no served plane claim", need.instance, need.need));
+            }
+            let Some((owner, datagram)) = self.framers.get(&need.transport) else {
+                return Err(format!(
+                    "{}: inbound need {} has no accepting framer for {}",
+                    need.instance, need.need, need.transport
+                ));
+            };
+            if *datagram {
+                if need.kind != KindCode::Plane || need.at == "listen" {
+                    return Err(format!(
+                        "{}: datagram need {} has no physical plane claim door",
+                        need.instance, need.need
+                    ));
+                }
+                let bind = physical_bind(&need.at)
+                    .ok_or_else(|| format!("{}: unknown datagram listener", need.at))?;
+                if let Some(previous) = datagram_claims.insert(&need.transport, &bind.at) {
+                    if previous != &bind.at {
+                        return Err(format!(
+                            "{}: a second claim door for {}",
+                            need.at, need.transport
+                        ));
+                    }
+                }
+            }
+            {
+                let bind = physical_bind(&need.at)
+                    .ok_or_else(|| format!("{}: unknown physical listener", need.at))?;
+                let scheme = if bind.owner == BindOwner::Root {
+                    crate::root::listener::framed::DATA_SCHEME
+                } else {
+                    &bind.transport
+                };
+                if bind.at == "admin_listen"
+                    || self
+                        .framers
+                        .get(scheme)
+                        .is_none_or(|(physical, _)| physical != owner)
+                {
+                    return Err(format!(
+                        "{}: inbound need {} has incompatible physical framing at {}",
+                        need.instance, need.need, bind.at
+                    ));
+                }
+            }
+            if matches!(need.kind, KindCode::Hook | KindCode::Export)
+                && !app.plugin_routes.descriptors().iter().any(|route| {
+                    route.source_instance == need.instance
+                        && (!route.persistent || self.initial.needs.contains(need))
+                        && route.auth != RouteAuth::Admin
+                        && match need.kind {
+                            KindCode::Hook => {
+                                route.kind == busbar_kernel::plugin_routes::RouteKind::Hook
+                            }
+                            _ => route.kind == busbar_kernel::plugin_routes::RouteKind::Export,
+                        }
+                })
+            {
+                return Err(format!(
+                    "{}: inbound need {} has no data SERVE route",
+                    need.instance, need.need
+                ));
+            }
+        }
+        let chain: Vec<_> = cfg
+            .data_chain
+            .iter()
+            .map(|name| (name.clone(), app.auth.position_points(name)))
+            .collect();
+        let default_auth =
+            |mut line: Line, need: &crate::root::boot::ListenerNeed| -> Result<Line, String> {
+                if cfg.data_chain.is_empty() && matches!(line.auth, LineAuth::Chain(..)) {
+                    if let Some(default) = app.inbound_default_auth(&need.auth)? {
+                        line.auth = chain_auth(&[(default.provider, default.points)]);
+                    }
+                }
+                Ok(line)
+            };
+        let mut partitions: Vec<(String, Vec<Line>)> = self
+            .initial
+            .binds
+            .iter()
+            .filter(|bind| {
+                bind.at != "admin_listen"
+                    && !self
+                        .framers
+                        .get(&bind.transport)
+                        .is_some_and(|(_, datagram)| *datagram)
+            })
+            .map(|bind| (bind.at.clone(), Vec::new()))
+            .collect();
+        let place = |partitions: &mut Vec<(String, Vec<Line>)>,
+                     at: &str,
+                     mut line: Line|
+         -> Result<(), String> {
+            let bind =
+                physical_bind(at).ok_or_else(|| format!("listener {at} was not bound at boot"))?;
+            let scheme = if bind.owner == BindOwner::Root {
+                crate::root::listener::framed::DATA_SCHEME
+            } else {
+                &bind.transport
+            };
+            line.offered = offered_by(&self.offers, scheme);
+            if matches!(line.auth, LineAuth::Chain(..)) && !cfg.data_chain.is_empty() {
+                line.auth = chain_auth(&chain);
+            }
+            let lines = &mut partitions
+                .iter_mut()
+                .find(|(name, _)| name == &bind.at)
+                .ok_or_else(|| {
+                    format!("{at}: a data route cannot be placed on the admin listener")
+                })?
+                .1;
+            let already_served = lines.iter().any(|old| {
+                let mut equivalent = line.clone();
+                if matches!((&old.claimant, &line.claimant), (Claimant::Need(a, _), Claimant::Need(b, _)) if a == b) {
+                    equivalent.claimant = old.claimant.clone();
+                }
+                *old == equivalent
+            });
+            if !already_served {
+                lines.push(line);
+            }
+            Ok(())
+        };
+        let assigned = |kind: KindCode, owner: &str, transport: Option<&str>| {
+            next.needs
+                .iter()
+                .filter(move |need| {
+                    need.kind == kind
+                        && need.instance == owner
+                        && transport.is_none_or(|scheme| need.transport == scheme)
+                })
+                .collect::<Vec<_>>()
+        };
+        for route in self.planes.get().into_iter().flatten() {
+            let mut line = route.line.clone();
+            if matches!(line.auth, LineAuth::Chain(..)) {
+                line.auth = chain_auth(&chain);
+            }
+            let transport = &route.transport;
+            let Claimant::Plane(owner) = &line.claimant else {
+                continue;
+            };
+            if self
+                .plane_sections
+                .get()
+                .and_then(|sections| sections.get(owner))
+                .is_some_and(|(section, fallback)| {
+                    !fallback
+                        && app
+                            .plane_sections
+                            .as_ref()
+                            .is_some_and(|sections| !sections.contains(section))
+                })
+            {
+                continue;
+            }
+            if route.root_only {
+                place(&mut partitions, "listen", line.clone())?;
+                continue;
+            }
+            let mut needs = assigned(KindCode::Plane, owner, Some(transport));
+            if needs.is_empty() && line.upgrade.is_some() {
+                needs = assigned(KindCode::Plane, owner, None)
+                    .into_iter()
+                    .filter(|need| {
+                        self.framers
+                            .get(&need.transport)
+                            .is_some_and(|(_, datagram)| !datagram)
+                    })
+                    .collect();
+            }
+            if needs.is_empty() {
+                if next
+                    .needs
+                    .iter()
+                    .any(|need| need.kind == KindCode::Plane && need.instance == *owner)
+                    && line.upgrade.is_none()
+                {
+                    return Err(format!(
+                        "{owner}: claim {} has no inbound need for its transport {transport}",
+                        line.route.path
+                    ));
+                }
+                place(&mut partitions, "listen", line.clone())?;
+            } else {
+                for need in needs {
+                    if self
+                        .framers
+                        .get(&need.transport)
+                        .is_some_and(|(_, datagram)| *datagram)
+                    {
+                        // Datagram claim doors keep their separate physical bind. Their existing
+                        // HTTP session-opening route remains on the root data listener.
+                        place(&mut partitions, "listen", default_auth(line.clone(), need)?)?;
+                    } else {
+                        place(&mut partitions, &need.at, default_auth(line.clone(), need)?)?;
+                    }
+                }
+            }
+        }
+        for (rung, (path, method, auth)) in (0u32..).zip(busbar_kernel::base_data_core_lines(app)) {
+            place(
+                &mut partitions,
+                "listen",
+                Line {
+                    route: Route {
+                        methods: listener_method_bits(method),
+                        path_form: if path.contains('{') {
+                            PATH_PATTERN
+                        } else {
+                            PATH_EXACT
+                        },
+                        path,
+                        fields: Vec::new(),
+                        rung,
+                    },
+                    claimant: Claimant::Clean(CORE_CLAIMANT.into()),
+                    dialect: 0,
+                    auth: if auth == RouteAuth::None {
+                        LineAuth::None
+                    } else {
+                        chain_auth(&chain)
+                    },
+                    upgrade: None,
+                    offered: crate::root::doors::offers_unstated(),
+                },
+            )?;
+        }
+        for (rung, route) in (0u32..).zip(app.plugin_routes.descriptors()) {
+            if route.auth == RouteAuth::Admin {
+                continue;
+            }
+            let kind = match route.kind {
+                busbar_kernel::plugin_routes::RouteKind::Hook => KindCode::Hook,
+                busbar_kernel::plugin_routes::RouteKind::Export => KindCode::Export,
+            };
+            let needs = if route.persistent {
+                self.initial
+                    .needs
+                    .iter()
+                    .filter(|need| need.kind == kind && need.instance == route.source_instance)
+                    .collect()
+            } else {
+                assigned(kind, route.source_instance, None)
+            };
+            let line = |need| Line {
+                route: Route {
+                    methods: listener_method_bits(route.method),
+                    path_form: PATH_EXACT,
+                    path: route.path.into(),
+                    fields: Vec::new(),
+                    rung,
+                },
+                claimant: Claimant::Need(route.source_instance.into(), need),
+                dialect: 0,
+                auth: if route.auth == RouteAuth::None {
+                    LineAuth::None
+                } else {
+                    chain_auth(&chain)
+                },
+                upgrade: None,
+                offered: crate::root::doors::offers_unstated(),
+            };
+            if needs.is_empty() {
+                place(&mut partitions, "listen", line(0))?;
+            } else {
+                for need in needs {
+                    place(
+                        &mut partitions,
+                        &need.at,
+                        default_auth(line(need.need), need)?,
+                    )?;
+                }
+            }
+        }
+        partitions
+            .into_iter()
+            .map(|(at, lines)| {
+                GuestList::seal(lines)
+                    .map(|list| (at.clone(), list))
+                    .map_err(|refusal| guest_refusal(&at, refusal))
+            })
+            .collect()
+    }
+
+    /// Select an immutable candidate's validated physical list. The existing inbound host retains
+    /// that same App and generation for every admitted request and active stream.
+    pub fn policy(self: &Arc<Self>, at: String) -> crate::root::inbound::ListenerPolicy {
+        let plan = Arc::clone(self);
+        Arc::new(move |source| {
+            let guests = plan
+                .lists(&source.app)?
+                .into_iter()
+                .find(|(name, _)| *name == at)
+                .map(|(_, guests)| guests)
+                .ok_or_else(|| format!("listener {at} is unavailable"))?;
+            let auths = plan.auths(&source.app, &guests)?;
+            let owned_guests = guests.clone();
+            let keys = plan.plane_keys.get().cloned().unwrap_or_default();
+            let legacy_fallback = at == "listen";
+            let scope = busbar_kernel::inbound::ListenerScope {
+                legacy_fallback,
+                admission: Arc::new(move |app, head| {
+                    use busbar_kernel::guest::{Claimant, Matched};
+                    let fields: Vec<_> = head
+                        .fields
+                        .iter()
+                        .map(|(name, value)| (name.as_str(), value.as_slice()))
+                        .collect();
+                    let Matched::Line(line) =
+                        owned_guests.matched(&head.method, &head.target, &fields)
+                    else {
+                        return None;
+                    };
+                    match &line.claimant {
+                        Claimant::Plane(owner) => keys
+                            .get(owner)
+                            .and_then(|key| app.planes.admission_of(key))
+                            .cloned(),
+                        Claimant::Need(..) => None,
+                        _ if legacy_fallback => app.planes.admission_for(&head.target).cloned(),
+                        _ => None,
+                    }
+                }),
+            };
+            Ok(busbar_kernel::inbound::Listener {
+                ids: Vec::new(),
+                guests,
+                auths,
+                body_limit: source
+                    .app
+                    .limits
+                    .as_ref()
+                    .map_or(source.body_limit, |limits| {
+                        limits.request_body_max_bytes as u64
+                    }),
+                app: Arc::clone(&source.app),
+                door_refusals: plan
+                    .refusals
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .get(&at)
+                    .cloned()
+                    .unwrap_or_default(),
+                signed_ingress: if legacy_fallback {
+                    source.signed_ingress.clone()
+                } else {
+                    Arc::new(|_, _| false)
+                },
+                scope: Some(scope),
+            })
+        })
+    }
+}
 
 /// The chain `data_chain` as a line's auth: its names in order, and the line's point set, the union
 /// of its auths' sets.
@@ -2739,20 +3605,43 @@ pub fn door_mounts(
     upgrades: &[&str],
     offers: &[TransportOffer],
 ) -> Result<DoorMounts, String> {
+    door_mounts_planned(served, pin, data_chain, core, upgrades, offers, None)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn door_mounts_planned(
+    served: Served,
+    pin: fn() -> Option<crate::root::kernel::PinnedHistory>,
+    data_chain: &[ChainAuth],
+    core: &[(String, RouteMethod, RouteAuth)],
+    upgrades: &[&str],
+    offers: &[TransportOffer],
+    plan: Option<(&ListenerPlan, &busbar_kernel::state::App, &str)>,
+) -> Result<DoorMounts, String> {
     use busbar_contract::abi::transport::route::{method_bit, PATH_EXACT, PATH_PATTERN};
     use busbar_kernel::guest::{Claimant, GuestList, LineAuth, Matched};
     use std::collections::HashMap;
     // THE PUBLIC ROUTES the served planes state (SEAM-4o): each at its own target on the data
     // listener, open to a caller that presents no busbar credential, served by the plane's `serve`.
-    let public = public_routes(&served);
-    if served.planes.iter().all(|p| p.snapshot.claims.is_empty()) {
-        return Ok(DoorMounts {
-            routes: public,
-            sessions: Vec::new(),
-            refusals: Vec::new(),
-            refuse_by_path: None,
-        });
-    }
+    let public = if plan.is_none_or(|(_, _, at)| at == "listen") {
+        public_routes(&served)
+    } else {
+        Vec::new()
+    };
+    let physical = if let Some((plan, app, at)) = plan {
+        if plan.planes.get().is_none() {
+            plan.mount_planes(&served, app, upgrades)?;
+        }
+        Some(
+            plan.lists(app)?
+                .into_iter()
+                .find(|(name, _)| name == at)
+                .ok_or_else(|| format!("listener {at} has no guest list"))?
+                .1,
+        )
+    } else {
+        None
+    };
     let mut upgraded: std::collections::HashSet<DoorClaim> = std::collections::HashSet::new();
     let mut lines = Vec::new();
     let mut doors: Vec<(busbar_kernel::guest::Line, RouteMethod, DoorClaim)> = Vec::new();
@@ -2765,8 +3654,16 @@ pub fn door_mounts(
             }
             let rung =
                 u32::try_from(i).map_err(|_| format!("{}: too many claims", plane.instance))?;
-            let (line, method) =
+            let (mut line, method) =
                 claim_line(&plane.instance, rung, claim, data_chain, upgrades, offers)?;
+            if let Some(guests) = &physical {
+                let Some(admitted) = guests.lines().iter().find(|admitted| {
+                    admitted.claimant == line.claimant && admitted.route.rung == rung
+                }) else {
+                    continue;
+                };
+                line = admitted.clone();
+            }
             if line.upgrade.is_some() {
                 upgraded.insert((p, rung));
             }
@@ -2800,8 +3697,12 @@ pub fn door_mounts(
             offered: crate::root::doors::offers_unstated(),
         });
     }
-    let guests =
-        GuestList::seal(lines).map_err(|refusal| guest_refusal("the data listener", refusal))?;
+    let guests = match physical {
+        Some(guests) => guests,
+        None => {
+            GuestList::seal(lines).map_err(|refusal| guest_refusal("the data listener", refusal))?
+        }
+    };
     let post = served.post.clone().unwrap_or_else(|| {
         Arc::new(crate::root::plane_node::NodeEndPost::new(
             crate::root::plane_node::node(),
@@ -2880,7 +3781,21 @@ pub fn door_mounts(
             .collect(),
         frames: Mutex::default(),
     });
-    attach_nests(kernel, &routes);
+    if let Some((plan, _, at)) = plan {
+        let all = {
+            let mut nests = plan
+                .nests
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            nests.push(Arc::downgrade(&routes));
+            nests.clone()
+        };
+        if at == "listen" {
+            attach_nest_routes(kernel, all);
+        }
+    } else {
+        attach_nests(kernel, &routes);
+    }
     let mut session_mounts: Vec<(String, RouteMethod, RouteAuth, DoorClaim)> = Vec::new();
     let mut sessions = Vec::new();
     let mut requests = Vec::new();
@@ -3103,7 +4018,9 @@ pub fn door_mounts(
     routes_of.extend(public);
     // THE DATA LISTENER'S LIST, staged for the inbound auth handle's tables (`root::inbound`),
     // with the door routes' unit-less refusals a stopped request is answered with.
-    crate::root::inbound::stage(routes.guests.clone(), refusals.clone());
+    if plan.is_none_or(|(_, _, at)| at == "listen") {
+        crate::root::inbound::stage(routes.guests.clone(), refusals.clone());
+    }
     Ok(DoorMounts {
         routes: routes_of,
         sessions,
@@ -3162,11 +4079,15 @@ pub(crate) fn line_routes(
 /// THE NESTED-DISPATCH SEAM, attached once to the kernel's services: `unit.nest` runs a child on
 /// `routes`, on the runtime the routes are built on (none outside a runtime).
 fn attach_nests(kernel: Option<Arc<KernelServices>>, routes: &Arc<DataRoutes>) {
+    attach_nest_routes(kernel, vec![Arc::downgrade(routes)]);
+}
+
+fn attach_nest_routes(
+    kernel: Option<Arc<KernelServices>>,
+    routes: Vec<std::sync::Weak<DataRoutes>>,
+) {
     if let (Some(kernel), Ok(runtime)) = (kernel, tokio::runtime::Handle::try_current()) {
-        let _attached = kernel.attach_nest(Arc::new(DoorNests {
-            routes: Arc::downgrade(routes),
-            runtime,
-        }));
+        let _attached = kernel.attach_nest(Arc::new(DoorNests { routes, runtime }));
     }
 }
 

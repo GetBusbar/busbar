@@ -39,6 +39,115 @@ use hook_door_plugin::{
 /// Every call's budget.
 const BUDGET: Duration = Duration::from_secs(5);
 
+fn serve_request() -> busbar_contract::abi::mechanism::endpoint::EndpointRequest {
+    busbar_contract::abi::mechanism::endpoint::EndpointRequest {
+        method: "POST".into(),
+        path: hook_door_plugin::ROUTE_PATH.into(),
+        query: "kind=feedback".into(),
+        headers: vec![("content-type".into(), "text/plain".into())],
+        body: b"received".to_vec(),
+    }
+}
+
+#[tokio::test]
+async fn hook_routes_serve_leased_responses_through_both_doors_and_refused_stubs_fail() {
+    for way in [Way::Linked, Way::Dropped] {
+        let axis = rows(hook_door_plugin::conforming::door, "hook_door", way);
+        let calls = axis
+            .open(
+                NAME,
+                "receiver",
+                &json!({"reject_over_messages": 3}),
+                BUDGET,
+            )
+            .unwrap();
+        assert_eq!(calls.routes().len(), 1);
+        assert_eq!(calls.routes()[0].path, hook_door_plugin::ROUTE_PATH);
+        let response = calls.serve(serve_request(), BUDGET).await.unwrap();
+        assert_eq!(response.status, 202);
+        assert_eq!(
+            response.headers,
+            vec![("x-fixture".into(), "present".into())]
+        );
+        assert_eq!(
+            response.body,
+            b"POST /hooks/receiver/feedback?kind=feedback\nreceived"
+        );
+        // A second response remains readable after the first answer's lease was released.
+        assert_eq!(
+            calls.serve(serve_request(), BUDGET).await.unwrap().body,
+            response.body
+        );
+        let stub = rows(hook_door_plugin::broken::door, "hook_broken_door", way);
+        let calls = stub
+            .open(
+                BROKEN_NAME,
+                "receiver",
+                &json!({"reject_over_messages": 3}),
+                BUDGET,
+            )
+            .unwrap();
+        assert_eq!(calls.routes().len(), 1);
+        assert!(calls.serve(serve_request(), BUDGET).await.is_err());
+    }
+}
+
+#[tokio::test]
+async fn malformed_hook_serve_headers_are_refused_and_the_answer_lease_is_released() {
+    for way in [Way::Linked, Way::Dropped] {
+        for mode in ["odd", "null", "overlong", "utf8"] {
+            let axis = rows(hook_door_plugin::conforming::door, "hook_door", way);
+            let calls = axis
+                .open(
+                    NAME,
+                    "receiver",
+                    &json!({
+                        "reject_over_messages": 3, "serve_headers": mode,
+                    }),
+                    BUDGET,
+                )
+                .unwrap();
+            let error = calls
+                .serve(serve_request(), BUDGET)
+                .await
+                .err()
+                .expect("the actual hook answer must fail header validation");
+            assert!(error.contains("response header"), "{way:?}/{mode}: {error}");
+            let mut count = serve_request();
+            count.query = "lease-count".into();
+            assert_eq!(
+                calls.serve(count, BUDGET).await.unwrap().body,
+                b"0",
+                "{way:?}/{mode}: rejected answers must not retain their leased body"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_slow_hook_serve_is_bounded_by_its_budget_through_both_doors() {
+    for way in [Way::Linked, Way::Dropped] {
+        let axis = rows(hook_door_plugin::conforming::door, "hook_door", way);
+        let calls = axis
+            .open(
+                NAME,
+                "receiver",
+                &json!({"reject_over_messages": 3, "sleep_ms": 100}),
+                BUDGET,
+            )
+            .unwrap();
+        assert!(calls
+            .serve(serve_request(), Duration::from_millis(10))
+            .await
+            .is_err());
+        // A fresh call with its full budget still serves normally after the timed-out request.
+        assert_eq!(
+            calls.serve(serve_request(), BUDGET).await.unwrap().status,
+            202
+        );
+    }
+}
+
 /// A request of `messages` messages.
 fn request(messages: usize) -> RoutingRequest<'static> {
     RoutingRequest {

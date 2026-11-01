@@ -21,6 +21,33 @@
 //! The `session_door` module below is the session door's root-leg cells (ARCHITECT 2026-10-05 Q1):
 //! the linked plane door that meters audio, served end to end the same way.
 
+#[tokio::test]
+async fn an_empty_plane_set_still_stages_the_core_listener_lines() {
+    use busbar_contract::abi::mechanism::route::{RouteAuth, RouteMethod};
+    let _publishing = crate::root::PUBLISHING.lock().await;
+    crate::root::inbound::stage(busbar_kernel::guest::GuestList::default(), Vec::new());
+    super::door_mounts(
+        super::Served::default(),
+        || None,
+        &[],
+        &[("/healthz".into(), RouteMethod::Get, RouteAuth::None)],
+        &[],
+        &[],
+    )
+    .unwrap();
+    let app = busbar_kernel::test_support::TestApp::new().build();
+    let generation =
+        crate::root::inbound::publish(&app).expect("the no-plane listener is published");
+    let specs = crate::root::inbound::host()
+        .specs(crate::root::inbound::ROOT_OWNER, generation)
+        .unwrap();
+    assert_eq!(
+        specs.len(),
+        1,
+        "a real core listener line survives without a plane claim"
+    );
+}
+
 #[cfg(feature = "plane-decisions")]
 use std::collections::BTreeMap;
 #[cfg(feature = "plane-decisions")]

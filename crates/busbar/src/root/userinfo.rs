@@ -113,6 +113,7 @@ impl UserinfoBasic {
                         name: AUTHORIZATION.as_bytes().to_vec(),
                         value: Secret::new(self.bytes().to_vec()),
                         sensitive: true,
+                        require_secure: false,
                     },
                 );
                 Fields::Ready(fields)

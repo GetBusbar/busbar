@@ -4472,3 +4472,33 @@ fn a_read_beside_a_hung_carrier_read_never_waits_and_is_woken_once_it_is_back() 
         c.close(OWNER, id).unwrap();
     });
 }
+
+#[test]
+fn protected_auth_requires_the_located_security_plan_even_on_private_plaintext_needs() {
+    worker().block_on(async {
+        let (_listening, far) = far_end().await;
+        let c = scheme_connector();
+        c.declare_need(OWNER, NeedId(0), "plain", EGRESS_OPERATOR_INFRASTRUCTURE)
+            .unwrap();
+        c.declare_need(OWNER, NeedId(1), "sec", EGRESS_OPERATOR_INFRASTRUCTURE)
+            .unwrap();
+        let fields = [("authorization", b"protected-token".as_slice())];
+        let desc = OpenDesc {
+            target: &far,
+            fields: &fields,
+            ..OpenDesc::default()
+        };
+        assert_eq!(
+            c.open_with_security(OWNER, NeedId(0), &desc, true),
+            Err(ConnError::AuthRefused)
+        );
+        let raw = c
+            .open_with_security(OWNER, NeedId(0), &desc, false)
+            .expect("raw behavior preserved");
+        c.close(OWNER, raw).unwrap();
+        let secure = c
+            .open_with_security(OWNER, NeedId(1), &desc, true)
+            .expect("secured plan admitted");
+        c.close(OWNER, secure).unwrap();
+    });
+}

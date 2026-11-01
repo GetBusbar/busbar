@@ -15,6 +15,7 @@ use busbar_contract::abi::hook::{
 use busbar_contract::abi::mechanism::call::{InHead, OutHead, Outcome};
 use busbar_contract::abi::mechanism::check::Fault;
 use busbar_contract::abi::mechanism::door::{MarkWord, Statement, MARK_WORD_HOOK};
+use busbar_contract::abi::mechanism::route::{Route, RouteAuth, RouteMethod};
 use busbar_contract::abi::mechanism::KindCode;
 pub use busbar_contract::hook_calls::HookFacts;
 
@@ -34,10 +35,6 @@ const HOOK_TAIL_FROZEN: usize = std::mem::size_of::<Tail>();
 pub const NO_TAIL: &str =
     "a hook Statement states no hook tail: a hook states its class and grants (abi::sdk::hook::tail)";
 
-/// The refusal of a hook tail stating `routes` (H7).
-pub const ROUTES_REFUSED: &str = "the hook tail states routes: the host serves no hook route (it \
-     never calls `serve`); a hook states none";
-
 /// The refusal of a hook tail stating `requested_signals` (H7).
 pub const SIGNALS_REFUSED: &str = "the hook tail states requested_signals: the signals a hook is \
      lent are the operator's `hooks:` configuration, never its tail; a hook states none";
@@ -48,7 +45,7 @@ pub const SIGNALS_REFUSED: &str = "the hook tail states requested_signals: the s
 ///
 /// A hook Statement with NO kind tail is refused ([`NO_TAIL`], ARCHITECT Q-SO8): every 1.6.0 hook
 /// states its class and grants (`abi::sdk::hook::tail`); none is assumed for it.
-pub(crate) fn facts(st: &Statement) -> Result<HookFacts, String> {
+fn read(st: &Statement) -> Result<HookContext, String> {
     let name = owned(st.name).ok_or("a hook's name is over-long")?;
     if st.kind_tail.is_null() {
         return Err(NO_TAIL.to_string());
@@ -71,10 +68,10 @@ pub(crate) fn facts(st: &Statement) -> Result<HookFacts, String> {
             t.user_access
         ));
     }
-    // A SURFACE NOTHING READS IS REFUSED (H7): the host never calls `serve` and never reads the
-    // tail's signal list, so a hook stating either would load a promise nothing keeps.
-    if t.routes_len != 0 {
-        return Err(ROUTES_REFUSED.to_string());
+    if (t.routes_len != 0 && t.routes.is_null())
+        || t.routes_len as u64 > busbar_contract::abi::export::validate::HARD_MAX_ROUTES
+    {
+        return Err("the hook tail's route list is null or exceeds the route bound".into());
     }
     if t.requested_signals_len != 0 {
         return Err(SIGNALS_REFUSED.to_string());
@@ -87,6 +84,41 @@ pub(crate) fn facts(st: &Statement) -> Result<HookFacts, String> {
         infallible: t.infallible != 0,
         words: Vec::new(),
     };
+    let routes = if t.routes_len == 0 {
+        &[][..]
+    } else {
+        // SAFETY: the count and pointer were checked above; the tail is static plugin data.
+        unsafe { std::slice::from_raw_parts(t.routes, t.routes_len) }
+    };
+    let mut declared_routes = Vec::new();
+    for r in routes {
+        let path = owned(r.path).ok_or("a hook route's path is malformed")?;
+        let method = owned(r.method).ok_or("a hook route's method is malformed")?;
+        if !path.starts_with('/') {
+            return Err("a hook route's path must start with '/'".into());
+        }
+        let method = [
+            RouteMethod::Get,
+            RouteMethod::Post,
+            RouteMethod::Put,
+            RouteMethod::Patch,
+            RouteMethod::Delete,
+        ]
+        .into_iter()
+        .find(|m| m.as_str() == method)
+        .ok_or_else(|| format!("the hook route {path} names an unsupported method"))?;
+        let auth = match r.auth {
+            hook::ROUTE_AUTH_NONE => RouteAuth::None,
+            hook::ROUTE_AUTH_KEY => RouteAuth::Key,
+            hook::ROUTE_AUTH_ADMIN => RouteAuth::Admin,
+            _ => {
+                return Err(format!(
+                    "the hook route {path} names an unsupported auth bar"
+                ))
+            }
+        };
+        declared_routes.push(Route { path, method, auth });
+    }
     let marks: &[MarkWord] = if st.mark_words_len == 0 || st.mark_words.is_null() {
         &[]
     } else {
@@ -99,7 +131,21 @@ pub(crate) fn facts(st: &Statement) -> Result<HookFacts, String> {
             .words
             .push(owned(m.word).ok_or("a hook word is over-long")?);
     }
-    Ok(facts)
+    Ok(HookContext {
+        facts,
+        routes: declared_routes,
+    })
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct HookContext {
+    pub facts: HookFacts,
+    pub routes: Vec<Route>,
+}
+
+#[cfg(test)]
+pub(crate) fn facts(st: &Statement) -> Result<HookFacts, String> {
+    read(st).map(|context| context.facts)
 }
 
 /// The hook kind.
@@ -124,7 +170,7 @@ impl Kind for Hook {
     const TIMEOUT: Outcome = Outcome::Failed;
 
     fn context(st: &Statement) -> Result<Option<Box<Context>>, String> {
-        Ok(Some(Box::new(facts(st)?)))
+        Ok(Some(Box::new(read(st)?)))
     }
 
     fn op_name(s: u32) -> &'static str {

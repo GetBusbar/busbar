@@ -595,6 +595,7 @@ fn kit_signed(
         door_refusals: Vec::new(),
         ids: line_ids(3),
         signed_ingress: signed.clone(),
+        scope: None,
     };
     inbound.install(OWNER, GEN, listener()).expect("installed");
     // The same list under another owner: a unit minted for one is not the other's.
@@ -883,6 +884,7 @@ fn an_active_unit_keeps_its_policy_after_three_reloads_without_reopening_the_old
                         door_refusals: Vec::new(),
                         ids: line_ids(3),
                         signed_ingress: kin_unsigned(),
+                        scope: None,
                     },
                 )
                 .expect("the replacement is published");
@@ -1735,6 +1737,7 @@ fn red_a_line_id_never_carries_the_binding_bit() {
         door_refusals: Vec::new(),
         ids,
         signed_ingress: kin_unsigned(),
+        scope: None,
     };
     for ids in [
         vec![1, 2, BINDING_BIT | 3],

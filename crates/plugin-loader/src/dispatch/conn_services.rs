@@ -1469,7 +1469,7 @@ fn open_with(
         unit: 0,
     };
     table
-        .open(id, need, &desc)
+        .open_with_security(id, need, &desc, auth.iter().any(|f| f.require_secure))
         .map_or_else(Conn::Failed, Conn::Open)
 }
 

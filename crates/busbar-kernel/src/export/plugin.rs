@@ -541,6 +541,8 @@ fn route_decls_from(cfg: &ExportCfg, boot_sinks: &[PluginSink]) -> Vec<RouteDecl
             }
             out.push(RouteDecl {
                 owner: owner.clone(),
+                source_instance: p.name.clone(),
+                dispatch_available: opened.is_some(),
                 kind: RouteKind::Export,
                 scrape: p.scrape && public_routes.contains(&route.path),
                 route,
@@ -559,6 +561,8 @@ fn route_decls_from(cfg: &ExportCfg, boot_sinks: &[PluginSink]) -> Vec<RouteDecl
                 .filter(|r| s.sink.persistent_routes().contains(&r.path))
                 .map(|route| RouteDecl {
                     owner: s.module.clone(),
+                    source_instance: s.name.clone(),
+                    dispatch_available: true,
                     kind: RouteKind::Export,
                     route: route.clone(),
                     scrape: true,

@@ -62,6 +62,8 @@ use crate::hooks::{
 };
 use crate::signal::{Signal, SignalBag, SignalValue};
 
+mod projection;
+
 // ── reading the host's views ─────────────────────────────────────────────────────────────────────
 //
 // Every read goes through the SDK's safe layer (`abi::sdk::lent`, SDK-SAFE): the `in` is a [`Lent`],
@@ -403,6 +405,21 @@ impl<'a> Decoded<'a> {
         serde_json::to_value(crate::hook_wire::build(op, &req, &cands, &ctx))
             .unwrap_or_else(|_| serde_json::json!({}))
     }
+
+    /// Append the canonical 1.5.5 projection envelope, with `op` last, directly to `out`.
+    /// Extra top-level fields replace projected fields; an extra `op` is ignored. No projection
+    /// JSON value is built, and borrowed prompt text and signal values are serialized in place.
+    ///
+    /// # Errors
+    /// The JSON serializer's refusal. On failure `out` may contain a partial envelope.
+    pub fn write_projection(
+        &self,
+        op: &str,
+        extra: Option<&serde_json::Map<String, serde_json::Value>>,
+        out: &mut Vec<u8>,
+    ) -> Result<(), serde_json::Error> {
+        projection::write(self, None, false, op, extra, out)
+    }
 }
 
 /// The stage a [`DecodedTap`] observed (the OLD `HookStageProjection`), borrowed.
@@ -500,6 +517,20 @@ impl<'a> DecodedTap<'a> {
             status: s.status,
         });
         serde_json::to_value(wire).unwrap_or_else(|_| serde_json::json!({}))
+    }
+
+    /// Append this tap's canonical projection envelope, with `op` last, directly to `out`.
+    /// Extra fields and serialization failures follow [`Decoded::write_projection`].
+    ///
+    /// # Errors
+    /// The JSON serializer's refusal. On failure `out` may contain a partial envelope.
+    pub fn write_projection(
+        &self,
+        op: &str,
+        extra: Option<&serde_json::Map<String, serde_json::Value>>,
+        out: &mut Vec<u8>,
+    ) -> Result<(), serde_json::Error> {
+        projection::write(&self.request, self.stage.as_ref(), true, op, extra, out)
     }
 }
 

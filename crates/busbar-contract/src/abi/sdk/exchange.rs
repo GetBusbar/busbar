@@ -792,10 +792,16 @@ fn apply(state: &mut Exchange, p: ReplyPiece, len: usize, fresh: bool) -> Result
                 .collect();
         }
         REPLY_BODY if fresh => {
-            extend_wiping(&mut state.reply.body, &state.buf[..len]);
-            if state.reply.body.len() > state.reply_ceiling {
+            if state
+                .reply
+                .body
+                .len()
+                .checked_add(len)
+                .is_none_or(|total| total > state.reply_ceiling)
+            {
                 return Err(REPLY_OVER_BOUND);
             }
+            extend_wiping(&mut state.reply.body, &state.buf[..len]);
         }
         REPLY_HEAD | REPLY_ACK | REPLY_BODY | REPLY_END => {}
         _ => return Err("the transport answered no reply piece: every request is acked"),
@@ -915,6 +921,59 @@ pub struct Inspection {
     pending: Option<crate::abi::mechanism::inspection::InspectionRequest>,
     completed: Option<crate::abi::mechanism::inspection::InspectionReceipt>,
     last: Option<(crate::abi::mechanism::ticket::Ticket, u64, u64)>,
+}
+
+/// An operation failure with the reply head received before the failure, when one arrived.
+/// The head's reason and fields are wiped when this owner drops; no partial body is exposed.
+pub struct ExchangeFailure {
+    cause: OpFailure,
+    head: Option<Zeroizing<ExchangeResponse>>,
+}
+
+impl ExchangeFailure {
+    fn without_head(cause: OpFailure) -> Self {
+        Self { cause, head: None }
+    }
+
+    /// The builder or connector failure, independently of any earlier reply head.
+    #[must_use]
+    pub fn cause(&self) -> &OpFailure {
+        &self.cause
+    }
+
+    /// The earlier status, reason and fields. The body is always empty. A caller can judge this
+    /// status before reporting a later read failure or body-limit refusal.
+    #[must_use]
+    pub fn head(&self) -> Option<&ExchangeResponse> {
+        self.head.as_deref()
+    }
+
+    /// Take the underlying failure, wiping and releasing any retained head.
+    #[must_use]
+    pub fn into_cause(self) -> OpFailure {
+        self.cause
+    }
+}
+
+impl std::fmt::Debug for ExchangeFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ExchangeFailure")
+            .field("status", &self.head().map(|head| head.status))
+            .field("head", &self.head().map(|_| "<redacted>"))
+            .finish_non_exhaustive()
+    }
+}
+
+impl std::fmt::Display for ExchangeFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.cause.fmt(f)
+    }
+}
+
+impl std::error::Error for ExchangeFailure {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.cause)
+    }
 }
 
 /// ONE OP'S EXCHANGE ON ITS TICKET (THE DESIGN, the plugin ABI: every call is Ready or
@@ -1159,27 +1218,97 @@ impl<'a> Op<'a> {
         reply_limit: usize,
         request: impl FnOnce() -> Result<(Request, Vec<SealedField>), String>,
     ) -> Poll<Result<ExchangeResponse, OpFailure>> {
+        self.exchange_sealed_bounded_with_head(need, target, reply_limit, false, request)
+            .map(|answer| answer.map_err(ExchangeFailure::into_cause))
+    }
+
+    /// A bounded exchange that retains an earlier reply head when the exchange later fails.
+    /// `head_only` ends the exchange at its reply head, without reading or collecting a body
+    /// ([`Exchange::head_only`]). The limit and this choice are fixed by the first entry's builder;
+    /// a resumed exchange keeps both. Request builders and sealed fields follow
+    /// [`Op::exchange_sealed_bounded`].
+    pub fn exchange_sealed_bounded_with_head(
+        &self,
+        need: u32,
+        target: Option<&str>,
+        reply_limit: usize,
+        head_only: bool,
+        request: impl FnOnce() -> Result<(Request, Vec<SealedField>), String>,
+    ) -> Poll<Result<ExchangeResponse, ExchangeFailure>> {
         let Some(host) = self.host else {
-            return Poll::Ready(Err(ConnFailure::Unarmed.into()));
+            return Poll::Ready(Err(ExchangeFailure::without_head(
+                ConnFailure::Unarmed.into(),
+            )));
         };
         let mut state = match self.on.resume() {
             Some(parked) => *parked,
             None => match request() {
-                Err(why) => return Poll::Ready(Err(OpFailure::Unbuilt(why))),
+                Err(why) => {
+                    return Poll::Ready(Err(ExchangeFailure::without_head(OpFailure::Unbuilt(why))))
+                }
                 Ok((r, sealed)) => match Exchange::request_sealed(r, sealed) {
-                    Ok(s) => s.reply_limit(reply_limit),
-                    Err(e) => return Poll::Ready(Err(e.into())),
+                    Ok(s) => {
+                        let s = s.reply_limit(reply_limit);
+                        if head_only {
+                            s.head_only()
+                        } else {
+                            s
+                        }
+                    }
+                    Err(e) => return Poll::Ready(Err(ExchangeFailure::without_head(e.into()))),
                 },
             },
         };
         let mut c = host.connector(self.on.ticket());
-        let answer = exchange(&mut c, &mut state, need, target);
-        if answer.is_pending() {
-            // Parked, the exchange may be given up (a cancel, a fresh op on the ticket): what it
-            // keeps closes its stream then.
-            self.on.park(state);
+        match exchange(&mut c, &mut state, need, target) {
+            Poll::Pending => {
+                // The same continuation, including any earlier reply head, owns pending buffers
+                // and its closer until the next entry or cancellation.
+                self.on.park(state);
+                Poll::Pending
+            }
+            Poll::Ready(Ok(reply)) => Poll::Ready(Ok(reply)),
+            Poll::Ready(Err(cause)) => {
+                let head = state.head_status().map(|status| {
+                    Zeroizing::new(ExchangeResponse {
+                        status,
+                        reason: state.reply.reason.take(),
+                        fields: std::mem::take(&mut state.reply.fields),
+                        body: Vec::new(),
+                    })
+                });
+                Poll::Ready(Err(ExchangeFailure {
+                    cause: cause.into(),
+                    head,
+                }))
+            }
         }
-        answer.map(|r| r.map_err(OpFailure::Conn))
+    }
+}
+
+#[cfg(test)]
+mod bounded_body_tests {
+    use super::*;
+
+    #[test]
+    fn a_refused_body_piece_is_not_collected_past_the_reply_limit() {
+        let mut state = Exchange::request(Request::default())
+            .expect("a valid request")
+            .reply_limit(100);
+        state.buf[..60].fill(b'a');
+        let body = ReplyPiece {
+            kind: REPLY_BODY,
+            ..ReplyPiece::default()
+        };
+        assert_eq!(apply(&mut state, body, 60, true), Ok(()));
+        state.buf[..41].fill(b'b');
+        assert_eq!(apply(&mut state, body, 41, true), Err(REPLY_OVER_BOUND));
+        assert_eq!(
+            state.reply.body.len(),
+            60,
+            "a rejected piece must not enter the collected body"
+        );
+        assert!(state.reply.body.iter().all(|byte| *byte == b'a'));
     }
 }
 

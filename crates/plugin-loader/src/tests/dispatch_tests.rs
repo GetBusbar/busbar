@@ -154,6 +154,52 @@ fn stated() -> Vec<u8> {
         .expect("the door renders its Statement")
 }
 
+#[test]
+fn raw_door_rendering_refuses_null_optional_blob_payloads() {
+    static CELL: LinkedSlot = LinkedSlot::new();
+    extern "C" fn door() -> *const Door {
+        CELL.get()
+    }
+    for schema in [false, true] {
+        let install = |ptr, len| {
+            let mut parts = plug::door().parts();
+            // SAFETY: the fixture's real door owns a complete static Statement.
+            let mut st = unsafe { parts.statement.read_unaligned() };
+            let field = if schema {
+                &mut st.settings_schema
+            } else {
+                &mut st.extensions
+            };
+            *field = Blob {
+                ptr,
+                len,
+                fmt: BLOB_OCTETS,
+                flags: 0,
+            };
+            parts.statement = Box::leak(Box::new(st));
+            // These optional blobs reach the renderer through the ordinary Statement checks.
+            assert!(crate::dispatch::load::statement(&parts).is_ok());
+            // SAFETY: all backing is static or leaked; the malformed NULL blob is never read.
+            CELL.set(unsafe { Door::__from_parts(parts) });
+        };
+        for len in [1, 5] {
+            install(std::ptr::null(), len);
+            assert!(matches!(
+                crate::dispatch::load::rendering_of_raw(door),
+                Err(LoadError::Rendering(_))
+            ));
+        }
+        install(std::ptr::null(), 0);
+        let empty = crate::dispatch::load::rendering_of_raw(door).unwrap();
+        install(b"".as_ptr(), 0);
+        assert_eq!(
+            crate::dispatch::load::rendering_of_raw(door).unwrap(),
+            empty
+        );
+        busbar_contract::abi::mechanism::rendering::read(&empty).unwrap();
+    }
+}
+
 /// [`stated`] with its head facts replaced by `f`.
 fn stated_with(f: ManifestFacts) -> Vec<u8> {
     let mut b = stated();

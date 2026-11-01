@@ -17,6 +17,24 @@ use crate::hooks::{
 use busbar_contract::ir::invoke::InvokeReq;
 use std::sync::{Arc, Mutex};
 
+#[test]
+fn projected_invocations_keep_exact_arguments_and_unnamed_documents() {
+    use serde_json::json;
+    let named = super::read_projected(Some(
+        br#"{"tool":"private-tool","arguments":{"private-key":["private-value"]},"unused":{"private":"discarded"}}"#,
+    ))
+    .unwrap();
+    assert_eq!(named.tool, "private-tool");
+    assert_eq!(named.arguments, json!({"private-key": ["private-value"]}));
+    assert!(named.extra.is_empty());
+
+    let unnamed = super::read_projected(Some(br#"{"private-key":["private-value"]}"#)).unwrap();
+    assert!(unnamed.tool.is_empty());
+    assert_eq!(unnamed.arguments, json!({"private-key": ["private-value"]}));
+    assert!(super::read_projected(None).is_none());
+    assert!(super::read_projected(Some(b"invalid JSON")).is_none());
+}
+
 /// A firing site's access-amendment seat that records nowhere: the tests that read no journal.
 fn no_reads(_: &str, _: Option<&str>, _: &str, _: bool) {}
 
