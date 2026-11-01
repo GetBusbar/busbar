@@ -23,16 +23,254 @@
 //! they sit. Unarmed (every binary that never calls [`marked_key`] or [`watch`]) it costs one
 //! atomic load per free.
 //!
-//! The crate's `deny(unsafe_code)` holds over this whole module except the one
-//! `unsafe impl GlobalAlloc` block, which carries the module's only `#[allow(unsafe_code)]`.
+//! The optional initialized-prefix observer below is independent of that legacy marker scanner.
+//! It never arms the scanner and suppresses it on its thread during a probe scope. Only explicitly
+//! registered initialized owned ranges are observed before the allocator frees them.
 
 use std::alloc::{GlobalAlloc, Layout, System};
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
+use std::marker::PhantomData;
+use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, AtomicU8, AtomicUsize, Ordering};
+#[cfg(target_os = "linux")]
+use std::{fs::File, os::unix::fs::FileExt};
 
 thread_local! {
     /// Allocations (and reallocations) made by THIS thread since it started or last [`reset`].
     static ALLOCS: Cell<u64> = const { Cell::new(0) };
+    static PAYLOADS: RefCell<Option<ProbeState>> = const { RefCell::new(None) };
+    static READING: Cell<bool> = const { Cell::new(false) };
+    static REENTERED: Cell<bool> = const { Cell::new(false) };
+}
+
+struct ProbeState {
+    payloads: Vec<ObservedPayload>,
+    #[cfg(target_os = "linux")]
+    memory: File,
+}
+
+/// The destruction of one explicitly registered initialized payload prefix.
+#[derive(Debug)]
+pub struct ObservedPayload {
+    address: usize,
+    /// The initialized prefix length, excluding spare capacity.
+    pub len: usize,
+    /// Whether deallocation of the registered allocation was observed.
+    pub freed: bool,
+    /// Whether every registered byte was zero at deallocation.
+    pub wiped: bool,
+    /// Whether this allocation was freed by a successful reallocation.
+    pub reallocated: bool,
+    /// Bytes successfully copied by the OS reader, excluding spare capacity.
+    pub bytes_read: usize,
+    /// Whether the complete registered prefix was copied without an error.
+    pub complete_read: bool,
+    /// A failed read, invalid range, or unsupported platform prevents memory proof.
+    pub read_error: Option<std::io::ErrorKind>,
+}
+
+/// The complete observation scope, including allocator reentry during an OS read.
+#[derive(Debug)]
+pub struct PayloadObservations {
+    /// Every explicitly registered allocation, including those not freed in the scope.
+    pub payloads: Vec<ObservedPayload>,
+    /// Whether the OS reader reentered the allocator. A true value invalidates memory proof.
+    pub reentered: bool,
+}
+
+/// A thread-bound observation scope. Dropping it disarms observation, including on panic.
+#[derive(Debug)]
+pub struct InitializedPayloadProbe {
+    _thread_bound: PhantomData<Rc<()>>,
+}
+
+impl InitializedPayloadProbe {
+    /// Begin observing payloads registered on this thread.
+    ///
+    /// # Safety
+    /// Every payload registered during this scope, including by test instrumentation, must remain
+    /// exclusively owned until it is deallocated on this thread or the scope ends. The registered
+    /// prefix must remain initialized while owned; deallocation is observed through an OS copy,
+    /// without dereferencing the Rust allocation after its owner gives it up.
+    /// Registration must identify the allocation's base, not an interior slice. Moving a registered
+    /// allocation to another thread before ending this scope is forbidden.
+    ///
+    /// # Panics
+    /// Panics if another observation scope is already active on this thread.
+    ///
+    /// # Errors
+    /// On Linux, opening `/proc/self/mem` must succeed before observation is armed. Other platforms
+    /// still record registrations and frees, but report `Unsupported` instead of memory proof.
+    #[allow(unsafe_code)]
+    pub unsafe fn start() -> std::io::Result<Self> {
+        #[cfg(target_os = "linux")]
+        let memory = File::open("/proc/self/mem")?;
+        PAYLOADS.with(|payloads| {
+            let mut payloads = payloads.borrow_mut();
+            assert!(payloads.is_none(), "one payload probe per thread");
+            *payloads = Some(ProbeState {
+                payloads: Vec::new(),
+                #[cfg(target_os = "linux")]
+                memory,
+            });
+        });
+        REENTERED.with(|reentered| reentered.set(false));
+        Ok(Self {
+            _thread_bound: PhantomData,
+        })
+    }
+
+    /// End observation and return the registered payloads and their destruction results.
+    #[must_use]
+    pub fn finish(self) -> PayloadObservations {
+        let state =
+            PAYLOADS.with(|payloads| payloads.borrow_mut().take().expect("active payload probe"));
+        PayloadObservations {
+            payloads: state.payloads,
+            reentered: REENTERED.with(Cell::get),
+        }
+    }
+}
+
+impl Drop for InitializedPayloadProbe {
+    fn drop(&mut self) {
+        let _ = PAYLOADS.try_with(|payloads| {
+            payloads.borrow_mut().take();
+        });
+    }
+}
+
+/// Register the initialized prefix of an owned allocation. Does nothing outside a probe scope.
+/// Repeated registration of the same live allocation extends its known initialized prefix.
+///
+/// # Safety
+/// `bytes` must start at the base of a live allocation. Its bytes must remain initialized and
+/// exclusively owned until that allocation is freed on this thread or the active probe ends.
+#[allow(unsafe_code)]
+pub unsafe fn watch_initialized_payload(bytes: &[u8]) {
+    if bytes.is_empty() {
+        return;
+    }
+    PAYLOADS.with(|payloads| {
+        let mut payloads = payloads.borrow_mut();
+        let Some(state) = payloads.as_mut() else {
+            return;
+        };
+        let payloads = &mut state.payloads;
+        let address = bytes.as_ptr() as usize;
+        if let Some(payload) = payloads
+            .iter_mut()
+            .find(|payload| !payload.freed && payload.address == address)
+        {
+            payload.len = payload.len.max(bytes.len());
+        } else {
+            payloads.push(ObservedPayload {
+                address,
+                len: bytes.len(),
+                freed: false,
+                wiped: false,
+                reallocated: false,
+                bytes_read: 0,
+                complete_read: false,
+                read_error: None,
+            });
+        }
+    });
+}
+
+fn registered(address: usize) -> bool {
+    PAYLOADS
+        .try_with(|payloads| {
+            payloads.try_borrow().is_ok_and(|payloads| {
+                payloads.as_ref().is_some_and(|payloads| {
+                    payloads
+                        .payloads
+                        .iter()
+                        .any(|payload| !payload.freed && payload.address == address)
+                })
+            })
+        })
+        .unwrap_or(false)
+}
+
+fn probe_active() -> bool {
+    PAYLOADS
+        .try_with(|payloads| payloads.try_borrow().is_ok_and(|state| state.is_some()))
+        .unwrap_or(false)
+}
+
+fn note_reentry() -> bool {
+    let reading = READING.try_with(Cell::get).unwrap_or(false);
+    if reading {
+        let _ = REENTERED.try_with(|reentered| reentered.set(true));
+    }
+    reading
+}
+
+fn observe_deallocation(address: usize, layout: Layout, reallocated: bool) {
+    let _ = PAYLOADS.try_with(|payloads| {
+        let Ok(mut payloads) = payloads.try_borrow_mut() else {
+            return;
+        };
+        let Some(state) = payloads.as_mut() else {
+            return;
+        };
+        if let Some(payload) = state
+            .payloads
+            .iter_mut()
+            .find(|payload| !payload.freed && payload.address == address)
+        {
+            payload.freed = true;
+            payload.reallocated = reallocated;
+            if payload.len > layout.size() || address.checked_add(payload.len).is_none() {
+                payload.read_error = Some(std::io::ErrorKind::InvalidInput);
+                return;
+            }
+            #[cfg(target_os = "linux")]
+            {
+                READING.with(|reading| reading.set(true));
+                read_payload(&state.memory, payload, address);
+                READING.with(|reading| reading.set(false));
+            }
+            #[cfg(not(target_os = "linux"))]
+            {
+                payload.read_error = Some(std::io::ErrorKind::Unsupported);
+            }
+        }
+    });
+}
+
+#[cfg(target_os = "linux")]
+fn read_payload(memory: &File, payload: &mut ObservedPayload, current_address: usize) {
+    let mut chunk = [0u8; 4096];
+    let mut all_zero = true;
+    while payload.bytes_read < payload.len {
+        let count = chunk.len().min(payload.len - payload.bytes_read);
+        let offset = (current_address as u64).checked_add(payload.bytes_read as u64);
+        let Some(offset) = offset else {
+            payload.read_error = Some(std::io::ErrorKind::InvalidInput);
+            return;
+        };
+        // The kernel copies the registered range into initialized stack storage. No Rust reference
+        // or load is formed from the allocation passed to GlobalAlloc::dealloc.
+        match memory.read_at(&mut chunk[..count], offset) {
+            Ok(0) => {
+                payload.read_error = Some(std::io::ErrorKind::UnexpectedEof);
+                return;
+            }
+            Ok(read) => {
+                all_zero &= chunk[..read].iter().all(|byte| *byte == 0);
+                payload.bytes_read += read;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(error) => {
+                payload.read_error = Some(error.kind());
+                return;
+            }
+        }
+    }
+    payload.complete_read = true;
+    payload.wiped = all_zero;
 }
 
 /// The system allocator, counting every allocation and reallocation on the calling thread.
@@ -270,17 +508,29 @@ fn bump() {
 #[allow(unsafe_code)] // REVIEWED, TEST ONLY: counting GlobalAlloc for plugin allocation gates
 unsafe impl GlobalAlloc for Counting {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        note_reentry();
         bump();
         // SAFETY: forwarded verbatim; the caller's obligations on `layout` are unchanged.
         unsafe { System.alloc(layout) }
     }
     unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+        note_reentry();
         bump();
         // SAFETY: forwarded verbatim; the caller's obligations on `layout` are unchanged.
         unsafe { System.alloc_zeroed(layout) }
     }
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        if WATCHING.load(Ordering::SeqCst) != 0 && layout.size() >= 2 {
+        // The optional initialized-prefix probe is independent of the legacy marker scanner.
+        // It observes only a registered owned range, before System frees this exact allocation.
+        let reentered = note_reentry();
+        if !reentered {
+            observe_deallocation(ptr as usize, layout, false);
+        }
+        if !reentered
+            && !probe_active()
+            && WATCHING.load(Ordering::SeqCst) != 0
+            && layout.size() >= 2
+        {
             // SAFETY (TEST ONLY, and NOT fully sound): `ptr` is a live block of `layout.size()`
             // bytes until `System` frees it below, and its owner has given it up, so nothing else
             // reads or writes it during `dealloc`. But the slice spans the WHOLE block, including
@@ -295,7 +545,25 @@ unsafe impl GlobalAlloc for Counting {
         unsafe { System.dealloc(ptr, layout) }
     }
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
-        if WATCHING.load(Ordering::SeqCst) != 0 {
+        let reentered = note_reentry();
+        if registered(ptr as usize) {
+            bump();
+            // SAFETY: the realloc contract guarantees a valid nonzero new layout.
+            let new_layout = unsafe { Layout::from_size_align_unchecked(new_size, layout.align()) };
+            // SAFETY: the new layout is valid and nonzero.
+            let new = unsafe { System.alloc(new_layout) };
+            if !new.is_null() {
+                // SAFETY: the live blocks are distinct, contain at least the copied size, and the
+                // old allocation is observed and freed exactly once. Raw copying allows spare bytes.
+                unsafe {
+                    std::ptr::copy_nonoverlapping(ptr, new, layout.size().min(new_size));
+                    observe_deallocation(ptr as usize, layout, true);
+                    System.dealloc(ptr, layout);
+                }
+            }
+            return new;
+        }
+        if !reentered && !probe_active() && WATCHING.load(Ordering::SeqCst) != 0 {
             // Armed: the trait's default body, so the old block is freed through `dealloc` and
             // read. One allocation, counted by `alloc`.
             // SAFETY: the caller guarantees `new_size`, rounded up to `layout.align()`, does not

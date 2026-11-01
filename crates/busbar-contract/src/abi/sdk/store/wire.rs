@@ -1001,3 +1001,7 @@ fn serve<T>(cx: &mut Op<'_>, running: &Running<T>, ask: &Ask, buf: &mut [u8]) ->
 #[cfg(test)]
 #[path = "../tests/store_wire_kept_tests.rs"]
 mod kept_tests;
+
+#[cfg(test)]
+#[path = "../tests/store_wire_output_wipe_tests.rs"]
+mod output_wipe_tests;
