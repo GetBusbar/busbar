@@ -308,7 +308,7 @@ impl crate::datagram::LegSink for ReturnedLines {
 /// actual host sink can hold. Recalls retain their output but receive no application bytes.
 struct LineOutputs {
     facts: crate::framer::DoorFacts,
-    pending: Mutex<VecDeque<(u64, Vec<u8>, u32)>>,
+    pending: Mutex<VecDeque<(u64, Vec<u8>, u16)>>,
     calls: Mutex<Vec<(usize, bool, bool)>>,
     count: std::sync::atomic::AtomicUsize,
     finished: std::sync::atomic::AtomicUsize,
