@@ -108,7 +108,7 @@ fn an_admitted_dial_moves_bytes_both_ways_and_a_handle_is_its_makers_alone() {
             .await
             .unwrap();
         assert_eq!(&buf[..n], b"pong");
-        let (_, peer_at) = io.ends(OWNER, h).unwrap();
+        let peer_at = io.ends(OWNER, h).unwrap().peer;
         assert_eq!(peer_at, at);
         // RED: another owner reaches nothing of it.
         assert!(io.close(OWNER + 1, h).is_err());
@@ -165,6 +165,61 @@ fn an_admitted_program_is_spawned_bare_and_killed_with_its_handle() {
     });
 }
 
+/// RED (a program carrier's end, coordinator ruling (A)): `io.ends` on a program's handle answers the program's
+/// OWN exit, read without waiting, so a program whose descendant still holds its output is seen to
+/// have ended while a read of the pipe still pends. Here the program exits with code 3 and leaves a
+/// `sleep` holding its output. RED before: `ends` answered a program `(0, "")` and nothing of its
+/// exit, so the end was only ever seen at the pipe's end, which the descendant withholds.
+#[test]
+fn a_programs_own_exit_is_answered_by_ends_while_a_descendant_holds_its_output() {
+    worker().block_on(async {
+        let io = HostIo::new();
+        let args = ["-c".to_owned(), "sleep 5 & exit 3".to_owned()];
+        let program = Program {
+            command: "/bin/sh".into(),
+            args: args.to_vec(),
+            env: Vec::new(),
+            env_refs: Vec::new(),
+        };
+        io.admit(
+            ticket(21),
+            Admission::Spawn(program, crate::spawn_env::HeldEnv::written_only()),
+        );
+        let argv: Vec<&str> = args.iter().map(String::as_str).collect();
+        let h = io
+            .spawn(
+                OWNER,
+                ticket(21),
+                &Spawn {
+                    program: "/bin/sh",
+                    args: &argv,
+                    env: &[],
+                },
+            )
+            .unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(4);
+        let ends = loop {
+            let ends = io.ends(OWNER, h).unwrap();
+            if ends.exit.is_some() || std::time::Instant::now() > deadline {
+                break ends;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        };
+        assert_eq!(
+            ends.exit,
+            Some(3),
+            "the program's own exit was not answered"
+        );
+        assert_eq!((ends.port, ends.peer.as_str()), (0, ""));
+        // The descendant still holds the output: a read of the pipe pends, not ends.
+        let mut buf = [0_u8; 16];
+        let waker = std::task::Waker::noop();
+        let read = io.read(OWNER, h, &mut buf, waker);
+        assert!(read.is_pending(), "the pipe ended: {read:?}");
+        io.close(OWNER, h).unwrap();
+    });
+}
+
 /// The config-time proof the cells' declarations hold.
 fn scope() -> busbar_contract::config_time::ConfigScope {
     busbar_contract::config_time::ConfigScope::config_time()
@@ -202,10 +257,10 @@ async fn env_lines(io: &HostIo, t: u32) -> Result<Vec<String>, IoRefusal> {
     Ok(lines)
 }
 
-/// THE HELD ENVIRONMENT (ARCHITECT ruling 2026-10-13, row 166): the carrier hands the host's
-/// `io.spawn` the program's WRITTEN environment only; the admitted program's references were
-/// resolved at config time and are held, so the value exists in the host's records and the child's
-/// environment and nowhere the carrier reaches. A reference that did not resolve spawns nothing.
+/// THE HELD ENVIRONMENT: the carrier hands the host's `io.spawn` the program's WRITTEN environment
+/// only; the admitted program's references were resolved at config time and are held, so the value
+/// exists in the host's records and the child's environment and nowhere the carrier reaches. A
+/// reference that did not resolve spawns nothing.
 #[test]
 fn a_programs_environment_reference_is_held_for_the_hosts_spawn() {
     const VAR: &str = "BUSBAR_HOSTIO_SPAWN_SECRET";
@@ -265,10 +320,10 @@ fn a_programs_environment_reference_is_held_for_the_hosts_spawn() {
     });
 }
 
-/// RED (ARCHITECT ruling 2026-10-13, row 166): A SPAWN RESOLVES NOTHING. A spawn serves a request
-/// (a member's first lease, a respawn, a program need's every open), so the program's references
-/// resolve ONCE, at the load, and every spawn after it loads what is held: two spawns, still one
-/// resolution. RED before: `io.spawn` resolved every reference at every spawn.
+/// A SPAWN RESOLVES NOTHING. A spawn serves a request (a member's first lease, a respawn, a program
+/// need's every open), so the program's references resolve ONCE, at the load, and every spawn after
+/// it loads what is held: two spawns, still one resolution. RED before: `io.spawn` resolved every
+/// reference at every spawn.
 ///
 /// And A ROTATED SECRET REACHES THE FIRST NEW CHILD AFTER THE NEXT REFRESH: the variable changed,
 /// the next spawn still hands the value the load resolved; after the refresher's pass the next
@@ -327,6 +382,30 @@ fn a_spawn_resolves_nothing_and_a_rotation_reaches_the_first_child_after_the_ref
             }
             other => panic!("a reference gone at the refresh spawned: {other:?}"),
         }
+        assert_eq!(io.held(), 0);
+    });
+}
+
+/// RED (transport ABI defect 2): `reap` releases every handle its owner still holds, as `close`
+/// releases one: the listener it bound stops listening. Another owner's handles stay.
+#[test]
+fn reap_releases_every_handle_of_its_owner_and_no_other() {
+    worker().block_on(async {
+        let io = HostIo::new();
+        io.admit(ticket(30), Admission::Bind("127.0.0.1:0".into()));
+        let (_, at) = io.listen(OWNER, ticket(30), "127.0.0.1:0").unwrap();
+        io.admit(ticket(31), Admission::Bind("127.0.0.1:0".into()));
+        let (other, _) = io.listen(OWNER + 1, ticket(31), "127.0.0.1:0").unwrap();
+        assert_eq!(io.held(), 2);
+        io.reap(OWNER);
+        assert_eq!(io.held(), 1, "the owner's listener is released");
+        assert!(
+            tokio::net::TcpStream::connect(&at).await.is_err(),
+            "the reaped listener still accepts at {at}"
+        );
+        assert!(matches!(io.close(OWNER, other), Err(IoRefusal::Refused(_))));
+        io.close(OWNER + 1, other)
+            .expect("another owner's handle stays");
         assert_eq!(io.held(), 0);
     });
 }

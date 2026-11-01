@@ -302,11 +302,11 @@ pub fn rendered_facts(rendering: &[u8]) -> Result<AuthFacts, String> {
     if r.kind_tail_size == 0 {
         return Err("an auth plugin states no kind tail".to_string());
     }
-    if (r.kind_tail_size as usize) < auth::AUTH_TAIL_FROZEN {
+    if (r.kind_tail_size as usize) < auth::TAIL_FROZEN {
         return Err(format!(
             "an auth plugin states a {}-byte tail, smaller than its frozen {}",
             r.kind_tail_size,
-            auth::AUTH_TAIL_FROZEN
+            auth::TAIL_FROZEN
         ));
     }
     let t =

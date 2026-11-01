@@ -114,6 +114,7 @@ fn a_second_install_is_refused() {
     impl PluginObserver for Other {
         fn dropped(&self, _: u64) {}
         fn observe(&self, _: &str, _: &str, _: &[serde_json::Value], _: &[serde_json::Value]) {}
+        fn refused(&self, _: &str, _: &str, _: crate::observe::BindRefusal<'_>) {}
     }
     let _guard = exclusive();
     let observing = Observing::default();

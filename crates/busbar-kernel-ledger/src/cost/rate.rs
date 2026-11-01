@@ -228,7 +228,7 @@ impl CellPrices {
 /// qualified `"<plane>\u{1f}<lane>"` ([`crate::cost::PLANE_LANE_SEP`]) is priced by THAT plane's card
 /// alone ([`Self::plane_lane`]). A plane with no card of its own is billing OFF for that plane (#42:
 /// reads 0), whatever any other plane's card says; each plane's presence is its own switch.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RateCard {
     present: bool,
     prices: BTreeMap<String, BTreeMap<String, CellPrices>>,
@@ -591,7 +591,7 @@ impl RateCard {
     pub fn digest(&self) -> [u8; 32] {
         let mut bytes = b"busbar/rate-card-digest/v1\0".to_vec();
         self.digest_into(&mut bytes);
-        crate::digest::sha256(&bytes)
+        busbar_contract::abi::sdk::digest::sha256(&bytes)
     }
 
     /// The bytes [`Self::digest`] hashes: length-prefixed, every map in its own (sorted) order.

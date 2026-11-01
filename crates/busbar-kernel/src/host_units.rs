@@ -79,6 +79,10 @@ struct UnitEntry {
     record: Option<Arc<UnitRecord>>,
     stage: Option<Arc<dyn UnitHookStage>>,
     lent: Option<busbar_contract::redacted::Secret<Vec<u8>>>,
+    /// What admitted the unit, for `ticket.take`: `Some(Some(record))` the record of the ticket
+    /// the gate spent admitting it, `Some(None)` a key; `None` never stated, or taken. The unit's
+    /// end drops what was never taken.
+    ticket: Option<Option<Vec<u8>>>,
 }
 
 /// Every unit in flight, by unit key, split across the in-flight table's shards by the key so a
@@ -116,6 +120,24 @@ impl UnitRecords {
     /// The unit `unit` ended: its record goes, its hook stage, and the credential it lent.
     pub fn ended(&self, unit: u64) {
         self.lock(unit).remove(&unit);
+    }
+
+    /// The unit `unit` was admitted by `ticket`: `Some` the record of the ticket the gate spent
+    /// admitting it, `None` a key. Only a unit in flight holds one (`false` otherwise).
+    pub fn ticketed(&self, unit: u64, ticket: Option<Vec<u8>>) -> bool {
+        match self.lock(unit).get_mut(&unit) {
+            Some(entry) if entry.record.is_some() => {
+                entry.ticket = Some(ticket);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// TAKE what admitted `unit`, once: `Some(Some(record))` a ticket's record, `Some(None)` a key,
+    /// and `None` for a unit not in flight or one already taken.
+    pub fn take_ticket(&self, unit: u64) -> Option<Option<Vec<u8>>> {
+        self.lock(unit).get_mut(&unit)?.ticket.take()
     }
 
     /// The caller of `unit` presented `credential`: lent, while the unit runs, to a passthrough

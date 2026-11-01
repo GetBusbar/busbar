@@ -25,7 +25,7 @@
 //!                   Posted, PrincipalId, UnitEnd, Usage, WriteMoney};
 //! let seal = KernelSeal::acquire_for_kernel();
 //! let admit: Grant<Admittance> = Grant::<Admittance>::mint(&seal);
-//! let hold = Hold::open(&admit, PrincipalId::new("acct-1"), 10);
+//! let hold = Hold::open(&admit, PrincipalId::new("acct-1"));
 //! let usage = Usage::report(&Grant::<Consumption>::mint(&seal), Vec::new()).unwrap();
 //! let posted = Posted::settle(hold, 0, &usage, &Grant::<WriteMoney>::mint(&seal));
 //! let end = UnitEnd::seal(&Grant::<Exit>::mint(&seal), Outcome::Completed, Ok(posted));

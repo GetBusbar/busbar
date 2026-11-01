@@ -162,3 +162,23 @@ fn sha256_hex_matches_the_published_test_vectors() {
         "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
     );
 }
+
+crate::own_seal!(Own);
+
+/// A PLUGIN'S OWN SECRET (Part 2 #54, coordinator ruling on #1192): the same `Secret`, under the
+/// crate's own seal. It reads back under that seal, and keeps every guarantee a kernel-owned
+/// secret has: `Debug`, `Display` and `to_string` render `[REDACTED]`, equality is constant-time
+/// over the bytes, and a clone is an equal secret.
+#[test]
+fn a_secret_the_crate_holds_reads_back_only_under_its_own_seal_and_stays_redacted() {
+    let held: Secret<String, Own> = Secret::held("sk-own-0001".to_string());
+    assert_eq!(held.expose_own(&Own::here()), "sk-own-0001");
+    assert_eq!(format!("{held:?}"), "[REDACTED]");
+    assert_eq!(format!("{held}"), "[REDACTED]");
+    assert_eq!(held.to_string(), "[REDACTED]");
+    assert!(held == held.clone());
+    assert!(held != Secret::<String, Own>::held("sk-own-0002".to_string()));
+    // A kernel-owned secret is still read only under a kernel seal.
+    let kernel = Secret::new("sk-live".to_string());
+    assert_eq!(kernel.expose(&crate::plugin::TestKernelSeal), "sk-live");
+}

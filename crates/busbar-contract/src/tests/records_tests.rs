@@ -1014,3 +1014,28 @@ fn retention_codes_round_trip_and_age_is_the_default() {
     assert_eq!(Retention::TerminalOnly.code(), 1);
     assert_eq!(Retention::from_code(2), None);
 }
+
+#[test]
+fn credential_rewrap_wire_request_cannot_decode_as_an_ordinary_credential() {
+    use crate::abi::sdk::store::rewrap::Request;
+    let expected = sample_credential();
+    let replacement = "v1:aead:NEW_ENVELOPE_CANARY";
+    let request = Request::new(&expected, replacement);
+    let debug = format!("{request:?}");
+    assert!(!debug.contains(&expected.secret));
+    assert!(!debug.contains(replacement));
+    let bytes = serde_json::to_vec(&request).unwrap();
+    assert!(
+        serde_json::from_slice::<CredentialSecret>(&bytes).is_err(),
+        "an old SDK must not mint this request"
+    );
+    let decoded: Request = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(decoded.version, 1);
+    assert_eq!(decoded.expected, expected);
+    assert_eq!(decoded.replacement, replacement);
+    let ordinary = serde_json::to_vec(&expected).unwrap();
+    assert!(
+        serde_json::from_slice::<Request>(&ordinary).is_err(),
+        "ordinary PUT is not maintenance intent"
+    );
+}

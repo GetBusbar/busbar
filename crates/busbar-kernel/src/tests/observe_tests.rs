@@ -15,7 +15,8 @@ use super::*;
 fn a_registered_code_resolves_to_the_catalogue_entry() {
     let d = crate::diagnostics::PLUGINS_DIR_FINGERPRINT_FAILED;
     let banner = format!("BUSBAR-{}", d.code);
-    let got = resolve_code(&banner).expect("a registered code resolves");
+    let got = resolve_code(crate::diagnostics::Catalogue::NEUTRAL, &banner)
+        .expect("a registered code resolves");
     assert_eq!(got.code, d.code);
     assert_eq!(got.slug, d.slug);
 }
@@ -25,7 +26,7 @@ fn a_registered_code_resolves_to_the_catalogue_entry() {
 /// promise, so an unregistered code resolves to nothing and never reaches a log line.
 #[test]
 fn an_unregistered_code_is_refused() {
-    assert!(resolve_code("BUSBAR-65535").is_none());
+    assert!(resolve_code(crate::diagnostics::Catalogue::NEUTRAL, "BUSBAR-65535").is_none());
 }
 
 /// Nor can a plugin get a banner by spelling one that is not a banner.
@@ -41,7 +42,10 @@ fn a_malformed_code_is_refused() {
         "BUSBAR-99999999",
         "BUSBAR-1234 ",
     ] {
-        assert!(resolve_code(bad).is_none(), "{bad} must not resolve");
+        assert!(
+            resolve_code(crate::diagnostics::Catalogue::NEUTRAL, bad).is_none(),
+            "{bad} must not resolve"
+        );
     }
 }
 
@@ -356,7 +360,7 @@ fn hook_envelope_metrics_are_carried_but_not_folded() {
     let entries = vec![serde_json::json!({"name": "x_total", "type": "counter", "value": 1})];
     // Must not panic, must not emit. The kind constant is read from the ABI so a kind rename cannot
     // silently turn the freeze off.
-    KernelPluginObserver.observe(
+    OBSERVER.observe(
         &*TEST_GRANTS,
         "some-hook",
         busbar_contract::abi::mechanism::kind::HOOK,
@@ -381,7 +385,7 @@ fn a_hooks_diagnostic_is_emitted_while_its_metrics_stay_frozen() {
     let cap = WarnCapture::capturing_debug();
     let subscriber = tracing_subscriber::registry().with(cap.clone());
     tracing::subscriber::with_default(subscriber, || {
-        KernelPluginObserver.observe(
+        OBSERVER.observe(
             &*TEST_GRANTS,
             "some-hook",
             busbar_contract::abi::mechanism::kind::HOOK,
@@ -442,14 +446,14 @@ fn a_first_party_plugins_diagnostic_is_written_as_the_hosts_own_line() {
     tracing::subscriber::with_default(subscriber, || {
         let url = String::from("https://a/");
         crate::diagnostics::diag_warn!(d, webhook_url = url, status = 503u16, "it broke");
-        KernelPluginObserver.observe(
+        OBSERVER.observe(
             &*TEST_GRANTS,
             "k9c-first-party",
             "export",
             &[],
             std::slice::from_ref(&entry),
         );
-        KernelPluginObserver.observe(&*TEST_GRANTS, "k9c-third-party", "export", &[], &[entry]);
+        OBSERVER.observe(&*TEST_GRANTS, "k9c-third-party", "export", &[], &[entry]);
     });
     let text = String::from_utf8(buf.0.lock().unwrap().clone()).unwrap();
     let lines: Vec<&str> = text.lines().collect();
@@ -477,6 +481,10 @@ impl Grants for TestGrants {
     }
 }
 
+/// The observer these tests fold through, lent the neutral built-ins (no plane is linked here).
+const OBSERVER: KernelPluginObserver =
+    KernelPluginObserver::lent(crate::diagnostics::Catalogue::NEUTRAL);
+
 static TEST_GRANTS: std::sync::LazyLock<TestGrants> = std::sync::LazyLock::new(TestGrants::default);
 
 /// Grant `plugin` first-party with `declared` series.
@@ -487,5 +495,80 @@ fn grant(plugin: &str, declared: &[busbar_contract::abi::mechanism::observe::Ser
             .iter()
             .map(|d| (d.name.clone(), d.kind.clone()))
             .collect(),
+    );
+}
+
+/// TWO OBSERVERS LENT TWO ROOTS' CATALOGUES EACH EMIT ONLY THEIR OWN ROOT'S CODES: the kernel holds
+/// no catalogue. The same first-party diagnostic naming a code only the first root folded is
+/// emitted by the observer lent that root's catalogue and dropped by the other, as a code no
+/// catalogue holds is. While the catalogue was one installed process static, every observer in the
+/// process resolved against whichever root installed first.
+#[test]
+fn two_observers_lent_two_catalogues_each_emit_only_their_own_roots_codes() {
+    use std::io::Write;
+    #[derive(Clone, Default)]
+    struct Buf(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+    impl Write for Buf {
+        fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(b);
+            Ok(b.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    static OWN: crate::diagnostics::Diagnostic = crate::diagnostics::Diagnostic {
+        code: 7995,
+        class: crate::diagnostics::Class::Plane,
+        slug: "lent-observer-own",
+        title: "A plane-contributed condition",
+        severity: crate::diagnostics::Severity::Actionable,
+        summary: "A test plane's own condition, folded into one root's catalogue only.",
+        action: "None: a test entry.",
+        since: "1.6.0",
+        retired: false,
+    };
+    let folded =
+        KernelPluginObserver::lent(crate::diagnostics::Catalogue::lent(Box::leak(Box::new([
+            &OWN,
+        ]))));
+    let other = KernelPluginObserver::lent(crate::diagnostics::Catalogue::lent(&[]));
+    grant("lent-observer-plugin", &[]);
+    let entry = serde_json::to_value(
+        busbar_contract::abi::mechanism::observe::PluginDiagnostic::warn(
+            "BUSBAR-7995".to_string(),
+            "the plane's own condition",
+        ),
+    )
+    .unwrap();
+    let emitted = |observer: KernelPluginObserver| {
+        let buf = Buf::default();
+        let writer = buf.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(move || writer.clone())
+            .with_ansi(false)
+            .without_time()
+            .finish();
+        tracing::subscriber::with_default(subscriber, || {
+            observer.observe(
+                &*TEST_GRANTS,
+                "lent-observer-plugin",
+                "export",
+                &[],
+                std::slice::from_ref(&entry),
+            );
+        });
+        let bytes = buf.0.lock().unwrap().clone();
+        String::from_utf8(bytes).unwrap()
+    };
+    let own = emitted(folded);
+    assert!(
+        own.contains("BUSBAR-7995"),
+        "the folding root's observer emits its code: {own}"
+    );
+    let theirs = emitted(other);
+    assert!(
+        theirs.is_empty(),
+        "the other root's observer holds no such code: {theirs}"
     );
 }

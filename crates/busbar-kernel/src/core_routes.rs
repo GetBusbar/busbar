@@ -122,6 +122,19 @@ impl CoreRouteTable {
             .map(|r| &r.refuse)
     }
 
+    /// The issued-id prefix of the tickets the door route `(path, method)` takes (row 132): `Some`
+    /// for a `CLAIM_TICKET` route whose plane declares one, `None` for every other route.
+    pub(crate) fn door_ticket(&self, path: &str, method: &Method) -> Option<&str> {
+        if self.door_refusals.is_empty() {
+            return None;
+        }
+        let rm = route_method_of(method)?;
+        self.door_refusals
+            .iter()
+            .find(|r| r.route.method == rm && route_matches(&r.route.path, path))
+            .and_then(|r| r.ticket_prefix.as_deref())
+    }
+
     /// Whether a door plane flags `path` a SIGNED path (`abi::plane::CLAIM_SIGNED_INGRESS`; ARCHITECT
     /// ruling 2026-10-16, 3b A): some raw-affix claim of a door plane (`abi::plane::CLAIM_RAW_AFFIX`,
     /// ARCHITECT ruling 2026-10-17), whatever its verb, whose prefix and suffix the raw `path` starts

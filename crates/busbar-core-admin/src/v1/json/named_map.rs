@@ -334,6 +334,7 @@ async fn apply(
     mutation: Mutation,
 ) -> Response {
     let actor = principal.actor_id().to_string();
+    let card_origin = format!("{} write by {actor}", section.key());
     let action = format!("{}.{}", section.singular(), mutation.verb());
     let resource = format!("{}:{name}", section.singular());
     let reject = |e: &AdminError, cond: Cond, actor: &str| -> Response {
@@ -600,7 +601,7 @@ async fn apply(
                 },
                 move || {
                     // Past persist AND swap: keep the limits this build installed.
-                    limits.keep();
+                    busbar_kernel::rate_apply::with_origin(&card_origin, || limits.keep());
                     if let Some(rotate) = gov_rotate {
                         rotate();
                     }
@@ -731,8 +732,8 @@ fn section_contains(app: &App, section: NamedMapSection, name: &str) -> bool {
         // read names no plane registry type; a plane compiled out has no decl and answers `false`.
         NamedMapSection::Plane(_) => {
             busbar_kernel::plane_driver::registry::plane_decl_for_config_section(section.key())
-                .and_then(|d| d.registry_contains)
-                .is_some_and(|f| f(app, name))
+                .and_then(|d| d.registry_contains.map(|f| (d, f)))
+                .is_some_and(|(d, f)| f(d, app, name))
         }
     }
 }

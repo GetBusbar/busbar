@@ -32,7 +32,7 @@ fn install() {
     ONCE.call_once(|| {
         busbar_kernel::test_support::install_test_root(busbar_kernel::preflight::RootInstall {
             plugin_logs: Some(plugin_logs),
-            ..busbar_kernel::preflight::root_rows()
+            ..busbar_kernel::test_support::root::composed()
         });
     });
 }

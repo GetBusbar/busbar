@@ -500,6 +500,16 @@ impl AsPlane {
         if !ath_matches || !bound_to_proof_key {
             return false;
         }
+        // The token must still be one THIS server holds. A DPoP-bound token is only ever minted by
+        // this plane, and `oauth-as` deletes what it revokes (a reused authorization code revokes
+        // the family its first redemption minted, RFC 6749 s4.1.2 / RFC 9700 s4.1.1). Judged by
+        // its signature alone it would stay admissible here until it expired.
+        if !matches!(
+            self.server.store().get_token(&presented.token).await,
+            Ok(Some(_))
+        ) {
+            return false;
+        }
         // Namespaced apart from the token endpoint's own proof `jti`s, which share the ledger.
         let replay_id = format!("dpop-resource:{}:{}", proof.jkt, proof.jti);
         matches!(

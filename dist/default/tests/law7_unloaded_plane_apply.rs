@@ -25,7 +25,7 @@
 //! RED before the fix: no rule judged the document, so the parse refused the section as an unknown
 //! field, without saying the plane was not loaded or that a restart takes it.
 #![cfg(unix)]
-#![cfg(linked_every_plane)]
+#![cfg(linked_every_plane_door)]
 
 mod common;
 
@@ -220,10 +220,10 @@ fn boot(dir: &Path, data: u16, admin: u16, run: &str) -> Booted {
     };
     let deadline = Instant::now() + Duration::from_secs(60);
     loop {
-        let text = read_to_string(&booted.log);
-        if common::boot::log_shows_data_and_admin_listening(&text) {
+        if common::boot::healthz_answers(data) {
             break;
         }
+        let text = read_to_string(&booted.log);
         if let Some(status) = booted.child.try_wait().expect("try_wait") {
             panic!("busbar exited before listening ({status:?}):\n{text}");
         }

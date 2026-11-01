@@ -342,8 +342,14 @@ fn plane_config_validate(
         decl.trust_keys,
         &crate::config::plane_sections::config_sections(),
     )?;
+    // A registration that would lend the caller's credential upstream, refused as boot refuses it.
+    crate::config::plane_sections::refuse_registration_forwarding_caller_credential(
+        &format!("`{}.{name}`", section.key()),
+        &entry,
+        decl.caller_credential_refusal,
+    )?;
     if let Some(f) = decl.config_validate {
-        f(name, def)?;
+        f(decl, name, def)?;
     }
     // THEN THE STRICT READING, the one boot's `parse_section` gives the section. The judgement above
     // reads a malformed trust key as absent, leaving its refusal to the plane's own parse; a token the

@@ -737,6 +737,160 @@ fn a_dropped_in_transports_offered_points_are_read_off_its_statement() {
     );
 }
 
+/// RED (#65, #74): a dial's `begin` carrying the binding's auth handle is admitted only for the
+/// framer it was minted for, at the published generation, with its mac as minted; a malformed
+/// binding is refused too. Every refusal is before the crossing.
+#[test]
+fn a_dial_begin_with_a_foreign_stale_or_forged_binding_ref_is_refused() {
+    use crate::dispatch::auth_handle::{generation, mint_auth_ref};
+    use busbar_contract::abi::host::service::AuthRef;
+    use busbar_contract::abi::transport::{POINT_HEAD, SIDE_ACCEPT, SIDE_DIAL};
+    let (framer, other) = (40, 41);
+    let admit = |i: &BeginIn, owner: u64| {
+        Transport::admit(
+            slot::BEGIN,
+            std::ptr::from_ref(i).cast(),
+            size_of::<BeginIn>(),
+            owner,
+        )
+    };
+    let mut i: BeginIn = z();
+    i.side = SIDE_DIAL;
+    i.scheme = busbar_contract::abi::host::service::SCHEME_SECURE;
+    assert_eq!(admit(&i, framer), None, "a binding with no auth");
+    i.points = POINT_HEAD;
+    i.auth = mint_auth_ref(framer, generation(), 9).expect("minted");
+    assert_eq!(admit(&i, framer), None, "the framer's own handle");
+    assert_eq!(admit(&i, other), Some(Outcome::Refused), "another owner's");
+    let mut stale = i;
+    stale.auth = mint_auth_ref(framer, generation().wrapping_sub(1), 9).expect("minted");
+    assert_eq!(admit(&stale, framer), Some(Outcome::Refused), "stale");
+    let mut forged = i;
+    forged.auth.mac ^= 1 << 17;
+    assert_eq!(admit(&forged, framer), Some(Outcome::Refused), "forged");
+    let mut unbound = i;
+    unbound.auth = AuthRef::NONE;
+    assert_eq!(
+        admit(&unbound, framer),
+        Some(Outcome::Refused),
+        "points with no handle"
+    );
+    let mut accept = i;
+    accept.side = SIDE_ACCEPT;
+    assert_eq!(
+        admit(&accept, framer),
+        Some(Outcome::Refused),
+        "a handle on accept"
+    );
+    // Only `begin` is judged, and only a frame that holds a `BeginIn`.
+    assert_eq!(
+        Transport::admit(
+            slot::INGEST,
+            std::ptr::from_ref(&forged).cast(),
+            size_of::<BeginIn>(),
+            framer
+        ),
+        None
+    );
+}
+
+/// RED: a `begin` whose scheme is undeclared (`0`, a zeroed `in`) or unknown is REFUSED before
+/// the crossing, on every side; a declared scheme is admitted.
+#[test]
+fn a_begin_with_an_undeclared_scheme_is_refused() {
+    use busbar_contract::abi::host::service::{SCHEME_PLAIN, SCHEME_SECURE};
+    use busbar_contract::abi::transport::{SIDE_ACCEPT, SIDE_ACCEPT_STREAM, SIDE_DIAL};
+    let admit = |i: &BeginIn| {
+        Transport::admit(
+            slot::BEGIN,
+            std::ptr::from_ref(i).cast(),
+            size_of::<BeginIn>(),
+            40,
+        )
+    };
+    for side in [SIDE_DIAL, SIDE_ACCEPT, SIDE_ACCEPT_STREAM] {
+        let mut i: BeginIn = z();
+        i.side = side;
+        assert_eq!(admit(&i), Some(Outcome::Refused), "an undeclared scheme");
+        i.scheme = SCHEME_SECURE + 1;
+        assert_eq!(admit(&i), Some(Outcome::Refused), "an unknown scheme");
+        for scheme in [SCHEME_PLAIN, SCHEME_SECURE] {
+            i.scheme = scheme;
+            assert_eq!(admit(&i), None, "a declared scheme");
+        }
+    }
+}
+
+/// RED (the opening body's length): an `emit` whose `body_len` breaks the contract (a length with
+/// `body_len_known` `0`, a flag past `1`, a padding byte) is the host's own fault and never
+/// crosses; a known length, and no length at all, cross.
+#[test]
+fn an_emit_whose_body_length_breaks_the_contract_never_crosses() {
+    let admit = |i: &EmitIn| {
+        Transport::admit(
+            slot::EMIT,
+            std::ptr::from_ref(i).cast(),
+            size_of::<EmitIn>(),
+            40,
+        )
+    };
+    let mut i: EmitIn = z();
+    assert_eq!(admit(&i), None, "no length stated");
+    i.body_len_known = 1;
+    i.body_len = 12;
+    assert_eq!(admit(&i), None, "a whole body's length");
+    let mut streamed = i;
+    streamed.body_len_known = 0;
+    assert_eq!(
+        admit(&streamed),
+        Some(Outcome::Fault),
+        "a length a streamed body states"
+    );
+    let mut flag = i;
+    flag.body_len_known = 2;
+    assert_eq!(admit(&flag), Some(Outcome::Fault), "a flag past 1");
+    let mut pad = i;
+    pad._body_len_reserved = 1;
+    assert_eq!(admit(&pad), Some(Outcome::Fault), "the padding");
+}
+
+/// RED (deadline classes, the op contracts): a TICKETED framer crossing is stamped with the class
+/// its op's contract states, `Stream` for `begin`, `ingest` and `emit` (a pending auth call inside
+/// one runs under the stream's deadline), never the carrier's `Connection`; a carrier's ticketed
+/// I/O keeps `Connection`; a ticket-less crossing is `Call`.
+#[test]
+fn a_ticketed_framer_crossing_is_stamped_with_its_contracts_class() {
+    use crate::dispatch::plugin::stamped_class;
+    use busbar_contract::abi::mechanism::call::DeadlineClass;
+    use busbar_contract::abi::mechanism::ticket::Ticket;
+    let real = Ticket {
+        slot: 3,
+        generation: 7,
+    };
+    for s in [slot::BEGIN, slot::INGEST, slot::EMIT] {
+        assert_eq!(
+            stamped_class::<Transport>(s, real),
+            DeadlineClass::Stream,
+            "{} on a ticket",
+            Transport::op_name(s)
+        );
+        assert_eq!(
+            stamped_class::<Transport>(s, Ticket::NONE),
+            DeadlineClass::Call,
+            "{} ticket-less",
+            Transport::op_name(s)
+        );
+    }
+    for s in [slot::READ, slot::WRITE, slot::DIAL, slot::ACCEPT] {
+        assert_eq!(
+            stamped_class::<Transport>(s, real),
+            DeadlineClass::Connection,
+            "{} on a ticket",
+            Transport::op_name(s)
+        );
+    }
+}
+
 /// RED (audit contract-src #11): every string list a transport's tail states is judged at bind by
 /// its own contract check, so a name counted over a NULL pointer refuses the load. The claims a
 /// connection may upgrade to (`check_upgrades_to`) and each claim row's fact keys

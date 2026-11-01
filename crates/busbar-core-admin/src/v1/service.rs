@@ -14,7 +14,6 @@ use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 
-use busbar_kernel::audit::amend;
 use busbar_kernel::diagnostics::{
     diag_debug, diag_error, diag_warn, ADMIN_STORE_OPERATION_FAILED, ADMIN_STORE_TASK_JOIN_FAILED,
     GROUP_DELETE_KEY_READ_FAILED, PLUGINS_DIR_FINGERPRINT_FAILED,
@@ -206,14 +205,72 @@ pub(crate) fn row_carries_classes(provider: &str) -> bool {
 /// upstream provider, never a plane key; or the fallback plane's key) keeps its model as its lane,
 /// and its requests carry the flat `per_request_fee:` — byte-identical to the previous release.
 pub fn row_lane<'a>(model: &'a str, provider: &str) -> std::borrow::Cow<'a, str> {
-    match busbar_kernel::plane_driver::registry::plane_decl_for(provider) {
-        Some(decl) if !decl.fallback => std::borrow::Cow::Owned(format!(
-            "{}{}{model}",
-            decl.key,
-            busbar_kernel::governance::PLANE_LANE_SEP
-        )),
-        _ => std::borrow::Cow::Borrowed(model),
+    busbar_kernel::governance::metering_lane(model, provider)
+}
+
+/// **THE DAY'S ADJUSTMENTS, FOLDED INTO ITS METERING ROWS** (MONEY-DESIGN §4, PR-C): every root
+/// `adjust` of the day, net per (key, lane, era), moves the counts of the day's rows of that key,
+/// lane and era — a positive delta onto the first such row, a negative one taken from the rows in
+/// order — so the read prices the counts AS ADJUSTED through the one function, and no money figure
+/// is carried by an adjustment. `Err` names an adjustment the rows cannot carry (no row of its
+/// slot, or a count it takes below zero): the read refuses it rather than serve counts nobody
+/// recorded. The adjust verb refuses such an adjustment when it is made, so this is a store that
+/// lost rows under it.
+pub fn fold_adjustments(
+    rows: &mut [busbar_kernel::governance::MeteringRow],
+    adjustments: &[busbar_kernel::governance::UsageAdjustment],
+) -> Result<(), String> {
+    fn column<'r>(row: &'r mut busbar_kernel::governance::MeteringRow, class: &str) -> &'r mut u64 {
+        match class {
+            busbar_contract::records::UNIT_INPUT => &mut row.tokens_input,
+            busbar_contract::records::UNIT_OUTPUT => &mut row.tokens_output,
+            busbar_contract::records::UNIT_CACHE_READ => &mut row.tokens_cache_read,
+            busbar_contract::records::UNIT_CACHE_WRITE => &mut row.tokens_cache_write,
+            other => row.usage_units.entry(other.to_string()).or_insert(0),
+        }
     }
+    for adj in adjustments {
+        let slot: Vec<usize> = (0..rows.len())
+            .filter(|&i| {
+                let r = &rows[i];
+                r.key_id == adj.key_id
+                    && r.priced_from_ms == adj.era
+                    && row_lane(&r.model, &r.provider) == adj.lane.as_str()
+            })
+            .collect();
+        let Some(&first) = slot.first() else {
+            return Err(format!(
+                "an adjustment of key {} lane {:?} era {} has no metering row",
+                adj.key_id, adj.lane, adj.era
+            ));
+        };
+        for (class, d) in &adj.delta {
+            if *d >= 0 {
+                let c = column(&mut rows[first], class);
+                *c = c
+                    .checked_add(d.unsigned_abs())
+                    .ok_or_else(|| format!("an adjustment of {class} leaves the range"))?;
+                continue;
+            }
+            let mut owed = d.unsigned_abs();
+            for &i in &slot {
+                let c = column(&mut rows[i], class);
+                let take = owed.min(*c);
+                *c -= take;
+                owed -= take;
+            }
+            if owed != 0 {
+                return Err(format!(
+                    "an adjustment of {class} on key {} takes the count below zero",
+                    adj.key_id
+                ));
+            }
+        }
+        for &i in &slot {
+            rows[i].usage_units.retain(|_, n| *n != 0);
+        }
+    }
+    Ok(())
 }
 
 /// A usage read the one function REFUSED, as the admin wire answers it (OWNER RULING Q25b). A card
@@ -288,70 +345,6 @@ fn dated_rate_history() -> Option<Arc<busbar_kernel::cost::History>> {
 /// earned in, never the newest card ever authored.
 pub fn row_priced_at_ms(bucket_start_secs: u64, priced_from_ms: u64) -> u64 {
     bucket_start_secs.saturating_mul(1_000).max(priced_from_ms)
-}
-
-/// **THE COUNT CORRECTIONS THAT LAND ON ONE METERING ROW** (item 404, OWNER RULING Q9), per class,
-/// in micro-units (`Count` scale 6).
-///
-/// An `adjust` corrects a recorded unit's COUNTS on the node amendment journal and never its money;
-/// money is this read, over the corrected counts. A row is an aggregate over `(key, lane, era)`, so
-/// what lands on it is Σ (now − was) over every correction whose subject is the row's key, whose lane
-/// is the row's lane, and whose card epoch falls inside the row's day and in the era the row covers:
-/// the latest `priced_from_ms` among this key's rows on this lane that is not after the epoch
-/// (`eras`). The sum TELESCOPES — a second correction of one unit names the first one's result as
-/// its `was` — so it is the unit's latest counts minus what it recorded.
-///
-/// `corrections` is the row's own share — the usage read indexes the node's list by (key, lane)
-/// once and hands each row only what can land on it; every condition is still checked here.
-pub fn row_count_corrections(
-    corrections: &[&amend::Amendment],
-    key_id: &str,
-    lane: &str,
-    window: (u64, u64),
-    priced_from_ms: u64,
-    eras: &[u64],
-) -> std::collections::BTreeMap<String, i128> {
-    use self::amend::{AmendBody, Subject};
-    let (start_ms, end_ms) = (
-        window.0.saturating_mul(1_000),
-        window.1.saturating_mul(1_000),
-    );
-    let mut deltas = std::collections::BTreeMap::<String, i128>::new();
-    for amendment in corrections {
-        let AmendBody::Adjust(adj) = &amendment.body else {
-            continue;
-        };
-        let at = adj.card_epoch_ms;
-        let era = eras.iter().copied().filter(|e| *e <= at).max().unwrap_or(0);
-        if !matches!(&adj.subject, Subject::PrincipalId(p) if p == key_id)
-            || adj.lane != lane
-            || at < start_ms
-            || at >= end_ms
-            || era != priced_from_ms
-        {
-            continue;
-        }
-        for class in adj.was.keys().chain(adj.now.keys()) {
-            deltas.entry(class.clone()).or_insert(0);
-        }
-        for (class, delta) in deltas.iter_mut() {
-            *delta = delta.saturating_add(adj.delta(class));
-        }
-    }
-    deltas.retain(|_, d| *d != 0);
-    deltas
-}
-
-/// Apply one class's corrected delta (micro-units) to a whole-unit column. `None` when the result
-/// is not a whole, non-negative unit count the column can hold — the read refuses rather than
-/// round or clamp a correction.
-pub fn corrected_column(recorded: u64, delta_micros: i128) -> Option<u64> {
-    const SCALE: i128 = 1_000_000;
-    if delta_micros % SCALE != 0 {
-        return None;
-    }
-    let whole = i128::from(recorded).checked_add(delta_micros / SCALE)?;
-    u64::try_from(whole).ok()
 }
 
 /// The row's flat tier fields under the reserved class spellings a card entry is written against,
@@ -1358,7 +1351,7 @@ fn rebuild_hook_derived(next: &mut busbar_kernel::state::App) {
 fn reresolve_plane_gates(next: &mut busbar_kernel::state::App) {
     for decl in busbar_kernel::plane_driver::registry::plane_decls() {
         if let Some(reresolve) = decl.reresolve_gates {
-            reresolve(next);
+            reresolve(decl, next);
         }
     }
 }
@@ -1371,9 +1364,12 @@ fn plane_named_def_list(
     app: &busbar_kernel::state::App,
 ) -> Vec<NamedDefView> {
     busbar_kernel::plane_driver::registry::plane_decl_for_config_section(section.key())
-        .and_then(|d| d.named_def_list)
-        .map_or_else(Vec::new, |f| {
-            f(app as &dyn busbar_kernel::plane_driver::slots::PlaneSlots)
+        .and_then(|d| d.named_def_list.map(|f| (d, f)))
+        .map_or_else(Vec::new, |(d, f)| {
+            f(
+                d,
+                app as &dyn busbar_kernel::plane_driver::slots::PlaneSlots,
+            )
         })
 }
 
@@ -1385,9 +1381,10 @@ fn plane_named_def_get(
     name: &str,
 ) -> Option<NamedDefView> {
     busbar_kernel::plane_driver::registry::plane_decl_for_config_section(section.key())
-        .and_then(|d| d.named_def_get)
-        .and_then(|f| {
+        .and_then(|d| d.named_def_get.map(|f| (d, f)))
+        .and_then(|(d, f)| {
             f(
+                d,
                 app as &dyn busbar_kernel::plane_driver::slots::PlaneSlots,
                 name,
             )

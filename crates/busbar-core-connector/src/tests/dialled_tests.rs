@@ -48,6 +48,7 @@ fn message(bytes: &[u8]) -> crate::framer::Got {
         bytes: bytes.to_vec(),
         end_of_frame: true,
         status_code: None,
+        handoff: false,
         status_class: 0,
         fault: 0,
         retry_after_secs: None,
@@ -60,7 +61,7 @@ fn message(bytes: &[u8]) -> crate::framer::Got {
     }
 }
 
-/// RED (Q128 arch u22 LOW 8; THE DESIGN §5: reads are back-pressured, nothing is lost silently on
+/// RED (THE DESIGN §5: reads are back-pressured, nothing is lost silently on
 /// a reliable stream; `busbar_contract::abi::transport`, "an EMPTY piece is an empty frame (a
 /// wire's empty message)"): every channel message the leg's association yields reaches the
 /// reader, in order: an EMPTY message is relayed as an empty message, and a reader that has fallen

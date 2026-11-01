@@ -34,8 +34,6 @@ pub use busbar_contract::DestinationId;
 /// box its future, and one box per port call is the price of the seam being a trait at all.
 pub type BoxFut<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
-// ── the breaker seam ────────────────────────────────────────────────────────────────────────────
-
 /// Why a member cannot take a request right now.
 ///
 /// This is the taxonomy every consumer in this crate speaks: selection excludes on it, the
@@ -76,51 +74,22 @@ impl Unavailable {
     }
 }
 
-/// What a successful admission hands over.
-///
-/// The probe epoch is an owner token, not a flag. A dispatch that abandons after an await could
-/// otherwise release a probe a different request has since won, so every release is checked
-/// against the epoch that was captured at the moment of the win.
-#[must_use]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Admit {
-    /// Set only when this admission actually won a half-open recovery probe. A plain ready-cell
-    /// admission wins nothing and owns nothing to release.
-    pub probe_epoch: Option<u64>,
-}
-
-/// What one attempt meant to the destination's breaker.
-///
-/// The 31-row table that turns an upstream status into one of these is the breaker unit's data,
-/// not this unit's code. This unit hands over the classified answer and the upstream's own retry
-/// request; what that does to a cooldown is decided on the other side of this trait.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Outcome {
-    /// The upstream served the request.
-    Success,
-    /// A transient failure. Cooldown and error counter, with the upstream's own wait as a floor.
-    Transient {
-        /// The wait the upstream asked for, in seconds, where it asked for one.
-        retry_after: Option<u64>,
-    },
-    /// A definitive signal about the shared destination — a rejected key, an exhausted account.
-    /// It trips every pool's cell for that destination, not only the one this attempt ran through.
-    HardDown,
-    /// The caller's own fault, or a request too large for this destination's window. The
-    /// destination is healthy either way and nothing is recorded.
-    RecordNothing,
-}
+/// What a successful admission hands over, what one attempt meant to the destination's breaker,
+/// and what the classifier made of one upstream answer: the breaker unit's own types, so the two
+/// sides of the [`Breaker`] port speak one vocabulary and nothing maps between them.
+pub use busbar_kernel_breaker::port::Classified;
+pub use busbar_kernel_breaker::{Admit, Outcome};
 
 /// What the upstream said, as the classifier reads it.
 ///
-/// The transport's own class of the frame (the fee leg, which also tells a success from a
-/// failure), its fault reading of the answer for the breaker, the upstream's numbered status in the
-/// numbering that spelled it, and the wait the upstream asked for. THE BREAKER CLASSIFIES FROM THE
-/// FAULT READING ALONE and never reads `code` (row 66: the kernel names no protocol); what a given
-/// code means to the breaker is the transport's own declared table, read on the transport's side of
-/// the frame. `code` crosses for the composition root's model egress, which runs the previous
-/// release's 429 rate-limit ladder and 4xx client-fault count on the number (the transport ABI carries the number beside the class, `FrameMeta`'s
-/// `status_code`, BUSBAR-1.6.0.md l.4036-4053).
+/// The transport's own class of the frame (the fee leg, which also tells a success from a failure),
+/// its fault reading of the answer for the breaker, the upstream's numbered status in the numbering
+/// that spelled it, and the wait the upstream asked for. THE BREAKER CLASSIFIES FROM THE FAULT
+/// READING ALONE and never reads `code` (the kernel names no protocol); what a given code means to
+/// the breaker is the transport's own declared table, read on the transport's side of the frame.
+/// `code` crosses for the composition root's model egress, which runs the previous release's 429
+/// rate-limit ladder and 4xx client-fault count on the number (the transport ABI carries the number
+/// beside the class, `FrameMeta`'s `status_code`, BUSBAR-1.6.0.md l.4036-4053).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct UpstreamStatus {
     /// The transport's own class of the frame, where it carries one.
@@ -141,17 +110,6 @@ pub struct UpstreamStatus {
 /// the build here rather than falling through some default arm on the request path — and one
 /// type on both sides of the [`Breaker`] port, so the integrator no longer re-spells it.
 pub use busbar_contract::upstream::Disposition;
-
-/// What the classifier made of one upstream answer.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Classified {
-    /// Where the walk sends the request next.
-    pub disposition: Disposition,
-    /// What the destination's breaker should be told.
-    pub outcome: Outcome,
-    /// The metric label for this failure.
-    pub label: &'static str,
-}
 
 /// `// contract:` the breaker unit, as this unit needs it.
 ///
@@ -286,8 +244,6 @@ pub trait Breaker: Send + Sync {
     fn refund_budget(&self, destination: DestinationId);
 }
 
-// ── the pool's own concurrency ──────────────────────────────────────────────────────────────────
-
 /// A held concurrency slot on one member.
 ///
 /// Dropping it frees the slot. It is held for the whole life of a streamed answer and dropped on
@@ -338,8 +294,6 @@ pub trait Capacity: Send + Sync {
     ) -> BoxFut<'a, Option<(DestinationId, Permit)>>;
 }
 
-// ── the journal seam ────────────────────────────────────────────────────────────────────────────
-
 /// One dispatch, as the journal records it before the dial.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Dispatched {
@@ -388,8 +342,6 @@ impl std::fmt::Display for DurabilityUnavailable {
 
 impl std::error::Error for DurabilityUnavailable {}
 
-// ── the clock ───────────────────────────────────────────────────────────────────────────────────
-
 /// `// contract:` the node's clock and its only sleep.
 ///
 /// Time is an input, not an ambient fact. Every deadline in this unit is computed from `now_secs`
@@ -417,8 +369,6 @@ pub trait Clock: Send + Sync {
     /// A future that completes no earlier than `ms` milliseconds from now.
     fn sleep(&self, ms: u64) -> BoxFut<'_, ()>;
 }
-
-// ── telemetry ───────────────────────────────────────────────────────────────────────────────────
 
 /// THE LABELS A PLANE STATED for one attempt's counters (`OnPieceOut::metric_pool` /
 /// `metric_lane`): each `None` where it stated none. Words, never trusted: the counters take a

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! ONE STREAM, FRAMED BY ITS CLAIM'S FRAMER (ARCHITECT 4l, 2026-10-05).
+//! ONE STREAM, FRAMED BY ITS CLAIM'S FRAMER.
 //!
 //! One listener port carries the streams of every claim, so the host's own framer keeps the
 //! connection and each stream's head, and a stream whose claim another framer answers is framed
@@ -17,7 +17,7 @@ use busbar_contract::abi::mechanism::call::Outcome;
 use busbar_contract::abi::transport::{StatusRow, SIDE_ACCEPT_STREAM};
 
 use crate::compose::HeadWords;
-use crate::framer::{Established, FramerDoor, Framing, Refused, Yielded};
+use crate::framer::{AuthBinding, Established, FramerDoor, Framing, Refused, Yielded};
 
 /// The one stream a [`SIDE_ACCEPT_STREAM`] framing carries.
 pub const STREAM: u64 = 1;
@@ -47,7 +47,9 @@ fn fault(error: impl Into<String>) -> Refused {
 
 impl FramedStream {
     /// Open the stream that arrived at `target` with `head` (its head fields, as the caller sent
-    /// them) on `claim`, a claim `door` answers.
+    /// them) on `claim`, a claim `door` answers. Its binding has no auth. `scheme` is the
+    /// listener's (`SCHEME_*`, `BeginIn::scheme`): secure when the connector terminated connection
+    /// security on the listener the stream arrived at, plain when it did not.
     ///
     /// # Errors
     ///
@@ -57,7 +59,29 @@ impl FramedStream {
         claim: &str,
         target: &str,
         head: &[(String, Vec<u8>)],
+        scheme: u8,
     ) -> Result<Self, Refused> {
+        Self::open_bound(door, claim, target, head, &AuthBinding::NONE, scheme)
+    }
+
+    /// [`FramedStream::open`] over `binding`. A stream is framed TICKET-LESS, so a binding with
+    /// auth points (guest lines whose auth needs a point) is refused before anything crosses
+    /// ([`crate::framer::TICKET_LESS_AUTH`]): its framer may call the auth service, which may
+    /// pend, and only a ticketed framing can park it.
+    ///
+    /// # Errors
+    ///
+    /// The binding has auth points, `door` does not answer `claim`, or its framer refused the
+    /// stream.
+    pub fn open_bound(
+        door: Arc<dyn FramerDoor>,
+        claim: &str,
+        target: &str,
+        head: &[(String, Vec<u8>)],
+        binding: &AuthBinding,
+        scheme: u8,
+    ) -> Result<Self, Refused> {
+        binding.ticket_less()?;
         let facts = door.facts();
         let index = facts
             .claims
@@ -77,10 +101,17 @@ impl FramedStream {
             .collect();
         let established = Established {
             claim: Some(claim.to_string()),
+            scheme,
             ..Established::default()
         };
-        let (framing, _) =
-            Framing::begin_with(door, SIDE_ACCEPT_STREAM, target, &established, head)?;
+        let (framing, _) = Framing::begin_ticketless(
+            door,
+            SIDE_ACCEPT_STREAM,
+            target,
+            &established,
+            head,
+            binding,
+        )?;
         Ok(Self {
             framing,
             claim: index,

@@ -16,14 +16,16 @@
 //! * `release` and `close` answer READY: a plane answers under no lease, and the SDK drops the state
 //!   and every snapshot it still holds.
 
+use std::ffi::c_void;
 use std::marker::PhantomData;
 
 use crate::abi::mechanism::call::{InHead, OutHead, Outcome};
 use crate::abi::mechanism::lifecycle::{GenIn, RefreshIn, ReleaseIn, TickIn, TickOut, ValidateIn};
 use crate::abi::plane::{
     PlaneCancelIn, PlaneCancelOut, PlaneDriveIn, PlaneDriveOut, PlaneOpenIn, PlaneOpenOut,
-    PlaneRefreshOut, PlaneSnapshot,
+    PlaneRefreshOut, PlaneSnapshot, ServeIn, ServeOut,
 };
+use crate::abi::sdk::door::RawSlot;
 use crate::abi::sdk::lent::Lent;
 use crate::abi::sdk::life::{settings_object, Refusal};
 use crate::abi::sdk::out::Out;
@@ -82,6 +84,18 @@ pub trait PlaneLife: Send + Sync + Sized + 'static {
     /// # Errors
     /// Why the refresh did not apply.
     fn refresh(&self, settings: &[u8], generation: u64) -> Result<Published<Self::Held>, Refusal>;
+
+    /// `refresh` from the whole lent `in`: what the slot calls. By default [`PlaneLife::refresh`]
+    /// with the settings and the generation alone. A plane that judges the applied owned sections
+    /// (`abi::plane::EXT_OWNED` on the head's extensions, the refresh-time twin of
+    /// `PlaneOpenIn::owned`) or the re-resolved secrets overrides this, as `open` reads the whole
+    /// `PlaneOpenIn`.
+    ///
+    /// # Errors
+    /// Why the refresh did not apply.
+    fn refresh_in(&self, input: &Lent<'_, RefreshIn>) -> Result<Published<Self::Held>, Refusal> {
+        self.refresh(input.settings().bytes(), input.generation())
+    }
 
     /// After `generation` was published, by `open` or `refresh`. Nothing by default.
     fn published(&self, generation: u64) {
@@ -175,13 +189,13 @@ plane_slot!(
 );
 
 plane_slot!(
-    /// `refresh`: [`PlaneLife::refresh`]; its generation is published. FAILED with no instance.
+    /// `refresh`: [`PlaneLife::refresh_in`]; its generation is published. FAILED with no instance.
     Refresh(RefreshIn => PlaneRefreshOut) |instance, input, out| {
         let Some(plane) = instance.get() else {
             return Outcome::Failed;
         };
         let generation = input.generation();
-        match plane.refresh(input.settings().bytes(), generation) {
+        match plane.refresh_in(&input) {
             Ok(next) => {
                 out.publish_with(|o| &o.snapshot, plane.generations(), generation, &next.spec, next.held);
                 plane.published(generation);
@@ -227,6 +241,32 @@ plane_slot!(
     /// `close`: READY; the SDK drops the state and every snapshot it still holds.
     Close(InHead => OutHead) |_, _, _out| { Outcome::Ready }
 );
+
+/// `hydrate` or `start` for a plane that names none (`export_plugin!`'s `plane` arm): READY, there
+/// is nothing to warm or start.
+#[derive(Debug)]
+pub struct Inert;
+
+impl RawSlot for Inert {
+    type In = GenIn;
+    type Out = OutHead;
+    unsafe fn call(_: *mut c_void, _: &GenIn, _: &mut OutHead) -> Outcome {
+        Outcome::Ready
+    }
+}
+
+/// `serve` for a plane that names none (`export_plugin!`'s `plane` arm): REFUSED, a plane with no
+/// routes serves no request (never an open default).
+#[derive(Debug)]
+pub struct NoServe;
+
+impl RawSlot for NoServe {
+    type In = ServeIn;
+    type Out = ServeOut;
+    unsafe fn call(_: *mut c_void, _: &ServeIn, _: &mut ServeOut) -> Outcome {
+        Outcome::Refused
+    }
+}
 
 #[cfg(test)]
 #[path = "tests/plane_life_tests.rs"]

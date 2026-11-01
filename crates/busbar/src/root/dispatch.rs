@@ -12,9 +12,8 @@
 
 use std::sync::{Arc, OnceLock};
 
-use busbar_contract::services::HostServices;
-
 use crate::root::loader::dispatch::{DispatchConfig, Dispatcher};
+use crate::root::serve::LateServices;
 
 static DISPATCHER: OnceLock<Arc<Dispatcher>> = OnceLock::new();
 
@@ -30,18 +29,18 @@ pub fn config(workers: usize) -> DispatchConfig {
 }
 
 /// Build the process's dispatcher for `workers` data workers, at boot, before any plugin loads,
-/// serving `services` (the composition's [`crate::root::serve::LateServices`], installed once the
-/// configuration loads). The first build stands; a later call answers it.
-pub fn boot(workers: usize, services: Arc<dyn HostServices>) -> Arc<Dispatcher> {
+/// serving `services` (the composition's, installed once the configuration loads). The first build
+/// stands; a later call answers it.
+pub fn boot(workers: usize, services: &LateServices) -> Arc<Dispatcher> {
     Arc::clone(DISPATCHER.get_or_init(|| Arc::new(build(workers, services))))
 }
 
-/// The dispatcher [`boot`] builds, for `workers` data workers, serving `services`, lent the
+/// The dispatcher [`boot`] builds, for `workers` data workers, serving `services`' slot, lent the
 /// kernel's seal (Part 2 #54: a door it binds reveals a resolved `Secret` it hands a plugin only
 /// under it).
 #[must_use]
-pub fn build(workers: usize, services: Arc<dyn HostServices>) -> Dispatcher {
-    let dispatcher = Dispatcher::with_services(config(workers), services);
+pub fn build(workers: usize, services: &LateServices) -> Dispatcher {
+    let dispatcher = Dispatcher::with_slot(config(workers), services.slot());
     let _ = dispatcher.lend_seal(busbar_kernel::seal::lend());
     dispatcher
 }
@@ -50,7 +49,7 @@ pub fn build(workers: usize, services: Arc<dyn HostServices>) -> Dispatcher {
 /// first use where no boot ran).
 #[must_use]
 pub fn dispatcher() -> Arc<Dispatcher> {
-    boot(1, crate::root::serve::LateServices::new())
+    boot(1, &LateServices::new())
 }
 
 /// THE AUTH AXIS of one build: that build's registry's auth rows, opened on the process's dispatcher

@@ -369,7 +369,11 @@ where
             credential: credential
                 .as_ref()
                 .map(|c| busbar_contract::redacted::Secret::new(c.as_bytes().to_vec())),
+            // A carrier line presents no ticket: its session was bound once, at its open.
+            ticket: None,
             app: app.load(),
+            // The process's own stdin/stdout: no listener, no connection security.
+            scheme: busbar_contract::abi::host::service::SCHEME_PLAIN,
             consumed_fields: Vec::new(),
         };
         let routes = Arc::clone(&routes);

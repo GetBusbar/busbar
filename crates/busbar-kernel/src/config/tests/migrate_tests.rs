@@ -2730,6 +2730,48 @@ tools:
     );
 }
 
+/// The 1.6.0 FLAT `tools:` shape (`tools.<id>`, no `servers:` level) gets the same rename: the
+/// trust doc promises `--migrate-config` carries an MCP `refresh_ttl:` over to `verify_ttl:` with a
+/// loud warning, whichever shape the entry is written in.
+/// RED: a flat entry's `refresh_ttl` is left in place and nothing warns.
+#[test]
+fn migrate_renames_a_flat_tools_entry_refresh_ttl() {
+    let raw = r#"
+tools:
+  fs:
+    url: "https://fs.example.com/rpc"
+    pin: { mechanism: cert_spki, key: "sha256:abc" }
+    refresh_ttl: "6h"
+  docs:
+    url: "https://docs.example.com/rpc"
+    pin: { mechanism: unpinned }
+"#;
+    let (out, doc) = migrate_to_value(raw);
+    assert!(
+        dig(&doc, &["tools", "fs", "refresh_ttl"]).is_none(),
+        "the old `refresh_ttl` key must be removed: {}",
+        out.yaml
+    );
+    assert_eq!(
+        dig(&doc, &["tools", "fs", "verify_ttl"]).and_then(|v| v.as_str()),
+        Some("6h"),
+        "the value is carried over onto `verify_ttl`: {}",
+        out.yaml
+    );
+    assert!(
+        dig(&doc, &["tools", "docs", "verify_ttl"]).is_none(),
+        "an entry that never set it is untouched: {}",
+        out.yaml
+    );
+    assert!(
+        out.warnings.iter().any(|w| {
+            w.contains("tools.fs.refresh_ttl -> verify_ttl") && w.contains("MAX staleness")
+        }),
+        "the rename must warn about the changed meaning: {:?}",
+        out.warnings
+    );
+}
+
 /// MIGRATION NEVER INVENTS `api_key: none`. Whether an upstream takes a credential is a fact about
 /// the deployment, not something readable off the config file: guessing `none` for a provider with
 /// no `api_key_env` to convert would silently disarm a provider that does need one — the same quiet
@@ -2764,4 +2806,79 @@ fn built_ins(defs: &crate::config::ExportDefs) -> crate::config::ExportDefs {
         .filter(|(_, d)| d.module.trim() != "request-log-webhook")
         .map(|(k, v)| (k.clone(), v.clone()))
         .collect()
+}
+
+/// The terraform-provider-busbar acceptance boot config (a 1.5.2-shaped config: the retired
+/// `admin_insecure:` waiver plus an INLINE `auth.admin_auth` operator-credential entry). Boot refuses
+/// it with the `--migrate-config` breadcrumb, exactly as 1.5.5 did; the migrator must then turn it
+/// into a config that boot-parses, keeps the admin waiver, and keeps the operator credential.
+#[test]
+fn golden_migrate_terraform_acceptance_admin_insecure_inline_admin_auth() {
+    crate::test_support::register_neutral_test_plane();
+    let raw = r#"admin_listen: "0.0.0.0:8081"
+admin_insecure: true
+models:
+  test-model:
+    provider: anthropic
+    max_concurrent: 1
+    max_requests: -1
+providers:
+  anthropic:
+    api_key: { env: "ANTHROPIC_API_KEY" }
+auth:
+  chain: [keys]
+  admin_auth:
+    - admin-tokens: { token: { env: "BUSBAR_ADMIN_TOKEN" } }
+"#;
+    assert_loud_fail_with_breadcrumb(raw, "admin_insecure");
+
+    let (out, doc) = migrate_golden(raw);
+    assert_eq!(
+        dig(&doc, &["admin_require_mtls"]).and_then(|v| v.as_bool()),
+        Some(false),
+        "the admin waiver survives, inverted; changes {:?}",
+        out.changes
+    );
+    assert_eq!(
+        dig(&doc, &["auth", "admin_auth"])
+            .and_then(|v| v.as_sequence())
+            .map(|s| s.len()),
+        Some(1),
+        "the admin chain keeps its one entry: {doc:?}"
+    );
+    assert!(
+        dig(&doc, &["identity-providers", "admin-tokens", "token"]).is_some(),
+        "the operator credential is lifted into identity-providers: {doc:?}"
+    );
+}
+
+/// A chain that already names `keys` (no `tokens` rewrite) with no `auth.signing_key` still needs
+/// one to `--validate`: the migrator must say so in the header, never leave it silent.
+#[test]
+fn a_keys_chain_without_a_signing_key_gets_the_signing_key_todo() {
+    let raw = "listen: 0.0.0.0:8080\nauth:\n  chain: [keys]\n";
+    let out = migrate_config(raw).expect("migrates");
+    assert!(
+        out.todos
+            .iter()
+            .any(|t| t.starts_with("auth.signing_key: required")
+                && t.contains("--generate-signing-key")),
+        "{:?}",
+        out.todos
+    );
+    assert!(
+        out.yaml
+            .contains("# TODO(migrate): auth.signing_key: required"),
+        "{}",
+        out.yaml
+    );
+
+    // With a signing key present there is nothing to say.
+    let with = "listen: 0.0.0.0:8080\nauth:\n  chain: [keys]\n  signing_key: { env: K }\n";
+    let out = migrate_config(with).expect("migrates");
+    assert!(
+        !out.todos.iter().any(|t| t.starts_with("auth.signing_key")),
+        "{:?}",
+        out.todos
+    );
 }

@@ -6,8 +6,8 @@
 //! Every runtime proof that has to MINT a token to run — that the cell is a state machine, that a
 //! hold is taken once, that an accrual is sealed to its parent — lives in the kernel
 //! (`busbar-kernel/src/tests/caps_tests/`), because a token constructor is spelled only there
-//! (construction `token-sealed`). What stays here reads the closed vocabularies, the canary and the
-//! lint data, none of which takes a seal.
+//! (construction `token-sealed`). What stays here reads the closed vocabularies and the lint data,
+//! none of which takes a seal. The canary is the kernel's own and is proved there.
 
 use crate::caps::*;
 
@@ -26,9 +26,7 @@ mod lint {
 /// they are.
 mod what_the_record_reads;
 
-/// The posting's arithmetic at the edges: the width the priced total does not share with the
-/// reservation, the line between spending the reservation and spending past it, and a unit that
-/// runs past the end more than once.
+/// The posting's flags: distinct bits, every one the type declares.
 mod the_posting_arithmetic;
 
 /// Where a reported quantity came from, and the three questions the crate asks about it.
@@ -176,40 +174,6 @@ fn every_abort_names_a_reason_of_its_own() {
 }
 
 #[test]
-fn the_canary_balances_a_clean_run_and_sees_a_missing_settlement() {
-    let canary = Canary::new();
-    for _ in 0..3 {
-        canary.draft_accepted();
-        canary.hold_opened();
-        canary.settled();
-    }
-    // A child that accrued into a parent instead of opening its own still has to settle.
-    canary.draft_accepted();
-    canary.accrual_taken();
-    canary.settled();
-    assert!(canary.balanced().is_ok());
-
-    // A unit that got through the door and never settled is exactly what this is for.
-    canary.draft_accepted();
-    canary.hold_opened();
-    let broken = canary.balanced().expect_err("one settlement is missing");
-    assert_eq!(broken.drafts, 5);
-    assert_eq!(broken.holds + broken.accruals, 5);
-    assert_eq!(broken.settlements, 4);
-}
-
-#[test]
-fn the_canary_also_catches_a_settlement_with_no_hold_behind_it() {
-    let canary = Canary::new();
-    canary.draft_accepted();
-    canary.settled();
-    assert!(
-        canary.balanced().is_err(),
-        "a settlement that references no hold is the other side of the same check"
-    );
-}
-
-#[test]
 fn the_lint_hooks_name_every_escape_the_compiler_cannot_close() {
     let symbols: Vec<_> = lint::all().map(|r| r.symbol).collect();
     // The required symbols are data beside the rules (`fixtures/lint_rules.txt`, ruling Q-GG2): a
@@ -218,11 +182,11 @@ fn the_lint_hooks_name_every_escape_the_compiler_cannot_close() {
     let expected = lint::expected();
     assert_eq!(
         expected.len(),
-        10,
+        9,
         "the escapes the scan must keep: {expected:?}"
     );
     assert_eq!(lint::hold_escapes().len(), 9, "the hold-escape list");
-    assert_eq!(lint::seal_sites().len(), 3, "the seal-site list");
+    assert_eq!(lint::seal_sites().len(), 2, "the seal-site list");
     for expected in expected {
         assert!(
             symbols.contains(&expected),

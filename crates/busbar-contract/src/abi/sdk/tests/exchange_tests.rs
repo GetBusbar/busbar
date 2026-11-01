@@ -58,6 +58,8 @@ struct Script {
     unframed: bool,
     /// The registration each ESTABLISH named, in order (`None` = an absent member).
     members: Vec<Option<Vec<u8>>>,
+    /// Streams established and not closed: the host's held streams.
+    held: i64,
     /// Every service the host ran (a replay runs none), in order.
     ops: Vec<u32>,
 }
@@ -152,6 +154,7 @@ fn serve(op: u32, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
         service::ESTABLISH => {
             // SAFETY: an `EstablishIn` (the SDK states its whole size).
             let i = unsafe { *input.cast::<crate::abi::host::conn::connector::EstablishIn>() };
+            s.held += 1;
             s.members.push((!i.member.ptr.is_null()).then(|| {
                 // SAFETY: the SDK's own string, live for the call.
                 unsafe { std::slice::from_raw_parts(i.member.ptr, i.member.len) }.to_vec()
@@ -182,6 +185,10 @@ fn serve(op: u32, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
                 return answer(out, Outcome::Pending, 0, 0);
             }
             (0, play(io, piece))
+        }
+        service::CLOSE => {
+            s.held -= 1;
+            (0, 0)
         }
         _ => (0, 0),
     };
@@ -305,6 +312,8 @@ struct Run<T> {
     members: Vec<Option<Vec<u8>>>,
     /// The exchange's state once it completed.
     state: Exchange,
+    /// Streams the host still holds when the op answered.
+    held: i64,
     /// Every service the host ran, in order.
     ops: Vec<u32>,
 }
@@ -344,6 +353,7 @@ fn run<T>(
         framed: s.framed,
         members: s.members,
         state,
+        held: s.held,
         ops: s.ops,
     }
 }
@@ -690,6 +700,83 @@ fn a_reply_at_the_exchanges_limit_passes() {
     assert_eq!(r.answered.expect("at the limit").body.len(), 100);
 }
 
+/// The op's instance, as [`Op`] parks on it: one parked exchange, on [`TICKET`].
+#[derive(Default)]
+struct Parked(std::cell::RefCell<Option<Box<Exchange>>>);
+
+impl Parks for Parked {
+    fn ticket(&self) -> Ticket {
+        TICKET
+    }
+    fn park(&self, exchange: Exchange) {
+        *self.0.borrow_mut() = Some(Box::new(exchange));
+    }
+    fn resume(&self) -> Option<Box<Exchange>> {
+        self.0.borrow_mut().take()
+    }
+}
+
+/// Run [`Op::exchange_bounded`] under `reply` to completion: re-entered from the top while it
+/// pends, as the op's wake re-enters it. What it answered, and how often it built its request.
+fn op_bounded(
+    reply: Vec<Scripted>,
+    limit: usize,
+) -> (Result<ExchangeResponse, super::OpFailure>, u32) {
+    *SCRIPT.lock().unwrap() = Some(Script {
+        reply,
+        ..Script::default()
+    });
+    let h = host();
+    let parked = Parked::default();
+    let op = Op {
+        on: &parked,
+        host: Some(&h),
+    };
+    let built = std::cell::Cell::new(0_u32);
+    let mut entries = 0;
+    let answered = loop {
+        entries += 1;
+        assert!(entries < 40, "the op never completed");
+        let answer = op.exchange_bounded(0, None, limit, || {
+            built.set(built.get() + 1);
+            Ok(post())
+        });
+        if let Poll::Ready(r) = answer {
+            break r;
+        }
+    };
+    SCRIPT.lock().unwrap().take();
+    (answered, built.get())
+}
+
+/// RED (a plugin with a documented reply cap below `REPLY_MAX`, secret-vault's 1 MiB): an op's
+/// exchange takes the cap, and a reply past it is refused as it is read, through [`Op`], with the
+/// bound's own text. RED before: `Op` had no way to lower the ceiling (this did not compile).
+#[test]
+fn an_ops_bounded_exchange_refuses_a_reply_over_its_limit() {
+    let _g = SERIAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let (answered, built) = op_bounded(body_reply(60, 41), 100);
+    assert_eq!(
+        answered.expect_err("the reply passes the op's limit"),
+        super::OpFailure::Conn(ConnFailure::Failed(REPLY_OVER_BOUND.to_string()))
+    );
+    assert_eq!(built, 1, "the request is built on the first entry only");
+}
+
+/// The limit holds across the op's re-entries: a reply exactly at it passes whole, the resumed
+/// exchange keeping the ceiling it was built with.
+#[test]
+fn an_ops_bounded_exchange_passes_a_reply_at_its_limit() {
+    let _g = SERIAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let (answered, built) = op_bounded(body_reply(60, 40), 100);
+    assert_eq!(answered.expect("at the limit").body.len(), 100);
+    assert_eq!(built, 1);
+}
+
 /// How many times the host ran `op` in `r`.
 fn ran<T>(r: &Run<T>, op: u32) -> usize {
     r.ops.iter().filter(|&&o| o == op).count()
@@ -824,6 +911,46 @@ fn a_limit_above_reply_max_clamps() {
     assert_eq!(req().reply_limit(REPLY_MAX + 1).reply_ceiling, REPLY_MAX);
     assert_eq!(req().reply_limit(usize::MAX).reply_ceiling, REPLY_MAX);
     assert_eq!(req().reply_limit(7).reply_ceiling, 7);
+}
+
+/// RED (Q128, a send-once caller's leak): an exchange that FAILS after it established its stream
+/// closes the stream before it answers, as a whole one does, so a caller that sends once and moves
+/// on holds nothing per failed delivery. The far end answers no reply piece; a stream that is not
+/// framed refuses the request. Each answers its failure with the host holding no stream. RED
+/// before: the failed exchange answered with its stream still held.
+#[test]
+fn a_failed_exchange_closes_its_stream_before_it_answers() {
+    let _g = SERIAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let no_piece = run(
+        vec![piece(0, 0, b"", b"", b"")],
+        false,
+        Exchange::send(b"ping".to_vec()),
+        None,
+        |c, st| send_and_ack(c, st, 0, None),
+    );
+    assert!(no_piece.answered.is_err(), "{:?}", no_piece.answered);
+    assert_eq!(no_piece.held, 0, "a failed exchange left its stream held");
+    let refused = run(
+        http_reply(),
+        true,
+        Exchange::request(post()).unwrap(),
+        None,
+        |c, st| exchange(c, st, 0, None),
+    );
+    assert!(refused.answered.is_err(), "{:?}", refused.answered);
+    assert_eq!(refused.held, 0, "a refused request left its stream held");
+    // A whole exchange closes its stream too.
+    let whole = run(
+        http_reply(),
+        false,
+        Exchange::request(post()).unwrap(),
+        None,
+        |c, st| exchange(c, st, 0, None),
+    );
+    assert!(whole.answered.is_ok(), "{:?}", whole.answered);
+    assert_eq!(whole.held, 0);
 }
 
 /// A buffer whose TYPE wipes it on drop: the bound is the proof, checked at compile time.
@@ -1191,5 +1318,70 @@ fn a_head_only_exchange_is_judged_on_the_head_and_never_reads_the_body() {
         observed.runs.values().all(|&n| n == 1),
         "{:?}",
         observed.runs
+    );
+}
+
+/// [`Op::exchange_bounded`] run to completion under `reply`, its reply capped at `limit` bytes.
+fn op_run(reply: Vec<Scripted>, limit: usize) -> Result<ExchangeResponse, super::OpFailure> {
+    op_bounded(reply, limit).0
+}
+
+/// RED (SV-F): an op's exchange takes the reply limit, so a source can cap a reply (a vault read
+/// at 1 MiB) without buffering up to `REPLY_MAX`: past it the reply is refused as one past
+/// `REPLY_MAX` is; at it, it passes whole.
+#[test]
+fn an_ops_exchange_takes_its_reply_limit() {
+    let _g = SERIAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    assert_eq!(
+        op_run(body_reply(60, 41), 100).expect_err("the reply passes the limit"),
+        super::OpFailure::Conn(ConnFailure::Failed(REPLY_OVER_BOUND.to_string()))
+    );
+    assert_eq!(
+        op_run(body_reply(60, 40), 100)
+            .expect("at the limit")
+            .body
+            .len(),
+        100
+    );
+}
+
+/// A RAW EXCHANGE PARKED BY ITS CALLER CLOSES ITS STREAM WHEN DROPPED (status row 159): an export
+/// door drives the free [`exchange`] itself and keeps the [`Exchange`] across PENDING entries; given
+/// up while it pends (its op cancelled or superseded, its instance closed) it CLOSEs the stream it
+/// established, as one [`Op::exchange`] parked does — the host reclaims a connection only on its
+/// CLOSE. RED: a free exchange that never kept what closes its stream leaves the stream held.
+#[test]
+fn a_raw_exchange_dropped_while_it_pends_closes_its_stream() {
+    let _g = SERIAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    *SCRIPT.lock().unwrap() = Some(Script {
+        reply: http_reply(),
+        ..Script::default()
+    });
+    let h = host();
+    let mut state = Exchange::request(post()).expect("a request");
+    for _ in 0..40 {
+        let mut c = h.connector(TICKET);
+        let answer = exchange(&mut c, &mut state, 0, None);
+        assert!(answer.is_pending(), "it pends until the stream is held");
+        if state.stream().is_some() {
+            break;
+        }
+    }
+    assert!(
+        state.stream().is_some(),
+        "the exchange established its stream"
+    );
+    // The op is given up: the host keeps no stored result of it, and the exchange is dropped.
+    SCRIPT.lock().unwrap().as_mut().unwrap().stored.clear();
+    drop(state);
+    let s = SCRIPT.lock().unwrap().take().unwrap();
+    assert_eq!(s.ops.last(), Some(&service::CLOSE), "{:?}", s.ops);
+    assert_eq!(
+        s.held, 0,
+        "the host still holds the dropped exchange's stream"
     );
 }

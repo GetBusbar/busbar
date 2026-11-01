@@ -305,11 +305,10 @@ pub trait CallerFacts: Send + Sync {
     fn rate_headroom(&self, principal: &str, pool: &str) -> Option<f64>;
     /// The caller's budget chain.
     fn budget(&self, principal: &str) -> Vec<BudgetBucketState>;
-    /// Leave the access amendment of a hook handed the prompt: the kernel's one seam (the node
-    /// journal), field names only.
-    fn hook_read(&self, hook: &str, principal: Option<&str>, dialect: &str, identity: bool) {
-        crate::audit::amend::hook_read(hook, principal, dialect, identity);
-    }
+    /// Leave the access amendment of a hook handed the prompt on the node's amendment journal,
+    /// field names only — through the host's own seat on it
+    /// ([`crate::plane_driver::EngineHost::hook_read`]).
+    fn hook_read(&self, hook: &str, principal: Option<&str>, dialect: &str, identity: bool);
     /// Fire the `response` taps of a unit refused at authentication.
     fn denied_taps(&self, taps: &[TapEntry], request_id: u64, dialect: &str, status: u16) {
         let shape = StageShape::zeroed(request_id, "", dialect, false);
@@ -673,6 +672,11 @@ pub struct Projection {
     /// The plane's projected body (`ProjectOut::body`), when it states one: what a gate-first
     /// plane's gates screen.
     pub projected: Option<Vec<u8>>,
+    /// The plane stated `PROJECT_REWRITE_NOT_APPLICABLE`: the rewrite this projection carried, for
+    /// which it answers no rewritten body, does not apply to the unit (its operation has no
+    /// conversation to frame one into). Read only where the call carried a rewrite and no
+    /// rewritten body came back.
+    pub rewrite_not_applicable: bool,
 }
 
 impl Projection {
@@ -1395,6 +1399,9 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
             end_user: opt(o.end_user),
             rewritten: span(o.rewritten),
             projected: span(o.body),
+            rewrite_not_applicable: v.flags
+                & busbar_contract::abi::plane::PROJECT_REWRITE_NOT_APPLICABLE
+                != 0,
             session: (v.session.fmt == busbar_contract::abi::mechanism::call::BLOB_OCTETS
                 && !v.session.ptr.is_null())
             .then(|| {
@@ -1603,25 +1610,37 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
                 TransformOutcome::Rewrite(rw) => {
                     let bytes = rewrite_bytes(&rw);
                     match self.project(Some(&bytes), true) {
-                        Ok(next) => {
+                        // Applied; or a rewrite naming no messages, which 1.5.5 read as no rewrite.
+                        Ok(next) if next.rewritten.is_some() || rw.messages.is_empty() => {
                             if let Some(body) = &next.rewritten {
                                 self.lock().body = Some(bytes::Bytes::copy_from_slice(body));
                             }
                             view = next;
                         }
-                        // The plane refused the rewrite: the hook's failure, by its `on_error`;
-                        // otherwise the unit goes on as it stood before that rewrite.
+                        // The rewrite does not apply to the unit, in the plane's own word (READY,
+                        // no rewritten body, `PROJECT_REWRITE_NOT_APPLICABLE`): its operation has
+                        // no conversation to frame one into. The audited pass-through: the view
+                        // and the body stand as they were, the hook is on record as a pass.
+                        Ok(next) if next.rewrite_not_applicable => {
+                            gated::rewrite_not_applicable(hook.name(), ran);
+                            tracing::warn!(
+                                hook = hook.name(),
+                                pool = %pool,
+                                "rewrite not applicable to this request; forwarded unmodified"
+                            );
+                        }
                         Err(fault @ Stopped::Veto(_)) => {
                             // A FAULT project: the shared 500, never the hook's `on_error`.
                             self.lock().hooked = Some((hooks, view));
                             return Err(fault);
                         }
-                        Err(_) => {
-                            if let Some((status, message)) = gated::refused_rewrite(&**hook, &pool)
-                            {
-                                self.lock().hooked = Some((hooks, view));
-                                return Err(veto(status, message));
-                            }
+                        // The plane refused the rewrite, or answered with no rewritten body and no
+                        // word that the rewrite does not apply: the request is refused, never
+                        // forwarded un-rewritten.
+                        Ok(_) | Err(_) => {
+                            let (status, message) = gated::refused_rewrite(&**hook, &pool, ran);
+                            self.lock().hooked = Some((hooks, view));
+                            return Err(veto(status, message));
                         }
                     }
                 }
@@ -2098,11 +2117,7 @@ fn gated_unit(g: GatedHooks, dialect: String) -> UnitHooks {
         budget: Vec::new(),
         requested: crate::hooks::RequestedSignals::default(),
         groups: Arc::new(|_: &[String]| true),
-        reads: Arc::new(
-            |hook: &str, principal: Option<&str>, dialect: &str, identity: bool| {
-                crate::audit::amend::hook_read(hook, principal, dialect, identity);
-            },
-        ),
+        reads: g.reads,
         dialect,
     }
 }

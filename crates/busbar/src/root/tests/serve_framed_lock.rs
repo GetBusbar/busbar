@@ -78,8 +78,14 @@ fn a_close_beside_a_hung_framer_emit_never_waits_and_the_write_makes_it() {
         gate: Mutex::new(None),
         crossed: Mutex::new(Vec::new()),
     });
-    let stream = FramedStream::open(Arc::clone(&door) as Arc<dyn FramerDoor>, "lp", "/", &[])
-        .expect("the stream opens");
+    let stream = FramedStream::open(
+        Arc::clone(&door) as Arc<dyn FramerDoor>,
+        "lp",
+        "/",
+        &[],
+        busbar_contract::abi::host::service::SCHEME_PLAIN,
+    )
+    .expect("the stream opens");
     let stream = shared(stream);
     let (inner, _reply) = IngressCaller::new();
     let (trailers, _trailed) = tokio::sync::oneshot::channel();

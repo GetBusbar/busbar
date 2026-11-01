@@ -106,3 +106,51 @@ fn the_store_host_lends_nothing_and_hands_the_settings_as_resolved() {
         (settings.to_vec(), Vec::new())
     );
 }
+
+mod referencing {
+    use busbar_contract::abi::mechanism::call::AbiStr;
+    use busbar_contract::abi::mechanism::extensions::EXT_REFERENCE_FIELDS;
+    use busbar_contract::abi::sdk::door::abi_str;
+
+    const SECRET_REFS: &[AbiStr] = &[abi_str("password")];
+
+    busbar_contract::statement_extensions!(EXTENSIONS: [
+        (EXT_REFERENCE_FIELDS, br#"["url"]"#),
+    ]);
+
+    busbar_contract::store_door!(
+        super::Wrapped<super::Plain>,
+        "referencing-store",
+        "0",
+        8,
+        extensions: EXTENSIONS,
+        secret_refs: SECRET_REFS
+    );
+}
+
+/// REFERENCE-CAPABLE `url` (lead ruling item 7a), as a store's suite proves it: the door states it
+/// apart from its secret paths; `{env: VAR}` there resolves as the kernel resolves it, and a literal
+/// url passes as written.
+#[test]
+fn a_reference_capable_url_resolves_a_reference_and_passes_a_literal() {
+    let p = load(referencing::door);
+    assert_eq!(p.reference_fields(), ["url".to_string()]);
+    assert_eq!(p.secret_refs(), ["password".to_string()]);
+    let out = super::settings_as_the_kernel_resolves(
+        &p,
+        br#"{"url":{"env":"STORE_URL"},"password":{"env":"PW"}}"#,
+        env,
+    )
+    .expect("resolves");
+    let v: serde_json::Value = serde_json::from_slice(&out).expect("json");
+    assert!(
+        v["url"]
+            .as_str()
+            .is_some_and(|s| s.starts_with("resolved:")),
+        "{v}"
+    );
+    let literal = br#"{"url":"postgres://db:5432/busbar"}"#;
+    let out = super::settings_as_the_kernel_resolves(&p, literal, env).expect("as written");
+    let v: serde_json::Value = serde_json::from_slice(&out).expect("json");
+    assert_eq!(v["url"], serde_json::json!("postgres://db:5432/busbar"));
+}

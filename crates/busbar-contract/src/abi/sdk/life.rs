@@ -51,6 +51,7 @@
 //! # fn main() { let _ = door(); }
 //! ```
 
+use std::any::Any;
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::marker::PhantomData;
@@ -61,7 +62,7 @@ use std::task::Poll;
 use zeroize::Zeroizing;
 
 use crate::abi::mechanism::call::{
-    AbiStr, Blob, InHead, MetricEntry, OutHead, Outcome, BLOB_SECRET, METRIC_ADD,
+    AbiStr, Blob, Diag, InHead, MetricEntry, OutHead, Outcome, BLOB_SECRET, METRIC_ADD,
 };
 use crate::abi::mechanism::lifecycle::{
     CancelIn, CancelOut, DriveIn, GenIn, OpenIn, OpenOut, ReadyIn, RefreshIn, ReleaseIn, TickIn,
@@ -126,6 +127,16 @@ impl Refusal {
     /// Its outcome and its text, for the SDK's writer ([`Out::fail`]).
     pub(crate) fn into_parts(self) -> (Outcome, Option<Cow<'static, str>>) {
         (self.outcome, self.text)
+    }
+}
+
+impl std::fmt::Display for Refusal {
+    /// Its text; a refusal saying nothing reads as its outcome.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.text {
+            Some(text) => f.write_str(text),
+            None => write!(f, "{:?}", self.outcome),
+        }
     }
 }
 
@@ -297,16 +308,22 @@ impl Leases {
     /// was not (a host bug). Only the SDK's `release` slot calls it: a body that released a lease
     /// the host is still copying would free memory under it.
     pub(crate) fn release(&self, lease: u64) -> Outcome {
+        let mut retired = Vec::new();
         let mut held = self.lock();
-        let mut freed = false;
         while let Some(key) = held
             .range((lease, 0)..=(lease, u32::MAX))
             .next()
             .map(|(k, _)| *k)
         {
-            held.remove(&key);
-            freed = true;
+            // Reserve before detaching: unwinding must unlock before dropping any kept storage.
+            retired.reserve(1);
+            if let Some(part) = held.remove(&key) {
+                retired.push(part);
+            }
         }
+        let freed = !retired.is_empty();
+        drop(held);
+        drop(retired);
         if freed {
             Outcome::Ready
         } else {
@@ -346,6 +363,38 @@ pub struct Refreshed {
     pub counted: Option<Counted>,
 }
 
+/// What an open's second step ([`Life::opening`]) answers.
+#[derive(Debug)]
+pub enum Opening {
+    /// Reached: the open is READY.
+    Ready,
+    /// Not yet: re-enter `open` at `wake_at_ns` (`0` = when a connector service the step made
+    /// completes); `parked` is kept on the ticket and handed back on that entry.
+    Pending {
+        /// When to re-enter.
+        wake_at_ns: u64,
+        /// What the step keeps across the pend.
+        parked: Box<dyn Any + Send + Sync>,
+    },
+    /// The open fails with this text.
+    Failed(Refusal),
+    /// The step broke a rule (it pended with nothing to wake it): FAULT.
+    Fault,
+}
+
+/// A diagnostic the plugin's Statement declares, raised by the instance an `open` or `refresh`
+/// built: the host audits one at warn or error on the plugin's behalf (a flagged open loaded,
+/// `plugin.open`, `degraded`), and writes it to the plugin's own log.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Flagged {
+    /// The index of its id in the plugin's Statement `diag_ids`.
+    pub id_idx: u32,
+    /// `SEVERITY_WARN` or `SEVERITY_ERROR` (`abi::mechanism::call`).
+    pub severity: u8,
+    /// The operator's words; never secret material.
+    pub text: String,
+}
+
 /// ONE KIND'S LIFECYCLE, as its SDK states it: the instance state the nine generic slots serve,
 /// and each per-kind value. A kind's SDK implements it over its author trait; a plugin names it
 /// through its kind's door macro.
@@ -374,7 +423,42 @@ pub trait Life: Send + Sync + Sized + 'static {
     /// Why it will not open.
     fn open(settings: &[u8], secrets: &[&[u8]], generation: u64) -> Result<Self, Refusal>;
 
-    /// `refresh` to `generation` with `settings` and `secrets`.
+    /// `open` over the host tables the call hands it (`OpenIn.host`; `None` when none): what the
+    /// `open` slot calls. The default is [`Life::open`]; a kind whose instance keeps the tables
+    /// from its first moment (the store's) states it.
+    ///
+    /// # Errors
+    /// Why it will not open.
+    fn open_on(
+        settings: &[u8],
+        secrets: &[&[u8]],
+        generation: u64,
+        host: Option<&Host>,
+    ) -> Result<Self, Refusal> {
+        let _ = host;
+        Self::open(settings, secrets, generation)
+    }
+
+    /// THE OPEN'S SECOND STEP: what the opened instance reaches before the host counts it opened
+    /// (a store's connect step), on `open`'s ticket with the instance's host tables. It may PEND
+    /// ([`Opening::Pending`], with what it parks): the host re-enters `open` on the wake, and the
+    /// SDK hands the same instance what it parked (`parked`; `None` on the first entry), never
+    /// opening it again. An [`Opening::Failed`] fails the load with its text, as an `open` refusal
+    /// does. The default reaches nothing.
+    fn opening(
+        &self,
+        host: Option<&Host>,
+        ticket: Ticket,
+        parked: Option<Box<dyn Any + Send + Sync>>,
+    ) -> Opening {
+        let _ = (host, ticket, parked);
+        Opening::Ready
+    }
+
+    /// `refresh` to `generation` with `settings` and `secrets`. Only a kind the host refreshes
+    /// (`abi::mechanism::lifecycle`, WHICH KINDS THE HOST REFRESHES) states its own; for every
+    /// other kind the default answers, REFUSED in [`NOT_REFRESHED`]'s words: a changed
+    /// configuration reaches such an instance only through a fresh `open`.
     ///
     /// # Errors
     /// Why the refresh did not apply.
@@ -383,7 +467,10 @@ pub trait Life: Send + Sync + Sized + 'static {
         settings: &[u8],
         secrets: &[&[u8]],
         generation: u64,
-    ) -> Result<Refreshed, Refusal>;
+    ) -> Result<Refreshed, Refusal> {
+        let _ = (settings, secrets, generation);
+        Err(Refusal::refused(NOT_REFRESHED))
+    }
 
     /// `retire` of `generation`: nothing held per generation unless the kind says so.
     fn retire(&self, generation: u64) {
@@ -418,7 +505,24 @@ pub trait Life: Send + Sync + Sized + 'static {
     fn close(&self, host: Option<&Host>) {
         let _ = host;
     }
+
+    /// What the instance an `open` or `refresh` just built raises on that answer
+    /// ([`Flagged`]): asked after each READY `open` and `refresh`. `None` (the default) raises
+    /// nothing.
+    fn flagged(&self) -> Option<Flagged> {
+        None
+    }
 }
+
+/// The diagnostic an `open` or `refresh` raised ([`Life::flagged`]), held by the instance until
+/// the host has copied the reply, as [`Reported`] is. BOXED: an `open` raises it before its state
+/// moves into the instance box, so the entry the envelope points to must not move with it.
+struct Raised(Mutex<Option<Box<(Flagged, Diag)>>>);
+
+// SAFETY: the entry's one pointer (`text`) points into the `Flagged` text held beside it.
+unsafe impl Send for Raised {}
+// SAFETY: as above.
+unsafe impl Sync for Raised {}
 
 /// The metric entry a `refresh` reports, held by the instance until the host has copied the reply
 /// (lifecycle ops never overlap on one instance, and the host copies a reply as it returns).
@@ -435,6 +539,7 @@ pub struct Held<L> {
     life: L,
     leases: Leases,
     reported: Reported,
+    raised: Raised,
     host: Option<Host>,
 }
 
@@ -447,14 +552,13 @@ impl<L> std::fmt::Debug for Held<L> {
 }
 
 impl<L: Life> Held<L> {
-    /// The instance state over `life`, with no lease held and the host tables `host`. A kind
-    /// whose `open` the generic slot cannot serve (the store's, whose connect step pends) builds
-    /// it itself.
+    /// The instance state over `life`, with no lease held and the host tables `host`.
     pub(crate) fn new(life: L, host: Option<Host>) -> Self {
         Self {
             life,
             leases: Leases::default(),
             reported: Reported(Mutex::new(entry(None))),
+            raised: Raised(Mutex::new(None)),
             host,
         }
     }
@@ -487,6 +591,31 @@ fn entry(counted: Option<Counted>) -> MetricEntry {
     }
 }
 
+/// Put what `h`'s instance raises ([`Life::flagged`]) in `head`'s envelope as its one declared
+/// diagnostic, held by the instance until its next lifecycle op; nothing when it raises none.
+fn raise<L: Life>(h: &Held<L>, head: &mut OutHead) {
+    let Some(flag) = h.life.flagged() else {
+        return;
+    };
+    let mut held = h
+        .raised
+        .0
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let (flag, diag) = &mut **held.insert(Box::new((flag, Diag::ZERO)));
+    *diag = Diag {
+        id_idx: flag.id_idx,
+        severity: flag.severity,
+        text: AbiStr {
+            ptr: flag.text.as_ptr(),
+            len: flag.text.len(),
+        },
+        ..Diag::ZERO
+    };
+    head.envelope.diags = std::ptr::from_ref(&*diag);
+    head.envelope.diags_len = 1;
+}
+
 fn secrets<'a>(list: LentList<'a, Blob>) -> Vec<&'a [u8]> {
     list.iter().map(Lent::<Blob>::bytes).collect()
 }
@@ -495,6 +624,55 @@ fn secrets<'a>(list: LentList<'a, Blob>) -> Vec<&'a [u8]> {
 
 /// What `release` answers for a lease this instance does not hold.
 pub const NO_SUCH_LEASE: &str = "release: no such lease";
+
+/// What the default [`Life::refresh`] answers: the instance takes a changed configuration only
+/// through a fresh `open`.
+pub const NOT_REFRESHED: &str =
+    "refresh: this instance is not refreshed; a changed configuration applies when it is opened again";
+
+/// What an [`Opened`] op answers when the host calls it with no open instance (never, under the
+/// call contract: the host crosses a kind op only on an instance whose `open` answered READY).
+pub const NO_INSTANCE: &str = "this op runs only on an open instance, and none is open";
+
+/// A KIND OP OVER AN OPEN INSTANCE: [`SafeSlot`] with the no-instance answer stated once, by the
+/// SDK. The body is handed the instance's [`Held<L>`] (and the call's [`Instance`], for its ticket
+/// and what it parks); named in [`plugin_door!`](crate::plugin_door) as `Safe<Opened<S>>`.
+pub trait HeldSlot {
+    /// The slot's `in`.
+    type In: crate::abi::sdk::door::AbiIn;
+    /// The slot's `out`.
+    type Out: crate::abi::sdk::door::AbiOut;
+    /// The kind's lifecycle the instance is opened by.
+    type Life: Life;
+    /// The body, on the open instance `held`.
+    fn call(
+        held: &Held<Self::Life>,
+        instance: &Instance<'_, Held<Self::Life>>,
+        input: Lent<'_, Self::In>,
+        out: Out<'_, Self::Out>,
+    ) -> Outcome;
+}
+
+/// [`HeldSlot`] `S` as a [`SafeSlot`]: with no open instance it answers REFUSED in
+/// [`NO_INSTANCE`]'s words before `S`'s body runs.
+#[derive(Debug)]
+pub struct Opened<S>(PhantomData<S>);
+
+impl<S: HeldSlot> SafeSlot for Opened<S> {
+    type In = S::In;
+    type Out = S::Out;
+    type State = Held<S::Life>;
+    fn call(
+        instance: Instance<'_, Held<S::Life>>,
+        input: Lent<'_, S::In>,
+        mut out: Out<'_, S::Out>,
+    ) -> Outcome {
+        let Some(held) = instance.get() else {
+            return out.fail(Refusal::refused(NO_INSTANCE));
+        };
+        S::call(held, &instance, input, out)
+    }
+}
 
 macro_rules! life_slot {
     ($(#[$doc:meta])* $name:ident($in:ty => $out:ty) |$inst:pat_param, $input:pat_param, $o:ident| $body:block) => {
@@ -527,16 +705,61 @@ life_slot!(
 );
 
 life_slot!(
-    /// `open`: [`Life::open`]; the SDK holds the state it answers.
+    /// `open`: [`Life::open_on`], then its second step [`Life::opening`]; the SDK holds the state
+    /// it answers. A PENDING step installs the instance NOW, its parked state on the ticket (the
+    /// box is retained across the pend); the RESUME runs the step again on that instance, and a
+    /// RESUME with no instance or nothing parked is FAULT (an open never runs afresh on it).
     Open(OpenIn => OpenOut) |instance, input, out| {
+        let host = input.host().map(|h| Host::of(&h));
+        let ticket = instance.ticket();
+        if instance.resuming() {
+            let Some(h) = instance.get() else {
+                return Outcome::Fault;
+            };
+            let Some(parked) = instance.resume_value::<Box<dyn Any + Send + Sync>>() else {
+                return Outcome::Fault;
+            };
+            return match h.life.opening(h.host(), ticket, Some(parked)) {
+                Opening::Ready => {
+                    raise(h, &mut out.raw().head);
+                    Outcome::Ready
+                }
+                Opening::Pending { wake_at_ns, parked } => {
+                    out.raw().head.wake_at_ns = wake_at_ns;
+                    instance.park(parked);
+                    Outcome::Pending
+                }
+                Opening::Failed(r) => out.fail(r),
+                Opening::Fault => Outcome::Fault,
+            };
+        }
         let settings = input.field(|i| &i.settings).bytes();
-        match L::open(settings, &secrets(input.secrets()), input.generation) {
-            Ok(life) => {
-                let host = input.host().map(|h| Host::of(&h));
-                instance.open(Held::new(life, host));
+        let opened = L::open_on(
+            settings,
+            &secrets(input.secrets()),
+            input.generation,
+            host.as_ref(),
+        );
+        let held = match opened {
+            Ok(life) => Held::new(life, host),
+            Err(r) => return out.fail(r),
+        };
+        match held.life.opening(held.host(), ticket, None) {
+            Opening::Ready => {
+                // Raised from the state before it is installed: the instance is not this
+                // call's to read until `open` returns (`Instance::get` answers `None` here).
+                raise(&held, &mut out.raw().head);
+                instance.open(held);
                 Outcome::Ready
             }
-            Err(r) => out.fail(r),
+            Opening::Pending { wake_at_ns, parked } => {
+                out.raw().head.wake_at_ns = wake_at_ns;
+                instance.open_parking(held, parked);
+                Outcome::Pending
+            }
+            // Nothing installed: the reason goes into the host's lent reason buffer.
+            Opening::Failed(r) => out.fail(r),
+            Opening::Fault => Outcome::Fault,
         }
     }
 );
@@ -559,9 +782,13 @@ life_slot!(
                 let o = out.raw();
                 o.envelope.metrics = std::ptr::from_ref(&*held);
                 o.envelope.metrics_len = 1;
+                raise(h, o);
                 Outcome::Ready
             }
-            Ok(Refreshed { counted: None }) => Outcome::Ready,
+            Ok(Refreshed { counted: None }) => {
+                raise(h, out.raw());
+                Outcome::Ready
+            }
             Err(r) => out.fail(r),
         }
     }

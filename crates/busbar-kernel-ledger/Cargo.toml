@@ -4,7 +4,7 @@ version = "1.6.0"
 publish = false            # internal workspace crate; never goes to crates.io
 edition = "2021"
 rust-version = "1.97"
-description = "The ledger unit: settlement through the capability token, the per-bucket totals a checkpoint seals, the balance identity as a pure function, the independent recompute, and the dual-write hook onto the previous release's rows."
+description = "Money as counts x the rate card: the dated rate-card history and the one pricing lookup."
 license = "Apache-2.0"
 
 [lib]
@@ -13,8 +13,4 @@ path = "src/lib.rs"
 
 [dependencies]
 busbar-contract = { path = "../busbar-contract" }
-ring = { workspace = true }
 serde = { workspace = true }
-
-[dev-dependencies]
-sha2 = { workspace = true }

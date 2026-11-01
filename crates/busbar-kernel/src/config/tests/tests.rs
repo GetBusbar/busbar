@@ -1511,6 +1511,45 @@ models: {}
     assert!(msg.contains("missing field `api_key`"), "{msg}");
 }
 
+/// security.md: pasting a secret inline is refused with ONE message that names the rule and the
+/// config position, and never echoes the value. Driven through the loader boot uses
+/// (`deploy_from_yaml_str`) on a document whose literal sits on a known line, as a bare string, an
+/// unquoted number and a boolean (each a spelling an operator pastes), so the refusal is the
+/// operator's to act on: it points at the line and the key, and carries none of the value.
+#[test]
+fn an_inline_literal_refusal_names_its_config_position() {
+    for (literal, line) in [
+        ("sk-live-0123456789abcdef", 5),
+        ("\"sk-live-0123456789abcdef\"", 5),
+        ("483920175534", 5),
+        ("true", 5),
+    ] {
+        let yaml = format!(
+            "store: {{module: memory}}\nmodels: {{}}\nproviders:\n  myprov:\n    api_key: {literal}\n"
+        );
+        let err = deploy_from_yaml_str(&yaml)
+            .expect_err("an inline literal secret is refused")
+            .to_string();
+        let value = literal.trim_matches('"');
+        assert!(
+            !err.contains(value),
+            "the refusal must not echo the value `{value}`: {err}"
+        );
+        assert!(
+            err.contains("REFERENCE") && err.contains("inline literal"),
+            "the refusal names the rule: {err}"
+        );
+        assert!(
+            err.contains("providers.myprov.api_key"),
+            "the refusal names the key path: {err}"
+        );
+        assert!(
+            err.contains(&format!("at line {line} ")),
+            "the refusal names the line: {err}"
+        );
+    }
+}
+
 #[test]
 fn test_resolve_unknown_provider_error() {
     // config.yaml references nope not in providers.yaml -> resolve returns error naming nope
@@ -2031,7 +2070,7 @@ fn test_secret_ref_builtin_resolution_fail_closed() {
         SecretResolver::builtins_only()
             .resolve(&SecretRef::env("BUSBAR_T_SECRET_ENV_OK"))
             .unwrap(),
-        b"s3cr3t-value".to_vec()
+        busbar_contract::redacted::Secret::new(b"s3cr3t-value".to_vec())
     );
     std::env::remove_var("BUSBAR_T_SECRET_ENV_OK");
 
@@ -2059,9 +2098,12 @@ fn test_secret_ref_builtin_resolution_fail_closed() {
     let sref = SecretRef::file(path.to_str().unwrap());
     assert_eq!(
         SecretResolver::builtins_only().resolve(&sref).unwrap(),
-        b"file-secret\n".to_vec()
+        busbar_contract::redacted::Secret::new(b"file-secret\n".to_vec())
     );
-    assert_eq!(resolve_linked_string(&sref).unwrap(), "file-secret");
+    assert_eq!(
+        resolve_linked_string(&sref).unwrap(),
+        busbar_contract::redacted::Secret::new("file-secret".to_string())
+    );
     std::fs::remove_file(&path).unwrap();
 
     // file: missing -> error.
@@ -3688,6 +3730,40 @@ fn test_auth_policy_rejects_bad_input_at_parse() {
     assert!(err.to_string().contains("unknown field"), "got: {err}");
 }
 
+/// The `auth:` block's refusals, byte for byte, through the boot parser: the frozen five-key list
+/// (with or without the lifted `policy:` beside it), a lifted key's own refusal at its own path and
+/// position, and a value that is not a section. An empty `auth:` is no block at all.
+#[test]
+fn the_auth_block_refusals_are_pinned() {
+    let refusal = |auth: &str| {
+        crate::config::deploy_from_yaml_str(&format!("providers: {{}}\nmodels: {{}}\n{auth}"))
+            .expect_err("refused")
+            .to_string()
+    };
+    let frozen = "unknown field `bogus_key`, expected one of `signing_key`, `chain`, \
+                  `admin_auth`, `role_bindings`, `key_ttl`";
+    assert_eq!(
+        refusal("auth:\n  bogus_key: 1\n"),
+        format!("auth: {frozen} at line 4 column 3")
+    );
+    assert_eq!(
+        refusal("auth:\n  policy: {}\n  bogus_key: 1\n"),
+        format!("auth: {frozen} at line 5 column 3")
+    );
+    assert_eq!(
+        refusal("auth:\n  policy:\n    slef_mint: true\n"),
+        "auth.policy: unknown field `slef_mint`, expected one of `self_mint`, `binding_modes`, \
+         `default_ttl`, `max_ttl`, `mint_ceilings` at line 5 column 5"
+    );
+    assert_eq!(
+        refusal("auth: 5\n"),
+        "auth: invalid type: integer `5`, expected a configuration section at line 3 column 7"
+    );
+    let empty = crate::config::deploy_from_yaml_str("providers: {}\nmodels: {}\nauth:\n")
+        .expect("an empty auth block parses");
+    assert!(empty.auth.is_none());
+}
+
 /// The top-level section [`NEUTRAL_SECTION_PLANE`] declares and owns.
 const NEUTRAL_SECTION: &str = "neutral_section";
 
@@ -3947,6 +4023,7 @@ fn a_decisions_section_with_no_owning_plane_is_refused_as_an_unknown_key() {
 static PLANE_SAW: std::sync::Mutex<Vec<serde_yaml::Value>> = std::sync::Mutex::new(Vec::new());
 
 fn record_plane_section(
+    _: &crate::plane_driver::registry::PlaneDecl,
     v: &serde_yaml::Value,
 ) -> Result<Box<dyn busbar_kernel::config::plane_sections::PlaneCfg>, String> {
     PLANE_SAW.lock().unwrap().push(v.clone());
@@ -3977,11 +4054,11 @@ static CARD_PLANE: crate::plane_driver::registry::PlaneDecl =
             served_op_classes: &[],
             caller_credential_refusal: None,
         },
-        wire_format_names: || &[],
-        provider_dialects: || &[],
+        wire_format_names: |_| &[],
+        provider_dialects: |_| &[],
         claims: |_| Vec::new(),
         admission: |_| None,
-        build: |_| None,
+        build: |_, _| None,
         routes: None,
         admin_routes: None,
         openapi: None,
@@ -4002,6 +4079,7 @@ static CARD_PLANE: crate::plane_driver::registry::PlaneDecl =
         retain_verify_gates: None,
         default_section: None,
         resolve_provider: None,
+        door: None,
     };
 
 /// THE #43 ENFORCEMENT: the section value handed to the plane carries the plane's own settings and
@@ -4157,7 +4235,11 @@ fn a_plane_entry_named_after_a_reserved_key_is_refused_at_its_position() {
 /// section words are refused as pool names, in 1.5.5's sentence.
 #[test]
 fn root_pools_named_after_a_reserved_sub_key_load_as_in_1_5_5() {
-    crate::test_support::register_neutral_test_plane();
+    // Seeded, not registered: a registration is visible to the next read only until a sibling
+    // test's `TestRegistryIsolation` swaps the list, so the reader holds the isolation itself.
+    let _isolation = crate::test_support::planes::TestRegistryIsolation::seeded(&[
+        crate::test_support::neutral_fallback_plane(),
+    ]);
     let pools: crate::config::PoolsCfg = serde_yaml::from_str(
         "tier:\n  members: [{model: m}]\nwork:\n  members: [{model: m}]\n\
          breaker:\n  members: [{model: m}]\n",
@@ -4219,11 +4301,11 @@ const fn requiring_plane(
             served_op_classes: &[],
             caller_credential_refusal: None,
         },
-        wire_format_names: || &[],
-        provider_dialects: || &[],
+        wire_format_names: |_| &[],
+        provider_dialects: |_| &[],
         claims: |_| Vec::new(),
         admission: |_| None,
-        build: |_| None,
+        build: |_, _| None,
         routes: None,
         admin_routes: None,
         openapi: None,
@@ -4244,6 +4326,7 @@ const fn requiring_plane(
         retain_verify_gates: None,
         default_section: None,
         resolve_provider: None,
+        door: None,
     }
 }
 

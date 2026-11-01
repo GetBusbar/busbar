@@ -6,9 +6,12 @@ use super::*;
 use busbar_kernel::test_support::{LaneSpec, TestApp};
 
 /// The served breaker port over `app`'s lane store, each of `pools` a cell under the default ladder.
-fn cells_over(app: Arc<busbar_kernel::state::App>, pools: &[&str]) -> DirectCells {
-    let source: AppSource = Arc::new(move || Arc::clone(&app));
-    let unit = Arc::clone(&source);
+fn cells_over(app: Arc<busbar_kernel::state::App>, pools: &[&str]) -> WalkCells {
+    cells_routing(LiveApp::fixed(app), pools, &[])
+}
+
+/// [`cells_over`], with each of `direct` a model a route names directly.
+fn cells_routing(app: LiveApp, pools: &[&str], direct: &[&str]) -> WalkCells {
     let mut records: HashMap<String, busbar_kernel::store::BreakerCfg> = pools
         .iter()
         .map(|pool| {
@@ -19,15 +22,13 @@ fn cells_over(app: Arc<busbar_kernel::state::App>, pools: &[&str]) -> DirectCell
         })
         .collect();
     records.insert(String::new(), busbar_kernel::store::BreakerCfg::default());
-    DirectCells {
-        inner: BreakerAdapter::over(
-            Arc::new(move || unit().store.breaker_unit()),
-            BreakerPolicy::new(),
-        ),
-        app: source,
-        records,
-        direct: HashSet::new(),
-    }
+    WalkCells::over(
+        app,
+        Arc::new(CellPlan {
+            records,
+            direct: direct.iter().map(|m| (*m).to_owned()).collect(),
+        }),
+    )
 }
 
 fn wall_secs() -> u64 {
@@ -270,8 +271,7 @@ fn a_direct_routes_fault_is_recorded_on_the_lanes_default_cell() {
     let app = TestApp::new()
         .lane(LaneSpec::new("m0", "wire-under-test", "http://127.0.0.1:9"))
         .build();
-    let mut cells = cells_over(Arc::clone(&app), &[]);
-    cells.direct.insert("m0".to_owned());
+    let cells = cells_routing(LiveApp::fixed(Arc::clone(&app)), &[], &["m0"]);
     let token = busbar_kernel::test_support::tokens::pass();
     let now = wall_secs();
 
@@ -300,5 +300,82 @@ fn a_direct_routes_fault_is_recorded_on_the_lanes_default_cell() {
         app.store.error_rate_in("m0", 0, now),
         None,
         "no cell is kept under the model's own name"
+    );
+}
+
+/// A WALK THAT SPANS A CONFIG APPLY RECORDS INTO THE NEW STORE: the walk's breaker resolves the live
+/// App once at its start, and a swap mid-walk moves its next record onto the App the live
+/// configuration answers then, as a breaker that read the live App on every call did. One transient
+/// lands on the first App's lane store; after the swap, the next lands on the second App's, and
+/// the first's window holds no more than its one.
+/// RED: a walk pinned to the App it started on records the second fault into the retired store.
+#[test]
+fn a_walk_spanning_a_config_apply_records_into_the_new_store() {
+    let generation = || {
+        TestApp::new()
+            .lane(LaneSpec::new("m0", "wire-under-test", "http://127.0.0.1:9"))
+            .pool("p", &[(0, 1)])
+            .build()
+    };
+    let (first, second) = (generation(), generation());
+    let handle = Arc::new(busbar_kernel::state::AppHandle::new(Arc::clone(&first)));
+    let live = Arc::new(std::sync::OnceLock::new());
+    let _ = live.set(Arc::clone(&handle));
+    let cells = cells_routing(LiveApp::new(live, Arc::clone(&first)), &["p"], &[]);
+    let dest = DestinationId::new(0);
+    let token = busbar_kernel::test_support::tokens::pass();
+    let now = wall_secs();
+    let fault = Outcome::Transient { retry_after: None };
+
+    cells.observe("p", dest, fault, now, &token);
+    assert_eq!(first.store.error_rate_in("p", 0, now), Some(1.0));
+
+    handle.swap(Arc::clone(&second));
+    cells.observe("p", dest, fault, now, &token);
+    assert_eq!(
+        second.store.error_rate_in("p", 0, now),
+        Some(1.0),
+        "the record after the apply lands on the new generation's store"
+    );
+    assert_eq!(
+        first.store.error_rate_in("p", 0, now),
+        Some(1.0),
+        "the retired store took nothing after the apply"
+    );
+}
+
+/// A KEYLESS LANE IS NOT PROBED (security.md: "`api_key: none` ... the lane sends no auth header
+/// and is skipped by the health prober"): two providers configure the same active `health:` block,
+/// one keyed and one declaring `api_key: none`; only the keyed provider's model is in the probe set.
+/// RED: the keyless lane's model is probed like any other.
+#[test]
+fn a_keyless_lane_is_not_probed() {
+    busbar_kernel::test_support::register_neutral_test_plane();
+    let mut defs = std::collections::HashMap::new();
+    for name in ["keyed", "local"] {
+        let def: busbar_kernel::config::ProviderDef =
+            serde_yaml::from_str("protocol: openai\nbase_url: http://127.0.0.1:9\n")
+                .expect("a def");
+        defs.insert(name.to_owned(), def);
+    }
+    let yaml = "providers:\n  \
+                keyed:\n    api_key: { env: BUSBAR_TEST_KEY }\n    health: { mode: active }\n  \
+                local:\n    api_key: none\n    health: { mode: active }\n\
+                models:\n  m-keyed:\n    provider: keyed\n  m-local:\n    provider: local\n";
+    let deploy = busbar_kernel::config::deploy_from_yaml_str(yaml).expect("parses");
+    let cfg = busbar_kernel::config::resolve(&deploy, &defs).expect("resolves");
+    let serving = ModelServing {
+        pools: ModelPools::of(&cfg),
+        lanes: [("m-keyed".to_string(), 0), ("m-local".to_string(), 1)]
+            .into_iter()
+            .collect(),
+        app: LiveApp::fixed(TestApp::new().build()),
+    };
+    let (_, members) = serving.probe_members();
+    let probed: Vec<&str> = members.iter().map(|(_, m)| m.name.as_str()).collect();
+    assert_eq!(
+        probed,
+        vec!["m-keyed"],
+        "the keyed lane is probed and the keyless one is not"
     );
 }

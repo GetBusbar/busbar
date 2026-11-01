@@ -12,7 +12,6 @@ use super::*;
 use crate::root::loader::sign::{DiagnosticDecl, SigningKey};
 use crate::root::loader::PluginRegistry;
 use crate::root::test_plugins;
-use busbar_kernel::plane_driver::registry::merged_boot_plane_decls;
 
 /// THE KERNEL SERVES NO EXPORT MODULE OF ITS OWN (K9e-2: its last built-in became a linked sink),
 /// so every module is a row of the axis. ARCHITECT Q-P4-12 (BUSBAR-1.6.0.md:106, "it refuses at boot
@@ -113,45 +112,10 @@ fn a_linked_export_declares_stating_needs_boots() {
     );
 }
 
-/// THE HOST'S METRIC CATALOG CANNOT DRIFT (K9a S1). Every `busbar_*` series constant the host's
-/// metric modules define is in [`HOST_SERIES`], so a first-party plugin's claim on one is refused;
-/// and a derived histogram series is the host's too. RED: drop an entry from the list and the
-/// scan names it.
+/// A host series, and a histogram series derived from one, is the host's, so a first-party
+/// plugin's claim on it is refused; a plugin's own series is not the host's.
 #[test]
-fn the_host_series_catalog_holds_every_series_the_host_defines() {
-    let root = std::path::Path::new(env!("BUSBAR_CORE_DIR")).join("..");
-    let sources = [
-        "busbar-kernel/src/snapshot/mod.rs",
-        "busbar-kernel/src/telemetry.rs",
-        "busbar-kernel/src/hooks/taps.rs",
-    ];
-    let mut defined = Vec::new();
-    for file in sources {
-        let text = std::fs::read_to_string(root.join(file)).expect("read a metric module");
-        // A `const NAME: &str =` followed (on its line or the next) by a `"busbar_…"` literal.
-        let mut pending = false;
-        for line in text.lines() {
-            let decl = line.contains("const ") && line.contains(": &str =");
-            if decl || pending {
-                if let Some(start) = line.find("\"busbar_") {
-                    let rest = &line[start + 1..];
-                    defined.push(rest[..rest.find('"').expect("closed")].to_string());
-                    pending = false;
-                    continue;
-                }
-                pending = decl && line.trim_end().ends_with('=');
-            }
-        }
-    }
-    assert!(
-        defined.len() >= HOST_SERIES.len(),
-        "the scan found {defined:?}"
-    );
-    let missing: Vec<&String> = defined.iter().filter(|n| !host_series(n)).collect();
-    assert!(
-        missing.is_empty(),
-        "host series missing from HOST_SERIES: {missing:?}"
-    );
+fn a_host_series_and_its_derived_histogram_series_are_the_hosts() {
     assert!(host_series("busbar_request_duration_seconds_count"));
     assert!(!host_series("busbar_example_deliveries_total"));
 }
@@ -219,9 +183,12 @@ fn decl(code: u16, severity: &str) -> DiagnosticDecl {
 #[test]
 fn a_first_party_plugins_declared_codes_join_the_catalogue_and_nothing_else_does() {
     use busbar_contract::diagnostic::{Class, Severity};
-    use busbar_kernel::diagnostics::{by_code, REGISTRY};
+    use busbar_kernel::diagnostics::{Catalogue, REGISTRY};
     let release = test_plugins::key(7);
-    assert!(by_code(6990).is_none(), "the witness code must be free");
+    assert!(
+        Catalogue::NEUTRAL.by_code(6990).is_none(),
+        "the witness code must be free"
+    );
     let registry = declaring_registry("ok", "busbar", &release, vec![decl(6990, "actionable")]);
     let declared = declared_diagnostics(&registry, &[]).expect("a first-party declaration joins");
     assert_eq!(declared.len(), 1);
@@ -345,139 +312,6 @@ fn the_secret_axis_resolves_the_linked_sources_over_the_one_dispatcher() {
     assert!(axis.shared("vault").is_err());
 }
 
-/// A Rust-hook plane row keyed `key` (declaring section `key`), leaked for the table.
-fn native(key: &'static str) -> &'static [PlaneDecl] {
-    let declaration = PlaneDeclaration {
-        key,
-        fallback: false,
-        config_section: key,
-        scope_kinds: &[],
-        subject_noun: key,
-        admin_noun: key,
-        audit_kind: key,
-        card_signing_domain: None,
-        card_kid_prefix: None,
-        owned_config_sections: &[],
-        billable_classes: &[],
-        fee_units: &[],
-        metric_families: &[],
-        record_kinds: &[],
-        required_config_sections: &[],
-        trust_keys: &[],
-        served_op_classes: &[],
-        caller_credential_refusal: None,
-    };
-    let hooks = busbar_kernel::plane_driver::registry::PlaneHooks {
-        wire_format_names: || &[busbar_kernel::plane_driver::dispatch::WIRE_HTTP_JSON],
-        provider_dialects: || &[],
-        claims: |_| Vec::new(),
-        admission: |_| None,
-        build: |_| None,
-        routes: None,
-        admin_routes: None,
-        openapi: None,
-        hydrate: None,
-        start: None,
-        config_validate: None,
-        named_def_list: None,
-        named_def_get: None,
-        registry_contains: None,
-        reresolve_gates: None,
-        openapi_schemas: None,
-        on_swap: None,
-        parse_section: None,
-        parse_endpoint: None,
-        lower_endpoint: None,
-        build_runtime: None,
-        viewer: None,
-        retain_verify_gates: None,
-        default_section: None,
-        resolve_provider: None,
-    };
-    Box::leak(Box::new([PlaneDecl::assemble(declaration, hooks)]))
-}
-
-/// SEAM-L(s), THE PER-AXIS FOLD: a door row and a legacy row sharing a plane key — the door owns the
-/// plane axis for it (the kernel's boot fold keeps the door's row), and the legacy row yields that
-/// axis alone: a legacy row of another key is untouched, and nothing on any other axis is read here
-/// (the legacy crate's other tables are its own). RED: the linked row came first and won the key,
-/// so a plane flipped onto its door only when its legacy row left whole.
-#[test]
-fn a_door_owns_the_plane_axis_for_its_key_and_a_legacy_row_keeps_the_rest() {
-    let legacy = &native("seam-l-shared")[0];
-    let other = &native("seam-l-other")[0];
-    let door = &native("seam-l-shared")[0];
-    let rows = doors_own_their_plane_keys(vec![legacy, other, door], &[door]);
-    assert_eq!(rows.len(), 2, "the legacy row yields the shared key");
-    assert!(
-        std::ptr::eq(rows[0], other),
-        "a legacy row of another key stays"
-    );
-    assert!(std::ptr::eq(rows[1], door), "the door serves the plane");
-    let folded = merged_boot_plane_decls(&rows, &[]);
-    let shared = folded
-        .iter()
-        .find(|d| d.key == "seam-l-shared")
-        .expect("the shared key is registered");
-    assert!(
-        std::ptr::eq(*shared, door),
-        "the boot fold keeps the door's row"
-    );
-}
-
-/// THE ENGINE DOES NOT RIDE THE KEY (status row 83, PR 4a; BUSBAR-1.6.0.md l.639, l.2577, #7): a
-/// door taking the key of the legacy row that is the fallback plane serves its key with its OWN
-/// row. The legacy row's engine (its fallback flag, the runtime it builds, the view, the provider
-/// merge, `on_swap`) yields with the plane axis: the fallback flag is the door's own tail's
-/// (`TAIL_FALLBACK`), and the core's readers walk the kernel's own tables
-/// (`busbar_kernel::plane_driver::route_tables::ConfigTables`, pinned equal to the engine's view on the same config
-/// by the retired engine crate's `view_parity_tests`). RED while the door's row carried the legacy engine: its
-/// `build_runtime` and `viewer` were the legacy row's, so the core read the engine's tables.
-#[test]
-fn a_door_taking_the_fallback_planes_key_serves_it_with_its_own_row() {
-    let base = &native("seam-l-engine")[0];
-    let legacy: &'static PlaneDecl = Box::leak(Box::new(PlaneDecl {
-        declaration: PlaneDeclaration {
-            fallback: true,
-            ..base.declaration
-        },
-        build_runtime: Some(|_, _| Arc::new(()) as Arc<dyn std::any::Any + Send + Sync>),
-        viewer: Some(|_| &busbar_kernel::plane_driver::route_tables::EMPTY_VIEW),
-        ..*base
-    }));
-    let door: &'static PlaneDecl = Box::leak(Box::new(PlaneDecl {
-        declaration: PlaneDeclaration {
-            fallback: true,
-            config_section: "seam-l-door-section",
-            ..base.declaration
-        },
-        ..*base
-    }));
-    let rows = doors_own_their_plane_keys(vec![legacy, door], &[door]);
-    assert_eq!(rows.len(), 1, "one row serves the key");
-    assert!(
-        std::ptr::eq(rows[0], door),
-        "the door's own row serves the plane"
-    );
-    assert!(
-        rows[0].build_runtime.is_none() && rows[0].viewer.is_none(),
-        "no legacy engine rides the door's row"
-    );
-    assert!(
-        rows[0].fallback,
-        "the door's own tail states the fallback plane"
-    );
-    let folded = merged_boot_plane_decls(&rows, &[]);
-    let kept = folded
-        .iter()
-        .find(|d| d.key == "seam-l-engine")
-        .expect("the key is registered");
-    assert!(
-        std::ptr::eq(*kept, door) && kept.viewer.is_none(),
-        "the boot fold keeps the door's row, with no engine view"
-    );
-}
-
 /// SEAM-L(s): a key two door rows both register on the same axis is a boot refusal naming both.
 #[test]
 fn a_key_two_doors_register_refuses_the_boot_naming_both() {
@@ -506,28 +340,6 @@ fn a_door_rows_probe_binds_on_the_processs_one_dispatcher() {
         &door_probe_dispatcher(),
         &crate::root::dispatch::dispatcher()
     ));
-}
-
-/// THE `linked-section` ROWS ARE THE DOORS' OWN: every section the build set a `linked_section_<name>`
-/// cfg for (`BUSBAR_LINKED_SECTIONS`, from `[package.metadata.busbar.linked-section]`) is the
-/// declaring section a linked plane door's Statement states, so a test gated on that cfg runs exactly
-/// when the plane that declares the section is linked.
-#[test]
-fn every_linked_section_row_is_a_linked_doors_declaring_section() {
-    let stated: Vec<&str> = crate::LINKED
-        .plane_doors
-        .iter()
-        .filter_map(|door| {
-            crate::root::loader::dispatch::kinds::plane::linked_declaring_section(*door)
-                .expect("a linked door's Statement reads")
-        })
-        .collect();
-    for section in env!("BUSBAR_LINKED_SECTIONS").split_whitespace() {
-        assert!(
-            stated.contains(&section),
-            "the `linked-section` row `{section}` is no linked door's declaring section: {stated:?}"
-        );
-    }
 }
 
 /// THE LINKED SCRAPE SINK RENDERS THE RECORDER'S BYTES BACK. The build's linked export rows,

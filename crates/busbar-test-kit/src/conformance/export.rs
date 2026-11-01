@@ -54,8 +54,8 @@ use busbar_contract::abi::mechanism::call::{
 };
 
 use super::{
-    called, close, crossings, dispatcher, input, load, open, output, ready_step, refresh, release,
-    tick, validate, Fold, Leg, Recorder, Subject,
+    answer, called, closed, crossings, dispatcher, facts, input, input_text, listed, load, opened,
+    output, refreshed, refused_settings, release, Fold, Leg, Recorder, Script, Subject,
 };
 use crate::dispatch::kinds::export::Export;
 use crate::dispatch::{
@@ -115,15 +115,6 @@ impl EnvelopeSink for Tape {
     }
     fn dropped(&self, why: Dropped) {
         self.push(format!("dropped {why:?}"));
-    }
-}
-
-/// The text of a settings-like input: a string as is, anything else as its JSON.
-fn text(v: &serde_json::Value) -> Vec<u8> {
-    match v {
-        serde_json::Value::String(s) => s.as_bytes().to_vec(),
-        serde_json::Value::Null => panic!("conformance.json: an export input is missing"),
-        other => other.to_string().into_bytes(),
     }
 }
 
@@ -416,22 +407,18 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     let k = s.kind_inputs(ROOT);
     assert!(k.is_object(), "conformance.json has no `export` inputs");
     let settings = leg.settings(s);
+    let text = |v: &serde_json::Value| input_text(v, "an export");
     let empty = Vec::new();
     let arr = |key: &str| {
         k.get(key)
             .and_then(serde_json::Value::as_array)
             .unwrap_or(&empty)
     };
-    let bad = arr("bad_settings");
-    assert!(
-        !bad.is_empty(),
-        "conformance.json: export.bad_settings is empty"
-    );
-    let delivers = arr("deliver");
-    assert!(
-        !delivers.is_empty(),
-        "conformance.json: export.deliver is empty"
-    );
+    let bad: Vec<Vec<u8>> = listed(k, ROOT, "bad_settings")
+        .iter()
+        .map(|b| text(&b["settings"]))
+        .collect();
+    let delivers = listed(k, ROOT, "deliver");
     let scrapes = arr("scrape");
     let serves = arr("serve");
     let snapshots: Vec<Snapshot> = scrapes.iter().map(|sc| snapshot(&sc["families"])).collect();
@@ -462,30 +449,17 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
         ..s.bind(&d, ROOT)
     };
     let p = load::<Export>(s, leg, b).expect("the export door loads");
-    let mut r = Recorder::new(crossings(&p));
+    let mut r = Script::new(crossings(&p));
     // Every line ends with what the host's sink observed while the step ran.
     let host = |line: String| format!("{line} host=[{}]", tape.seen());
-    r.line("facts", 0, || {
-        host(format!(
-            "{:?} {} max_inflight={}",
-            p.kind(),
-            p.name(),
-            p.max_inflight()
-        ))
-    });
-    for (i, b) in bad.iter().enumerate() {
-        r.line(&format!("validate bad #{i}"), 1, || {
-            host(called(&validate(&p, &text(&b["settings"]))))
-        });
-    }
-    r.line("validate", 1, || host(called(&validate(&p, &settings))));
+    r.line("facts", 0, || host(facts(&p)));
+    refused_settings(&mut r, &p, &bad, &host);
     // The host refuses an unopened instance's kind op before any crossing.
     r.line("deliver unopened", 0, || {
         let d0 = &delivers[0];
         host(deliver(&p, &d, stream(d0), &text(&d0["batch"]), 0))
     });
-    r.line("open", 1, || host(called(&open(&p, &settings))));
-    ready_step(&mut r, s, &p, &d);
+    opened(&mut r, (s, &p, &d), &settings, &host);
     for (i, dl) in delivers.iter().enumerate() {
         r.line(&format!("deliver #{i}"), 1, || {
             host(deliver(
@@ -541,19 +515,12 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     if let Some((_, first)) = leases.first() {
         r.line("release again", 1, || host(called(&release(&p, *first))));
     }
-    r.line("tick", 1, || {
-        let (c, next) = tick(&p, 1);
-        host(format!("{} next={next}", called(&c)))
-    });
-    r.line("refresh bad", 1, || {
-        host(called(&refresh(&p, &text(&bad[0]["settings"]))))
-    });
-    r.line("refresh", 1, || host(called(&refresh(&p, &settings))));
+    refreshed(&mut r, &p, Some(&bad[0]), &settings, &host);
     r.line("deliver after refresh", 1, || {
         let d0 = &delivers[0];
         host(deliver(&p, &d, stream(d0), &text(&d0["batch"]), 0xfe))
     });
-    r.line("close", 1, || host(called(&close(&p))));
+    closed(&mut r, &p, &host);
     // A closed instance answers FAULT without a crossing.
     r.line("deliver after close", 0, || {
         let d0 = &delivers[0];
@@ -571,12 +538,7 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
 /// as the inputs say; every lease is its own and is released once; an unopened or closed instance
 /// serves nothing.
 fn contract(fold: &Fold, k: &serde_json::Value) {
-    let at = |label: &str| {
-        fold.iter()
-            .find(|s| s.label == label)
-            .map(|s| s.answer.as_str())
-            .unwrap_or_else(|| panic!("the script ran no step '{label}'"))
-    };
+    let at = |label: &str| answer(fold, label);
     let empty = Vec::new();
     let arr = |key: &str| {
         k.get(key)

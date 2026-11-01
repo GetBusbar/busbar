@@ -45,7 +45,7 @@ impl ExportAxis for RootExports {
         &self,
         module: &str,
         phase: u32,
-        instances: &[(String, serde_json::Value)],
+        instances: &[(String, &serde_json::Value)],
     ) -> Option<Vec<String>> {
         rows()?.check(module, phase, instances)
     }
@@ -83,5 +83,19 @@ impl ExportAxis for RootExports {
 
     fn routes(&self, module: &str) -> Vec<busbar_contract::abi::mechanism::route::Route> {
         rows().map(|r| r.routes(module)).unwrap_or_default()
+    }
+
+    fn secret_refs(&self, module: &str) -> Vec<String> {
+        use busbar_contract::plugin_rows::PluginRows;
+        crate::root::linked::dropped()
+            .map(|registry| registry.secret_slots(module))
+            .unwrap_or_default()
+    }
+
+    fn reference_fields(&self, module: &str) -> Vec<String> {
+        use busbar_contract::plugin_rows::PluginRows;
+        crate::root::linked::dropped()
+            .map(|registry| registry.reference_slots(module))
+            .unwrap_or_default()
     }
 }

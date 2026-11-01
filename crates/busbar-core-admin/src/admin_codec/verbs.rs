@@ -1,6 +1,6 @@
 //! The pure `(method, path) -> verb` match over the closed verb table in [`crate::verb`].
 //!
-//! The rows (the 66 of the pinned 1.5.5 `openapi-1.5.5.json` fixture, the 12 new 1.6.0 verbs, the
+//! The rows (the 66 of the pinned 1.5.5 `openapi-1.5.5.json` fixture, the 11 new 1.6.0 verbs, the
 //! five ledger views and the three audit-chain reads) live in [`crate::verb::TABLE`]; this module
 //! only matches request lines against them. Five verbs the design once named left 1.6.0 by the
 //! owner's 2026-09-08 ruling, and four more by #77(9) (owner answer Q71(1)); none has a row: their

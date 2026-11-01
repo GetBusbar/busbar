@@ -14,10 +14,9 @@ use crate::diagnostics::{
 
 #[allow(unused_imports)]
 use crate::{
-    admin, audit, auth, billing, breaker, catalogue, config, config_validate, core_routes, cost,
-    durable, endpoints, export, governance, handlers, hooks, ingress, ir, json, limits, oauth_as,
-    observability, operation, plugin_routes, profile, snapshot, state, store, telemetry, tls,
-    transport, trust,
+    admin, audit, auth, catalogue, config, config_validate, core_routes, cost, durable, endpoints,
+    export, governance, hooks, ingress, ir, json, limits, oauth_as, observability, operation,
+    plugin_routes, profile, snapshot, state, store, telemetry, transport, trust,
 };
 
 /// The FLEET DATA DIR the first-party anti-downgrade floor persists under, or `None` when this
@@ -260,6 +259,10 @@ pub struct RootInstall {
     /// The root's auth-axis opener ([`AuthAxisOpener`]): every build's auth rows, opened on the
     /// process's one dispatcher. `None` = no auth row answers anything.
     pub auth_axis: Option<AuthAxisOpener>,
+    /// The `auth.chain` / `identity-providers` modules this build's auth axis answers in process
+    /// with no plugin behind them, which the plugin pre-flight therefore does not require in the
+    /// plugins directory. `None` = every module but the engine's built-ins is a plugin reference.
+    pub in_process_auth: Option<fn(&str) -> bool>,
     /// What the root keeps of each resolved configuration beside the generation built from it
     /// ([`crate::appbuild::ConfigProjection`]), taken by every build. `None` = a generation keeps
     /// no projection.
@@ -288,91 +291,60 @@ pub type HookAxisBuild =
         &std::sync::Arc<dyn PluginRows>,
     ) -> Result<std::sync::Arc<dyn busbar_contract::hook_calls::HookAxis>, String>;
 
-/// A test build has no root: its store double ([`crate::test_support::store_double`]) and ranking
-/// double stand in for the root's entries, the in-crate secret double
-/// ([`crate::test_support::secrets`]) as the secret axis, and the test axis for the exports.
-#[cfg(any(test, feature = "test-support"))]
-const STAND_IN: RootInstall = RootInstall {
-    stores: &[crate::test_support::store_double::STORE],
-    registry_build: Some(crate::test_support::registry_stand_in),
-    plugins_fetch: Some(crate::test_support::fetch_stand_in),
-    hook_axis: Some(crate::test_support::hook_axis_stand_in),
-    // A test build links no hook row of the root's: the operator surface lists none, unless the
-    // root's own test binary hands its names in (`test_support::install_root_hook_names`).
-    hook_names: &[],
-    store_axis: Some(crate::test_support::store_axis_stand_in),
-    secret_axis: Some(&crate::test_support::SecretsStandIn),
-    secret_admit: None,
-    // A test build has no root ledger: no holder hears an apply and no dater dates an accrual,
-    // unless a test binary hands its own in (`test_support::rate_holders`).
-    rate_apply: None,
-    rate_epoch: None,
-    export_axis: Some(&crate::test_support::export_axis::STAND_IN),
-    admission: Some(&crate::test_support::AdmissionStandIn),
-    durable: Some(&crate::test_support::DurableStandIn),
-    plugin_logs: None,
-    hook_answers: None,
-    auth_chain_module: Some(crate::test_support::auth_chain_module_stand_in),
-    dispatch_latched: None,
-    // The in-process stand-in (no loader): the build's linked auth rows answered in process, a
-    // dropped-in auth row refused at its open, the double for every outbound style.
-    auth_axis: Some(crate::test_support::outbound_auth::stand_in),
-    // A test build has no root to project a configuration for its door planes.
-    config_projection: None,
-};
-
-/// The composition root's linked store and hook entries (the build's in-process stores and, when
-/// compiled in, its ranking hooks) and its registry build, installed once before the first
-/// resolution.
-static ROOT_ROWS: std::sync::OnceLock<RootInstall> = std::sync::OnceLock::new();
+/// The install record: null until the composition root installs its rows ([`install_linked_rows`],
+/// the first install stands) or a test binary publishes its own ([`publish_root_rows`]). Every
+/// pointer stored here comes from `Box::leak` and is never freed or written through.
+static ROOT_ROWS: std::sync::atomic::AtomicPtr<RootInstall> =
+    std::sync::atomic::AtomicPtr::new(std::ptr::null_mut());
 
 /// THE ROOT'S DOOR onto the cold-kind axis: its linked tables' `stores` and `hooks` entries and the
 /// root's registry build (the first install stands). The kernel names none of the plugins it
 /// registers, and no store is a default (#2 rule (1), #40; Q-STORE = (B)).
 pub fn install_linked_rows(rows: RootInstall) {
-    let _ = ROOT_ROWS.set(rows);
+    let fresh: *mut RootInstall = Box::leak(Box::new(rows));
+    let _ = ROOT_ROWS.compare_exchange(
+        std::ptr::null_mut(),
+        fresh,
+        std::sync::atomic::Ordering::AcqRel,
+        std::sync::atomic::Ordering::Acquire,
+    );
 }
 
-/// The installed root rows (a test build stands its fixtures in). Admin's store catalog lists
-/// `stores`, the stores this build links.
+/// Set the install record to `rows`, replacing any set before. The composition root never calls
+/// this: it installs once through [`install_linked_rows`]. A test binary, which has no root,
+/// publishes the rows it stands in through it.
+#[doc(hidden)]
+pub fn publish_root_rows(rows: RootInstall) {
+    ROOT_ROWS.store(
+        Box::leak(Box::new(rows)),
+        std::sync::atomic::Ordering::Release,
+    );
+}
+
+/// The installed root rows. Admin's store catalog lists `stores`, the stores this build links.
+#[allow(unsafe_code)]
 pub fn root_rows() -> RootInstall {
-    #[cfg(any(test, feature = "test-support"))]
-    let mut rows = match TEST_ROOT.get().copied() {
-        Some(rows) => rows,
-        None => {
-            let _ = ROOT_ROWS.set(STAND_IN);
-            ROOT_ROWS.get().copied().unwrap_or_default()
-        }
-    };
-    #[cfg(not(any(test, feature = "test-support")))]
-    let rows = ROOT_ROWS.get().copied().unwrap_or_default();
+    let ptr = ROOT_ROWS.load(std::sync::atomic::Ordering::Acquire);
+    if ptr.is_null() {
+        return unset();
+    }
+    // SAFETY: `ptr` is non-null and was stored in `ROOT_ROWS` from `Box::leak`, which is never
+    // freed or mutated; the Acquire load that read it pairs with the store that wrote it.
+    unsafe { *ptr }
+}
+
+/// The install record before any is installed: none in a shipped build; a test build, which has no
+/// root, reads its stand-in rows until it publishes its own.
+fn unset() -> RootInstall {
     #[cfg(any(test, feature = "test-support"))]
     {
-        if let Some(hook_names) = TEST_ROOT_HOOK_NAMES.get().copied() {
-            rows.hook_names = hook_names;
-        }
-        if let Some(open) = TEST_ROOT_AUTH_AXIS.get().copied() {
-            rows.auth_axis = Some(open);
-        }
+        crate::test_support::root::STAND_IN
     }
-    rows
+    #[cfg(not(any(test, feature = "test-support")))]
+    {
+        RootInstall::default()
+    }
 }
-
-/// A TEST BINARY'S OWN ROOT, over the stand-in: what a test of the composition root's package
-/// installs when it drives the kernel in process over the loader it may name (the kernel names none,
-/// so its stand-in rows are in-process doubles). Read ahead of the stand-in, whichever read came
-/// first; the first install stands.
-#[cfg(any(test, feature = "test-support"))]
-pub(crate) static TEST_ROOT: std::sync::OnceLock<RootInstall> = std::sync::OnceLock::new();
-
-/// The hook names the composition root's OWN test binary hands in, in the root's words (its
-/// generated linked-hook list): a test build's install record reports them in place of the
-/// stand-in's none, whichever read came first, so a document that test binary renders names the
-/// hooks the shipped binary names ([`crate::test_support::install_root_hook_names`]). The first
-/// hand-in stands.
-#[cfg(any(test, feature = "test-support"))]
-pub(crate) static TEST_ROOT_HOOK_NAMES: std::sync::OnceLock<&'static [&'static str]> =
-    std::sync::OnceLock::new();
 
 /// THE ROOT'S DOOR onto the auth axis: its linked table's `auths` entries (the first install
 /// stands; the authenticate step holds them) and their names. Every admin auth module — the operator
@@ -400,13 +372,6 @@ pub fn inbound_auth_names(rows: &[LinkedAuth]) -> Vec<&'static str> {
 /// composition root's (it holds the dispatcher), installed once; the kernel names neither the
 /// dispatcher nor the rows it opens (ARCHITECT ruling 2026-09-30, AUTH-DOOR Q1).
 pub type AuthAxisOpener = fn(Arc<dyn PluginRows>) -> Arc<dyn busbar_contract::auth_calls::AuthAxis>;
-
-/// The auth-axis opener the composition root's OWN test binary hands in
-/// ([`crate::test_support::install_root_auth_axis`]): a test build's install record reports it in
-/// place of the stand-in's, whichever read came first. The first hand-in stands.
-#[cfg(any(test, feature = "test-support"))]
-pub(crate) static TEST_ROOT_AUTH_AXIS: std::sync::OnceLock<AuthAxisOpener> =
-    std::sync::OnceLock::new();
 
 /// This build's auth axis over `registry`, through the opener on the root's install record
 /// ([`RootInstall::auth_axis`]); `None` (no opener installed): no auth row answers anything. A
@@ -636,24 +601,17 @@ pub fn plugins_preflight(
 
     // Every non-builtin `auth.chain` module is a `kind: auth` plugin — the same manifest-only
     // pre-flight the store ref gets, so `--validate` catches a missing/wrong-kind/untrusted auth
-    // plugin BEFORE boot. `keys` is engine-handled (never a plugin); `test-groups-module` is the
-    // compiled-in test stand-in — ONLY actually registered under
-    // `#[cfg(any(test, feature = "test-support"))]` (`AuthMiddleware::new` and
-    // `AdminAuthChain::build`, `crates/busbar-kernel/src/auth/mod.rs`), so filtering it out
-    // unconditionally here made `--validate`/`config_validate::validate` silently agree a RELEASE
-    // config naming it is fine, while real boot still hard-failed (the invariant `--validate`
-    // clean => the plugin half of boot succeeds too, documented a few lines below, broke). Gate
-    // the exemption the same way the module itself is gated — ONE gate, `stand_ins`, read by the
-    // chain predicate here AND the definition predicate below. The definition side once read
-    // `cfg!(test)` alone, so a `test-support` build (how a downstream crate's test binary links
-    // this one) refused an `identity-providers:` definition its own auth chain accepts (item 292).
-    let stand_ins = cfg!(any(test, feature = "test-support"));
+    // plugin BEFORE boot. `keys` is engine-handled (never a plugin), and a module the build's auth
+    // axis answers in process (`RootInstall::in_process_auth`) has no plugin behind it: ONE
+    // predicate, read by the chain filter here AND the definition filter below, the same answer
+    // the chain build gets when it opens the module.
+    let in_process = root_rows().in_process_auth.unwrap_or(|_| false);
     let auth_plugin_refs: Vec<&str> = auth_cfg
         .map(|a| {
             a.chain
                 .iter()
                 .map(|e| e.module.as_str())
-                .filter(|m| is_real_auth_plugin_ref(m, stand_ins))
+                .filter(|m| is_real_auth_plugin_ref(m, in_process))
                 .collect()
         })
         .unwrap_or_default();
@@ -674,7 +632,7 @@ pub fn plugins_preflight(
         .map(|(name, def)| (name.as_str(), def.module.trim()))
         // An EMPTY module is `resolve_auth`'s rule ("must be a non-empty module name"), reported
         // there in its own words; do not shadow it with a less specific "no such plugin".
-        .filter(|(_, m)| !m.is_empty() && is_real_identity_provider_plugin_ref(m, stand_ins))
+        .filter(|(_, m)| !m.is_empty() && is_real_identity_provider_plugin_ref(m, in_process))
         .collect();
     let idp_refs_human = |refs: &[(&str, &str)]| {
         refs.iter()
@@ -937,6 +895,14 @@ fn log_build(n: BuildNote<'_>, dir: &str) {
                     reason = %s.reason,
                     "plugin present but NOT loaded (trust policy)"
                 );
+                // AUDITED, in host words: the trust evaluator's category, never its reason text
+                // (which embeds manifest bytes).
+                crate::audit::auditlog::record_plugin_refusal(
+                    crate::audit::auditlog::PluginRefusal::Trust,
+                    "file",
+                    &s.file,
+                    s.code,
+                );
             }
             for p in &loadable {
                 match &p.trust {
@@ -952,14 +918,24 @@ fn log_build(n: BuildNote<'_>, dir: &str) {
                         first_party,
                         "plugin validated"
                     ),
-                    busbar_contract::plugin_rows::Trust::Allowed { reason } => diag_warn!(
-                        PLUGIN_LOADED_UNVERIFIED,
-                        plugin = %p.name,
-                        alias = %p.alias,
-                        kind = %p.kind,
-                        reason = %reason,
-                        "plugin validated as UNVERIFIED (permitted by an explicit plugins.trust opt-in)"
-                    ),
+                    busbar_contract::plugin_rows::Trust::Allowed { reason } => {
+                        diag_warn!(
+                            PLUGIN_LOADED_UNVERIFIED,
+                            plugin = %p.name,
+                            alias = %p.alias,
+                            kind = %p.kind,
+                            reason = %reason,
+                            "plugin validated as UNVERIFIED (permitted by an explicit plugins.trust opt-in)"
+                        );
+                        // AUDITED (item 1): the host's category, never the evaluator's reason
+                        // text (it carries manifest bytes); the warning above names the reason.
+                        crate::audit::auditlog::record_plugin_refusal(
+                            crate::audit::auditlog::PluginRefusal::Unverified,
+                            "file",
+                            &p.file,
+                            "unverified",
+                        );
+                    }
                 }
             }
         }
@@ -996,10 +972,10 @@ pub(crate) fn resolve_admin_token(
     let token = resolver
         .resolve_string_at_config(r, &busbar_contract::config_time::ConfigScope::config_time())
         .map_err(|e| unresolved_token(op, &e))?;
-    if token.trim().is_empty() {
+    if token.expose(&crate::seal::lend()).trim().is_empty() {
         return Err(blank_token(op));
     }
-    Ok(Some(busbar_contract::redacted::Secret::new(token)))
+    Ok(Some(token))
 }
 
 /// Parse resolved bytes into a 32-byte ed25519 secret: accept RAW 32 bytes or 64 hex chars. Shared
@@ -1066,7 +1042,7 @@ pub(crate) fn resolve_signing_key(
              issues busbar-signed keys."
         )
         })?;
-    let secret = parse_signing_secret(&bytes)?;
+    let secret = parse_signing_secret(bytes.expose(&crate::seal::lend()))?;
     Ok(Some(TokenSigner::from_secret_bytes(&secret, DEFAULT_KID)))
 }
 
@@ -1086,15 +1062,15 @@ pub(crate) fn resolve_at_rest_keys(
         return Ok(None);
     };
     let resolve = |path: &str, r: &config::SecretRef| {
-        let bytes = resolver
+        // The resolved key stays in the holder its source wrote it into (row 6), wiped when it drops.
+        let held = resolver
             .resolve_at_config(r, &busbar_contract::config_time::ConfigScope::config_time())
-            .map(zeroize::Zeroizing::new)
             .map_err(|e| {
                 format!(
                     "{path} did not resolve: {e}. It is a reference to an EXISTING secret                      (env/file/plugin) holding 32 random bytes; create one with `openssl rand -hex                      32`"
                 )
             })?;
-        governance::at_rest::parse_key(path, &bytes)
+        governance::at_rest::parse_key(path, held.expose(&crate::seal::lend()))
     };
     let key = resolve("credentials.at_rest.key", &at_rest.key)?;
     let previous = at_rest
@@ -1109,39 +1085,24 @@ pub(crate) fn resolve_at_rest_keys(
 }
 
 /// Whether `m` names a REAL `auth.chain` plugin ref that must resolve against the plugin registry
-/// (`true`) vs a builtin/test stand-in that's exempt (`false`). `keys` is engine-handled, never a
-/// plugin. `test-groups-module` is ONLY actually registered as a chain module under
-/// `#[cfg(any(test, feature = "test-support"))]` (`AuthMiddleware::new`,
-/// `crates/busbar-kernel/src/auth/mod.rs`) — `is_test_build` MUST be that same gate at the real call
-/// site, so this exemption fires exactly where the stand-in exists. Module-
-/// level (not inlined into the `.filter(...)` closure) so the exact predicate that determines
-/// `--validate`/`config_validate::validate`'s pass/fail is unit-testable independent of which
-/// binary flavor happens to be running `cargo test` — see `tests/tests.rs`. A prior version
-/// exempted `test-groups-module` UNCONDITIONALLY (no `is_test_build` gate at all), which made
-/// `--validate` silently agree a RELEASE config naming it was fine while real boot still hard-
-/// failed (`AuthMiddleware::new` has no non-test arm for it) — breaking the documented invariant
-/// a few lines below ("a clean `--validate` means the plugin half of boot succeeds too").
-pub(crate) fn is_real_auth_plugin_ref(m: &str, is_test_build: bool) -> bool {
-    m != config::KEYS_MODULE && !(is_test_build && m == "test-groups-module")
+/// (`true`) vs one the engine handles: `keys` (never a plugin) and any module the build's auth axis
+/// answers in process (`in_process`, the install record's [`RootInstall::in_process_auth`]).
+/// Module-level so the exact predicate `--validate`/`config_validate::validate` passes or fails on
+/// is unit-testable (`tests/tests.rs`).
+pub(crate) fn is_real_auth_plugin_ref(m: &str, in_process: fn(&str) -> bool) -> bool {
+    m != config::KEYS_MODULE && !in_process(m)
 }
 
 /// The DEFINITION-side twin of [`is_real_auth_plugin_ref`]: whether an
 /// `identity-providers.<name>.module:` is a REAL `kind: auth` plugin reference that must resolve
 /// against the registry, as opposed to a built-in the engine handles inline
-/// ([`config::builtin_identity_providers`] — `keys` and the operator credential) or a compiled-in
-/// test stand-in. Separate from the chain predicate because the two answer different questions over
-/// different vocabularies: `auth.chain:` never carries the operator credential (that plane is
-/// `admin_auth:`),
-/// so the chain predicate exempts only `keys`, while EVERY built-in is legal as a definition's
-/// module. Same `is_test_build` discipline for the same reason: `test-scope-module` /
-/// `test-groups-module` are only ever registered under `#[cfg(any(test, feature = "test-support"))]`
-/// (`AdminAuthChain::build`, `crates/busbar-kernel/src/auth/mod.rs`), so exempting them
-/// unconditionally would make `--validate` silently bless a RELEASE config that real boot still
-/// hard-fails, and gating them on `cfg!(test)` alone refused them in a `test-support` build that
-/// registers them (item 292).
-pub(crate) fn is_real_identity_provider_plugin_ref(m: &str, is_test_build: bool) -> bool {
-    !config::is_builtin_identity_module(m)
-        && !(is_test_build && matches!(m, "test-groups-module" | "test-scope-module"))
+/// ([`config::builtin_identity_providers`] — `keys` and the operator credential) or a module the
+/// build's auth axis answers in process. Separate from the chain predicate because the two answer
+/// different questions over different vocabularies: `auth.chain:` never carries the operator
+/// credential (that plane is `admin_auth:`), so the chain predicate exempts only `keys`, while
+/// EVERY built-in is legal as a definition's module.
+pub(crate) fn is_real_identity_provider_plugin_ref(m: &str, in_process: fn(&str) -> bool) -> bool {
+    !config::is_builtin_identity_module(m) && !in_process(m)
 }
 
 /// The human list of every module an `identity-providers.<name>.module:` may legally name RIGHT NOW:
@@ -1214,6 +1175,10 @@ pub(crate) fn build_secret_resolver(
         config::secret::resolve_settings(
             &mcfg.settings,
             &registry.secret_slots(module),
+            // A secret module's settings reach its open AS WRITTEN (the secret axis lends its
+            // declared secrets; it holds no seal to read a resolved text), so no field of one is
+            // reference-capable: a reference there that is not a declared secret stays refused.
+            &[],
             module,
             &builtins,
             &busbar_contract::config_time::ConfigScope::config_time(),
@@ -1231,7 +1196,7 @@ pub(crate) fn build_secret_resolver(
             move |module: &str,
                   settings: &str,
                   scope: Option<&busbar_contract::config_time::ConfigScope>|
-                  -> Result<Vec<u8>, String> {
+                  -> Result<config::secret::Held, config::secret::SecretRefused> {
                 if let Some(axis) = config::secret::axis().filter(|a| a.answers(module)) {
                     // Keyed by the plugin's CANONICAL name, so an alias and its canonical spelling
                     // open the plugin once.
@@ -1252,7 +1217,10 @@ pub(crate) fn build_secret_resolver(
                 }
                 // No door answers it: no such secret plugin, or a 1.5.5 JSON-contract one, which this
                 // host does not load (THE DESIGN §11.8). Refused in the registry's own words.
-                Err(registry.secret_refusal(module))
+                Err(config::secret::SecretRefused {
+                    error_kind: busbar_contract::abi::secret::ERROR_KIND_INVALID,
+                    text: registry.secret_refusal(module),
+                })
             },
         ),
     ))
@@ -1296,14 +1264,19 @@ impl OpenedSecrets {
         settings: &str,
         scope: Option<&busbar_contract::config_time::ConfigScope>,
         open: impl FnOnce() -> Result<Arc<dyn busbar_contract::secret::SecretCalls>, String>,
-    ) -> Result<Vec<u8>, String> {
-        let calls = self.calls(key, open)?;
+    ) -> Result<config::secret::Held, config::secret::SecretRefused> {
+        // A plugin that will not load or open names no code of its own: INTERNAL.
+        let calls = self
+            .calls(key, open)
+            .map_err(|text| config::secret::SecretRefused {
+                error_kind: busbar_contract::abi::secret::ERROR_KIND_INTERNAL,
+                text,
+            })?;
+        // The plugin's own refusal, its `error_kind` kept.
         match scope {
             Some(scope) => calls.resolve_at_config(settings.as_bytes(), scope),
             None => calls.resolve(settings.as_bytes()),
         }
-        .map(|m| m.expose(&crate::seal::lend()).clone())
-        .map_err(|r| r.text)
     }
 }
 
@@ -1366,3 +1339,7 @@ mod opened_secrets_tests;
 #[cfg(test)]
 #[path = "tests/store_row_tests.rs"]
 mod store_row_tests;
+
+#[cfg(test)]
+#[path = "tests/plugin_refusal_tests.rs"]
+mod plugin_refusal_tests;

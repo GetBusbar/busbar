@@ -4,8 +4,8 @@
 //! THE DIAL'S OPENING (`conformance/transport.rs`, `begin_dial_want`): the declared bytes pass,
 //! a silent dial passes, and undeclared or other bytes are refused.
 
-use super::{begin_dial_want, contract, yielded_line, Want};
-use crate::conformance::Step;
+use super::{begin_dial_want, yielded_line, Want};
+use crate::conformance::{judge as contract, Step};
 
 fn begun(wire: &[u8]) -> Vec<Step> {
     vec![Step {

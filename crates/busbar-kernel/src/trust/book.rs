@@ -24,10 +24,9 @@
 //!   so a counterparty that flapped recently is not believed at once. Demotion is never held. A
 //!   demotion replayed for a counterparty with no declared pin has no pin to clear it by, and stays
 //!   until the operator declares one.
-//! * **Re-verification.** The kernel's tick marks a counterparty due by [`super::reverify::due`]
-//!   under its declared cadence; a cadence of zero declares none and is never marked by the timer.
-//!   `trust.due` answers the marks; a sighting clears its counterparty's mark, so a mark outlives a
-//!   short answer and is answered until the plane re-sights the counterparty.
+//! * **Re-verification.** No background timer: a counterparty is re-verified when a unit uses it,
+//!   never because time passed, so an upstream nobody calls is never fetched. `trust.due` answers
+//!   no counterparty.
 //! * **Durability.** Demotion and clearing are effects the caller writes through the durable
 //!   demotion record; [`TrustBook::admit`] replays the demotions it was handed.
 //! * **Approve.** The kernel's Approve step judges the trust facts a plane STATES for a unit
@@ -35,15 +34,18 @@
 //!   by [`TrustBook::judge`]; a plane judges none. Item-less facts need the counterparty approved (pinned); an item needs itself
 //!   approved at the digest offered. An item's approval is the operator's: the configured one
 //!   ([`TrustEntry::approved`], re-read at every admit) under the core-admin decision
-//!   ([`TrustBook::decide`]), which wins.
+//!   ([`TrustBook::decide`]), which wins. An item sighted at another digest than its approval is
+//!   DEMOTED: refused at any digest, a revert included, until the operator decides it again, and
+//!   the demotion is kept durably with the operator's decisions.
 //! * **Unreachable.** A sighting the plane could not make ([`TrustBook::last_verdict`]) answers
 //!   the last verdict and changes nothing: an upstream that stopped answering is neither drifted
 //!   nor cleared by it.
 
+use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use super::reverify::{self, Ledger};
+use super::reverify::Ledger;
 use super::section::{DeclaredPin, TrustEntry};
 
 /// What a sighting answered.
@@ -98,12 +100,15 @@ struct Subject {
     /// A sighting has matched the pin since it was set.
     confirmed: bool,
     ledger: Ledger,
-    due: bool,
     /// The operator's item decisions (core-admin): `Some(digest)` approved at it, `None` revoked.
     /// Each wins over the item's configured approval.
     granted: BTreeMap<String, Option<String>>,
     /// Each item's last SIGHTING: the digest the plane's live re-fetch reported it offered at.
     items: BTreeMap<String, String>,
+    /// THE ITEMS DEMOTED BY DRIFT: sighted at another digest than the one they were approved at.
+    /// Refused ([`Distrust::Changed`]) whatever they are offered at after, a revert included,
+    /// until the operator decides the item again; kept durably ([`RulingRow::demoted`]).
+    demoted: std::collections::BTreeSet<String>,
 }
 
 /// THE TRUST FACTS a plane states for one unit, as the kernel's Approve reads them: neutral words
@@ -163,11 +168,17 @@ impl Subject {
         }
     }
 
+    /// Nothing at the counterparty is approved: never pinned, revoked, or pending on a declared
+    /// fingerprint the operator never approved.
+    fn unapproved(&self) -> bool {
+        self.pinned.is_none() || self.revoked || self.pending
+    }
+
     /// The verdict a sighting of the pinned state answers, without one being made.
     fn verdict(&self) -> Sight {
         if self.quarantined {
             Sight::Quarantined
-        } else if self.pinned.is_none() || self.revoked || self.pending {
+        } else if self.unapproved() {
             Sight::New
         } else {
             Sight::Same
@@ -182,7 +193,7 @@ impl Subject {
             } else {
                 KeyState::Quarantined
             }
-        } else if self.pinned.is_none() || self.revoked || self.pending {
+        } else if self.unapproved() {
             KeyState::New
         } else if self.confirmed {
             KeyState::Same
@@ -195,6 +206,13 @@ impl Subject {
     fn item_state(&self, entry: &TrustEntry, item: &str) -> KeyState {
         if self.quarantined {
             return KeyState::Quarantined;
+        }
+        if self.demoted.contains(item) {
+            // Still offered at what moved: drifted; back at its approval: held, quarantined.
+            return match (self.approval(entry, item), self.items.get(item)) {
+                (Some(at), Some(seen)) if at == seen => KeyState::Quarantined,
+                _ => KeyState::Drifted,
+            };
         }
         match (self.approval(entry, item), self.items.get(item)) {
             _ if self.revoked || self.pending => KeyState::New,
@@ -273,6 +291,13 @@ pub enum Ruling {
     Revoke,
 }
 
+/// THE SIGHTING OF A DOCUMENT THAT FAILED ITS VERIFICATION: a plane that fetched a counterparty's
+/// document and could not verify it (against its pin, its signature or its root) reports this word
+/// in place of a fingerprint. No fingerprint is ever this word, so a pinned counterparty sighted
+/// under it drifts, and nothing is ever approved at it ([`Undecided::Unverified`]): an approval
+/// approves what was seen AND verified, by the generic verb and a plane's typed one alike.
+pub const UNVERIFIED_SIGHTING: &str = "unverified";
+
 /// Why a decision was not made.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Undecided {
@@ -285,6 +310,9 @@ pub enum Undecided {
     Rootless,
     /// The fingerprint the caller approves is not the key's current sighting.
     Stale,
+    /// The key's current sighting is a document that failed its verification
+    /// ([`UNVERIFIED_SIGHTING`]): there is nothing verified to approve.
+    Unverified,
 }
 
 /// THE DURABLE FACT a decision leaves: what the operator decided about one key. Replayed at admit
@@ -308,6 +336,11 @@ pub struct RulingRow {
     /// registration.
     #[serde(default)]
     pub declared: Option<DeclaredPin>,
+    /// THE KERNEL DEMOTED THE ITEM: a sighting moved from its approval (`approved` = the approval
+    /// it moved from). Replays as the item's demotion; only the operator's next decision about the
+    /// item replaces it. `false` for every operator decision, and for a row kept before the field.
+    #[serde(default)]
+    pub demoted: bool,
 }
 
 fn declared_pin(entry: &TrustEntry) -> Option<String> {
@@ -318,6 +351,28 @@ fn declared_pin(entry: &TrustEntry) -> Option<String> {
 struct Book {
     entries: BTreeMap<String, TrustEntry>,
     subjects: BTreeMap<String, Subject>,
+}
+
+impl Book {
+    /// `name`'s entry and state; a declared counterparty never sighted reads as declared.
+    fn subject(&self, name: &str) -> Option<(&TrustEntry, Cow<'_, Subject>)> {
+        let entry = self.entries.get(name)?;
+        let s = self
+            .subjects
+            .get(name)
+            .map_or_else(|| Cow::Owned(Subject::declared(entry)), Cow::Borrowed);
+        Some((entry, s))
+    }
+
+    /// `name`'s entry and its state to change, made from the declaration on first use.
+    fn subject_mut(&mut self, name: &str) -> Option<(&TrustEntry, &mut Subject)> {
+        let entry = self.entries.get(name)?;
+        let s = self
+            .subjects
+            .entry(name.to_string())
+            .or_insert_with(|| Subject::declared(entry));
+        Some((entry, s))
+    }
 }
 
 /// THE TRUST STATE of every admitted instance.
@@ -382,17 +437,11 @@ impl TrustBook {
     ) -> Result<(Sight, Effect), Unjudged> {
         let mut map = self.lock();
         let book = map.get_mut(instance).ok_or(Unjudged::UnknownInstance)?;
-        let entry = book
-            .entries
-            .get(counterparty)
+        let (entry, s) = book
+            .subject_mut(counterparty)
             .ok_or(Unjudged::UnknownCounterparty)?;
         let backoff = entry.policy.recovery_backoff_ms;
-        let s = book
-            .subjects
-            .entry(counterparty.to_string())
-            .or_insert_with(|| Subject::declared(entry));
         s.ledger.last_checked_ms = Some(now_ms);
-        s.due = false;
         s.last_seen = Some(hash.to_string());
         let pinned = s.pinned.as_deref();
         if pinned.is_none() && s.quarantined {
@@ -452,14 +501,10 @@ impl TrustBook {
     pub fn last_verdict(&self, instance: &str, counterparty: &str) -> Result<Sight, Unjudged> {
         let map = self.lock();
         let book = map.get(instance).ok_or(Unjudged::UnknownInstance)?;
-        let entry = book
-            .entries
-            .get(counterparty)
+        let (_, s) = book
+            .subject(counterparty)
             .ok_or(Unjudged::UnknownCounterparty)?;
-        Ok(book
-            .subjects
-            .get(counterparty)
-            .map_or_else(|| Subject::declared(entry).verdict(), Subject::verdict))
+        Ok(s.verdict())
     }
 
     /// The root key `instance` declares for `counterparty`: its pin's material when the pin is an
@@ -499,7 +544,8 @@ impl TrustBook {
     /// for an approval with nothing ever sighted (or declared) to approve at;
     /// [`Undecided::Rootless`] for an approval at a counterparty with no authenticity root; and
     /// [`Undecided::Stale`] for an approval whose `expected` fingerprint is not the current
-    /// sighting.
+    /// sighting; and [`Undecided::Unverified`] for an approval at a sighting that failed its
+    /// verification ([`UNVERIFIED_SIGHTING`]).
     pub fn decide(
         &self,
         instance: &str,
@@ -531,18 +577,10 @@ impl TrustBook {
     ) -> Result<RulingRow, Undecided> {
         let map = self.lock();
         let book = map.get(instance).ok_or(Undecided::NoSuchKey)?;
-        let entry = book.entries.get(counterparty).ok_or(Undecided::NoSuchKey)?;
+        let (entry, s) = book.subject(counterparty).ok_or(Undecided::NoSuchKey)?;
         if decision == Ruling::Approve && entry.rootless() {
             return Err(Undecided::Rootless);
         }
-        let declared;
-        let s = match book.subjects.get(counterparty) {
-            Some(s) => s,
-            None => {
-                declared = Subject::declared(entry);
-                &declared
-            }
-        };
         // APPROVE WHAT YOU SAW: a stated fingerprint must be the key's current sighting.
         if let (Ruling::Approve, Some(expected)) = (decision, expected) {
             let current = match item {
@@ -584,12 +622,18 @@ impl TrustBook {
                 }
             }
         };
+        // NEVER PIN WHAT WAS NOT VERIFIED: whichever verb asks, with or without an expected
+        // fingerprint, the placeholder of a failed verification is never approved.
+        if approved.as_deref() == Some(UNVERIFIED_SIGHTING) {
+            return Err(Undecided::Unverified);
+        }
         Ok(RulingRow {
             instance: instance.to_string(),
             counterparty: counterparty.to_string(),
             item: item.map(str::to_string),
             approved,
             declared: entry.pin.clone(),
+            demoted: false,
         })
     }
 
@@ -616,14 +660,12 @@ impl TrustBook {
         if entry.pin != fact.declared {
             return Err(Undecided::Stale);
         }
-        let approves = fact.approved.is_some();
-        if approves && entry.rootless() {
+        if fact.approved.is_some() && entry.rootless() {
             return Err(Undecided::Rootless);
         }
-        let s = book
-            .subjects
-            .entry(fact.counterparty.clone())
-            .or_insert_with(|| Subject::declared(entry));
+        let (entry, s) = book
+            .subject_mut(&fact.counterparty)
+            .ok_or(Undecided::NoSuchKey)?;
         match (&fact.item, &fact.approved) {
             (None, Some(at)) => {
                 s.confirmed = s.pinned.as_ref() == Some(at) && s.confirmed;
@@ -639,6 +681,7 @@ impl TrustBook {
             }
             (Some(item), at) => {
                 s.granted.insert(item.clone(), at.clone());
+                s.demoted.remove(item);
             }
         }
         Ok(row_of(
@@ -662,19 +705,23 @@ impl TrustBook {
             return;
         };
         for row in rows.into_iter().filter(|r| r.instance == instance) {
-            let Some(entry) = book.entries.get(&row.counterparty) else {
+            let Some((entry, s)) = book.subject_mut(&row.counterparty) else {
                 continue;
             };
             if row.declared != entry.pin || (row.approved.is_some() && entry.rootless()) {
                 continue;
             }
-            let s = book
-                .subjects
-                .entry(row.counterparty.clone())
-                .or_insert_with(|| Subject::declared(entry));
+            // An approval kept at the placeholder of a failed verification approves nothing.
+            if row.approved.as_deref() == Some(UNVERIFIED_SIGHTING) {
+                continue;
+            }
             match (&row.item, &row.approved) {
+                (Some(item), _) if row.demoted => {
+                    s.demoted.insert(item.clone());
+                }
                 (Some(item), at) => {
                     s.granted.insert(item.clone(), at.clone());
+                    s.demoted.remove(item);
                 }
                 (None, Some(at)) => {
                     s.pinned = Some(at.clone());
@@ -696,15 +743,11 @@ impl TrustBook {
         instances.sort_by(|a, b| a.0.cmp(b.0));
         let mut out = Vec::new();
         for (instance, book) in instances {
-            for (name, entry) in &book.entries {
-                let declared;
-                let s = match book.subjects.get(name) {
-                    Some(s) => s,
-                    None => {
-                        declared = Subject::declared(entry);
-                        &declared
-                    }
+            for name in book.entries.keys() {
+                let Some((entry, s)) = book.subject(name) else {
+                    continue;
                 };
+                let s = &*s;
                 out.push(row_of(instance, name, None, entry, s));
                 let mut items: std::collections::BTreeSet<&str> =
                     s.items.keys().map(String::as_str).collect();
@@ -733,18 +776,46 @@ impl TrustBook {
         item: &str,
         digest: &str,
     ) -> Result<Sight, Unjudged> {
+        self.sight_item_kept(instance, counterparty, item, digest)
+            .map(|(sight, _)| sight)
+    }
+
+    /// [`Self::sight_item`], and THE ITEM'S DEMOTION to keep durably when this sighting moved it
+    /// from its approval (configured or the operator's): the item is refused from now on, at any
+    /// digest, a revert included, until the operator decides it again.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::sight_item`].
+    pub fn sight_item_kept(
+        &self,
+        instance: &str,
+        counterparty: &str,
+        item: &str,
+        digest: &str,
+    ) -> Result<(Sight, Option<RulingRow>), Unjudged> {
         let mut map = self.lock();
         let book = map.get_mut(instance).ok_or(Unjudged::UnknownInstance)?;
-        let entry = book
-            .entries
-            .get(counterparty)
+        let (entry, s) = book
+            .subject_mut(counterparty)
             .ok_or(Unjudged::UnknownCounterparty)?;
-        let s = book
-            .subjects
-            .entry(counterparty.to_string())
-            .or_insert_with(|| Subject::declared(entry));
         let before = s.items.insert(item.to_string(), digest.to_string());
-        Ok(if s.quarantined {
+        let moved = s
+            .approval(entry, item)
+            .filter(|at| *at != digest && !s.demoted.contains(item))
+            .map(str::to_string);
+        let demotion = moved.map(|at| {
+            s.demoted.insert(item.to_string());
+            RulingRow {
+                instance: instance.to_string(),
+                counterparty: counterparty.to_string(),
+                item: Some(item.to_string()),
+                approved: Some(at),
+                declared: entry.pin.clone(),
+                demoted: true,
+            }
+        });
+        let sight = if s.quarantined {
             Sight::Quarantined
         } else {
             match before {
@@ -752,7 +823,8 @@ impl TrustBook {
                 Some(d) if d == digest => Sight::Same,
                 Some(_) => Sight::Drifted,
             }
-        })
+        };
+        Ok((sight, demotion))
     }
 
     /// THE KERNEL'S APPROVE over the trust facts a plane stated for a unit of `instance`: the
@@ -767,18 +839,7 @@ impl TrustBook {
     pub fn judge(&self, instance: &str, facts: &TrustFacts<'_>) -> Result<(), Distrust> {
         let map = self.lock();
         let book = map.get(instance).ok_or(Distrust::Unknown)?;
-        if !book.entries.contains_key(facts.counterparty) {
-            return Err(Distrust::Unknown);
-        }
-        let entry = &book.entries[facts.counterparty];
-        let declared;
-        let s = match book.subjects.get(facts.counterparty) {
-            Some(s) => s,
-            None => {
-                declared = Subject::declared(entry);
-                &declared
-            }
-        };
+        let (entry, s) = book.subject(facts.counterparty).ok_or(Distrust::Unknown)?;
         if s.quarantined {
             return Err(Distrust::Quarantined);
         }
@@ -795,6 +856,10 @@ impl TrustBook {
                 (None, Some(_)) => Err(Distrust::NotApproved),
             };
         };
+        if s.demoted.contains(item) {
+            // Moved from its approval once: refused at any digest until the operator decides it.
+            return Err(Distrust::Changed);
+        }
         let offered = facts
             .digest
             .or_else(|| s.items.get(item).map(String::as_str));
@@ -816,35 +881,12 @@ impl TrustBook {
         }
     }
 
-    /// The kernel tick: mark every counterparty whose declared cadence says it is due at `now_ms`.
-    pub fn mark_due(&self, now_ms: u64) {
-        for book in self.lock().values_mut() {
-            let Book { entries, subjects } = book;
-            for (name, entry) in entries.iter() {
-                if entry.policy.ttl_ms == 0 {
-                    continue;
-                }
-                let s = subjects
-                    .entry(name.clone())
-                    .or_insert_with(|| Subject::declared(entry));
-                if reverify::due(&s.ledger, &entry.policy, now_ms, false).should_check() {
-                    s.due = true;
-                }
-            }
-        }
-    }
-
-    /// The counterparties of `instance` marked due, in name order; `None` for an instance never
+    /// The counterparties of `instance` due a re-verification: none, ever. No background timer
+    /// re-fetches an upstream; a unit that uses one re-verifies it. `None` for an instance never
     /// admitted.
     #[must_use]
     pub fn due(&self, instance: &str) -> Option<Vec<String>> {
-        self.lock().get(instance).map(|b| {
-            b.subjects
-                .iter()
-                .filter(|(_, s)| s.due)
-                .map(|(n, _)| n.clone())
-                .collect()
-        })
+        self.lock().get(instance).map(|_| Vec::new())
     }
 }
 

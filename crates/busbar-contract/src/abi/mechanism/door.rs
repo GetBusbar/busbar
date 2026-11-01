@@ -16,7 +16,10 @@ use crate::abi::host::conn::connector::Need;
 ///
 /// The loader checks, in order: the manifest's mechanism version (before `dlopen`), that the symbol
 /// exists, then `magic == DOOR_MAGIC`, `mechanism_version == MECHANISM_VERSION` and `kind_abi ==`
-/// the host's version for `kind`. Older and newer are both refused.
+/// the host's version for `kind`. Older and newer are both refused. Once the Statement is read,
+/// `layout` must be the host's layout fingerprint for `kind`
+/// ([`super::KindCode::layout_fingerprint`]), or the door is refused naming the kind and both
+/// numbers.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct Door {
@@ -44,6 +47,10 @@ pub struct Door {
     /// and `busbar --migrate-config` passes its settings section through unchanged. A door whose
     /// `size` ends before this field has none: the host reads it only when `size` covers it.
     pub(crate) migrate: Option<Op>,
+    /// APPEND-ONLY TAIL: the kind's layout fingerprint as the plugin was built
+    /// ([`super::KindCode::layout_fingerprint`]). A door whose `size` ends before this field states
+    /// none (`0`) and is refused.
+    pub(crate) layout: u64,
 }
 
 /// The door function: the ONE symbol a plugin exports. `extern "C"`: a panic escaping it aborts.
@@ -75,6 +82,12 @@ pub struct DoorParts {
     pub ops: *const OpsHead,
     /// The optional `ready` op.
     pub ready: Option<Op>,
+    /// APPEND-ONLY TAIL: the kind's layout fingerprint as the plugin was built
+    /// ([`super::KindCode::layout_fingerprint`], `abi/<kind>/`'s `LAYOUT_FINGERPRINT`). The loader
+    /// refuses a door whose number is not the host's: it was built against other shapes of its
+    /// kind and would read and write them at the wrong offsets. A door whose `size` ends before
+    /// this field predates it, states `0` and is refused the same.
+    pub layout: u64,
 }
 
 impl Door {
@@ -101,6 +114,7 @@ impl Door {
             ops: p.ops,
             ready: p.ready,
             migrate: None,
+            layout: p.layout,
         }
     }
 
@@ -129,6 +143,7 @@ impl Door {
             statement: self.statement,
             ops: self.ops,
             ready: self.ready,
+            layout: self.layout,
         }
     }
 
@@ -186,6 +201,18 @@ impl Door {
         self.migrate
     }
 
+    /// The kind's layout fingerprint the door was built against (`0`: a door that predates it).
+    #[must_use]
+    pub const fn layout(&self) -> u64 {
+        self.layout
+    }
+
+    /// Where the layout fingerprint starts: a door whose `size` ends before it states none.
+    #[must_use]
+    pub const fn layout_at() -> usize {
+        core::mem::offset_of!(Door, layout)
+    }
+
     /// Where the append-only `ready` tail starts: the least size a door states.
     #[must_use]
     pub const fn ready_at() -> usize {
@@ -221,7 +248,7 @@ impl Door {
     /// Each field's name and offset, in order: the layout golden's record of the sealed door.
     #[doc(hidden)]
     #[must_use]
-    pub const fn __layout() -> [(&'static str, usize); 9] {
+    pub const fn __layout() -> [(&'static str, usize); 10] {
         use core::mem::offset_of;
         [
             ("magic", offset_of!(Door, magic)),
@@ -233,6 +260,7 @@ impl Door {
             ("ops", offset_of!(Door, ops)),
             ("ready", offset_of!(Door, ready)),
             ("migrate", offset_of!(Door, migrate)),
+            ("layout", offset_of!(Door, layout)),
         ]
     }
 
@@ -260,8 +288,8 @@ impl Door {
     ///
     /// # Safety
     ///
-    /// `p` is non-NULL and readable up to `ready` ([`Door::ready_at`]), and through `ready` when
-    /// the `size` it states covers it.
+    /// `p` is non-NULL and readable up to `ready` ([`Door::ready_at`]), and through `ready` and
+    /// `layout` when the `size` it states covers each.
     #[must_use]
     pub unsafe fn read_parts(p: *const Self) -> DoorParts {
         use core::ptr::addr_of;
@@ -269,6 +297,7 @@ impl Door {
         unsafe {
             let (magic, mechanism_version, size) = Self::read_head(p);
             let has_ready = size as usize >= Self::ready_at() + size_of::<Option<Op>>();
+            let has_layout = size as usize >= Self::layout_at() + size_of::<u64>();
             DoorParts {
                 magic,
                 mechanism_version,
@@ -281,6 +310,12 @@ impl Door {
                     addr_of!((*p).ready).read_unaligned()
                 } else {
                     None
+                },
+                // An absent word reads `0`, which no kind's fingerprint is: refused at load.
+                layout: if has_layout {
+                    addr_of!((*p).layout).read_unaligned()
+                } else {
+                    0
                 },
             }
         }

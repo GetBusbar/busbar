@@ -171,3 +171,26 @@ fn plane_store_view_forwards_to_the_real_backend() {
         "second redemption sees the same inner ledger the wrapper forwarded to"
     );
 }
+
+/// A plane-owned kind is keyed by its plane: two planes declaring one kind get two kinds, none of
+/// them a kernel kind, and a name that would make the scope ambiguous gets none.
+#[test]
+fn a_plane_owned_kind_is_its_planes_alone_and_never_a_kernel_kind() {
+    use super::{plane_owned_kind, KERNEL_RECORD_KINDS};
+    let alpha = plane_owned_kind("alpha", "note").expect("fit");
+    let beta = plane_owned_kind("beta", "note").expect("fit");
+    assert_eq!(alpha, "\u{1}plane\u{1}alpha\u{1}note");
+    assert_ne!(alpha, beta);
+    for kind in KERNEL_RECORD_KINDS {
+        assert!(
+            !kind.chars().any(char::is_control),
+            "{kind} holds no control character"
+        );
+        let owned = plane_owned_kind("mcp", kind).expect("fit");
+        assert!(!KERNEL_RECORD_KINDS.contains(&owned.as_str()));
+    }
+    assert_eq!(plane_owned_kind("a\u{1}b", "c"), None);
+    assert_eq!(plane_owned_kind("a", "b\u{1}c"), None);
+    assert_eq!(plane_owned_kind("", "c"), None);
+    assert_eq!(plane_owned_kind("a", ""), None);
+}

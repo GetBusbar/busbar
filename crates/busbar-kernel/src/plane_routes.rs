@@ -96,6 +96,9 @@ pub struct PlaneRefusalSpec {
     pub route: DoorRouteId,
     /// Its plane's rendering.
     pub refuse: PlaneRefuseFn,
+    /// The issued-id prefix of the tickets the route takes: `Some` for a `CLAIM_TICKET` claim whose
+    /// plane declares one; `None` = the route takes keys alone.
+    pub ticket_prefix: Option<String>,
     /// THE SIGNED PATHS of its plane (ARCHITECT ruling 2026-10-16, 3b A): the raw-affix target
     /// (`<prefix>*<suffix>`, `abi::plane::CLAIM_RAW_AFFIX`, ARCHITECT ruling 2026-10-17) of every
     /// claim the plane flags `abi::plane::CLAIM_SIGNED_INGRESS`, whatever this route's own path and
@@ -226,6 +229,9 @@ pub struct PlaneReqCtx {
     /// alone (a passthrough member's outbound auth call); `None` when the caller presented none or
     /// the route bypassed the gate. A plane handler never reads it.
     pub caller_credential: Option<busbar_contract::redacted::Secret<Vec<u8>>>,
+    /// The record of the TICKET the gate spent admitting the caller (row 132), for the unit's
+    /// `ticket.take`; `None` when a key (or nothing) admitted it. A plane handler never reads it.
+    pub ticket: Option<Vec<u8>>,
     /// The head fields the auth gate consumed (stripped from [`Self::headers`]), each by its
     /// lower-case name with its value's scheme word: the value up to its first space, empty when it
     /// has none. The word names how a credential is spelled, never the credential; an entry fact
@@ -238,7 +244,17 @@ pub struct PlaneReqCtx {
     /// The plane's own per-generation runtime slot (the same `Arc<dyn Any>` the plane's `build` fn
     /// produced), so the handler reads its plane state without a host round-trip.
     pub slot: Arc<dyn Any + Send + Sync>,
+    /// The scheme of the listener the request arrived at (`SCHEME_*`, from [`ListenerScheme`]):
+    /// secure when the connector terminated connection security on it, plain when it did not;
+    /// `SCHEME_UNDECLARED` when no listener stated one, which a framer's `begin` refuses.
+    pub scheme: u8,
 }
+
+/// THE LISTENER'S SCHEME, as a request extension: the listener that accepted the connection
+/// states, on every request it serves, whether the connector terminated connection security on
+/// it (`SCHEME_SECURE`) or not (`SCHEME_PLAIN`), and [`PlaneReqCtx::scheme`] carries it on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ListenerScheme(pub u8);
 
 // ── SESSION ROUTES (TRANSITIONAL: deleted when INBOUND-LISTEN's accepted::Caller serves) ─────────
 
@@ -262,6 +278,32 @@ pub struct SessionPipe {
     pub from_caller: tokio::sync::mpsc::Sender<Vec<u8>>,
     /// The frames toward the caller.
     pub to_caller: tokio::sync::mpsc::Receiver<SessionOut>,
+}
+
+/// WHERE A FRAMED CONNECTION TAKES AN ADMITTED SESSION'S PIPE: a request the data listener serves
+/// through its framer's accept side carries one (a request extension). The session route leaves
+/// the admitted pipe here and answers `101`; the listener then hands the connection to the framer
+/// that claims the upgrade, which answers the upgrade itself, and carries the pipe over it.
+#[derive(Debug, Clone, Default)]
+pub struct FramedSession(Arc<std::sync::Mutex<Option<SessionPipe>>>);
+
+impl FramedSession {
+    /// Leave `pipe` for the connection.
+    pub fn put(&self, pipe: SessionPipe) {
+        *self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(pipe);
+    }
+
+    /// The pipe left here, once.
+    #[must_use]
+    pub fn take(&self) -> Option<SessionPipe> {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+    }
 }
 
 /// What a session route's handler answers, before any upgrade: refused with a finished response (no

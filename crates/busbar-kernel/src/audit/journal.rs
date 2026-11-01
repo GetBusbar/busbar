@@ -457,8 +457,7 @@ impl<R: ChainedRecord> Journal<R> {
 
 /// The NEUTRAL durable body the store-backed journal persists per record — `{seq, prev_hash, hash,
 /// content}`, naming no plane type. The journal persists THIS, and a stream's reframe callback is
-/// the decode bridge that turns EITHER this shape or a legacy serde row back into a record on
-/// restore (so a store still holding old serde rows verifies unchanged).
+/// the decode bridge that turns this shape back into a record on restore.
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct NeutralBody {
     /// The chain sequence the host minted for this record.
@@ -480,10 +479,10 @@ pub(crate) trait NeutralRecord: ChainedRecord + Clone {
     fn content(&self) -> &[u8];
 }
 
-/// A plane-side REFRAME: turn one stored body + its scope back into a record. The store bodies may be
-/// this journal's own [`NeutralBody`] OR a legacy serde row from before the cleave — the callback owns
-/// which, so core never decodes a plane type. Boxed as a trait object so the neutral methods take one
-/// uniform argument regardless of the closure's captures (the per-scope framing/digests_scope).
+/// A plane-side REFRAME: turn one stored body (this journal's own [`NeutralBody`]) + its scope back
+/// into a record; the callback decodes it, so core never decodes a plane type. Boxed as a trait
+/// object so the neutral methods take one uniform argument regardless of the closure's captures
+/// (the per-scope framing/digests_scope).
 pub(crate) type Reframe<'a, R> = dyn Fn(&str, &[u8]) -> RecordStoreResult<R> + 'a;
 
 impl<R: NeutralRecord> Journal<R> {
@@ -653,12 +652,15 @@ impl<R: NeutralRecord> Journal<R> {
     /// RETENTION (the host seam's `journal_compact`): ask the sink to drop `kind` records older than
     /// `before`. The policy (the window) lives at the call site; this owns only the mechanism.
     /// Positions are NOT reset — reopening a scope at seq 1 after a purge would collide with a
-    /// sequence the store may still hold. Test-only since its one production caller (the deleted
+    /// sequence the store may still hold. A chain stream is purged by age (`Retention::Age`): its
+    /// records carry no settledness. Test-only since its one production caller (the deleted
     /// plane-host journal slot) went.
     #[cfg(test)]
     pub(crate) fn compact_scoped(&self, kind: &str, before: u64) -> RecordStoreResult<u64> {
         match self.sink() {
-            Some(store) => store.purge_plane_records_before(kind, before),
+            Some(store) => {
+                store.purge_plane_records(kind, before, busbar_contract::records::Retention::Age)
+            }
             None => Ok(0),
         }
     }

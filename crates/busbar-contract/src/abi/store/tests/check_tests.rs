@@ -11,6 +11,7 @@ use crate::abi::mechanism::call::{
 };
 use crate::abi::mechanism::lifecycle::CancelOut;
 use crate::abi::store::ledger::{HostRecords, RecordEntry};
+use crate::abi::store::plane::{KindBeforeIn, RETENTION_AGE, RETENTION_TERMINAL_ONLY};
 use crate::abi::store::{
     CountOut, HostBlobs, HostBuf, HostBytesOut, HostListOut, LeasedBlobOut, LeasedListOut,
     LeasedStrListOut, VerdictOut, ABSENT, FOUND,
@@ -616,4 +617,160 @@ fn every_store_fault_names_its_own_store_field() {
         assert!(seen.insert(f.field), "{} is named by two arms", f.field);
     }
     assert_eq!(seen.len(), ALL.len());
+}
+
+fn kind_before(retention: u32) -> KindBeforeIn {
+    // SAFETY: `KindBeforeIn` is `#[repr(C)]` integers and pointers; all-zero is a valid value.
+    let mut i: KindBeforeIn = unsafe { std::mem::zeroed() };
+    i.before = 100;
+    i.retention = retention;
+    i
+}
+
+/// GREEN: each rule a purge may carry passes, and the zero an older host's shorter `in` reads as
+/// is the age rule.
+#[test]
+fn green_a_purge_carries_a_known_retention() {
+    assert_eq!(check_kind_before(&kind_before(RETENTION_AGE)), Ok(()));
+    assert_eq!(
+        check_kind_before(&kind_before(RETENTION_TERMINAL_ONLY)),
+        Ok(())
+    );
+    assert_eq!(RETENTION_AGE, 0);
+    assert_eq!(
+        crate::records::Retention::from_code(0),
+        Some(crate::records::Retention::Age)
+    );
+}
+
+/// RED: a purge whose retention names no rule is refused.
+#[test]
+fn red_a_purge_with_an_unknown_retention_is_refused() {
+    for code in [RETENTION_TERMINAL_ONLY + 1, u32::MAX] {
+        assert_eq!(
+            check_kind_before(&kind_before(code)),
+            Err(KIND_BEFORE_RETENTION)
+        );
+    }
+}
+
+/// The contract rule and its code map both ways.
+#[test]
+fn a_retention_and_its_code_map_both_ways() {
+    use crate::records::Retention;
+    for r in [Retention::Age, Retention::TerminalOnly] {
+        assert_eq!(Retention::from_code(r.code()), Some(r));
+    }
+    assert_eq!(Retention::default(), Retention::Age);
+}
+
+// ── the kind's answer check (`check_answer`): frames, then the op's validator ───────────────
+
+/// `check_answer` for a store slot over an `in` and an `out` of the stated sizes.
+fn answer<I, O>(
+    slot: u32,
+    outcome: Outcome,
+    input: &I,
+    in_size: usize,
+    out: &O,
+    out_size: usize,
+) -> Result<(), Fault> {
+    // SAFETY: both frames are live locals of at least the sizes stated, each leading with its
+    // head; no lent buffer is named.
+    unsafe {
+        check_answer(
+            slot,
+            outcome,
+            (&raw const *input).cast(),
+            in_size,
+            (&raw const *out).cast(),
+            out_size,
+            &(),
+        )
+    }
+}
+
+/// `record_get` reads its `in` first, then its `out`, and is judged against the capacity its `in`
+/// lent; `get_usage` is a leased blob; `cancel` its disposition; a bare-head op passes.
+#[test]
+fn check_answer_reads_the_frames_in_order_then_judges_the_op() {
+    use crate::abi::store::{slot, RecordGetIn};
+    use std::mem::size_of;
+    // SAFETY: an all-zero `RecordGetIn` is a valid value (plain data: integers, NULL pointers).
+    let mut input: RecordGetIn = unsafe { std::mem::zeroed() };
+    input.value.cap = 512;
+    let (is, os) = (size_of::<RecordGetIn>(), size_of::<HostBytesOut>());
+    let fits = bytes_out(FOUND, 512, 0);
+    assert_eq!(answer(slot::RECORD_GET, R, &input, is, &fits, os), Ok(()));
+    let over = bytes_out(FOUND, 513, 0);
+    assert_eq!(
+        answer(slot::RECORD_GET, R, &input, is, &over, os),
+        Err(BYTES_WRITTEN_OVER_CAP)
+    );
+    assert_eq!(
+        answer(slot::RECORD_GET, R, &input, is - 1, &fits, os - 1),
+        Err(fault(Rule::Foreign, "in"))
+    );
+    assert_eq!(
+        answer(slot::RECORD_GET, R, &input, is, &fits, os - 1),
+        Err(fault(Rule::Foreign, "out"))
+    );
+
+    let leased = LeasedBlobOut {
+        head: head(),
+        found: 7,
+        _reserved: 0,
+        record: blob(null(), 0, 0),
+    };
+    let (hs, ls) = (
+        size_of::<crate::abi::mechanism::call::InHead>(),
+        size_of::<LeasedBlobOut>(),
+    );
+    assert_eq!(
+        answer(slot::GET_USAGE, R, &input, hs, &leased, ls),
+        Err(LEASED_BLOB_FOUND)
+    );
+    // An op reading its `out` alone never size-checks the `in`.
+    assert_eq!(
+        answer(slot::GET_KEY, R, &input, 0, &leased, ls - 1),
+        Err(fault(Rule::Foreign, "out"))
+    );
+
+    let cancel = CancelOut {
+        head: head(),
+        disposition: CANCEL_APPLIED + 1,
+        _reserved: 0,
+    };
+    assert_eq!(
+        answer(life::CANCEL, R, &input, hs, &cancel, size_of::<CancelOut>()),
+        Err(CANCEL_DISPOSITION)
+    );
+    assert_eq!(answer(slot::PUT_KEY, R, &input, 0, &fits, 0), Ok(()));
+}
+
+/// A leased list is read only on READY, its count capped before any slice exists, and its fault
+/// named for its op.
+#[test]
+fn check_answer_reads_a_leased_list_only_on_ready() {
+    use crate::abi::store::slot;
+    use std::mem::size_of;
+    // SAFETY: as above.
+    let input: crate::abi::mechanism::call::InHead = unsafe { std::mem::zeroed() };
+    let hs = size_of::<crate::abi::mechanism::call::InHead>();
+    let list = LeasedListOut {
+        head: head(),
+        items: null(),
+        items_len: LIST_ITEMS_HARD_MAX as usize + 1,
+    };
+    let ls = size_of::<LeasedListOut>();
+    assert_eq!(
+        answer(slot::LIST_AUDIT, R, &input, hs, &list, ls),
+        Err(fault(Rule::OverCap, "list_audit.items"))
+    );
+    assert_eq!(
+        answer(slot::LIST_KEYS_SINCE, R, &input, hs, &list, ls),
+        Err(fault(Rule::OverCap, "list_keys_since.items"))
+    );
+    // FAILED holds no lease: nothing is read, and the validator states nothing for it.
+    assert_eq!(answer(slot::LIST_AUDIT, F, &input, hs, &list, ls), Ok(()));
 }

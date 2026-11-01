@@ -37,7 +37,7 @@ use busbar_contract::secret_ref::{
     SECRET_MODULE_FILE,
 };
 
-/// The stand-in secret axis a test build installs in place of the root's (`preflight::STAND_IN`).
+/// The stand-in secret axis a test build installs in place of the root's (`test_support::root::STAND_IN`).
 pub struct SecretsStandIn;
 
 /// Which of the two sources a reference names.
@@ -224,7 +224,7 @@ impl SecretAxis for SecretsStandIn {
         &self,
         module: &str,
         _: &serde_json::Value,
-        _: &dyn Fn(&SecretRef) -> Result<Vec<u8>, String>,
+        _: &dyn Fn(&SecretRef) -> Result<busbar_contract::redacted::Secret<Vec<u8>>, String>,
     ) -> Result<Arc<dyn SecretCalls>, String> {
         self.shared(module)
     }

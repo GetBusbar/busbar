@@ -690,6 +690,9 @@ impl DatagramFraming {
                 };
                 let mut i: BeginIn = blank_in();
                 i.side = self.side;
+                // A datagram lane is always secured: its media rides the host's secure layer,
+                // whose association the rendezvous terms build (no terms is the framer's fault).
+                i.scheme = busbar_contract::abi::host::service::SCHEME_SECURE;
                 i.facts = &facts;
                 if !fields.is_empty() {
                     i.fields = fields.as_ptr();
@@ -975,6 +978,53 @@ pub struct Associations {
     by_user: HashMap<String, u64>,
     by_path: HashMap<SocketAddr, u64>,
     last: u64,
+    /// The associations a [`PortAssociations`] caller has out on a crossing: still carried (their
+    /// user name and paths still find them), their framing with the caller.
+    out: HashMap<u64, Out>,
+}
+
+/// What a caller owes an association that is out on another caller's crossing: run, in order, by
+/// that caller before it puts the association back.
+#[derive(Debug)]
+enum Owed<'a> {
+    Datagram(SocketAddr, std::borrow::Cow<'a, [u8]>),
+    Emit {
+        stream: u64,
+        bytes: std::borrow::Cow<'a, [u8]>,
+        end_of_frame: bool,
+        text: bool,
+    },
+    Timer,
+}
+
+impl Owed<'_> {
+    fn owned(self) -> Owed<'static> {
+        match self {
+            Owed::Datagram(from, b) => Owed::Datagram(from, b.into_owned().into()),
+            Owed::Emit {
+                stream,
+                bytes,
+                end_of_frame,
+                text,
+            } => Owed::Emit {
+                stream,
+                bytes: bytes.into_owned().into(),
+                end_of_frame,
+                text,
+            },
+            Owed::Timer => Owed::Timer,
+        }
+    }
+}
+
+/// An association out on a crossing.
+#[derive(Debug, Default)]
+struct Out {
+    owed: VecDeque<Owed<'static>>,
+    /// Removed while out: its holder finishes it as it brings it back.
+    closing: bool,
+    /// Its deadline as it went out, until the clock owes it a [`Owed::Timer`].
+    deadline: Option<Instant>,
 }
 
 /// Why an association was not added to a port.
@@ -999,10 +1049,21 @@ impl Associations {
     ///
     /// [`NotAdded`]: no terms yet, or its user name is another association's.
     pub fn add(&mut self, framing: DatagramFraming) -> Result<u64, NotAdded> {
+        let user = self.admits(&framing)?;
+        Ok(self.carry(user, framing))
+    }
+
+    /// Whether `framing` may be carried: the user name it is found by.
+    fn admits(&self, framing: &DatagramFraming) -> Result<String, NotAdded> {
         let user = framing.user().ok_or(NotAdded::NoTerms)?.to_owned();
         if self.by_user.contains_key(&user) {
             return Err(NotAdded::UserTaken);
         }
+        Ok(user)
+    }
+
+    /// Carry `framing`, found by `user`; its number.
+    fn carry(&mut self, user: String, framing: DatagramFraming) -> u64 {
         self.last += 1;
         let id = self.last;
         self.by_user.insert(user, id);
@@ -1013,15 +1074,21 @@ impl Associations {
             self.by_path.entry(addr).or_insert(id);
         }
         self.framings.insert(id, framing);
-        Ok(id)
+        id
     }
 
     /// Stop carrying association `id`; the framing, for its owner to finish.
     pub fn remove(&mut self, id: u64) -> Option<DatagramFraming> {
         let f = self.framings.remove(&id)?;
+        self.forget(id);
+        Some(f)
+    }
+
+    /// Association `id` is no longer carried: its user name and paths let go.
+    fn forget(&mut self, id: u64) {
         self.by_user.retain(|_, v| *v != id);
         self.by_path.retain(|_, v| *v != id);
-        Some(f)
+        self.out.remove(&id);
     }
 
     /// The association `id`.
@@ -1050,40 +1117,54 @@ impl Associations {
         bytes: &[u8],
         now: Instant,
     ) -> Option<(u64, Result<Yielded, Refused>)> {
-        let id = match check_user(bytes) {
-            Some(user) => self.by_user.get(user).copied(),
-            None => self.by_path.get(&from).copied(),
-        }?;
-        let f = self.framings.get_mut(&id)?;
+        let id = self.find(from, bytes)?;
+        let mut f = self.framings.remove(&id)?;
         let answer = f.datagram(from, bytes, now);
-        let (owns, binds) = (f.owns(from), f.binds(from));
-        if answer.is_ok() && owns {
-            // A path another association holds stays its own while it still owns it, unless this
-            // one has it BOUND (proven by core's round trip) and the holder does not: a heard check
-            // proves only that its sender knows this association's password, never that it owns
-            // the source address.
-            let take = match self.by_path.get(&from) {
-                None => true,
-                Some(holder) if *holder == id => false,
-                Some(holder) => self
-                    .framings
-                    .get(holder)
-                    .is_none_or(|h| !h.owns(from) || (binds && !h.binds(from))),
-            };
-            if take {
-                self.by_path.insert(from, id);
-                // The paths it let go of (a heard path that made room for this one) are let go
-                // here too, so the port routes an association no more paths than it owns.
-                let framings = &self.framings;
-                self.by_path.retain(|addr, holder| {
-                    *holder != id || framings.get(holder).is_some_and(|h| h.owns(*addr))
-                });
-            }
+        if answer.is_ok() {
+            self.route(id, from, &f);
         }
         if answer.is_err() {
-            self.remove(id);
+            self.forget(id);
+        } else {
+            self.framings.insert(id, f);
         }
         Some((id, answer))
+    }
+
+    /// The association a datagram from `from` belongs to: a check's by its user name, anything
+    /// else's by its path.
+    fn find(&self, from: SocketAddr, bytes: &[u8]) -> Option<u64> {
+        match check_user(bytes) {
+            Some(user) => self.by_user.get(user).copied(),
+            None => self.by_path.get(&from).copied(),
+        }
+    }
+
+    /// Association `id` (its framing `f`, out of the map) took a datagram from `from`.
+    fn route(&mut self, id: u64, from: SocketAddr, f: &DatagramFraming) {
+        if !f.owns(from) {
+            return;
+        }
+        let binds = f.binds(from);
+        // A path another association holds stays its own while it still owns it, unless this one
+        // has it BOUND (proven by core's round trip) and the holder does not: a heard check proves
+        // only that its sender knows this association's password, never that it owns the source
+        // address. A holder out on a crossing keeps what it holds.
+        let take = match self.by_path.get(&from) {
+            None => true,
+            Some(holder) if *holder == id => false,
+            Some(holder) => match self.framings.get(holder) {
+                Some(h) => !h.owns(from) || (binds && !h.binds(from)),
+                None => !self.out.contains_key(holder),
+            },
+        };
+        if take {
+            self.by_path.insert(from, id);
+            // The paths it let go of (a heard path that made room for this one) are let go here
+            // too, so the port routes an association no more paths than it owns.
+            self.by_path
+                .retain(|addr, holder| *holder != id || f.owns(*addr));
+        }
     }
 
     /// The clock, for every association whose deadline has passed; a failed one is removed.
@@ -1113,6 +1194,7 @@ impl Associations {
         self.framings
             .values()
             .filter_map(DatagramFraming::deadline)
+            .chain(self.out.values().filter_map(|o| o.deadline))
             .min()
     }
 
@@ -1121,6 +1203,266 @@ impl Associations {
         self.framings
             .values_mut()
             .find_map(DatagramFraming::poll_send)
+    }
+}
+
+/// What a port's associations answered: each association's number and what it yielded or why it
+/// failed (a failed one is no longer carried).
+pub type Answered = Vec<(u64, Result<Yielded, Refused>)>;
+
+/// THE PORT'S ASSOCIATIONS, SHARED by every caller of one port: the port's task (datagrams, the
+/// clock), the sessions' writers (emits), admissions and teardowns. `send` hands each datagram an
+/// association owes the port to the port.
+///
+/// NO FRAMER IS CROSSED UNDER ITS LOCK (`BUSBAR-1.6.0.md` §11.13 M1): a caller takes the one
+/// association out, crosses its framer with nothing held (a wedged framer holds only its own
+/// association), and puts it back. A caller that finds it out does not wait: what it owes (a
+/// datagram, an emit, the clock) is queued for the holder, who runs it, in order, before putting
+/// the association back. A framing that finishes (removed, failed, or refused) is dropped with no
+/// lock held; one removed while out is finished by its holder.
+#[derive(Debug, Default)]
+pub struct PortAssociations {
+    assocs: std::sync::Mutex<Associations>,
+}
+
+/// An association out of the map. Only an unwind drops it still holding the framing: the
+/// association is then no longer carried, and its framing finished with no lock held.
+struct Taken<'p> {
+    port: &'p PortAssociations,
+    id: u64,
+    framing: Option<DatagramFraming>,
+}
+
+impl Drop for Taken<'_> {
+    fn drop(&mut self) {
+        if let Some(f) = self.framing.take() {
+            self.port.lock().forget(self.id);
+            drop(f);
+        }
+    }
+}
+
+impl PortAssociations {
+    /// An empty port.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, Associations> {
+        self.assocs
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Carry `framing` on this port; its number.
+    ///
+    /// # Errors
+    ///
+    /// [`NotAdded`]: no terms yet, or its user name is another association's. The refused
+    /// framing finishes after the port's lock is let go.
+    pub fn add(&self, framing: DatagramFraming) -> Result<u64, NotAdded> {
+        let why = {
+            let mut assocs = self.lock();
+            match assocs.admits(&framing) {
+                Ok(user) => return Ok(assocs.carry(user, framing)),
+                Err(why) => why,
+            }
+        };
+        drop(framing);
+        Err(why)
+    }
+
+    /// Stop carrying association `id`: its framing finishes, here with no lock held, or by its
+    /// holder when it is out.
+    pub fn remove(&self, id: u64) {
+        let gone = {
+            let mut assocs = self.lock();
+            match assocs.out.get_mut(&id) {
+                Some(out) => {
+                    out.closing = true;
+                    None
+                }
+                None => assocs.remove(id),
+            }
+        };
+        drop(gone);
+    }
+
+    /// How many associations the port carries.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        let assocs = self.lock();
+        assocs.framings.len() + assocs.out.values().filter(|o| !o.closing).count()
+    }
+
+    /// Whether the port carries none.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// The earliest deadline of any association.
+    #[must_use]
+    pub fn deadline(&self) -> Option<Instant> {
+        self.lock().deadline()
+    }
+
+    /// One datagram the port read from `from`, to the association it belongs to: what the
+    /// associations answered (nothing when it belongs to none, or is out and the datagram queued).
+    pub fn datagram(
+        &self,
+        from: SocketAddr,
+        bytes: &[u8],
+        now: Instant,
+        send: &dyn Fn(SocketAddr, &[u8]),
+    ) -> Answered {
+        let Some(id) = self.lock().find(from, bytes) else {
+            return Vec::new();
+        };
+        self.turn(id, Owed::Datagram(from, bytes.into()), now, send)
+            .1
+    }
+
+    /// The clock, for every association whose deadline has passed (one out is owed it).
+    pub fn timeout(&self, now: Instant, send: &dyn Fn(SocketAddr, &[u8])) -> Answered {
+        let due: Vec<u64> = {
+            let mut assocs = self.lock();
+            for out in assocs.out.values_mut() {
+                if out.deadline.is_some_and(|d| d <= now) {
+                    out.deadline = None;
+                    out.owed.push_back(Owed::Timer);
+                }
+            }
+            assocs
+                .framings
+                .iter()
+                .filter(|(_, f)| f.deadline().is_some_and(|d| d <= now))
+                .map(|(id, _)| *id)
+                .collect()
+        };
+        due.into_iter()
+            .flat_map(|id| self.turn(id, Owed::Timer, now, send).1)
+            .collect()
+    }
+
+    /// One message's bytes for `stream` on association `id`: whether it was taken (`false` = no
+    /// such association, or its framer refused them; queued behind another caller's crossing =
+    /// taken), and what the associations answered for what this caller ran meanwhile.
+    #[allow(clippy::too_many_arguments)]
+    pub fn emit(
+        &self,
+        id: u64,
+        stream: u64,
+        bytes: &[u8],
+        end_of_frame: bool,
+        text: bool,
+        now: Instant,
+        send: &dyn Fn(SocketAddr, &[u8]),
+    ) -> (bool, Answered) {
+        let owed = Owed::Emit {
+            stream,
+            bytes: bytes.into(),
+            end_of_frame,
+            text,
+        };
+        let (ok, answered) = self.turn(id, owed, now, send);
+        (ok.unwrap_or(false), answered)
+    }
+
+    /// THE HAND-OFF: take association `id` out, run `first` on it and then what was owed it
+    /// meanwhile, each crossing with no lock held, and put it back (or, failed or removed, finish
+    /// it with no lock held). Found out, `first` is queued for its holder. The first op's emit
+    /// verdict (`None` = no such association), and what datagrams and the clock answered.
+    fn turn(
+        &self,
+        id: u64,
+        first: Owed<'_>,
+        now: Instant,
+        send: &dyn Fn(SocketAddr, &[u8]),
+    ) -> (Option<bool>, Answered) {
+        let f = {
+            let mut assocs = self.lock();
+            if let Some(out) = assocs.out.get_mut(&id) {
+                if out.closing {
+                    return (None, Vec::new());
+                }
+                out.owed.push_back(first.owned());
+                return (Some(true), Vec::new());
+            }
+            let Some(f) = assocs.framings.remove(&id) else {
+                return (None, Vec::new());
+            };
+            let deadline = f.deadline();
+            assocs.out.insert(
+                id,
+                Out {
+                    deadline,
+                    ..Out::default()
+                },
+            );
+            f
+        };
+        let mut taken = Taken {
+            port: self,
+            id,
+            framing: Some(f),
+        };
+        let mut op = first;
+        let mut emitted = None;
+        let mut answered = Vec::new();
+        loop {
+            let f = taken.framing.as_mut().expect("the association is out");
+            let (failed, routed) = match op {
+                Owed::Datagram(from, bytes) => {
+                    let answer = f.datagram(from, &bytes, now);
+                    let failed = answer.is_err();
+                    answered.push((id, answer));
+                    (failed, (!failed).then_some(from))
+                }
+                Owed::Timer => {
+                    let answer = f.timeout(now);
+                    let failed = answer.is_err();
+                    answered.push((id, answer));
+                    (failed, None)
+                }
+                Owed::Emit {
+                    stream,
+                    bytes,
+                    end_of_frame,
+                    text,
+                } => {
+                    let ok = f.emit(stream, &bytes, end_of_frame, text, now).is_ok();
+                    emitted.get_or_insert(ok);
+                    (false, None)
+                }
+            };
+            while let Some((to, d)) = f.poll_send() {
+                send(to, &d);
+            }
+            let mut assocs = self.lock();
+            if let Some(from) = routed {
+                assocs.route(id, from, f);
+            }
+            if failed || assocs.out.get(&id).is_none_or(|o| o.closing) {
+                assocs.forget(id);
+                drop(assocs);
+                drop(taken.framing.take());
+                break;
+            }
+            let next = assocs.out.get_mut(&id).and_then(|o| o.owed.pop_front());
+            if let Some(next) = next {
+                drop(assocs);
+                op = next;
+                continue;
+            }
+            assocs.out.remove(&id);
+            if let Some(f) = taken.framing.take() {
+                assocs.framings.insert(id, f);
+            }
+            break;
+        }
+        (emitted.or(Some(true)), answered)
     }
 }
 
@@ -1199,12 +1541,12 @@ pub struct Across {
 }
 
 /// THE BRIDGE: one session's two associations, their LINES paired `i <-> i` by the order each leg
-/// named them (ARCHITECT ruling, row 132: the host pairs lines, the plane pairs channels). The
-/// upstream leg is dialled with the caller's lines mirrored ([`Bridge::opening`]: same count, kind
-/// and order); a leg whose lines do not mirror the other's is no bridge ([`Bridge::mirrored`]) and
-/// nothing crosses half-paired. A line's frames are carried across unread; each leg seals with
-/// its own keys. Once [`Bridge::stop`]ped nothing crosses again: the session's close stops both
-/// directions in one step.
+/// named them (the host pairs lines, the plane pairs channels). The upstream leg is dialled with
+/// the caller's lines mirrored ([`Bridge::opening`]: same count, kind and order); a leg whose lines
+/// do not mirror the other's is no bridge ([`Bridge::mirrored`]) and nothing crosses half-paired. A
+/// line's frames are carried across unread; each leg seals with its own keys. Once
+/// [`Bridge::stop`]ped nothing crosses again: the session's close stops both directions in one
+/// step.
 #[derive(Debug, Default)]
 pub struct Bridge {
     caller: Vec<(u64, String)>,
@@ -1348,10 +1690,10 @@ pub trait LegSink: Send + Sync {
     fn close(&self);
 }
 
-/// ONE HELD SESSION'S PAIRING (ARCHITECT rulings, row 132): its caller leg, registered under the
-/// session's unit key before the session runs ([`crate::Connector::pair`]); its upstream leg, the
-/// dial the session's walk opens for that unit; and the [`Bridge`] between their lines. Closing it
-/// stops the bridge and closes both legs, exactly once.
+/// ONE HELD SESSION'S PAIRING: its caller leg, registered under the session's unit key before the
+/// session runs ([`crate::Connector::pair`]); its upstream leg, the dial the session's walk opens
+/// for that unit; and the [`Bridge`] between their lines. Closing it stops the bridge and closes
+/// both legs, exactly once.
 pub struct Pairing {
     state: std::sync::Mutex<PairState>,
     /// The caller leg's port address: the upstream leg binds a port of its own on the same host

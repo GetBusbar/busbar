@@ -5,9 +5,9 @@ use super::*;
 
 #[test]
 fn the_dispatcher_is_built_once_and_every_caller_shares_it() {
-    let a = boot(3, crate::root::serve::LateServices::new());
+    let a = boot(3, &crate::root::serve::LateServices::new());
     let b = dispatcher();
-    let c = boot(9, crate::root::serve::LateServices::new());
+    let c = boot(9, &crate::root::serve::LateServices::new());
     assert!(Arc::ptr_eq(&a, &b), "one dispatcher per process");
     assert!(Arc::ptr_eq(&a, &c), "the first build stands");
     assert!(a.workers() >= 1);
@@ -39,7 +39,7 @@ fn the_binarys_dispatcher_serves_dest_judge_once_composed() {
         }
     };
     let late = crate::root::serve::LateServices::new();
-    let dispatcher = build(1, late.clone());
+    let dispatcher = build(1, &late);
     assert_eq!(
         judged(&dispatcher, "https://93.184.216.34/"),
         Stored::refused(crate::root::serve::NOT_INSTALLED),
@@ -61,7 +61,7 @@ fn the_binarys_dispatcher_serves_dest_judge_once_composed() {
     match services.records_secret("a-kind", "an-id", Box::new(|_| {})) {
         Ran::Now(stored) => assert_eq!(
             stored,
-            Stored::refused(crate::root::credentials::NOT_READABLE)
+            Stored::refused(busbar_kernel::host_services::NOT_READABLE)
         ),
         Ran::Later => panic!("the credential read answers at once"),
     }

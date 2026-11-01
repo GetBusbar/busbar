@@ -46,7 +46,7 @@ impl GovState {
             .cloned()
     }
 
-    /// Whether this subject's self-serve mint must be refused, checked under `self_mint_lock`
+    /// Whether this subject's self-serve mint must be refused, checked under the subject's `self_mint_claims` claim
     /// before either door writes anything. The subject's rows are every non-tombstoned row in the
     /// self group `user:<sub>` OR recording `idp_subject == sub`, so an admin group rebind does not
     /// hide a row from the check.
@@ -183,7 +183,7 @@ impl GovState {
         material: &SigningMaterial,
         user_sub: &str,
         provider: &str,
-        allowed_pools: Option<Vec<String>>,
+        allowed_scopes: Option<Vec<busbar_contract::records::ScopeRef>>,
         epoch: u64,
         exp: u64,
         now: u64,
@@ -195,8 +195,8 @@ impl GovState {
             id: id.clone(),
             generation_hash: binding_marker(&id, &generation),
             name: format!("self-serve key ({user_sub})"),
-            // Intent carried intact: None = all pools; Some([]) = none.
-            allowed_scopes: crate::governance::pool_scopes(allowed_pools),
+            // Intent carried intact: None = all scopes; Some([]) = none.
+            allowed_scopes,
             enabled: true,
             created_at: now,
             group: Some(format!("{SELF_KEY_GROUP_PREFIX}{user_sub}")),
@@ -240,24 +240,36 @@ impl GovState {
         exp: u64,
         now: u64,
     ) -> Result<(VirtualKey, String), SelfMintError> {
+        let scopes = crate::governance::pool_scopes(allowed_pools);
+        self.issue_self_scoped(user_sub, provider, scopes, exp, now)
+    }
+
+    /// [`GovState::issue_self`] over a grant of every scope kind (`None` = all, `Some([])` = none):
+    /// the grant a principal's role bindings union to (W9).
+    pub fn issue_self_scoped(
+        &self,
+        user_sub: &str,
+        provider: &str,
+        allowed_scopes: Option<Vec<busbar_contract::records::ScopeRef>>,
+        exp: u64,
+        now: u64,
+    ) -> Result<(VirtualKey, String), SelfMintError> {
         let Some(material) = self.signing_material() else {
             return Err(RecordStoreError(
                 "signed-token minting is unavailable: no signing key is configured".to_string(),
             )
             .into());
         };
-        // Serialize the check→write against a concurrent issue/refresh for the same sub.
-        let _mint = self
-            .self_mint_lock
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+        // Serialize the check→write against a concurrent issue/refresh for the same sub; other
+        // subjects' mints run beside it (see `self_mint_claims`).
+        let _mint = self.self_mint_claims.claim(user_sub.to_string());
         if let Some(refusal) = self.self_mint_refusal(user_sub, provider) {
             return Err(SelfMintError::Refused(refusal));
         }
         match self.current_self_binding(user_sub) {
             Some(existing) => {
-                // The pools the caller resolved THIS login (from the possibly-changed binding).
-                let new_scopes = crate::governance::pool_scopes(allowed_pools.clone());
+                // The grant the caller resolved THIS login (from the possibly-changed binding).
+                let new_scopes = allowed_scopes.clone();
                 // A binding minted before the provider record existed ADOPTS the first provider
                 // that logs in, recorded on the row so every other provider is refused from now on.
                 let adopt = existing.idp_provider.is_none();
@@ -299,7 +311,7 @@ impl GovState {
                 &material,
                 user_sub,
                 provider,
-                allowed_pools,
+                allowed_scopes,
                 0,
                 exp,
                 now,
@@ -321,17 +333,28 @@ impl GovState {
         exp: u64,
         now: u64,
     ) -> Result<(VirtualKey, String), SelfMintError> {
+        let scopes = crate::governance::pool_scopes(allowed_pools);
+        self.refresh_self_scoped(user_sub, provider, scopes, exp, now)
+    }
+
+    /// [`GovState::refresh_self`] over a grant of every scope kind (`None` = all, `Some([])` =
+    /// none): the grant a principal's role bindings union to (W9).
+    pub fn refresh_self_scoped(
+        &self,
+        user_sub: &str,
+        provider: &str,
+        allowed_scopes: Option<Vec<busbar_contract::records::ScopeRef>>,
+        exp: u64,
+        now: u64,
+    ) -> Result<(VirtualKey, String), SelfMintError> {
         let Some(material) = self.signing_material() else {
             return Err(RecordStoreError(
                 "signed-token minting is unavailable: no signing key is configured".to_string(),
             )
             .into());
         };
-        // Serialize against a concurrent issue/refresh for the same sub (see `self_mint_lock`).
-        let _mint = self
-            .self_mint_lock
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+        // Serialize against a concurrent issue/refresh for the same sub (see `self_mint_claims`).
+        let _mint = self.self_mint_claims.claim(user_sub.to_string());
         if let Some(refusal) = self.self_mint_refusal(user_sub, provider) {
             return Err(SelfMintError::Refused(refusal));
         }
@@ -348,7 +371,7 @@ impl GovState {
             &material,
             user_sub,
             provider,
-            allowed_pools,
+            allowed_scopes,
             new_epoch,
             exp,
             now,

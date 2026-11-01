@@ -19,10 +19,18 @@
 //!     states this busbar's mechanism and the kind's current ABI;
 //!   * [`load_dropped`] admits it, and the KIND'S SCRIPT answers as the kind's contract requires,
 //!     every answer judged by the one dispatcher's kind checks (only `kind: secret` has a script
-//!     here today; another kind is a failure naming that, not a pass).
+//!     here today; another kind is a failure naming that, not a pass). A secret is written into the
+//!     host's buffer under no lease (the credential chip, row 6: host-owned secret bytes), a buffer
+//!     too small gets the short-buffer answer, and no credential `conformance.json` names crosses
+//!     back in any answer's text (THE CANARY).
 //!   * RED ARM, KEPT: the same sources built with `-DBUSBAR_PLUGIN_KIND_ABI=<host ± 1>` are refused
 //!     at pack time and at load (`KindAbi`, naming the rebuild); a manifest stating another kind ABI,
 //!     or another kind, is refused before `dlopen`.
+//!   * RED ARM, LAYOUT: the same sources built with `-DBUSBAR_PLUGIN_LAYOUT=<another fingerprint>`
+//!     (the source states `.layout = BUSBAR_PLUGIN_LAYOUT`, defaulting to its kind's
+//!     `BB_<KIND>_LAYOUT_FINGERPRINT`) are refused at pack time and at load (`KindLayout`). A
+//!     source with no `BUSBAR_PLUGIN_LAYOUT` hook cannot be rebuilt at another layout: the arm
+//!     SKIPS, printing why.
 //!
 //! An example, not a test: busbar's own suite has no plugin to point it at. plugin-ci.yml runs it
 //! (`cargo run --example dropped_conformance`) over the plugin it built, and requires both proofs
@@ -32,7 +40,12 @@
 fn main() {
     a_plugin_built_from_the_c_header_alone_passes_its_kinds_script();
     a_plugin_built_against_another_kind_abi_is_refused();
-    println!("dropped conformance: 2 proofs passed");
+    let proofs = if a_plugin_built_against_another_kind_layout_is_refused() {
+        3
+    } else {
+        2
+    };
+    println!("dropped conformance: {proofs} proofs passed");
 }
 
 use std::mem::MaybeUninit;
@@ -245,19 +258,48 @@ fn release<K: Kind>(p: &Plugin<K>, lease: u64) -> Called {
     p.call(life::RELEASE, &mut f)
 }
 
-/// `resolve`: the call, its `error_kind`, and the material it leased (copied before release).
-fn resolve(p: &Plugin<Secret>, settings: &[u8]) -> (Called, u32, Vec<u8>, u32) {
+/// What one `resolve` answered: the call, its `error_kind`, the material it wrote into the host's
+/// buffer (copied out, the buffer then wiped), its blob flags and the `needed` a short answer names.
+struct Resolved {
+    c: Called,
+    kind: u32,
+    got: Vec<u8>,
+    flags: u32,
+    needed: u64,
+}
+
+/// `resolve` into a zeroed host buffer of `cap` bytes. The dispatcher's `check_resolve` holds a
+/// READY answer to bytes at the start of that buffer, under no lease.
+fn resolve_into(p: &Plugin<Secret>, settings: &[u8], cap: usize) -> Resolved {
+    let mut buf = vec![0_u8; cap];
     let mut f: Frame<ResolveIn, ResolveOut> = Frame::new(input(), output());
     f.input.settings = blob(settings, BLOB_JSON);
+    f.input.secret_buf = buf.as_mut_ptr();
+    f.input.secret_cap = buf.len();
     let c = p.call(secret::slot::RESOLVE, &mut f);
-    let material = if c.outcome == Outcome::Ready && !f.out.secret.ptr.is_null() {
-        // SAFETY: a READY resolve's blob is the plugin's, live until `release` of its lease, which
-        // has not run; the dispatcher's `check_resolve` judged its pointer/length pairing.
-        unsafe { std::slice::from_raw_parts(f.out.secret.ptr, f.out.secret.len) }.to_vec()
+    let got = if c.outcome == Outcome::Ready && !f.out.secret.ptr.is_null() {
+        assert_eq!(
+            f.out.secret.ptr,
+            buf.as_ptr(),
+            "a READY value is in the host's buffer"
+        );
+        buf[..f.out.secret.len].to_vec()
     } else {
         Vec::new()
     };
-    (c, f.out.error_kind, material, f.out.secret.flags)
+    buf.fill(0);
+    Resolved {
+        c,
+        kind: f.out.error_kind,
+        got,
+        flags: f.out.secret.flags,
+        needed: f.out.needed,
+    }
+}
+
+/// [`resolve_into`] the host's first buffer.
+fn resolve(p: &Plugin<Secret>, settings: &[u8]) -> Resolved {
+    resolve_into(p, settings, secret::FIRST_SECRET_CAP)
 }
 
 /// THE SECRET KIND'S SCRIPT over the plugin's own inputs:
@@ -266,6 +308,12 @@ fn resolve(p: &Plugin<Secret>, settings: &[u8]) -> (Called, u32, Vec<u8>, u32) {
 ///   `known`           `{ "resolve": <resolve settings>, "material": <what it resolves to> }`
 ///   `unknown`         resolve settings naming a secret it does not hold (FAILED, NOT_FOUND)
 ///   `malformed`       resolve settings that are not a reference (FAILED, INVALID)
+///   `bad_references`  optional: more resolve settings that are not a reference (FAILED, INVALID)
+///   `empty`           optional: resolve settings naming a secret whose value is EMPTY (FAILED,
+///                     INVALID, no material)
+///
+/// and, at the top level, `credentials`: the canary's plant list, REQUIRED for a secret plugin
+/// (an empty list would pass the canary vacuously).
 fn secret_script(lib: &Path, stated: &[u8], inputs: &serde_json::Value) {
     let s = &inputs["secret"];
     assert!(
@@ -286,9 +334,38 @@ fn secret_script(lib: &Path, stated: &[u8], inputs: &serde_json::Value) {
         !material.is_empty(),
         "the known secret's material is not empty"
     );
+    // Optional: absent (or null), no more malformed references are resolved.
+    let bad_references: Vec<&str> = match &s["bad_references"] {
+        serde_json::Value::Null => Vec::new(),
+        v => v
+            .as_array()
+            .expect("conformance.json: `bad_references` must be an array")
+            .iter()
+            .map(|v| v.as_str().expect("`bad_references` entries are strings"))
+            .collect(),
+    };
+    // Optional: absent (or null), no empty secret is resolved.
+    let empty: Option<&str> = match &s["empty"] {
+        serde_json::Value::Null => None,
+        v => Some(
+            v.as_str()
+                .expect("conformance.json: `empty` must be a string"),
+        ),
+    };
+    let planted = credentials(inputs);
+    assert!(
+        !planted.is_empty(),
+        "conformance.json names no `credentials`: a secret plugin's canary needs the values its \
+         settings carry (`\"credentials\": [\"<value>\", ...]`), or it proves nothing"
+    );
 
     let (p, _d) = load::<Secret>(lib, stated).expect("the dropped-in secret plugin loads");
     assert_eq!(p.kind(), KindCode::Secret);
+    // THE CANARY: every answer's text, searched for every spelling of a configured credential.
+    let mut said: Vec<(String, Vec<u8>)> = Vec::new();
+    let mut heard = |step: &str, c: &Called| {
+        said.push((step.to_string(), c.error.clone().unwrap_or_default()));
+    };
 
     for b in &bad {
         let v = validate(&p, b.as_bytes());
@@ -308,30 +385,58 @@ fn secret_script(lib: &Path, stated: &[u8], inputs: &serde_json::Value) {
     assert_eq!(o.outcome, Outcome::Ready, "{}", line("open", &o));
     assert!(p.is_open());
 
-    // A known name: READY, its material under a lease, flagged secret.
-    let (c, kind, got, flags) = resolve(&p, known);
-    assert_eq!(c.outcome, Outcome::Ready, "{}", line("resolve, known", &c));
-    assert_eq!(kind, secret::ERROR_KIND_UNSET);
-    assert_eq!(got, material, "the known secret's material");
-    assert_ne!(c.lease, 0, "READY material is leased");
+    // A known name: READY, its material in the host's buffer under no lease, flagged secret.
+    let r = resolve(&p, known);
+    heard("resolve, known", &r.c);
+    assert_eq!(
+        r.c.outcome,
+        Outcome::Ready,
+        "{}",
+        line("resolve, known", &r.c)
+    );
+    assert_eq!(r.kind, secret::ERROR_KIND_UNSET);
+    assert_eq!(r.got, material, "the known secret's material");
+    assert_eq!(r.c.lease, 0, "READY material is the host's, never leased");
     assert_ne!(
-        flags & BLOB_SECRET,
+        r.flags & BLOB_SECRET,
         0,
         "secret material is flagged BLOB_SECRET"
     );
-    let lease = c.lease;
-    // A second resolve while the first is outstanding: its own lease.
-    let (c2, _, got2, _) = resolve(&p, known);
+    // A second resolve: the same, again under no lease.
+    let r = resolve(&p, known);
+    heard("resolve, again", &r.c);
     assert_eq!(
-        c2.outcome,
+        r.c.outcome,
         Outcome::Ready,
         "{}",
-        line("resolve, again", &c2)
+        line("resolve, again", &r.c)
     );
-    assert_eq!(got2, material);
-    assert_ne!(c2.lease, lease, "each READY material has its own lease");
+    assert_eq!(r.got, material);
+    assert_eq!(r.c.lease, 0);
+    // A buffer one byte short of the value: the short-buffer answer, nothing written.
+    let r = resolve_into(&p, known, material.len() - 1);
+    heard("resolve, short", &r.c);
+    assert_eq!(
+        r.c.outcome,
+        Outcome::Failed,
+        "{}",
+        line("resolve, short", &r.c)
+    );
+    assert_eq!(
+        r.needed,
+        material.len() as u64,
+        "a short answer names the value's length"
+    );
+    assert_eq!(
+        r.kind,
+        secret::ERROR_KIND_UNSET,
+        "a short answer names no error kind"
+    );
+    assert!(r.got.is_empty() && r.c.lease == 0);
 
-    let (c, kind, got, _) = resolve(&p, text(s, "unknown").as_bytes());
+    let r = resolve(&p, text(s, "unknown").as_bytes());
+    heard("resolve, unknown", &r.c);
+    let (c, kind, got) = (r.c, r.kind, r.got);
     assert_eq!(
         c.outcome,
         Outcome::Failed,
@@ -347,7 +452,9 @@ fn secret_script(lib: &Path, stated: &[u8], inputs: &serde_json::Value) {
         got.is_empty() && c.lease == 0,
         "a FAILED resolve carries nothing"
     );
-    let (c, kind, _, _) = resolve(&p, text(s, "malformed").as_bytes());
+    let r = resolve(&p, text(s, "malformed").as_bytes());
+    heard("resolve, malformed", &r.c);
+    let (c, kind) = (r.c, r.kind);
     assert_eq!(
         c.outcome,
         Outcome::Failed,
@@ -359,49 +466,122 @@ fn secret_script(lib: &Path, stated: &[u8], inputs: &serde_json::Value) {
         secret::ERROR_KIND_INVALID,
         "a malformed reference is INVALID"
     );
+    for b in &bad_references {
+        let r = resolve(&p, b.as_bytes());
+        heard("resolve, bad reference", &r.c);
+        assert_eq!(
+            r.c.outcome,
+            Outcome::Failed,
+            "{}",
+            line("resolve, bad reference", &r.c)
+        );
+        assert_eq!(
+            r.kind,
+            secret::ERROR_KIND_INVALID,
+            "a reference that is not one is INVALID: {b}"
+        );
+        assert!(
+            r.got.is_empty() && r.c.lease == 0,
+            "a FAILED resolve carries nothing"
+        );
+    }
 
-    let r = release(&p, lease);
-    assert_eq!(r.outcome, Outcome::Ready, "{}", line("release", &r));
-    let r = release(&p, lease);
-    assert_eq!(r.outcome, Outcome::Refused, "{}", line("release again", &r));
-    let r = release(&p, c2.lease);
-    assert_eq!(r.outcome, Outcome::Ready, "{}", line("release, second", &r));
+    if let Some(e) = empty {
+        let r = resolve(&p, e.as_bytes());
+        heard("resolve, empty", &r.c);
+        assert_eq!(
+            r.c.outcome,
+            Outcome::Failed,
+            "an EMPTY secret is no secret: {}",
+            line("resolve, empty", &r.c)
+        );
+        assert_eq!(
+            r.kind,
+            secret::ERROR_KIND_INVALID,
+            "an EMPTY secret's value is INVALID"
+        );
+        assert!(
+            r.got.is_empty() && r.c.lease == 0,
+            "a FAILED resolve carries nothing"
+        );
+    }
+
+    // No lease was granted: a release of one is refused.
+    let r = release(&p, 1);
+    assert_eq!(r.outcome, Outcome::Refused, "{}", line("release", &r));
 
     let mut tk: Frame<TickIn, TickOut> = Frame::new(input(), output());
     let t = p.call(life::TICK, &mut tk);
     assert_eq!(t.outcome, Outcome::Ready, "{}", line("tick", &t));
     let r = refresh(&p, bad[0].as_bytes());
+    heard("refresh, bad", &r);
     assert_eq!(r.outcome, Outcome::Failed, "{}", line("refresh, bad", &r));
+    // The refused refresh kept the instance as it was: the known name still resolves, BEFORE the
+    // good refresh re-reads anything.
+    let r = resolve(&p, known);
+    heard("resolve after a refused refresh", &r.c);
+    assert_eq!(
+        r.c.outcome,
+        Outcome::Ready,
+        "{}",
+        line("resolve after a refused refresh", &r.c)
+    );
+    assert_eq!(r.kind, secret::ERROR_KIND_UNSET);
+    assert_eq!(
+        r.got, material,
+        "a refused refresh keeps the known secret's material"
+    );
+    assert_eq!(r.c.lease, 0);
     let r = refresh(&p, settings);
     assert_eq!(r.outcome, Outcome::Ready, "{}", line("refresh", &r));
-    // The refused refresh kept the instance as it was: the known name still resolves.
-    let (c, _, got, _) = resolve(&p, known);
+    // After the good refresh: the known name resolves.
+    let r = resolve(&p, known);
+    heard("resolve after refresh", &r.c);
     assert_eq!(
-        c.outcome,
+        r.c.outcome,
         Outcome::Ready,
         "{}",
-        line("resolve after refresh", &c)
+        line("resolve after refresh", &r.c)
     );
-    assert_eq!(got, material);
-    let r = release(&p, c.lease);
-    assert_eq!(
-        r.outcome,
-        Outcome::Ready,
-        "{}",
-        line("release after refresh", &r)
-    );
+    assert_eq!(r.got, material);
+    assert_eq!(r.c.lease, 0);
 
     let mut cl: Frame<InHead, OutHead> = Frame::new(input(), output());
     let c = p.call(life::CLOSE, &mut cl);
     assert_eq!(c.outcome, Outcome::Ready, "{}", line("close", &c));
-    let (c, _, got, _) = resolve(&p, known);
+    let r = resolve(&p, known);
+    heard("resolve after close", &r.c);
     assert_ne!(
-        c.outcome,
+        r.c.outcome,
         Outcome::Ready,
         "a closed instance serves nothing: {}",
-        line("resolve after close", &c)
+        line("resolve after close", &r.c)
     );
-    assert!(got.is_empty());
+    assert!(r.got.is_empty());
+
+    for planted in planted {
+        for (step, text) in &said {
+            assert!(
+                !text.windows(planted.len()).any(|w| w == planted.as_slice()),
+                "a configured credential crossed back in step '{step}'"
+            );
+        }
+    }
+}
+
+/// The credentials `conformance.json` names (`"credentials": ["<value>", ...]`), as the suite's
+/// canary reads them. Empty when it names none.
+fn credentials(inputs: &serde_json::Value) -> Vec<Vec<u8>> {
+    inputs["credentials"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str())
+                .filter(|v| !v.is_empty())
+                .map(|v| v.as_bytes().to_vec())
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// **THE PROOF.** The plugin, built from the header alone, is admitted by the one dropped-in path
@@ -490,4 +670,58 @@ fn a_plugin_built_against_another_kind_abi_is_refused() {
         load::<Export>(&lib, &as_export).is_err(),
         "a secret door is not an export door"
     );
+}
+
+/// THE RED ARM, LAYOUT: the same sources built stating another layout fingerprint of their kind
+/// (`-DBUSBAR_PLUGIN_LAYOUT=<host's, one bit flipped>`) are refused at pack time and at load
+/// (`KindLayout`, naming the plugin, the stated layout and the host's). `false` (printed) when no
+/// source names `BUSBAR_PLUGIN_LAYOUT`: such a source states its kind's fingerprint by hand and
+/// cannot be rebuilt at another, so there is nothing to refuse.
+fn a_plugin_built_against_another_kind_layout_is_refused() -> bool {
+    let hooked = sources().iter().any(|src| {
+        std::fs::read_to_string(src)
+            .expect("the plugin's source")
+            .contains("BUSBAR_PLUGIN_LAYOUT")
+    });
+    if !hooked {
+        println!(
+            "dropped conformance: SKIP the wrong-layout arm: no source names BUSBAR_PLUGIN_LAYOUT \
+             (state `.layout = BUSBAR_PLUGIN_LAYOUT`, `#define`d to the kind's \
+             BB_<KIND>_LAYOUT_FINGERPRINT when unset, so the arm can rebuild at another layout)"
+        );
+        return false;
+    }
+    let lib = lib();
+    let stated = stated(&lib);
+    let facts = ManifestFacts::read(&stated).expect("a Statement rendering");
+    let host = facts.kind.layout_fingerprint();
+    let other = host ^ 1;
+    let red = rebuild(
+        "red_layout",
+        &[format!("BUSBAR_PLUGIN_LAYOUT=0x{other:016x}ull")],
+    );
+    let refused_as_built = |e: &LoadError| {
+        matches!(
+            e,
+            LoadError::KindLayout { kind, stated, host: h, .. }
+                if *kind == facts.kind && *stated == other && *h == host
+        )
+    };
+    let packed = rendering_of_library(&red).err();
+    assert!(
+        packed.as_ref().is_some_and(refused_as_built),
+        "the pack tool refuses the layout {other:#018x} build (does the source state \
+         `.layout = BUSBAR_PLUGIN_LAYOUT`?): {packed:?}"
+    );
+    match facts.kind {
+        KindCode::Secret => {
+            let Err(refused) = load::<Secret>(&red, &stated) else {
+                panic!("the loader refuses a door built against another layout");
+            };
+            assert!(refused_as_built(&refused), "{refused}");
+            assert!(refused.to_string().contains("rebuild"), "{refused}");
+        }
+        other => panic!("no dropped-in conformance script for kind {other:?} yet"),
+    }
+    true
 }

@@ -11,21 +11,24 @@
 //! reads the host's `in`, decodes each record blob, calls the method, and writes the answer into
 //! the host's buffers or under a lease.
 //!
-//! # Dedupe is the store's (S1-S4)
+//! # Dedupe is the store's (S1-S5)
 //!
 //! Every method that takes an [`OpId`] dedupes on it, DURABLY for a durable store: the same
 //! `op_id` with the same value fields applies nothing and answers what the first call answered
 //! (S1); the same `op_id` with different value fields is [`OpRefused::Conflict`] and applies nothing (S2,
 //! [`DIAG_OPID_CONFLICT`](crate::abi::store::DIAG_OPID_CONFLICT)); only an answer that APPLIED a
 //! change is recorded. The SDK checks every host capacity BEFORE calling the method, so a
-//! short-buffer answer never reaches the store and is never recorded (the S1 addendum).
+//! short-buffer answer never reaches the store and is never recorded (the S1 addendum). The check,
+//! the answers and what is recorded are [`dedupe`]'s; the store keeps the log.
 
 pub mod door;
+// The `op_id` dedupe: the state machine and the body a store records.
+pub mod dedupe;
+pub mod fork;
+pub mod rewrap;
 pub mod wire;
 // A record's fields as a backend stores them: scope columns, storable integers, counters.
 pub mod column;
-// A forked chain, in one wording for every store.
-pub mod fork;
 
 use crate::abi::sdk::conn::Host;
 use crate::abi::store::OpId;
@@ -37,6 +40,9 @@ use crate::records::{
 
 mod op;
 pub use op::{Checkout, Op, Services, Step};
+// A store that never pends, served whole over its `RecordStore`.
+mod sync_store;
+pub use sync_store::SyncStore;
 
 /// What `record_scan` answers: `(key, record)` in key order.
 pub type Scanned = Vec<(Vec<u8>, RecordBytes)>;
@@ -48,8 +54,9 @@ pub enum OpRefused {
     /// [`DIAG_OPID_CONFLICT`](crate::abi::store::DIAG_OPID_CONFLICT), nothing applied.
     Conflict,
     /// The write could not be applied (a fork at a used `seq`, a backend error): FAILED with this
-    /// text, nothing applied, nothing recorded under the `op_id`. A host cannot tell this from a
-    /// commit whose answer was lost, so it replays the same `op_id` (S5).
+    /// text, nothing applied, nothing recorded under the `op_id`. A host cannot tell a backend error
+    /// from a commit whose answer was lost, so it replays the same `op_id` (S5); a fork it never
+    /// replays.
     Failed(String),
     /// The write was decided before commit and refused (a value its columns cannot hold, a
     /// constraint, a script error before any write): REFUSED with this text, PROVABLY nothing
@@ -95,7 +102,8 @@ pub trait StoreSlots: Sized + Send + Sync + 'static {
     fn open(settings: &[u8], host: Option<Host>) -> Result<Self, String>;
 
     /// THE CONNECT STEP of `open` (ARCHITECT ruling 2026-10-03 on Q-L16-2): what the store reaches
-    /// before the host counts it opened (its backend's first round trip, a schema check). It runs
+    /// before the host counts it opened (its backend's first round trip, a schema check: a backend
+    /// whose stored schema is NEWER than this build's is refused, never written). It runs
     /// on the instance [`StoreSlots::open`] answered, on `open`'s own ticket, and may PEND on the
     /// connector exactly as an op does: the host re-enters `open` on the wake and the door hands
     /// back the same instance and [`Op`] (what it parked, its one connection), never calling
@@ -186,7 +194,7 @@ pub trait StoreSlots: Sized + Send + Sync + 'static {
         deltas: &[MeteringDelta],
     ) -> Step<OpResult<()>>;
 
-    // ── the 1.5.5 op set (slots 0-32), each one body, served through the table ─────────────────
+    // ── the 1.5.5 op set, each one body, served through the table ──────────────────────────────
 
     /// `put_key` (slot 0): upsert `key` by its id.
     ///
@@ -264,6 +272,20 @@ pub trait StoreSlots: Sized + Send + Sync + 'static {
         cx: &mut Op<'_>,
         secret: &CredentialSecret,
     ) -> Step<RecordStoreResult<()>>;
+
+    /// Update-only envelope CAS, carried by slot 8 with explicit rewrap intent. See
+    /// [`crate::records::RecordStore::rewrap_credential`]. No ordinary PUT fallback is safe.
+    fn rewrap_credential(
+        &self,
+        cx: &mut Op<'_>,
+        expected: &CredentialSecret,
+        replacement: &str,
+    ) -> Step<RecordStoreResult<bool>> {
+        let _ = (cx, expected, replacement);
+        Step::Ready(Err(crate::records::RecordStoreError(
+            "this Store does not support credential rewrap CAS".into(),
+        )))
+    }
 
     /// `put_key_with_credential` (slot 9): both, atomically.
     ///
@@ -378,7 +400,7 @@ pub trait StoreSlots: Sized + Send + Sync + 'static {
         kind: &str,
     ) -> Step<RecordStoreResult<Vec<String>>>;
 
-    /// `purge_plane_records_before` (slot 22).
+    /// `purge_plane_records_before` (slot 22) under the age rule.
     ///
     /// # Errors
     /// The store's refusal, as the 1.5.5 op set states it.
@@ -389,7 +411,9 @@ pub trait StoreSlots: Sized + Send + Sync + 'static {
         before: u64,
     ) -> Step<RecordStoreResult<u64>>;
 
-    /// RETENTION, with the predicate named (no slot of its own yet).
+    /// RETENTION, with the predicate named: slot 22 under the rule its `in` carries
+    /// (`KindBeforeIn::retention`); the door calls this, so a store that honours the terminal-only
+    /// rule overrides it ([`Retention::drops`]).
     ///
     /// DEFAULTED: [`Retention::Age`] is [`StoreSlots::purge_plane_records_before`];
     /// [`Retention::TerminalOnly`] answers `Ok(0)` — a store that has not implemented the

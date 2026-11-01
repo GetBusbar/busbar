@@ -1,6 +1,6 @@
 {
  "_comment": [
-  "Shadow-oracle request material for busbar's admin API: one entry per SERVED admin operation. 66 are the operationIds of fixtures/openapi-1.5.5.json (66 operations / 49 paths); 44 are 1.6.0 additions: the 15 plane-section operations (`tools:` / `agents:`, mounted only when the plane is configured) and the 29 kernel verbs of the closed verb table (18 money-governance verbs, 3 trust verbs, 5 ledger views, 3 audit-chain reads). crates/busbar-core-admin's served-surface reconciliation test fails when a served operation has no entry here (or no admin.ops cell) and when an entry or cell names an operation the build does not serve.",
+  "Shadow-oracle request material for busbar's admin API: one entry per SERVED admin operation. 66 are the operationIds of fixtures/openapi-1.5.5.json (66 operations / 49 paths); 43 are 1.6.0 additions: the 15 plane-section operations (`tools:` / `agents:`, mounted only when the plane is configured) and the 28 kernel verbs of the closed verb table (17 money-governance verbs, 3 trust verbs, 5 ledger views, 3 audit-chain reads). crates/busbar-core-admin's served-surface reconciliation test fails when a served operation has no entry here (or no admin.ops cell) and when an entry or cell names an operation the build does not serve.",
   "Sources: openapi-1.5.5.json (schemas, x-busbar-required-scope, If-Match params), qa/evidence/inventory/1.5.5-routes-admin.md (ADM-001..066), qa/evidence/inventory/1.5.5-config.md section 2 (config shapes), testing/shadow-oracle/oracle-config.sh (what exists at record time).",
   "Auth: every request carries `Authorization: Bearer <ORACLE_ADMIN_TOKEN>` (the admin-tokens provider; x-admin-token is the equivalent header). Bodies are sent with Content-Type: application/json where `body` is non-null.",
   "Placeholders substituted by the recorder: {KEY_OK} {KEY_BROKE} {KEY_NOSCOPE} (minted key ids), {TMP} (a writable temp dir), {WORK} (the oracle work dir holding signing.key), {LISTEN_ADDR} / {ADMIN_LISTEN_ADDR} (the oracle's `127.0.0.1:<port>` listen strings), {MOCK_URL} (`http://127.0.0.1:<mock_port>`). {GROUP} {HOOK} {EXPORT} {IDP} {PLUGIN_FILE} {SECTION} {V} are resolved to concrete names here (oracle-added / none / oracle-log,metrics / oracle-idp2,admin-tokens / none / root / 0).",
@@ -2608,25 +2608,6 @@
      "Content-Type": "application/json"
     }
    }
-  },
-  "PostResealEpochFloor": {
-   "bad_body": null,
-   "idempotent": false,
-   "if_match": false,
-   "method": "POST",
-   "mutating": true,
-   "not_found": null,
-   "notes": "Disaster recovery; effect lands on the store (204 no body). A plain scoped verb (#77(9)): the oracle's full-scope admin token is admitted with no operator key. The node's bound verb store applies it. Body not read. Baseline: [204]. 1.6.0-additive: the published 1.5.5 binary has no such route, so its recording of this call is the admin router's generic 404 not_found envelope.",
-   "ok": {
-    "body": null,
-    "expect": [
-     204
-    ],
-    "headers": {}
-   },
-   "path": "/api/v1/admin/reseal-epoch-floor",
-   "restart": false,
-   "scope": "full"
   },
   "PostRestart": {
    "bad_body": {

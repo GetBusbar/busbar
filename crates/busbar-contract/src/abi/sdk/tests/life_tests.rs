@@ -67,6 +67,29 @@ impl Life for Echo {
         Ok(Echo(secrets.first().map_or(settings, |s| *s).to_vec()))
     }
 
+    fn opening(
+        &self,
+        _: Option<&Host>,
+        _: Ticket,
+        parked: Option<Box<dyn std::any::Any + Send + Sync>>,
+    ) -> Opening {
+        if self.0 != b"pending-owned-failure" && self.0 != b"pending-owned-refusal" {
+            return Opening::Ready;
+        }
+        if parked.is_none() {
+            return Opening::Pending {
+                wake_at_ns: 1,
+                parked: Box::new(()),
+            };
+        }
+        let text = String::from_utf8(self.0.clone()).unwrap();
+        Opening::Failed(if self.0 == b"pending-owned-refusal" {
+            Refusal::refused(text)
+        } else {
+            Refusal::failed(text)
+        })
+    }
+
     fn refresh(&self, settings: &[u8], _: &[&[u8]], _: u64) -> Result<Refreshed, Refusal> {
         match settings {
             b"count" => Ok(Refreshed {
@@ -94,9 +117,17 @@ impl Life for Echo {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .push((self.0.clone(), host.is_some()));
     }
+
+    fn flagged(&self) -> Option<Flagged> {
+        self.0.strip_prefix(b"flag:").map(|why| Flagged {
+            id_idx: 0,
+            severity: crate::abi::mechanism::call::SEVERITY_WARN,
+            text: String::from_utf8_lossy(why).into_owned(),
+        })
+    }
 }
 
-/// `resolve`: the state's bytes, under a secret lease.
+/// `resolve`: the state's bytes, into the host's secret buffer.
 struct Resolve;
 impl SafeSlot for Resolve {
     type In = ResolveIn;
@@ -154,8 +185,12 @@ impl SafeSlot for Resolve {
                 _ => Outcome::Pending,
             };
         }
-        out.lease_secret(|o| &o.secret, h.leases(), h.life().0.clone(), BLOB_OCTETS);
-        Outcome::Ready
+        // The value goes into the host's buffer, never leased (the credential chip, row 6).
+        crate::abi::sdk::cred::resolved(
+            input,
+            &mut out,
+            crate::abi::sdk::cred::Held::new(h.life().0.clone()),
+        )
     }
 }
 
@@ -250,13 +285,21 @@ fn open(settings: &[u8], secrets: &[Blob]) -> (Outcome, *mut c_void, String) {
 }
 
 fn resolve(inst: *mut c_void) -> (Outcome, Vec<u8>, u64, u32) {
+    // The host lends the buffer a READY value is written into (row 6).
+    let mut buf = [0u8; 64];
     let mut input: ResolveIn = zeroed();
     input.head = in_head::<ResolveIn>(crate::abi::secret::slot::RESOLVE);
+    input.secret_buf = buf.as_mut_ptr();
+    input.secret_cap = buf.len();
     let mut out: ResolveOut = zeroed();
     out.head = out_head::<ResolveOut>();
     let o = call(table().resolve, inst, &input, &mut out);
-    // SAFETY: the plugin's leased bytes, held until `release`.
-    let bytes = unsafe { std::slice::from_raw_parts(out.secret.ptr, out.secret.len) }.to_vec();
+    let bytes = if out.secret.len == 0 {
+        Vec::new()
+    } else {
+        // SAFETY: the answer names the start of `buf`, the host's own buffer, still live here.
+        unsafe { std::slice::from_raw_parts(out.secret.ptr, out.secret.len) }.to_vec()
+    };
     (o, bytes, out.head.lease, out.secret.flags)
 }
 
@@ -399,15 +442,24 @@ fn an_unknown_lease_is_refused_in_words() {
     assert_eq!(close(inst), Outcome::Ready);
 }
 
+/// A resolved secret is written into the host's buffer and takes no lease (row 6); a leased answer
+/// (the leased-string probe) is held until its release, each its own, and an unknown lease is
+/// refused.
 #[test]
-fn a_leased_answer_is_held_until_release_and_an_unknown_lease_is_refused() {
+fn a_resolved_secret_takes_no_lease_and_a_leased_answer_is_held_until_release() {
     let secret = blob(b"s3cret");
     let (_, inst, _) = open(b"{}", &[secret]);
     let (o, bytes, lease, flags) = resolve(inst);
     assert_eq!(o, Outcome::Ready);
     assert_eq!(bytes, b"s3cret");
-    assert_ne!(lease, 0);
+    assert_eq!(lease, 0, "a resolved secret is the host's: no lease");
     assert_eq!(flags, BLOB_SECRET);
+    assert_eq!(close(inst), Outcome::Ready);
+
+    let (_, inst, _) = open(b"str", &[]);
+    let (o, _, lease, _) = resolve(inst);
+    assert_eq!(o, Outcome::Ready);
+    assert_ne!(lease, 0);
     let (_, _, second, _) = resolve(inst);
     assert_ne!(second, lease, "each answer its own lease");
     assert_eq!(release(inst, lease), Outcome::Ready);
@@ -656,6 +708,81 @@ fn a_kept_answer_is_dropped_at_its_release_and_only_then() {
     assert_eq!(leases.release(lease), Outcome::Refused);
 }
 
+#[test]
+fn releasing_a_chain_drops_its_storage_after_unlocking_and_removing_the_whole_chain() {
+    use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize};
+    use std::sync::{Arc, Weak};
+    struct Observed {
+        leases: Weak<Leases>,
+        released: Arc<AtomicU64>,
+        unrelated: Arc<AtomicU64>,
+        dropped: Arc<AtomicUsize>,
+        unlocked_and_complete: Arc<AtomicUsize>,
+    }
+    impl Drop for Observed {
+        fn drop(&mut self) {
+            if let Some(leases) = self.leases.upgrade() {
+                if let Ok(held) = leases.held.try_lock() {
+                    let released = self.released.load(Ordering::SeqCst);
+                    let unrelated = self.unrelated.load(Ordering::SeqCst);
+                    if held.keys().all(|(id, _)| *id != released)
+                        && held.keys().any(|(id, _)| *id == unrelated)
+                    {
+                        self.unlocked_and_complete.fetch_add(1, Ordering::SeqCst);
+                    }
+                }
+            }
+            self.dropped.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+    struct Other(Arc<AtomicBool>);
+    impl Drop for Other {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
+    let leases = Arc::new(Leases::default());
+    let released = Arc::new(AtomicU64::new(0));
+    let unrelated = Arc::new(AtomicU64::new(0));
+    let dropped = Arc::new(AtomicUsize::new(0));
+    let unlocked_and_complete = Arc::new(AtomicUsize::new(0));
+    let other_dropped = Arc::new(AtomicBool::new(false));
+    let mut other_head = out_head::<OutHead>();
+    let other_id = leases.keep(&mut other_head, Other(other_dropped.clone()));
+    unrelated.store(other_id, Ordering::SeqCst);
+    let mut head = out_head::<OutHead>();
+    for _ in 0..2 {
+        let id = leases.keep(
+            &mut head,
+            Observed {
+                leases: Arc::downgrade(&leases),
+                released: released.clone(),
+                unrelated: unrelated.clone(),
+                dropped: dropped.clone(),
+                unlocked_and_complete: unlocked_and_complete.clone(),
+            },
+        );
+        released.store(id, Ordering::SeqCst);
+    }
+    assert_eq!(dropped.load(Ordering::SeqCst), 0);
+    assert_eq!(leases.release(head.lease), Outcome::Ready);
+    assert_eq!(
+        dropped.load(Ordering::SeqCst),
+        2,
+        "synchronous exactly-once destruction"
+    );
+    assert_eq!(
+        unlocked_and_complete.load(Ordering::SeqCst),
+        2,
+        "destructors may reenter the lease table and see their entire chain removed"
+    );
+    assert!(!other_dropped.load(Ordering::SeqCst));
+    assert_eq!(leases.release(head.lease), Outcome::Refused);
+    assert_eq!(leases.release(u64::MAX), Outcome::Refused);
+    assert_eq!(leases.release(other_id), Outcome::Ready);
+    assert!(other_dropped.load(Ordering::SeqCst));
+}
+
 /// A kind that states no `validate` of its own: the SDK's object check, in the SDK's words.
 struct Defaulted;
 impl Life for Defaulted {
@@ -797,4 +924,90 @@ fn a_recycled_ticket_never_resumes_a_finished_ops_parked_state() {
         "the new op's RESUME must not see the earlier op's state"
     );
     assert_eq!(close(inst), Outcome::Ready);
+}
+
+/// The declared diagnostics on a reply's envelope: `(id_idx, severity, text)`.
+fn raised(head: &OutHead) -> Vec<(u32, u8, String)> {
+    if head.envelope.diags_len == 0 {
+        return Vec::new();
+    }
+    // SAFETY: the instance holds the entries until its next lifecycle op.
+    let diags = unsafe { std::slice::from_raw_parts(head.envelope.diags, head.envelope.diags_len) };
+    diags
+        .iter()
+        .map(|d| (d.id_idx, d.severity, text(d.text)))
+        .collect()
+}
+
+/// RED (BIND-AUDIT): what the instance an `open` or `refresh` built raises ([`Life::flagged`])
+/// rides that reply's envelope as its one declared diagnostic, for the host to audit on the
+/// plugin's behalf; an instance that raises nothing answers a bare envelope.
+#[test]
+fn an_open_and_a_refresh_carry_what_the_instance_raises() {
+    let warn = crate::abi::mechanism::call::SEVERITY_WARN;
+    let (o, out) = open_lent(b"flag:plain http", None);
+    assert_eq!(o, Outcome::Ready);
+    assert_eq!(raised(&out.head), vec![(0, warn, "plain http".to_string())]);
+    let inst = out.instance;
+    let (o, out) = refresh(inst, b"uncounted");
+    assert_eq!(o, Outcome::Ready);
+    assert_eq!(raised(&out), vec![(0, warn, "plain http".to_string())]);
+    let (o, out) = refresh(inst, b"count");
+    assert_eq!(o, Outcome::Ready);
+    assert_eq!(out.envelope.metrics_len, 1, "the count rides beside it");
+    assert_eq!(raised(&out), vec![(0, warn, "plain http".to_string())]);
+    assert_eq!(close(inst), Outcome::Ready);
+
+    let (o, out) = open_lent(b"{}", None);
+    assert_eq!(o, Outcome::Ready);
+    assert!(raised(&out.head).is_empty());
+    assert_eq!(close(out.instance), Outcome::Ready);
+}
+
+#[test]
+fn a_resumed_open_failure_keeps_its_owned_reason_in_the_hosts_buffer() {
+    for (settings, outcome) in [
+        (&b"pending-owned-failure"[..], Outcome::Failed),
+        (&b"pending-owned-refusal"[..], Outcome::Refused),
+    ] {
+        let mut buffer = [0_u8; 64];
+        let mut input: OpenIn = zeroed();
+        input.head = in_head::<OpenIn>(slot::OPEN);
+        input.head.ticket = Ticket {
+            slot: 71,
+            generation: 1,
+        };
+        input.settings = blob(settings);
+        input.err_buf = buffer.as_mut_ptr();
+        input.err_cap = buffer.len();
+        let mut out: OpenOut = zeroed();
+        out.head = out_head::<OpenOut>();
+        assert_eq!(
+            call(table().head.open, ptr::null_mut(), &input, &mut out),
+            Outcome::Pending
+        );
+        let partial = out.instance;
+        assert!(
+            !partial.is_null(),
+            "the pending open retains its partial instance"
+        );
+        input.head.flags = FLAG_RESUME;
+        out = zeroed();
+        out.head = out_head::<OpenOut>();
+        assert_eq!(call(table().head.open, partial, &input, &mut out), outcome);
+        assert!(
+            out.instance.is_null(),
+            "the failed partial instance was freed"
+        );
+        // Check buffer ownership before reading any plugin-supplied pointer. An error in a
+        // freed instance's kept ring must fail this assertion without dereferencing that ring.
+        assert_eq!(
+            out.err_len,
+            settings.len(),
+            "the resumed failure writes the host's buffer"
+        );
+        assert_eq!(out.head.error.ptr, buffer.as_ptr());
+        assert_eq!(&buffer[..out.err_len], settings);
+        assert_eq!(text(out.head.error).as_bytes(), settings);
+    }
 }

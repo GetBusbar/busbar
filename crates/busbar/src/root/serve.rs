@@ -8,8 +8,8 @@
 //! THE HOST SERVICES ARRIVE LATE, BY DESIGN. The one dispatcher is built as the process's first act,
 //! before any configuration is read (the one-dispatcher boot), while the kernel's services are
 //! built from the loaded configuration (the destination guard `dest.judge` asks, among others). So the
-//! dispatcher is handed a [`LateServices`]: it answers every service REFUSED, as a dispatcher with
-//! no services does, until the composition installs the kernel's services, once, after the
+//! dispatcher serves the slot of a [`LateServices`]: every service answers REFUSED, as a dispatcher
+//! with no services does, until the composition installs the kernel's services, once, after the
 //! configuration loads and before any plugin is bound. No plugin crosses before then in a booted
 //! process, so none sees the refusal.
 
@@ -33,7 +33,7 @@ use busbar_kernel::host_records::QUEUE_CAP;
 use busbar_kernel::host_services::{BlockingPool, DestJudge, KernelServices, SignKey};
 /// The stream `Content-Type` every declared protocol states, folded at boot.
 use busbar_kernel::ingress::protocols::streaming_content_types as declared_stream_media;
-use busbar_kernel::plane_driver::serve::{publish, ServeRoute, ServeTable};
+use busbar_kernel::plane_driver::serve::{ServeRoute, ServeTable, ServeTables};
 use busbar_kernel::plane_driver::{
     refusal_status, BufferCaps, CallerEnd, DriverConfig, Egress, HeadFields, MoneySeam,
     PlaneDriver, PlaneMoney, Rendered, SessionCaller,
@@ -46,6 +46,7 @@ use crate::root::boot::DoorPlane;
 use crate::root::door_steps::{door_facts, DoorFacts, DoorPools};
 use crate::root::loader::dispatch::kinds::plane::OwnedSnapshot;
 use crate::root::loader::dispatch::plane_calls::PlaneInstance;
+use crate::root::loader::dispatch::services::ServicesSlot;
 // The data routes drive their units on the node: what only they name.
 use crate::root::door_steps::{egress_pool, DoorCaller, DoorSteps};
 use crate::root::loader::dispatch::{in_head, out_head, Dispatcher, Frame};
@@ -86,13 +87,44 @@ pub fn compose(
     late: &LateServices,
     credentials: crate::root::credentials::AppCredentials,
 ) {
-    let kernel = Arc::new(kernel_services(dest));
-    let services = crate::root::credentials::CredentialServices::new(
-        Arc::clone(&kernel) as Arc<dyn HostServices>,
-        Arc::new(credentials),
-    );
-    if late.install_kernel(kernel, Arc::new(services)).is_err() {
+    let kernel = Arc::new(kernel_services(dest).with_credentials(Arc::new(credentials)));
+    if late
+        .install_kernel(Arc::clone(&kernel), kernel as Arc<dyn HostServices>)
+        .is_err()
+    {
         tracing::debug!("the kernel's host services were already installed");
+    }
+}
+
+/// THE TICKET PRESS behind `ticket.mint` (row 132, the ARCHITECT ticket ruling): each mint reads the
+/// live generation through its swap handle, so a ticket is stamped by the deployment's governance
+/// under the mint ceiling (`auth.policy.max_ttl`) in force when it is minted.
+pub struct LiveTickets(pub Arc<busbar_kernel::state::AppHandle>);
+
+impl busbar_kernel::host_services::TicketPress for LiveTickets {
+    fn mint(
+        &self,
+        key_id: &str,
+        prefix: &str,
+        ttl_secs: u64,
+        record: &[u8],
+        now: u64,
+    ) -> Result<(String, u64), &'static str> {
+        use busbar_kernel::governance::TicketRefusal;
+        let app = self.0.load();
+        let gov = app
+            .governance
+            .as_deref()
+            .ok_or(TicketRefusal::NoSigner.reason())?;
+        gov.mint_ticket(
+            key_id,
+            prefix,
+            ttl_secs,
+            app.mint_policy.block_max_ttl_secs,
+            record,
+            now,
+        )
+        .map_err(TicketRefusal::reason)
     }
 }
 
@@ -168,13 +200,13 @@ pub fn demotion_owner(planes: &[&PlaneDeclaration]) -> Option<&'static str> {
     }
 }
 
-/// The kernel's host services, installed once after the configuration loads (see the module doc).
+/// The kernel's host services, installed once after the configuration loads (see the module doc),
+/// into the slot the dispatcher serves from: a plugin's call reaches them with no forwarder between.
 pub struct LateServices {
-    installed: OnceLock<Arc<dyn HostServices>>,
+    /// The dispatcher's: the installed services, or `NotInstalled` before the install.
+    slot: Arc<ServicesSlot>,
     /// The kernel's own services, when those are what was composed ([`Self::install_kernel`]).
     kernel: OnceLock<Arc<KernelServices>>,
-    /// The clock before the install: the kernel's own, judging no destination.
-    clock: KernelServices,
 }
 
 /// Why [`LateServices::install`] would not take a second set of services.
@@ -189,16 +221,25 @@ impl LateServices {
     #[must_use]
     pub fn new() -> Arc<Self> {
         Arc::new(LateServices {
-            installed: OnceLock::new(),
+            slot: ServicesSlot::late(Arc::new(NotInstalled(KernelServices::new()))),
             kernel: OnceLock::new(),
-            clock: KernelServices::new(),
         })
+    }
+
+    /// The slot the dispatcher serves from ([`crate::root::dispatch::build`]).
+    #[must_use]
+    pub fn slot(&self) -> Arc<ServicesSlot> {
+        Arc::clone(&self.slot)
     }
 
     /// Install the kernel's services. Once per process: a second install is refused and changes
     /// nothing, so a reload can never swap the services a running instance reaches.
     pub fn install(&self, services: Arc<dyn HostServices>) -> Result<(), AlreadyInstalled> {
-        self.installed.set(services).map_err(|_| AlreadyInstalled)
+        if self.slot.install(services) {
+            Ok(())
+        } else {
+            Err(AlreadyInstalled)
+        }
     }
 
     /// Install `services` (the kernel's own, wrapped by the root's), as [`Self::install`] does, and
@@ -222,268 +263,154 @@ impl LateServices {
     /// Whether the kernel's services are installed.
     #[must_use]
     pub fn is_installed(&self) -> bool {
-        self.installed.get().is_some()
+        self.slot.is_installed()
     }
 
-    /// The installed services, or the refusal every service answers before the install.
-    fn served(&self) -> Result<&dyn HostServices, Stored> {
-        self.installed
-            .get()
-            .map(|s| &**s)
-            .ok_or_else(|| Stored::refused(NOT_INSTALLED))
+    /// What the dispatcher serves now: the installed services, or `NotInstalled`.
+    #[cfg(test)]
+    pub(crate) fn served(&self) -> Arc<dyn HostServices> {
+        Arc::clone(self.slot.get().expect("a late slot always serves"))
     }
 }
 
-impl HostServices for LateServices {
-    /// The kernel's clock once installed. `clock.now` has no refusal to answer, so before the
-    /// install it is the kernel's own clock with no egress class, started with this value.
+/// What every service answers before the kernel's are installed: REFUSED, [`NOT_INSTALLED`].
+/// `clock.now` has no refusal to answer, so it is the kernel's own clock with no egress class,
+/// started with these services.
+struct NotInstalled(KernelServices);
+
+fn not_installed() -> Stored {
+    Stored::refused(NOT_INSTALLED)
+}
+
+impl HostServices for NotInstalled {
     fn now(&self) -> Reading {
-        match self.installed.get() {
-            Some(s) => s.now(),
-            None => self.clock.now(),
-        }
+        self.0.now()
     }
 
-    // Every other service is the installed services' answer, or REFUSED before the install.
-    fn dest_judge(&self, dest: &str, class: u32, flags: u32, later: Option<Later>) -> Ran {
-        match self.served() {
-            Ok(s) => s.dest_judge(dest, class, flags, later),
-            Err(r) => Ran::Now(r),
-        }
+    fn dest_judge(&self, _: &str, _: u32, _: u32, _: Option<Later>) -> Ran {
+        Ran::Now(not_installed())
     }
 
-    fn records_get(&self, caller: &Caller, kind: &str, key: &[u8], later: Later) -> Ran {
-        match self.served() {
-            Ok(s) => s.records_get(caller, kind, key, later),
-            Err(r) => Ran::Now(r),
-        }
+    fn records_get(&self, _: &Caller, _: &str, _: &[u8], _: Later) -> Ran {
+        Ran::Now(not_installed())
     }
 
-    fn records_list(&self, caller: &Caller, list: RecordsList, later: Later) -> Ran {
-        match self.served() {
-            Ok(s) => s.records_list(caller, list, later),
-            Err(r) => Ran::Now(r),
-        }
+    fn records_list(&self, _: &Caller, _: RecordsList, _: Later) -> Ran {
+        Ran::Now(not_installed())
     }
 
-    fn records_claim(
-        &self,
-        caller: &Caller,
-        kind: &str,
-        key: &[u8],
-        ttl_ms: u64,
-        later: Later,
-    ) -> Ran {
-        match self.served() {
-            Ok(s) => s.records_claim(caller, kind, key, ttl_ms, later),
-            Err(r) => Ran::Now(r),
-        }
+    fn records_claim(&self, _: &Caller, _: &str, _: &[u8], _: u64, _: Later) -> Ran {
+        Ran::Now(not_installed())
     }
 
-    fn sign(&self, caller: &Caller, data: &[u8]) -> Stored {
-        match self.served() {
-            Ok(s) => s.sign(caller, data),
-            Err(r) => r,
-        }
+    fn sign(&self, _: &Caller, _: &[u8]) -> Stored {
+        not_installed()
     }
 
-    fn trust_sight(&self, caller: &Caller, counterparty: &str, hash: &str, later: Later) -> Ran {
-        match self.served() {
-            Ok(s) => s.trust_sight(caller, counterparty, hash, later),
-            Err(r) => Ran::Now(r),
-        }
+    fn trust_sight(&self, _: &Caller, _: &str, _: &str, _: Later) -> Ran {
+        Ran::Now(not_installed())
     }
 
-    fn trust_unreached(&self, caller: &Caller, counterparty: &str) -> Stored {
-        match self.served() {
-            Ok(s) => s.trust_unreached(caller, counterparty),
-            Err(r) => r,
-        }
+    fn trust_unreached(&self, _: &Caller, _: &str) -> Stored {
+        not_installed()
     }
 
     fn trust_decide(
         &self,
-        caller: &Caller,
-        key: busbar_contract::services::TrustKeyRef<'_>,
-        expected: Option<&str>,
-        approve: bool,
+        _: &Caller,
+        _: busbar_contract::services::TrustKeyRef<'_>,
+        _: Option<&str>,
+        _: bool,
     ) -> Stored {
-        match self.served() {
-            Ok(s) => s.trust_decide(caller, key, expected, approve),
-            Err(r) => r,
-        }
+        not_installed()
     }
 
-    fn trust_state(&self, caller: &Caller, counterparty: &str) -> Stored {
-        match self.served() {
-            Ok(s) => s.trust_state(caller, counterparty),
-            Err(r) => r,
-        }
+    fn trust_state(&self, _: &Caller, _: &str) -> Stored {
+        not_installed()
     }
 
-    fn trust_sight_item(
-        &self,
-        caller: &Caller,
-        counterparty: &str,
-        item: &str,
-        digest: &str,
-    ) -> Stored {
-        match self.served() {
-            Ok(s) => s.trust_sight_item(caller, counterparty, item, digest),
-            Err(r) => r,
-        }
+    fn trust_sight_item(&self, _: &Caller, _: &str, _: &str, _: &str) -> Stored {
+        not_installed()
     }
 
-    fn trust_serves(
-        &self,
-        caller: &Caller,
-        counterparty: &str,
-        item: Option<&str>,
-        digest: Option<&str>,
-    ) -> Stored {
-        match self.served() {
-            Ok(s) => s.trust_serves(caller, counterparty, item, digest),
-            Err(r) => r,
-        }
+    fn trust_serves(&self, _: &Caller, _: &str, _: Option<&str>, _: Option<&str>) -> Stored {
+        not_installed()
     }
 
-    fn trust_due(&self, caller: &Caller) -> Stored {
-        match self.served() {
-            Ok(s) => s.trust_due(caller),
-            Err(r) => r,
-        }
+    fn trust_due(&self, _: &Caller) -> Stored {
+        not_installed()
     }
 
-    fn trust_verify(&self, caller: &Caller, cp: &str, payload: &[u8], sigs: &[u8]) -> Stored {
-        match self.served() {
-            Ok(s) => s.trust_verify(caller, cp, payload, sigs),
-            Err(r) => r,
-        }
+    fn trust_verify(&self, _: &Caller, _: &str, _: &[u8], _: &[u8]) -> Stored {
+        not_installed()
     }
 
-    fn entitlement_check(&self, caller: &Caller, unit: Option<u64>, target: &str) -> Stored {
-        match self.served() {
-            Ok(s) => s.entitlement_check(caller, unit, target),
-            Err(r) => r,
-        }
+    fn entitlement_check(&self, _: &Caller, _: Option<u64>, _: &str) -> Stored {
+        not_installed()
     }
 
-    fn random_fill(&self, len: u64) -> Stored {
-        match self.served() {
-            Ok(s) => s.random_fill(len),
-            Err(r) => r,
-        }
+    fn random_fill(&self, _: u64) -> Stored {
+        not_installed()
     }
 
-    fn session_emit(&self, caller: &Caller, session: u64, bytes: &[u8]) -> Stored {
-        match self.served() {
-            Ok(s) => s.session_emit(caller, session, bytes),
-            Err(r) => r,
-        }
+    fn session_emit(&self, _: &Caller, _: u64, _: &[u8]) -> Stored {
+        not_installed()
     }
 
-    fn records_secret(&self, kind: &str, id: &str, later: Later) -> Ran {
-        match self.served() {
-            Ok(s) => s.records_secret(kind, id, later),
-            Err(r) => Ran::Now(r),
-        }
+    fn ticket_mint(&self, _: &Caller, _: Option<u64>, _: u64, _: &[u8]) -> Stored {
+        not_installed()
     }
 
-    fn unit_nest(&self, caller: &Caller, unit: Option<u64>, ask: NestAsk, later: Later) -> Ran {
-        match self.served() {
-            Ok(s) => s.unit_nest(caller, unit, ask, later),
-            Err(r) => Ran::Now(r),
-        }
+    fn ticket_take(&self, _: &Caller, _: Option<u64>) -> Stored {
+        not_installed()
     }
 
-    fn work_open(
-        &self,
-        caller: &Caller,
-        unit: Option<u64>,
-        kind: &str,
-        record: &[u8],
-        later: Later,
-    ) -> Ran {
-        match self.served() {
-            Ok(s) => s.work_open(caller, unit, kind, record, later),
-            Err(r) => Ran::Now(r),
-        }
+    fn records_secret(&self, _: &str, _: &str, _: Later) -> Ran {
+        Ran::Now(not_installed())
     }
 
-    fn work_find(&self, caller: &Caller, unit: Option<u64>, reference: &[u8], later: Later) -> Ran {
-        match self.served() {
-            Ok(s) => s.work_find(caller, unit, reference, later),
-            Err(r) => Ran::Now(r),
-        }
+    fn unit_nest(&self, _: &Caller, _: Option<u64>, _: NestAsk, _: Later) -> Ran {
+        Ran::Now(not_installed())
     }
 
-    fn work_settle(
-        &self,
-        caller: &Caller,
-        unit: Option<u64>,
-        handle: u64,
-        record: &[u8],
-        later: Later,
-    ) -> Ran {
-        match self.served() {
-            Ok(s) => s.work_settle(caller, unit, handle, record, later),
-            Err(r) => Ran::Now(r),
-        }
+    fn work_open(&self, _: &Caller, _: Option<u64>, _: &str, _: &[u8], _: Later) -> Ran {
+        Ran::Now(not_installed())
     }
 
-    fn work_resume(&self, caller: &Caller, unit: Option<u64>, handle: u64, later: Later) -> Ran {
-        match self.served() {
-            Ok(s) => s.work_resume(caller, unit, handle, later),
-            Err(r) => Ran::Now(r),
-        }
+    fn work_find(&self, _: &Caller, _: Option<u64>, _: &[u8], _: Later) -> Ran {
+        Ran::Now(not_installed())
     }
 
-    fn disk_append(&self, dest: &DiskDest, bytes: Vec<u8>, later: Later) -> Ran {
-        match self.served() {
-            Ok(s) => s.disk_append(dest, bytes, later),
-            Err(r) => Ran::Now(r),
-        }
+    fn work_settle(&self, _: &Caller, _: Option<u64>, _: u64, _: &[u8], _: Later) -> Ran {
+        Ran::Now(not_installed())
     }
 
-    fn verify_lookup(&self, caller: &Caller, key: &[u8], later: Later) -> Ran {
-        match self.served() {
-            Ok(s) => s.verify_lookup(caller, key, later),
-            Err(r) => Ran::Now(r),
-        }
+    fn work_resume(&self, _: &Caller, _: Option<u64>, _: u64, _: Later) -> Ran {
+        Ran::Now(not_installed())
     }
 
-    fn verify_store(&self, caller: &Caller, key: &[u8], entry: &[u8], ttl_ms: u64) -> Stored {
-        match self.served() {
-            Ok(s) => s.verify_store(caller, key, entry, ttl_ms),
-            Err(r) => r,
-        }
+    fn disk_append(&self, _: &DiskDest, _: Vec<u8>, _: Later) -> Ran {
+        Ran::Now(not_installed())
     }
 
-    fn content_scan(
-        &self,
-        caller: &Caller,
-        unit: Option<u64>,
-        content: &[u8],
-        later: Later,
-    ) -> Ran {
-        match self.served() {
-            Ok(s) => s.content_scan(caller, unit, content, later),
-            Err(r) => Ran::Now(r),
-        }
+    fn verify_lookup(&self, _: &Caller, _: &[u8], _: Later) -> Ran {
+        Ran::Now(not_installed())
     }
 
-    fn hook_call(&self, caller: &Caller, unit: Option<u64>, ask: HookAsk, later: Later) -> Ran {
-        match self.served() {
-            Ok(s) => s.hook_call(caller, unit, ask, later),
-            Err(r) => Ran::Now(r),
-        }
+    fn verify_store(&self, _: &Caller, _: &[u8], _: &[u8], _: u64) -> Stored {
+        not_installed()
     }
 
-    fn snapshot_read(&self, caller: &Caller, scope: u32) -> busbar_contract::services::Snapshot {
-        match self.served() {
-            Ok(s) => s.snapshot_read(caller, scope),
-            Err(r) => busbar_contract::services::Snapshot::Refused(r.error),
-        }
+    fn content_scan(&self, _: &Caller, _: Option<u64>, _: &[u8], _: Later) -> Ran {
+        Ran::Now(not_installed())
+    }
+
+    fn hook_call(&self, _: &Caller, _: Option<u64>, _: HookAsk, _: Later) -> Ran {
+        Ran::Now(not_installed())
+    }
+
+    fn snapshot_read(&self, _: &Caller, _: u32) -> busbar_contract::services::Snapshot {
+        busbar_contract::services::Snapshot::Refused(NOT_INSTALLED)
     }
 }
 
@@ -686,8 +613,8 @@ impl DoorApply {
             section,
             self.reach.as_ref().and_then(|r| r.catalog.as_ref()),
         );
-        let pools =
-            DoorPools::of(&table).map_err(|e| format!("{}: {e}", self.facts.plane.as_str()))?;
+        let pools = DoorPools::of(&table, self.served_facts.section)
+            .map_err(|e| format!("{}: {e}", self.facts.plane.as_str()))?;
         let egress = match &self.reach {
             Some(r) => {
                 let reach = crate::root::door_steps::DoorReach {
@@ -912,12 +839,13 @@ pub struct Served {
     /// another framer than the data listener's own answers (ARCHITECT 4l). `None` = the process's
     /// one connector's.
     pub framers: Option<StreamFramers>,
-    /// THE FLUSH EPOCH every served plane's money steps pace their checkpoints by: bumped once per
-    /// checkpoint flush tick ([`Served::spawn_ticks`]).
-    pub epoch: busbar_kernel::plane_driver::FlushEpoch,
     /// THE CLAIM DOORS, by the claim their datagram framer answers: the datagram port each one's
     /// inbound need binds ([`serve_datagram::ClaimDoor`]). Empty = no datagram claim is served.
     pub claim_doors: serve_datagram::ClaimDoors,
+    /// THE PUBLISHED INSTANCES' ADMIN TABLE these planes were published into: the generation's
+    /// (`App::serve_tables`) the composition was lent, held here for the data listener's public
+    /// mount ([`public_routes`]).
+    pub tables: ServeTables,
 }
 
 /// The framer that answers a claim, by its name (`Connector::framer_for`).
@@ -979,47 +907,35 @@ impl Served {
             let driver = Arc::clone(&p.driver);
             tokio::spawn(async move { driver.drives().await });
         }
-        // THE CHECKPOINT FLUSH TICK (THE DESIGN §7: "a checkpoint is a durability `unit.accrued`
-        // record"), on the kernel's flush interval: the piece path only marks a running unit, and
-        // this tick journals each marked unit's counts, once per epoch, off the runtime's workers.
+        // THE FLUSH TICK, on the kernel's flush interval. A running unit's checkpoints stay in RAM
+        // (MONEY-DESIGN §3c, "Long units"), so nothing is journaled here; what the tick still does
+        // is refresh this node's lease on its host name (Q128, MONEY-REVIEW review 12 N4).
         if let Some(post) = &self.post {
-            let checkpoints = Checkpoints {
-                epoch: self.epoch.clone(),
-                money: self.planes.iter().map(|p| Arc::clone(&p.money)).collect(),
-                post: Arc::clone(post),
+            let lease = LeaseTick {
+                node: Arc::clone(post.node()),
             };
-            tokio::spawn(checkpoints.ticks());
+            tokio::spawn(lease.ticks());
         }
     }
 }
 
-/// What the checkpoint flush tick runs over: the flush epoch, every served plane's money steps,
-/// and the node's posting site their checkpoints are journaled through.
-struct Checkpoints {
-    epoch: busbar_kernel::plane_driver::FlushEpoch,
-    money: Vec<Arc<PlaneMoney>>,
-    post: Arc<crate::root::plane_node::NodeEndPost>,
+/// What the flush tick runs over: the process's node, whose journal lane holds the lease.
+struct LeaseTick {
+    node: Arc<crate::root::plane_node::Node>,
 }
 
-impl Checkpoints {
-    /// One tick: bump the epoch, then hand each running unit's checkpoint to the node's book
-    /// ([`PlaneMoney::flush_checkpoints`]). Answers how many were journaled.
-    fn tick(&self) -> usize {
-        // THE NODE'S LEASE ON ITS HOST NAME, refreshed on this same tick (Q128): a node with no data
-        // directory keeps journaling under its host's id only while it holds it. It is held on the
-        // lane of the book the node settles onto.
-        if let Some(lane) = self.post.node().book_lane() {
+impl LeaseTick {
+    /// One tick: refresh THE NODE'S LEASE ON ITS HOST NAME (Q128). A node with no data directory
+    /// journals under its host's id only while it holds it, and it is held on the journal's lane to
+    /// the configured store, read directly: no lock is taken.
+    fn tick(&self) {
+        if let Some(lane) = self.node.journal_lane() {
             lane.refresh_held_lease();
         }
-        self.epoch.bump();
-        self.money
-            .iter()
-            .map(|m| m.flush_checkpoints(&*self.post))
-            .sum()
     }
 
     /// Every [`busbar_kernel::host_records::FLUSH_INTERVAL`], for the process's life; each tick's
-    /// journal writes run on the blocking pool, never on a runtime worker.
+    /// lease refresh (a store round trip) runs on the blocking pool, never on a runtime worker.
     async fn ticks(self) {
         let every = busbar_kernel::host_records::FLUSH_INTERVAL;
         let mut at = tokio::time::interval_at(tokio::time::Instant::now() + every, every);
@@ -1028,7 +944,7 @@ impl Checkpoints {
         loop {
             at.tick().await;
             let tick = Arc::clone(&this);
-            let _journaled = tokio::task::spawn_blocking(move || tick.tick()).await;
+            let _refreshed = tokio::task::spawn_blocking(move || tick.tick()).await;
         }
     }
 }
@@ -1052,6 +968,7 @@ pub fn compose_served(
     public_url: Option<&str>,
     reach: &crate::root::door_steps::DoorReach<'_>,
     host: Option<busbar_kernel::plane_driver::GenerationHost>,
+    tables: &ServeTables,
 ) -> Result<Served, String> {
     let Some(gov) = gov else {
         if !doors.is_empty() {
@@ -1068,18 +985,11 @@ pub fn compose_served(
         journal: Some(Arc::clone(&post) as Arc<dyn busbar_kernel::plane_driver::HookJournal>),
     });
     let site = Arc::clone(&post);
-    // THE ONE FLUSH EPOCH every plane's checkpoints are paced by, bumped by the served planes'
-    // checkpoint flush tick (`Served::spawn_ticks`).
-    let epoch = busbar_kernel::plane_driver::FlushEpoch::new();
-    let paced = epoch.clone();
     let money = move || {
-        Arc::new(
-            PlaneMoney::new(
-                Arc::clone(&gov),
-                Arc::clone(&site) as Arc<dyn busbar_kernel::plane_driver::EndPost>,
-            )
-            .with_epoch(paced.clone()),
-        )
+        Arc::new(PlaneMoney::new(
+            Arc::clone(&gov),
+            Arc::clone(&site) as Arc<dyn busbar_kernel::plane_driver::EndPost>,
+        ))
     };
     let egress = DoorEgress {
         reach,
@@ -1094,9 +1004,9 @@ pub fn compose_served(
         &money,
         Some(&egress),
         stage.as_ref(),
+        tables,
     )?;
     served.post = Some(post);
-    served.epoch = epoch;
     // THE CLAIM DOORS (row 132, ARCHITECT seam ruling (d)): each served plane's inbound need whose
     // settings block states a `listen` binds there, and the ones a datagram framer answers become
     // claim doors (`serve_datagram::ClaimDoors::bind`). The connector is read only when something
@@ -1564,13 +1474,13 @@ pub struct DoorEgress<'a> {
 /// a [`PlaneInstance`] on `dispatcher` (unit tickets on worker 0, where its driver ticket is
 /// minted), a [`PlaneDriver`] admitted to the kernel's composed services with the plane's tail
 /// facts and the money steps `money` builds for it, the pools its section states, and its admin
-/// routes published on the admin router's table (`plane_driver::serve`, K-SERVE). A plane whose
-/// section is absent stays bound and unopened, as before. With `egress`, each plane's egress is
-/// sealed over it ([`crate::root::door_steps::member_routes`]); without, none is (every walk is
-/// exhausted at once). With `hooks`, each driver binds a unit's hooks over the deployment's hook
-/// configuration ([`HookStage`]: a gate-first plane its entries' gates, every other its routed
-/// hooks); without, no hook binds. The data routes are the data router's
-/// construction ([`data_routes`]).
+/// routes published on `tables`, the generation's admin table (`plane_driver::serve`, K-SERVE). A
+/// plane whose section is absent stays bound and unopened, as before. With `egress`, each plane's
+/// egress is sealed over it ([`crate::root::door_steps::member_routes`]); without, none is (every
+/// walk is exhausted at once). With `hooks`, each driver binds a unit's hooks over the deployment's
+/// hook configuration ([`HookStage`]: a gate-first plane its entries' gates, every other its routed
+/// hooks); without, no hook binds. The data routes are the data router's construction
+/// ([`data_routes`]).
 ///
 /// # Errors
 ///
@@ -1586,6 +1496,7 @@ pub fn compose_planes(
     money: &dyn Fn() -> Arc<PlaneMoney>,
     egress: Option<&DoorEgress<'_>>,
     hooks: Option<&HookStage>,
+    tables: &ServeTables,
 ) -> Result<Served, String> {
     // BOOT IS CONFIG TIME (BUSBAR-1.6.0.md l.1468, R4): the proof is minted here, once, and handed
     // down to every member credential the planes' egress resolves.
@@ -1606,6 +1517,7 @@ pub fn compose_planes(
         hooks,
         &clock,
         &scope,
+        tables,
     )
 }
 
@@ -1632,8 +1544,12 @@ pub(crate) fn compose_planes_over(
     hooks: Option<&HookStage>,
     clock: &Arc<dyn busbar_kernel_egress::ports::Clock>,
     scope: &busbar_contract::config_time::ConfigScope,
+    tables: &ServeTables,
 ) -> Result<Served, String> {
-    let mut served = Served::default();
+    let mut served = Served {
+        tables: tables.clone(),
+        ..Served::default()
+    };
     if doors.is_empty() {
         return Ok(served);
     }
@@ -1671,20 +1587,20 @@ pub(crate) fn compose_planes_over(
         let dialects = egress
             .map(|e| crate::root::door_steps::dialect_facts(&walked, e.reach.providers))
             .unwrap_or_default();
-        let snapshot = open(
+        let opened = open(
             plugin,
             settings_path(&served_facts),
             &settings,
             public_url,
             &owned,
             &dialects,
-        )
-        .map_err(|e| format!("{instance}: {e}"))?;
+        );
         // ITS OWNED TRUST ANCHORS, judged by the one rule a config apply is judged by too (the
         // root's rules, [`crate::root::door_steps::Rules`], before the build): an anchor the
         // operator wrote that is no trust anchor refuses the boot, naming the key.
         crate::root::door_steps::owned_anchors_refusal(&served_facts.need_trust, sections)
             .map_err(|e| format!("{instance}: {e}"))?;
+        let snapshot = opened.map_err(|e| format!("{instance}: {e}"))?;
         let section = &walked;
         let calls = Arc::new(PlaneInstance::new(
             plugin.clone(),
@@ -1761,18 +1677,20 @@ pub(crate) fn compose_planes_over(
             .collect();
         // The admin router's fallback is this table, so a kernel admin route always matches first
         // and is never shadowed; no route is reserved beyond that.
-        publish(
-            ServeTable {
-                instance: instance.clone(),
-                audit_kind: served_facts.audit_kind.to_string(),
-                calls,
-                caps: BufferCaps::default(),
-                routes,
-                records: Some((Arc::clone(&kernel), caller)),
-            },
-            &[],
-        )
-        .map_err(|c| format!("{instance}: admin route {:?} overlaps {}", c.route, c.with))?;
+        served
+            .tables
+            .publish(
+                ServeTable {
+                    instance: instance.clone(),
+                    audit_kind: served_facts.audit_kind.to_string(),
+                    calls,
+                    caps: BufferCaps::default(),
+                    routes,
+                    records: Some((Arc::clone(&kernel), caller)),
+                },
+                &[],
+            )
+            .map_err(|c| format!("{instance}: admin route {:?} overlaps {}", c.route, c.with))?;
         let declared = plugin.declared();
         // EVERY REPORTED CLASS IS REGISTERED (THE DESIGN §7): the classes a plane may report are the
         // ones its tail declares, linked or dropped in, registered once at its composition, so its
@@ -1990,7 +1908,8 @@ fn seal_live(
     // The route table: the section, with the catalog model its `session.model` names folded in
     // ([`catalog_routes`]).
     let table = routes_of(section, egress.and_then(|e| e.reach.catalog));
-    let pools = DoorPools::of(&table).map_err(|e| format!("{instance}: {e}"))?;
+    let pools =
+        DoorPools::of(&table, served_facts.section).map_err(|e| format!("{instance}: {e}"))?;
     let egress = match egress {
         Some(egress) => {
             let routes = crate::root::door_steps::member_routes(
@@ -2287,7 +2206,7 @@ fn open(
     );
     let (called, snapshot) = plugin.open(&mut frame);
     if called.outcome != AbiOutcome::Ready {
-        return Err(format!("it did not open: {:?}", called.outcome));
+        return Err(called.open_failure(plugin.name()));
     }
     snapshot.ok_or_else(|| "its snapshot did not pass the host's checks".to_string())
 }
@@ -2474,8 +2393,14 @@ pub struct DoorRequest {
     pub gov: busbar_contract::records::PlaneRequestCtx,
     /// The caller's verified credential, lent for a passthrough member's outbound auth call alone.
     pub credential: Option<busbar_contract::redacted::Secret<Vec<u8>>>,
+    /// The record of the ticket the auth gate spent admitting the caller (row 132); `None` when a
+    /// key admitted it.
+    pub ticket: Option<Vec<u8>>,
     /// The generation serving the request.
     pub app: Arc<busbar_kernel::state::App>,
+    /// The scheme of the listener the request arrived at (`SCHEME_*`): a stream another framer
+    /// frames begins with it.
+    pub scheme: u8,
     /// The head fields the auth gate consumed, each by name with its scheme word
     /// (`PlaneReqCtx::consumed_fields`): what an entry fact reads of them.
     pub consumed_fields: Vec<(String, String)>,
@@ -3007,11 +2932,24 @@ pub fn door_mounts(
         .filter(|(_, _, auth, _)| matches!(auth, RouteAuth::Key))
         .map(|(path, method, _, (plane, claim))| {
             let (routes, plane, claim) = (Arc::clone(&routes), *plane, *claim);
+            // A route whose claim takes tickets is told its plane's issued-id prefix (row 132).
+            let ticket_prefix = {
+                let served = &routes.served.planes[plane];
+                let takes = served
+                    .snapshot
+                    .claims
+                    .get(claim as usize)
+                    .is_some_and(|c| c.flags & busbar_contract::abi::plane::CLAIM_TICKET != 0);
+                takes
+                    .then(|| served.kernel.ticket_prefix_of(&served.instance))
+                    .flatten()
+            };
             PlaneRefusalSpec {
                 route: busbar_kernel::plane_routes::DoorRouteId {
                     path: path.clone(),
                     method: *method,
                 },
+                ticket_prefix,
                 signed_ingress: Arc::clone(&signed[plane]),
                 refuse: Arc::new(move |reason: ReasonCode, target: &str| {
                     let served = &routes.served.planes[plane];
@@ -3233,6 +3171,7 @@ fn attach_nests(kernel: Option<Arc<KernelServices>>, routes: &Arc<DataRoutes>) {
 /// listener's arrival gates still apply), answered by the plane's `serve` op through the kernel's
 /// public serve path. A verb the router does not mount is left out.
 fn public_routes(served: &Served) -> Vec<PlaneRouteSpec> {
+    let tables = &served.tables;
     served
         .planes
         .iter()
@@ -3246,21 +3185,26 @@ fn public_routes(served: &Served) -> Vec<PlaneRouteSpec> {
                 path: r.target.clone(),
                 method,
                 auth: RouteAuth::None,
-                handler: Arc::new(move |ctx: PlaneReqCtx| -> PlaneRouteFuture {
-                    Box::pin(async move {
-                        let target = ctx
-                            .uri
-                            .path_and_query()
-                            .map_or_else(|| ctx.path.clone(), |pq| pq.as_str().to_string());
-                        busbar_kernel::plane_driver::serve::answer_public(
-                            ctx.method.as_str(),
-                            &ctx.path,
-                            &target,
-                            &ctx.headers,
-                            ctx.body,
-                        )
-                        .await
-                    })
+                handler: Arc::new({
+                    let tables = tables.clone();
+                    move |ctx: PlaneReqCtx| -> PlaneRouteFuture {
+                        let tables = tables.clone();
+                        Box::pin(async move {
+                            let target = ctx
+                                .uri
+                                .path_and_query()
+                                .map_or_else(|| ctx.path.clone(), |pq| pq.as_str().to_string());
+                            tables
+                                .answer_public(
+                                    ctx.method.as_str(),
+                                    &ctx.path,
+                                    &target,
+                                    &ctx.headers,
+                                    ctx.body,
+                                )
+                                .await
+                        })
+                    }
                 }),
             })
         })
@@ -3356,7 +3300,9 @@ impl DoorRequest {
             body: ctx.body,
             gov: ctx.gov.unwrap_or_default(),
             credential: ctx.caller_credential,
+            ticket: ctx.ticket,
             app,
+            scheme: ctx.scheme,
             consumed_fields: ctx.consumed_fields,
         })
     }
@@ -3475,6 +3421,7 @@ impl DataRoutes {
                 records: Some(Arc::clone(served.kernel.units())),
                 depth: 0,
                 credential: door.credential.clone(),
+                ticket: door.ticket,
             },
         );
         let far = DoorFar {
@@ -3657,7 +3604,9 @@ impl DataRoutes {
             body,
             gov,
             credential,
+            ticket,
             app,
+            scheme: _,
             consumed_fields: _,
         } = req;
         let fields: HeadFields = headers
@@ -3697,6 +3646,7 @@ impl DataRoutes {
             key,
             open,
             credential,
+            ticket,
         };
         (door, arrival, body)
     }
@@ -3705,6 +3655,8 @@ impl DataRoutes {
     /// the fields never kept struck), delivered once at `arrive`; the caller the auth gate
     /// resolved; the unit driven inside the response, so a caller that goes away drops it.
     async fn answer(self: Arc<Self>, plane: usize, claim: u32, req: DoorRequest) -> Response {
+        // The listener's scheme, which a stream another framer frames begins with.
+        let scheme = req.scheme;
         let (door, arrival, body) = self.arrived(plane, claim, req);
         // The claim's carrier and the framer that answers it, looked up once.
         let framed = self.served.planes[plane]
@@ -3726,6 +3678,7 @@ impl DataRoutes {
             key,
             open,
             credential,
+            ticket,
             ..
         } = door;
         // A STREAM ANOTHER FRAMER FRAMES (ARCHITECT 4l): the claim's carrier is answered by a
@@ -3741,7 +3694,7 @@ impl DataRoutes {
                 .collect();
             let target = String::from_utf8_lossy(&arrival.target).into_owned();
             let Ok(mut stream) = busbar_core_connector::framed_stream::FramedStream::open(
-                door, carrier, &target, &head,
+                door, carrier, &target, &head, scheme,
             ) else {
                 return stated(
                     (refusal_status(ReasonCode::DecodeFailed), Vec::new()),
@@ -3767,7 +3720,7 @@ impl DataRoutes {
                 self.drive(
                     plane,
                     app,
-                    (principal, key, credential),
+                    (principal, key, credential, ticket),
                     open,
                     &caller,
                     arrival,
@@ -3788,7 +3741,7 @@ impl DataRoutes {
             self.drive(
                 plane,
                 app,
-                (principal, key, credential),
+                (principal, key, credential, ticket),
                 open,
                 &caller,
                 arrival,
@@ -3887,7 +3840,7 @@ impl DataRoutes {
                     app,
                     // A nested unit presents no credential of its own: nothing is lent to a
                     // passthrough member on its behalf.
-                    (principal, key, None),
+                    (principal, key, None, None),
                     open,
                     &caller,
                     arrival,
@@ -3924,7 +3877,7 @@ impl DataRoutes {
         &self,
         plane: usize,
         app: Arc<busbar_kernel::state::App>,
-        (principal, key, credential): UnitCaller,
+        (principal, key, credential, ticket): UnitCaller,
         open: bool,
         caller: &C,
         arrival: Arrival,
@@ -3962,6 +3915,7 @@ impl DataRoutes {
                 records: Some(Arc::clone(served.kernel.units())),
                 depth: nesting.as_ref().map_or(0, |n| n.depth),
                 credential: credential.clone(),
+                ticket,
             },
         );
         if let Some(n) = &nesting {
@@ -4354,6 +4308,8 @@ struct SessionDoor {
     open: bool,
     /// The caller's verified credential, lent to a passthrough member alone.
     credential: Option<busbar_contract::redacted::Secret<Vec<u8>>>,
+    /// The record of the ticket that admitted the caller; `None` when a key did.
+    ticket: Option<Vec<u8>>,
 }
 
 /// THE CALLER'S SIDE OF A DUPLEX SESSION over today's hyper upgrade (K6's one `SessionCaller`;
@@ -4631,11 +4587,13 @@ impl IngressReply {
 }
 
 /// Who a door unit serves: the principal the auth gate verified, its governance key, and its
-/// verified credential (lent for a passthrough member's outbound auth call alone).
+/// verified credential (lent for a passthrough member's outbound auth call alone), and the record
+/// of the ticket that admitted it, if one did.
 type UnitCaller = (
     PrincipalId,
     Option<Arc<busbar_contract::records::VirtualKey>>,
     Option<busbar_contract::redacted::Secret<Vec<u8>>>,
+    Option<Vec<u8>>,
 );
 
 /// A FRAMED STREAM THAT CLOSED BEFORE ITS FIRST BODY BYTE (ARCHITECT ruling on #787): its close is
@@ -4888,9 +4846,10 @@ mod door_tests;
 
 // THE DOOR CELLS' RIG: the one surface the door planes' own root cells reach the composition root
 // through (no struct literal of a root type, no installer by its path), so a root refactor keeps
-// its signatures and leaves a pinned plane's cells compiling. Compiled iff an enabled door's
-// cells name it (`build.rs`, `door_rig`).
-#[cfg(all(test, linked_section_pools, door_rig))]
+// its signatures and leaves a pinned plane's cells compiling. Compiled in every test build that
+// serves the `pools` section, so a root change that breaks the rig fails here, on the change, and
+// not at the next plane repin (`build.rs` sets `door_rig` when an enabled door's cells name it).
+#[cfg(all(test, linked_section_pools))]
 #[path = "tests/door_rig.rs"]
 pub(crate) mod door_rig;
 
@@ -4921,8 +4880,3 @@ mod framed_tests;
 #[cfg(all(test, linked_section_pools, linked_axis_plane_door))]
 #[path = "tests/secret_source.rs"]
 mod secret_source_tests;
-
-// The door planes' own root cells, held to the linked roster and to the capability-equality ledger.
-#[cfg(all(test, linked_section_pools))]
-#[path = "tests/door_cells.rs"]
-mod door_cells_tests;

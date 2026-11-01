@@ -14,7 +14,7 @@ use busbar_contract::abi::store::OpId;
 use busbar_contract::kinds::RecordBytes;
 use busbar_contract::records::{
     AuditRecord, CredentialMeta, CredentialSecret, MeteringDelta, MeteringRow, PlaneRecordRef,
-    PlaneSelector, RecordStoreResult, UsageDelta, UsageLedger, VirtualKey,
+    PlaneSelector, RecordStoreResult, Retention, UsageDelta, UsageLedger, VirtualKey,
 };
 
 use crate::both_ways::store_fixture::MemoryStore;
@@ -160,6 +160,15 @@ pub(crate) trait Hooks: Send + Sync + 'static {
         <MemoryStore as StoreSlots>::put_credential(inner, cx, secret)
     }
 
+    fn rewrap_credential(
+        inner: &MemoryStore,
+        cx: &mut Op<'_>,
+        expected: &CredentialSecret,
+        replacement: &str,
+    ) -> Step<RecordStoreResult<bool>> {
+        <MemoryStore as StoreSlots>::rewrap_credential(inner, cx, expected, replacement)
+    }
+
     fn put_key_with_credential(
         inner: &MemoryStore,
         cx: &mut Op<'_>,
@@ -263,6 +272,16 @@ pub(crate) trait Hooks: Send + Sync + 'static {
         before: u64,
     ) -> Step<RecordStoreResult<u64>> {
         <MemoryStore as StoreSlots>::purge_plane_records_before(inner, cx, kind, before)
+    }
+
+    fn purge_plane_records(
+        inner: &MemoryStore,
+        cx: &mut Op<'_>,
+        kind: &str,
+        before: u64,
+        retention: Retention,
+    ) -> Step<RecordStoreResult<u64>> {
+        <MemoryStore as StoreSlots>::purge_plane_records(inner, cx, kind, before, retention)
     }
 
     fn delete_plane_record(
@@ -431,6 +450,15 @@ impl<H: Hooks> StoreSlots for Wrapped<H> {
         H::put_credential(&self.0, cx, secret)
     }
 
+    fn rewrap_credential(
+        &self,
+        cx: &mut Op<'_>,
+        expected: &CredentialSecret,
+        replacement: &str,
+    ) -> Step<RecordStoreResult<bool>> {
+        H::rewrap_credential(&self.0, cx, expected, replacement)
+    }
+
     fn put_key_with_credential(
         &self,
         cx: &mut Op<'_>,
@@ -531,6 +559,16 @@ impl<H: Hooks> StoreSlots for Wrapped<H> {
         before: u64,
     ) -> Step<RecordStoreResult<u64>> {
         H::purge_plane_records_before(&self.0, cx, kind, before)
+    }
+
+    fn purge_plane_records(
+        &self,
+        cx: &mut Op<'_>,
+        kind: &str,
+        before: u64,
+        retention: Retention,
+    ) -> Step<RecordStoreResult<u64>> {
+        H::purge_plane_records(&self.0, cx, kind, before, retention)
     }
 
     fn delete_plane_record(

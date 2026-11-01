@@ -4,6 +4,7 @@
 //! Tests for `crates/busbar-core/src/config/secret.rs`.
 
 use super::*;
+use busbar_contract::redacted::Secret;
 
 /// The resolver's built-in arm resolves env/file inline WITHOUT any plugin.
 #[test]
@@ -11,8 +12,14 @@ fn resolver_builtins_resolve_without_plugin() {
     let r = SecretResolver::builtins_only();
     let var = format!("BUSBAR_RESOLVER_TEST_{}", std::process::id());
     std::env::set_var(&var, "abc\n");
-    assert_eq!(r.resolve(&SecretRef::env(&var)).unwrap(), b"abc\n");
-    assert_eq!(r.resolve_string(&SecretRef::env(&var)).unwrap(), "abc");
+    assert_eq!(
+        r.resolve(&SecretRef::env(&var)).unwrap(),
+        Secret::new(b"abc\n".to_vec())
+    );
+    assert_eq!(
+        r.resolve_string(&SecretRef::env(&var)).unwrap(),
+        Secret::new("abc".to_string())
+    );
     std::env::remove_var(&var);
 }
 
@@ -40,8 +47,8 @@ fn resolver_delegates_to_plugin_and_fails_closed_on_empty_or_error() {
         if module == "vault" {
             let v: serde_json::Value = serde_json::from_str(settings).unwrap();
             match v.get("path").and_then(|p| p.as_str()) {
-                Some("kv/ok") => Ok(b"plugin-secret".to_vec()),
-                Some("kv/empty") => Ok(Vec::new()),
+                Some("kv/ok") => Ok(Secret::new(b"plugin-secret".to_vec())),
+                Some("kv/empty") => Ok(Secret::new(Vec::new())),
                 _ => Err("no such path".to_string()),
             }
         } else {
@@ -59,7 +66,10 @@ fn resolver_delegates_to_plugin_and_fails_closed_on_empty_or_error() {
             settings,
         }
     };
-    assert_eq!(r.resolve(&mk("kv/ok")).unwrap(), b"plugin-secret");
+    assert_eq!(
+        r.resolve(&mk("kv/ok")).unwrap(),
+        Secret::new(b"plugin-secret".to_vec())
+    );
     // Empty plugin result is rejected (fail-closed), never an empty secret.
     assert!(r.resolve(&mk("kv/empty")).unwrap_err().contains("EMPTY"));
     // Plugin error is surfaced fail-closed.
@@ -70,6 +80,9 @@ fn resolver_delegates_to_plugin_and_fails_closed_on_empty_or_error() {
     // Built-ins still short-circuit past the plugin.
     let var = format!("BUSBAR_RESOLVER_PLUGIN_TEST_{}", std::process::id());
     std::env::set_var(&var, "envval");
-    assert_eq!(r.resolve_string(&SecretRef::env(&var)).unwrap(), "envval");
+    assert_eq!(
+        r.resolve_string(&SecretRef::env(&var)).unwrap(),
+        Secret::new("envval".to_string())
+    );
     std::env::remove_var(&var);
 }

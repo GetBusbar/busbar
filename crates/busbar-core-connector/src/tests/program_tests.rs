@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! MEMBER PROGRAMS through the connection table (ARCHITECT round 5 Q-L3B-PROGRAM (A)): one
+//! MEMBER PROGRAMS through the connection table: one
 //! long-lived program per (instance, need, member), every open on the member a lease on it.
 
 use std::sync::Arc;
@@ -240,7 +240,7 @@ fn a_frame_reaches_every_open_lease_and_an_opens_body_is_its_first_message() {
     });
 }
 
-/// RED (finding 13): a lease opened while the program is part way through one frame does not read
+/// RED: a lease opened while the program is part way through one frame does not read
 /// that frame's rest as though it began there (on one shared child, another exchange's answer
 /// taken as its own): its first body bytes begin a frame. The lease already reading the frame reads
 /// it whole.
@@ -397,10 +397,10 @@ fn a_members_program_inherits_only_its_stated_environment() {
     });
 }
 
-/// THE HELD ENVIRONMENT (ARCHITECT ruling 2026-10-13, row 166): an `env` entry written as a secret
-/// reference stays the reference in the declared program; the need's DECLARATION resolves it (config
-/// time) and the spawn hands the held value: the child's environment carries it, a template's
-/// `${VAR}` filled in place. The first lease's spawn resolves nothing.
+/// THE HELD ENVIRONMENT: an `env` entry written as a secret reference stays the reference in the
+/// declared program; the need's DECLARATION resolves it (config time) and the spawn hands the held
+/// value: the child's environment carries it, a template's `${VAR}` filled in place. The first
+/// lease's spawn resolves nothing.
 #[test]
 fn a_members_env_refsironment_resolves_at_the_declaration_and_is_held_for_the_spawn() {
     const VAR: &str = "BUSBAR_CONNECTOR_SPAWN_SECRET";
@@ -622,9 +622,9 @@ fn open_bounded(c: &Connector, target: &str) -> ConnId {
     .unwrap()
 }
 
-/// RED (ARCHITECT timeout ruling, step 2): a lease's bound runs past its head, which the host serves
-/// the instant the lease opens, to the program's own first bytes: a program that takes the request
-/// and never answers is a timeout once the bound passes.
+/// A lease's bound runs past its head, which the host serves the instant the lease opens, to the
+/// program's own first bytes: a program that takes the request and never answers is a timeout once
+/// the bound passes.
 ///
 /// The bound is moved by the test's own hand, never raced on the wall clock. The earlier form opened
 /// with a live 300ms bound, took its `started` only after `open` returned, and polled the head and
@@ -811,10 +811,10 @@ fn a_members_spawn_carries_its_supervision_key_and_a_changed_member_a_new_one() 
     });
 }
 
-/// THE RESOLVER IS THE CONNECTOR'S, NOT THE PROCESS'S (row 159; BUSBAR-1.6.0.md Part 0, no
-/// process-global static seam): a connector the root handed no resolver resolves no reference,
-/// whatever another connector in the same process was handed, so its member is not spawned
-/// (fail-closed); the connector handed one spawns the same member with the value.
+/// THE RESOLVER IS THE CONNECTOR'S, NOT THE PROCESS'S (BUSBAR-1.6.0.md Part 0, no process-global
+/// static seam): a connector the root handed no resolver resolves no reference, whatever another
+/// connector in the same process was handed, so its member is not spawned (fail-closed); the
+/// connector handed one spawns the same member with the value.
 #[test]
 fn a_connector_handed_no_resolver_spawns_no_member_that_states_a_reference() {
     const VAR: &str = "BUSBAR_CONNECTOR_SPAWN_OWN_RESOLVER";
@@ -850,9 +850,9 @@ fn a_connector_handed_no_resolver_spawns_no_member_that_states_a_reference() {
     });
 }
 
-/// RED (audit row 159, connector HIGH 5): an instance that is gone (replaced by a reload, closed or
-/// quarantined) leaves no member program running. Its needs are dropped, its open lease is closed,
-/// and every member program it held is killed, even the one a lease was still holding.
+/// An instance that is gone (replaced by a reload, closed or quarantined) leaves no member program
+/// running. Its needs are dropped, its open lease is closed, and every member program it held is
+/// killed, even the one a lease was still holding.
 #[test]
 fn a_forgotten_instance_leaves_no_member_program_running() {
     worker().block_on(async {
@@ -892,3 +892,192 @@ fn a_forgotten_instance_leaves_no_member_program_running() {
         c.forget(OWNER);
     });
 }
+
+/// The test carrier, with a `read` that HANGS once armed: it says it is inside the crossing, then
+/// does not come back until the test lets it.
+struct HangingRead {
+    inner: TestDoor,
+    gate: std::sync::Mutex<Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>>,
+}
+
+impl crate::framer::FramerDoor for HangingRead {
+    fn facts(&self) -> &crate::framer::DoorFacts {
+        self.inner.facts()
+    }
+
+    fn cross(&self, call: crate::framer::Call<'_>) -> crate::framer::Crossed {
+        self.inner.cross(call)
+    }
+
+    fn side(&self) -> Option<Box<dyn crate::carrier::Side>> {
+        self.inner.side()
+    }
+
+    fn carry(
+        &self,
+        side: &dyn crate::carrier::Side,
+        resume: bool,
+        call: crate::carrier::Carry<'_>,
+    ) -> crate::framer::Crossed {
+        if matches!(call, crate::carrier::Carry::Read(..)) {
+            let gate = self.gate.lock().unwrap().take();
+            if let Some((entered, release)) = gate {
+                entered.send(()).unwrap();
+                release.recv().unwrap();
+            }
+        }
+        self.inner.carry(side, resume, call)
+    }
+}
+
+/// RED while a member's lock was held across its program's carrier crossings (`BUSBAR-1.6.0.md`
+/// §11.13 M1: no plugin code runs under a host lock): one lease's read hung in the carrier's
+/// `read` held the member, so every other caller of it (a new lease, its write, a wait on it, its
+/// close, a re-declaration retiring the member) waited on the plugin for as long as it hung. Now
+/// each returns while the read still hangs.
+#[test]
+fn a_hung_carrier_read_on_one_lease_never_blocks_the_members_other_callers() {
+    let rt = worker();
+    let handle = rt.handle().clone();
+    rt.block_on(async {
+        let door = Arc::new(HangingRead {
+            inner: TestDoor::identity("bytes"),
+            gate: std::sync::Mutex::new(None),
+        });
+        let c = Arc::new(Connector::serving(
+            Transports::new(vec![Entry {
+                door: Arc::clone(&door) as Arc<dyn crate::framer::FramerDoor>,
+                alpn: Vec::new(),
+            }])
+            .unwrap(),
+            Arc::new(crate::LiteralsOnly(crate::guard::Guard::default())),
+            None,
+            Arc::new(|_, _| {}),
+        ));
+        declare(&c, &[("m", sh(ECHO_PID, &[]))]).unwrap();
+        let a = open(&c, "m", b"").unwrap();
+        assert_eq!(generation(&c, a).await, 1);
+        pid_of(&c, a, "a").await;
+
+        // LEASE A READS, and the carrier's read hangs with the member's program in its hands.
+        let (entered_tx, entered) = std::sync::mpsc::channel();
+        let (release, held_back) = std::sync::mpsc::channel();
+        *door.gate.lock().unwrap() = Some((entered_tx, held_back));
+        let reading = Arc::clone(&c);
+        let on = handle.clone();
+        let reader = std::thread::spawn(move || {
+            let _rt = on.enter();
+            let mut buf = [0_u8; 64];
+            let _ = reading.read(OWNER, a, 7, &mut buf);
+        });
+        let reached = entered.recv_timeout(Duration::from_secs(10));
+
+        // BESIDE IT: a second lease opens, writes, waits, closes; then the member is retired.
+        let (done_tx, done) = std::sync::mpsc::channel();
+        let beside = Arc::clone(&c);
+        let on = handle.clone();
+        let other = std::thread::spawn(move || {
+            let _rt = on.enter();
+            let b = open(&beside, "m", b"b\n");
+            let wrote = b
+                .as_ref()
+                .ok()
+                .map(|b| beside.write(OWNER, *b, b"c\n", false, false));
+            let waited = b.as_ref().ok().map(|b| beside.wait(OWNER, &[*b], 8));
+            let closed = b.as_ref().ok().map(|b| beside.close(OWNER, *b));
+            let retired = declare(&beside, &[("m", sh("exec cat", &[]))]);
+            done_tx
+                .send((b.map(|_| ()), wrote, waited, closed, retired))
+                .unwrap();
+        });
+        let answered = done.recv_timeout(Duration::from_secs(5));
+
+        // Let the hung read go before asserting, so nothing is left waiting on it.
+        release.send(()).unwrap();
+        reader.join().unwrap();
+        other.join().unwrap();
+        reached.expect("lease A's read reaches the carrier");
+        let (opened, wrote, waited, closed, retired) = answered.expect(
+            "a lease's open, write, wait and close, and the member's retirement, beside a hung \
+             carrier read returned while it still hangs",
+        );
+        assert_eq!(
+            opened,
+            Ok(()),
+            "a second lease opens on the running program"
+        );
+        assert!(
+            matches!(wrote, Some(Ok(2) | Err(ConnError::Pending))),
+            "the write is taken or pends: {wrote:?}"
+        );
+        assert!(waited.is_some(), "the wait answered");
+        assert_eq!(closed, Some(Ok(())), "the lease closes");
+        assert_eq!(retired, Ok(()), "the re-declaration retires the member");
+        c.close(OWNER, a).unwrap();
+    });
+}
+
+/// RED (T5, stdio TS1): A RETIRED MEMBER'S KEY IS SIGNALLED RETIRED. A member a re-declaration
+/// changed is retired; once its program is shut, its carrier is handed a [`DEST_RETIRED`] dial
+/// carrying the retired member's supervision key (and only its), so a supervising carrier forgets
+/// the key instead of holding it for the process's life. A member the re-declaration kept is not.
+///
+/// [`DEST_RETIRED`]: busbar_contract::abi::transport::DEST_RETIRED
+#[test]
+fn a_retired_members_supervision_key_is_signalled_retired_once() {
+    worker().block_on(async {
+        let door = Arc::new(TestDoor::identity("bytes"));
+        let view = Transports::new(vec![Entry {
+            door: Arc::clone(&door) as Arc<dyn crate::framer::FramerDoor>,
+            alpn: Vec::new(),
+        }])
+        .unwrap();
+        let c = Connector::serving(
+            view,
+            Arc::new(crate::LiteralsOnly(crate::guard::Guard::default())),
+            None,
+            Arc::new(|_, _| {}),
+        );
+        declare(
+            &c,
+            &[("kept", sh(ECHO_PID, &[])), ("changed", sh(ECHO_PID, &[]))],
+        )
+        .unwrap();
+        for name in ["kept", "changed"] {
+            let id = open(&c, name, b"").unwrap();
+            generation(&c, id).await;
+            c.close(OWNER, id).unwrap();
+        }
+        let keys = door.dialled_keys.lock().unwrap().clone();
+        assert!(door.retired_keys.lock().unwrap().is_empty());
+        declare(
+            &c,
+            &[
+                ("kept", sh(ECHO_PID, &[])),
+                ("changed", sh(ECHO_PID, &[("NEW", "1")])),
+            ],
+        )
+        .unwrap();
+        assert_eq!(
+            *door.retired_keys.lock().unwrap(),
+            [keys[1]],
+            "the changed member's old key, once: dialled {keys:?}"
+        );
+        declare(
+            &c,
+            &[
+                ("kept", sh(ECHO_PID, &[])),
+                ("changed", sh(ECHO_PID, &[("NEW", "1")])),
+            ],
+        )
+        .unwrap();
+        assert_eq!(
+            door.retired_keys.lock().unwrap().len(),
+            1,
+            "a kept member is not retired"
+        );
+    });
+}
+
+#[path = "program_retirement_tests.rs"]
+mod retirement_order;

@@ -265,16 +265,19 @@ fn a_dropped_in_export_plugin_serves() {
     );
 
     // 3. THE RECORDER SNAPSHOT (K9a S6): the host's real exposition, read into the snapshot, is
-    // handed to the dropped-in sink through its door. The file sink serves no `/metrics`, so it
-    // renders no body. The byte-for-byte render is the prometheus
-    // sink's, which owns `render_exposition` (ABI-TRIM F10a) and proves it in its own repo.
+    // handed to the dropped-in sink through its door. The file sink carries no `metrics` stream, so
+    // it renders no body: its door refuses the scrape in the SDK's words (`NO_EXPOSITION`). The
+    // byte-for-byte render is the prometheus sink's, which owns `render_exposition` (ABI-TRIM F10a)
+    // and proves it in its own repo.
     let exposition = scrape(data_port).map(|(_, b)| b).unwrap_or_default();
     assert!(!exposition.is_empty(), "the host serves an exposition");
     let settings = format!("{{\"path\":\"{}\"}}", lines.display());
     let rendered = common::plugins::render_snapshot(&lib, PLUGIN, &settings, &exposition);
     assert!(
-        rendered.is_empty(),
-        "a sink serving no metrics renders no body"
+        rendered
+            .as_ref()
+            .is_err_and(|e| e.contains(busbar_contract::abi::sdk::export::NO_EXPOSITION)),
+        "a sink serving no metrics renders no body: {rendered:?}"
     );
 
     drop(child);

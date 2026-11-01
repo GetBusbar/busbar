@@ -49,7 +49,14 @@ impl AuthCalls for OpenedLogin {
 struct StatedLogin;
 
 impl busbar_contract::abi::sdk::auth_door::VerifyPlugin for StatedLogin {
-    fn open(_: &[u8], _: &[&[u8]]) -> Result<Self, &'static str> {
+    fn validate(settings: &[u8]) -> Result<(), busbar_contract::abi::sdk::life::Refusal> {
+        busbar_contract::abi::sdk::auth_door::validate_by_opening::<Self>(settings)
+    }
+
+    fn open_refusing(
+        _: &[u8],
+        _: &[&[u8]],
+    ) -> Result<Self, busbar_contract::abi::sdk::life::Refusal> {
         Ok(StatedLogin)
     }
     fn verify(
@@ -240,7 +247,7 @@ fn the_lent_settings_are_wiped() {
         "client_id": "client-abc",
         "nested": {"token": "inner-secret", "list": ["a-secret", 7]},
     });
-    wipe_lent_settings(&mut lent);
+    crate::config::secret::wipe_strings(&mut lent);
     assert_eq!(
         lent,
         serde_json::json!({

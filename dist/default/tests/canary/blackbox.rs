@@ -337,7 +337,7 @@ pub fn node(c: &NodeCanaries) -> (Vec<Sink>, Vec<String>) {
         if child.try_wait().ok().flatten().is_some() {
             return true;
         }
-        common::boot::log_shows_data_and_admin_listening(&read_log())
+        common::boot::healthz_answers(data)
     });
     assert!(
         up && child.try_wait().ok().flatten().is_none(),

@@ -20,6 +20,10 @@
 
 use crate::secret_ref::SecretRef;
 
+/// RESOLVED SECRET BYTES, as the host holds them (the credential chip, row 6: host-owned secret bytes): the
+/// zeroizing holder the secret plugin wrote the value into, never a plain `Vec` or `String`.
+pub type SecretBytes = crate::redacted::Secret<Vec<u8>>;
+
 /// The result type every secret module call returns.
 pub type SecretResult<T> = Result<T, SecretModuleError>;
 
@@ -116,14 +120,21 @@ impl From<&str> for SecretModuleError {
 /// FAIL-CLOSED, exactly as the underlying resolver: an unknown module, an unset source, or an empty
 /// value is an `Err(String)`, never an empty secret. The error is a neutral `String` — a plane never
 /// sees an engine-only error type across this seam.
+///
+/// THE VALUE IS HELD, NEVER PLAIN (the credential chip, row 6: host-owned secret bytes): every answer is a
+/// zeroizing [`Secret`](crate::redacted::Secret) — the bytes the secret plugin wrote into the
+/// host's buffer, moved, never copied into a `Vec` or a `String` — read only under a kernel seal and
+/// wiped when it drops.
 pub trait SecretResolve: Send + Sync {
     /// Resolve a reference to raw bytes (fail-closed). Some consumers — a raw-file loader, for
     /// instance — need the untrimmed bytes rather than a string.
-    fn resolve(&self, secret: &SecretRef) -> Result<Vec<u8>, String>;
+    fn resolve(&self, secret: &SecretRef) -> Result<crate::redacted::Secret<Vec<u8>>, String>;
 
-    /// Resolve a reference to a UTF-8 STRING (trailing newline trimmed; fail-closed on non-UTF-8 or
-    /// empty). Some consumers — a credential-minting path, for instance — need the string form.
-    fn resolve_string(&self, secret: &SecretRef) -> Result<String, String>;
+    /// Resolve a reference to UTF-8 TEXT (trailing newline trimmed; fail-closed on non-UTF-8 or
+    /// empty), the same bytes moved into a `Secret<String>`. Some consumers — a credential-minting
+    /// path, for instance — need the text form.
+    fn resolve_string(&self, secret: &SecretRef)
+        -> Result<crate::redacted::Secret<String>, String>;
 
     /// [`Self::resolve`] at CONFIG TIME, with its proof: the one way a reference to a source that
     /// reads the disk resolves (THE DESIGN Q-DISK R4, OWNER 2026-10-13). Every other source answers
@@ -132,7 +143,7 @@ pub trait SecretResolve: Send + Sync {
         &self,
         secret: &SecretRef,
         _scope: &crate::config_time::ConfigScope,
-    ) -> Result<Vec<u8>, String> {
+    ) -> Result<crate::redacted::Secret<Vec<u8>>, String> {
         self.resolve(secret)
     }
 
@@ -141,8 +152,30 @@ pub trait SecretResolve: Send + Sync {
         &self,
         secret: &SecretRef,
         _scope: &crate::config_time::ConfigScope,
-    ) -> Result<String, String> {
+    ) -> Result<crate::redacted::Secret<String>, String> {
         self.resolve_string(secret)
+    }
+
+    /// [`Self::resolve`] (or, with `scope`, [`Self::resolve_at_config`]) whose refusal KEEPS the
+    /// source's `abi::secret::ERROR_KIND_*` code: a caller that answers a missing secret
+    /// differently from an unreachable source reads it here. A resolver that names no code answers
+    /// its text as `ERROR_KIND_INTERNAL`.
+    ///
+    /// # Errors
+    /// The refusal, its code and its text (the same text the other forms answer).
+    fn resolve_refusing(
+        &self,
+        secret: &SecretRef,
+        scope: Option<&crate::config_time::ConfigScope>,
+    ) -> Result<crate::redacted::Secret<Vec<u8>>, SecretRefused> {
+        match scope {
+            Some(scope) => self.resolve_at_config(secret, scope),
+            None => self.resolve(secret),
+        }
+        .map_err(|text| SecretRefused {
+            error_kind: crate::abi::secret::ERROR_KIND_INTERNAL,
+            text,
+        })
     }
 }
 
@@ -162,9 +195,9 @@ pub struct SecretRefused {
 /// implements it; the kernel names only this. Every call is boot-, refresh- or setup-time, off the
 /// request path, and blocks the calling thread up to its deadline.
 pub trait SecretCalls: Send + Sync {
-    /// `resolve` one reference's `settings` object (JSON bytes) to the secret's material. The
-    /// plugin's lease is released before this returns; the material is held only in the
-    /// [`Secret`](crate::redacted::Secret) it comes back in.
+    /// `resolve` one reference's `settings` object (JSON bytes) to the secret's material, which the
+    /// plugin wrote into the host's zeroed buffer: the [`Secret`](crate::redacted::Secret) it comes
+    /// back in (no lease, and no copy on either side).
     ///
     /// # Errors
     /// The plugin's refusal, its code and its text.
@@ -202,6 +235,18 @@ pub trait SecretAxis: Send + Sync {
     /// `secrets:` block and no plugins directory).
     fn linked(&self, module: &str) -> bool;
 
+    /// JUDGE one reference to `module` at config time, before anything resolves: its plugin's
+    /// `check` (`abi::secret::Ops::check`) over the reference's `settings`, with no instance and no
+    /// I/O. `Ok` when the plugin accepts it, serves no `check`, or no plugin answers `module` (its
+    /// existence is the registry's to judge); else the plugin's reasons, one per line, which the
+    /// host renders after the reference's config path.
+    ///
+    /// # Errors
+    /// The plugin's reasons.
+    fn check(&self, _module: &str, _settings: &serde_json::Value) -> Result<(), Vec<String>> {
+        Ok(())
+    }
+
     /// The process's ONE instance of the linked plugin `module` names, opened on first use with no
     /// settings (a linked source takes no module-level configuration).
     ///
@@ -221,6 +266,6 @@ pub trait SecretAxis: Send + Sync {
         &self,
         module: &str,
         settings: &serde_json::Value,
-        resolve: &dyn Fn(&SecretRef) -> Result<Vec<u8>, String>,
+        resolve: &dyn Fn(&SecretRef) -> Result<SecretBytes, String>,
     ) -> Result<std::sync::Arc<dyn SecretCalls>, String>;
 }

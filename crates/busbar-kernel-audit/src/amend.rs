@@ -14,27 +14,13 @@
 //! be a reason to turn it off, and an audit that gets turned off under load is an audit that is not
 //! there when it matters.
 //!
-//! ## Adjust — every time a figure that was already recorded changes
+//! ## Adjust — a record class no longer written
 //!
-//! A journal is append-only, so a figure is never corrected in place; a correction is a NEW entry
-//! that names the old one and says what it is now. That is what makes an adjustment visible: there
-//! is no state in which the original amount has quietly become something else. The amendment carries
-//! what it was, what it is, who authorised it, and — because a correction that nobody can question is
-//! a correction nobody should trust — the reason.
-//!
-//! **What an adjustment carries is COUNTS, never money**: money is a read-time view on the ledger ×
-//! the rate card, so the figure a correction changes is the unit's raw count per billable class,
-//! and the amendment names the CARD EPOCH — the instant whose card those counts price at. The
-//! corrected money is then what the one function (the ledger's `cost::Tally`) derives from the
-//! corrected counts at that card; a money figure sealed here would be a second copy of that answer
-//! that no later card correction could reach. A correction that would take any count below zero is
-//! REFUSED ([`CorrectionRefused`]): a negative measurement is not a thing a meter reports.
-//!
-//! **An adjustment names the POOL its unit was dispatched through**, so a pool-scoped budget bucket
-//! takes the correction as well as the group-wide ones. The field is OPTIONAL on the record and
-//! only in that one sense: an adjustment sealed before it existed cannot be rewritten (it is
-//! hash-chained), so it reads as UNSCOPED — group-wide buckets only, exactly as it always did — and
-//! its digest is the one it was sealed with. A new correction always names one.
+//! Pre-release 1.6.0 builds sealed count corrections here and every money view folded them in, so
+//! two nodes reported different money for the same counts. An adjustment is now a signed usage-row
+//! delta through the ledger's own counts, so nothing writes this class any more and nothing reads it
+//! as money. The record shape stays only so a chain that already holds one still decodes and
+//! verifies; 1.5.5 had no amendments, so no released deployment holds any.
 //!
 //! ## Why these are amendments rather than fields on the audit record
 //!
@@ -44,8 +30,7 @@
 
 use crate::record::{subject_tag, subject_value, OpClassId, Subject};
 use busbar_contract::{
-    authz::Scope,
-    caps::{Audit, Pass},
+    caps::{Audit, DurableWrite, Grant, Pass},
     count::Count,
 };
 use std::collections::{BTreeMap, VecDeque};
@@ -151,7 +136,8 @@ pub struct Access {
     pub wall: u64,
 }
 
-/// One correction to counts that were already recorded.
+/// One correction to counts that were already recorded, as pre-release 1.6.0 sealed it. Never
+/// written now and never priced: kept so a chain that holds one still verifies.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Adjust {
     /// Which entry is being corrected, by its digest.
@@ -180,58 +166,6 @@ pub struct Adjust {
     /// sealed hash still verifies.
     pub pool: Option<String>,
 }
-
-impl Adjust {
-    /// How far one class's count moved, in micro-units (scale 6). A class absent on one side is
-    /// zero on that side.
-    ///
-    /// SATURATING, not refusing: a correction that moves a count DOWN is the commonest one there
-    /// is — a duplicate charge on a retried request is exactly `was` greater than `now` — so "was
-    /// exceeds now" is a normal amendment. What is not normal is a pair far enough apart to overrun
-    /// the signed range, and a wrapped delta would read as a correction in the OPPOSITE direction;
-    /// saturating pins it at the extreme instead. This is a convenience over two fields the chain
-    /// digests separately, never the source of either.
-    pub fn delta(&self, class: &str) -> i128 {
-        let side = |c: &ClassCounts| c.get(class).map_or(0, |n| n.micros());
-        side(&self.now).saturating_sub(side(&self.was))
-    }
-
-    /// Whether this correction reaches a group budget bucket of scope `scope`. An UNSCOPED bucket
-    /// (`None`) takes every correction of a unit it counted; a pool-scoped one takes only a
-    /// correction naming its own pool — by exact equality, the same predicate the budget book's
-    /// accrual walk uses (`ChainBucket::applies_to_pool`), so a correction reaches exactly the
-    /// buckets the unit was charged on. A correction sealed before the pool was recorded names none
-    /// and so reaches the unscoped buckets only.
-    pub fn reaches(&self, scope: Option<&busbar_contract::records::ScopeRef>) -> bool {
-        scope.is_none_or(|s| s.kind == "pool" && Some(s.value.as_str()) == self.pool.as_deref())
-    }
-}
-
-/// Why a correction was refused before it reached the chain.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum CorrectionRefused {
-    /// The correction would take this class's count below zero.
-    NegativeCount {
-        /// The class.
-        class: String,
-    },
-    /// No reason was given.
-    NoReason,
-}
-
-impl std::fmt::Display for CorrectionRefused {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            CorrectionRefused::NegativeCount { class } => write!(
-                f,
-                "a correction may not take the {class:?} count below zero"
-            ),
-            CorrectionRefused::NoReason => f.write_str("a correction must say why"),
-        }
-    }
-}
-
-impl std::error::Error for CorrectionRefused {}
 
 /// What the amendment is about.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -489,61 +423,17 @@ pub fn content_access(
     })
 }
 
-/// Named so that the type checker, rather than a reviewer, notices an amendment written against no
-/// prior entry: an adjustment must name what it amends.
-///
-/// # Errors
-///
-/// [`CorrectionRefused::NegativeCount`] for a corrected count below zero, and
-/// [`CorrectionRefused::NoReason`] for a blank reason.
-#[allow(clippy::too_many_arguments)]
-pub fn correction(
-    amends: &str,
-    subject: Subject,
-    lane: impl Into<String>,
-    card_epoch_ms: u64,
-    was: ClassCounts,
-    now: ClassCounts,
-    authorised_by: impl Into<String>,
-    reason: impl Into<String>,
-    wall: u64,
-) -> Result<AmendBody, CorrectionRefused> {
-    if let Some((class, _)) = now.iter().find(|(_, n)| n.is_negative()) {
-        return Err(CorrectionRefused::NegativeCount {
-            class: class.clone(),
-        });
-    }
-    let reason = reason.into();
-    if reason.trim().is_empty() {
-        return Err(CorrectionRefused::NoReason);
-    }
-    Ok(AmendBody::Adjust(Adjust {
-        amends_hash: amends.to_string(),
-        subject,
-        lane: lane.into(),
-        card_epoch_ms,
-        was,
-        now,
-        authorised_by: authorised_by.into(),
-        reason,
-        wall,
-        pool: None,
-    }))
-}
-
 /// How many amendments a journal keeps in memory. Bounds RAM, not history: accesses are written at
-/// request rate, so an unbounded in-memory run is a leak. Corrections are never released — they are
-/// operator-rate, and [`AmendJournal::counts_now`] reads them.
+/// request rate, so an unbounded in-memory run is a leak.
 pub const AMENDMENTS_RETAINED: usize = 1000;
 
-/// A chain together with the amendments it sealed: the one node-wide journal a hook read, an export
-/// read and a correction are all appended to, in the order they happened.
+/// A chain together with the amendments it sealed: the one node-wide journal a hook read and an
+/// export read are appended to, in the order they happened.
 #[derive(Debug, Default)]
 pub struct AmendJournal {
     chain: AmendChain,
     recent: VecDeque<Amendment>,
     released: u64,
-    corrections: Vec<Amendment>,
 }
 
 impl AmendJournal {
@@ -555,9 +445,6 @@ impl AmendJournal {
     /// Seal one amendment onto the chain and keep it.
     pub fn append(&mut self, body: AmendBody, token: &Pass<Audit>) -> Amendment {
         let amendment = self.chain.append(body, token);
-        if amendment.class() == AmendClass::Adjust {
-            self.corrections.push(amendment.clone());
-        }
         if self.recent.len() == AMENDMENTS_RETAINED {
             self.recent.pop_front();
             self.released = self.released.saturating_add(1);
@@ -571,11 +458,6 @@ impl AmendJournal {
         self.recent.iter()
     }
 
-    /// Every correction ever appended, oldest first.
-    pub fn corrections(&self) -> &[Amendment] {
-        &self.corrections
-    }
-
     /// How many older amendments have left the in-memory window.
     pub fn released(&self) -> u64 {
         self.released
@@ -586,22 +468,8 @@ impl AmendJournal {
         self.chain.head()
     }
 
-    /// The counts an entry stands at NOW: its most recent correction's `now`, or `recorded` when
-    /// nothing has corrected it. The recorded counts are never rewritten — this is the read.
-    pub fn counts_now(&self, amends_hash: &str, recorded: &ClassCounts) -> ClassCounts {
-        self.corrections
-            .iter()
-            .rev()
-            .find_map(|a| match &a.body {
-                AmendBody::Adjust(adj) if adj.amends_hash == amends_hash => Some(adj.now.clone()),
-                _ => None,
-            })
-            .unwrap_or_else(|| recorded.clone())
-    }
-
     /// REBUILD A JOURNAL FROM A WHOLE RUN read back off durable storage, oldest first from the
-    /// genesis: the chain resumes at the run's head, every correction is kept, and the newest
-    /// [`AMENDMENTS_RETAINED`] are held. The run is verified first, so a journal is never rebuilt
+    /// genesis: the chain resumes at the run's head and the newest [`AMENDMENTS_RETAINED`] are held. The run is verified first, so a journal is never rebuilt
     /// over a broken chain.
     ///
     /// # Errors
@@ -612,86 +480,22 @@ impl AmendJournal {
         let chain = run.last().map_or_else(AmendChain::new, |a| {
             AmendChain::resume(a.hash.clone(), a.seq.saturating_add(1))
         });
-        let corrections = (run.iter())
-            .filter(|a| a.class() == AmendClass::Adjust)
-            .cloned()
-            .collect();
         let released = run.len().saturating_sub(AMENDMENTS_RETAINED);
         Ok(AmendJournal {
             chain,
             recent: run.into_iter().skip(released).collect(),
             released: released as u64,
-            corrections,
         })
     }
 
     /// Verify what is held: from the genesis while nothing has been released, and always to the
     /// chain's own head. Once the window has moved, the run is checked from its first held link.
     ///
-    /// AND THE CORRECTIONS COPY, which is the one the money read uses: [`Self::counts_now`] reads
-    /// `corrections`, never the window, and a correction older than the window exists only there.
-    /// Each held correction must still hash to its own fields, sit at a position the chain sealed,
-    /// in ascending order, and — where the window still holds its position — be exactly the
-    /// amendment the window holds there; and every adjustment the window holds must be in the copy.
-    /// A copy edited in memory is reported here rather than priced.
-    ///
     /// # Errors
     ///
-    /// The held window does not verify, or the corrections copy disagrees with it or with itself.
-    /// `at_index` is one-based into the window for a window break and into the corrections copy for
-    /// a copy break.
+    /// The held window does not verify. `at_index` is one-based into the window.
     pub fn verify(&self) -> Result<(), crate::record::AuditBreak> {
-        self.verify_window()?;
-        self.verify_corrections()
-    }
-
-    /// The corrections copy, judged against itself, the chain and the held window.
-    fn verify_corrections(&self) -> Result<(), crate::record::AuditBreak> {
-        use crate::record::{AuditBreak, AuditBreakKind};
-        let first_held = self.recent.front().map_or(self.chain.next_seq(), |a| a.seq);
-        let held_at = |seq: u64| {
-            seq.checked_sub(first_held)
-                .and_then(|i| usize::try_from(i).ok())
-                .and_then(|i| self.recent.get(i))
-        };
-        let mut previous = 0u64;
-        for (i, correction) in self.corrections.iter().enumerate() {
-            let at_index = i + 1;
-            if correction.class() != AmendClass::Adjust
-                || AmendChain::digest_of(correction) != correction.hash
-            {
-                return Err(AuditBreak {
-                    at_index,
-                    kind: AuditBreakKind::DigestMismatch,
-                });
-            }
-            if correction.seq <= previous || correction.seq >= self.chain.next_seq() {
-                return Err(AuditBreak {
-                    at_index,
-                    kind: AuditBreakKind::SequenceMismatch {
-                        expected: previous.saturating_add(1),
-                        found: correction.seq,
-                    },
-                });
-            }
-            if correction.seq >= first_held && held_at(correction.seq) != Some(correction) {
-                return Err(AuditBreak {
-                    at_index,
-                    kind: AuditBreakKind::LinkMismatch,
-                });
-            }
-            previous = correction.seq;
-        }
-        let copied = |a: &Amendment| self.corrections.iter().any(|c| c.seq == a.seq);
-        if let Some(i) =
-            (self.recent.iter()).position(|a| a.class() == AmendClass::Adjust && !copied(a))
-        {
-            return Err(AuditBreak {
-                at_index: i + 1,
-                kind: AuditBreakKind::LinkMismatch,
-            });
-        }
-        Ok(())
+        self.verify_window()
     }
 
     /// The held window: linked, numbered, hashing to its own fields, and ending at the head.
@@ -734,201 +538,167 @@ impl AmendJournal {
     }
 }
 
-// A hook and an export sink are resolved per config generation, but what they read is the node's
-// to account for, so the node keeps ONE journal for the life of the process. Every writer below
-// takes the audit step's token: the kernel mints it, and only the kernel can.
+// A hook and an export sink are resolved per config generation, but what they read is the node's to
+// account for, so the node keeps ONE journal for the life of the process: a [`NodeAmendments`]
+// INSTANCE, held by the kernel state that outlives every config apply and handed to each writer —
+// never a process static, so two nodes (two books, two tests) never share one. Sealing an amendment
+// takes the audit step's token; rebuilding the journal from durable storage and binding where its
+// amendments are made durable take the durable-write grant. The kernel mints both, and only the
+// kernel can.
 
-static NODE: std::sync::OnceLock<std::sync::Mutex<AmendJournal>> = std::sync::OnceLock::new();
-
-fn node() -> std::sync::MutexGuard<'static, AmendJournal> {
-    NODE.get_or_init(Default::default)
-        .lock()
-        .unwrap_or_else(|p| p.into_inner())
-}
-
-/// WHERE THE NODE JOURNAL'S AMENDMENTS ARE MADE DURABLE: handed every amendment the node journal
-/// seals, in chain order, as it is sealed. The composition root binds one over its own journal;
-/// with none bound the node journal is memory-only, the retired shape.
+/// WHERE A NODE JOURNAL'S AMENDMENTS ARE MADE DURABLE: handed every amendment the journal seals, in
+/// chain order, as it is sealed. The composition root binds one over its own journal
+/// ([`NodeAmendments::bind`]); with none bound the journal is memory-only, the retired shape.
 ///
-/// Called with the node journal's lock held — that is what keeps what reaches the sink in chain
-/// order with no gap — so an implementation must never seal an amendment itself, and no caller
-/// may seal one while holding whatever lock the sink takes.
+/// Called with the journal's lock held — that is what keeps what reaches the sink in chain order with
+/// no gap — so an implementation must never seal an amendment itself, and no caller may seal one while
+/// holding whatever lock the sink takes.
 pub trait AmendSink: Send + Sync {
-    /// `amendment` was just sealed onto the node journal.
+    /// `amendment` was just sealed onto the journal.
     fn sealed(&self, amendment: &Amendment);
 }
 
-static SINK: std::sync::RwLock<Option<std::sync::Arc<dyn AmendSink>>> =
-    std::sync::RwLock::new(None);
-
-/// Seal `body` onto `journal` and hand it to the bound sink, under the journal's lock.
-fn seal(journal: &mut AmendJournal, body: AmendBody, token: &Pass<Audit>) -> Amendment {
-    let amendment = journal.append(body, token);
-    if let Some(sink) = SINK.read().unwrap_or_else(|p| p.into_inner()).as_ref() {
-        sink.sealed(&amendment);
-    }
-    amendment
+/// What the journal's one lock guards: the journal, and the sink its amendments go to.
+#[derive(Default)]
+struct Held {
+    journal: AmendJournal,
+    sink: Option<std::sync::Arc<dyn AmendSink>>,
 }
 
-/// VERIFY THE NODE JOURNAL AS IT IS HELD NOW — the on-demand check `GET /admin/verify` runs.
-/// The boot restore verifies what it reads back; this verifies what the process holds at the moment
-/// it is asked, so an edit made to the held run after boot is seen.
-///
-/// # Errors
-///
-/// The held run does not verify (see [`AmendJournal::verify`]).
-pub fn verify_node() -> Result<(), crate::record::AuditBreak> {
-    node().verify()
+/// THE NODE'S AMENDMENT JOURNAL: every hook or export content access, in the order they happened,
+/// and the sink that makes them durable. One per node, owned by the state that lives as long as the
+/// node does and reached through it; every method takes `&self`, so it is shared by `Arc` and never
+/// copied.
+#[derive(Default)]
+pub struct NodeAmendments {
+    held: std::sync::Mutex<Held>,
 }
 
-/// TEST ONLY: edit the newest held amendment's recorded hash in place, as an in-memory tamper would.
-/// Never compiled into a shipped build.
-#[cfg(any(test, feature = "test-support"))]
-#[doc(hidden)]
-pub fn tamper_node_for_test() {
-    if let Some(last) = node().recent.back_mut() {
-        last.hash = "0".repeat(last.hash.len().max(1));
+impl std::fmt::Debug for NodeAmendments {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let held = self.held();
+        f.debug_struct("NodeAmendments")
+            .field("head", &held.journal.head())
+            .field("held", &held.journal.recent.len())
+            .field("durable", &held.sink.is_some())
+            .finish()
     }
 }
 
-/// REBUILD THE NODE JOURNAL from a whole run read back off durable storage (see
-/// [`AmendJournal::restore`]), replacing what it holds, and answer the position of the run's
-/// newest amendment (0 for an empty run) — what [`bind_node_sink`] is told was already durable.
-///
-/// # Errors
-///
-/// The run does not verify from the genesis; the node journal is left as it was.
-pub fn restore_node(run: Vec<Amendment>) -> Result<u64, crate::record::AuditBreak> {
-    let through = run.last().map_or(0, |a| a.seq);
-    let restored = AmendJournal::restore(run)?;
-    *node() = restored;
-    Ok(through)
-}
+impl NodeAmendments {
+    /// An empty journal, bound to no sink.
+    #[must_use]
+    pub fn new() -> Self {
+        NodeAmendments::default()
+    }
 
-/// BIND the node journal's sink (`None` unbinds). Every amendment it still holds above position
-/// `journalled_through` is handed over first, in chain order, so an amendment sealed between the
-/// rebuild and the binding reaches the sink too and what is durable has no gap.
-pub fn bind_node_sink(sink: Option<std::sync::Arc<dyn AmendSink>>, journalled_through: u64) {
-    let journal = node();
-    if let Some(sink) = &sink {
-        for amendment in journal.recent().filter(|a| a.seq > journalled_through) {
-            sink.sealed(amendment);
+    /// Poison-recovering: a panic under this lock (a sink that panicked) leaves an amendment that
+    /// was already sealed and held, and cascading the poison would take every hook read out of the
+    /// record over it. What the journal holds is checked on demand ([`Self::verify`]).
+    fn held(&self) -> std::sync::MutexGuard<'_, Held> {
+        self.held.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    /// Seal `body` onto the journal and hand it to the bound sink, under the journal's lock.
+    fn seal(held: &mut Held, body: AmendBody, token: &Pass<Audit>) -> Amendment {
+        let amendment = held.journal.append(body, token);
+        if let Some(sink) = &held.sink {
+            sink.sealed(&amendment);
+        }
+        amendment
+    }
+
+    /// VERIFY THE JOURNAL AS IT IS HELD NOW — the on-demand check `GET /admin/verify` runs. The boot
+    /// restore verifies what it reads back; this verifies what the process holds at the moment it is
+    /// asked, so an edit made to the held run after boot is seen.
+    ///
+    /// # Errors
+    ///
+    /// The held run does not verify (see [`AmendJournal::verify`]).
+    pub fn verify(&self) -> Result<(), crate::record::AuditBreak> {
+        self.held().journal.verify()
+    }
+
+    /// TEST ONLY: edit the newest held amendment's recorded hash in place, as an in-memory tamper
+    /// would. Never compiled into a shipped build.
+    #[cfg(any(test, feature = "test-support"))]
+    #[doc(hidden)]
+    pub fn tamper_for_test(&self) {
+        if let Some(last) = self.held().journal.recent.back_mut() {
+            last.hash = "0".repeat(last.hash.len().max(1));
         }
     }
-    *SINK.write().unwrap_or_else(|p| p.into_inner()) = sink;
+
+    /// REBUILD THE JOURNAL from a whole run read back off durable storage (see
+    /// [`AmendJournal::restore`]), replacing what it holds, and answer the position of the run's
+    /// newest amendment (0 for an empty run) — what [`Self::bind`] is told was already durable.
+    /// Takes the durable-write grant: replacing a node's journal is the boot's act, never a caller's.
+    ///
+    /// # Errors
+    ///
+    /// The run does not verify from the genesis; the journal is left as it was.
+    pub fn restore(
+        &self,
+        run: Vec<Amendment>,
+        _token: &Grant<DurableWrite>,
+    ) -> Result<u64, crate::record::AuditBreak> {
+        let through = run.last().map_or(0, |a| a.seq);
+        let restored = AmendJournal::restore(run)?;
+        self.held().journal = restored;
+        Ok(through)
+    }
+
+    /// BIND the journal's sink (`None` unbinds). Every amendment it still holds above position
+    /// `journalled_through` is handed over first, in chain order, so an amendment sealed between the
+    /// rebuild and the binding reaches the sink too and what is durable has no gap. Takes the
+    /// durable-write grant, as [`Self::restore`] does.
+    pub fn bind(
+        &self,
+        sink: Option<std::sync::Arc<dyn AmendSink>>,
+        journalled_through: u64,
+        _token: &Grant<DurableWrite>,
+    ) {
+        let mut held = self.held();
+        if let Some(sink) = &sink {
+            for amendment in held.journal.recent().filter(|a| a.seq > journalled_through) {
+                sink.sealed(amendment);
+            }
+        }
+        held.sink = sink;
+    }
+
+    /// Record that `reader` `name` was handed `fields` of a unit's content at `wall` (unix seconds,
+    /// the caller's clock — this unit reads none). `op_class` is the caller's label for the
+    /// operation — data, never branched on.
+    #[allow(clippy::too_many_arguments)]
+    pub fn record_read(
+        &self,
+        token: &Pass<Audit>,
+        reader: Reader,
+        name: &str,
+        principal: Option<&str>,
+        op_class: &str,
+        fields: Vec<String>,
+        wall: u64,
+    ) -> Amendment {
+        let body = content_access(
+            reader,
+            name,
+            subject_of(principal),
+            OpClassId::new(op_class),
+            fields,
+            wall,
+        );
+        Self::seal(&mut self.held(), body, token)
+    }
+
+    /// The amendments the journal holds, oldest first.
+    #[must_use]
+    pub fn recent(&self) -> Vec<Amendment> {
+        self.held().journal.recent().cloned().collect()
+    }
 }
 
 fn subject_of(principal: Option<&str>) -> Subject {
     principal.map_or(Subject::Arrival, |p| Subject::PrincipalId(p.to_string()))
 }
-
-/// Record on the node journal that `reader` `name` was handed `fields` of a unit's content at
-/// `wall` (unix seconds, the caller's clock — this unit reads none). `op_class` is the caller's
-/// label for the operation — data, never branched on.
-pub fn record_read(
-    token: &Pass<Audit>,
-    reader: Reader,
-    name: &str,
-    principal: Option<&str>,
-    op_class: &str,
-    fields: Vec<String>,
-    wall: u64,
-) -> Amendment {
-    let body = content_access(
-        reader,
-        name,
-        subject_of(principal),
-        OpClassId::new(op_class),
-        fields,
-        wall,
-    );
-    seal(&mut node(), body, token)
-}
-
-/// One correction to a recorded unit's counts, as the admin verb states it.
-#[derive(Debug, Clone)]
-pub struct CountCorrection<'a> {
-    /// The digest of the entry whose counts are corrected.
-    pub amends: &'a str,
-    /// Whose counts they are.
-    pub principal: Option<&'a str>,
-    /// The lane the counts were recorded on.
-    pub lane: &'a str,
-    /// The card epoch the counts price at, carried unchanged.
-    pub card_epoch_ms: u64,
-    /// The counts per class as the correction says they should be.
-    pub now: ClassCounts,
-    /// Who authorised it.
-    pub authorised_by: &'a str,
-    /// Why.
-    pub reason: &'a str,
-    /// The pool the unit was dispatched through. The admin verb always names one; `None` seals an
-    /// unscoped correction, the shape every adjustment sealed before the field had.
-    pub pool: Option<&'a str>,
-}
-
-/// Why a correction did not land.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum CorrectionError {
-    /// Only the full (root) admin scope may correct a recorded count.
-    NotRoot,
-    /// The correction itself was refused (a count below zero, no reason).
-    Refused(CorrectionRefused),
-}
-
-/// THE CORRECTION VERB'S JOURNAL HALF: amend a recorded unit's counts on the node journal.
-/// Root-only, audited (the adjustment is sealed with who and why), and refusing a count below
-/// zero. `recorded` is what the entry carries; what it was BEFORE this correction is read through
-/// any earlier correction, so a second correction names the first one's result as its `was`.
-///
-/// # Errors
-///
-/// [`CorrectionError::NotRoot`] below the full scope; [`CorrectionError::Refused`] for a refused
-/// correction. Nothing is sealed on either.
-pub fn correct_counts(
-    token: &Pass<Audit>,
-    scope: Scope,
-    recorded: &ClassCounts,
-    c: CountCorrection<'_>,
-    wall: u64,
-) -> Result<Amendment, CorrectionError> {
-    if scope != Scope::Full {
-        return Err(CorrectionError::NotRoot);
-    }
-    let mut journal = node();
-    let mut body = correction(
-        c.amends,
-        subject_of(c.principal),
-        c.lane,
-        c.card_epoch_ms,
-        journal.counts_now(c.amends, recorded),
-        c.now,
-        c.authorised_by,
-        c.reason,
-        wall,
-    )
-    .map_err(CorrectionError::Refused)?;
-    if let AmendBody::Adjust(adj) = &mut body {
-        adj.pool = c.pool.map(str::to_string);
-    }
-    Ok(seal(&mut journal, body, token))
-}
-
-/// The counts an entry stands at now on the node journal: its latest correction, or `recorded`.
-pub fn counts_now(amends: &str, recorded: &ClassCounts) -> ClassCounts {
-    node().counts_now(amends, recorded)
-}
-
-/// The amendments the node journal holds, oldest first.
-pub fn node_recent() -> Vec<Amendment> {
-    node().recent().cloned().collect()
-}
-
-/// Every correction the node journal has sealed, oldest first.
-pub fn node_corrections() -> Vec<Amendment> {
-    node().corrections().to_vec()
-}
-
-#[cfg(test)]
-#[path = "tests/amend_journal_tests.rs"]
-mod amend_journal_tests;

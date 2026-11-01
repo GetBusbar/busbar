@@ -27,6 +27,12 @@ use serde_yaml::{Mapping, Value};
 #[path = "migrate_1_6.rs"]
 mod upgrade_1_6;
 
+const MISSING_SIGNING_KEY: &str =
+    "auth.signing_key: required now that the chain uses `keys` (busbar no longer \
+     auto-generates one); run `busbar --generate-signing-key` and set \
+     auth.signing_key to a secret reference for it ({file: /path} or {env: VAR}, \
+     shared across a fleet)";
+
 /// The 1.5.x store-module text this migration and its refusals print, read off the ROOT LEGACY
 /// TABLE the composition root hands in ([`crate::config::migration_table`]; moved from
 /// `data/legacy_store_modules.toml`): frozen text naming store backends no crate in the kernel
@@ -455,18 +461,24 @@ pub fn migrate_config_with(
     // config path.
     let mut yaml = String::new();
     if !warnings.is_empty() || !todos.is_empty() {
-        yaml.push_str(&format!(
-            "# busbar {} config, migrated by `busbar --migrate-config`.\n",
-            crate::config::CONFIG_TARGET_VERSION
-        ));
-        yaml.push_str("# The items below need a decision; `busbar --validate` must pass.\n");
+        let signing_key_only = warnings.is_empty()
+            && matches!(todos.as_slice(), [todo] if todo == MISSING_SIGNING_KEY);
+        if !signing_key_only {
+            yaml.push_str(&format!(
+                "# busbar {} config, migrated by `busbar --migrate-config`.\n",
+                crate::config::CONFIG_TARGET_VERSION
+            ));
+            yaml.push_str("# The items below need a decision; `busbar --validate` must pass.\n");
+        }
         for w in &warnings {
             yaml.push_str(&format!("# WARNING(migrate): {w}\n"));
         }
         for t in &todos {
             yaml.push_str(&format!("# TODO(migrate): {t}\n"));
         }
-        yaml.push('\n');
+        if !signing_key_only {
+            yaml.push('\n');
+        }
     }
     yaml.push_str(&body);
     Ok(MigrateOutput {
@@ -481,7 +493,8 @@ pub(super) fn take(m: &mut Mapping, k: &str) -> Option<Value> {
     m.remove(Value::from(k))
 }
 
-/// 1.6.0 verify-on-call: rename each `tools.servers.<id>.refresh_ttl:` to `verify_ttl:`.
+/// 1.6.0 verify-on-call: rename each `tools.<id>.refresh_ttl:` (the flat shape) and each
+/// pre-release `tools.servers.<id>.refresh_ttl:` to `verify_ttl:`.
 ///
 /// The KEY is renamed and the VALUE is carried over unchanged, because a rescale would guess at what
 /// the operator meant. But the meaning is not the same: `refresh_ttl` was a BACKGROUND SWEEP CADENCE
@@ -500,11 +513,42 @@ fn migrate_tools_verify_ttl(
     let Some(Value::Mapping(tools)) = root.get_mut(Value::from("tools")) else {
         return;
     };
+    // The 1.6.0 flat shape: each `tools.<id>` entry, the legacy `servers:` container aside.
+    let flat = rename_refresh_ttl(
+        tools
+            .iter_mut()
+            .filter(|(id, _)| id.as_str() != Some("servers")),
+        "tools",
+        warnings,
+    );
+    if flat {
+        changes.push(
+            "tools.<id>.refresh_ttl -> verify_ttl (verify-on-call replaces the background \
+             refresh daemon; see the per-server WARNING for the semantics change)"
+                .into(),
+        );
+    }
     let Some(Value::Mapping(servers)) = tools.get_mut(Value::from("servers")) else {
         return;
     };
+    if rename_refresh_ttl(servers.iter_mut(), "tools.servers", warnings) {
+        changes.push(
+            "tools.servers.<id>.refresh_ttl -> verify_ttl (verify-on-call replaces the background \
+             refresh daemon; see the per-server WARNING for the semantics change)"
+                .into(),
+        );
+    }
+}
+
+/// Rename `refresh_ttl:` to `verify_ttl:` on each mapping entry of `entries` (the entries under
+/// `prefix`), with the per-server WARNING; true when any entry was renamed.
+fn rename_refresh_ttl<'a>(
+    entries: impl Iterator<Item = (&'a Value, &'a mut Value)>,
+    prefix: &str,
+    warnings: &mut Vec<String>,
+) -> bool {
     let mut renamed = false;
-    for (id, def) in servers.iter_mut() {
+    for (id, def) in entries {
         let Value::Mapping(def) = def else { continue };
         let Some(value) = def.remove(Value::from("refresh_ttl")) else {
             continue;
@@ -513,7 +557,7 @@ fn migrate_tools_verify_ttl(
         def.insert("verify_ttl".into(), value);
         renamed = true;
         warnings.push(format!(
-            "tools.servers.{}.refresh_ttl -> verify_ttl (value `{shown}` carried over). The meaning \
+            "{prefix}.{}.refresh_ttl -> verify_ttl (value `{shown}` carried over). The meaning \
              CHANGED: `refresh_ttl` was a background sweep cadence (default 6h); `verify_ttl` is the \
              MAX staleness before a `tools/call` re-verifies the upstream live (default 5s). Your \
              value is now a drift-serving window on the request path — reconsider it: a few seconds \
@@ -522,13 +566,7 @@ fn migrate_tools_verify_ttl(
             id.as_str().unwrap_or("?")
         ));
     }
-    if renamed {
-        changes.push(
-            "tools.servers.<id>.refresh_ttl -> verify_ttl (verify-on-call replaces the background \
-             refresh daemon; see the per-server WARNING for the semantics change)"
-                .into(),
-        );
-    }
+    renamed
 }
 
 /// 1.6.0 Q-STORE = (B) (owner ruling 2026-09-27): a config with no `store:` block is refused, so the
@@ -1236,18 +1274,21 @@ fn migrate_auth(
                  signed key (POST /api/v1/admin/keys) - 1.x bearer tokens stop working"
                     .into(),
             );
-            // The `keys` verifier REQUIRES a signing key (1.5.1: no auto-generation), so a config
-            // that migrated tokens -> keys will not `--validate` until the operator provides one.
-            if !auth.contains_key(Value::from("signing_key")) {
-                todos.push(
-                    "auth.signing_key: required now that the chain uses `keys` (busbar no longer \
-                     auto-generates one); run `busbar --generate-signing-key` and set \
-                     auth.signing_key to a secret reference for it ({file: /path} or {env: VAR}, \
-                     shared across a fleet)"
-                        .into(),
-                );
-            }
         }
+    }
+
+    // The `keys` verifier REQUIRES a signing key (1.5.1: no auto-generation), so a config whose
+    // migrated chain uses `keys` - rewritten from `tokens` above OR already written that way - will
+    // not `--validate` until the operator provides one. Never invent a key; say so.
+    let chain_uses_keys = matches!(
+        auth.get(Value::from("chain")),
+        Some(Value::Sequence(c)) if c.iter().any(|e| {
+            e.as_str() == Some("keys")
+                || e.as_mapping().is_some_and(|m| m.contains_key(Value::from("keys")))
+        })
+    );
+    if chain_uses_keys && !auth.contains_key(Value::from("signing_key")) {
+        todos.push(MISSING_SIGNING_KEY.into());
     }
 
     // `auth.modules` (per-module trust-boundary caps) is REMOVED in 1.5.0. `max_admin_scope` has a

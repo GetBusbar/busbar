@@ -23,7 +23,8 @@ use std::time::{Duration, Instant};
 use busbar_contract::abi::plane::{
     reason_code, RefusalStatus, UnitCount, CANCEL_FAILED, CANCEL_OK_PARTIAL, REFUSAL_ANY_DIALECT,
 };
-use busbar_contract::caps::{Canary, Outcome, Pass, ReasonCode, Route, StepName};
+use busbar_contract::caps::{Outcome, Pass, ReasonCode, Route, StepName};
+use busbar_kernel::canary::Canary;
 use busbar_kernel::plane_driver::{
     Arrival, BufferCaps, CallerEnd, CancelBill, Checkpoint, FarEnd, FarPiece, MoneySeam,
     OutboundRequest, Pick, PlaneUnits, SessionCaller,
@@ -434,6 +435,17 @@ pub(crate) struct Book {
     forward: Option<Arc<dyn MoneySeam>>,
     /// Sessions whose one cleanup ran (the book admits every session).
     pub(crate) sessions_ended: AtomicU64,
+}
+
+impl Book {
+    /// A book that also hands every call to `money` (the production money steps).
+    #[allow(dead_code)] // built by the kernel's driver suite only
+    pub(crate) fn forwarding(money: Arc<dyn MoneySeam>) -> Self {
+        Book {
+            forward: Some(money),
+            ..Book::default()
+        }
+    }
 }
 
 impl MoneySeam for Book {

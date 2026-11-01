@@ -61,7 +61,7 @@ pub(crate) mod hooks;
 /// THE OBSERVATION SOURCE — the recorder the emission sites write and [`snapshot`] reads.
 mod source;
 /// A test builds its own source to drive one through `metrics::with_local_recorder`.
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(test)]
 pub use source::Source;
 
 // ─── PER-REQUEST HANDLE CACHE ─────────────────────────────────────────────────────────────────────
@@ -339,21 +339,6 @@ pub fn refresh_scrape_gauges(app: &App) {
         // fault attribution (the same cell `LANE_STATE` reads via `cooldown_remaining_in("", ...)`).
         let avail = app.store.classify("", lane_idx, now);
         emit_lane_gauges(model, &lane_model, snap, &avail, now);
-    }
-
-    // Every OTHER plane's destinations: the plane-neutral breaker cells secondary planes dispatch
-    // through, read from the one shared handle. The `pool` label is the cell's key exactly as the
-    // plane keyed it (a registered target id or a pool name, already qualified by the plane so it
-    // cannot collide with a bare pool name above); the `lane` label is the member's position in
-    // that pool (`0` for a single registered target). Only cells a dispatch has materialized
-    // exist, so the label space is bounded by the configured targets and pools.
-    for (key, member, state, cooldown) in app.plane_breakers.cell_readings(now) {
-        metrics::gauge!(
-            LANE_STATE,
-            "pool" => key.to_string(),
-            "lane" => member.to_string()
-        )
-        .set(lane_state_value(state, cooldown, now));
     }
 }
 
@@ -640,8 +625,50 @@ pub const PLANE_REQUEST_DURATION_SECONDS: &str = "busbar_plane_request_duration_
 // tap-decode fault class: the log site is warn-once-per-(protocol,reason) to avoid per-request spam,
 // so this counter — not the log — is what an operator alerts on. A steady non-zero rate means a live
 // protocol/dialect the tap reader cannot decode, i.e. silent under-billing.
-// Labels: `protocol`, `reason`. Its warn-once latch is `handlers::usage_tap_decode_fail_should_warn`.
+// Labels: `protocol`, `reason`. Its warn-once latch is `usage_tap_decode_fail_should_warn`.
 pub const BILLING_TAP_DECODE_FAIL_TOTAL: &str = "busbar_billing_tap_decode_fail_total";
+
+/// Process-lifetime warn-once latch for the usage-tap decode fault class, keyed `protocol:reason`. A
+/// live protocol/dialect the tap reader cannot decode fails on EVERY 2xx body of that shape, so an
+/// unlatched `warn!` spams per request; [`BILLING_TAP_DECODE_FAIL_TOTAL`] carries the per-request
+/// volume. This records the fault (increments the counter) and returns `true` only the FIRST time a
+/// given `(protocol, reason)` is seen, so the caller warns once and logs `debug!` thereafter.
+pub fn usage_tap_decode_fail_should_warn(protocol: &str, reason: &'static str) -> bool {
+    metrics::counter!(
+        BILLING_TAP_DECODE_FAIL_TOTAL,
+        "protocol" => protocol.to_string(),
+        "reason" => reason,
+    )
+    .increment(1);
+    static SEEN: std::sync::LazyLock<std::sync::Mutex<std::collections::HashSet<String>>> =
+        std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashSet::new()));
+    let mut seen = SEEN.lock().unwrap_or_else(|e| e.into_inner());
+    seen.insert(format!("{protocol}:{reason}"))
+}
+
+/// COUNT ONE USAGE-TAP FAULT a plane's answer carried for a unit read in `protocol`: one increment
+/// of [`BILLING_TAP_DECODE_FAIL_TOTAL`] under `reason`, warned the first time the
+/// `(protocol, reason)` is seen and logged at debug after. The request billed 0 tokens for its tap;
+/// the plane names the fault, the kernel counts it.
+pub fn usage_tap_fault(protocol: &str, reason: &'static str) {
+    if usage_tap_decode_fail_should_warn(protocol, reason) {
+        crate::diagnostics::diag_warn!(
+            crate::diagnostics::USAGE_TAP_DECODE_FAILED,
+            protocol = protocol,
+            reason = reason,
+            "usage tap: a same-protocol 2xx body's usage could not be read; \
+             billing 0 tokens for this request"
+        );
+    } else {
+        crate::diagnostics::diag_debug!(
+            crate::diagnostics::USAGE_TAP_DECODE_FAILED,
+            protocol = protocol,
+            reason = reason,
+            "usage tap: a same-protocol 2xx body's usage still could not be read; \
+             billing 0 tokens for this request"
+        );
+    }
+}
 
 // A request/task denied entry by a `limits::admission::AdmissionGate` because its permit cap was
 // saturated. Labeled `gate` = the gate's fixed name (`"inbound"`/`"tap"` and each sink's own — one

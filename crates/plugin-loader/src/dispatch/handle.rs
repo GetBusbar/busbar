@@ -133,7 +133,7 @@ fn draw(source: impl FnOnce(&mut [u8]) -> Result<(), String>) -> Result<(u64, u6
 /// The host's key: 16 bytes from the OS random source, drawn once, at the loader's boot
 /// ([`arm`]) and at the latest by the first bind. A source that cannot answer refuses the boot
 /// ([`LoadError::Entropy`]): there is no fallback key.
-fn key() -> Result<(u64, u64), LoadError> {
+pub(crate) fn key() -> Result<(u64, u64), LoadError> {
     #[cfg(test)]
     if ENTROPY_FAILS.with(std::cell::Cell::get) {
         return draw(|_| Err("the test seam's failing entropy source".to_string()));
@@ -161,7 +161,7 @@ pub fn arm() -> Result<(), LoadError> {
 }
 
 /// SipHash-2-4 over `words`, each eight little-endian message bytes.
-fn siphash24((k0, k1): (u64, u64), words: &[u64]) -> u64 {
+pub(crate) fn siphash24((k0, k1): (u64, u64), words: &[u64]) -> u64 {
     let mut v = [
         k0 ^ 0x736f_6d65_7073_6575,
         k1 ^ 0x646f_7261_6e64_6f6d,

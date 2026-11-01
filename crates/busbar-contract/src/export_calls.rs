@@ -307,6 +307,17 @@ pub trait ExportCalls: Send + Sync {
         None
     }
 
+    /// START the instance: its door's `ready` (discovery at boot) is awaited HERE, when the host
+    /// starts its PUSH sinks (after the app is built, before any listener binds), not when it was
+    /// opened. That is where 1.5.5 configured its exporters, so what a sink says of its own target
+    /// lands in busbar's log where 1.5.5 printed it, once. Nothing by default.
+    ///
+    /// # Errors
+    /// The instance's `ready` did not answer READY: the plugin's own text, which refuses the boot.
+    fn start(&self) -> Result<(), String> {
+        Ok(())
+    }
+
     /// The host shed a line for this instance before handing it over: an instance that declared a
     /// shed counter has it counted. Nothing by default.
     fn shed(&self) {}
@@ -327,12 +338,13 @@ pub trait ExportAxis: Send + Sync {
 
     /// The sink's own checks across every configured `instances` of `module`, at `phase`
     /// ([`crate::abi::export::CHECK_PHASE_LIMITS`] | `_INSTANCES`), each line verbatim; `None`
-    /// when `module` is not an export row.
+    /// when `module` is not an export row. Settings are borrowed so their zeroizing owners remain
+    /// alive through the check rather than yielding unguarded plaintext copies.
     fn check(
         &self,
         module: &str,
         phase: u32,
-        instances: &[(String, serde_json::Value)],
+        instances: &[(String, &serde_json::Value)],
     ) -> Option<Vec<String>>;
 
     /// OPEN one instance of `module` with `settings`, under the host's instance `label` (unique per
@@ -372,6 +384,23 @@ pub trait ExportAxis: Send + Sync {
     /// The `module:` words of the export rows this build LINKS, in the order the composition root
     /// registered them: what an unknown-exporter refusal lists. None by default.
     fn linked_modules(&self) -> Vec<String> {
+        Vec::new()
+    }
+
+    /// The settings paths `module`'s Statement declares secret (its `secret_refs`, `.`-separated,
+    /// `*` = any key or index; [`crate::secret_fields`]). The export host lends nothing: a reference
+    /// written at one of these paths is resolved IN PLACE before the settings reach the sink's
+    /// probe, check or open. None by default.
+    fn secret_refs(&self, module: &str) -> Vec<String> {
+        let _ = module;
+        Vec::new()
+    }
+
+    /// The REFERENCE-CAPABLE, NOT-SECRET settings paths `module`'s Statement states (its
+    /// extensions' `reference_fields`, lead ruling item 7a): a reference there is resolved in
+    /// place to its string, a literal passes as written. None by default.
+    fn reference_fields(&self, module: &str) -> Vec<String> {
+        let _ = module;
         Vec::new()
     }
 }

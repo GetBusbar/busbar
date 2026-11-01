@@ -15,6 +15,8 @@ use busbar_contract::abi::transport::{
     FramePiece, FramerOut, FramerSink, PIECE_END_OF_FRAME, SIDE_ACCEPT_STREAM,
 };
 
+use busbar_contract::abi::host::service::{SCHEME_PLAIN, SCHEME_SECURE};
+
 use super::{field_lines, FramedStream};
 use crate::framer::{Call, Crossed, DoorFacts, FramerDoor};
 
@@ -22,6 +24,7 @@ use crate::framer::{Call, Crossed, DoorFacts, FramerDoor};
 struct Stream {
     inbound: Vec<u8>,
     sides: u32,
+    scheme: u8,
 }
 
 /// One close the framer heard: its status, message and details.
@@ -87,6 +90,7 @@ impl FramerDoor for LengthDoor {
                     token,
                     Stream {
                         sides: i.side,
+                        scheme: i.scheme,
                         ..Stream::default()
                     },
                 );
@@ -190,6 +194,7 @@ fn a_stream_is_framed_by_its_claims_framer_and_closed_with_the_units_final_statu
         "lp",
         "/svc/Call",
         &[("x-meta".into(), b"1".to_vec())],
+        SCHEME_PLAIN,
     )
     .expect("open");
     assert_eq!(
@@ -223,8 +228,14 @@ fn a_stream_is_framed_by_its_claims_framer_and_closed_with_the_units_final_statu
 #[test]
 fn a_final_status_past_the_claims_numbering_never_crosses() {
     let d = door();
-    let mut s =
-        FramedStream::open(Arc::clone(&d) as Arc<dyn FramerDoor>, "lp", "/", &[]).expect("open");
+    let mut s = FramedStream::open(
+        Arc::clone(&d) as Arc<dyn FramerDoor>,
+        "lp",
+        "/",
+        &[],
+        SCHEME_PLAIN,
+    )
+    .expect("open");
     let refused = s
         .finish(10, b"", b"")
         .expect_err("RED: 10 is not the claim's");
@@ -243,14 +254,20 @@ fn a_final_status_past_the_claims_numbering_never_crosses() {
     );
 }
 
-/// RED (Q128 framer L1): a refusal after the stream's response head went out is told so, and its
-/// block is closing lines with no head line in them; one before the head is the whole answer.
+/// A refusal after the stream's response head went out is told so, and its block is closing lines
+/// with no head line in them; one before the head is the whole answer.
 #[test]
 fn a_refusal_after_the_head_is_told_the_head_went_out() {
     for head_sent in [false, true] {
         let d = door();
-        let mut s = FramedStream::open(Arc::clone(&d) as Arc<dyn FramerDoor>, "lp", "/", &[])
-            .expect("open");
+        let mut s = FramedStream::open(
+            Arc::clone(&d) as Arc<dyn FramerDoor>,
+            "lp",
+            "/",
+            &[],
+            SCHEME_PLAIN,
+        )
+        .expect("open");
         let block = s.refuse(b"cut", 4, head_sent).expect("refuse");
         let has_head = block.iter().any(|(name, _)| name.as_slice() == b":status");
         assert_eq!(has_head, !head_sent, "head_sent={head_sent}: {block:?}");
@@ -260,7 +277,7 @@ fn a_refusal_after_the_head_is_told_the_head_went_out() {
 #[test]
 fn a_claim_the_framer_does_not_answer_opens_no_stream() {
     let d = door();
-    assert!(FramedStream::open(d as Arc<dyn FramerDoor>, "other", "/", &[]).is_err());
+    assert!(FramedStream::open(d as Arc<dyn FramerDoor>, "other", "/", &[], SCHEME_PLAIN).is_err());
 }
 
 #[test]
@@ -276,4 +293,25 @@ fn field_lines_read_a_closing_block_in_order() {
     assert!(field_lines(b"no colon\r\n").is_err());
     assert!(field_lines(b":: pseudo with no name\r\n").is_err());
     assert!(field_lines(b": empty name\r\n").is_err());
+}
+
+/// A stream begins with its listener's scheme: SECURE where the connector terminated connection
+/// security on the listener, PLAIN where it did not; never undeclared.
+#[test]
+fn a_stream_begins_with_its_listeners_scheme() {
+    for scheme in [SCHEME_SECURE, SCHEME_PLAIN] {
+        let d = door();
+        let _s = FramedStream::open(
+            Arc::clone(&d) as Arc<dyn FramerDoor>,
+            "lp",
+            "/",
+            &[],
+            scheme,
+        )
+        .expect("open");
+        assert_eq!(
+            d.framings.lock().unwrap().values().next().map(|s| s.scheme),
+            Some(scheme)
+        );
+    }
 }

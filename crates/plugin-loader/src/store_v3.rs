@@ -52,8 +52,8 @@ use busbar_contract::abi::store::{
 use busbar_contract::kinds::RecordBytes;
 use busbar_contract::records::{
     AuditRecord, CredentialMeta, CredentialSecret, MeteringDelta, MeteringRow, PlaneDisposition,
-    PlaneRecordRef, PlaneSelector, RecordStore, RecordStoreError, RecordStoreResult, UsageDelta,
-    UsageLedger, VirtualKey,
+    PlaneRecordRef, PlaneSelector, RecordStore, RecordStoreError, RecordStoreResult, Retention,
+    UsageDelta, UsageLedger, VirtualKey,
 };
 use busbar_contract::store_calls::{OpIdMint, StoreCall, StoreCalls, StoreFailure};
 
@@ -1402,10 +1402,13 @@ impl StoreCalls for LoadedStore {
         boxed(async move {
             let r = fixed::<_, CountOut>(
                 slot::PURGE_PLANE_RECORDS_BEFORE,
+                // The age rule, as the bridge's `purge_plane_records_before` states it.
                 owned_in(|o, head| KindBeforeIn {
                     head,
                     kind: o.text(kind),
                     before,
+                    retention: Retention::Age.code(),
+                    _reserved: 0,
                 }),
             );
             let (ran, _) = run!(self, submit, r);
@@ -1574,6 +1577,50 @@ impl RecordStore for LoadedStore {
         )
     }
 
+    fn rewrap_credential(
+        &self,
+        expected: &CredentialSecret,
+        replacement: &str,
+    ) -> RecordStoreResult<bool> {
+        use busbar_contract::abi::mechanism::extensions;
+        use busbar_contract::abi::sdk::store::rewrap;
+        if !self.facts.credential_rewrap {
+            return Err(RecordStoreError(
+                "the store does not state credential rewrap CAS support".into(),
+            ));
+        }
+        let request = rewrap::Request::new(expected, replacement);
+        let (ran, _lent) = self.now(fixed::<_, OutHead>(
+            slot::PUT_CREDENTIAL,
+            owned_in(|o, mut head| {
+                head.extensions = o.octets(&extensions::encode(&[(rewrap::INTENT, b"1")]));
+                BlobIn {
+                    head,
+                    record: o.secret_json(to_json(&request)),
+                }
+            }),
+        ));
+        let result = bridge(ran.ok()).and_then(|()| {
+            if ran.lease == 0 {
+                return Err(RecordStoreError(
+                    "credential rewrap answered without a leased result".into(),
+                ));
+            }
+            // A successful result extension is held by the same lease as its answer memory.
+            // Copy it before releasing; do not infer success from READY alone.
+            let bytes = copy(ran.out.extensions.ptr, ran.out.extensions.len);
+            match extensions::get(&bytes, rewrap::RESULT) {
+                Some(b"applied") => Ok(true),
+                Some(b"conflict") => Ok(false),
+                _ => Err(RecordStoreError(
+                    "credential rewrap result is missing or invalid".into(),
+                )),
+            }
+        });
+        self.release(ran.lease);
+        result
+    }
+
     fn put_key_with_credential(
         &self,
         key: &VirtualKey,
@@ -1682,12 +1729,23 @@ impl RecordStore for LoadedStore {
     }
 
     fn purge_plane_records_before(&self, kind: &str, before: u64) -> RecordStoreResult<u64> {
+        self.purge_plane_records(kind, before, Retention::Age)
+    }
+
+    fn purge_plane_records(
+        &self,
+        kind: &str,
+        before: u64,
+        retention: Retention,
+    ) -> RecordStoreResult<u64> {
         self.count(
             slot::PURGE_PLANE_RECORDS_BEFORE,
             owned_in(|o, head| KindBeforeIn {
                 head,
                 kind: o.text(kind),
                 before,
+                retention: retention.code(),
+                _reserved: 0,
             }),
         )
     }
@@ -1835,3 +1893,7 @@ mod axis_tests;
 #[cfg(test)]
 #[path = "tests/store_v3_lent_tests.rs"]
 mod lent_tests;
+
+#[cfg(test)]
+#[path = "tests/store_v3_rewrap_tests.rs"]
+mod rewrap_tests;

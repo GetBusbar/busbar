@@ -344,7 +344,7 @@ fn hook_words(r: &rendering::Read) -> Vec<String> {
 /// rendered: the same kind, `max_inflight`, flag marks, hook words and tail, and the tail's facts
 /// the same (class and grants, as the hook axis reads them); the name is the double's own (the
 /// kernel names no plugin, C1). Both opened: the same refusals, byte for byte once each door's own
-/// name is read as one. Both asked: the same decision on every 1.5.5 parity case.
+/// name is read as one (the host names it; neither door spells it). Both asked: the same decision on every 1.5.5 parity case.
 ///
 /// RED by flipping any copied literal or rule in the double (e.g. `least_busy` ascending).
 #[tokio::test]
@@ -386,10 +386,20 @@ async fn the_kernel_ranking_double_states_what_the_linked_ranking_door_states() 
     ] {
         let refusal =
             |axis: &Arc<dyn HookAxis>, name: &str| axis.open(name, name, &settings, budget).err();
-        // The door's refusal, its Statement name and its own prefix read as the double's name.
+        // The door's refusal, its Statement name read as the double's name. Its words are bare:
+        // the host names the plugin (`plugin '<name>' open failed: ...`). The pinned door from
+        // before that rule spelled `hook-ranking: ` or `ranking: ` at the start of its reason.
+        // Only that prefix is read as absent; the remaining reason is compared byte for byte.
         let want = refusal(&linked, &real.name).map(|e| {
-            e.replace(&real.name, ranking_double::NAME)
-                .replace("hook-ranking", ranking_double::NAME)
+            let envelope = format!("plugin '{}' open failed: ", real.name);
+            let reason = e
+                .strip_prefix(&envelope)
+                .unwrap_or_else(|| panic!("the host's open-refusal envelope: {e}"));
+            let reason = reason
+                .strip_prefix("hook-ranking: ")
+                .or_else(|| reason.strip_prefix("ranking: "))
+                .unwrap_or(reason);
+            format!("plugin '{}' open failed: {reason}", ranking_double::NAME)
         });
         assert!(want.is_some(), "the linked door refuses {settings}");
         assert_eq!(

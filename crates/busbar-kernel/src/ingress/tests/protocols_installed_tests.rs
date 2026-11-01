@@ -88,9 +88,9 @@ fn a_usage_tap_fault_counts_one_increment_under_its_reason() {
     let counts = Counts::default();
     let proto = "sd3-armed-tap-protocol";
     let (first, second) = metrics::with_local_recorder(&Local(Arc::clone(&counts)), || {
-        let first = crate::handlers::usage_tap_decode_fail_should_warn(proto, "bad_json");
-        let second = crate::handlers::usage_tap_decode_fail_should_warn(proto, "bad_json");
-        crate::handlers::usage_tap_fault(proto, "decode");
+        let first = crate::snapshot::usage_tap_decode_fail_should_warn(proto, "bad_json");
+        let second = crate::snapshot::usage_tap_decode_fail_should_warn(proto, "bad_json");
+        crate::snapshot::usage_tap_fault(proto, "decode");
         (first, second)
     });
     assert!(

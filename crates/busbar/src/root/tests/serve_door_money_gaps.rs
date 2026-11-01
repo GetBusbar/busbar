@@ -5,8 +5,8 @@
 //! is the door-path successor of one money test in `root/tests/plane_node.rs` (the node's legacy
 //! answer path, deleted by #1161), driven end to end through the door serving the `pools` map
 //! (`super::super::hook_seat_tests::rig`): a keyed caller through the data router, the kernel's
-//! steps, the model-serving walk to a loopback far end, the money steps on the governance book and
-//! the node's book. Every expected value is the original's literal or the 1.5.5 behaviour the
+//! steps, the model-serving walk to a loopback far end, and the money steps on the governance
+//! book. Every expected value is the original's literal or the 1.5.5 behaviour the
 //! original pinned, and each cell names its original.
 
 use std::collections::BTreeMap;
@@ -19,7 +19,7 @@ use busbar_kernel::test_support::{MockResponse, MockServer, MockServerState};
 use super::super::hook_seat_tests::{
     far_end_answering, far_end_scripted, rig, word, DoorRig, RigOpts, Script, ANSWER,
 };
-use super::super::planes_tests::{Published, PUBLISHING};
+use super::super::planes_tests::PUBLISHING;
 use super::{frame, stream_pausing, streamed_chat, STREAM_HEAD};
 
 /// The store's clock.
@@ -98,34 +98,6 @@ fn metering_rows(rig: &DoorRig, at: u64) -> Vec<String> {
         .collect()
 }
 
-/// The node's book's lines so far (an overdraft carry is the same unit's second record, not a
-/// second unit), as `plane_node.rs`'s `second_book_rows` read them.
-fn book_lines(rig: &DoorRig) -> Vec<crate::root::durability::Posting> {
-    rig.book
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .read_back()
-        .into_iter()
-        .filter(|p| p.kind != crate::root::durability::PostingKind::Carry)
-        .collect()
-}
-
-/// The unit's line that carries its counts, once the node's late arm wrote it (bounded).
-async fn counted_line(rig: &DoorRig) -> crate::root::durability::Posting {
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(3);
-    loop {
-        if let Some(line) = book_lines(rig).into_iter().find(|p| p.counts.is_some()) {
-            return line;
-        }
-        assert!(
-            tokio::time::Instant::now() < deadline,
-            "the node's book has a line carrying the unit's counts: {:?}",
-            book_lines(rig)
-        );
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-    }
-}
-
 /// The key's all-time derived spend in cents on the governance book (`Err`: the read refused).
 fn key_spend(rig: &DoorRig) -> Result<i64, String> {
     rig.gov
@@ -152,7 +124,6 @@ fn card_of(entry: &str) -> BTreeMap<String, busbar_kernel::config::RateEntryCfg>
 async fn the_pools_door_keeps_a_prior_charge_through_a_pre_routing_refusal() {
     let _one = PUBLISHING.lock().await;
     let instance = "door-gap-pre-routing-refusal";
-    let _published = Published(instance);
     let far = far_end_answering(200, ANSWER).await;
     let rig = rig(
         instance,
@@ -206,7 +177,6 @@ async fn the_pools_door_prices_an_aliased_lane_at_its_config_names_card() {
     const WIRE: &str = "m0-on-the-wire";
     let _one = PUBLISHING.lock().await;
     let instance = "door-gap-aliased-lane";
-    let _published = Published(instance);
     let answered = || MockResponse::Ok {
         status: StatusCode::OK,
         body: serde_json::json!({
@@ -275,13 +245,12 @@ const FIRST_FRAME: &str = r#"{"id":"chatcmpl-root","object":"chat.completion.chu
 /// `plane_node.rs::the_tap_reports_the_end_a_status_line_cannot`. 1.5.5 behaviour, as the original pinned it for its two fixtures (a 2xx stream cut after
 /// one content frame, and a 2xx transfer that failed before its first byte): both answer the caller
 /// under a 200 status line and neither completes, so the caller holds the cut (the one relayed
-/// frame, no terminator) or nothing; the unit's report (on the door, the counts its line on the
-/// node's book carries) names the lane that served it (`m0`) and bills what streamed before the end,
-/// zero tokens; and the key's ledger holds no tokens. The plane ledgered nothing, so nothing bills:
-/// the 2xx end's one metering row carries no token.
+/// frame, no terminator) or nothing; and the key's ledger holds no tokens. The plane ledgered nothing, so nothing bills:
+/// the 2xx end's one metering row carries no token (owner ruling 2026-10-20: the plane's ledger is
+/// final, cut or not; a cut does not drop the row).
 ///
-/// RED: no report, a report keyed to another lane, tokens that never streamed, a terminator the far
-/// end never reached, or a metering row carrying a token that never streamed.
+/// RED: tokens that never streamed, a terminator the far end never reached, or a metering row
+/// carrying a token that never streamed.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_pools_doors_report_carries_the_end_a_status_line_cannot() {
     use http_body_util::BodyExt as _;
@@ -301,7 +270,6 @@ async fn the_pools_doors_report_carries_the_end_a_status_line_cannot() {
         ),
     ];
     for (instance, label, pieces, relayed) in cases {
-        let _published = Published(instance);
         let far = far_end_scripted(Script {
             head: STREAM_HEAD.to_string(),
             pieces,
@@ -340,17 +308,6 @@ async fn the_pools_doors_report_carries_the_end_a_status_line_cannot() {
             relayed,
             "{label}: the caller has exactly what was relayed before the end: {text}"
         );
-        let line = counted_line(&rig).await;
-        let counts = line.counts.expect("the line carries the unit's counts");
-        assert_eq!(
-            counts.lane, "m0",
-            "{label}: the report is keyed to the lane that served it"
-        );
-        assert_eq!(
-            counts.classes.values().sum::<u64>(),
-            0,
-            "{label}: no usage frame streamed before the end, so there is no token to bill"
-        );
         assert_eq!(rig.tokens_after().await, 0, "{label}: no token ledgered");
         let (requests, _, _, _) = rig.ledger_after(0).await;
         assert_eq!(
@@ -385,7 +342,6 @@ const FIRST_FRAME_WITH_USAGE: &str = r#"{"id":"chatcmpl-root","object":"chat.com
 async fn the_pools_door_bills_what_its_plane_ledgered_for_a_stream_cut_after_its_first_frame() {
     let _one = PUBLISHING.lock().await;
     let instance = "door-gap-cut-stream-plane-ledger";
-    let _published = Published(instance);
     let far = far_end_scripted(Script {
         head: STREAM_HEAD.to_string(),
         pieces: vec![(0, frame(FIRST_FRAME_WITH_USAGE)), (50, Vec::new())],
@@ -442,12 +398,12 @@ async fn the_pools_door_bills_what_its_plane_ledgered_for_a_stream_cut_after_its
     );
 }
 
-// ── GAP 6: rerank pricing on both books ────────────────────────────────────────────────────────
+// ── GAP 6: rerank pricing ────────────────────────────────────────────────────────
 
 /// The open class a rerank's far end bills (`plane_node.rs`'s `SEARCH_UNITS`).
 const SEARCH_UNITS: &str = "search_units";
 
-/// The rerank card on the node's book: `m0` pricing `search_units` at 2,000,000 nano-units (2,000
+/// The rerank card pinned at the door: `m0` pricing `search_units` at 2,000,000 nano-units (2,000
 /// micro-units) each, no fee (`plane_node.rs`'s `rerank_history_on(lane, 0, Some(2_000_000))`).
 static RERANK_CARD: std::sync::LazyLock<crate::root::kernel::RootHistory> =
     std::sync::LazyLock::new(|| {
@@ -477,18 +433,16 @@ fn rerank_pin() -> Option<crate::root::kernel::PinnedHistory> {
     RERANK_CARD.pin()
 }
 
-/// A RERANK'S SEARCH UNITS REACH THE PRICE ON BOTH BOOKS, THROUGH THE DOOR. Door successor of
-/// `plane_node.rs::a_reranks_search_units_reach_the_price_on_both_books`
-/// and of the unbilled arm of `a_same_dialect_rerank_puts_identical_search_units_on_both_books`.
+/// A RERANK'S SEARCH UNITS REACH THE PRICE, THROUGH THE DOOR. Door successor of
+/// `plane_node.rs::a_reranks_search_units_reach_the_price_on_both_books` and of the unbilled arm of `a_same_dialect_rerank_puts_identical_search_units_on_both_books`.
 /// 1.5.5 behaviour, as the originals pinned it: a card pricing `search_units` at 2,000 micro-units
 /// (0.2 cents) each derives 10 cents for 50 units and 0 cents for 1 unit (one unit rounds to
-/// nothing), and the durable book settles 50 x and 1 x 2,000,000 nano-units; a rerank whose far end
-/// bills no units books none on either book and derives 0 cents.
+/// nothing); a rerank whose far end bills no units derives 0 cents.
 ///
-/// RED: the search units dropped or priced as a flat request (10 cents read 0), one unit rounded
-/// up, the durable book missing the open class, or a unit-less rerank booking a count.
+/// RED: the search units dropped or priced as a flat request (10 cents read 0), or one unit
+/// rounded up.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn the_pools_door_prices_a_reranks_search_units_on_both_books() {
+async fn the_pools_door_prices_a_reranks_search_units() {
     let _one = PUBLISHING.lock().await;
     let card = card_of(&format!("{{ units: {{ {SEARCH_UNITS}: 2000 }} }}"));
     for (instance, answer, units, cents) in [
@@ -506,7 +460,6 @@ async fn the_pools_door_prices_a_reranks_search_units_on_both_books() {
             0,
         ),
     ] {
-        let _published = Published(instance);
         let far = far_end_answering(200, answer).await;
         let rig = rig(
             instance,
@@ -530,21 +483,6 @@ async fn the_pools_door_prices_a_reranks_search_units_on_both_books() {
             String::from_utf8_lossy(&answered)
         );
         assert_eq!(far.served(), 1, "{units:?} units: dialled once");
-
-        // THE DURABLE BOOK: the unit's one line, its counts and its settled figure.
-        let line = counted_line(&rig).await;
-        let counts = line.counts.clone().expect("the line carries the counts");
-        assert_eq!(
-            counts.classes.get(SEARCH_UNITS).copied(),
-            units,
-            "{units:?} units: the durable book holds the rerank's search units: {line:?}"
-        );
-        assert_eq!(
-            line.settled,
-            i128::from(units.unwrap_or(0)) * 2_000_000,
-            "{units:?} units: the durable book settles them at the card: {line:?}"
-        );
-        assert_eq!(line.refusal, None, "{units:?} units: priced, not refused");
 
         // THE GOVERNANCE BOOK: the key's derived spend, once the unit's money settled.
         let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
@@ -578,7 +516,6 @@ async fn the_pools_door_prices_a_reranks_search_units_on_both_books() {
 async fn the_pools_door_charges_a_client_request_exactly_one_flat_fee() {
     let _one = PUBLISHING.lock().await;
     let instance = "door-strong-client-fee";
-    let _published = Published(instance);
     let far = far_end_answering(200, ANSWER).await;
     let rig = rig(
         instance,
@@ -589,12 +526,6 @@ async fn the_pools_door_charges_a_client_request_exactly_one_flat_fee() {
     )
     .await;
     assert_eq!(rig.chat().await.0, 200);
-    let line = counted_line(&rig).await;
-    assert_eq!(
-        line.counts.as_ref().map(|c| c.fee_count),
-        Some(1),
-        "a client's delivered request pays the flat per-request fee: {line:?}"
-    );
     let (requests, spend, row_requests, billable) = rig.ledger_after(1).await;
     assert_eq!(
         (requests, spend, row_requests, billable),
@@ -617,7 +548,6 @@ async fn the_pools_door_charges_a_client_request_exactly_one_flat_fee() {
 async fn the_pools_door_keeps_the_fee_of_a_caller_that_hung_up_mid_dispatch() {
     let _one = PUBLISHING.lock().await;
     let instance = "door-strong-hang-up";
-    let _published = Published(instance);
     let started = Arc::new(tokio::sync::Notify::new());
     let release = Arc::new(tokio::sync::Notify::new());
     let (_state, server) = mock(vec![MockResponse::Gated {
@@ -662,7 +592,6 @@ async fn served_streamed(
     instance: &'static str,
     rate_card: Option<&BTreeMap<String, busbar_kernel::config::RateEntryCfg>>,
 ) -> (u16, i64, Vec<String>) {
-    let _published = Published(instance);
     let far = far_end_scripted(stream_pausing(0)).await;
     let rig = rig(
         instance,
@@ -723,7 +652,6 @@ async fn the_pools_door_serves_free_with_billing_off_writes_its_row_and_still_go
     );
 
     let instance = "door-strong-billing-off-governed";
-    let _published = Published(instance);
     let far = far_end_answering(200, ANSWER).await;
     let rig = rig(
         instance,
@@ -750,8 +678,7 @@ async fn the_pools_door_serves_free_with_billing_off_writes_its_row_and_still_go
 /// THE DOOR ATTRIBUTES THE IDENTITY ITS AUTH RESOLVED AND INVENTS NONE. Door successor of
 /// `plane_node.rs::the_loop_attributes_the_identity_the_door_resolved_and_invents_none`. Three
 /// credentials through the deployment's own data door: the live bearer is admitted, its unit is
-/// charged to that key (requests 1) and the unit's line on the node's book names that key as its
-/// principal; a bearer this deployment never minted and a bearer whose lifetime has run out are
+/// charged to that key (requests 1); a bearer this deployment never minted and a bearer whose lifetime has run out are
 /// both refused at the door (401, the chat dialect's `invalid_api_key` refusal the wrong-key door
 /// cells pin), so no unit exists: nothing is dialled, no line or record is written for either, and
 /// the expired key's own ledger stays empty.
@@ -762,7 +689,6 @@ async fn the_pools_door_serves_free_with_billing_off_writes_its_row_and_still_go
 async fn the_pools_door_attributes_the_identity_its_auth_resolved_and_invents_none() {
     let _one = PUBLISHING.lock().await;
     let instance = "door-strong-identity";
-    let _published = Published(instance);
     let far = far_end_answering(200, ANSWER).await;
     let rig = rig(
         instance,
@@ -777,12 +703,6 @@ async fn the_pools_door_attributes_the_identity_its_auth_resolved_and_invents_no
     assert_eq!(rig.chat().await.0, 200, "the deployment's own bearer");
     let (requests, _, _, _) = rig.ledger_after(1).await;
     assert_eq!(requests, 1, "the admitted unit was charged to the key");
-    let line = counted_line(&rig).await;
-    assert_eq!(
-        line.principal, rig.key_id,
-        "the loop settled on the key the door resolved"
-    );
-    let lines = book_lines(&rig).len();
     let records = rig.audit_records();
 
     // A BEARER THIS DEPLOYMENT NEVER MINTED.
@@ -835,16 +755,9 @@ async fn the_pools_door_attributes_the_identity_its_auth_resolved_and_invents_no
         "neither refused credential reached a far end"
     );
     assert_eq!(
-        (book_lines(&rig).len(), rig.audit_records()),
-        (lines, records),
-        "no unit exists for a refused credential: no line, no record"
-    );
-    assert!(
-        book_lines(&rig)
-            .iter()
-            .all(|line| line.principal == rig.key_id),
-        "every line is the resolved key's: {:?}",
-        book_lines(&rig)
+        rig.audit_records(),
+        records,
+        "no unit exists for a refused credential: no record"
     );
     let expired_usage = rig
         .gov
@@ -881,7 +794,6 @@ async fn the_pools_doors_gate_stops_a_unit_and_a_passing_gate_changes_nothing() 
         ("door-strong-gate-veto", true),
         ("door-strong-gate-pass", false),
     ] {
-        let _published = Published(instance);
         let far = far_end_answering(200, ANSWER).await;
         let rig = rig(
             instance,
@@ -959,7 +871,6 @@ async fn the_pools_door_dials_a_served_unit_once_and_a_refused_one_never() {
             "served: the whole walk, exactly once",
         ),
     ] {
-        let _published = Published(instance);
         let far = far_end_answering(200, ANSWER).await;
         let members = [(far.port, 1)];
         let opts = match opts_of {
@@ -992,91 +903,4 @@ async fn the_pools_door_dials_a_served_unit_once_and_a_refused_one_never() {
             far.served()
         );
     }
-}
-
-// ── STRENGTHENED: both books price one unit against the same card pin ──────────────────────────
-
-/// The token card on the node's book: `m0` pricing input and output at 10,000 micro-units a token,
-/// no fee, the same rates [`TOKEN_RATES`] writes on the governance book's card.
-static TOKEN_CARD: std::sync::LazyLock<crate::root::kernel::RootHistory> =
-    std::sync::LazyLock::new(|| {
-        use busbar_kernel_ledger::cost::{LaneClass, RateCard};
-        let holder = crate::root::kernel::RootHistory::default();
-        holder.apply(
-            RateCard::from_micro_rates(
-                [
-                    (
-                        LaneClass::new("m0", busbar_contract::records::UNIT_INPUT),
-                        10_000.0,
-                    ),
-                    (
-                        LaneClass::new("m0", busbar_contract::records::UNIT_OUTPUT),
-                        10_000.0,
-                    ),
-                ],
-                0,
-            ),
-            1_000,
-        );
-        holder
-    });
-
-/// The governance book's card at [`TOKEN_CARD`]'s rates.
-const TOKEN_RATES: &str = "{ input_utok: 10000, output_utok: 10000 }";
-
-fn token_pin() -> Option<crate::root::kernel::PinnedHistory> {
-    TOKEN_CARD.pin()
-}
-
-/// Nano-units per cent: 10,000 micro-units of 1,000 nano-units each.
-const NANOS_PER_CENT: i128 = 10_000_000;
-
-/// BOTH BOOKS PRICE ONE DOOR UNIT AGAINST THE SAME CARD PIN. Door successor of
-/// `plane_node.rs::both_legs_price_against_the_same_root_card_pin`. The original's two assertions,
-/// on the door's two books for one delivered unit: the card history the unit pinned at its door
-/// does not move across the drive (its head seq is the same before and after), and the money the
-/// two books priced the unit to is the same (the governance book's derived spend, in cents, is the
-/// durable book's settled figure, in nano-units), and not zero, so the agreement is on a price.
-///
-/// RED: the history moving under the unit, or the two books pricing the same unit differently.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn the_pools_doors_two_books_price_a_unit_against_one_card_pin() {
-    let _one = PUBLISHING.lock().await;
-    let instance = "door-strong-one-card-pin";
-    let _published = Published(instance);
-    let card = card_of(TOKEN_RATES);
-    let far = far_end_scripted(stream_pausing(0)).await;
-    let rig = rig(
-        instance,
-        RigOpts {
-            members: &[(far.port, 1)],
-            rate_card: Some(&card),
-            fee_cents: Some(0),
-            pin: Some(token_pin),
-            ..RigOpts::default()
-        },
-    )
-    .await;
-    let before = token_pin().map(|p| p.seq().get());
-    let (status, _, _) = rig
-        .send("POST", "/v1/chat/completions", Some(streamed_chat()))
-        .await;
-    assert_eq!(status, 200);
-    let line = counted_line(&rig).await;
-    let after = token_pin().map(|p| p.seq().get());
-    assert_eq!(
-        before, after,
-        "the rate-card history moved under the unit, so its books did not price against one card"
-    );
-    assert_eq!(rig.tokens_after().await, 18, "the stream's tokens, once");
-    let spend = key_spend(&rig).expect("the card prices the key's counts");
-    assert!(
-        line.settled > 0,
-        "the unit is priced, so the agreement below is on a price: {line:?}"
-    );
-    assert_eq!(
-        i128::from(spend) * NANOS_PER_CENT,
-        line.settled,
-        "the two books priced the same unit to different money against one card pin: {line:?}"
-    );
 }

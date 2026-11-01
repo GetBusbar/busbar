@@ -7,7 +7,7 @@
 //! plane. The registry's own machinery over synthetic declarations is the kernel's to prove
 //! (`busbar-kernel`'s `proto` tests, `registry_fold`).
 //!
-//! Compiled only in a build that links every plane (`linked_every_plane`): the fixture is the shipped
+//! Compiled only in a build that links every plane door (`linked_every_plane_door`): the fixture is the shipped
 //! composition's, and a single-plane build links a different protocol set.
 
 use busbar_contract::codec::RequestHandler;
@@ -371,7 +371,7 @@ fn fallback_door_row() -> &'static busbar_kernel::plane_driver::registry::PlaneD
 fn the_fallback_doors_declared_dialects_are_the_1_5_5_metric_labels() {
     let row = fallback_door_row();
     assert_eq!(
-        (row.wire_format_names)(),
+        (row.wire_format_names)(row),
         strs(&FIXTURE["protocol_order"]).as_slice(),
         "the banked ingress_protocol / from / to labels, and their order, are 1.5.5's"
     );
@@ -388,7 +388,7 @@ fn the_fallback_doors_declared_dialects_are_the_1_5_5_metric_labels() {
 fn the_fallback_doors_provider_dialects_are_the_1_5_5_provider_protocols() {
     let row = fallback_door_row();
     assert_eq!(
-        (row.provider_dialects)(),
+        (row.provider_dialects)(row),
         strs(&FIXTURE["protocol_order"]).as_slice(),
         "the provider protocols a config may name, and their order, are 1.5.5's"
     );

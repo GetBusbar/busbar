@@ -17,7 +17,7 @@ use std::sync::{Arc, Mutex, TryLockError};
 use super::audit::tests::inputs;
 use super::*;
 use crate::root::store_double::RecordSlots;
-use crate::root::units_admin::{AuditView, LedgerView, NodeAudit, NodeLedger};
+use crate::root::units_admin::{AuditView, NodeAudit};
 
 /// The node the store-kept chain is written under.
 const NODE: u64 = 47;
@@ -58,15 +58,8 @@ fn node_over(
     ready: impl FnOnce(&mut Durability),
 ) -> (Arc<Mutex<Durability>>, Arc<Scans>) {
     let lane = JournalLane::start(slots.calls(), "test-store").expect("the lane starts");
-    let mut durability = build_on_store(
-        &DurabilityConfig { data_dir: None },
-        NODE,
-        lane,
-        Box::new(busbar_kernel_ledger::legacy::RecordingRows::new()),
-        Box::new(|| None),
-        None,
-    )
-    .expect("the store reads back");
+    let mut durability = build_on_store(&DurabilityConfig { data_dir: None }, NODE, lane, None)
+        .expect("the store reads back");
     ready(&mut durability);
     let book = Arc::new(Mutex::new(durability));
     let scans = Arc::new(Scans::default());
@@ -87,22 +80,6 @@ fn node_over(
     (book, scans)
 }
 
-/// The ledger views over `book`.
-fn ledger_over(book: &Arc<Mutex<Durability>>) -> NodeLedger {
-    NodeLedger::new(
-        Arc::clone(book),
-        Arc::new(busbar_kernel_ledger::legacy::RecordingRows::new()),
-    )
-}
-
-/// Seal checkpoint 1.
-fn sealed_once(durability: &mut Durability) {
-    let sealed = durability
-        .seal_checkpoint(&token(), StepName::Meter, NOW)
-        .expect("sealed");
-    assert_eq!(sealed.checkpoint_seq, 1);
-}
-
 /// Seal unit `unit`'s one audit record.
 fn seal(durability: &mut Durability, unit: u64) {
     durability
@@ -114,94 +91,63 @@ fn seal(durability: &mut Durability, unit: u64) {
         .expect("sealed");
 }
 
-/// THE CHECKPOINTS READ scans the store without the book's lock, and still serves the held
-/// checkpoint re-derived from the whole chain (`docs/design/BUSBAR-1.6.0.md:1285`).
-///
-/// RED before the fix: `NodeLedger::each_checkpoint` re-derived the checkpoints under the lock, and
-/// `Durability::chain` scanned the store there.
-#[test]
-fn the_checkpoints_read_scans_the_store_without_the_book_lock() {
-    let slots = RecordSlots::new();
-    let (book, scans) = node_over(&slots, sealed_once);
-    let mut served = Vec::new();
-    ledger_over(&book)
-        .each_checkpoint(&mut |checkpoint| served.push(checkpoint.checkpoint_seq))
-        .expect("the held checkpoint re-derives");
-    assert_eq!(served, vec![1], "the held checkpoint is served");
-    scans.assert_unlocked("the checkpoints read");
-}
-
-/// BOTH VERIFY READS scan the store without the book's lock, and still answer the held checkpoint,
-/// the book and the anchor's head as of one moment (`docs/design/BUSBAR-1.6.0.md:1285`).
-///
-/// RED before the fix: `verify_snapshot` and `verify_snapshot_anchored` re-derived the checkpoints
-/// under the lock they read the book under.
-#[test]
-fn the_verify_reads_scan_the_store_without_the_book_lock() {
-    let slots = RecordSlots::new();
-    let (book, scans) = node_over(&slots, sealed_once);
-    let view = ledger_over(&book);
-    let mut served = Vec::new();
-    let plain = view.verify_snapshot(&mut |checkpoint| served.push(checkpoint.checkpoint_seq));
-    assert!(plain.read.is_ok(), "the held checkpoint re-derives");
-    assert!(plain.book.is_some(), "the book is read");
-    let anchored =
-        view.verify_snapshot_anchored(&mut |checkpoint| served.push(checkpoint.checkpoint_seq));
-    assert!(anchored.read.is_ok(), "the held checkpoint re-derives");
-    assert_eq!(
-        anchored.anchored.map(|head| head.checkpoint_seq),
-        Some(1),
-        "the anchor's head is the checkpoint sealed"
-    );
-    assert_eq!(served, vec![1, 1], "each read serves the held checkpoint");
-    scans.assert_unlocked("the verify reads");
-}
-
-/// THE MIGRATION READ scans the store without the book's lock, and still answers the marker on the
-/// chain (`docs/design/BUSBAR-1.6.0.md:1285`).
-///
-/// RED before the fix: `NodeLedger::migration_marker` read the whole chain under the lock.
-#[test]
-fn the_migration_read_scans_the_store_without_the_book_lock() {
-    let marker = MigrationMarker {
-        checkpoint_seq: 1,
-        node: NODE,
-        sealed_at: NOW,
-        body_hash: [7; 32],
-        balances: 2,
-        cells_read: 3,
-        rate_card_version: 1,
+/// A unit's audit inputs, numbered `unit`.
+fn audit_inputs(unit: u64) -> busbar_kernel_audit::AuditInputs {
+    use busbar_contract::caps::{OriginKind, Outcome, UnitKey};
+    use busbar_kernel_audit::{
+        AuditInputs, Controls, FinishClass, OpClassId, OutcomeFacts, Subject, Usage, What,
     };
-    let slots = RecordSlots::new();
-    let (book, scans) = node_over(&slots, |durability| {
-        let entry = Entry::new(RecordClass::Migration, migration_body(&marker)).at(NOW, 0);
-        durability
-            .journal
-            .append(&token(), StepName::Meter, &[entry])
-            .expect("the marker goes on the chain");
-    });
-    assert_eq!(
-        ledger_over(&book).migration_marker(),
-        Some(marker),
-        "the marker on the chain is answered"
-    );
-    scans.assert_unlocked("the migration read");
+    AuditInputs {
+        subject: Subject::PrincipalId(format!("pseudonym-{unit}")),
+        what: What {
+            unit_key: UnitKey::new(unit),
+            incarnation: 0,
+            op_class: OpClassId::new("chat.completion"),
+            destination: None,
+            parent: None,
+            pre_hook_head: None,
+            post_hook_head: None,
+        },
+        wall: NOW + unit,
+        mono: unit * 1_000,
+        origin: busbar_kernel::test_support::tokens::origin(OriginKind::Client),
+        outcome: OutcomeFacts {
+            unit_end: Outcome::Completed,
+            step: None,
+            finish: FinishClass::Complete,
+            hook_failed: false,
+            emission_delta: 0,
+            stale_policy: false,
+        },
+        usage: Usage {
+            lines: Vec::new(),
+            tier_bp: 10_000,
+            fee_count: 0,
+            rate_card_version: 1,
+            bucket_chain_ref: String::new(),
+        },
+        controls: Controls::default(),
+        correlation_label: None,
+    }
 }
 
-/// THE `adjust` VERB'S LOOKUP of what the book recorded scans the store without the book's lock
-/// (`docs/design/BUSBAR-1.6.0.md:1285`).
-///
-/// RED before the fix: `NodeLedger::recorded_counts` replayed the whole chain under the lock.
+/// THE VERIFY WALK of every chain the store keeps scans the store without the journal's lock: it
+/// takes its inputs under the lock and walks after letting go of it (`docs/design/BUSBAR-1.6.0.md:1285`).
 #[test]
-fn the_adjust_lookup_scans_the_store_without_the_book_lock() {
+fn the_verify_walk_scans_the_store_without_the_book_lock() {
     let slots = RecordSlots::new();
-    let (book, scans) = node_over(&slots, |_| {});
-    assert_eq!(
-        ledger_over(&book).recorded_counts(&"ab".repeat(32)),
-        None,
-        "the chain holds no such entry"
+    let (book, scans) = node_over(&slots, |durability| seal(durability, 1));
+    assert!(
+        book.lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .lane()
+            .expect("a journal over the store")
+            .drain(std::time::Duration::from_secs(5)),
+        "the store takes the record"
     );
-    scans.assert_unlocked("the adjust verb's lookup");
+    let findings = NodeAudit::new(Arc::clone(&book)).stored_chain_findings();
+    assert!(findings.is_empty(), "{findings:?}");
+    scans.assert_unlocked("the verify walk");
 }
 
 /// AN AUDIT WINDOW OLDER THAN THE CACHE scans the store without the book's lock, and still answers

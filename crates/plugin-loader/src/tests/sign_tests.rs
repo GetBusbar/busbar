@@ -1016,6 +1016,7 @@ fn a_revoked_digest_is_refused_whoever_signed_it_and_whatever_is_opted_in() {
         .insert(sha256_hex(b"lib"), "pulled for a test".to_string());
     let err = evaluate(b"lib", &m, &pol).unwrap_err();
     assert_eq!(err.kind, RejectKind::Revoked);
+    assert_eq!(err.kind.code(), "revoked");
     assert!(err.reason.contains("pulled for a test"), "{}", err.reason);
     let mut unsigned = m.clone();
     unsigned.signature.clear();
@@ -1595,6 +1596,364 @@ fn the_default_release_key_input_is_the_real_release_key_list() {
     assert!(
         keys.iter().all(|k| k.key != retired),
         "the retired 1.5 key, whose seed lived in GitHub, is not trusted"
+    );
+}
+
+/// A manifest packed before `former_names` existed parses UNCHANGED and its signature still
+/// verifies over this binary's canonical bytes: the field is skipped when empty, so an old
+/// manifest's signed bytes are exactly what its publisher signed. The witness is the REAL manifest
+/// of `busbar-webrequest` v1.0.6 (the release beside busbar v1.5.5), as its published tarball
+/// `busbar-webrequest-1.0.6-aarch64-apple-darwin.tar.gz` carries it (sha256 `7f0818c6…`, the
+/// testing/shadow-oracle/plugin-digests.tsv row), verified against the release key that signed it.
+#[test]
+fn an_old_manifest_with_no_former_names_parses_and_verifies_unchanged() {
+    let text = include_str!("../../tests/fixtures/manifest_1_5_5_busbar_webrequest.json");
+    let m: Manifest = serde_json::from_str(text).expect("a 1.5.5 manifest parses");
+    assert!(m.former_names.is_empty());
+    assert_eq!(m.name, "busbar-webrequest");
+    let key = public_key_from_hex(RELEASE_PUBKEY_1_5).unwrap();
+    let sig: [u8; 64] = hex::decode(&m.signature).unwrap().try_into().unwrap();
+    let canonical = canonical_manifest_bytes(&m);
+    assert!(
+        !String::from_utf8_lossy(&canonical).contains("former_names"),
+        "an empty former-name list stays off the signed bytes"
+    );
+    key.verify_strict(&canonical, &Signature::from_bytes(&sig))
+        .expect("the 1.5.5 release signature verifies over this binary's canonical bytes");
+    // Re-serialized, it is still the same document (no field appears from nowhere).
+    let back: serde_json::Value = serde_json::to_value(&m).unwrap();
+    let orig: serde_json::Value = serde_json::from_str(text).unwrap();
+    assert_eq!(back, orig);
+}
+
+/// A former name is SIGNED: the signature covers it, so a former name added, dropped or changed
+/// after signing fails verification (RED), and the signed list verifies (GREEN).
+#[test]
+fn former_names_are_covered_by_the_signature() {
+    let key = test_key(9);
+    let lib = b"lib";
+    let mut m = manifest("busbar-store-alpha", "alpha", "busbar");
+    m.former_names = vec!["busbar-store-alpha-plugin".into()];
+    let signed = sign(&key, m, lib);
+    assert!(String::from_utf8_lossy(&canonical_manifest_bytes(&signed))
+        .contains("\"former_names\":[\"busbar-store-alpha-plugin\"]"));
+    signature_ok(&signed, lib, &key.verifying_key()).expect("the signed list verifies");
+    for tamper in [
+        vec![],
+        vec![
+            "busbar-store-alpha-plugin".to_string(),
+            "alpha-x".to_string(),
+        ],
+        vec!["busbar-store-beta-plugin".to_string()],
+    ] {
+        let mut t = signed.clone();
+        t.former_names = tamper.clone();
+        assert!(
+            signature_ok(&t, lib, &key.verifying_key()).is_err(),
+            "a tampered former-name list {tamper:?} must not verify"
+        );
+    }
+}
+
+/// A former name is held to the alias's rules, and to being a name the plugin does not already
+/// have: lowercase `[a-z0-9-]+`, not the plugin's name or alias, not listed twice.
+#[test]
+fn a_malformed_or_repeated_former_name_fails_structure() {
+    let ok = |former: &[&str]| {
+        let mut m = manifest("busbar-hook-webrequest", "webrequest", "busbar");
+        m.former_names = former.iter().map(|s| s.to_string()).collect();
+        validate_identity(&m, HOST_IDENTITY)
+    };
+    ok(&["busbar-webrequest"]).expect("a well-formed former name");
+    ok(&[]).expect("none");
+    for bad in [
+        &["Busbar-WebRequest"][..],
+        &["busbar_webrequest"],
+        &["-busbar"],
+        &[""],
+        &["busbar-hook-webrequest"],
+        &["webrequest"],
+        &["busbar-webrequest", "busbar-webrequest"],
+    ] {
+        let e = ok(bad).expect_err("refused");
+        assert!(e.contains("former name"), "{bad:?}: {e}");
+    }
+}
+
+/// THE DISK NEED (`declares.disk`, THE DESIGN §11.11 R4 as the OWNER amended it 2026-10-13) is a
+/// `kind: secret` fact alone: any other kind stating it is refused at phase 1, naming the kind; a
+/// secret source stating it validates; and a manifest that states none keeps its canonical bytes
+/// (the field is left off the wire when false).
+#[test]
+fn only_a_secret_source_may_declare_a_disk_need() {
+    let mut store = manifest("busbar-store-disk", "disk", "acme");
+    store.declares.disk = true;
+    let err = validate_identity(&store, HOST_IDENTITY).unwrap_err();
+    assert!(
+        err.contains("'store'") && err.contains("disk"),
+        "the refusal names the kind and the need: {err}"
+    );
+
+    let mut secret = manifest("busbar-secret-disk", "disk", "acme");
+    secret.kind = "secret".to_string();
+    secret.declares.disk = true;
+    validate_identity(&secret, HOST_IDENTITY).expect("a secret source may read the disk");
+
+    assert_eq!(
+        serde_json::to_value(Declares::default()).expect("encode"),
+        serde_json::json!({}),
+        "no disk need is left off the wire"
+    );
+    assert_eq!(
+        Declares::from_declares_json(br#"{"disk": true}"#).map(|d| d.disk),
+        Ok(true)
+    );
+}
+
+/// THE DEFAULT RELEASE KEY INPUT NEVER NAMES A RETIRED KEY. The release key is a build input
+/// (`BUSBAR_RELEASE_PUBKEY`, read by [`embedded_release_keys`] at compile time); a build that does
+/// not set it in its environment takes this tree's `.cargo/config.toml` `[env]` value. The retired
+/// 1.5 key is not that value, nor any key on [`RETIRED_RELEASE_KEYS`]: a default build embeds no
+/// retired key. The shadow oracle sets the variable to its run key at ITS candidate build only
+/// (ARCHITECT ruling 2026-10-20, row 86); cargo's `[env]` never overrides the process environment.
+#[test]
+fn the_default_release_key_input_is_not_a_retired_key() {
+    let cfg = include_str!("../../../../.cargo/config.toml");
+    assert!(
+        !cfg.contains(RELEASE_PUBKEY_1_5),
+        "the committed build input must not carry the retired 1.5 release key"
+    );
+    let committed: Vec<&str> = cfg
+        .lines()
+        .filter_map(|l| l.trim().strip_prefix("BUSBAR_RELEASE_PUBKEY"))
+        .filter_map(|rest| rest.trim().strip_prefix('='))
+        .map(|v| v.trim().trim_matches('"'))
+        .collect();
+    for value in committed {
+        assert!(
+            !RETIRED_RELEASE_KEYS
+                .iter()
+                .any(|(k, _)| k.eq_ignore_ascii_case(value)),
+            "the committed build input {value} is a retired release key"
+        );
+    }
+}
+
+// ── THE RETIRED 1.5 CI KEY (security P0, 2026-10-28) ─────────────────────────────────────────────
+// A first-party manifest signed by a RETIRED release key is refused with its own reason and audit
+// code, whether or not the build embeds that key, unless the operator names the key under
+// `plugins.trust.publishers`. No private half of the retired key is used here: the real key is
+// witnessed by the REAL 1.5.5 manifest it signed, and a stand-in test key, put on a retired list
+// through `evaluate_against`, signs a library these tests hold.
+
+/// The real `busbar-webrequest` 1.0.6 manifest, signed by the retired 1.5 key.
+fn retired_key_manifest() -> Manifest {
+    serde_json::from_str(include_str!(
+        "../../tests/fixtures/manifest_1_5_5_busbar_webrequest.json"
+    ))
+    .expect("the 1.5.5 manifest parses")
+}
+
+/// A stand-in retired key, its hex, and a first-party manifest it signed over `artifact`.
+fn stand_in_retired(artifact: &[u8]) -> (SigningKey, String, Manifest) {
+    let key = test_key(0x15);
+    let hex = hex::encode(key.verifying_key().as_bytes());
+    let signed = sign(
+        &key,
+        manifest("busbar-store-retired", "retired", FIRST_PARTY_PUBLISHER),
+        artifact,
+    );
+    (key, hex, signed)
+}
+
+#[test]
+fn a_manifest_signed_by_the_retired_ci_key_is_refused() {
+    assert!(
+        RETIRED_RELEASE_KEYS
+            .iter()
+            .any(|(k, _)| *k == RELEASE_PUBKEY_1_5),
+        "the retired 1.5 CI key is on the compiled-in retired list"
+    );
+
+    // THE REAL KEY. Zero config, in a build that embeds no key and in a build that still embeds
+    // the retired key (a stale CI variable): refused, as a retired key, naming the key and the way
+    // an operator trusts it explicitly. Never "unsigned", never silent.
+    let m = retired_key_manifest();
+    let lib = b"\x7fELF any library";
+    let keyless = policy(None, &[], false, false);
+    let embeds_it = TrustPolicy {
+        first_party_keys: vec![FirstPartyKey::unnamed(
+            public_key_from_hex(RELEASE_PUBKEY_1_5).unwrap(),
+        )],
+        ..policy(None, &[], false, false)
+    };
+    for pol in [&keyless, &embeds_it] {
+        let r = evaluate(lib, &m, pol).expect_err("a retired-key manifest never loads by default");
+        assert_eq!(r.kind, RejectKind::RetiredKey, "got {r:?}");
+        assert_eq!(r.kind.code(), "retired_key");
+        assert!(
+            r.reason.contains(RELEASE_PUBKEY_1_5),
+            "names the key: {}",
+            r.reason
+        );
+        assert!(
+            r.reason.contains("RETIRED"),
+            "says it is retired: {}",
+            r.reason
+        );
+        assert!(
+            r.reason.contains("plugins.trust.publishers"),
+            "names the explicit opt-in: {}",
+            r.reason
+        );
+    }
+    // A third-party opt-in does not reach it: it is not a third-party plugin.
+    let loose = policy(None, &[], false, true);
+    assert_eq!(
+        evaluate(lib, &m, &loose).unwrap_err().kind,
+        RejectKind::RetiredKey
+    );
+
+    // A STAND-IN retired key over a library it truly signed: the signature is valid and bound,
+    // the build embeds that very key as its release key, and it is still refused. Off the retired
+    // list the same manifest is first-party trusted, so the refusal is the retired list's alone.
+    let artifact = b"\x7fELF signed by a retired key";
+    let (key, hex, signed) = stand_in_retired(artifact);
+    let retired = [(hex.as_str(), "a stand-in retired key")];
+    let pol = policy(Some(&key), &[], false, false);
+    let r = evaluate_against(artifact, &signed, &pol, &retired).unwrap_err();
+    assert_eq!(r.kind, RejectKind::RetiredKey, "got {r:?}");
+    assert!(r.reason.contains(&hex) && r.reason.contains("a stand-in retired key"));
+    assert_eq!(
+        evaluate_against(artifact, &signed, &pol, &[]).unwrap(),
+        Verdict::Trusted {
+            publisher: FIRST_PARTY_PUBLISHER.into(),
+            first_party: true
+        }
+    );
+}
+
+#[test]
+fn a_manifest_signed_by_the_retired_ci_key_loads_only_when_the_operator_trusts_it_explicitly() {
+    let artifact = b"\x7fELF signed by a retired key";
+    let (key, hex, signed) = stand_in_retired(artifact);
+    let vk = key.verifying_key();
+    let retired = [(hex.as_str(), "a stand-in retired key")];
+
+    // Not named by the operator: refused.
+    let r = evaluate_against(
+        artifact,
+        &signed,
+        &policy(None, &[], false, false),
+        &retired,
+    )
+    .unwrap_err();
+    assert_eq!(r.kind, RejectKind::RetiredKey);
+
+    // Named under plugins.trust.publishers (any name but `busbar`): it loads, as an EXPLICIT
+    // opt-in the boot WARNs about (an `Allowed` verdict), naming the key, why it is retired and the
+    // operator's entry. It is never `Trusted` as a current first-party plugin.
+    let pol = policy(None, &[("busbar-1-5-retired", &vk)], false, false);
+    match evaluate_against(artifact, &signed, &pol, &retired) {
+        Ok(Verdict::Allowed {
+            reason,
+            allow: AllowReason::RetiredKey,
+        }) => {
+            assert!(reason.contains(&hex), "names the key: {reason}");
+            assert!(reason.contains("RETIRED"), "says it is retired: {reason}");
+            assert!(
+                reason.contains("a stand-in retired key"),
+                "says why: {reason}"
+            );
+            assert!(
+                reason.contains("busbar-1-5-retired"),
+                "names the entry: {reason}"
+            );
+        }
+        other => panic!("an explicitly trusted retired key loads as an opt-in, got {other:?}"),
+    }
+    // The opt-in trusts the KEY, not any bytes: a library the manifest does not bind is refused.
+    assert_eq!(
+        evaluate_against(b"\x7fELF another library", &signed, &pol, &retired)
+            .unwrap_err()
+            .kind,
+        RejectKind::Tampered
+    );
+    // The opt-in proves no anti-downgrade floor: a floored name still needs a current key.
+    let mut floored = pol.clone();
+    floored
+        .min_versions
+        .insert("busbar-store-retired".into(), "1.0.0".into());
+    assert_eq!(
+        evaluate_against(artifact, &signed, &floored, &retired)
+            .unwrap_err()
+            .kind,
+        RejectKind::UntrustedFloored
+    );
+    // allow_unsigned does NOT admit it (owner-signed 2026-10-30, SEC-ALLOWUNS): a retired key is a
+    // revocation, not a missing signature. The refusal names the key and says allow_unsigned does
+    // not admit it, with every opt-in flag on.
+    for permissive in [
+        policy(None, &[], true, false),
+        policy(None, &[], true, true),
+    ] {
+        let r = evaluate_against(artifact, &signed, &permissive, &retired)
+            .expect_err("allow_unsigned never admits a retired-key signature");
+        assert_eq!(r.kind, RejectKind::RetiredKey, "got {r:?}");
+        assert_eq!(r.kind.code(), "retired_key");
+        assert!(r.reason.contains(&hex), "names the key: {}", r.reason);
+        assert!(
+            r.reason
+                .contains("plugins.trust.allow_unsigned does not admit a retired key"),
+            "says allow_unsigned does not admit it: {}",
+            r.reason
+        );
+    }
+    // The real retired 1.5 key under allow_unsigned: refused the same way.
+    let r = evaluate(
+        b"\x7fELF any library",
+        &retired_key_manifest(),
+        &policy(None, &[], true, false),
+    )
+    .expect_err("allow_unsigned never admits the retired 1.5 key");
+    assert_eq!(r.kind, RejectKind::RetiredKey, "got {r:?}");
+    assert!(r.reason.contains(RELEASE_PUBKEY_1_5), "{}", r.reason);
+    // A plugin with NO signature at all is still what allow_unsigned is for: it loads unverified.
+    let unsigned = manifest("busbar-store-unsigned", "unsigned", FIRST_PARTY_PUBLISHER);
+    assert!(unsigned.signature.is_empty(), "the helper signs nothing");
+    match evaluate_against(
+        artifact,
+        &unsigned,
+        &policy(None, &[], true, false),
+        &retired,
+    ) {
+        Ok(Verdict::Allowed {
+            allow: AllowReason::Unsigned,
+            ..
+        }) => {}
+        other => panic!("an unsigned plugin under allow_unsigned loads unverified, got {other:?}"),
+    }
+
+    // THE REAL KEY, through the operator's config entry: it parses, and it lifts the retired
+    // refusal off the real 1.5.5 manifest. What then stands is that manifest's binding to its own
+    // library, which this test does not hold.
+    let mins = BTreeMap::new();
+    let floors = BTreeMap::new();
+    let pol = TrustPolicy::from_config(TrustInput {
+        publishers: &[("busbar-1-5-retired", RELEASE_PUBKEY_1_5)],
+        allow_unsigned: false,
+        allow_third_party: false,
+        min_versions: &mins,
+        first_party_floors: &floors,
+        binary_version: "1.6.0",
+    })
+    .expect("the operator's entry for the retired key parses");
+    let r = evaluate(b"\x7fELF any library", &retired_key_manifest(), &pol).unwrap_err();
+    assert_eq!(
+        r.kind,
+        RejectKind::Tampered,
+        "trusted explicitly, the retired key is no longer the refusal: {}",
+        r.reason
     );
 }
 

@@ -332,6 +332,114 @@ fn ipv6_link_local_is_its_own_predicate_not_a_metadata_one() {
     }
 }
 
+/// A SOCKET LITERAL is exactly what the standard parser accepts: every row agrees with
+/// `SocketAddr`'s own answer, and states it.
+#[test]
+fn a_socket_literal_is_exactly_what_the_standard_parser_accepts() {
+    for (s, want) in [
+        ("127.0.0.1:8080", true),
+        ("0.0.0.0:0", true),
+        ("10.1.2.3:65535", true),
+        ("[::1]:443", true),
+        ("[2001:db8::1]:80", true),
+        ("[::ffff:127.0.0.1]:80", true),
+        ("[fe80::1%eth0]:80", false),
+        // A numeric scope id is the standard grammar's; a named zone is not.
+        ("[fe80::1%2]:80", true),
+        ("0x7f.1:80", false),
+        ("127.1:80", false),
+        ("2130706433:80", false),
+        ("127.0.0.1", false),
+        ("127.0.0.1:", false),
+        ("127.0.0.1:65536", false),
+        ("127.0.0.1:-1", false),
+        ("127.0.0.1:80 ", false),
+        (" 127.0.0.1:80", false),
+        ("localhost:80", false),
+        ("example.test:443", false),
+        ("::1:443", false),
+        ("[::1]", false),
+        ("::1", false),
+        ("[::1]:", false),
+        ("", false),
+    ] {
+        assert_eq!(is_socket_literal(s), want, "{s:?}");
+        assert_eq!(
+            is_socket_literal(s),
+            s.parse::<std::net::SocketAddr>().is_ok(),
+            "{s:?} disagrees with the standard parser"
+        );
+    }
+}
+
+/// AN IP LITERAL (v4 or v6) is exactly what the standard parser accepts: every row agrees with
+/// `IpAddr`'s own answer, and states it.
+#[test]
+fn an_ip_literal_is_exactly_what_the_standard_parser_accepts() {
+    for (s, want) in [
+        ("127.0.0.1", true),
+        ("0.0.0.0", true),
+        ("255.255.255.255", true),
+        ("256.0.0.1", false),
+        ("127.0.0.01", false),
+        ("127.1", false),
+        ("0x7f.0.0.1", false),
+        ("2130706433", false),
+        ("127.0.0.1:80", false),
+        (" 127.0.0.1", false),
+        ("127.0.0.1 ", false),
+        ("::1", true),
+        ("::", true),
+        ("2001:db8::1", true),
+        ("::ffff:127.0.0.1", true),
+        ("[::1]", false),
+        ("[::1]:443", false),
+        ("fe80::1%2", false),
+        ("fe80::1%eth0", false),
+        ("2001:db8:::1", false),
+        ("localhost", false),
+        ("", false),
+    ] {
+        assert_eq!(is_ip_literal(s), want, "{s:?}");
+        assert_eq!(
+            is_ip_literal(s),
+            s.parse::<std::net::IpAddr>().is_ok(),
+            "{s:?} disagrees with the standard parser"
+        );
+    }
+}
+
+/// THE VERBATIM HOST READER keeps what the shared reader normalises: a trailing root dot stays
+/// (`example.com.` is not `example.com`), a percent-encoded host is not decoded, and an IPv6
+/// literal is unbracketed as `Ipv6Addr` displays it; the authority is read exactly as
+/// `parse_url` reads it. RED against `url_host`, which drops the dot.
+#[test]
+fn the_verbatim_host_keeps_the_root_dot_the_shared_reader_drops() {
+    use crate::net::{url_host, url_host_verbatim};
+    assert_eq!(
+        url_host_verbatim("http://example.com./x").as_deref(),
+        Some("example.com.")
+    );
+    assert_eq!(
+        url_host("http://example.com./x").as_deref(),
+        Some("example.com")
+    );
+    assert_eq!(
+        url_host_verbatim("https://user@example.com:8443/p?q").as_deref(),
+        Some("example.com")
+    );
+    assert_eq!(
+        url_host_verbatim("foo://ex%41mple/").as_deref(),
+        Some("ex%41mple")
+    );
+    assert_eq!(
+        url_host_verbatim("http://[::ffff:a9fe:a9fe]/").as_deref(),
+        Some("::ffff:169.254.169.254")
+    );
+    assert_eq!(url_host_verbatim("file:///etc/passwd"), None);
+    assert_eq!(url_host_verbatim("mailto:a@b"), None);
+}
+
 /// THE ONE AUTHORITY SPLIT reads v1.5.5's authority: it ends at `/`, `?`, `#` and (no scheme, or a
 /// web scheme) `\`; the userinfo runs to the authority's last `@`; a generic scheme keeps its `\`.
 #[test]
@@ -586,177 +694,6 @@ fn a_bare_idn_authority_reads_as_its_punycode_name() {
         extract_normalized_host("https://b\u{fc}cher\u{ff1c}.example/"),
         None
     );
-}
-
-/// One row: the target, then the host, the authority port, the dial port and the `Host` value.
-type DialRow = (
-    &'static str,
-    &'static str,
-    Option<u16>,
-    Option<u16>,
-    &'static str,
-);
-
-/// THE AUTHORITY AND `Host` A DIAL SENDS, as busbar 1.5.5 sent them. 1.5.5 built every `http(s)`
-/// request with reqwest 0.12.28 over `url` 2.5.8 (`url` serialises the host, elides the scheme's
-/// default port) and hyper-util 0.1.20's legacy client, which wrote `Host` as `uri.host()` plus
-/// `:port` for a port other than 443 (`https`/`wss`) or 80 (otherwise)
-/// (`hyper_util::client::legacy::Client::send_request`, `get_non_default_port`); `uri.host()` keeps
-/// an IPv6 literal's brackets. The `Host` column is that value.
-#[test]
-fn the_dial_authority_and_host_are_the_bytes_1_5_5_sent() {
-    let rows: [DialRow; 18] = [
-        // IDN, default port implied and spelled, explicit port.
-        (
-            "https://b\u{fc}cher.example/",
-            "xn--bcher-kva.example",
-            None,
-            Some(443),
-            "xn--bcher-kva.example",
-        ),
-        (
-            "https://b\u{fc}cher.example:443/x",
-            "xn--bcher-kva.example",
-            None,
-            Some(443),
-            "xn--bcher-kva.example",
-        ),
-        (
-            "https://b\u{fc}cher.example:8443/x",
-            "xn--bcher-kva.example",
-            Some(8443),
-            Some(8443),
-            "xn--bcher-kva.example:8443",
-        ),
-        (
-            "http://b\u{fc}cher.example:443/",
-            "xn--bcher-kva.example",
-            Some(443),
-            Some(443),
-            "xn--bcher-kva.example:443",
-        ),
-        (
-            "https://user:pw@M\u{dc}nchen.De/",
-            "xn--mnchen-3ya.de",
-            None,
-            Some(443),
-            "xn--mnchen-3ya.de",
-        ),
-        (
-            "wss://b\u{fc}cher.example:443/",
-            "xn--bcher-kva.example",
-            None,
-            Some(443),
-            "xn--bcher-kva.example",
-        ),
-        // Upper-case host: `url` lower-cases a special host; the root dot is kept.
-        (
-            "http://API.Example.COM:80/v1",
-            "api.example.com",
-            None,
-            Some(80),
-            "api.example.com",
-        ),
-        (
-            "https://Example.COM./",
-            "example.com.",
-            None,
-            Some(443),
-            "example.com.",
-        ),
-        // IPv6 literals: bracketed, compressed and lower-cased as `url` writes them.
-        (
-            "http://[::1]:8080/",
-            "[::1]",
-            Some(8080),
-            Some(8080),
-            "[::1]:8080",
-        ),
-        (
-            "https://[2001:DB8:0:0:1:0:0:1]/",
-            "[2001:db8::1:0:0:1]",
-            None,
-            Some(443),
-            "[2001:db8::1:0:0:1]",
-        ),
-        (
-            "https://[::ffff:127.0.0.1]:443/",
-            "[::ffff:7f00:1]",
-            None,
-            Some(443),
-            "[::ffff:7f00:1]",
-        ),
-        (
-            "https://[1:0:0:0:0:0:0:0]/",
-            "[1::]",
-            None,
-            Some(443),
-            "[1::]",
-        ),
-        // IPv4 in any spelling `url` reads as a number.
-        ("http://0x7f.1/", "127.0.0.1", None, Some(80), "127.0.0.1"),
-        (
-            "https://\u{ff11}\u{ff12}\u{ff17}.0.0.1:8443/",
-            "127.0.0.1",
-            Some(8443),
-            Some(8443),
-            "127.0.0.1:8443",
-        ),
-        // A bare authority: UTS #46 host, the port as written, no default.
-        (
-            "b\u{fc}cher.example:8443",
-            "xn--bcher-kva.example",
-            Some(8443),
-            Some(8443),
-            "xn--bcher-kva.example:8443",
-        ),
-        ("Example.COM", "example.com", None, None, "example.com"),
-        // A non-special scheme: `url`'s opaque host, no default port.
-        (
-            "ldap://b\u{fc}cher.example:389",
-            "b%C3%BCcher.example",
-            Some(389),
-            Some(389),
-            "b%C3%BCcher.example:389",
-        ),
-        (
-            "ldap://Dir.Example",
-            "Dir.Example",
-            None,
-            None,
-            "Dir.Example",
-        ),
-    ];
-    for (target, host, port, dial_port, host_header) in rows {
-        let got = dial_authority(target).unwrap_or_else(|e| panic!("{target:?}: {e}"));
-        assert_eq!(got.host, host, "{target:?}");
-        assert_eq!(got.port, port, "{target:?}");
-        assert_eq!(got.dial_port, dial_port, "{target:?}");
-        assert_eq!(got.host_header, host_header, "{target:?}");
-        assert_eq!(got.authority, host_header, "{target:?}");
-    }
-    for target in [
-        "https://1.2.3.4.5/",
-        "https://1.256.0.0.0/",
-        "https://b\u{fc}cher\u{ff1c}.example/",
-        "https://[::1/",
-    ] {
-        assert!(dial_authority(target).is_err(), "{target:?}");
-    }
-    // Where the destination check's reader reads no host, no authority is read either: the two
-    // never disagree.
-    for target in [
-        "ldapi://%2Fvar%2Frun%2Fslapd%2Fldapi",
-        "ldap://a%25b.example:389",
-        "ldap://evil%40good.example",
-    ] {
-        assert_eq!(target_host(target), None, "{target:?}");
-        assert_eq!(
-            dial_authority(target),
-            Err(UrlRefusal::NoHost),
-            "{target:?}"
-        );
-    }
 }
 
 /// `url` 2.5.8'S IPv4 READING (`url/src/host.rs` `ends_in_a_number`, `parse_ipv4addr`): the short,

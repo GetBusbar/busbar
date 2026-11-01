@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! `dest.judge` AND THE DIAL, THROUGH THE KERNEL, OVER THE ONE GUARD (OWNER ruling DESTINATION
-//! GUARD): the kernel's host services with the deployment's judge installed, as the root installs
-//! it, and a resolver the test answers by hand. These held the kernel's own rules before; the rules
-//! are the guard's now, and the kernel only asks.
+//! `dest.judge` AND THE DIAL, THROUGH THE KERNEL, OVER THE ONE GUARD: the kernel's host services
+//! with the deployment's judge installed, as the root installs it, and a resolver the test answers
+//! by hand. These held the kernel's own rules before; the rules are the guard's now, and the kernel
+//! only asks.
 
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -424,7 +424,7 @@ fn without_an_override_metadata_stays_refused_on_the_dial() {
     assert_eq!(*pinned.lock().unwrap(), Some(Err(svc::DEST_METADATA)));
 }
 
-/// RULING A ON THE DIAL: every resolved address is judged by the same lists the configuration check
+/// ON THE DIAL: every resolved address is judged by the same lists the configuration check
 /// reads, operator-blocked addresses included. A name answering an address in
 /// `security.blocked_metadata_hosts` is refused on the dial, exactly as the literal is.
 #[test]
@@ -526,7 +526,7 @@ fn dest_judge_refuses_private_reach_when_asked_and_names_what_decided_it() {
     );
 }
 
-/// RED (SEAM-4f): the deployment's one judge, asked for a dial a need holds a PRIVATE REACH to
+/// RED: the deployment's one judge, asked for a dial a need holds a PRIVATE REACH to
 /// (`DestJudge::judge_reaching`), admits a private address (a literal, and a name's private answer)
 /// in the provider class, which refuses both without it; a cloud-metadata address is refused either
 /// way, a reach being a host entry, never an IP one.
@@ -578,7 +578,7 @@ fn a_private_reach_admits_a_private_address_in_its_class_and_never_metadata() {
     );
 }
 
-/// RED (HIGH, the SSRF guard bypass through a plugin's argument guard): `dest.judge` asked
+/// RED, the SSRF guard bypass through a plugin's argument guard: `dest.judge` asked
 /// about the exact host strings that guard passes it (a bare host, an IPv6 literal bracketed,
 /// never resolved; `DEST_REFUSE_PRIVATE` for a registration granted no private reach, none for one
 /// granted it) answers each odd spelling with the verdict of the plain ASCII host a URL client
@@ -660,7 +660,7 @@ fn dest_judge_answers_an_odd_spelling_as_the_ascii_host_it_maps_to() {
     assert_eq!(r.asked.load(Ordering::SeqCst), 0, "nothing resolved");
 }
 
-/// RED (HIGH, the percent-escape the guard did not decode): `dest.judge` asked about a bare host
+/// RED, the percent-escape the guard did not decode: `dest.judge` asked about a bare host
 /// holding a `%` escape, without `DEST_RESOLVE` (the argument guard's own question), answers
 /// `DEST_NO_HOST`, at once, nothing resolved. `%6c%6fcalhost` was `DEST_ALLOWED`: the guard read
 /// it as an unknown name, and a client that decodes it dials `localhost`. The `://` spelling, which

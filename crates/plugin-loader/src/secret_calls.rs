@@ -10,13 +10,16 @@
 //! reads which door a plugin came in by once it is loaded.
 //!
 //! `open` is a ticket-less crossing (it may not pend); `resolve` is submitted on a ticket and the
-//! calling thread waits for its answer, which may PEND (the dispatcher's worker drives it). The
-//! material is copied out of the plugin's lease into a [`SecretValue`] and the lease is released before
-//! `resolve` returns, so no plugin memory outlives the call. An instance is closed when its last
-//! handle drops.
+//! calling thread waits for its answer, which may PEND (the dispatcher's worker drives it). THE
+//! VALUE IS WRITTEN INTO THE HOST'S BUFFER (the credential chip, row 6: host-owned secret bytes): a zeroed
+//! [`SecretValue`] the host lends `resolve` ([`ResolveIn::secret_buf`]) and keeps, so there is no
+//! plugin lease, no copy out of plugin memory and nothing to release. A value over the buffer is
+//! the short-buffer answer, re-called once with a buffer its size. The holder is the bytes' one
+//! home until the consumer's `open` has them, and wipes them when it drops. An instance is closed
+//! when its last handle drops.
 
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::{Arc, PoisonError, RwLock};
+use std::sync::{Arc, Mutex, PoisonError, RwLock};
 
 use crate::open_once::OpenOnce;
 use std::time::Duration;
@@ -25,10 +28,11 @@ use busbar_contract::abi::mechanism::call::{
     Blob, DeadlineClass, Outcome, BLOB_JSON, BLOB_OCTETS, BLOB_SECRET,
 };
 use busbar_contract::abi::mechanism::door::DoorFn;
-use busbar_contract::abi::mechanism::lifecycle::{slot as life, ReleaseIn};
+use busbar_contract::abi::mechanism::lifecycle::slot as life;
 use busbar_contract::abi::mechanism::KindCode;
 use busbar_contract::abi::secret::{
-    slot, ResolveIn, ResolveOut, ERROR_KIND_DENIED, ERROR_KIND_INTERNAL, ERROR_KIND_UNAVAILABLE,
+    slot, CheckIn, ResolveIn, ResolveOut, ERROR_KIND_DENIED, ERROR_KIND_INTERNAL,
+    ERROR_KIND_UNAVAILABLE, ERROR_KIND_UNSET, FIRST_SECRET_CAP, MAX_SECRET_BYTES,
 };
 use busbar_contract::config_time::{ConfigScope, RESOLVE_OFF_CONFIG_TIME};
 use busbar_contract::conn::DeclaredConns;
@@ -93,8 +97,133 @@ impl std::fmt::Debug for LoadedSecret {
     }
 }
 
+/// ONE RESOLVE'S HOST MEMORY, owned by the dispatcher while the crossing runs (a crossing the
+/// waiter gave up on still writes into it until it returns): the settings it reads and the zeroed
+/// holder the value is written into. The holder is taken out (moved, never copied) once the answer
+/// is READY; whatever is left wipes itself when the last owner drops.
+struct Lending {
+    // settings-leak-lint: allow — NON-PROJECTION engine type: one resolve's settings bytes, lent to
+    // the plugin for the call and owned by the dispatcher until it returns. `Lending` implements
+    // neither `Debug` nor `Serialize`.
+    settings: Vec<u8>,
+    held: Mutex<SecretValue<Vec<u8>>>,
+}
+
+impl Lending {
+    /// `settings` and a zeroed holder of `cap` bytes, and the `in` naming both.
+    fn new(settings: &[u8], cap: usize) -> (Arc<Self>, ResolveIn) {
+        let mut held = SecretValue::zeroed(cap);
+        let (buf, cap) = held.lend_mut();
+        let lending = Arc::new(Self {
+            settings: settings.to_vec(),
+            held: Mutex::new(held),
+        });
+        let input = resolve_in(blob(&lending.settings, BLOB_JSON, 0), buf, cap);
+        (lending, input)
+    }
+
+    /// The holder, moved out, keeping the `len` bytes the plugin wrote.
+    fn take(&self, len: usize) -> SecretValue<Vec<u8>> {
+        let mut held =
+            std::mem::take(&mut *self.held.lock().unwrap_or_else(PoisonError::into_inner));
+        held.keep(len);
+        held
+    }
+}
+
+/// `resolve`'s `in`: the settings and the host's buffer.
+fn resolve_in(settings: Blob, secret_buf: *mut u8, secret_cap: usize) -> ResolveIn {
+    ResolveIn {
+        head: in_head(),
+        settings,
+        secret_buf,
+        secret_cap,
+    }
+}
+
+/// `resolve`'s `out`, blank.
+fn resolve_out() -> ResolveOut {
+    ResolveOut {
+        head: out_head(),
+        secret: NO_BLOB,
+        error_kind: ERROR_KIND_UNSET,
+        _reserved: 0,
+        needed: 0,
+    }
+}
+
+/// The buffer a short answer asks for: what it `needed`, within the secret cap the answer check
+/// already enforced.
+fn regrown(out: &ResolveOut) -> usize {
+    usize::try_from(out.needed)
+        .unwrap_or(FIRST_SECRET_CAP)
+        .min(MAX_SECRET_BYTES)
+}
+
+/// The reason buffer the host lends a `check`, in bytes.
+const CHECK_REASON_CAP: usize = 4096;
+
+/// `check` one reference's `settings` (JSON bytes) on `plugin`, ticket-less and with no instance
+/// (`abi::secret::Ops::check`): `Ok` when READY, or REFUSED (a plugin that serves no `check`
+/// passes every reference); else the plugin's reasons, one per line, as it wrote them.
+///
+/// # Errors
+/// The plugin's reasons, or what it answered instead of a judgement.
+pub fn check(plugin: &Plugin<Secret>, settings: &[u8]) -> Result<(), Vec<String>> {
+    let mut reason = vec![0_u8; CHECK_REASON_CAP];
+    let mut f = Frame::new(
+        CheckIn {
+            head: in_head(),
+            settings: blob(settings, BLOB_JSON, 0),
+            err_buf: reason.as_mut_ptr(),
+            err_cap: reason.len(),
+        },
+        out_head(),
+    );
+    let c = plugin.call(slot::CHECK, &mut f);
+    let name = plugin.name();
+    match c.outcome {
+        Outcome::Ready | Outcome::Refused => Ok(()),
+        Outcome::Failed => {
+            let text = c.error.as_deref().unwrap_or_default();
+            if busbar_contract::abi::mechanism::lifecycle::check_validate_refusal(text).is_err() {
+                return Err(vec![format!(
+                    "secret module '{name}' refused the reference without saying why"
+                )]);
+            }
+            Err(String::from_utf8_lossy(text)
+                .split('\n')
+                .map(str::to_string)
+                .collect())
+        }
+        o => Err(vec![format!(
+            "secret module '{name}' answered {o:?} to check the reference"
+        )]),
+    }
+}
+
 fn refused(error_kind: u32, text: String) -> SecretRefused {
     SecretRefused { error_kind, text }
+}
+
+/// THE VALUE CHANGED SIZE BETWEEN THE HOST'S TWO READS: the one re-call, lent a buffer the size
+/// the first answer named, was answered short again (the dispatcher's FAULT for a second short
+/// answer): the value grew between the reads (a file rotated, a Kubernetes `..data` swap). A
+/// transient refusal, UNAVAILABLE, naming the module, so the caller resolves again.
+fn changed_size(name: &str) -> SecretRefused {
+    refused(
+        ERROR_KIND_UNAVAILABLE,
+        format!(
+            "secret module '{name}' could not resolve: the secret's value changed size between \
+             the host's two reads; resolve it again"
+        ),
+    )
+}
+
+/// The re-call answered short again: FAULT (the second short answer), its `out` naming more than
+/// the `lent` bytes of the re-call's buffer.
+fn short_again(outcome: Outcome, out: &ResolveOut, lent: usize) -> bool {
+    outcome == Outcome::Fault && out.needed > lent as u64
 }
 
 /// The text of a refused answer: the plugin's own, else `fallback`.
@@ -193,51 +322,37 @@ impl LoadedSecret {
 }
 
 impl Opened {
-    /// Hand `lease` back (ticket-less; a release never pends).
-    fn release(&self, lease: u64) {
-        let mut f = Frame::new(
-            ReleaseIn {
-                head: in_head(),
-                lease,
-            },
-            out_head(),
-        );
-        let _ = self.plugin.call(life::RELEASE, &mut f);
-    }
-
-    /// `resolve` on THIS thread, ticket-less: the disk lane's crossing. The material is copied out
-    /// of the plugin's lease and the lease released before this returns.
+    /// `resolve` on THIS thread, ticket-less: the disk lane's crossing. The value is written into
+    /// the host's holder (re-called once, with a buffer its size, when it does not fit), so
+    /// nothing is left in plugin memory and nothing is released.
     fn resolve_here(&self, settings: &[u8]) -> Result<SecretValue<Vec<u8>>, SecretRefused> {
         let name = self.plugin.name();
+        let mut held = SecretValue::zeroed(FIRST_SECRET_CAP);
+        let (buf, cap) = held.lend_mut();
         let mut f = Frame::new(
-            ResolveIn {
-                head: in_head(),
-                settings: blob(settings, BLOB_JSON, 0),
-            },
-            ResolveOut {
-                head: out_head(),
-                secret: NO_BLOB,
-                error_kind: 0,
-                _reserved: 0,
-            },
+            resolve_in(blob(settings, BLOB_JSON, 0), buf, cap),
+            resolve_out(),
         );
-        let c = self.plugin.call(slot::RESOLVE, &mut f);
+        let mut c = self.plugin.call(slot::RESOLVE, &mut f);
+        let mut recalled = None;
+        if let Some(token) = c.recall.take() {
+            // THE ONE RE-CALL (M-SB): a holder the size the answer named; the first held nothing.
+            held = SecretValue::zeroed(regrown(&f.out));
+            let (buf, cap) = held.lend_mut();
+            f.input.secret_buf = buf;
+            f.input.secret_cap = cap;
+            f.out = resolve_out();
+            c = self.plugin.recall(token, slot::RESOLVE, &mut f);
+            recalled = Some(cap);
+        }
+        if recalled.is_some_and(|lent| short_again(c.outcome, &f.out, lent)) {
+            return Err(changed_size(name));
+        }
         match c.outcome {
             Outcome::Ready => {
-                let b = f.out.secret;
-                // SAFETY: a READY resolve's `secret` names plugin memory held under the answer's
-                // lease until `release` (the secret kind's answer rule, checked by `check_resolve`
-                // in the crossing); it is copied here, before the release below.
-                let material = if b.ptr.is_null() || b.len == 0 {
-                    Vec::new()
-                } else {
-                    unsafe { std::slice::from_raw_parts(b.ptr, b.len) }.to_vec()
-                };
-                let material = SecretValue::new(material);
-                if c.lease != 0 {
-                    self.release(c.lease);
-                }
-                Ok(material)
+                // `check_resolve` held the answer to the host's buffer: `len` bytes at its start.
+                held.keep(f.out.secret.len);
+                Ok(held)
             }
             Outcome::Failed | Outcome::Refused => Err(refused(
                 f.out.error_kind,
@@ -282,34 +397,35 @@ impl SecretCalls for LoadedSecret {
                 format!("secret module '{name}' could not be called: no ticket"),
             ));
         };
-        // The settings ride with the job: a crossing the watchdog answered still owns them until
-        // it returns.
-        let owned: Arc<Vec<u8>> = Arc::new(settings.to_vec());
-        let frame = Frame::new(
-            ResolveIn {
-                head: in_head(),
-                settings: blob(&owned, BLOB_JSON, 0),
-            },
-            ResolveOut {
-                head: out_head(),
-                secret: NO_BLOB,
-                error_kind: 0,
-                _reserved: 0,
-            },
-        );
+        // The settings and the holder ride with the job: a crossing the watchdog answered still
+        // owns them until it returns, and the holder wipes itself when the last owner drops.
         let deadline = now_ns().saturating_add(CALL_DEADLINE.as_nanos() as u64);
-        let done = self
-            .dispatcher
-            .submit_lent(
-                plugin,
-                ticket,
-                slot::RESOLVE,
-                frame,
-                DeadlineClass::Call,
-                deadline,
-                owned,
-            )
-            .wait(WAIT);
+        let mut cap = FIRST_SECRET_CAP;
+        let mut first = true;
+        let (done, lending) = loop {
+            let (lending, input) = Lending::new(settings, cap);
+            let done = self
+                .dispatcher
+                .submit_lent(
+                    plugin,
+                    ticket,
+                    slot::RESOLVE,
+                    Frame::new(input, resolve_out()),
+                    DeadlineClass::Call,
+                    deadline,
+                    Arc::clone(&lending) as crate::dispatch::Lent,
+                )
+                .wait(WAIT);
+            match done {
+                // THE ONE RE-CALL, on the same ticket, with a holder the size the answer named;
+                // the dispatcher answers a second short answer FAULT.
+                Some(d) if d.short && first => {
+                    first = false;
+                    cap = d.frame.as_ref().map_or(cap, |f| regrown(&f.out));
+                }
+                d => break (d, lending),
+            }
+        };
         self.dispatcher.recycle(ticket);
         let Some(done) = done else {
             return Err(refused(
@@ -317,23 +433,17 @@ impl SecretCalls for LoadedSecret {
                 format!("secret module '{name}' did not answer its resolve"),
             ));
         };
+        if !first
+            && done
+                .frame
+                .as_ref()
+                .is_some_and(|f| short_again(done.outcome, &f.out, cap))
+        {
+            return Err(changed_size(name));
+        }
         match (done.outcome, done.frame.as_ref()) {
-            (Outcome::Ready, Some(f)) => {
-                let b = f.out.secret;
-                // SAFETY: a READY resolve's `secret` names plugin memory held under the answer's
-                // lease until `release` (the secret kind's answer rule, checked by `check_resolve`
-                // before this answer was settled); it is copied here, before the release below.
-                let material = if b.ptr.is_null() || b.len == 0 {
-                    Vec::new()
-                } else {
-                    unsafe { std::slice::from_raw_parts(b.ptr, b.len) }.to_vec()
-                };
-                let material = SecretValue::new(material);
-                if done.lease != 0 {
-                    self.opened.release(done.lease);
-                }
-                Ok(material)
-            }
+            // `check_resolve` held the answer to the host's buffer: `len` bytes at its start.
+            (Outcome::Ready, Some(f)) => Ok(lending.take(f.out.secret.len)),
             (Outcome::Failed | Outcome::Refused, f) => Err(refused(
                 f.map_or(ERROR_KIND_INTERNAL, |f| f.out.error_kind),
                 answer_text(
@@ -392,6 +502,8 @@ pub struct SecretRows {
     /// The host's one disk lane, where a source that declares a disk need resolves at config time.
     /// `None` = no lane is wired (such a source refuses every resolve).
     disk_run: Option<DiskRun>,
+    /// Each plugin bound (never opened) to `check` references, by Statement name.
+    checkers: Mutex<std::collections::HashMap<String, Arc<Plugin<Secret>>>>,
 }
 
 impl std::fmt::Debug for SecretRows {
@@ -405,11 +517,6 @@ impl std::fmt::Debug for SecretRows {
             )
             .finish_non_exhaustive()
     }
-}
-
-/// Whether config names `c` by `word` (its name or an alias).
-fn answers(c: &Candidate, word: &str) -> bool {
-    c.name == word || c.aliases.iter().any(|a| a == word)
 }
 
 impl SecretRows {
@@ -428,6 +535,7 @@ impl SecretRows {
             dropped: RwLock::new(Vec::new()),
             shared: OpenOnce::new(),
             disk_run: None,
+            checkers: Mutex::default(),
         }
     }
 
@@ -514,11 +622,7 @@ impl SecretRows {
         former_of: impl Fn(&str) -> Vec<String>,
     ) -> Result<&mut Self, String> {
         for c in &mut self.linked {
-            let words: Vec<String> = std::iter::once(c.name.clone())
-                .chain(c.aliases.iter().cloned())
-                .flat_map(|w| former_of(&w))
-                .collect();
-            *c = c.clone().answering(words);
+            *c = c.clone().answering_former(&former_of);
         }
         crate::boot::one_owner(&self.linked)?;
         Ok(self)
@@ -585,14 +689,14 @@ impl SecretRows {
     fn find(&self, module: &str) -> Option<Candidate> {
         self.linked
             .iter()
-            .find(|c| answers(c, module))
+            .find(|c| c.answers(module))
             .cloned()
             .or_else(|| {
                 self.dropped
                     .read()
                     .unwrap_or_else(PoisonError::into_inner)
                     .iter()
-                    .find(|c| answers(c, module))
+                    .find(|c| c.answers(module))
                     .cloned()
             })
     }
@@ -661,15 +765,38 @@ impl SecretAxis for SecretRows {
         self.find(module).is_some()
     }
 
+    fn check(&self, module: &str, settings: &serde_json::Value) -> Result<(), Vec<String>> {
+        let Some(c) = self.find(module) else {
+            // No row answers it: whether the module exists is the registry's to say.
+            return Ok(());
+        };
+        let plugin = {
+            let mut checkers = self.checkers.lock().unwrap_or_else(PoisonError::into_inner);
+            match checkers.get(&c.name) {
+                Some(p) => Arc::clone(p),
+                None => {
+                    // Loaded once per plugin to judge references, never opened.
+                    let p = Arc::new(
+                        self.load(&c, &format!("{}.check", Self::label(module)))
+                            .map_err(|e| vec![e])?,
+                    );
+                    checkers.insert(c.name.clone(), Arc::clone(&p));
+                    p
+                }
+            }
+        };
+        check(&plugin, settings.to_string().as_bytes())
+    }
+
     fn linked(&self, module: &str) -> bool {
-        self.linked.iter().any(|c| answers(c, module))
+        self.linked.iter().any(|c| c.answers(module))
     }
 
     fn shared(&self, module: &str) -> Result<Arc<dyn SecretCalls>, String> {
         let c = self
             .linked
             .iter()
-            .find(|c| answers(c, module))
+            .find(|c| c.answers(module))
             .ok_or_else(|| format!("no linked secret module answers to '{module}'"))?;
         // Bound and opened with the map's lock let go (THE DESIGN §11.13 M1).
         let label = Self::label(module);
@@ -684,7 +811,7 @@ impl SecretAxis for SecretRows {
         &self,
         module: &str,
         settings: &serde_json::Value,
-        resolve: &dyn Fn(&SecretRef) -> Result<Vec<u8>, String>,
+        resolve: &dyn Fn(&SecretRef) -> Result<SecretValue<Vec<u8>>, String>,
     ) -> Result<Arc<dyn SecretCalls>, String> {
         let c = self
             .find(module)
@@ -697,8 +824,9 @@ impl SecretAxis for SecretRows {
             ));
         }
         // An exact key stays in the settings, as this host has always left it; a wildcard match
-        // is lent behind its `{"$secret": <index>}` marker.
-        let reference = |at: &str, v: serde_json::Value| -> Result<Vec<u8>, String> {
+        // is lent behind its `{"$secret": <index>}` marker. Each resolved secret stays in the
+        // holder its secret plugin wrote it into (row 6): moved, never copied.
+        let reference = |at: &str, v: serde_json::Value| -> Result<SecretValue<Vec<u8>>, String> {
             // The decoder's own text is withheld: the value may be the secret itself.
             let r = serde_json::from_value::<SecretRef>(v).map_err(
                 crate::boot::not_a_reference(format!("secrets.{module}.settings.{at}")),
@@ -706,19 +834,14 @@ impl SecretAxis for SecretRows {
             resolve(&r).map_err(|e| format!("secrets.{module}.settings.{at}: {e}"))
         };
         let mut lent_settings = settings.clone();
-        let secrets: Vec<_> = busbar_contract::secret_fields::lend(
+        let secrets = busbar_contract::secret_fields::lend(
             &mut lent_settings,
             &keys,
             true,
-            |at, found| found.map_or(Ok(Vec::new()), |v| reference(at, v)),
-            |at, found| match found {
-                serde_json::Value::String(s) => Ok(s.into_bytes()),
-                v => reference(at, v),
-            },
-        )?
-        .into_iter()
-        .map(SecretValue::new)
-        .collect();
+            |at, found| found.map_or(Ok(SecretValue::default()), |v| reference(at, v)),
+            // A wildcard match is a declared secret as an exact one is: a literal refuses (7b).
+            |at, found| reference(at, found),
+        )?;
         let bytes = if lent_settings.is_null() {
             Vec::new()
         } else {

@@ -42,11 +42,6 @@ pub fn hydrate_all(app: &Arc<crate::state::App>) -> Result<(), String> {
     if let Some(gov) = app.governance.as_ref() {
         crate::audit::auditlog::register_and_migrate(app, &gov.store());
     }
-    // THE RESIDUAL LOG (MONEY LAW, ARCHITECT ruling 2026-10-02): core's per-principal
-    // `usage.residual` chain, registered and REPLAYED from the durable store before a listener binds,
-    // so every principal's chain continues where the last process stopped. Core's, not a plane's: the
-    // kernel spells the row at the settle step for every plane.
-    crate::residual_log::register_and_restore(app);
 
     // THE PLANE HYDRATION FOLD. Each plane restores its OWN durable state through the `hydrate` hook
     // it declared, in plane-list order (the audit ring, above, already went first). The store handed
@@ -60,6 +55,13 @@ pub fn hydrate_all(app: &Arc<crate::state::App>) -> Result<(), String> {
         .governance
         .as_ref()
         .map(|gov| crate::store::plane_view::PlaneStoreView::narrow(gov.store()));
+    // THE KERNEL'S DURABLE TRUST RECORD (THE DESIGN §11.12: "the demotion record is durable"): the
+    // demotions and the operator's trust decisions write through to the configured store, attached
+    // here, core side, for every deployment with a store, whatever planes are linked. It rides the
+    // `App` across every later config apply, so this one attach holds for the process.
+    if let Some(store) = &plane_store {
+        app.demotion_record.set_sink(Arc::clone(store));
+    }
     let ctx = crate::plane_driver::registry::BootCtx::for_hydrate(plane_store, app);
     run_hydrate_hooks(&configured_decls(app), &ctx)
 }
@@ -152,3 +154,7 @@ pub fn generate_signing_key_hex() -> Result<String, String> {
             .map_err(|e| e.to_string())?;
     Ok(hex::encode(signer.secret_bytes()))
 }
+
+#[cfg(test)]
+#[path = "tests/boot_tests.rs"]
+mod boot_tests;

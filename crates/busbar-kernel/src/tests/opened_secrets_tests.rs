@@ -58,11 +58,11 @@ fn a_slow_secret_source_does_not_stall_another_modules_resolution() {
     let _ = release.send(());
     assert_eq!(
         answered.expect("another module's resolution was stalled behind a slow source"),
-        Ok(b"fast".to_vec())
+        Ok(Secret::new(b"fast".to_vec()))
     );
     assert_eq!(
         slow_side.join().expect("the slow side ends"),
-        Ok(b"slow".to_vec())
+        Ok(Secret::new(b"slow".to_vec()))
     );
 }
 
@@ -76,11 +76,11 @@ fn a_plugin_is_opened_once_under_its_key() {
     };
     assert_eq!(
         opened.resolve("one-source", "a", None, open),
-        Ok(b"a".to_vec())
+        Ok(Secret::new(b"a".to_vec()))
     );
     assert_eq!(
         opened.resolve("one-source", "b", None, open),
-        Ok(b"b".to_vec())
+        Ok(Secret::new(b"b".to_vec()))
     );
     assert_eq!(opens.load(Ordering::SeqCst), 1);
 }
@@ -116,10 +116,19 @@ fn a_dropped_in_source_is_handed_the_callers_config_time_proof() {
     let scope = busbar_contract::config_time::ConfigScope::config_time();
     assert_eq!(
         opened.resolve("disk-source", "at-config", Some(&scope), open),
-        Ok(b"at-config".to_vec())
+        Ok(Secret::new(b"at-config".to_vec()))
     );
     let refused = opened
         .resolve("disk-source", "on-a-request", None, open)
         .expect_err("a request path is refused");
-    assert!(refused.contains("never on a request path"), "{refused}");
+    assert!(
+        refused.text.contains("never on a request path"),
+        "{}",
+        refused.text
+    );
+    // The source's own code reaches the kernel's caller (S4).
+    assert_eq!(
+        refused.error_kind,
+        busbar_contract::abi::secret::ERROR_KIND_DENIED
+    );
 }

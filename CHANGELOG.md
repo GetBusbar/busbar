@@ -77,6 +77,15 @@ Everything else in this release is identical to 1.5.5, apart from the improvemen
 register entries listed below. These are the changes an operator must act on or will notice, each
 signed by the owner (spec: `docs/design/BUSBAR-1.6.0.md`).
 
+- **A request that asks for a stream gets a stream.**
+  1.6.0 Changed: a request that asks for a stream is answered as a stream in the caller's own dialect even when the upstream answers with one whole body; the conversion is audited (`egress.stream_synthesized`) and billed from the upstream's body.
+  1.5.5 relayed such an answer as one `application/json` body to a caller that asked for
+  `stream: true`. busbar answers in the caller's dialect and mode (owner, 2026-10-27).
+- **A stream cut mid-flight ends on the error its spec names.**
+  1.6.0 Changed: an Anthropic-dialect stream cut mid-flight ends on an error event whose `error.type` is a published type (`api_error`), with the text in `error.message`, as the Anthropic spec says.
+  1.6.0 Changed: a Bedrock ConverseStream cut mid-flight ends on an exception frame whose `:exception-type` is the spec's union member name `internalServerException`.
+  1.5.5 wrote the message text into Anthropic's error type and `InternalServerException` on the
+  Bedrock frame (owner, 2026-10-26).
 - **A key refresh link rotates only from busbar's own page.** `GET /auth/token?method=<m>&refresh=1`
   rotates the caller's key only when the browser reports a same-origin navigation (the key page's
   "Refresh key" link). From any other site, a typed URL or a non-browser client it re-shows the
@@ -92,6 +101,10 @@ signed by the owner (spec: `docs/design/BUSBAR-1.6.0.md`).
   **Migration:** run `busbar --migrate-config`, which inserts exactly `store: {module: memory}`
   (spec line 557, "a signed customer-visible change from 1.5.5"; owner ruling Q-STORE (B), spec lines
   4365-4378). See [the migration guide](docs/migration-1.6.md#the-store-block-is-required).
+- **Config migration explains how to configure a required missing signing key.** When the migrated
+  auth chain uses `keys` without `auth.signing_key`, the YAML and migration summary tell the
+  operator to generate a key and configure a secret reference. Validation and boot still require
+  that key; migration does not generate one.
 - **A published 1.5.5 JSON-contract plugin no longer loads.** Plugins speak the memory ABI only; boot
   refuses a 1.5.5 plugin, including the four published store plugins, with a message naming the
   rebuild against the 1.6.0 SDK (spec lines 1387-1389, section 11.8, "an owner-signed
@@ -108,6 +121,10 @@ signed by the owner (spec: `docs/design/BUSBAR-1.6.0.md`).
 - **A store refuses a different record at an already-used task-event sequence as a fork**, where the
   published store plugin overwrote it (spec lines 1200-1202, Q79-fork-refusal, "signed as an accepted
   difference").
+- **`allow_unsigned` no longer admits a plugin signed by a retired release key.**
+  1.6.0 Changed: a first-party plugin signed by a retired busbar release key is refused (`retired_key`) even under `plugins.trust.allow_unsigned`, with a message naming the key and saying allow_unsigned does not admit it; an unsigned plugin under `allow_unsigned` still loads as unverified.
+  A retired key is a revocation, not a missing signature; naming the key under
+  `plugins.trust.publishers` remains the one explicit opt-in (owner-signed 2026-10-30).
 - **The LDAP auth plugin differs from 1.5.5 in three ways:** a malformed reply or a hostless URL
   fails closed instead of panicking, an overrunning nested length fails fast, and inbound replies are
   capped at 16 MiB (spec lines 863-865, signed 2026-09-28).
@@ -115,13 +132,16 @@ signed by the owner (spec: `docs/design/BUSBAR-1.6.0.md`).
 ### Security
 
 - **A metadata host-list entry is read the way the destination it guards is read.**
-  1.6.0 Changed: a Unicode-written `blocked_metadata_hosts` or `allow_metadata_hosts` entry matches the ASCII host it maps to, a destination host holding a `%` outside an IPv6 zone id is refused as `DEST_NO_HOST`, and a metadata host-list entry that names no host still boots but is dropped with one BUSBAR-3024 warning line.
+  1.6.0 Changed: a Unicode-written `blocked_metadata_hosts` or `allow_metadata_hosts` entry matches the ASCII host it maps to, a destination host holding a `%` outside an IPv6 zone id is refused as `DEST_NO_HOST`, and a metadata host-list entry that names no usable host refuses startup with an error naming the entry.
   On 1.5.5 the lists compared raw strings, so `１０.９９.９９.９９` matched nothing and
   `https://10.99.99.99/` was dialled; now it is blocked. A `://` URL's host is decoded first and an
-  IPv6 zone id (`fe80::1%eth0`) is judged as its address, as before. The entries that warn are a `%`
+  IPv6 zone id (`fe80::1%eth0`) is judged as its address, as before. The entries refused at startup are a `%`
   outside a zone id, a number-like last label that is no IPv4 address (`db.1`, `1.2.3.4.5`), and
   non-ASCII that UTS #46 cannot map. Every other ASCII host gets 1.5.5's verdicts and texts, and a CIDR
   entry is still refused with 1.5.5's text (owner-approved 2026-10-21).
+- **`--print-metadata-blocklist` prints every metadata entry the guard enforces.**
+  1.6.0: `--print-metadata-blocklist` now also lists `fd00:ec2::23` (EC2 task metadata) and `fe80::/10` (IPv6 link-local), which the guard already refused; the eleven 1.5.5 lines are unchanged and in the same order.
+  Exit status and stderr are unchanged (owner-signed 2026-10-30).
 - **The OIDC auth plugin no longer follows a redirect into a private network or a metadata service.**
   1.6.0 Changed: the OIDC auth plugin refuses a discovery or JWKS redirect to a cloud metadata or IPv6 link-local host from any host, and a redirect to a private or loopback host (an IP literal, or the localhost name) unless the hop that sent it is itself on a private or loopback host; each hop is judged by the host that redirected, so a chain that leaves through a public host cannot come back into the private network. The check reads the literal host only, with no DNS lookup, so an identity provider reached by any other DNS name counts as public.
   The refusal names the URL that was asked, not the redirect target:
@@ -491,13 +511,6 @@ as an improvement or does not exist: a config written for 1.5.5 boots, validates
 identically (once it carries the `store:` block that `--migrate-config` inserts), and every 1.5.5 key and
 minted secret carries over.
 
-- 1.6.0 Changed: a Bedrock caller whose budget is spent is refused 429 `ThrottlingException`, an
-  error Converse declares; 1.5.5 answered 400 `ServiceQuotaExceededException`, which only
-  InvokeModel declares. The message, the `Retry-After` header and the charge (none) are unchanged,
-  and the five other dialects already answered an exhausted budget with 429. **Migration:** a
-  Bedrock client that matched `ServiceQuotaExceededException` on Converse must match
-  `ThrottlingException`; the AWS SDKs retry it under their standard retry mode, as they retry the
-  other dialects' 429.
 - 1.6.0 Improvements: a fallback hop refused upstream is answered in the ingress-native
   auth-failure envelope and recorded on the breaker. Previously, an auth or billing hard-down on a
   fallback, least-bad or queue hop relayed the upstream's 401/403 body verbatim and left the
@@ -589,6 +602,14 @@ minted secret carries over.
 - 1.6.0 Changed: every audit entry carries its `scheme`, the signing scheme of the record.
   `GET /api/v1/admin/audit` items gain `scheme`, and `openapi.json` marks it required.
   **Migration:** none; every 1.5.5 member is unchanged.
+- 1.6.0 Changed: every recipe number in a `GET /api/v1/admin/audit/range` record is published as its decimal text in a JSON string.
+  That covers `seq`, `unit_key`, `incarnation`, `parent`, `wall`, `mono`, `node`, `hook_failed`,
+  `stale_policy`, `tier_bp`, `fee_count`, `rate_card_version`, `lease_epoch`, `policy_epoch`, the
+  group counts and every number inside a group. The sealing `node` is a uniform 64-bit draw, so a
+  JSON reader that maps numbers to doubles rounded it and reported an honest chain as tampered.
+  The digest framing is unchanged; the envelope members (`from`, `to`, `next_seq`, and a head's
+  `seq`/`wall`) stay JSON numbers. **Migration:** a third-party verifier parses each recipe number
+  from its decimal text, framing it by the kind column of `docs/audit-chain-digest-v4.md`.
 - 1.6.0 Changed: a newly sealed audit record signs under `busbar.audit.digest.v4`, which drops `currency` from the digest and adds `incarnation` and `node`.
   Money is unitless abstract cost, so the signed preimage no longer names a denomination. A record
   already sealed keeps verifying under `busbar.audit.digest.v2`, and every record in
@@ -654,6 +675,14 @@ and the `at` field on the hook view is joined by `fires_at`, which carries the r
   The body is the gateway's at-capacity answer, the one `limits.max_inbound_concurrent` sheds
   with. A bad credential is still answered `401`, and the admin API keeps 1.5.5's answer. **Migration:** a
   client that retries a `503` after its `Retry-After` needs no change.
+- 1.6.0 Breaking: when an inbound auth plugin's `verify` answers no verdict (it failed, for example an OIDC plugin whose key set is unavailable, faulted, or timed out), the request is refused with `503` and `Retry-After: 1` instead of 1.5.5's `401`.
+  This applies on the data plane, on `POST /auth/token` and on the admin API (where the body is the
+  admin envelope's `unavailable` code). A rejected credential is still answered `401`, and the
+  operator log names the provider that answered no verdict, never the credential. The lead signed
+  this on 2026-10-30 under owner delegation (SIGN-auth-kind), extending the owner-signed rule that an
+  IdP outage answers `503`, never `401`. **Migration:** a client that retries a `503` after its
+  `Retry-After` needs no change. A client that treated a `401` from a failing IdP as "discard the
+  token" now keeps a valid token through the outage.
 - 1.6.0 Breaking: the destination guard now also judges an A2A peer's fetches, a streaming upstream and a duplex or WebSocket dial, so a private, loopback or cloud-metadata destination there is refused unless the configuration allows it, as a private provider host is.
   **Migration:** name an internal peer or upstream in `advanced.allow_destinations` (an A2A
   registration may also set its own `allow_private: true`), as a provider on an internal DNS name
@@ -1063,6 +1092,7 @@ each dialect translates, field by field, is listed in the generated
 - 1.6.0 Changed: a postgres store that cannot open names the server's SQLSTATE and message (or the TLS failure) where 1.5.5 printed `db error` / `error performing TLS handshake`.
 - 1.6.0 Changed: a plugin's `interface_version` is its kind's memory-ABI contract version (hook 2, store 3).
 - 1.6.0 Changed: first-party plugins ship at version 1.6.x, above every 1.5.5-era release.
+- 1.6.0 Changed: a sign-in whose identity provider answered its token or userinfo request with a 5xx or 429, or timed out, answers 503 with the identity provider's own `Retry-After` (clamped to 1 to 3600 seconds; 5 when the provider sent none), on the browser callback and the credential sign-in alike. A login plugin states it on its `LOGIN_OUTAGE` answer under the reply-extensions key `retry_after` (SDK: `auth_kit::login_outage`, `abi::auth::retry_after_secs`); only an RFC 6749 §5.2 credential error answers 401 (owner-signed 2026-10-30, OWNER-QUEUE.md item: IdP errors).
 - **The TLS listener now offers h2 via ALPN** (owner-signed, 2026-10-04, Q137). A `tls:` listener offers
   ALPN `h2, http/1.1`; 1.5.5 offered `http/1.1` alone. A client that offers `h2` (curl, browsers, gRPC
   clients) speaks HTTP/2 to Busbar over TLS; a client that offers only `http/1.1`, or no ALPN, is served

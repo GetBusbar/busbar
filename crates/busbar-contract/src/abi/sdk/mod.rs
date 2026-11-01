@@ -63,8 +63,8 @@ pub use safe::{Instance, Safe, SafeSlot};
 // THE HOST SERVICES, PLUGIN SIDE: the one home of every safe host-service wrapper.
 pub mod services;
 pub use services::{
-    CredentialSecret, Judged, Names, Pend, Records, ServiceError, Services, Signature, Signed,
-    StaticServices, StaticWake, TrustItem, TrustItems, Wake,
+    CredentialSecret, Judged, Minted, Names, Pend, Records, ServiceError, Services, Signature,
+    Signed, StaticServices, StaticWake, TrustItem, TrustItems, Wake,
 };
 // THE ONE DIGEST A PLUGIN TAKES without linking a crypto crate of its own.
 pub mod digest;
@@ -80,8 +80,8 @@ pub mod auth_door;
 // THE AUTH KIND'S OUTBOUND DOOR over the safe layer (`auth_outbound_door!`, and
 // `auth_door!(verify_and_outbound: ..)` for a plugin that does both).
 pub mod auth_outbound;
-// THE AUTH LOGIN KIT's shared checks: the id-token nonce binding v1.5.5's core ran for every login.
-pub mod login;
+// THE AUTH KIND'S SHARED PLUGIN PIECES: the withheld decode error and a completed login's identity.
+pub mod auth_kit;
 // THE STORE KIND'S TYPED SDK: the trait a store implements to be served through the store v3 table.
 pub mod store;
 // THE SECRET KIND'S SHARED SOURCE PIECES: the error-kind code, a reference's settings, the
@@ -102,11 +102,10 @@ pub mod life;
 pub mod migrate;
 // THE PLANE LIFECYCLE, ONCE FOR EVERY PLANE: the nine slots over a plane's `PlaneLife`.
 pub mod plane_life;
-// THE PLUGIN TEST SUPPORT: the all-zero value of a reviewed ABI struct and a door's Statement read
-// as Rust values, so a plugin's own tests drive its door with no `unsafe` (BUSBAR-1.6.0.md
-// l.272-274). Compiled for this crate's tests and behind the dev-only `test-seal` feature, as the
-// test kit is (`tests/feature_invariance.rs`); no shipped image carries it.
-#[cfg(any(test, feature = "test-seal"))]
+// THE TEST KIT'S HALF THAT MUST LIVE IN THE CONTRACT (all-zero values, lending pairs; `chip` behind
+// `test-seal`); the rest is the test kit's (`busbar_test_kit::test_support`). Behind the
+// `test-support` feature busbar-test-kit enables; no shipped image carries it.
+#[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
 
 /// The "decision observability" signal catalog: a plugin author references

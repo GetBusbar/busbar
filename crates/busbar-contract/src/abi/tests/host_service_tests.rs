@@ -29,7 +29,8 @@ fn out(o: Outcome) -> ServiceOut {
     ServiceOut {
         size: core::mem::size_of::<ServiceOut>() as u32,
         outcome: RawOutcome::of(o),
-        _reserved: [0; 3],
+        exited: 0,
+        _reserved: [0; 2],
         value: 0,
         len: 0,
         items: 0,
@@ -414,7 +415,7 @@ fn the_host_refuses_a_capacity_with_a_null_buffer() {
 }
 
 #[test]
-fn the_services_that_never_pend_are_exactly_the_stated_fourteen() {
+fn the_services_that_never_pend_are_exactly_the_stated_eighteen() {
     let never: Vec<u32> = (0..SERVICES).filter(|s| !may_pend(*s)).collect();
     assert_eq!(
         never,
@@ -432,8 +433,16 @@ fn the_services_that_never_pend_are_exactly_the_stated_fourteen() {
             op::TRUST_SERVES,
             op::TRUST_DECIDE,
             op::TRUST_STATE,
-            op::SESSION_EMIT
+            op::SESSION_EMIT,
+            op::UNIT_HAND_IN,
+            op::UNIT_REFUSE,
+            op::TICKET_MINT,
+            op::TICKET_TAKE
         ]
+    );
+    assert!(
+        may_pend(op::AUTH_CALL),
+        "an auth's call may be not-ready with a wake"
     );
     assert!(!may_pend(SERVICES), "an index past the table never pends");
 }
@@ -503,6 +512,11 @@ fn every_service_field_sits_at_its_op_index() {
         (offset_of!(HostSlots, trust_decide), op::TRUST_DECIDE),
         (offset_of!(HostSlots, trust_state), op::TRUST_STATE),
         (offset_of!(HostSlots, session_emit), op::SESSION_EMIT),
+        (offset_of!(HostSlots, auth_call), op::AUTH_CALL),
+        (offset_of!(HostSlots, unit_hand_in), op::UNIT_HAND_IN),
+        (offset_of!(HostSlots, unit_refuse), op::UNIT_REFUSE),
+        (offset_of!(HostSlots, ticket_mint), op::TICKET_MINT),
+        (offset_of!(HostSlots, ticket_take), op::TICKET_TAKE),
     ];
     for (i, (offset, op)) in table.iter().enumerate() {
         assert_eq!(*op as usize, i, "op constants run 0.. in table order");
@@ -1007,4 +1021,719 @@ fn the_snapshot_alignment_is_the_scrape_layouts() {
         assert!(align <= SNAPSHOT_ALIGN && SNAPSHOT_ALIGN.is_multiple_of(align));
         assert_eq!(size % SNAPSHOT_ALIGN, 0);
     }
+}
+
+// ── the host auth handle ──────────────────────────────────────────────────────────────────────
+
+const A_REF: AuthRef = AuthRef { id: 7, mac: 0xfeed };
+const A_UNIT: UnitRef = UnitRef {
+    id: 11,
+    mac: 0xbeef,
+};
+
+fn view() -> HeadView {
+    HeadView {
+        method: AbiStr {
+            ptr: b"GET".as_ptr(),
+            len: 3,
+        },
+        target: none(),
+        authority: none(),
+        query: none(),
+        fields: core::ptr::null(),
+        fields_len: 0,
+        scheme: SCHEME_PLAIN,
+        _scheme_reserved: [0; 7],
+    }
+}
+
+fn blank_answer() -> AuthAnswer {
+    AuthAnswer {
+        size: 0,
+        flow: 0,
+        unit: UnitRef::NONE,
+    }
+}
+
+fn auth_call_in(
+    point: u32,
+    buf: &mut [u8],
+    spans: &mut [FieldSpan],
+    answer: &mut AuthAnswer,
+) -> AuthCallIn {
+    AuthCallIn {
+        head: head(op::AUTH_CALL, TICKET, core::mem::size_of::<AuthCallIn>()),
+        auth: A_REF,
+        unit: UnitRef::NONE,
+        point,
+        _reserved: 0,
+        conn: 1,
+        stream: 1,
+        request: view(),
+        body: empty_blob(),
+        buf: buf.as_mut_ptr(),
+        cap: buf.len(),
+        spans: spans.as_mut_ptr(),
+        spans_cap: spans.len(),
+        answer,
+    }
+}
+
+fn hand_in(answer: &mut AuthAnswer) -> UnitHandInIn {
+    UnitHandInIn {
+        head: head(
+            op::UNIT_HAND_IN,
+            Ticket::NONE,
+            core::mem::size_of::<UnitHandInIn>(),
+        ),
+        auth: A_REF,
+        unit: UnitRef::NONE,
+        line: 3,
+        _reserved: 0,
+        conn: 1,
+        stream: 1,
+        request: view(),
+        answer,
+    }
+}
+
+fn refuse_in(cause: u32, line: u32, answer: &mut RefusalAnswer) -> UnitRefuseIn {
+    UnitRefuseIn {
+        head: head(
+            op::UNIT_REFUSE,
+            Ticket::NONE,
+            core::mem::size_of::<UnitRefuseIn>(),
+        ),
+        unit: UnitRef::NONE,
+        cause,
+        line,
+        conn: 1,
+        stream: 1,
+        answer,
+        request: view(),
+    }
+}
+
+fn refusal(status: u16) -> RefusalAnswer {
+    RefusalAnswer {
+        size: core::mem::size_of::<RefusalAnswer>() as u32,
+        status,
+        _reserved: 0,
+        fields: core::ptr::null(),
+        fields_len: 0,
+        body: empty_blob(),
+    }
+}
+
+fn no_span() -> FieldSpan {
+    FieldSpan {
+        name: Span {
+            offset: SPAN_ABSENT,
+            len: 0,
+        },
+        value: Span {
+            offset: SPAN_ABSENT,
+            len: 0,
+        },
+        flags: 0,
+        _reserved: 0,
+    }
+}
+
+fn in_rule(r: Result<(), Fault>) -> Fault {
+    r.expect_err("the `in` must be refused")
+}
+
+/// RED (exact sizes): an `in` whose stated size is one field short, or longer, is refused; another
+/// op is a contradiction; the exact size passes.
+#[test]
+fn red_an_exact_size_in_one_field_short_or_long_is_refused() {
+    let exact = core::mem::size_of::<UnitRefuseIn>();
+    let h = head(op::UNIT_REFUSE, Ticket::NONE, exact);
+    assert!(check_head_exact(&h, op::UNIT_REFUSE, exact).is_ok());
+    let short = head(op::UNIT_REFUSE, Ticket::NONE, exact - 8);
+    assert_eq!(
+        in_rule(check_head_exact(&short, op::UNIT_REFUSE, exact)),
+        fault(Rule::Foreign, "service.head.size")
+    );
+    let long = head(op::UNIT_REFUSE, Ticket::NONE, exact + 8);
+    assert_eq!(
+        in_rule(check_head_exact(&long, op::UNIT_REFUSE, exact)).rule,
+        Rule::Foreign
+    );
+    assert_eq!(
+        in_rule(check_head_exact(&h, op::UNIT_HAND_IN, exact)),
+        fault(Rule::Contradiction, "service.head.op")
+    );
+}
+
+/// RED: each arm of the host's check of an `auth.call` `in`, one break at a time.
+#[test]
+fn red_auth_call_in_refuses_each_break() {
+    use crate::abi::auth::{POINT_FRAME, POINT_HEAD, POINT_HEAD_BODY, POINT_PEER};
+    let (mut buf, mut spans, mut a) = ([0u8; 32], [no_span(); 2], blank_answer());
+    let ok = auth_call_in(POINT_HEAD, &mut buf, &mut spans, &mut a);
+    assert!(check_auth_call_in(&ok).is_ok());
+
+    let mut i = ok;
+    i.auth = AuthRef::NONE;
+    assert_eq!(
+        in_rule(check_auth_call_in(&i)),
+        fault(Rule::Missing, "auth_call.auth")
+    );
+    for point in [0, POINT_FRAME, POINT_HEAD | POINT_PEER, 16] {
+        let mut i = ok;
+        i.point = point;
+        assert_eq!(
+            in_rule(check_auth_call_in(&i)),
+            fault(Rule::UnknownCode, "auth_call.point"),
+            "{point}"
+        );
+    }
+    let mut i = ok;
+    i.body = Blob {
+        ptr: b"x".as_ptr(),
+        len: 1,
+        fmt: 0,
+        flags: 0,
+    };
+    assert_eq!(
+        in_rule(check_auth_call_in(&i)),
+        fault(Rule::Contradiction, "auth_call.body")
+    );
+    i.point = POINT_HEAD_BODY;
+    assert!(check_auth_call_in(&i).is_ok(), "a body at the body point");
+    i.body.ptr = core::ptr::null();
+    assert_eq!(
+        in_rule(check_auth_call_in(&i)),
+        fault(Rule::NullWithCount, "auth_call.body")
+    );
+    let mut i = ok;
+    i.point = POINT_PEER;
+    i.unit = A_UNIT;
+    assert_eq!(
+        in_rule(check_auth_call_in(&i)),
+        fault(Rule::Contradiction, "auth_call.unit")
+    );
+    let mut i = ok;
+    i.request.fields_len = 1;
+    assert_eq!(
+        in_rule(check_auth_call_in(&i)),
+        fault(Rule::NullWithCount, "head_view.fields")
+    );
+    let f = crate::abi::mechanism::call::Field {
+        name: none(),
+        value: none(),
+    };
+    i.request.fields = core::ptr::from_ref(&f);
+    i.request.fields_len = MAX_SPANS as usize + 1;
+    assert_eq!(
+        in_rule(check_auth_call_in(&i)),
+        fault(Rule::OverMax, "head_view.fields")
+    );
+    let mut i = ok;
+    i.buf = core::ptr::null_mut();
+    assert_eq!(
+        in_rule(check_auth_call_in(&i)),
+        fault(Rule::NullWithCount, "auth_call.buf")
+    );
+    let mut i = ok;
+    i.spans = core::ptr::null_mut();
+    assert_eq!(
+        in_rule(check_auth_call_in(&i)),
+        fault(Rule::NullWithCount, "auth_call.spans")
+    );
+    let mut i = ok;
+    i.answer = core::ptr::null_mut();
+    assert_eq!(
+        in_rule(check_auth_call_in(&i)),
+        fault(Rule::Missing, "auth_call.answer")
+    );
+}
+
+/// RED: each arm of the host's check of a `unit.hand_in` `in`.
+#[test]
+fn red_unit_hand_in_in_refuses_each_break() {
+    let mut a = blank_answer();
+    let ok = hand_in(&mut a);
+    assert!(check_unit_hand_in_in(&ok).is_ok());
+    let mut i = ok;
+    i.auth = AuthRef::NONE;
+    assert_eq!(
+        in_rule(check_unit_hand_in_in(&i)),
+        fault(Rule::Missing, "unit_hand_in.auth")
+    );
+    let mut i = ok;
+    i.line = LINE_NONE;
+    assert_eq!(
+        in_rule(check_unit_hand_in_in(&i)),
+        fault(Rule::Missing, "unit_hand_in.line")
+    );
+    let mut i = ok;
+    i.request.method = none();
+    assert_eq!(
+        in_rule(check_unit_hand_in_in(&i)),
+        fault(Rule::Missing, "unit_hand_in.request.method")
+    );
+    let mut i = ok;
+    i.request.query.len = 4;
+    assert_eq!(
+        in_rule(check_unit_hand_in_in(&i)),
+        fault(Rule::NullWithCount, "head_view.query")
+    );
+    // RED: the scheme is a code; one past the last, or a padding byte, is unknown.
+    let mut i = ok;
+    i.request.scheme = SCHEME_SECURE + 1;
+    assert_eq!(
+        in_rule(check_unit_hand_in_in(&i)),
+        fault(Rule::UnknownCode, "head_view.scheme")
+    );
+    let mut i = ok;
+    i.request._scheme_reserved[6] = 1;
+    assert_eq!(
+        in_rule(check_unit_hand_in_in(&i)),
+        fault(Rule::UnknownCode, "head_view._scheme_reserved")
+    );
+    let mut i = ok;
+    i.answer = core::ptr::null_mut();
+    assert_eq!(
+        in_rule(check_unit_hand_in_in(&i)),
+        fault(Rule::Missing, "unit_hand_in.answer")
+    );
+}
+
+/// RED: each arm of the host's check of a `unit.refuse` `in`: an unknown cause, a line that
+/// disagrees with the cause, a unit with no line, no answer slot, and a request with no method or a
+/// malformed one (the refusal with no unit is shaped by the request, so it is always named).
+#[test]
+fn red_unit_refuse_in_refuses_each_break() {
+    let mut a = refusal(0);
+    assert!(check_unit_refuse_in(&refuse_in(REFUSE_NO_ROUTE, LINE_NONE, &mut a)).is_ok());
+    for cause in [
+        REFUSE_METHOD_MISS,
+        REFUSE_OVER_GATE,
+        REFUSE_STOPPED,
+        REFUSE_CHECK_FAILED,
+    ] {
+        assert!(
+            check_unit_refuse_in(&refuse_in(cause, 2, &mut a)).is_ok(),
+            "{cause}"
+        );
+        assert_eq!(
+            in_rule(check_unit_refuse_in(&refuse_in(cause, LINE_NONE, &mut a))),
+            fault(Rule::Contradiction, "unit_refuse.line")
+        );
+    }
+    for cause in [0, REFUSE_CHECK_FAILED + 1] {
+        assert_eq!(
+            in_rule(check_unit_refuse_in(&refuse_in(cause, 2, &mut a))),
+            fault(Rule::UnknownCode, "unit_refuse.cause")
+        );
+    }
+    assert_eq!(
+        in_rule(check_unit_refuse_in(&refuse_in(REFUSE_NO_ROUTE, 2, &mut a))),
+        fault(Rule::Contradiction, "unit_refuse.line")
+    );
+    let mut i = refuse_in(REFUSE_NO_ROUTE, LINE_NONE, &mut a);
+    i.unit = A_UNIT;
+    assert_eq!(
+        in_rule(check_unit_refuse_in(&i)),
+        fault(Rule::Contradiction, "unit_refuse.unit")
+    );
+    let mut i = refuse_in(REFUSE_STOPPED, 2, &mut a);
+    i.answer = core::ptr::null_mut();
+    assert_eq!(
+        in_rule(check_unit_refuse_in(&i)),
+        fault(Rule::Missing, "unit_refuse.answer")
+    );
+    let mut i = refuse_in(REFUSE_NO_ROUTE, LINE_NONE, &mut a);
+    i.request.method = none();
+    assert_eq!(
+        in_rule(check_unit_refuse_in(&i)),
+        fault(Rule::Missing, "unit_refuse.request.method")
+    );
+    let mut i = refuse_in(REFUSE_NO_ROUTE, LINE_NONE, &mut a);
+    i.request.scheme = SCHEME_SECURE + 1;
+    assert_eq!(
+        in_rule(check_unit_refuse_in(&i)),
+        fault(Rule::UnknownCode, "head_view.scheme")
+    );
+}
+
+/// RED: the caller's check of an `auth.call` answer: the flow, the unit, the answer's exact size,
+/// every span inside the bytes written with a present name and known flags, counts within caps.
+/// RED (the upstream's scheme, rule 1: a zero never grants): an `auth.call` off the peer point
+/// whose view declares no scheme is refused, a wholly zeroed view first among them, and is never
+/// read as plain; at the peer point there is no request and no scheme to declare.
+#[test]
+fn red_an_auth_call_whose_view_declares_no_scheme_is_refused() {
+    use crate::abi::auth::{POINT_HEAD, POINT_HEAD_BODY, POINT_PEER};
+    let (mut buf, mut spans, mut a) = ([0_u8; 8], [no_span(); 1], blank_answer());
+    let ok = auth_call_in(POINT_HEAD, &mut buf, &mut spans, &mut a);
+    assert!(check_auth_call_in(&ok).is_ok(), "a declared scheme");
+    for scheme in [SCHEME_PLAIN, SCHEME_SECURE] {
+        let mut i = ok;
+        i.request.scheme = scheme;
+        assert!(check_auth_call_in(&i).is_ok(), "scheme {scheme}");
+    }
+    let mut zeroed = ok;
+    // Every byte of the view zero, as a transport that never set it hands it.
+    zeroed.request = HeadView {
+        method: none(),
+        target: none(),
+        authority: none(),
+        query: none(),
+        fields: core::ptr::null(),
+        fields_len: 0,
+        scheme: 0,
+        _scheme_reserved: [0; 7],
+    };
+    assert_eq!(zeroed.request.scheme, SCHEME_UNDECLARED);
+    assert_eq!(
+        in_rule(check_auth_call_in(&zeroed)),
+        fault(Rule::Missing, "head_view.scheme"),
+        "a zeroed view is refused, never read as plain"
+    );
+    let mut undeclared = ok;
+    undeclared.request.scheme = SCHEME_UNDECLARED;
+    for point in [POINT_HEAD, POINT_HEAD_BODY] {
+        undeclared.point = point;
+        undeclared.body = empty_blob();
+        assert_eq!(
+            in_rule(check_auth_call_in(&undeclared)),
+            fault(Rule::Missing, "head_view.scheme"),
+            "{point}"
+        );
+    }
+    let mut peer = zeroed;
+    peer.point = POINT_PEER;
+    assert!(
+        check_auth_call_in(&peer).is_ok(),
+        "the peer point has no request"
+    );
+}
+
+#[test]
+fn red_auth_call_answer_refuses_each_break() {
+    use crate::abi::auth::{FIELD_QUERY, FIELD_SENSITIVE, POINT_HEAD, POINT_PEER};
+    let mut buf = [0u8; 32];
+    let mut spans = [no_span(); 2];
+    let mut a = AuthAnswer {
+        size: core::mem::size_of::<AuthAnswer>() as u32,
+        flow: FLOW_CONTINUE,
+        unit: A_UNIT,
+    };
+    // Two names to strip: a field line and a query key, names only.
+    spans[0].name = Span { offset: 0, len: 4 };
+    spans[0].flags = FIELD_SENSITIVE;
+    spans[1].name = Span { offset: 4, len: 3 };
+    spans[1].flags = FIELD_QUERY;
+    let i = auth_call_in(POINT_HEAD, &mut buf, &mut spans, &mut a);
+    let mut o = out(Outcome::Ready);
+    o.len = 7;
+    o.items = 2;
+    assert_eq!(check_auth_call(&i, ready(&o), &o).unwrap(), Filled::Written);
+
+    // SAFETY (each block below): the test's own answer slot and spans, live for the test.
+    unsafe { (*i.answer).flow = 2 };
+    assert_eq!(
+        check_auth_call(&i, ready(&o), &o).unwrap_err(),
+        fault(Rule::UnknownCode, "auth_call.answer.flow")
+    );
+    unsafe { (*i.answer).flow = FLOW_STOP };
+    assert!(
+        check_auth_call(&i, ready(&o), &o).is_ok(),
+        "a stop names its strips too"
+    );
+    unsafe { (*i.answer).size -= 1 };
+    assert_eq!(
+        check_auth_call(&i, ready(&o), &o).unwrap_err(),
+        fault(Rule::Foreign, "auth_call.answer")
+    );
+    unsafe { (*i.answer).size += 1 };
+    unsafe { (*i.answer).unit = UnitRef::NONE };
+    assert_eq!(
+        check_auth_call(&i, ready(&o), &o).unwrap_err(),
+        fault(Rule::Missing, "auth_call.answer.unit")
+    );
+    let mut presented = i;
+    presented.unit = UnitRef { id: 12, mac: 1 };
+    unsafe { (*i.answer).unit = A_UNIT };
+    assert_eq!(
+        check_auth_call(&presented, ready(&o), &o).unwrap_err(),
+        fault(Rule::Contradiction, "auth_call.answer.unit")
+    );
+    let mut peer = i;
+    peer.point = POINT_PEER;
+    assert_eq!(
+        check_auth_call(&peer, ready(&o), &o).unwrap_err(),
+        fault(Rule::Contradiction, "auth_call.answer.unit")
+    );
+    let mut nowhere = i;
+    nowhere.answer = core::ptr::null_mut();
+    assert_eq!(
+        check_auth_call(&nowhere, ready(&o), &o).unwrap_err(),
+        fault(Rule::Missing, "auth_call.answer")
+    );
+
+    unsafe { (*i.spans.add(1)).flags = 4 };
+    assert_eq!(
+        check_auth_call(&i, ready(&o), &o).unwrap_err(),
+        fault(Rule::UnknownCode, "auth_call.span.flags")
+    );
+    unsafe { (*i.spans.add(1)).flags = FIELD_QUERY };
+    unsafe { (*i.spans.add(1)).name.len = 4 };
+    assert_eq!(
+        check_auth_call(&i, ready(&o), &o).unwrap_err(),
+        fault(Rule::SpanOutOfBounds, "auth_call.span.name")
+    );
+    unsafe {
+        (*i.spans.add(1)).name = Span {
+            offset: SPAN_ABSENT,
+            len: 0,
+        }
+    };
+    assert_eq!(
+        check_auth_call(&i, ready(&o), &o).unwrap_err(),
+        fault(Rule::Missing, "auth_call.span.name")
+    );
+    unsafe { (*i.spans.add(1)).name = Span { offset: 4, len: 3 } };
+    let mut over = o;
+    over.items = 3;
+    assert_eq!(
+        check_auth_call(&i, ready(&over), &over).unwrap_err().rule,
+        Rule::OverCap
+    );
+    let mut short = out(Outcome::Failed);
+    short.needed_bytes = 64;
+    assert_eq!(
+        check_auth_call(&i, ready(&short), &short).unwrap(),
+        Filled::Short
+    );
+    let mut unticketed = i;
+    unticketed.head.handle.ticket = Ticket::NONE;
+    let pending = out(Outcome::Pending);
+    assert_eq!(
+        check_auth_call(&unticketed, ready(&pending), &pending).unwrap_err(),
+        fault(Rule::Contradiction, "service.out.pending")
+    );
+    assert!(check_auth_call(&i, ready(&pending), &pending).is_ok());
+}
+
+/// RED: at the peer point an `auth.call` answers ONLY continue or stop. An outbound binding's
+/// peer answer that carries a field (a name and a value: key material) or any byte is refused; the
+/// bare continue and the bare stop pass.
+#[test]
+fn red_a_peer_answer_that_carries_fields_or_bytes_is_refused() {
+    use crate::abi::auth::{FIELD_SENSITIVE, POINT_PEER};
+    let mut buf = [0u8; 32];
+    let mut spans = [no_span(); 2];
+    let mut a = AuthAnswer {
+        size: core::mem::size_of::<AuthAnswer>() as u32,
+        flow: FLOW_CONTINUE,
+        unit: UnitRef::NONE,
+    };
+    let i = auth_call_in(POINT_PEER, &mut buf, &mut spans, &mut a);
+    let bare = out(Outcome::Ready);
+    assert_eq!(
+        check_auth_call(&i, ready(&bare), &bare).unwrap(),
+        Filled::Written
+    );
+    // SAFETY (each block below): the test's own answer slot and spans, live for the test.
+    unsafe { (*i.answer).flow = FLOW_STOP };
+    assert!(
+        check_auth_call(&i, ready(&bare), &bare).is_ok(),
+        "a bare stop"
+    );
+    unsafe { (*i.answer).flow = FLOW_CONTINUE };
+    // A field the binding would add: `x-key: secret`, its name and its value in the bytes.
+    unsafe {
+        (*i.spans).name = Span { offset: 0, len: 5 };
+        (*i.spans).value = Span { offset: 5, len: 6 };
+        (*i.spans).flags = FIELD_SENSITIVE;
+    }
+    let mut keyed = out(Outcome::Ready);
+    keyed.len = 11;
+    keyed.items = 1;
+    assert_eq!(
+        check_auth_call(&i, ready(&keyed), &keyed).unwrap_err(),
+        fault(Rule::Contradiction, "auth_call.answer.peer_fields")
+    );
+    let mut bytes_only = out(Outcome::Ready);
+    bytes_only.len = 4;
+    assert_eq!(
+        check_auth_call(&i, ready(&bytes_only), &bytes_only).unwrap_err(),
+        fault(Rule::Contradiction, "auth_call.answer.peer_fields")
+    );
+}
+
+/// RED: the caller's check of a `unit.hand_in` answer: a known flow and the unit.
+#[test]
+fn red_unit_hand_in_answer_refuses_each_break() {
+    let mut a = AuthAnswer {
+        size: core::mem::size_of::<AuthAnswer>() as u32,
+        flow: FLOW_CONTINUE,
+        unit: A_UNIT,
+    };
+    let i = hand_in(&mut a);
+    let o = out(Outcome::Ready);
+    assert!(check_unit_hand_in(&i, ready(&o), &o).is_ok());
+    // SAFETY (each block below): the test's own answer slot.
+    unsafe { (*i.answer).flow = 9 };
+    assert_eq!(
+        check_unit_hand_in(&i, ready(&o), &o).unwrap_err(),
+        fault(Rule::UnknownCode, "unit_hand_in.answer.flow")
+    );
+    unsafe { (*i.answer).flow = FLOW_STOP };
+    unsafe { (*i.answer).unit = UnitRef::NONE };
+    assert_eq!(
+        check_unit_hand_in(&i, ready(&o), &o).unwrap_err(),
+        fault(Rule::Missing, "unit_hand_in.answer.unit")
+    );
+    let pending = out(Outcome::Pending);
+    assert_eq!(
+        check_unit_hand_in(&i, ready(&pending), &pending).unwrap_err(),
+        fault(Rule::Contradiction, "service.out.pending")
+    );
+}
+
+/// RED: the caller's check of a `unit.refuse` answer: the exact size, a status in range, no list or
+/// body a count behind NULL.
+#[test]
+fn red_unit_refuse_answer_refuses_each_break() {
+    let mut a = refusal(404);
+    let i = refuse_in(REFUSE_NO_ROUTE, LINE_NONE, &mut a);
+    let o = out(Outcome::Ready);
+    assert!(check_unit_refuse(&i, ready(&o), &o).is_ok());
+    // SAFETY (each block below): the test's own answer slot.
+    for status in [0u16, 99, 600] {
+        unsafe { (*i.answer).status = status };
+        assert_eq!(
+            check_unit_refuse(&i, ready(&o), &o).unwrap_err(),
+            fault(Rule::UnknownCode, "unit_refuse.answer.status"),
+            "{status}"
+        );
+    }
+    unsafe { (*i.answer).status = 413 };
+    unsafe { (*i.answer).fields_len = 1 };
+    assert_eq!(
+        check_unit_refuse(&i, ready(&o), &o).unwrap_err(),
+        fault(Rule::NullWithCount, "unit_refuse.answer.fields")
+    );
+    unsafe { (*i.answer).fields_len = 0 };
+    unsafe { (*i.answer).body.len = 3 };
+    assert_eq!(
+        check_unit_refuse(&i, ready(&o), &o).unwrap_err(),
+        fault(Rule::NullWithCount, "unit_refuse.answer.body")
+    );
+    unsafe { (*i.answer).body.len = 0 };
+    unsafe { (*i.answer).size = 0 };
+    assert_eq!(
+        check_unit_refuse(&i, ready(&o), &o).unwrap_err(),
+        fault(Rule::Foreign, "unit_refuse.answer")
+    );
+}
+
+fn mint_in(ttl_secs: u64, into: ServiceBufs) -> TicketMintIn {
+    TicketMintIn {
+        head: head(
+            op::TICKET_MINT,
+            Ticket::NONE,
+            core::mem::size_of::<TicketMintIn>(),
+        ),
+        ttl_secs,
+        record: empty_blob(),
+        into,
+    }
+}
+
+/// A mint asks a lifetime and a record within the cap; anything else is refused before the host
+/// mints.
+#[test]
+fn a_mint_asks_a_lifetime_and_a_record_within_the_cap() {
+    let mut buf = [0u8; 8];
+    assert_eq!(
+        check_ticket_mint_in(&mint_in(600, bufs(&mut buf, &mut []))),
+        Ok(())
+    );
+    // RED: no lifetime.
+    assert_eq!(
+        check_ticket_mint_in(&mint_in(0, bufs(&mut buf, &mut []))).map_err(|f| f.rule),
+        Err(Rule::Missing)
+    );
+    // RED: a record over the cap.
+    let over = vec![0u8; MAX_TICKET_RECORD as usize + 1];
+    let mut i = mint_in(600, bufs(&mut buf, &mut []));
+    i.record = Blob {
+        ptr: over.as_ptr(),
+        len: over.len(),
+        fmt: 0,
+        flags: 0,
+    };
+    assert_eq!(
+        check_ticket_mint_in(&i).map_err(|f| f.rule),
+        Err(Rule::OverMax)
+    );
+}
+
+/// A minted ticket is bytes and an expiry: an empty ticket, a span, or an expiry of zero is FAULT.
+#[test]
+fn a_minted_ticket_is_bytes_and_an_expiry() {
+    let mut buf = [0u8; 8];
+    let i = mint_in(600, bufs(&mut buf, &mut []));
+    let mut o = out(Outcome::Ready);
+    o.len = 4;
+    o.value = 1_700_000_600;
+    assert_eq!(check_ticket_mint(&i, ready(&o), &o), Ok(Filled::Written));
+    // RED: nothing written.
+    let mut empty = o;
+    empty.len = 0;
+    assert_eq!(
+        rule(check_ticket_mint(&i, ready(&empty), &empty)),
+        Rule::Contradiction
+    );
+    // RED: no expiry.
+    let mut never = o;
+    never.value = 0;
+    assert_eq!(
+        rule(check_ticket_mint(&i, ready(&never), &never)),
+        Rule::UnknownCode
+    );
+}
+
+/// A take writes the record only when a ticket admitted the unit.
+#[test]
+fn a_take_writes_a_record_only_when_a_ticket_admitted_the_unit() {
+    let mut buf = [0u8; 8];
+    let i = TicketTakeIn {
+        head: head(
+            op::TICKET_TAKE,
+            Ticket::NONE,
+            core::mem::size_of::<TicketTakeIn>(),
+        ),
+        into: bufs(&mut buf, &mut []),
+    };
+    let mut taken = out(Outcome::Ready);
+    taken.value = TICKET_TAKEN;
+    taken.len = 3;
+    assert_eq!(
+        check_ticket_take(&i, ready(&taken), &taken),
+        Ok(Filled::Written)
+    );
+    let none = out(Outcome::Ready);
+    assert!(check_ticket_take(&i, ready(&none), &none).is_ok());
+    // RED: NONE with bytes.
+    let mut stray = none;
+    stray.len = 3;
+    assert_eq!(
+        rule(check_ticket_take(&i, ready(&stray), &stray)),
+        Rule::Contradiction
+    );
+    // RED: a value outside NONE..=TAKEN.
+    let mut odd = taken;
+    odd.value = TICKET_TAKEN + 1;
+    assert_eq!(
+        rule(check_ticket_take(&i, ready(&odd), &odd)),
+        Rule::UnknownCode
+    );
 }

@@ -74,7 +74,9 @@
 //!   the store cannot hold, a constraint, a script error before any write). FAILED proves nothing:
 //!   a store answers FAILED whenever it cannot know whether its commit landed (a lost commit or EXEC
 //!   reply, a dropped session), so the host replays the same `op_id` with the same body until READY
-//!   or REFUSED, and only a REFUSED write is ever split or re-sent under a new `op_id`.
+//!   or REFUSED, and only a REFUSED write is ever split or re-sent under a new `op_id`. The one
+//!   deterministic answer that is FAILED is a FORK (slot 19 under `fork_refusal`: a different
+//!   record at an occupied chain position): the host never replays a fork under the same `op_id`.
 
 pub mod check;
 pub mod ledger;
@@ -82,6 +84,8 @@ pub mod money;
 pub mod plane;
 pub mod records;
 
+use crate::abi::mechanism::decl::abi_struct;
+pub use check::check_answer;
 pub use ledger::*;
 pub use money::*;
 pub use plane::*;
@@ -95,66 +99,124 @@ use super::mechanism::lifecycle::{OpsHead, LIFECYCLE_SLOTS};
 /// The store kind's ABI version: v1.5.5 shipped `2` (`ABI_VERSION`), so 1.6.0 ships `3`.
 pub const ABI_VERSION: u32 = 3;
 
+/// The store kind's layout fingerprint ([`crate::abi::mechanism::layout`]): the fold of
+/// [`LAYOUT_SHAPES`], the size, alignment and field offsets of every `#[repr(C)]` struct crossing
+/// the store table. A door states it as built
+/// ([`Door::layout`](crate::abi::mechanism::door::Door::layout)) and the loader refuses another;
+/// `tests/layout_fingerprint.rs` holds it to its fold.
+pub const LAYOUT_FINGERPRINT: u64 = 0x56bdc8a89ba6e6e0;
+
+/// The store kind's shapes, in fold order ([`crate::layout_shape!`]): every `#[repr(C)]` struct
+/// crossing its table, each with every field. A struct `abi/store/` gains is listed here (gate
+/// `abi-location`).
+pub const LAYOUT_SHAPES: &[&[u64]] = &[
+    HostBuf::LAYOUT,
+    HostBlobs::LAYOUT,
+    HostBytesOut::LAYOUT,
+    HostListOut::LAYOUT,
+    LeasedBlobOut::LAYOUT,
+    LeasedListOut::LAYOUT,
+    LeasedStrListOut::LAYOUT,
+    CountOut::LAYOUT,
+    VerdictOut::LAYOUT,
+    StoreTail::LAYOUT,
+    crate::layout_shape!(OpId =>),
+    UsageCell::LAYOUT,
+    AddUsageBatchIn::LAYOUT,
+    OpBlobsIn::LAYOUT,
+    IdIn::LAYOUT,
+    U64In::LAYOUT,
+    WindowIn::LAYOUT,
+    PutUsageIn::LAYOUT,
+    BlobIn::LAYOUT,
+    KeyWithCredentialIn::LAYOUT,
+    KindIdIn::LAYOUT,
+    IdReasonIn::LAYOUT,
+    PlaneRecordRow::LAYOUT,
+    UpsertPlaneRecordIn::LAYOUT,
+    AppendPlaneRecordIn::LAYOUT,
+    GetPlaneRecordIn::LAYOUT,
+    ListPlaneRecordsIn::LAYOUT,
+    KindBeforeIn::LAYOUT,
+    TokenIn::LAYOUT,
+    RecordPutIn::LAYOUT,
+    RecordGetIn::LAYOUT,
+    RecordEntry::LAYOUT,
+    HostRecords::LAYOUT,
+    RecordScanIn::LAYOUT,
+    crate::layout_shape!(Ops =>
+        head, put_key, get_key, list_keys, delete_key, list_keys_since, get_usage, put_usage,
+        list_metering, put_credential, put_key_with_credential, list_credentials,
+        revoke_credential, list_credentials_since, list_audit, add_denylist, list_denylist,
+        list_audit_tail, upsert_plane_record, get_plane_record, append_plane_record,
+        list_plane_records, list_plane_record_parents, purge_plane_records_before,
+        delete_plane_record, redeem_plane_token, plane_token_live, record_put, record_get,
+        record_scan, add_usage_batch, add_metering_batch
+    ),
+];
+
 // ── shared host-buffer shapes (mechanism memory class (i)) ────────────────────────────────────
 
-/// A HOST-owned byte buffer a request-path result is written into: pointer + capacity. The plugin
-/// writes at most `cap` bytes and never keeps the pointer past the op.
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct HostBuf {
-    /// The buffer; NULL only with `cap == 0`.
-    pub ptr: *mut u8,
-    /// Its capacity in bytes.
-    pub cap: usize,
-}
+abi_struct! {
+    /// A HOST-owned byte buffer a request-path result is written into: pointer + capacity. The plugin
+    /// writes at most `cap` bytes and never keeps the pointer past the op.
+    #[repr(C)]
+    #[derive(Debug, Clone, Copy)]
+    pub struct HostBuf {
+        /// The buffer; NULL only with `cap == 0`.
+        pub ptr: *mut u8,
+        /// Its capacity in bytes.
+        pub cap: usize,
+    }
 
-/// A HOST-owned list of blobs: an array of [`Blob`] slots and one byte buffer the blobs point into.
-/// The plugin copies each item into `bytes` and writes a [`Blob`] whose `ptr` points inside it.
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct HostBlobs {
-    /// The blob slots.
-    pub items: *mut Blob,
-    /// How many slots.
-    pub items_cap: usize,
-    /// The bytes the blobs point into.
-    pub bytes: HostBuf,
-}
+    /// A HOST-owned list of blobs: an array of [`Blob`] slots and one byte buffer the blobs point into.
+    /// The plugin copies each item into `bytes` and writes a [`Blob`] whose `ptr` points inside it.
+    #[repr(C)]
+    #[derive(Debug, Clone, Copy)]
+    pub struct HostBlobs {
+        /// The blob slots.
+        pub items: *mut Blob,
+        /// How many slots.
+        pub items_cap: usize,
+        /// The bytes the blobs point into.
+        pub bytes: HostBuf,
+    }
 
-/// The `out` of a request-path single-value read into a [`HostBuf`]: on READY `written` bytes are
-/// in the buffer and `needed == 0`; a value over the capacity is the short-buffer answer (M-SB, on
-/// [`OutHead`]) with `needed` its full length.
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct HostBytesOut {
-    /// The head.
-    pub head: OutHead,
-    /// [`FOUND`] or [`ABSENT`].
-    pub found: u32,
-    /// Alignment padding.
-    pub _reserved: u32,
-    /// How many bytes were written.
-    pub written: u64,
-    /// On a short FAILED, the value's full length; `0` otherwise.
-    pub needed: u64,
-}
+    /// The `out` of a request-path single-value read into a [`HostBuf`]: on READY `written` bytes are
+    /// in the buffer and `needed == 0`; a value over the capacity is the short-buffer answer (M-SB, on
+    /// [`OutHead`]) with `needed` its full length.
+    #[repr(C)]
+    #[derive(Debug, Clone, Copy)]
+    pub struct HostBytesOut {
+        /// The head.
+        pub head: OutHead,
+        /// [`FOUND`] or [`ABSENT`].
+        pub found: u32,
+        /// Alignment padding.
+        pub _reserved: u32,
+        /// How many bytes were written.
+        pub written: u64,
+        /// On a short FAILED, the value's full length; `0` otherwise.
+        pub needed: u64,
+    }
 
-/// The `out` of a request-path list written into host buffers: on READY `items_written` items and
-/// `bytes_written` bytes are in the buffers and both `needed_*` are `0`; a list over either
-/// capacity is the short-buffer answer (M-SB, on [`OutHead`]) with the full sizes in `needed_*`.
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct HostListOut {
-    /// The head.
-    pub head: OutHead,
-    /// How many items were written.
-    pub items_written: u64,
-    /// How many bytes of the byte buffer the written items use.
-    pub bytes_written: u64,
-    /// On a short FAILED, how many items the whole answer holds; `0` otherwise.
-    pub needed_items: u64,
-    /// On a short FAILED, how many bytes the whole answer needs; `0` otherwise.
-    pub needed_bytes: u64,
+    /// The `out` of a request-path list written into host buffers: on READY `items_written` items and
+    /// `bytes_written` bytes are in the buffers and both `needed_*` are `0`; a list over either
+    /// capacity is the short-buffer answer (M-SB, on [`OutHead`]) with the full sizes in `needed_*`.
+    #[repr(C)]
+    #[derive(Debug, Clone, Copy)]
+    pub struct HostListOut {
+        /// The head.
+        pub head: OutHead,
+        /// How many items were written.
+        pub items_written: u64,
+        /// How many bytes of the byte buffer the written items use.
+        pub bytes_written: u64,
+        /// On a short FAILED, how many items the whole answer holds; `0` otherwise.
+        pub needed_items: u64,
+        /// On a short FAILED, how many bytes the whole answer needs; `0` otherwise.
+        pub needed_bytes: u64,
+    }
 }
 
 /// [`HostBytesOut::found`]: the record exists and was written.
@@ -165,65 +227,67 @@ pub const ABSENT: u32 = 0;
 
 // ── shared off-path result shapes (mechanism memory class (iv)) ───────────────────────────────
 
-/// The `out` of an off-path single-record read: a plugin-owned blob held under `head.lease`.
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct LeasedBlobOut {
-    /// The head; `head.lease` holds `record` until `release`.
-    pub head: OutHead,
-    /// [`FOUND`] or [`ABSENT`].
-    pub found: u32,
-    /// Alignment padding.
-    pub _reserved: u32,
-    /// The record; absent when `found == ABSENT`.
-    pub record: Blob,
-}
+abi_struct! {
+    /// The `out` of an off-path single-record read: a plugin-owned blob held under `head.lease`.
+    #[repr(C)]
+    #[derive(Debug, Clone, Copy)]
+    pub struct LeasedBlobOut {
+        /// The head; `head.lease` holds `record` until `release`.
+        pub head: OutHead,
+        /// [`FOUND`] or [`ABSENT`].
+        pub found: u32,
+        /// Alignment padding.
+        pub _reserved: u32,
+        /// The record; absent when `found == ABSENT`.
+        pub record: Blob,
+    }
 
-/// The `out` of an off-path list of records: plugin-owned blobs held under `head.lease`.
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct LeasedListOut {
-    /// The head; `head.lease` holds `items` and their bytes until `release`.
-    pub head: OutHead,
-    /// The records, in the op's stated order.
-    pub items: *const Blob,
-    /// How many.
-    pub items_len: usize,
-}
+    /// The `out` of an off-path list of records: plugin-owned blobs held under `head.lease`.
+    #[repr(C)]
+    #[derive(Debug, Clone, Copy)]
+    pub struct LeasedListOut {
+        /// The head; `head.lease` holds `items` and their bytes until `release`.
+        pub head: OutHead,
+        /// The records, in the op's stated order.
+        pub items: *const Blob,
+        /// How many.
+        pub items_len: usize,
+    }
 
-/// The `out` of an off-path list of strings: plugin-owned strings held under `head.lease`.
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct LeasedStrListOut {
-    /// The head; `head.lease` holds `items` and their bytes until `release`.
-    pub head: OutHead,
-    /// The strings.
-    pub items: *const AbiStr,
-    /// How many.
-    pub items_len: usize,
-}
+    /// The `out` of an off-path list of strings: plugin-owned strings held under `head.lease`.
+    #[repr(C)]
+    #[derive(Debug, Clone, Copy)]
+    pub struct LeasedStrListOut {
+        /// The head; `head.lease` holds `items` and their bytes until `release`.
+        pub head: OutHead,
+        /// The strings.
+        pub items: *const AbiStr,
+        /// How many.
+        pub items_len: usize,
+    }
 
-/// The `out` of a count (a purge's rows removed).
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct CountOut {
-    /// The head.
-    pub head: OutHead,
-    /// The count.
-    pub count: u64,
-}
+    /// The `out` of a count (a purge's rows removed).
+    #[repr(C)]
+    #[derive(Debug, Clone, Copy)]
+    pub struct CountOut {
+        /// The head.
+        pub head: OutHead,
+        /// The count.
+        pub count: u64,
+    }
 
-/// The `out` of a yes/no check. [`VERDICT_NO`] is `0`, so an `out` nobody wrote is a NO: the
-/// token checks are fail-closed (records.rs:1548-1554, :1580-1587).
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct VerdictOut {
-    /// The head.
-    pub head: OutHead,
-    /// [`VERDICT_YES`] or [`VERDICT_NO`].
-    pub verdict: u32,
-    /// Alignment padding.
-    pub _reserved: u32,
+    /// The `out` of a yes/no check. [`VERDICT_NO`] is `0`, so an `out` nobody wrote is a NO: the
+    /// token checks are fail-closed (records.rs:1548-1554, :1580-1587).
+    #[repr(C)]
+    #[derive(Debug, Clone, Copy)]
+    pub struct VerdictOut {
+        /// The head.
+        pub head: OutHead,
+        /// [`VERDICT_YES`] or [`VERDICT_NO`].
+        pub verdict: u32,
+        /// Alignment padding.
+        pub _reserved: u32,
+    }
 }
 
 /// [`VerdictOut::verdict`]: no (and the fail-closed zero).
@@ -233,22 +297,24 @@ pub const VERDICT_YES: u32 = 1;
 
 // ── the Statement tail ───────────────────────────────────────────────────────────────────────
 
-/// The store kind's Statement tail (B.1 "Tail": `durable_plane`, `fork_refusal`). Each fact is
-/// `0` (no) or `1` (yes). `ephemeral` is a Statement mark, not a tail fact
-/// ([`MARK_EPHEMERAL`](crate::abi::mechanism::door::MARK_EPHEMERAL); the design's One Statement rule).
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct StoreTail {
-    /// The head; `size == size_of::<StoreTail>()`.
-    pub head: KindTailHead,
-    /// The store keeps plane records durably (a store that does not answers the plane-record
-    /// slots with nothing kept, as the 1.5.5-default RAM store did, records.rs:1481-1487).
-    pub durable_plane: u8,
-    /// The store refuses a DIFFERENT record at an already-used append sequence as a fork, rather
-    /// than overwriting it (Q79-fork-refusal, THE DESIGN's owner questions, ruled 2026-09-27).
-    pub fork_refusal: u8,
-    /// Alignment padding.
-    pub _reserved: [u8; 6],
+abi_struct! {
+    /// The store kind's Statement tail (B.1 "Tail": `durable_plane`, `fork_refusal`). Each fact is
+    /// `0` (no) or `1` (yes). `ephemeral` is a Statement mark, not a tail fact
+    /// ([`MARK_EPHEMERAL`](crate::abi::mechanism::door::MARK_EPHEMERAL); the design's One Statement rule).
+    #[repr(C)]
+    #[derive(Debug, Clone, Copy)]
+    pub struct StoreTail {
+        /// The head; `size == size_of::<StoreTail>()`.
+        pub head: KindTailHead,
+        /// The store keeps plane records durably (a store that does not answers the plane-record
+        /// slots with nothing kept, as the 1.5.5-default RAM store did, records.rs:1481-1487).
+        pub durable_plane: u8,
+        /// The store refuses a DIFFERENT record at an already-used append sequence as a fork, rather
+        /// than overwriting it (Q79-fork-refusal, THE DESIGN's owner questions, ruled 2026-09-27).
+        pub fork_refusal: u8,
+        /// Alignment padding.
+        pub _reserved: [u8; 6],
+    }
 }
 
 impl StoreTail {
@@ -425,7 +491,7 @@ store_slots! {
     21 LIST_PLANE_RECORD_PARENTS list_plane_record_parents IdIn, LeasedStrListOut, Off, Call, HostCap,
         "`list_plane_record_parents`. In [`IdIn`] (kind), out [`LeasedStrListOut`]. The boot enumeration.";
     22 PURGE_PLANE_RECORDS_BEFORE purge_plane_records_before KindBeforeIn, CountOut, Off, Call, Fixed,
-        "`purge_plane_records_before`. In [`KindBeforeIn`], out [`CountOut`]. Honours `disposition`.";
+        "`purge_plane_records_before`. In [`KindBeforeIn`], out [`CountOut`]. Honours `disposition` under the `retention` rule the host passes.";
     23 DELETE_PLANE_RECORD delete_plane_record KindIdIn, OutHead, Request, Call, Fixed,
         "`delete_plane_record`. In [`KindIdIn`], out [`OutHead`]. Absent is READY.";
     24 REDEEM_PLANE_TOKEN redeem_plane_token TokenIn, VerdictOut, Request, Call, Fixed,
@@ -495,12 +561,12 @@ super::sdk::door::slot_structs!(
     /// use busbar_contract::abi::store::{UpsertPlaneRecordIn, VerdictOut, WindowIn};
     /// use busbar_contract::abi::mechanism::call::Outcome;
     /// use busbar_contract::abi::mechanism::lifecycle::*;
-    /// use busbar_contract::abi::sdk::door::Slot;
+    /// use busbar_contract::abi::sdk::door::RawSlot;
     /// # use std::ffi::c_void;
     /// # macro_rules! ready { ($n:ident, $i:ty, $o:ty) => {
     /// #     struct $n;
-    /// #     impl Slot for $n { type In = $i; type Out = $o;
-    /// #         fn call(_: *mut c_void, _: &$i, _: &mut $o) -> Outcome { Outcome::Ready } }
+    /// #     impl RawSlot for $n { type In = $i; type Out = $o;
+    /// #         unsafe fn call(_: *mut c_void, _: &$i, _: &mut $o) -> Outcome { Outcome::Ready } }
     /// # } }
     /// # ready!(V, ValidateIn, OutHead); ready!(Op_, OpenIn, OpenOut); ready!(Rf, RefreshIn, OutHead);
     /// # ready!(Rt, GenIn, OutHead); ready!(Tk, TickIn, TickOut); ready!(Dr, DriveIn, OutHead);

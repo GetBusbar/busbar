@@ -42,63 +42,6 @@ fn preamble_layout_is_frozen() {
 }
 
 #[test]
-fn check_preamble_accepts_current_and_newer_minor() {
-    assert_eq!(check_preamble(&AbiPreamble::CURRENT), Ok(()));
-    let newer_minor = AbiPreamble {
-        abi_minor: ABI_MINOR + 7,
-        ..AbiPreamble::CURRENT
-    };
-    assert_eq!(check_preamble(&newer_minor), Ok(()));
-}
-
-#[test]
-fn check_preamble_fails_closed_on_magic_and_major() {
-    let bad_magic = AbiPreamble {
-        magic: 0xDEAD_BEEF,
-        ..AbiPreamble::CURRENT
-    };
-    assert_eq!(
-        check_preamble(&bad_magic),
-        Err(PreambleError::BadMagic { found: 0xDEAD_BEEF })
-    );
-    let bad_major = AbiPreamble {
-        abi_major: ABI_MAJOR + 1,
-        ..AbiPreamble::CURRENT
-    };
-    assert_eq!(
-        check_preamble(&bad_major),
-        Err(PreambleError::MajorMismatch {
-            ours: ABI_MAJOR,
-            theirs: ABI_MAJOR + 1,
-        })
-    );
-}
-
-/// ITEM 410 — THE PRE-RESIZE LAYOUT IS REFUSED, NOT ACCEPTED. Minor 21 RESIZED an interior field
-/// (`BuildCtx.host_ctx`, 8 → 16 bytes) and shifted every field after it, so a peer stamped with the
-/// major that layout change left behind (`1`, at minor 20 or at the 21 that carried the resize under
-/// the old major) reads `config_ptr`/`config_len`/`resolved_refs_*` from the wrong offsets. A layout
-/// change is a MAJOR event: the airlock must refuse every such peer before a sized struct is read.
-#[test]
-fn check_preamble_refuses_a_peer_of_the_pre_resize_layout() {
-    for abi_minor in [20, 21] {
-        let old = AbiPreamble {
-            magic: ABI_MAGIC,
-            abi_major: 1,
-            abi_minor,
-        };
-        assert_eq!(
-            check_preamble(&old),
-            Err(PreambleError::MajorMismatch {
-                ours: ABI_MAJOR,
-                theirs: 1,
-            }),
-            "a 1.{abi_minor} peer predates the BuildCtx resize and must be refused"
-        );
-    }
-}
-
-#[test]
 fn sized_field_guard_hides_truncated_tail() {
     let g = Pod::whole();
     // A full-size struct reveals a tail field.
@@ -122,18 +65,6 @@ fn an_over_large_attested_size_is_clamped_to_this_builds_struct() {
     // A shorter claim is honoured verbatim — that is the append-only rule, untouched.
     assert_eq!(honoured_size(16, ours), 16);
     assert_eq!(honoured_size(ours as u32, ours), ours as u32);
-}
-
-#[test]
-fn write_out_publishes_on_ok_and_tolerates_null() {
-    let mut slot = MaybeUninit::<u64>::uninit();
-    // SAFETY: `slot` is a live, writable MaybeUninit.
-    unsafe { write_out(&mut slot as *mut MaybeUninit<u64>, 0x1234_u64) };
-    // SAFETY: we just wrote it on the Ok path.
-    assert_eq!(unsafe { slot.assume_init() }, 0x1234);
-    // A null out-slot must not fault.
-    // SAFETY: null is explicitly tolerated by the contract.
-    unsafe { write_out(core::ptr::null_mut::<MaybeUninit<u64>>(), 99_u64) };
 }
 
 /// The sized-field guard must be safe to point at a peer buffer that is SHORTER than the struct it

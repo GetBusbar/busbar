@@ -74,22 +74,6 @@ pub mod store_adapter;
 #[allow(unsafe_code)] // REVIEWED: lends the store door its request (`Lend`)
 pub mod store_v3;
 pub mod tarball;
-/// TEST ONLY: the fake-call store harness the kernel's minting tests share with this crate's own.
-/// Compiled for this crate's tests and under the `test-support` feature, which only
-/// busbar-kernel's `[dev-dependencies]` edge turns on; never in a shipped build.
-#[cfg(any(test, feature = "test-support"))]
-#[doc(hidden)]
-#[path = "tests/test_support.rs"]
-pub mod test_support;
-
-/// TEST ONLY: the composition root's door fixtures (status row 195): doors built by the contract's
-/// door macro, whose expansion writes `unsafe`, kept here so the `forbid(unsafe_code)` root holds no
-/// such expansion. Under `test-support`, which only the root's `[dev-dependencies]` turns on.
-#[cfg(any(test, feature = "test-support"))]
-#[doc(hidden)]
-#[allow(unsafe_code)] // TEST ONLY: plugin_door! fixtures the composition root's tests drive
-#[path = "../tests/fixtures/root_door_fixtures.rs"]
-pub mod root_door_fixtures;
 
 /// TEST ONLY: busbar-test-kit's source (the published conformance suite and the test connection
 /// tables), compiled into this crate's own tests so the suite's unit tests run over this crate's
@@ -101,6 +85,9 @@ pub mod conformance;
 #[cfg(test)]
 #[path = "../../busbar-test-kit/src/https_conns.rs"]
 pub mod https_conns;
+#[cfg(test)]
+#[path = "../../busbar-test-kit/src/services_double.rs"]
+pub mod services_double;
 #[cfg(test)]
 #[path = "../../busbar-test-kit/src/stand_in.rs"]
 pub mod stand_in;
@@ -356,6 +343,11 @@ mod dispatch_kind_plane_tests;
 #[allow(unsafe_code)] // TEST ONLY: raw doors and crossings
 #[path = "tests/dispatch_kind_store_tests.rs"]
 mod dispatch_kind_store_tests;
+
+/// The stub store's plane records: an upsert is keyed on its own id, parent or not.
+#[cfg(test)]
+#[path = "tests/stub_store_plane_tests.rs"]
+mod stub_store_plane_tests;
 
 /// The hook kind's answer checks, through the dispatcher's `Kind` adapter.
 #[cfg(test)]

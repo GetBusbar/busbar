@@ -69,7 +69,7 @@ fn issuer() -> &'static busbar_test_kit::test_issuer::Issuer {
         let issuer = busbar_test_kit::test_issuer::Issuer::start(ISSUER, "plugin-chain");
         let conns = busbar_test_kit::https_conns::HttpsConns::new();
         conns.serve_issuer(&issuer);
-        busbar_plugin_loader::auth_axis::stand_in_conns(std::sync::Arc::new(conns));
+        busbar_test_kit::auth_axis::stand_in_conns(std::sync::Arc::new(conns));
         issuer
     })
 }

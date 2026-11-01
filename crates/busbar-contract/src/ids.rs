@@ -276,18 +276,6 @@ pub struct BucketRef {
     pub capped: bool,
 }
 
-/// The chain of buckets one principal draws against, all or nothing.
-///
-/// One tier multiplier governs the whole chain; a chain whose buckets disagree on the tier is a
-/// mismatch, not an average.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct BucketChain {
-    /// The buckets, in pool-filtered chain order.
-    pub buckets: crate::bounded::BoundedVec<BucketRef, { crate::bounded::MAX_KEYS }>,
-    /// The chain's tier multiplier, in basis points.
-    pub tier_bp: u32,
-}
-
 /// One class's share of a unit's estimate.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
 pub struct ClassEstimate {

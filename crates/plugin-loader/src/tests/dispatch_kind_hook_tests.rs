@@ -421,3 +421,77 @@ fn zeroed_pending_and_refused_pass_every_op() {
         );
     }
 }
+
+/// THE KIND TAIL GROWTH RULE on the hook tail (H8): the hook facts are read through the loader's one
+/// tail reader, like a plane's, store's or transport's. A tail of the host's size loads; one that
+/// states MORE (a later plugin's appended field) loads, read only to the host's size; one below the
+/// frozen size is refused, naming it.
+#[test]
+fn the_hook_tail_follows_the_growth_rule() {
+    use busbar_contract::abi::hook::{Tail, CLASS_TAP, PROMPT_NO, USER_NO};
+    use busbar_contract::abi::sdk::door::statement;
+    use busbar_contract::hook_calls::HookFacts;
+    let bind = |size: usize| {
+        let mut tail = Tail::EMPTY.with_access(CLASS_TAP, PROMPT_NO, USER_NO);
+        tail.head.size = size as u32;
+        // Room past the host's tail for a later plugin's appended bytes.
+        let leaked: &'static mut [Tail; 2] = Box::leak(Box::new([tail, tail]));
+        let st = busbar_contract::abi::mechanism::door::Statement {
+            kind_tail: std::ptr::from_ref(&leaked[0]).cast(),
+            ..statement("t", "1", 0)
+        };
+        <Hook as Kind>::context(&st).map(|c| {
+            c.and_then(|c| c.downcast::<HookFacts>().ok())
+                .map(|f| f.class)
+        })
+    };
+    let host = size_of::<Tail>();
+    assert_eq!(bind(host), Ok(Some(CLASS_TAP)));
+    assert_eq!(bind(host + 8), Ok(Some(CLASS_TAP)), "a grown tail loads");
+    assert_eq!(
+        bind(host - 8),
+        Err(format!(
+            "a hook states a {}-byte tail, smaller than its frozen {host}",
+            host - 8
+        ))
+    );
+}
+
+/// RED (H7): A HOOK STATES NO SURFACE THE HOST NEVER READS. The host never calls a hook's `serve`
+/// (no route under `/hooks/<name>/*` is served) and never reads its tail's `requested_signals`
+/// (the signals a hook is lent are the operator's `hooks:` configuration), so a tail stating
+/// either is refused at bind, naming the field, instead of loading a promise nothing keeps. The
+/// tail stating neither binds.
+#[test]
+fn a_hook_tail_stating_routes_or_requested_signals_is_refused_at_bind() {
+    use busbar_contract::abi::hook::{Route, Tail, CLASS_GATE, PROMPT_NO, USER_NO};
+    use busbar_contract::abi::mechanism::call::AbiStr;
+    use busbar_contract::abi::mechanism::door::{KindTailHead, Statement};
+    let routes: &'static [Route] = Box::leak(Box::new([Route {
+        path: AbiStr::ZERO,
+        method: AbiStr::ZERO,
+        auth: 0,
+        _reserved: 0,
+    }]));
+    static SIGNALS: [u32; 1] = [1];
+    static NAME: &[u8] = b"hooks-h7";
+    let plain = Tail::EMPTY.with_access(CLASS_GATE, PROMPT_NO, USER_NO);
+    let bind = |t: &Tail| {
+        let st = Statement {
+            name: AbiStr {
+                ptr: NAME.as_ptr(),
+                len: NAME.len(),
+            },
+            kind_tail: std::ptr::from_ref(t).cast::<KindTailHead>(),
+            ..Statement::ZERO
+        };
+        crate::dispatch::kinds::hook::facts(&st).map(|_| ())
+    };
+    assert_eq!(bind(&plain), Ok(()), "a tail stating neither binds");
+    let routed = plain.with_routes(routes);
+    let err = bind(&routed).expect_err("routes are refused");
+    assert!(err.contains("routes"), "{err}");
+    let signalled = plain.with_requested_signals(&SIGNALS);
+    let err = bind(&signalled).expect_err("requested signals are refused");
+    assert!(err.contains("requested_signals"), "{err}");
+}

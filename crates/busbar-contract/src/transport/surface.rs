@@ -34,8 +34,6 @@
 //! one that answers 404 to a conformant client. The declaration is the single copy; the transport
 //! matches against it and the plane's claims are built from it.
 
-use core::fmt;
-
 /// Whether an operation's answer is one document or a run of them.
 ///
 /// Load-bearing on both sides. A transport reads it to decide whether the response leaves as a
@@ -201,78 +199,6 @@ pub struct WireSurface {
     pub operations: &'static [Operation],
 }
 
-/// A surface a mount will not boot on.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SurfaceError {
-    /// Two operations are addressed identically, so a request naming that address is ambiguous.
-    ///
-    /// Not a warning. A mount handed two rows for one address either answers with the first and
-    /// silently never reaches the second, or answers with whichever the map iterated to — and both
-    /// are a served surface nobody declared.
-    DuplicateAddress {
-        /// The operation the second row belongs to.
-        op: &'static str,
-    },
-    /// A path template is not in the template grammar: an empty segment, or a capture that is not a
-    /// whole segment.
-    MalformedTemplate {
-        /// The template as declared.
-        path: &'static str,
-    },
-    /// An operation declares no way to address it at all, so nothing can ever reach it.
-    Unaddressable {
-        /// The operation.
-        op: &'static str,
-    },
-    /// The surface declares no binding, so there is nothing to mount it on.
-    NoBinding,
-    /// A dispatch names a binding the surface does not declare.
-    ///
-    /// The other direction of the declaration rule, and the one a mount cannot survive: a document
-    /// row naming a binding with no mounts is an operation posted to nowhere, and it would report as
-    /// "that method does not exist" to every caller that asked for it correctly.
-    UnknownBinding {
-        /// The operation the dispatch belongs to.
-        op: &'static str,
-        /// The binding it named.
-        binding: &'static str,
-    },
-}
-
-impl fmt::Display for SurfaceError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::DuplicateAddress { op } => write!(
-                f,
-                "the operation `{op}` is addressed the same way as an earlier one, so a request \
-                 naming that address is ambiguous and one of the two could never be reached"
-            ),
-            Self::MalformedTemplate { path } => write!(
-                f,
-                "the path template `{path}` is not in the template grammar: a capture is a whole \
-                 segment spelled `{{name}}`, and no segment may be empty"
-            ),
-            Self::Unaddressable { op } => write!(
-                f,
-                "the operation `{op}` declares no dispatch, so nothing on any binding could ever \
-                 reach it"
-            ),
-            Self::NoBinding => write!(
-                f,
-                "the surface declares no binding, so there is no transport to mount it on"
-            ),
-            Self::UnknownBinding { op, binding } => write!(
-                f,
-                "the operation `{op}` is dispatched on the binding `{binding}`, which this surface \
-                 does not declare — so it is posted to nowhere and reports as a method that does \
-                 not exist"
-            ),
-        }
-    }
-}
-
-impl std::error::Error for SurfaceError {}
-
 /// One capture a matched target yielded.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Capture<'t> {
@@ -285,8 +211,7 @@ pub struct Capture<'t> {
 /// The most captures one path template may declare.
 ///
 /// A fixed ceiling rather than a growing vector: this runs once per arriving request, and a
-/// template deep enough to exceed it is one no protocol in the tree writes. A template that does is
-/// refused by [`check_surface`] at boot rather than truncated at serve time.
+/// template deep enough to exceed it is one no protocol in the tree writes.
 pub const MAX_CAPTURES: usize = 8;
 
 /// Match one request target against one path template.
@@ -325,114 +250,6 @@ pub fn match_target<'t>(template: &'t str, target: &'t str) -> Option<Vec<Captur
     }
 }
 
-/// Whether a path template is in the grammar [`match_target`] reads.
-#[must_use]
-pub fn template_is_wellformed(template: &str) -> bool {
-    if !template.starts_with('/') {
-        return false;
-    }
-    let mut captures = 0;
-    for (i, seg) in template.split('/').enumerate() {
-        // The leading empty segment is the one `/` produces and is the only empty one allowed.
-        if i == 0 {
-            continue;
-        }
-        if seg.is_empty() {
-            return false;
-        }
-        let opens = seg.starts_with('{');
-        let closes = seg.ends_with('}');
-        if opens != closes {
-            return false;
-        }
-        if opens {
-            captures += 1;
-            if seg.len() <= 2 || captures > MAX_CAPTURES {
-                return false;
-            }
-        } else if seg.contains('{') || seg.contains('}') {
-            return false;
-        }
-    }
-    true
-}
-
-/// The address one dispatch occupies, as the duplicate check compares them.
-///
-/// Two dispatches collide when a request could name both. For a target that is the template and the
-/// method; for a document it is the mount, the method and the name; for a service it is the two
-/// names. Comparing the whole dispatch instead would let two rows differing only in their credential
-/// bar both mount, which is a surface where one address answers with a credential demanded and
-/// without it depending on which row matched first.
-fn address_of(d: &Dispatch) -> (&'static str, &'static str, &'static str) {
-    match d {
-        Dispatch::Target { path, method, .. } => (path, method, ""),
-        Dispatch::Document {
-            binding,
-            method,
-            name,
-            ..
-        } => (binding, method, name),
-        Dispatch::Service {
-            service, method, ..
-        } => (service, method, ""),
-    }
-}
-
-/// The boot check over a declared surface: every operation is reachable, no two are reachable the
-/// same way, and every template is in the grammar.
-///
-/// Run once, when the mount is built, and before a byte is accepted. Each of the three is a
-/// declaration that was a comment before this ran: a template nothing parsed, an ordering nothing
-/// checked, an operation nothing could reach.
-///
-/// # Errors
-///
-/// The surface declares no binding, an operation declares no dispatch, a template is not in the
-/// grammar, or two dispatches occupy one address.
-pub fn check_surface(surface: &WireSurface) -> Result<(), SurfaceError> {
-    if surface.bindings.is_empty() {
-        return Err(SurfaceError::NoBinding);
-    }
-    for binding in surface.bindings {
-        for mount in binding.mounts {
-            // A mount is a literal target and carries no captures, so the template grammar holds
-            // with the stricter reading: `/mount/` ends in an empty segment and is a legitimate
-            // spelling of a mount, which is exactly the case a template may not have.
-            if !mount.starts_with('/') || mount.contains('{') || mount.contains('}') {
-                return Err(SurfaceError::MalformedTemplate { path: mount });
-            }
-        }
-    }
-    let mut seen: Vec<(&'static str, &'static str, &'static str)> = Vec::new();
-    for operation in surface.operations {
-        if operation.dispatch.is_empty() {
-            return Err(SurfaceError::Unaddressable { op: operation.op });
-        }
-        for d in operation.dispatch {
-            if let Dispatch::Target { path, .. } = d {
-                if !template_is_wellformed(path) {
-                    return Err(SurfaceError::MalformedTemplate { path });
-                }
-            }
-            if let Dispatch::Document { binding, .. } = d {
-                if !surface.bindings.iter().any(|b| b.name == *binding) {
-                    return Err(SurfaceError::UnknownBinding {
-                        op: operation.op,
-                        binding,
-                    });
-                }
-            }
-            let address = address_of(d);
-            if seen.contains(&address) {
-                return Err(SurfaceError::DuplicateAddress { op: operation.op });
-            }
-            seen.push(address);
-        }
-    }
-    Ok(())
-}
-
 /// Find the operation a request target and method address, in the surface's own order.
 ///
 /// The order is the declarer's and is not re-derived: most-specific-first is how a protocol says
@@ -457,65 +274,6 @@ pub fn resolve_target<'s>(
             }
             if let Some(captures) = match_target(path, target) {
                 return Some((operation, d, captures));
-            }
-        }
-    }
-    None
-}
-
-/// Find the operation a framed call's service and method address.
-#[must_use]
-pub fn resolve_service<'s>(
-    surface: &'s WireSurface,
-    service: &str,
-    method: &str,
-) -> Option<(&'s Operation, &'s Dispatch)> {
-    for operation in surface.operations {
-        for d in operation.dispatch {
-            if let Dispatch::Service {
-                service: s,
-                method: m,
-                ..
-            } = d
-            {
-                if *s == service && *m == method {
-                    return Some((operation, d));
-                }
-            }
-        }
-    }
-    None
-}
-
-/// The binding whose declared mounts include this target, if any.
-///
-/// The target is cut at the query and the fragment first, for the reason [`match_target`] cuts it:
-/// neither is part of the path, and a mount that failed to match because a client appended a query
-/// would answer 404 to a well-formed request.
-#[must_use]
-pub fn binding_at<'s>(surface: &'s WireSurface, target: &str) -> Option<&'s BindingDecl> {
-    let path = target.split(['?', '#']).next().unwrap_or(target);
-    surface.bindings.iter().find(|b| b.mounts.contains(&path))
-}
-
-/// Find the operation a document member's value addresses on one binding.
-#[must_use]
-pub fn resolve_document<'s>(
-    surface: &'s WireSurface,
-    binding: &str,
-    name: &str,
-) -> Option<(&'s Operation, &'s Dispatch)> {
-    for operation in surface.operations {
-        for d in operation.dispatch {
-            if let Dispatch::Document {
-                binding: b,
-                name: n,
-                ..
-            } = d
-            {
-                if *b == binding && *n == name {
-                    return Some((operation, d));
-                }
             }
         }
     }

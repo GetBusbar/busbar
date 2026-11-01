@@ -46,11 +46,11 @@ static PROBE: PlaneDecl = PlaneDecl {
         served_op_classes: &[],
         caller_credential_refusal: None,
     },
-    wire_format_names: || &["law7probe"],
-    provider_dialects: || &[],
+    wire_format_names: |_| &["law7probe"],
+    provider_dialects: |_| &[],
     claims: |_| Vec::new(),
     admission: |_| None,
-    build: |_| {
+    build: |_, _| {
         BUILT.fetch_add(1, Ordering::SeqCst);
         Some(std::sync::Arc::new(()))
     },
@@ -80,6 +80,7 @@ static PROBE: PlaneDecl = PlaneDecl {
     retain_verify_gates: None,
     default_section: None,
     resolve_provider: None,
+    door: None,
 };
 
 /// Run hydrate + start over an App whose configured plane sections are exactly `sections`, and
@@ -136,7 +137,7 @@ fn only_a_configured_plane_builds_its_slot() {
         );
         cfg.plane_sections = sections.iter().copied().collect();
         let b0 = BUILT.load(Ordering::SeqCst);
-        let app = busbar_kernel::test_support::build_once(cfg, None).expect("build");
+        let app = busbar_kernel_testkit::app::build_once(cfg, None).expect("build");
         (
             BUILT.load(Ordering::SeqCst) - b0,
             app.plane_slots.contains_key(PROBE.key),

@@ -273,9 +273,8 @@ fn register_protocols() {
 }
 
 /// REGISTER THE PLANES — the composition root's one write into the plane axis
-/// (`busbar_kernel::plane_driver::registry::install_planes`), over the plane tables of [`LINKED`] (each
-/// entry's contract declaration joined kernel-side to its behaviour, `PlaneDecl::assemble`) and the
-/// plane doors, linked and dropped into the configured `plugins.dir`, discovered first
+/// (`busbar_kernel::plane_driver::registry::install_planes`), over the plane doors,
+/// linked and dropped into the configured `plugins.dir`, discovered first
 /// (`root::boot::discover_planes`) and folded by one fold.
 /// `merged_boot_plane_decls` normalises the installed set to canonical layering order, so each row
 /// lands in its own slot regardless of the table's order. Then the two unconditional seams, then
@@ -298,7 +297,7 @@ fn register_planes() {
     // read off their Statements before the configuration is first parsed (arch-audit u29 F1).
     busbar_kernel::preflight::install_declared_styles(root::door_steps::declared_styles);
     root::boot::discover_planes(&LINKED, dropped);
-    root::linked::register_planes(&LINKED);
+    root::linked::register_planes();
     root::linked::register_exports(dropped);
     // The settings each plugin's schema declares public, before any configuration is read: every
     // other plugin setting is sensitive (`busbar_kernel::config::settings_public`).
@@ -335,12 +334,13 @@ fn register_planes() {
     root::linked::seal(ROOT_UNITS);
 }
 
-/// REGISTER THE LINKED PLANES' DIAGNOSTICS — the composition root's one write into the diagnostics
-/// axis (`busbar_kernel::diagnostics::install_diagnostics`). The neutral
-/// `REGISTRY ∪ installed` fold makes these codes resolve through `by_code` and land in a rendered
-/// catalog. Installed BEFORE any reader; a build with a plane compiled out contributes nothing.
-fn register_diagnostics() {
-    root::linked::register_diagnostics(&LINKED);
+/// FOLD THE LINKED PLANES' DIAGNOSTICS — the composition root's one fold of the diagnostics axis
+/// (`root::linked::register_diagnostics`), lent by value (`busbar_kernel::diagnostics::Catalogue`).
+/// The neutral `REGISTRY ∪ folded` catalogue makes these codes resolve through `by_code` and land in
+/// a rendered catalog. Folded BEFORE any reader is lent it; a build with a plane compiled out
+/// contributes nothing.
+fn register_diagnostics() -> busbar_kernel::diagnostics::Catalogue {
+    root::linked::register_diagnostics(&LINKED)
 }
 
 /// The data-plane worker count and its warnings, resolved once at the top of `main()`.
@@ -366,7 +366,7 @@ fn main() {
         eprintln!("busbar: {e}");
         std::process::exit(1);
     }
-    let dispatcher = root::dispatch::boot(WORKERS.0, late_services.clone());
+    let dispatcher = root::dispatch::boot(WORKERS.0, &late_services);
     root::doors::install_dispatcher(dispatcher);
     // PROTOCOL REGISTRATION FIRST — before the CLI flags, because `--validate` reads the protocol
     // set. This is the composition root's whole knowledge of the protocol crates: one line per
@@ -383,10 +383,10 @@ fn main() {
     // to the transport doors before any linked row binds.
     root::doors::install_plugin_logs(root::boot::plugin_logs());
     // DIAGNOSTICS REGISTRATION, same slot and the same reason: a rendered catalog or a `by_code`
-    // lookup must see every linked plane's owned codes, so the diagnostics axis is installed before
-    // any reader. Each linked entry contributes its owned diagnostics; a no-planes build installs
-    // nothing and the catalog is the neutral built-ins alone.
-    register_diagnostics();
+    // lookup must see every linked plane's owned codes, so the catalogue is folded before any
+    // reader is lent it. Each linked entry contributes its owned diagnostics; a no-planes build
+    // folds nothing and the catalog is the neutral built-ins alone.
+    let catalogue = register_diagnostics();
     // THE COMPOSITION ROOT'S OWN SEAL is NOT here, and it is the one boot step that is not: it
     // composes the transports a switched-over plane would serve through, and the http one carries
     // the operator's `limits.request_body_max_bytes`, so it cannot run before the configuration it
@@ -508,7 +508,7 @@ fn main() {
             .enable_all()
             .build()
             .expect("failed to build the tokio control runtime")
-            .block_on(run(worker_threads, late_services));
+            .block_on(run(worker_threads, late_services, catalogue));
     }
     #[cfg(not(unix))]
     {
@@ -517,13 +517,18 @@ fn main() {
             .enable_all()
             .build()
             .expect("failed to build the tokio runtime")
-            .block_on(run(worker_threads, late_services));
+            .block_on(run(worker_threads, late_services, catalogue));
     }
 }
 
-async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::LateServices>) {
-    // THE PLUGIN OBSERVABILITY ENVELOPE, before any plugin loads (`root::observe`).
-    root::observe::install();
+async fn run(
+    data_workers: usize,
+    late_services: std::sync::Arc<root::serve::LateServices>,
+    catalogue: busbar_kernel::diagnostics::Catalogue,
+) {
+    // THE PLUGIN OBSERVABILITY ENVELOPE, before any plugin loads (`root::observe`), resolving a
+    // plugin's reported codes against the catalogue folded above.
+    root::observe::install(catalogue);
     // Metrics are configured AFTER the config loads (below, via `metrics::configure`) because they
     // are 100% OPT-IN: `observability.metrics` absent ⇒ no recorder, no `/metrics`, nothing recorded
     // and nothing retained. Nothing may install a recorder before that decision is read.
@@ -798,10 +803,6 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     // Each door plane's pools, by its section key: each door plane's section carries its own pools
     // (DoorPools), captured before `cfg` is consumed.
     let door_pools = root::serve::door_pools(&cfg.plane_pools);
-    // The root breaker's per-pool ladders, read off the same `pools:` the build resolves each pool's
-    // own dispatch cfg from, before `cfg` is consumed.
-    #[cfg(feature = "root-admin")]
-    let breaker_policy = root::adapters::BreakerPolicy::from_pools(&cfg.pools);
 
     // THE ROOT'S RULES every configuration is judged by before a generation is built from it
     // (`busbar_kernel::appbuild::RootRules`): handed to the boot build here, kept by each generation
@@ -907,16 +908,10 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
             .into_iter()
             .map(|(model, lane)| (model.to_string(), lane))
             .collect(),
-        app: {
-            let (live, boot) = (
-                std::sync::Arc::clone(&door_live_handle),
-                std::sync::Arc::clone(&app),
-            );
-            std::sync::Arc::new(move || {
-                live.get()
-                    .map_or_else(|| std::sync::Arc::clone(&boot), |h| h.load())
-            })
-        },
+        app: root::model_egress::LiveApp::new(
+            std::sync::Arc::clone(&door_live_handle),
+            std::sync::Arc::clone(&app),
+        ),
     };
     let door_reach = root::door_steps::DoorReach {
         providers: &door_providers,
@@ -964,6 +959,7 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
                 )
             })
         }),
+        &app.serve_tables,
     )
     .unwrap_or_else(|e| die(e));
     root_rules.hold_owned_anchors(&served.need_trust());
@@ -996,7 +992,7 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     // START the export axis's opened sinks (every request-log sink is one): each states whether it
     // takes deliveries this run and its in-flight admission — the moment the built-in request-log
     // exporters were configured, so a sink that refuses its own target at start says so here.
-    export::plugin::start();
+    export::plugin::start().unwrap_or_else(|e| die(format!("config errors:\n  - {e}")));
 
     // Spawn the active health probers (one per lane with a probing mode). No-op when every lane is
     // `mode: none` / has no `health:` block. The composition root owns THIS generation's engine host
@@ -1085,6 +1081,13 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     }
     credential_handle.set(std::sync::Arc::clone(&app_handle));
     let _ = door_live_handle.set(std::sync::Arc::clone(&app_handle));
+    // THE TICKET PRESS (row 132): `ticket.mint` mints through the live generation's governance,
+    // under its mint ceiling, once the swap handle exists.
+    if let Some(kernel) = late_services.kernel() {
+        kernel.attach_tickets(std::sync::Arc::new(root::serve::LiveTickets(
+            std::sync::Arc::clone(&app_handle),
+        )));
+    }
     app_handle.on_apply(Box::new({
         let door_appliers = door_appliers.clone();
         move |app| door_appliers.apply(app)
@@ -1117,14 +1120,10 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
                     .into_iter()
                     .map(|(model, lane)| (model.to_string(), lane))
                     .collect(),
-                app: {
-                    let (live, fallback) =
-                        (std::sync::Arc::clone(&live), std::sync::Arc::clone(next));
-                    std::sync::Arc::new(move || {
-                        live.get()
-                            .map_or_else(|| std::sync::Arc::clone(&fallback), |h| h.load())
-                    })
-                },
+                app: root::model_egress::LiveApp::new(
+                    std::sync::Arc::clone(&live),
+                    std::sync::Arc::clone(next),
+                ),
             };
             let reach = root::door_steps::DoorReach {
                 providers: &cfg.providers,
@@ -1177,53 +1176,12 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     // answers the admin operations is unchanged; what the wrap adds is the path a request takes to
     // reach it — through the kernel's loop, past the auth, scope, admission, usage and audit units,
     // and out through the one exit. Off, this line does not exist and the surface is the one it was.
-    // THE PROCESS'S ONE BOOK. The node plane's exit arm settles onto it (its root unit's book step,
-    // below) and the administrative ledger views read it; no other plane binds an exit arm to it.
-    // It is ONE book, and that matters: a mount that opened its own would post
-    // onto books nothing serves and serve books nothing posts to, and both halves of that would look
-    // healthy, because an empty ledger reconciles. Its records ship to the deployment's CONFIGURED
-    // STORE (committed-before-ack, and onto this node's own disk as well when a data directory was
-    // resolved) and its OPENING BALANCES are SEALED at start-of-book from the rows the previous
-    // release left in that store — see `root::boot::book`. A configuration that named no data
-    // directory still probes nothing and opens nothing; the branch that decides is unchanged.
-    //
-    // It is built HERE — before either listener binds — because the first accepted connection can
-    // settle, and it must settle against a book whose opening is ALREADY sealed. `root::boot::book`
-    // returns only after the seal, so there is no window in which a settlement could be measured
-    // from a checkpoint that was not written yet.
-    // Opened for the admin surface and for every root unit that settles onto it; a build with
-    // neither opens nothing.
-    // (Opened above, before the routers: Q-SW7.)
+    // THE PROCESS'S ONE JOURNAL (opened above, before the routers: Q-SW7). The node's units seal
+    // their audit records onto it and the administrative chain reads read it. It carries no money:
+    // the ledger is the store's usage counts, priced by the card in core.
 
-    // THE CHECKPOINT CADENCE (OWNER Q71(3); BUSBAR-1.6.0.md THE DESIGN, §7): armed on the one book once its
-    // opening is sealed, so every serving append checks the entry half and this tick checks the
-    // interval half — whichever comes first. The tick runs for the process lifetime; each pass
-    // holds the book's lock only for the check (and the seal, when one is due).
-    if let Some(book) = &book {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| d.as_secs());
-        book.durability
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .arm_checkpoints(now);
-        let durability = Arc::clone(&book.durability);
-        tokio::spawn(async move {
-            let mut tick = tokio::time::interval(std::time::Duration::from_secs(
-                root::durability::CHECKPOINT_TICK_SECS,
-            ));
-            loop {
-                tick.tick().await;
-                durability
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner())
-                    .seal_on_cadence();
-            }
-        });
-    }
-
-    // THE ROOT UNITS' BOOK STEP, once the book is open and before either listener binds: the
-    // root-driven exit arm is bound to the book, so a posting the loop hands back has somewhere to go.
+    // THE ROOT UNITS' JOURNAL STEP, once the journal is open and before either listener binds: the
+    // node is bound to the journal its units' audit records are sealed onto.
     if let Some(book) = &book {
         let app = app_handle.load();
         let ctx = root::linked::BookCtx { book, app: &app };
@@ -1249,7 +1207,7 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
             book,
             None,
             &late_services,
-            breaker_policy,
+            root::adapters::BreakerPolicy::new(),
         ),
         None => admin_router,
     };
@@ -1390,6 +1348,17 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
         };
         let data_at = bound_at("listen", &listen);
         let admin_at = bound_at("admin_listen", &admin_listen);
+        // The admin socket is BOUND before any data worker serves, as 1.5.5 bound both listeners
+        // before either served: once the data door's `/healthz` answers, a connection to the admin
+        // surface is queued, never refused (a client that waits on `/healthz` and then calls the
+        // admin API must not race the admin bind). It is served below, after the data workers start.
+        // The root's own binds listen through the process's address carrier (TRANSPORT-STACK (2):
+        // the accept loop is the carrier's); each accepted stream is handed up to the kernel.
+        let admin_via = root::connector::the().address_via();
+        let admin_listener =
+            Listening::bind_stream(admin_via.as_ref(), &admin_at, ROOT_BIND_LIMITS).unwrap_or_else(
+                |e| die(format!("cannot bind listen address '{admin_listen}': {e}")),
+            );
         let data_handles = serve_thread_per_core(
             data_workers,
             listen.clone(),
@@ -1399,14 +1368,8 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
             tls_secret_resolver.clone(),
             &shutdown_tx,
             worker_shutdown_rx,
+            data_framer(&listen),
         );
-        // The root's own binds listen through the process's address carrier (TRANSPORT-STACK (2):
-        // the accept loop is the carrier's); each accepted stream is handed up to the kernel.
-        let admin_via = root::connector::the().address_via();
-        let admin_listener =
-            Listening::bind_stream(admin_via.as_ref(), &admin_at, ROOT_BIND_LIMITS).unwrap_or_else(
-                |e| die(format!("cannot bind listen address '{admin_listen}': {e}")),
-            );
         tracing::debug!(
             listen = %admin_listen,
             carrier = %root::connector::carrier_name(admin_via.as_ref()),
@@ -1421,6 +1384,7 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
             recv_shutdown(shutdown_tx.subscribe()),
             None,
             true,
+            None,
         )
         .await;
         // The shutdown broadcast has fired (the admin serve returned), so every per-core data
@@ -1449,6 +1413,7 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
                 recv_shutdown(shutdown_tx.subscribe()),
                 None,
                 true,
+                data_framer(&listen),
             ),
             serve_listener(
                 admin_listener,
@@ -1459,6 +1424,7 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
                 recv_shutdown(shutdown_tx.subscribe()),
                 None,
                 true,
+                None,
             ),
         );
     }
@@ -1487,6 +1453,31 @@ async fn bind_listener(addr: &str) -> tokio::net::TcpListener {
     tokio::net::TcpListener::bind(addr)
         .await
         .unwrap_or_else(|e| die(format!("cannot bind listen address '{addr}': {e}")))
+}
+
+/// THE DATA LISTENER'S FRAMER, found by facts on the process's one connector
+/// (`root::listener::framed::data_framer`): the framer serving the listener's scheme whose tail
+/// states it accepts. `None` = the build serves none: the data listener `listen` is served by the
+/// kernel's own HTTP loop (the core-only build's path), and the boot says so in one warning naming
+/// the listener.
+fn data_framer(listen: &str) -> Option<root::listener::framed::DataFramer> {
+    let framer = root::listener::framed::data_framer(Arc::new(|scheme: &str| {
+        root::connector::the().framer_for(scheme)
+    }));
+    match &framer {
+        Some(f) => tracing::debug!(
+            framer = %f.door().facts().name,
+            "data door served through its framer's accept side"
+        ),
+        None => {
+            tracing::warn!(
+                listen = %listen,
+                "data listener served by the kernel's own HTTP loop: no transport the build \
+                 serves accepts `http`"
+            );
+        }
+    }
+    framer
 }
 
 /// One shutdown-broadcast subscription resolved into a plain future. Any receive outcome — a send,
@@ -1522,6 +1513,9 @@ fn serve_thread_per_core(
     secret_resolver: Arc<busbar_kernel::config::secret::SecretResolver>,
     shutdown_tx: &tokio::sync::broadcast::Sender<()>,
     worker_shutdown: tokio::sync::watch::Receiver<bool>,
+    // The data listener's framer, whose accept side serves each connection (`None` = the build
+    // serves no framer that accepts the listener's scheme).
+    framer: Option<root::listener::framed::DataFramer>,
 ) -> Vec<std::thread::JoinHandle<()>> {
     // Distinct cores to pin the n workers to, when the platform exposes them. Fewer ids than
     // workers (or none) just means the tail runs unpinned — advisory, never a boot failure.
@@ -1569,6 +1563,7 @@ fn serve_thread_per_core(
         let worker_shutdown = worker_shutdown.clone();
         let balancer = balancers[i].take();
         let bind_at = bind_at.clone();
+        let framer = framer.clone();
         let spawned = std::thread::Builder::new()
             .name(format!("busbar-core-{i}"))
             .spawn(move || {
@@ -1628,6 +1623,7 @@ fn serve_thread_per_core(
                         // worker: only worker 0 logs it at INFO; every other worker's identical fact
                         // logs at DEBUG (the per-worker detail an operator can still opt into).
                         i == 0,
+                        framer,
                     )
                     .await;
                     // Connections are drained; give this worker's detached work its bounded
@@ -1669,6 +1665,9 @@ async fn serve_listener(
     // listen address — only the first call logs at INFO (matching 1.5.5's once-per-listener line),
     // the rest log the identical fact at DEBUG.
     log_at_info: bool,
+    // The data listener's framer, whose accept side serves each connection; `None` for the admin
+    // listener, and for a build that serves no framer accepting the data listener's scheme.
+    framer: Option<root::listener::framed::DataFramer>,
 ) {
     match tls_cfg {
         None => {
@@ -1677,8 +1676,10 @@ async fn serve_listener(
             } else {
                 tracing::debug!(listen = %label, "busbar listening");
             }
-            if let Err(e) =
-                root::listener::serve_admitted(listener, router, None, shutdown, balancer).await
+            if let Err(e) = root::listener::serve_admitted_framed(
+                listener, router, None, shutdown, balancer, framer,
+            )
+            .await
             {
                 die(format!("server error on '{label}': {e}"));
             }
@@ -1704,9 +1705,15 @@ async fn serve_listener(
             } else {
                 tracing::debug!(listen = %label, mtls, "busbar listening (TLS)");
             }
-            if let Err(e) =
-                root::listener::serve_admitted(listener, router, Some(security), shutdown, balancer)
-                    .await
+            if let Err(e) = root::listener::serve_admitted_framed(
+                listener,
+                router,
+                Some(security),
+                shutdown,
+                balancer,
+                framer,
+            )
+            .await
             {
                 die(format!("server error on '{label}': {e}"));
             }

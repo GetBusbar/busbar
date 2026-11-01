@@ -43,8 +43,9 @@ fn a_double_serves_only_the_transport_its_facts_name() {
 }
 
 /// RED: a scheme the deployment serves beside the framed one, named unreached, passes the boot's
-/// scheme match, and a need over it is refused at declare, so no open reaches anything; a scheme
-/// not named stays unserved.
+/// scheme match, and a need over it is DECLARED as the connector declares a need over a loaded
+/// transport (the loader refuses the load on a refused config-free need, kind-secret K17), while
+/// every open on it is refused, so no open reaches anything; a scheme not named stays unserved.
 #[test]
 fn an_unreached_scheme_is_served_at_boot_and_reaches_nothing() {
     use busbar_contract::abi::mechanism::rendering::{ReadBlob, ReadNeed};
@@ -74,11 +75,18 @@ fn an_unreached_scheme_is_served_at_boot_and_reaches_nothing() {
         timeout_ms: 0,
     };
     let (owner, id) = (InstanceId(7), NeedId(0));
+    assert_eq!(framed.declare(owner, id, &need, None, None), Ok(()));
+    assert_eq!(framed.declared(owner, id), Some(Ok(())));
     assert_eq!(
-        framed.declare(owner, id, &need, None, None),
-        Err(ConnError::Refused)
+        busbar_contract::conn::Conns::open(
+            &framed,
+            owner,
+            id,
+            &busbar_contract::conn::OpenDesc::default()
+        ),
+        Err(ConnError::Refused),
+        "an open on an unreached scheme reaches nothing"
     );
-    assert_eq!(framed.declared(owner, id), Some(Err(ConnError::Refused)));
 }
 
 /// AN UNREACHED SCHEME IS A NAMED, REASONED, COVERED CLAIM, or the suite fails (row 114: no silent
@@ -195,7 +203,7 @@ fn an_open_on_an_unreached_scheme_is_counted() {
         timeout_ms: 0,
     };
     let (owner, id) = (InstanceId(7), NeedId(0));
-    assert!(framed.declare(owner, id, &need, None, None).is_err());
+    assert!(framed.declare(owner, id, &need, None, None).is_ok());
     assert!(framed.unreached_opens().is_empty());
     let desc = OpenDesc::default();
     assert_eq!(framed.open(owner, id, &desc), Err(ConnError::Refused));
@@ -254,4 +262,51 @@ fn a_member_need_is_declared_with_no_one_target_as_the_connector_declares_it() {
         framed.declare(owner, NeedId(8), &need("", "settings.ca"), None, None),
         Err(ConnError::Refused)
     );
+}
+
+/// RED: THE FAR-END TABLE REACHES ONLY WHAT IT DECLARES. A member need opens each URL the plugin
+/// names; a declared far end answers, and a URL or host the table does not declare is refused as
+/// an unreachable far end is, so no dial in a suite reaches anything its inputs did not state.
+#[test]
+fn an_undeclared_far_end_is_refused() {
+    use busbar_contract::abi::host::conn::connector::DIRECTION_OUTBOUND;
+    use busbar_contract::abi::mechanism::rendering::{ReadBlob, ReadNeed};
+    use busbar_contract::conn::{ConnError, Conns, InstanceId, NeedId, OpenDesc};
+    let table = crate::https_conns::HttpsConns::framing(FramedFacts::stand_in());
+    table.serve("https://far.example/doc", None, 200, "{}");
+    let need = ReadNeed {
+        direction: DIRECTION_OUTBOUND,
+        egress_class: 0,
+        transport: FramedFacts::stand_in().transport,
+        auth: String::new(),
+        target_from: "settings.*.url".into(),
+        trust_from: String::new(),
+        details: ReadBlob {
+            fmt: 0,
+            flags: 0,
+            bytes: Vec::new(),
+        },
+        timeout_ms: 0,
+    };
+    let (me, member) = (InstanceId(1), NeedId(0));
+    assert_eq!(table.declare(me, member, &need, None, None), Ok(()));
+    let open = |target: &str| {
+        table.open(
+            me,
+            member,
+            &OpenDesc {
+                target,
+                ..OpenDesc::default()
+            },
+        )
+    };
+    let reached = open("https://far.example/doc").expect("a declared far end answers");
+    table.close(me, reached).expect("closed");
+    for undeclared in ["https://far.example/other", "https://elsewhere.example/doc"] {
+        assert_eq!(
+            open(undeclared).map(|_| ()),
+            Err(ConnError::Refused),
+            "{undeclared}"
+        );
+    }
 }

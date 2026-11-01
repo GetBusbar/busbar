@@ -44,8 +44,8 @@
 //!
 //! THE REPLAY RULE (`abi::sdk::conn`): the host never runs a service twice. A ticketed service's
 //! answer is kept under its completion handle, and a re-issued handle answers it again without a
-//! second run (a `READ_REPLY`'s with its piece and its bytes, written again into what the replay
-//! lends); the worker forgets a ticket's answers when it recycles the ticket, a driver
+//! second run (a `READ_REPLY`'s with its piece and its bytes, a raw `READ`'s with its bytes, a
+//! `FACTS`'s with the facts it was answered, written again into what the replay lends); the worker forgets a ticket's answers when it recycles the ticket, a driver
 //! ticket's when its next tick starts with nothing held on it (a held exchange keeps its
 //! answers), and any other ticket's when a new op (not a short answer's
 //! re-call) starts on it ([`forget`]).
@@ -60,12 +60,12 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use busbar_contract::abi::host::conn::connector::{
     service, ConnectorSlots, EstablishIn, FactsIn, IdentityIn, IoIn, ProcessIdentity, ReplyIn,
-    ReplyPiece, RequestIn, RequestPiece, StreamFacts, StreamIn, UpgradeIn,
-    CAUSE_CREDENTIAL_UNAVAILABLE, CAUSE_NONE, REPLY_ACK, REPLY_BODY, REPLY_END, REPLY_HEAD,
-    REQUEST_BODY, REQUEST_END, REQUEST_HEAD, SERVICES, UPGRADE_IN_V1_SIZE, UPGRADE_VERIFY_OFF,
-    WITHIN_SEPARATOR,
+    ReplyPiece, RequestIn, RequestPiece, StreamFacts, StreamIn, UpgradeIn, CAUSE_AUTH_FAILED,
+    CAUSE_AUTH_REFUSED, CAUSE_CREDENTIAL_UNAVAILABLE, CAUSE_NONE, REPLY_ACK, REPLY_BODY, REPLY_END,
+    REPLY_HEAD, REQUEST_BODY, REQUEST_END, REQUEST_HEAD, SERVICES, UPGRADE_IN_V1_SIZE,
+    UPGRADE_VERIFY_OFF, WITHIN_SEPARATOR,
 };
-use busbar_contract::abi::host::service::{ServiceHead, ServiceOut};
+use busbar_contract::abi::host::service::{lent_out, ServiceHead, ServiceOut};
 use busbar_contract::abi::mechanism::call::{AbiStr, Outcome, RawOutcome};
 use busbar_contract::abi::mechanism::ticket::{CompletionHandle, HostCtx, Ticket};
 use busbar_contract::abi::transport::{fields, FrameSpan};
@@ -75,7 +75,7 @@ use busbar_contract::conn::{
 };
 use std::future::Future as _;
 
-use super::services::{write_out, Answered};
+use super::services::{service, write_out, Answered};
 use super::ticket::InstanceWake;
 
 /// The table an instance with a declared need is handed.
@@ -117,19 +117,27 @@ pub const fn ticket_of(n: u64) -> Ticket {
 
 /// A connection table's refusal, as the plugin reads it. An unavailable credential is a refusal
 /// that names its own cause ([`CAUSE_CREDENTIAL_UNAVAILABLE`] in `value`), so the plugin can tell
-/// it from the target's, the egress rules' or the far end's.
+/// it from the target's, the egress rules' or the far end's; an auth's refusal and an auth call's
+/// failure name theirs ([`CAUSE_AUTH_REFUSED`], [`CAUSE_AUTH_FAILED`]).
 const fn refusal(e: ConnError) -> Answered {
     let outcome = match e {
         ConnError::Pending => Outcome::Pending,
-        ConnError::Timeout | ConnError::Closed | ConnError::Fault => Outcome::Failed,
+        ConnError::Timeout | ConnError::Closed | ConnError::Fault | ConnError::AuthFailed => {
+            Outcome::Failed
+        }
         ConnError::NotOwner
         | ConnError::UndeclaredNeed
         | ConnError::Refused
         | ConnError::Unarmed
-        | ConnError::CredentialUnavailable => Outcome::Refused,
+        | ConnError::CredentialUnavailable
+        | ConnError::AuthRefused => Outcome::Refused,
+        // A cause this host does not name is the host failing the call.
+        _ => Outcome::Fault,
     };
     let value = match e {
         ConnError::CredentialUnavailable => CAUSE_CREDENTIAL_UNAVAILABLE,
+        ConnError::AuthRefused => CAUSE_AUTH_REFUSED,
+        ConnError::AuthFailed => CAUSE_AUTH_FAILED,
         _ => CAUSE_NONE,
     };
     Answered {
@@ -222,7 +230,7 @@ fn held(wake: &InstanceWake, h: CompletionHandle, run: impl FnOnce() -> Answered
 
 /// ONE SLOT'S FRAME: the `in` and `out` are there and the head is this service's and covers its
 /// `in`, then `body` with the caller's identity, table and connector state. A panic answers FAULT;
-/// the whole `out` is written.
+/// the `out` is written as far as the caller stated it, and one stated below the first is REFUSED.
 fn slot<R: Into<Kept>>(
     ctx: HostCtx,
     input: *const c_void,
@@ -231,6 +239,18 @@ fn slot<R: Into<Kept>>(
     in_size: usize,
     body: impl FnOnce(InstanceId, &Arc<dyn DeclaredConns>, &ConnState, ServiceHead) -> R,
 ) -> RawOutcome {
+    // THE CALLER'S `out`, as it states it: one below the first `ServiceOut` is REFUSED before the
+    // service runs, and nothing of it is written (an `out` grows by appending, so an older caller's
+    // smaller one is never overrun).
+    let lent = if out.is_null() {
+        0
+    } else {
+        // SAFETY: the caller's non-NULL `out`, its leading `size` readable.
+        match unsafe { lent_out(out) } {
+            Some(lent) => lent,
+            None => return RawOutcome::of(Outcome::Refused),
+        }
+    };
     let a = catch_unwind(AssertUnwindSafe(|| {
         if input.is_null() || out.is_null() {
             return Answered::fault();
@@ -252,13 +272,19 @@ fn slot<R: Into<Kept>>(
         if service == service::IDENTITY {
             return run().answer;
         }
-        // A replayed `READ_REPLY` writes what it read again into the memory the replay lends.
-        let replay = (service == service::READ_REPLY).then_some(input);
+        // A replayed `READ_REPLY`, raw `READ` or `FACTS` writes what it wrote again into the
+        // memory the replay lends.
+        let replay = matches!(
+            service,
+            service::READ_REPLY | service::READ | service::FACTS
+        )
+        .then_some(input);
         held(wake, head.handle, || st.kept(head.handle, replay, run))
     }))
     .unwrap_or_else(|_| Answered::fault());
-    // SAFETY: the caller's `out`, as the call shape lends it.
-    unsafe { write_out(out, &a) }
+    // SAFETY: the caller's `out`, as the call shape lends it, writable for the `lent` bytes it
+    // stated.
+    unsafe { write_out(out, &a, lent) }
 }
 
 /// The caller's bytes (`len` of them at `ptr`), or `None` for a length behind NULL or over the hard
@@ -425,6 +451,11 @@ impl ConnState {
     /// the op that asked for it ended without its re-call. The map is let go before anything is
     /// closed.
     fn drop_dialling(&self, table: Option<&ArmedConns>, gone: impl Fn(&Ticket) -> bool) {
+        drop(self.take_dialling(table, gone));
+    }
+
+    /// [`ConnState::drop_dialling`]'s dials, taken out of the map and closed when the answer drops.
+    fn take_dialling(&self, table: Option<&ArmedConns>, gone: impl Fn(&Ticket) -> bool) -> Closes {
         let left: Vec<ConnId> = {
             let mut all = lock(&self.dialling);
             let keys: Vec<Ticket> = all.keys().filter(|k| gone(k)).copied().collect();
@@ -432,8 +463,19 @@ impl ConnState {
                 .filter_map(|k| all.remove(k).map(|(_, conn)| conn))
                 .collect()
         };
-        if let Some((id, table)) = table {
-            for conn in left {
+        Closes(table.filter(|_| !left.is_empty()).cloned(), left)
+    }
+}
+
+/// DIALS TO CLOSE ON A TABLE, closed when this drops. A close may cross into a transport door
+/// (THE DESIGN §11.13 M1), so a caller under a lock keeps this until it has let the lock go.
+#[must_use = "dropped, it closes its dials at once"]
+pub(crate) struct Closes(Option<ArmedConns>, Vec<ConnId>);
+
+impl Drop for Closes {
+    fn drop(&mut self) {
+        if let Some((id, table)) = &self.0 {
+            for conn in self.1.drain(..) {
                 let _ = table.close(*id, conn);
             }
         }
@@ -452,96 +494,77 @@ fn addresses(within: &[u8]) -> Option<Vec<IpAddr>> {
         .collect()
 }
 
-extern "C" fn read(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
-    slot(
-        ctx,
-        input,
-        out,
-        service::READ,
-        size_of::<IoIn>(),
-        |id, table, st, head| {
-            // SAFETY: the head covered an `IoIn`.
-            let i = unsafe { input.cast::<IoIn>().read_unaligned() };
-            // SAFETY: the caller's buffer, lent for this call only: the host keeps no hold on it
-            // past the call, a PENDING answer included.
-            let Some(buf) = (unsafe { bytes(i.buf, i.len) }) else {
-                return Answered::fault();
-            };
-            let ticket = conn_ticket(head.handle.ticket);
-            let conn = match resolve(st, id, table, i.stream) {
-                Ok(c) => c,
-                Err(e) => return refusal(e),
-            };
-            match table.read(id, conn, ticket, buf) {
-                Ok(piece) => Answered::ready(0, piece.len as u64),
-                Err(ConnError::Closed) => Answered::ready(0, 0),
-                Err(ConnError::Pending) if head.handle.ticket.is_none() => Answered::bare(
-                    Outcome::Refused,
-                    "a read that would pend is callable only inside a ticketed op",
-                ),
-                Err(e) => refusal_of(e, id, table, conn),
-            }
-        },
-    )
-}
+service!(read, slot, service::READ, IoIn, |id, table, st, head, i| {
+    // SAFETY: the caller's buffer, lent for this call only: the host keeps no hold on it
+    // past the call, a PENDING answer included.
+    let Some(buf) = (unsafe { bytes(i.buf, i.len) }) else {
+        return Kept::from(Answered::fault());
+    };
+    let ticket = conn_ticket(head.handle.ticket);
+    let conn = match resolve(st, id, table, i.stream) {
+        Ok(c) => c,
+        Err(e) => return refusal(e).into(),
+    };
+    match table.read(id, conn, ticket, buf) {
+        Ok(piece) => {
+            let n = piece.len.min(buf.len());
+            let answer = Answered::ready(0, n as u64);
+            // A ticketed read keeps the bytes it wrote, stored with its answer.
+            let read =
+                (!head.handle.ticket.is_none() && n > 0).then(|| Wrote::Raw(buf[..n].into()));
+            Kept { answer, read }
+        }
+        Err(ConnError::Closed) => Answered::ready(0, 0).into(),
+        Err(ConnError::Pending) if head.handle.ticket.is_none() => Answered::bare(
+            Outcome::Refused,
+            "a read that would pend is callable only inside a ticketed op",
+        )
+        .into(),
+        Err(e) => refusal_of(e, id, table, conn).into(),
+    }
+});
 
-extern "C" fn write(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
-    slot(
-        ctx,
-        input,
-        out,
-        service::WRITE,
-        size_of::<IoIn>(),
-        |id, table, st, _| {
-            // SAFETY: the head covered an `IoIn`.
-            let i = unsafe { input.cast::<IoIn>().read_unaligned() };
-            // SAFETY: the caller's bytes, lent for this call only: the host keeps no hold on it
-            // past the call, a PENDING answer included.
-            let Some(buf) = (unsafe { bytes(i.buf, i.len) }) else {
-                return Answered::fault();
-            };
-            let conn = match resolve(st, id, table, i.stream) {
-                Ok(c) => c,
-                Err(e) => return refusal(e),
-            };
-            match table.write(id, conn, buf, false, false) {
-                Ok(n) => Answered::ready(0, n as u64),
-                Err(e) => refusal_of(e, id, table, conn),
-            }
-        },
-    )
-}
+service!(write, slot, service::WRITE, IoIn, |id, table, st, _, i| {
+    // SAFETY: the caller's bytes, lent for this call only: the host keeps no hold on it
+    // past the call, a PENDING answer included.
+    let Some(buf) = (unsafe { bytes(i.buf, i.len) }) else {
+        return Answered::fault();
+    };
+    let conn = match resolve(st, id, table, i.stream) {
+        Ok(c) => c,
+        Err(e) => return refusal(e),
+    };
+    match table.write(id, conn, buf, false, false) {
+        Ok(n) => Answered::ready(0, n as u64),
+        Err(e) => refusal_of(e, id, table, conn),
+    }
+});
 
-extern "C" fn close(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
-    slot(
-        ctx,
-        input,
-        out,
-        service::CLOSE,
-        size_of::<StreamIn>(),
-        |id, table, st, _| {
-            // SAFETY: the head covered a `StreamIn`.
-            let i = unsafe { input.cast::<StreamIn>().read_unaligned() };
-            lock(&st.facts).remove(&i.stream);
-            let held = st.streams().remove(&i.stream);
-            let conn = match held.map(|s| s.conn) {
-                // Never opened, or refused: nothing on the table to close.
-                // (A request waiting on its auth call drops the call: a client drop.)
-                // (A stream being opened outside the lock is closed by the call that opens it.)
-                Some(Conn::Held { .. } | Conn::Failed(_) | Conn::Authing(_) | Conn::Opening) => {
-                    return Answered::ready(0, 0)
-                }
-                Some(Conn::Open(c)) => c,
-                None if i.stream & HELD != 0 => return refusal(ConnError::Closed),
-                None => ConnId(i.stream),
-            };
-            match table.close(id, conn) {
-                Ok(()) => Answered::ready(0, 0),
-                Err(e) => refusal(e),
+service!(
+    close,
+    slot,
+    service::CLOSE,
+    StreamIn,
+    |id, table, st, _, i| {
+        lock(&st.facts).remove(&i.stream);
+        let held = st.streams().remove(&i.stream);
+        let conn = match held.map(|s| s.conn) {
+            // Never opened, or refused: nothing on the table to close.
+            // (A request waiting on its auth call drops the call: a client drop.)
+            // (A stream being opened outside the lock is closed by the call that opens it.)
+            Some(Conn::Held { .. } | Conn::Failed(_) | Conn::Authing(_) | Conn::Opening) => {
+                return Answered::ready(0, 0)
             }
-        },
-    )
-}
+            Some(Conn::Open(c)) => c,
+            None if i.stream & HELD != 0 => return refusal(ConnError::Closed),
+            None => ConnId(i.stream),
+        };
+        match table.close(id, conn) {
+            Ok(()) => Answered::ready(0, 0),
+            Err(e) => refusal(e),
+        }
+    }
+);
 
 /// An optional text the caller handed: `Ok(None)` when absent or empty, `Err` when it is not text.
 ///
@@ -660,46 +683,55 @@ fn held_text(all: &mut HeldFacts, key: u64, text: Option<&str>) -> AbiStr {
     }
 }
 
-extern "C" fn facts(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
-    slot(
-        ctx,
-        input,
-        out,
-        service::FACTS,
-        size_of::<FactsIn>(),
-        |id, table, st, _| {
-            // SAFETY: the head covered a `FactsIn`.
-            let i = unsafe { input.cast::<FactsIn>().read_unaligned() };
-            if i.facts.is_null() {
-                return Answered::fault();
-            }
-            let conn = match resolve(st, id, table, i.stream) {
-                Ok(c) => c,
-                Err(e) => return refusal(e),
-            };
-            let f = match table.facts(id, conn) {
-                Ok(f) => f,
-                Err(e) => return refusal(e),
-            };
-            let hash = f.peer_cert.as_ref().map(|c| c.fingerprint.as_str());
-            let mut all = lock(&st.facts);
-            let key = i.stream;
-            let written = StreamFacts {
-                size: size_of::<StreamFacts>() as u32,
-                secure: u32::from(hash.is_some()),
-                endpoint: held_text(&mut all, key, None),
-                agreed_protocol: held_text(&mut all, key, f.alpn.as_deref()),
-                peer_cert_hash: held_text(&mut all, key, hash),
-                peer_key_pin: held_text(&mut all, key, f.peer_key_pin.as_deref()),
-                client_identity: u32::from(f.client_identity),
-                _reserved: 0,
-            };
-            // SAFETY: the caller's `facts`, checked non-NULL, live for the call.
-            unsafe { i.facts.write_unaligned(written) };
-            Answered::ready(0, 0)
-        },
-    )
-}
+service!(
+    facts,
+    slot,
+    service::FACTS,
+    FactsIn,
+    |id, table, st, head, i| {
+        if i.facts.is_null() {
+            return Kept::from(Answered::fault());
+        }
+        let conn = match resolve(st, id, table, i.stream) {
+            Ok(c) => c,
+            Err(e) => return refusal(e).into(),
+        };
+        let f = match table.facts(id, conn) {
+            Ok(f) => f,
+            Err(e) => return refusal(e).into(),
+        };
+        let hash = f.peer_cert.as_ref().map(|c| c.fingerprint.as_str());
+        let mut all = lock(&st.facts);
+        let key = i.stream;
+        let written = StreamFacts {
+            size: size_of::<StreamFacts>() as u32,
+            secure: u32::from(hash.is_some()),
+            endpoint: held_text(&mut all, key, None),
+            agreed_protocol: held_text(&mut all, key, f.alpn.as_deref()),
+            peer_cert_hash: held_text(&mut all, key, hash),
+            peer_key_pin: held_text(&mut all, key, f.peer_key_pin.as_deref()),
+            client_identity: u32::from(f.client_identity),
+            _reserved: 0,
+        };
+        // SAFETY: the caller's `facts`, checked non-NULL, live for the call.
+        unsafe { i.facts.write_unaligned(written) };
+        // A ticketed call keeps the facts it wrote, stored with its answer.
+        let read = (!head.handle.ticket.is_none()).then(|| {
+            Wrote::Facts(KeptFacts {
+                stream: key,
+                secure: written.secure,
+                client_identity: written.client_identity,
+                agreed_protocol: f.alpn.as_deref().map(Into::into),
+                peer_cert_hash: hash.map(Into::into),
+                peer_key_pin: f.peer_key_pin.as_deref().map(Into::into),
+            })
+        });
+        Kept {
+            answer: Answered::ready(0, 0),
+            read,
+        }
+    }
+);
 
 // ── THE REPLAY RULE ─────────────────────────────────────────────────────────────────────────────
 
@@ -732,13 +764,38 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-/// One ticketed service's answer, stored once under its handle. A `READ_REPLY` keeps beside it its
-/// piece and the bytes it wrote: the read wrote the caller's memory, so its replay writes them
-/// again ([`replay_read`]), as a replayed `IDENTITY` does. A short answer's re-call starts the op
-/// over with fresh buffers, and its kept reads are the far end's whole reply.
+/// One ticketed service's answer, stored once under its handle. A read (`READ_REPLY`, raw `READ`,
+/// `FACTS`) keeps beside it what it wrote into the caller's memory ([`Wrote`]), so its replay
+/// writes the same again ([`replay_read`], [`replay_raw`], [`ConnState::replay_facts`]), as a
+/// replayed `IDENTITY` does. A short answer's
+/// re-call runs the op again on the same ticket, and the buffers it lends hold whatever its last
+/// run left there: its kept reads, written again, are the far end's reply as the first run read
+/// it. They are forgotten with the ticket's other answers ([`forget`]).
 struct Kept {
     answer: Answered,
-    read: Option<(ReplyPiece, Box<[u8]>)>,
+    read: Option<Wrote>,
+}
+
+/// What a ticketed read wrote into the caller's memory, kept for its replay.
+enum Wrote {
+    /// A `READ_REPLY`'s piece and the bytes it wrote.
+    Reply(ReplyPiece, Box<[u8]>),
+    /// The bytes a raw `READ` wrote.
+    Raw(Box<[u8]>),
+    /// The facts a `FACTS` wrote.
+    Facts(KeptFacts),
+}
+
+/// The `StreamFacts` a `FACTS` call wrote, its strings owned: the replay writes the facts the
+/// first run was answered, never the stream's now (it may have been upgraded, or closed, later in
+/// that run), so the replay never asks the table again.
+struct KeptFacts {
+    stream: u64,
+    secure: u32,
+    client_identity: u32,
+    agreed_protocol: Option<Box<str>>,
+    peer_cert_hash: Option<Box<str>>,
+    peer_key_pin: Option<Box<str>>,
 }
 
 impl From<Answered> for Kept {
@@ -755,8 +812,8 @@ impl ConnState {
 
     /// `run` once per completion handle: a handle that already answered (anything but PENDING)
     /// answers the same again, and `run` is not made a second time; a kept read is written again
-    /// into what `replay` (a `READ_REPLY`'s `in`) lends. A call on no ticket is never kept: it may
-    /// not pend, and every call is its own.
+    /// into what `replay` (a `READ_REPLY`'s, raw `READ`'s or `FACTS`'s `in`) lends. A call on no
+    /// ticket is never kept: it may not pend, and every call is its own.
     fn kept(
         &self,
         h: CompletionHandle,
@@ -770,10 +827,15 @@ impl ConnState {
             .get(&h.ticket)
             .and_then(|issued| issued.get(&h.seq))
         {
-            if let (Some(input), Some(read)) = (replay, &k.read) {
-                replay_read(input, read);
-            }
-            return k.answer;
+            return match (replay, &k.read) {
+                (Some(input), Some(Wrote::Reply(piece, bytes))) => {
+                    replay_read(input, *piece, bytes);
+                    k.answer
+                }
+                (Some(input), Some(Wrote::Raw(bytes))) => replay_raw(input, k.answer, bytes),
+                (Some(input), Some(Wrote::Facts(f))) => self.replay_facts(input, k.answer, f),
+                _ => k.answer,
+            };
         }
         let k = run();
         let a = k.answer;
@@ -786,19 +848,55 @@ impl ConnState {
         a
     }
 
-    /// Forget every answer kept, and close on `table` every dial left in flight, on `ticket`; how
-    /// many answers there were.
-    fn forget(&self, table: Option<&ArmedConns>, ticket: Ticket) -> usize {
-        self.drop_dialling(table, |t| *t == ticket);
-        lock(&self.kept)
+    /// A replayed `FACTS`: the facts it wrote, written again into the `facts` the replay's `in`
+    /// lends, and its kept `answer`. Their strings are the stream's held ones while it is open
+    /// (valid until it closes, as `FactsIn::facts` states); once it has closed, the kept answer's
+    /// own, valid until the ticket's answers are forgotten.
+    fn replay_facts(&self, input: *const c_void, answer: Answered, kept: &KeptFacts) -> Answered {
+        // SAFETY: `slot` checked the head covers a `FactsIn`.
+        let i = unsafe { input.cast::<FactsIn>().read_unaligned() };
+        if i.facts.is_null() {
+            return Answered::fault();
+        }
+        let mut all = lock(&self.facts);
+        let open = all.contains_key(&kept.stream);
+        let mut text = |t: &Option<Box<str>>| match t {
+            Some(t) if open => held_text(&mut all, kept.stream, Some(t)),
+            Some(t) => AbiStr {
+                ptr: t.as_ptr(),
+                len: t.len(),
+            },
+            None => held_text(&mut all, kept.stream, None),
+        };
+        let written = StreamFacts {
+            size: size_of::<StreamFacts>() as u32,
+            secure: kept.secure,
+            endpoint: text(&None),
+            agreed_protocol: text(&kept.agreed_protocol),
+            peer_cert_hash: text(&kept.peer_cert_hash),
+            peer_key_pin: text(&kept.peer_key_pin),
+            client_identity: kept.client_identity,
+            _reserved: 0,
+        };
+        // SAFETY: the caller's `facts`, checked non-NULL, live for the call.
+        unsafe { i.facts.write_unaligned(written) };
+        answer
+    }
+
+    /// Forget every answer kept on `ticket`: how many there were, and every dial it left in flight,
+    /// to be closed on `table` once the caller holds no lock ([`Closes`]).
+    fn forget(&self, table: Option<&ArmedConns>, ticket: Ticket) -> (usize, Closes) {
+        let closes = self.take_dialling(table, |t| *t == ticket);
+        let kept = lock(&self.kept)
             .remove(&ticket)
-            .map_or(0, |issued| issued.len())
+            .map_or(0, |issued| issued.len());
+        (kept, closes)
     }
 }
 
 /// A replayed read: what it wrote, written again into the piece slot and the buffer the replay's
 /// `in` lends (as much of the bytes as the buffer holds).
-fn replay_read(input: *const c_void, (piece, kept): &(ReplyPiece, Box<[u8]>)) {
+fn replay_read(input: *const c_void, piece: ReplyPiece, kept: &[u8]) {
     // SAFETY: `slot` checked the head covers a `ReplyIn`.
     let i = unsafe { input.cast::<ReplyIn>().read_unaligned() };
     // SAFETY: the caller's buffer, lent for this call only.
@@ -808,7 +906,28 @@ fn replay_read(input: *const c_void, (piece, kept): &(ReplyPiece, Box<[u8]>)) {
     let n = kept.len().min(buf.len());
     buf[..n].copy_from_slice(&kept[..n]);
     // SAFETY: the caller's descriptor slot, checked non-NULL.
-    unsafe { i.piece.write_unaligned(*piece) };
+    unsafe { i.piece.write_unaligned(piece) };
+}
+
+/// A replayed raw `READ`: the bytes it wrote, written again into the buffer the replay's `in`
+/// lends, and its kept `answer`. A buffer below them is the short-buffer rule's answer
+/// (`abi::host::service`): FAILED with `needed_bytes` the kept count and nothing written; the kept
+/// answer stays for a re-call that lends enough.
+fn replay_raw(input: *const c_void, answer: Answered, kept: &[u8]) -> Answered {
+    // SAFETY: `slot` checked the head covers an `IoIn`.
+    let i = unsafe { input.cast::<IoIn>().read_unaligned() };
+    // SAFETY: the caller's buffer, lent for this call only.
+    let Some(buf) = (unsafe { bytes(i.buf, i.len) }) else {
+        return Answered::fault();
+    };
+    if kept.len() > buf.len() {
+        return Answered {
+            needed_bytes: kept.len() as u64,
+            ..Answered::bare(Outcome::Failed, super::services::SHORT)
+        };
+    }
+    buf[..kept.len()].copy_from_slice(kept);
+    answer
 }
 
 /// Forget every answer instance `id` kept under `ticket` (its worker recycled it, a driver
@@ -816,8 +935,11 @@ fn replay_read(input: *const c_void, (piece, kept): &(ReplyPiece, Box<[u8]>)) {
 /// well as by ticket: tickets are minted per dispatcher, so another dispatcher's instance may hold
 /// an identical ticket, and its kept answers are never its neighbour's to drop (dropping them would
 /// make it run a stored establish or write a second time).
-pub(crate) fn forget(id: InstanceId, ticket: Ticket) -> usize {
-    super::handle::supplier_of(id).map_or(0, |w| w.conn_state.forget(w.conn.get(), ticket))
+pub(crate) fn forget(id: InstanceId, ticket: Ticket) -> (usize, Closes) {
+    super::handle::supplier_of(id).map_or_else(
+        || (0, Closes(None, Vec::new())),
+        |w| w.conn_state.forget(w.conn.get(), ticket),
+    )
 }
 
 /// Forget every answer the instances `ids` kept under worker `worker`'s tickets: it was replaced.
@@ -1183,7 +1305,14 @@ extern "C" fn write_request(
                         Some(_) if handle.is_none() => {
                             Conn::Failed(ConnError::CredentialUnavailable)
                         }
-                        Some(binding) => match auth_request(&binding, &h, &target, &body, scope) {
+                        Some(binding) => match auth_request(
+                            &binding,
+                            &h,
+                            &target,
+                            &body,
+                            scope,
+                            &completing(table, id, need, &target, &h, &body),
+                        ) {
                             None => Conn::Failed(ConnError::Refused),
                             Some(request) => {
                                 let handle = handle.unwrap_or(binding.handle);
@@ -1286,9 +1415,31 @@ fn open_with(
         .map_or_else(Conn::Failed, Conn::Open)
 }
 
+/// THE LINES THE CONNECTOR COMPLETES the plugin's whole request with at its open (THE DESIGN
+/// section 6, step 5; [`busbar_contract::conn::HeadDefaults::completing`]): the framer's own lines
+/// its head does not carry, then the body's length where the framer leaves it to the host. They are
+/// part of the head the member's auth call signs, so nothing is added after the auth runs.
+fn completing(
+    table: &Arc<dyn DeclaredConns>,
+    id: InstanceId,
+    need: NeedId,
+    target: &str,
+    h: &Head,
+    body: &[u8],
+) -> Vec<(Vec<u8>, Vec<u8>)> {
+    table.request_head(id, need, target).completing(
+        |name| {
+            h.fields
+                .iter()
+                .any(|(n, _)| n.as_bytes().eq_ignore_ascii_case(name))
+        },
+        body.len(),
+    )
+}
+
 /// The member binding's ONE auth call for a whole request to `target` (THE DESIGN, outbound auth: the facts at
-/// the style's point; the request's head when the style reads it; its stated `scope` in the
-/// extensions blob). A passthrough binding is lent the caller credential of the unit the crossing
+/// the style's point; the request's head when the style reads it, completed with `added`, the lines
+/// the connector adds at the open; its stated `scope` in the extensions blob). A passthrough binding is lent the caller credential of the unit the crossing
 /// serves (none presented: an empty one, so nothing is presented, never the operator's); a request
 /// made inside no unit has no caller, and opens nothing (`None`): an operator's own fetch never
 /// spends a caller's credential.
@@ -1298,6 +1449,7 @@ fn auth_request(
     target: &str,
     body: &[u8],
     scope: Option<Vec<u8>>,
+    added: &[(Vec<u8>, Vec<u8>)],
 ) -> Option<FieldsRequest> {
     use busbar_contract::abi::auth::{AuthPoint, STYLE_NEEDS_HEADERS};
     let caller_credential = if binding.passthrough {
@@ -1349,6 +1501,7 @@ fn auth_request(
             h.fields
                 .iter()
                 .map(|(n, v)| (n.as_bytes().to_vec(), v.clone()))
+                .chain(added.iter().cloned())
                 .collect()
         } else {
             Vec::new()
@@ -1408,7 +1561,7 @@ extern "C" fn read_reply(ctx: HostCtx, input: *const c_void, out: *mut ServiceOu
                 // A ticketed read keeps what it wrote, stored with its answer.
                 if answer.outcome != Outcome::Pending && !head.handle.ticket.is_none() {
                     let n = usize::try_from(answer.len).map_or(buf.len(), |n| n.min(buf.len()));
-                    read = Some((p, buf[..n].into()));
+                    read = Some(Wrote::Reply(p, buf[..n].into()));
                 }
             }
             Kept { answer, read }
@@ -1615,34 +1768,29 @@ fn abi(s: &'static str) -> AbiStr {
     }
 }
 
-extern "C" fn identity(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
-    slot(
-        ctx,
-        input,
-        out,
-        service::IDENTITY,
-        size_of::<IdentityIn>(),
-        |_, _, _, _| {
-            // SAFETY: the head covered an `IdentityIn`.
-            let i = unsafe { input.cast::<IdentityIn>().read_unaligned() };
-            if i.identity.is_null() {
-                return Answered::fault();
-            }
-            let (user, program) = process();
-            // SAFETY: the caller's identity slot, checked non-NULL.
-            unsafe {
-                i.identity.write_unaligned(ProcessIdentity {
-                    size: size_of::<ProcessIdentity>() as u32,
-                    _reserved: 0,
-                    pid: u64::from(std::process::id()),
-                    os_user: abi(user),
-                    program: abi(program),
-                });
-            }
-            Answered::ready(0, 0)
-        },
-    )
-}
+service!(
+    identity,
+    slot,
+    service::IDENTITY,
+    IdentityIn,
+    |_, _, _, _, i| {
+        if i.identity.is_null() {
+            return Answered::fault();
+        }
+        let (user, program) = process();
+        // SAFETY: the caller's identity slot, checked non-NULL.
+        unsafe {
+            i.identity.write_unaligned(ProcessIdentity {
+                size: size_of::<ProcessIdentity>() as u32,
+                _reserved: 0,
+                pid: u64::from(std::process::id()),
+                os_user: abi(user),
+                program: abi(program),
+            });
+        }
+        Answered::ready(0, 0)
+    }
+);
 
 #[cfg(test)]
 #[path = "../tests/conn_services_tests.rs"]

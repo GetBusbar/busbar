@@ -10,7 +10,7 @@
 //! A connection is full-duplex, so it holds TWO sides (`abi::transport`: "TWO TICKETS PER
 //! CONNECTION"), each an inline ticket ([`Side`]) with at most one op in flight: `read` on the read
 //! side; `dial`, `write`, `flush` and `shut` on the write side. Every op is crossed INLINE on the
-//! task that polls the connection — no thread handoff (#30). An op that answers PENDING registered
+//! task that polls the connection — no thread handoff. An op that answers PENDING registered
 //! the task's waker on its side's ticket; the next call on that side RESUMES it (`FLAG_RESUME`, the
 //! same op on the same ticket) before anything else is asked of it.
 //!
@@ -36,7 +36,7 @@ use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::abi::sdk::door::{blank_in, blank_out};
 use busbar_contract::abi::transport::{
     AcceptIn, AcceptOut, ConnIn, ConnOut, Destination, DialIn, IoOut, ListenIn, ListenOut, ReadIn,
-    ShutIn, WriteIn, CLOSE_NORMAL, DEST_AUTHORITY, DEST_PROGRAM, READ_END_OF_FRAME,
+    ShutIn, WriteIn, CLOSE_NORMAL, DEST_AUTHORITY, DEST_PROGRAM, DEST_RETIRED, READ_END_OF_FRAME,
     WRITE_END_OF_FRAME,
 };
 
@@ -304,6 +304,32 @@ impl Carried {
             Some(c) => Err(DialFailure::Failed(text(&c))),
             None => Err(DialFailure::Failed("a dial may not pend".into())),
         }
+    }
+
+    /// THE KEY-RETIRED SIGNAL (`abi::transport::DEST_RETIRED`): tell the carrier `door` that the
+    /// member holding supervision key `key` is retired, so a supervising carrier forgets it. Nothing
+    /// is admitted for it (no `io.*` call it makes reaches anything) and its answer is not read: a
+    /// carrier that supervises nothing may refuse it. Never called under a host lock.
+    pub fn retire_key(door: &Arc<dyn FramerDoor>, io: &HostIo, key: u64) {
+        let Some(mut wr) = Driven::of(door.as_ref()) else {
+            return;
+        };
+        let raw = Destination {
+            kind: DEST_RETIRED,
+            _reserved: 0,
+            authority: abi(b""),
+            program: abi(b""),
+            args: std::ptr::null(),
+            args_len: 0,
+            env: std::ptr::null(),
+            env_len: 0,
+        };
+        let mut i: DialIn = blank_in();
+        i.dest = &raw;
+        i.supervision_key = key;
+        let mut o: ConnOut = blank_out();
+        let _ = wr.cross(door.as_ref(), Carry::Dial(&mut i, &mut o), None);
+        let _ = io.settle(wr.ticket());
     }
 
     /// The connection `conn` the carrier `door` accepted (host handle `handle`).

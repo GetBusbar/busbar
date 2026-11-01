@@ -55,6 +55,9 @@ struct Recording {
     held: Mutex<Vec<(InstanceId, usize)>>,
     /// Every instance the table was told is gone ([`DeclaredConns::forget`]), in order.
     forgotten: Mutex<Vec<InstanceId>>,
+    /// The table refuses every CONFIG-FREE need (no `target_from`, no `trust_from`): the one the
+    /// loader declares at bind.
+    refuse_config_free: bool,
 }
 
 /// One member-program declaration as it reached the table.
@@ -93,8 +96,14 @@ impl DeclaredConns for Recording {
             target.map(str::to_owned),
             trust.map(str::to_owned),
         ));
+        // As the real table: an unresolved target or trust is refused, and so is a trust that is
+        // no trust anchor (here: anything not spelled `PEM…`).
         if (!spec.target_from.is_empty() && target.is_none())
             || (!spec.trust_from.is_empty() && trust.is_none())
+            || (self.refuse_config_free
+                && spec.target_from.is_empty()
+                && spec.trust_from.is_empty())
+            || trust.is_some_and(|t| !t.starts_with("PEM"))
         {
             return Err(ConnError::Refused);
         }
@@ -337,6 +346,7 @@ fn establish_as(
     };
     // SAFETY: an all-zero `ServiceOut` is a valid value the slot overwrites.
     let mut out: ServiceOut = unsafe { std::mem::zeroed() };
+    out.size = std::mem::size_of::<ServiceOut>() as u32;
     let slot = CONN_SLOTS.establish.expect("ESTABLISH is served");
     let _: RawOutcome = slot(p.inner.ctx(), std::ptr::from_ref(&i).cast(), &mut out);
     out
@@ -433,6 +443,54 @@ fn a_need_over_an_unserved_scheme_refuses_the_load_naming_plugin_and_scheme() {
 
     let served = Arc::new(Recording::default());
     assert!(bind_over(Box::leak(Box::new(NEEDS)), &served).is_ok());
+}
+
+/// RED (kind-secret K17): a CONFIG-FREE need (no `target_from`, no `trust_from`) is declared at
+/// bind, and a table that REFUSES it refuses the load, naming the plugin and the need, with what
+/// the instance declared forgotten. Before: the answer was discarded (`let _ = table.declare(..)`)
+/// and the instance bound with a need it could never open. The same need on a table that carries
+/// it binds.
+#[test]
+fn a_config_free_need_the_table_refuses_refuses_the_load_naming_plugin_and_need() {
+    const CONFIG_FREE: [Need; 1] = [Need {
+        target_from: NONE,
+        ..NEEDS[0]
+    }];
+    let refusing = Arc::new(Recording {
+        refuse_config_free: true,
+        ..Recording::default()
+    });
+    let Err(refusal) = bind_over(Box::leak(Box::new(CONFIG_FREE)), &refusing) else {
+        panic!("a config-free need the table refuses must refuse the load");
+    };
+    // SAFETY: the test door and its Statement are `'static`.
+    let real: Door = unsafe { *plug::busbar_plugin_door() };
+    let st: Statement = unsafe { *real.statement() };
+    let plugin = String::from_utf8_lossy(
+        crate::dispatch::plugin::str_bytes(st.name).expect("the test door is named"),
+    )
+    .into_owned();
+    let text = refusal.to_string();
+    assert!(
+        text.contains(plugin.as_str())
+            && text.contains("need 0")
+            && text.contains("`sock`")
+            && text.contains("refused"),
+        "the refusal names the plugin, the need and why: {text}"
+    );
+    assert_eq!(
+        refusing.declared.lock().unwrap().len(),
+        1,
+        "the need reached the table"
+    );
+    assert_eq!(
+        refusing.forgotten.lock().unwrap().len(),
+        1,
+        "what the refused instance declared is forgotten"
+    );
+
+    let carrying = Arc::new(Recording::default());
+    assert!(bind_over(Box::leak(Box::new(CONFIG_FREE)), &carrying).is_ok());
 }
 
 /// RED (spec Part 0: core refuses at boot; Part 2 #50; ARCHITECT ruling 2026-10-02): an INBOUND need
@@ -590,6 +648,50 @@ fn a_trust_from_need_is_declared_with_its_settings_ca_at_open_and_every_refresh(
     );
 }
 
+/// A trust anchor [`Recording`] refuses, as the connector refuses a PEM that is no trust anchor.
+const NOT_A_PEM: &str = "NOT-A-PEM";
+
+/// RED (S7): an `open` whose settings name a trust anchor the table refuses FAILS, naming the
+/// setting, before the plugin is entered: the operator learns of a bad CA at open, not at the
+/// first call that dials. An anchor the table takes opens as before.
+#[test]
+fn an_open_whose_settings_ca_the_table_refuses_fails_naming_it() {
+    let table = Arc::new(Recording::default());
+    let p = bound(Box::leak(Box::new(TRUSTING)), &table);
+    let mut f = Frame::new(
+        OpenIn {
+            head: in_head(),
+            host: std::ptr::null(),
+            settings: settings(br#"{"ca":"NOT-A-PEM"}"#),
+            secrets: std::ptr::null(),
+            secrets_len: 0,
+            generation: 1,
+            err_buf: std::ptr::null_mut(),
+            err_cap: 0,
+        },
+        OpenOut {
+            head: out_head(),
+            instance: std::ptr::null_mut(),
+            err_len: 0,
+        },
+    );
+    let c = p.call(slot::OPEN, &mut f);
+    assert_eq!(
+        c.outcome,
+        Outcome::Failed,
+        "a refused trust anchor fails the open"
+    );
+    let text = c.open_failure("trusting");
+    assert!(text.contains("settings.ca"), "{text}");
+    assert!(
+        !text.contains(NOT_A_PEM),
+        "the value is never repeated: {text}"
+    );
+
+    let good = bound(Box::leak(Box::new(TRUSTING)), &table);
+    assert_eq!(open_with(&good, br#"{"ca":"PEM-A"}"#), Outcome::Ready);
+}
+
 /// A need whose trust anchors come from the OWNED namespace: `owned.agent_push.ca`.
 const OWNED_TRUSTING: [Need; 1] = [Need {
     target_from: NONE,
@@ -689,7 +791,7 @@ fn recycling_one_instances_ticket_never_replays_anothers_establish() {
     assert_eq!(two_stream.outcome, RawOutcome::of(Outcome::Ready));
     assert_eq!((opens(&one_table), opens(&two_table)), (1, 1));
 
-    forget(one.instance(), first);
+    drop(forget(one.instance(), first));
     let replayed = establish_on(&two, 0, "127.0.0.1:9", first);
     assert_eq!(
         (replayed.outcome, replayed.value),
@@ -868,6 +970,8 @@ struct Scripted {
     parked: Mutex<Vec<(InstanceId, u64)>>,
     /// Armed, a close parks here until released: a transport door wedged in its close.
     close_gate: Gate,
+    /// Every dial is still connecting when its establish asks: `landed` answers PENDING.
+    landing: bool,
 }
 
 /// A door double's park: armed, the next caller notes it entered and waits for the release (at
@@ -956,6 +1060,14 @@ impl DeclaredConns for Scripted {
 
     fn cause(&self, _: InstanceId, _: ConnId) -> Option<ConnCause> {
         self.failing.as_ref().map(|(_, c)| c.clone())
+    }
+
+    fn landed(&self, caller: InstanceId, conn: ConnId, _: u64) -> Result<(), ConnError> {
+        self.slab.get(caller, conn)?;
+        if self.landing {
+            return Err(ConnError::Pending);
+        }
+        Ok(())
     }
 
     fn auth_of(
@@ -1126,6 +1238,7 @@ fn head_of<I>(op: u32, seq: u32) -> ServiceHead {
 fn call<I>(p: &Plugin<TestKind>, f: Option<ServiceFn>, input: &I) -> ServiceOut {
     // SAFETY: an all-zero `ServiceOut` is a valid value the slot overwrites.
     let mut out: ServiceOut = unsafe { std::mem::zeroed() };
+    out.size = std::mem::size_of::<ServiceOut>() as u32;
     let _: RawOutcome =
         f.expect("served")(p.inner.ctx(), std::ptr::from_ref(input).cast(), &mut out);
     out
@@ -1476,7 +1589,7 @@ fn a_replayed_handle_never_runs_its_service_twice() {
         "the replay answers the stored result, not a second head"
     );
     assert_eq!(replayed.len, h.len);
-    super::forget(q.instance(), T);
+    drop(super::forget(q.instance(), T));
     let fresh = request(&q, 1, stream, &head_piece(), HEAD_BYTES);
     assert_eq!(
         fresh.outcome,
@@ -1560,6 +1673,7 @@ fn admit(p: &Plugin<TestKind>, need: u32) -> Outcome {
     };
     // SAFETY: an all-zero `ServiceOut` is a valid value the slot overwrites.
     let mut out: ServiceOut = unsafe { std::mem::zeroed() };
+    out.size = std::mem::size_of::<ServiceOut>() as u32;
     let slot = crate::dispatch::services::HOST_SLOTS
         .need_admit
         .expect("need.admit is served");
@@ -1725,6 +1839,57 @@ fn facts_expose_the_peer_certificate_hash() {
         ..ConnFacts::default()
     });
     assert_eq!(read(2), (1, Some("ab".repeat(32))), "secured");
+}
+
+/// RED (THE DESIGN §11.12, "on resume the plugin re-issues the SAME handle and receives the stored
+/// result"): `FACTS` wrote the caller's `StreamFacts`, so a replayed handle writes the same facts
+/// again into the `facts` the replay lends, never a kept READY over memory nothing touched. A store
+/// op answering short re-runs on its ticket with its kept answers. The facts are the ones the first
+/// run was answered, not the stream's now (it was upgraded, or closed, later in that run), and their
+/// strings stay readable for the replay after the stream closed.
+#[test]
+fn a_replayed_facts_writes_the_same_facts_again() {
+    use busbar_contract::abi::host::conn::connector::{FactsIn, StreamFacts, StreamIn};
+    let table = Arc::new(Scripted::default());
+    let p = bound_over(&table);
+    let stream = opened_stream(&p, 0).value;
+    let ask = |seq: u32| {
+        // SAFETY: an all-zero `StreamFacts` is a valid value the slot overwrites.
+        let mut f: StreamFacts = unsafe { std::mem::zeroed() };
+        let i = FactsIn {
+            head: head_of::<FactsIn>(service::FACTS, seq),
+            stream,
+            facts: &mut f,
+        };
+        let out = call(&p, CONN_SLOTS.facts, &i);
+        let text = |s: AbiStr| {
+            (!s.ptr.is_null()).then(|| {
+                // SAFETY: the host holds the facts' strings for the caller.
+                String::from_utf8(unsafe { std::slice::from_raw_parts(s.ptr, s.len) }.to_vec())
+                    .unwrap()
+            })
+        };
+        (ready(&out), f.secure, text(f.peer_cert_hash))
+    };
+    *table.facts.lock().unwrap() = Some(ConnFacts {
+        peer_cert: Some(busbar_contract::transport::wire::CertFacts {
+            subject: String::new(),
+            issuer: String::new(),
+            fingerprint: "ab".repeat(32),
+        }),
+        ..ConnFacts::default()
+    });
+    let secured = (true, 1, Some("ab".repeat(32)));
+    assert_eq!(ask(1), secured, "the first run's facts");
+    // The stream's facts move on after the first run asked.
+    *table.facts.lock().unwrap() = Some(ConnFacts::default());
+    assert_eq!(ask(1), secured, "the replayed facts");
+    let c = StreamIn {
+        head: head_of::<StreamIn>(service::CLOSE, 2),
+        stream,
+    };
+    assert!(ready(&call(&p, CONN_SLOTS.close, &c)));
+    assert_eq!(ask(1), secured, "the replayed facts, the stream closed");
 }
 
 /// Q-L16-4: `UpgradeIn::flags`' verify-off reaches the table; an `in` from before the flags
@@ -2258,10 +2423,74 @@ fn a_replayed_read_reply_writes_its_piece_and_bytes_again() {
         table.script.lock().unwrap().is_empty(),
         "every piece was read from the far end once"
     );
-    super::forget(p.instance(), T);
+    drop(super::forget(p.instance(), T));
     let mut fresh = [0_u8; 64];
     let (_, gone) = read_reply(&p, 1, stream, &mut fresh);
     assert_ne!(gone, h, "a forgotten ticket's read is not replayed");
+}
+
+/// One raw `READ` of `stream` into `buf` under handle `seq`.
+fn raw_read(p: &Plugin<TestKind>, seq: u32, stream: u64, buf: &mut [u8]) -> ServiceOut {
+    let i = IoIn {
+        head: head_of::<IoIn>(service::READ, seq),
+        stream,
+        buf: buf.as_mut_ptr(),
+        len: buf.len(),
+    };
+    call(p, CONN_SLOTS.read, &i)
+}
+
+/// RED (THE DESIGN §11.12, "on resume the plugin re-issues the SAME handle and receives the stored
+/// result"): a raw `READ` wrote the caller's memory, so a replayed handle writes the same bytes
+/// again into the buffer the replay lends, never a kept count over memory nothing touched. A store
+/// op answering short re-runs on its ticket with its kept answers: a reply read in more than one
+/// raw `READ` was otherwise parsed from the reused buffer's stale last chunk
+/// (busbar-store-valkey's `list_plane_records`, "invalid RESP reply: unknown reply type"). A replay
+/// buffer below the kept piece is the short-buffer rule's: FAILED, the full size needed, nothing
+/// written, and the kept answer still redeemable. The far end is read once.
+#[test]
+fn a_replayed_raw_read_writes_its_bytes_again() {
+    let table = Arc::new(Scripted::default());
+    table.script.lock().unwrap().extend([
+        (piece(PieceKind::Body, None, None, 6), b"*2\r\n$3".to_vec()),
+        (piece(PieceKind::Body, None, None, 5), b"\r\nabc".to_vec()),
+    ]);
+    let p = bound_over(&table);
+    let stream = opened_stream(&p, 0).value;
+    let mut buf = [0_u8; 16];
+    let first = raw_read(&p, 1, stream, &mut buf);
+    assert!(ready(&first) && first.len == 6);
+    let second = raw_read(&p, 2, stream, &mut buf);
+    assert!(ready(&second) && second.len == 5);
+    // The re-run reuses the buffer, its last chunk still in it.
+    let r1 = raw_read(&p, 1, stream, &mut buf);
+    assert!(ready(&r1) && r1.len == 6);
+    assert_eq!(&buf[..6], b"*2\r\n$3", "the replayed first read's bytes");
+    let r2 = raw_read(&p, 2, stream, &mut buf);
+    assert!(ready(&r2) && r2.len == 5);
+    assert_eq!(&buf[..5], b"\r\nabc", "the replayed second read's bytes");
+    assert!(
+        table.script.lock().unwrap().is_empty(),
+        "every read reached the far end once"
+    );
+    let mut small = [0xEE_u8; 4];
+    let short = raw_read(&p, 1, stream, &mut small);
+    assert_eq!(
+        (short.outcome, short.needed_bytes, short.len),
+        (RawOutcome::of(Outcome::Failed), 6, 0),
+        "a replay buffer below the kept piece is a short answer"
+    );
+    assert_eq!(small, [0xEE; 4], "a short answer writes nothing");
+    let mut again = [0_u8; 6];
+    let r1 = raw_read(&p, 1, stream, &mut again);
+    assert!(
+        ready(&r1) && r1.len == 6,
+        "the kept answer is still redeemable"
+    );
+    assert_eq!(&again, b"*2\r\n$3");
+    drop(super::forget(p.instance(), T));
+    let gone = raw_read(&p, 1, stream, &mut buf);
+    assert!(!ready(&gone), "a forgotten ticket's read is not replayed");
 }
 
 /// RED (audit row 159, connector HIGH 5: "a replaced instance's member programs keep running"):
@@ -2589,6 +2818,7 @@ fn an_auth_instances_authority_is_held_before_its_needs_are_declared() {
         Door::__from_parts(busbar_contract::abi::mechanism::door::DoorParts {
             kind: auth as u32,
             kind_abi: auth.abi_version(),
+            layout: auth.layout_fingerprint(),
             statement: st,
             ..real.parts()
         })
@@ -2701,6 +2931,116 @@ fn red_an_instances_last_drop_on_a_worker_closes_with_no_worker_lock_held() {
     d.recycle(t);
 }
 
+/// RED (THE DESIGN §11.13 M1, "No plugin code (`dlclose` included) runs under a host lock"): a raw
+/// `ESTABLISH` that answered PENDING leaves its dial in flight on the ticket; the recycle that ends
+/// the ticket closes that dial, and the close reaches a transport door. The door double parks in
+/// its close: while it is parked, a ticket is still minted on that worker, because the worker's
+/// state lock is not held across the close.
+#[test]
+fn red_a_dial_left_in_flight_is_closed_with_no_worker_lock_held() {
+    let table = Arc::new(Scripted {
+        landing: true,
+        ..Scripted::default()
+    });
+    let d = crate::dispatch::Dispatcher::new(crate::dispatch::DispatchConfig::default());
+    let p = bound_over_by(&table, d.adopter());
+    assert_eq!(open_with(&p, b"{}"), Outcome::Ready);
+    let driver = d.driver(&p, 0).expect("a driver ticket");
+    let pending = establish_on(&p, 0, "127.0.0.1:9", driver);
+    assert_eq!(
+        pending.outcome,
+        RawOutcome::of(Outcome::Pending),
+        "the dial is still connecting"
+    );
+    assert_eq!(table.opened.lock().unwrap().len(), 1, "one dial in flight");
+    table.close_gate.armed.store(true, AtomicOrdering::SeqCst);
+    d.recycle(driver);
+    let parked = table
+        .close_gate
+        .entered_within(std::time::Duration::from_secs(10));
+    let minted = std::thread::scope(|s| {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let d = &d;
+        s.spawn(move || {
+            let _ = tx.send(d.mint(0));
+        });
+        let minted = rx.recv_timeout(std::time::Duration::from_secs(5));
+        // Released whatever happened, so the scope's join never waits on the parked close.
+        table
+            .close_gate
+            .released
+            .store(true, AtomicOrdering::SeqCst);
+        minted
+    });
+    assert!(parked, "the dial left in flight was never closed");
+    let minted = minted.expect(
+        "a mint on the worker blocked while a transport close ran: the dial left in flight was \
+         closed under the worker's state lock",
+    );
+    let t = minted.expect("a ticket");
+    d.recycle(t);
+    drop(p);
+}
+
+/// A caller's `out` lent in 96 bytes, stating `size`: every byte past the size field is `0xAA`, so
+/// a write past what the caller stated shows.
+#[repr(C, align(8))]
+struct LentOut([u8; 96]);
+
+impl LentOut {
+    fn stating(size: u32) -> Self {
+        let mut b = [0xAA_u8; 96];
+        b[..4].copy_from_slice(&size.to_ne_bytes());
+        Self(b)
+    }
+
+    fn out(&mut self) -> *mut busbar_contract::abi::host::service::ServiceOut {
+        self.0.as_mut_ptr().cast()
+    }
+
+    /// Whether every byte from `from` on is still the caller's.
+    fn untouched_from(&self, from: usize) -> bool {
+        self.0[from..].iter().all(|b| *b == 0xAA)
+    }
+}
+
+/// RED (Q128 kernel-scope MEDIUM, the connector service frame): the host writes a caller's `out` only as far
+/// as the caller STATED it (`min(out.size, its own)`), and refuses an `out` stated below the first
+/// `ServiceOut` before the service runs, writing none of it, so a `ServiceOut` may grow by appending
+/// and an older caller's smaller one is never overrun. RED before: the frame wrote a whole
+/// `ServiceOut` over whatever the caller lent.
+#[test]
+fn red_the_connector_service_frame_writes_no_further_than_the_out_the_caller_stated() {
+    use busbar_contract::abi::host::service::SERVICE_OUT_V1;
+    use busbar_contract::abi::mechanism::call::{Outcome, RawOutcome};
+    let mut lent = LentOut::stating(32);
+    let raw: RawOutcome = super::slot(
+        busbar_contract::abi::mechanism::ticket::HostCtx::NONE,
+        std::ptr::null(),
+        lent.out(),
+        0,
+        0,
+        |_, _, _, _| -> super::Answered { unreachable!("a NULL `in` never reaches the body") },
+    );
+    assert_eq!(raw.outcome(), Outcome::Refused, "a short `out` was served");
+    assert!(lent.untouched_from(4), "a short `out` was written");
+    let mut lent = LentOut::stating(SERVICE_OUT_V1 as u32);
+    let raw: RawOutcome = super::slot(
+        busbar_contract::abi::mechanism::ticket::HostCtx::NONE,
+        std::ptr::null(),
+        lent.out(),
+        0,
+        0,
+        |_, _, _, _| -> super::Answered { unreachable!("a NULL `in` never reaches the body") },
+    );
+    assert_eq!(raw.outcome(), Outcome::Fault, "a NULL `in` is FAULT");
+    assert!(
+        lent.untouched_from(SERVICE_OUT_V1),
+        "the host wrote past the `out` stated"
+    );
+    assert_eq!(lent.0[5], 0, "`exited` is written zero by every frame");
+}
+
 /// THE AUTH CALL SIGNS THE AUTHORITY THE SOCKET DIALS. A member binding is asked for its fields over
 /// the request's authority, path and query, and the authority is read where the dialling stack ends
 /// it: at the first `/`, `?`, `#` or (a web scheme) `\`, with the userinfo before its last `@` left
@@ -2749,10 +3089,290 @@ fn the_auth_request_signs_the_authority_the_socket_dials() {
             None,
         ),
     ] {
-        let asked = super::auth_request(&binding, &head, target, b"", None)
+        let asked = super::auth_request(&binding, &head, target, b"", None, &[])
             .expect("a non-passthrough binding asks");
         assert_eq!(asked.authority, authority, "{target}");
         assert_eq!(asked.path, path, "{target}");
         assert_eq!(asked.query.as_deref(), query, "{target}");
     }
+}
+
+/// THE AUTH SIGNS THE HEAD THAT GOES OUT (THE DESIGN section 6, step 5): a style that reads the
+/// head is handed the plugin's fields and then the lines the connector completes the request with at
+/// its open (the framer's own lines the head lacks, then the body's length), in that order. RED
+/// before: the auth was handed the plugin's fields alone, and the length the http door needs was
+/// stated nowhere.
+#[test]
+fn the_auth_request_signs_the_lines_the_open_completes_the_head_with() {
+    let binding = busbar_contract::conn::ConnAuth {
+        auth: Arc::new(ByHandle::default()) as Arc<dyn OutboundAuth>,
+        handle: 1,
+        style_flags: busbar_contract::abi::auth::STYLE_NEEDS_HEADERS,
+        points: busbar_contract::abi::auth::AuthPoints::HEAD,
+        passthrough: false,
+        lender: None,
+        per_request: None,
+    };
+    let head = super::Head {
+        method: b"POST".to_vec(),
+        target: b"/x".to_vec(),
+        fields: vec![("content-type".to_owned(), b"application/json".to_vec())],
+        timeout_ms: 0,
+    };
+    let located = busbar_contract::conn::HeadDefaults {
+        lines: vec![
+            (b"accept".to_vec(), b"*/*".to_vec()),
+            (b"host".to_vec(), b"svc.example".to_vec()),
+        ],
+        states_length: true,
+    };
+    let added = located.completing(
+        |name| {
+            head.fields
+                .iter()
+                .any(|(n, _)| n.as_bytes().eq_ignore_ascii_case(name))
+        },
+        2,
+    );
+    let asked = super::auth_request(
+        &binding,
+        &head,
+        "https://svc.example/x",
+        b"{}",
+        None,
+        &added,
+    )
+    .expect("a non-passthrough binding asks");
+    let signed: Vec<(&[u8], &[u8])> = asked
+        .headers
+        .iter()
+        .map(|(n, v)| (n.as_slice(), v.as_slice()))
+        .collect();
+    assert_eq!(
+        signed,
+        [
+            (&b"content-type"[..], &b"application/json"[..]),
+            (b"accept", b"*/*"),
+            (b"host", b"svc.example"),
+            (b"content-length", b"2"),
+        ]
+    );
+}
+
+// ── AUDITED ON THE PLUGIN'S BEHALF (BIND-AUDIT): every refusal the host makes while an instance
+// binds reaches the host's audit, once; nothing the plugin says at run time becomes its words. ──
+
+/// [`bind_as`] under the instance label `label`, over `table`: the label every refusal is
+/// recorded under ([`crate::observe::testing::refused`] reads a test's own by it).
+fn bound_labelled(needs: &'static [Need], table: &Arc<Recording>, label: &str) -> Plugin<TestKind> {
+    // SAFETY: the real door and its Statement are `'static`.
+    let real: Door = unsafe { *plug::busbar_plugin_door() };
+    let st: Statement = unsafe { *real.statement() };
+    let st: &'static Statement = Box::leak(Box::new(Statement {
+        needs: needs.as_ptr(),
+        needs_len: needs.len(),
+        ..st
+    }));
+    let door: &'static Door = Box::leak(Box::new(unsafe {
+        Door::__from_parts(busbar_contract::abi::mechanism::door::DoorParts {
+            statement: st,
+            ..real.parts()
+        })
+    }));
+    let v = validate_door::<TestKind>(door).expect("the door validates");
+    let conns: Arc<dyn DeclaredConns> = table.clone();
+    Plugin::bind(
+        v,
+        None,
+        Bind {
+            instance: Arc::from(label),
+            max_inflight_cap: 8,
+            sink: Arc::new(NoSink),
+            dispatcher: Adopter::unwatched(),
+            conns: crate::dispatch::ConnTable::Host(conns),
+        },
+    )
+    .expect("the instance binds")
+}
+
+/// The refusals the host's audit was handed for `label`, rendered.
+fn refused_for(label: &str) -> Vec<String> {
+    crate::observe::testing::refused(label)
+        .into_iter()
+        .map(|(_, _, refusal)| refusal)
+        .collect()
+}
+
+/// RED: a need the table refuses at `open` or `refresh` is handed to the host's audit once per
+/// refusal, under the instance's label: its Statement index and why in a host word. An admitted
+/// declaration is not.
+#[test]
+fn a_need_refused_at_open_is_audited_once() {
+    let label = "bind-audit-need-refused";
+    let table = Arc::new(Recording::default());
+    let p = bound_labelled(Box::leak(Box::new(NEEDS)), &table, label);
+    assert_eq!(
+        open_with(&p, br#"{"upstream":"127.0.0.1:9"}"#),
+        Outcome::Ready
+    );
+    assert!(
+        refused_for(label).is_empty(),
+        "an admitted need is not a refusal"
+    );
+
+    // Its target path resolves to nothing: the table refuses it.
+    assert_eq!(
+        refresh_with(&p, br#"{"other":"127.0.0.3:9"}"#),
+        Outcome::Ready
+    );
+    let refused = refused_for(label);
+    assert_eq!(
+        refused,
+        vec![format!(
+            "{:?}",
+            crate::observe::BindRefusal::Need {
+                need: 0,
+                reason: "target_unresolved"
+            }
+        )],
+        "one record for the one refusal"
+    );
+}
+
+/// RED: a need refused for anything else is recorded in the table's own word: a trust anchor the
+/// settings DO write that is no anchor (a junk PEM).
+#[test]
+fn a_need_refused_by_the_table_is_audited_in_its_word() {
+    let label = "bind-audit-trust-refused";
+    let table = Arc::new(Recording::default());
+    let p = bound_labelled(Box::leak(Box::new(TRUSTING)), &table, label);
+    assert_eq!(open_with(&p, br#"{"ca":"junk"}"#), Outcome::Failed);
+    assert_eq!(
+        refused_for(label),
+        vec![format!(
+            "{:?}",
+            crate::observe::BindRefusal::Need {
+                need: 0,
+                reason: "refused"
+            }
+        )]
+    );
+}
+
+/// RED (secret-vault without `ca_cert_pem`): a need whose `trust_from` names a settings path the
+/// operator did not write is refused by the table (fail-closed, no connection on it) but is NO
+/// audited refusal, on `open` or on any `refresh`: a correct config that names no CA is not a
+/// refused need in the operator's audit log. A junk anchor written later is audited. RED before:
+/// every `open` and `refresh` of the healthy config recorded a `BindRefusal::Need`.
+#[test]
+fn an_unwritten_settings_trust_is_refused_but_not_audited() {
+    let label = "bind-audit-trust-unwritten";
+    let table = Arc::new(Recording::default());
+    let p = bound_labelled(Box::leak(Box::new(TRUSTING)), &table, label);
+    assert_eq!(open_with(&p, br#"{"other":"PEM-C"}"#), Outcome::Ready);
+    assert_eq!(refresh_with(&p, br#"{"other":"PEM-D"}"#), Outcome::Ready);
+    assert!(
+        refused_for(label).is_empty(),
+        "an unwritten optional anchor is no audited refusal: {:?}",
+        refused_for(label)
+    );
+    // Still declared without a trust, for the table to refuse (fail-closed).
+    let trusts: Vec<Option<String>> = table
+        .declared
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(owner, need, ..)| (*owner, *need) == (p.instance(), NeedId(0)))
+        .map(|(.., trust)| trust.clone())
+        .collect();
+    assert_eq!(trusts, vec![None, None]);
+    // The table refuses and audits the need. Refresh still returns the existing plugin's
+    // outcome; it does not become a new OPEN or make that refused need available.
+    assert_eq!(refresh_with(&p, br#"{"ca":"junk"}"#), Outcome::Ready);
+    assert_eq!(
+        refused_for(label),
+        vec![format!(
+            "{:?}",
+            crate::observe::BindRefusal::Need {
+                need: 0,
+                reason: "refused"
+            }
+        )]
+    );
+}
+
+/// RED: an `open` that answers with a diagnostic its Statement declares, at warn, is handed to the
+/// host's audit once, by that declared id. A log line at warn, a declared id at info and an id the
+/// Statement does not declare are not.
+#[test]
+fn a_declared_open_warning_is_audited_once() {
+    let label = "bind-audit-open-flagged";
+    let table = Arc::new(Recording::default());
+    let p = bound_labelled(&[], &table, label);
+    assert_eq!(open_with(&p, plug::FLAG_OPEN), Outcome::Ready);
+    assert_eq!(
+        refused_for(label),
+        vec![format!(
+            "{:?}",
+            crate::observe::BindRefusal::Open { code: "m1.note" }
+        )]
+    );
+}
+
+/// `tick` with `mode` as its extensions, ticket-less.
+fn tick_with(p: &Plugin<TestKind>, mode: &'static [u8]) -> Outcome {
+    let mut head = in_head();
+    head.extensions = Blob {
+        ptr: mode.as_ptr(),
+        len: mode.len(),
+        fmt: busbar_contract::abi::mechanism::call::BLOB_OCTETS,
+        flags: 0,
+    };
+    let mut f = Frame::new(
+        busbar_contract::abi::mechanism::lifecycle::TickIn {
+            head,
+            now_ns: crate::dispatch::now_ns(),
+        },
+        busbar_contract::abi::mechanism::lifecycle::TickOut {
+            head: out_head(),
+            next_tick_ns: 0,
+        },
+    );
+    p.call(slot::TICK, &mut f).outcome
+}
+
+/// RED (security item 3, owner rule: every refusal audited): an op other than `open` or `refresh`
+/// that answers with a diagnostic its Statement declares, at ERROR, is handed to the host's audit,
+/// by that declared id, as an op's refusal. A declared id at warn (a retrying op's warning), a log
+/// line at error and an id the Statement does not declare are not; an op's ordinary envelope (its
+/// declared id at warn) hands the audit nothing.
+#[test]
+fn a_declared_error_an_op_raises_is_audited() {
+    let label = "op-audit-flagged";
+    let table = Arc::new(Recording::default());
+    let p = bound_labelled(&[], &table, label);
+    assert_eq!(open_with(&p, br"{}"), Outcome::Ready);
+    assert_eq!(tick_with(&p, b"answer:1"), Outcome::Ready);
+    assert!(
+        refused_for(label).is_empty(),
+        "a declared warning at an op is a log, not a record"
+    );
+    assert_eq!(tick_with(&p, plug::FLAG_OP), Outcome::Ready);
+    assert_eq!(
+        refused_for(label),
+        vec![format!(
+            "{:?}",
+            crate::observe::BindRefusal::Op { code: "m1.note" }
+        )]
+    );
+}
+
+/// An `open` with nothing to flag hands the host's audit nothing.
+#[test]
+fn a_quiet_open_is_not_audited() {
+    let label = "bind-audit-open-quiet";
+    let table = Arc::new(Recording::default());
+    let p = bound_labelled(&[], &table, label);
+    assert_eq!(open_with(&p, br"{}"), Outcome::Ready);
+    assert!(refused_for(label).is_empty());
 }

@@ -1,111 +1,134 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! **THE `adjust` VERB'S EFFECT** (item 404, OWNER RULING Q9): a root correction to a recorded
-//! unit's COUNTS, never to a money figure.
+//! **THE `adjust` VERB'S EFFECT** (MONEY-DESIGN §4, "Amendments become counts"): a root correction
+//! to a key's COUNTS, as a SIGNED DELTA on the one ledger — the usage rows every money view prices.
 //!
-//! The kernel half ([`busbar_kernel::audit::amend::correct_counts`]) seals the correction on the
-//! node amendment journal and refuses a count below zero, a blank reason and any scope below
-//! `full`. This half is the composition root's: it decodes the body, reads what the book RECORDED
-//! for the entry the correction names ([`recorded_in`]) — the lane, the card epoch (#79) and the
-//! counts, never from the body, so a correction cannot misstate what it corrects — and hands both
-//! to the kernel half.
+//! There is no amendment journal and no read-time correction any more: two nodes reading the same
+//! counts report the same money (MONEY-REVIEW review 5, B9). The correction:
 //!
-//! The body NAMES THE POOL the corrected unit was dispatched through (owner ruling Q64/Q67), so a
-//! pool-scoped group budget takes the correction too. It is required and must name a pool this node
-//! has configured; a missing or unknown pool is a `400` that says which, and seals nothing.
+//! - names the KEY, the LANE (model) the counts were earned on, the card ENTRY they were priced
+//!   with (its history position, as `GET /api/v1/admin/usage` names it in `rate_card_version`),
+//!   and the unit's CARD EPOCH (`card_epoch_ms`, its arrival instant);
+//! - names the POOL the unit was dispatched through (owner ruling Q64/Q67), so it lands on every
+//!   bucket an accrual of the unit landed on: the key's own and each group bucket that pool
+//!   participates in;
+//! - LANDS WHERE ITS UNIT WAS LEDGERED (Q128 arch u32 #18): in each bucket's window holding the
+//!   epoch, in the segment of the card entry in force then, on the metering day holding it — never
+//!   the window, card or day current when the correction is made. Money is the counts x the card in
+//!   effect at the ledgered unit's time;
+//! - is applied to the counts in RAM at once, all or nothing, and reaches the store as a signed
+//!   `add_usage` delta through today's write-behind path (the poster replaces it, PR-B2);
+//! - FAILS CLOSED: it is REFUSED, with the reason, when no card entry covers its epoch, when the
+//!   entry it names is not the one in force then, when its epoch's window holds none of the counts
+//!   it moves down, or when it would take any count of its segment below zero: nothing is applied.
 //!
-//! Money stays a read-time view (#71): what a recorded unit costs is the one function
-//! (`cost::price_exact`) over the counts it stands at NOW
-//! ([`busbar_kernel::audit::amend::counts_now`]) at its own card epoch. Nothing here prices.
+//! The admin unit's own audit record is the trail: who asked, and that it applied or was refused.
+
+use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use super::AdminAnswer;
-use crate::root::durability::{ChainAt, Posting, PostingKind, RecordEra};
-use busbar_contract::count::Count;
 use busbar_core_admin::GovernanceError;
-use busbar_kernel::audit::amend::{
-    correct_counts, AmendBody, ClassCounts, CorrectionError, CountCorrection,
-};
+use busbar_kernel::governance::AdjustRefused;
 
-/// What the book recorded for one unit: whose it was, its lane, its card epoch (#79), its billable
-/// request count and its counts per class. Read off the journal record the correction names.
+/// One correction, as the verb's body states it.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RecordedCounts {
-    /// Whose unit it was — the principal the posting was written for.
-    pub principal: String,
-    /// The serving lane, the key a card entry is written against.
+pub struct Correction {
+    /// The key whose counts are corrected.
+    pub key: String,
+    /// The lane (model) the counts were earned on.
     pub lane: String,
-    /// THE CARD EPOCH: the unit's arrival instant in milliseconds, whose card its counts price at.
+    /// The card entry the counts were priced with, by its history position.
+    pub entry: u64,
+    /// THE CARD EPOCH: the corrected unit's arrival instant in milliseconds. The correction lands
+    /// in the window, card entry and metering day holding it.
     pub card_epoch_ms: u64,
-    /// How many billable requests the unit is. A count correction never moves it.
-    pub fee_count: u64,
-    /// The counts per class, as recorded.
-    pub classes: ClassCounts,
+    /// The pool the unit was dispatched through.
+    pub pool: String,
+    /// The signed delta per class.
+    pub delta: BTreeMap<String, i64>,
 }
 
-/// The counts the book recorded for the entry whose journal digest is `amends` (64 hex
-/// characters, the record's chain hash), or `None` when the chain holds no such entry or the entry
-/// carries no counts to correct: a hold, a claim, an overdraft carry, an audit record, or a
-/// figures-era posting written before the chain carried counts.
-///
-/// Read-only: a replay of the node's own journal as of the hold `chain` was taken under, read
-/// without the book's lock ([`crate::root::durability::Durability::chain_at`]), nothing written.
+/// Why the ledger would not take a correction.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Refused {
+    /// The history holds no entry at that position.
+    UnknownEntry,
+    /// The ledger refused it; nothing was applied.
+    Ledger(AdjustRefused),
+}
+
+/// WHERE A CORRECTION LANDS: the node's live governance state. `Err` is a store that could not be
+/// read, in its own words, for the node's log only.
+pub type UsageAdjuster =
+    Arc<dyn Fn(&Correction) -> Result<Result<(), Refused>, String> + Send + Sync>;
+
+/// The adjuster of a node no root bound a ledger to: every correction is a store failure.
 #[must_use]
-pub fn recorded_in(chain: ChainAt, amends: &str) -> Option<RecordedCounts> {
-    let Ok(Ok(records)) = chain.read() else {
-        return None;
-    };
-    let record = records
-        .iter()
-        .find(|record| hex::encode(record.hash).eq_ignore_ascii_case(amends))?;
-    let posting = Posting::from_record(record)?;
-    if posting.kind == PostingKind::Carry || posting.era != RecordEra::Counts {
-        return None;
-    }
-    let counts = posting.counts?;
-    let classes = counts
-        .classes
-        .iter()
-        .map(|(class, n)| Some((class.clone(), Count::from_integer(i128::from(*n)).ok()?)))
-        .collect::<Option<ClassCounts>>()?;
-    Some(RecordedCounts {
-        principal: posting.principal,
-        lane: counts.lane,
-        card_epoch_ms: posting.arrived_ms,
-        fee_count: counts.fee_count,
-        classes,
+pub fn no_ledger() -> UsageAdjuster {
+    Arc::new(|_| Err("no ledger is bound on this node".to_string()))
+}
+
+/// The adjuster over `app`'s live governance state and dated rate-card history: the entry's
+/// position resolves to the era its counts were dated with (its `effective_from`), and
+/// [`busbar_kernel::governance::GovState::adjust_usage`] applies the delta where the unit was
+/// ledgered: at its card epoch, never at the instant the correction is made.
+#[must_use]
+pub fn live_adjuster(app: Arc<busbar_kernel::state::AppHandle>) -> UsageAdjuster {
+    Arc::new(move |c: &Correction| {
+        let snapshot = app.load();
+        let Some(gov) = snapshot.governance.clone() else {
+            return Err("this node has no governance store".to_string());
+        };
+        let history = busbar_kernel::rate_apply::dated_history();
+        let era = match history.as_deref() {
+            Some(history) => match history.entries().iter().find(|e| e.seq().get() == c.entry) {
+                Some(entry) => entry.effective_from(),
+                None => return Ok(Err(Refused::UnknownEntry)),
+            },
+            // No dated history: every count is undated, era zero, priced by the one card.
+            None if c.entry == busbar_kernel::cost::HistorySeq::OPENING.get() => 0,
+            None => return Ok(Err(Refused::UnknownEntry)),
+        };
+        let adjustment = busbar_kernel::governance::Adjustment {
+            key_id: &c.key,
+            pool: &c.pool,
+            model: &c.lane,
+            entry_era: era,
+            card_epoch_ms: c.card_epoch_ms,
+            delta: &c.delta,
+            now: busbar_kernel::store::now(),
+        };
+        crate::root::durability::off_runtime(|| gov.adjust_usage(&snapshot.cost, &adjustment))
+            .map(|applied| applied.map_err(Refused::Ledger))
+            .map_err(|e| e.to_string())
     })
 }
 
-/// The effect half of `adjust`: decode a COUNT correction and hand it to the kernel half, which
-/// seals it on the node amendment journal.
+/// The effect half of `adjust`: decode a COUNT correction and apply it to the one ledger.
 ///
-/// The body is `{ "amends": "<journal digest>", "now": { "<class>": "<decimal count>", … },
-/// "reason": "…", "pool": "<pool name>" }`. Counts are decimal TEXT (#81) and never a money figure (owner ruling Q9). The
-/// principal, lane, card epoch and what the counts WERE come from the book (`recorded`), never the
-/// body. `scope` is the scope the caller was admitted under; the verbs unit admits `adjust` at
-/// `full` only, and the kernel half checks it again.
+/// The body is `{ "key": "<key id>", "lane": "<model>", "entry": <history position>,
+/// "card_epoch_ms": <unix ms>, "pool": "<pool name>", "delta": { "<class>": <signed whole count>,
+/// … }, "reason": "…" }`. Counts are whole numbers and never a money figure (owner ruling Q9).
+/// `scope` is the scope the caller was admitted under; the verbs unit admits `adjust` at `full`
+/// only, and it is checked again here.
 ///
-/// Refusals are client-safe: a malformed body, a count that is not an exact decimal, a count below
-/// zero, a blank reason or a scope below `full` is `Validation` (400); an entry the book does not
-/// hold is `NotFound`. A missing `pool`, or one `pool_known` does not know, answers `400
-/// invalid_request` whose message names the fault (Q64/Q67). The answer names the sealed
-/// amendment's position and digest, the pool, and the counts it now stands at.
-///
-/// A COUNT CORRECTION IS A DURABLE VERB (ARCHITECT 2026-10-07 H3 ruling (d)): it moves money (#71).
-/// With `journal` bound — the node's journal, which the node amendment journal's sink writes the
-/// correction onto as it is sealed (`durability::bind_amendments`) — nothing is sealed while the
-/// store is refusing the journal's records, and the answer waits for the store to keep the
-/// correction: either refusal is a `503` with the reason. With none bound the node amendment
-/// journal is memory-only and there is nothing to wait for.
+/// Refusals are client-safe: a malformed body, a blank reason, a scope below `full`, an entry the
+/// history does not hold, a card epoch no entry covers or at which the named entry is not in force,
+/// a correction its epoch's window holds no counts for, or a delta that would take a count below
+/// zero is `400 invalid_request` naming the fault; a key that does not exist is `NotFound`. A
+/// missing `pool`, or one `pool_known` does not know, is `400` naming it (Q64/Q67). Nothing is
+/// applied on any refusal.
 pub(crate) fn adjust_effect(
     body: &[u8],
     scope: busbar_contract::authz::Scope,
-    authorised_by: &str,
     pool_known: &dyn Fn(&str) -> bool,
-    journal: Option<&super::AmendmentJournal>,
-    recorded: impl FnOnce(&str) -> Option<RecordedCounts>,
+    adjuster: &UsageAdjuster,
 ) -> Result<AdminAnswer, GovernanceError> {
+    if scope != busbar_contract::authz::Scope::Full {
+        return Err(GovernanceError::Validation);
+    }
     let doc: serde_json::Value =
         serde_json::from_slice(body).map_err(|_| GovernanceError::Validation)?;
     let obj = doc.as_object().ok_or(GovernanceError::Validation)?;
@@ -115,8 +138,17 @@ pub(crate) fn adjust_effect(
             .filter(|s| !s.trim().is_empty())
             .ok_or(GovernanceError::Validation)
     };
-    let amends = text("amends")?;
-    let reason = text("reason")?;
+    let key = text("key")?;
+    let lane = text("lane")?;
+    let _reason = text("reason")?;
+    let entry = obj
+        .get("entry")
+        .and_then(serde_json::Value::as_u64)
+        .ok_or(GovernanceError::Validation)?;
+    let card_epoch_ms = obj
+        .get("card_epoch_ms")
+        .and_then(serde_json::Value::as_u64)
+        .ok_or(GovernanceError::Validation)?;
     let Ok(pool) = text("pool") else {
         return Ok(super::error_answer_with_message(
             400,
@@ -131,72 +163,55 @@ pub(crate) fn adjust_effect(
             &format!("`pool` names `{pool}`, which is not a configured pool"),
         ));
     }
-    let mut now = ClassCounts::new();
-    for (class, count) in obj
-        .get("now")
+    let mut delta = BTreeMap::new();
+    for (class, n) in obj
+        .get("delta")
         .and_then(serde_json::Value::as_object)
         .filter(|m| !m.is_empty())
         .ok_or(GovernanceError::Validation)?
     {
-        let count = count.as_str().ok_or(GovernanceError::Validation)?;
-        let count = Count::parse(count).map_err(|_| GovernanceError::Validation)?;
-        now.insert(class.clone(), count);
+        let n = n.as_i64().ok_or(GovernanceError::Validation)?;
+        delta.insert(class.clone(), n);
     }
-    let was = recorded(amends).ok_or(GovernanceError::NotFound)?;
-    // WHERE THE STORE KEEPS THE JOURNAL, nothing is sealed while it is refusing the journal's
-    // records: the correction is refused 503 with the reason.
-    if let Some(journal) = journal {
-        if let Err(why) = journal.admit() {
-            return Ok(super::bound::journal_unavailable(&why));
-        }
-    }
-    let sealed = correct_counts(
-        scope,
-        &was.classes,
-        CountCorrection {
-            amends,
-            principal: Some(&was.principal),
-            lane: &was.lane,
-            card_epoch_ms: was.card_epoch_ms,
-            now,
-            authorised_by,
-            reason,
-            pool: Some(pool),
-        },
-    )
-    .map_err(|e| match e {
-        CorrectionError::NotRoot | CorrectionError::Refused(_) => GovernanceError::Validation,
-    })?;
-    // AND THE ANSWER WAITS FOR THE STORE. The sink put the correction on the journal as it was
-    // sealed, so it is at or below the journal's newest record: once that is kept, so is the
-    // correction. Until then it is in force on this node, as the chain holds it, and not answered
-    // as done.
-    if let Some(journal) = journal {
-        if let Err(why) = journal.acked(journal.sealed_through()) {
-            return Ok(super::bound::journal_unavailable(&format!(
-                "the correction is sealed as amendment {} and not yet kept by the store: {why}; \
-                 do not re-submit",
-                sealed.seq
-            )));
-        }
-    }
-    let AmendBody::Adjust(adj) = &sealed.body else {
-        return Err(GovernanceError::Store);
+    let correction = Correction {
+        key: key.to_string(),
+        lane: lane.to_string(),
+        entry,
+        card_epoch_ms,
+        pool: pool.to_string(),
+        delta,
     };
-    let counts: serde_json::Map<String, serde_json::Value> = adj
-        .now
-        .iter()
-        .map(|(c, n)| (c.clone(), serde_json::Value::String(n.to_decimal_string())))
-        .collect();
-    serde_json::to_vec(&serde_json::json!({
-        "seq": sealed.seq,
-        "hash": sealed.hash,
-        "amends": adj.amends_hash,
-        "lane": adj.lane,
-        "card_epoch_ms": adj.card_epoch_ms,
-        "pool": adj.pool,
-        "now": counts,
-    }))
-    .map(super::json_answer)
-    .map_err(|_| GovernanceError::Store)
+    match adjuster(&correction) {
+        Err(why) => {
+            tracing::error!(why = %why, "an adjustment could not reach the ledger");
+            Err(GovernanceError::Store)
+        }
+        Ok(Err(Refused::Ledger(AdjustRefused::UnknownKey))) => Err(GovernanceError::NotFound),
+        Ok(Err(Refused::UnknownEntry)) => Ok(refused(&format!(
+            "`entry` names {entry}, which is not a rate-card history position"
+        ))),
+        Ok(Err(Refused::Ledger(why))) => Ok(refused(&why.to_string())),
+        Ok(Ok(())) => serde_json::to_vec(&serde_json::json!({
+            "applied": true,
+            "key": correction.key,
+            "lane": correction.lane,
+            "entry": correction.entry,
+            "card_epoch_ms": correction.card_epoch_ms,
+            "pool": correction.pool,
+            "delta": correction.delta,
+        }))
+        .map(super::json_answer)
+        .map_err(|_| GovernanceError::Store),
+    }
+}
+
+/// The `400 invalid_request` a refused correction gets, in the admin envelope, with a message that
+/// says what to fix.
+fn refused(message: &str) -> AdminAnswer {
+    AdminAnswer {
+        status: 400,
+        headers: vec![("content-type".to_string(), "application/json".to_string())],
+        body: busbar_core_admin::admin_codec::refusal::envelope_of("invalid_request", message)
+            .into_bytes(),
+    }
 }

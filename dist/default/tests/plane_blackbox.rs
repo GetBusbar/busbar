@@ -275,7 +275,7 @@ impl Step {
     }
 }
 
-/// One line-session script item, checked: `send`, `recv`, `repeat` or `eof`.
+/// One line-session script item, checked: `send`, `recv`, `repeat`, `eof` or `signal`.
 fn script_item(value: &Value, what: &str) -> Result<(), String> {
     let map = value
         .as_object()
@@ -311,6 +311,13 @@ fn script_item(value: &Value, what: &str) -> Result<(), String> {
             Ok(())
         }
         "eof" => object(body, &what, &["exit", "within_secs"]).map(|_| ()),
+        "signal" => {
+            object(body, &what, &["name", "exit", "within_secs"])?;
+            match body.get("name").and_then(Value::as_str) {
+                Some("TERM" | "INT") => Ok(()),
+                other => Err(format!("{what}.name: `TERM` or `INT`, not {other:?}")),
+            }
+        }
         other => Err(format!("{what}: `{other}` is no script item")),
     }
 }
@@ -1062,6 +1069,24 @@ fn run_script(
                 let code = common::lines::try_wait_bounded(&mut child.child, secs(body, 60))
                     .map_err(|e| format!("{what}: {e}"))?;
                 exit_is(body, code).map_err(|e| format!("{what}: {e}"))?;
+            }
+            // A shutdown signal with stdin still open: only the signal can end the session.
+            "signal" => {
+                let name = body.get("name").and_then(Value::as_str).unwrap_or("TERM");
+                let sent = Command::new("kill")
+                    .arg(format!("-{name}"))
+                    .arg(child.child.id().to_string())
+                    .status()
+                    .map_err(|e| format!("{what}: run kill: {e}"))?;
+                if !sent.success() {
+                    return Err(format!("{what}: SIG{name} was not delivered"));
+                }
+                let code = common::lines::try_wait_bounded(&mut child.child, secs(body, 60))
+                    .map_err(|e| format!("{what}: {e}"))?;
+                exit_is(body, code).map_err(|e| format!("{what}: {e}"))?;
+                if child.stdin.is_none() {
+                    return Err(format!("{what}: stdin was closed before the signal"));
+                }
             }
             _ => unreachable!("checked when the case was read"),
         }

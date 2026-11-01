@@ -49,9 +49,8 @@ pub use registry::{
 /// itself is plane-agnostic and lives with the rest of the transport-facing vocabulary, because it
 /// is read by every mount and by no plugin author who is not writing one.
 pub use surface::{
-    binding_at, check_surface, match_target, resolve_document, resolve_service, resolve_target,
-    Answering, Bar, BindingDecl, Capture, Dispatch, Operation, SurfaceError, WireSurface,
-    MAX_CAPTURES,
+    match_target, resolve_target, Answering, Bar, BindingDecl, Capture, Dispatch, Operation,
+    WireSurface, MAX_CAPTURES,
 };
 
 /// Where a dial lands, as the transport family that dials it spells it — named at the transport

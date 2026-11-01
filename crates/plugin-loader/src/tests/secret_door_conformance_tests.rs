@@ -5,8 +5,8 @@
 //! secret kind's REAL plugin (the env source, from its own repo, reached by KIND through
 //! `[package.metadata.busbar.both-ways]`) is loaded LINKED (the logic crate's door, compiled into this build) and
 //! DROPPED IN (its `cdylib`, built from the same crate and `dlopen`ed) and driven over one script of
-//! the kind's table: `validate`, `open`, a `resolve` that HITS (READY, its material under a lease,
-//! released), a `resolve` that MISSES (FAILED, NOT_FOUND), a `refresh` to the next generation, the
+//! the kind's table: `validate`, `open`, a `resolve` that HITS (READY, its material in the host's
+//! buffer under no lease), a `release` of a lease never granted (REFUSED), a `resolve` that MISSES (FAILED, NOT_FOUND), a `refresh` to the next generation, the
 //! same hit again, `retire` of the old generation and `close`. The two transcripts must be equal,
 //! line for line, and each door must have made EXACTLY [`CROSSINGS`] crossings: not "above zero", the
 //! count the script's calls make, with the call after `close` making none.
@@ -81,46 +81,45 @@ fn retire(p: &Plugin<Secret>, generation: u64) -> String {
     line("retire", &p.call(life::RETIRE, &mut r))
 }
 
-/// `resolve` over `settings`: the host's line with its `error_kind` and the material it leased
-/// (copied before the lease is released), and the lease.
-fn resolve(p: &Plugin<Secret>, settings: &[u8]) -> (String, u64) {
+/// `resolve` over `settings` into a zeroed host buffer (the credential chip, row 6: host-owned
+/// secret bytes): the host's line with its `error_kind` and the material written into the buffer
+/// (`check_resolve` held a READY answer to it), the buffer wiped after.
+fn resolve(p: &Plugin<Secret>, settings: &[u8]) -> String {
+    let mut buf = vec![0_u8; busbar_contract::abi::secret::FIRST_SECRET_CAP];
     let mut r: Frame<ResolveIn, ResolveOut> = Frame::new(input(), output());
     r.input.settings = json(settings);
+    r.input.secret_buf = buf.as_mut_ptr();
+    r.input.secret_cap = buf.len();
     let c = p.call(slot::RESOLVE, &mut r);
     let material = if c.outcome == Outcome::Ready && !r.out.secret.ptr.is_null() {
-        // SAFETY: a READY resolve's blob is the plugin's, valid until `release` of its lease,
-        // which has not run; `check_resolve` judged its pointer/length pairing.
-        let bytes = unsafe { std::slice::from_raw_parts(r.out.secret.ptr, r.out.secret.len) };
-        String::from_utf8_lossy(bytes).into_owned()
+        assert_eq!(r.out.secret.ptr, buf.as_ptr(), "in the host's buffer");
+        String::from_utf8_lossy(&buf[..r.out.secret.len]).into_owned()
     } else {
         String::new()
     };
-    (
-        format!(
-            "{} error_kind={} material={material:?}",
-            line("resolve", &c),
-            r.out.error_kind
-        ),
-        c.lease,
+    buf.fill(0);
+    format!(
+        "{} error_kind={} material={material:?}",
+        line("resolve", &c),
+        r.out.error_kind
     )
 }
 
-/// THE SCRIPT, one line per answer, ending with the resolve after `close` (no crossing).
+/// THE SCRIPT, one line per answer, ending with the resolve after `close` (no crossing). No
+/// resolve grants a lease, so each `release` is of one never granted.
 fn script(p: &Plugin<Secret>) -> Vec<String> {
     let hit = format!(r#"{{"key": "{HIT}"}}"#);
     let miss = format!(r#"{{"key": "{MISS}"}}"#);
     let mut t = vec![validate(p, b"{}"), line("open", &open(p, b"{}"))];
-    let (first, lease) = resolve(p, hit.as_bytes());
-    t.push(first);
-    t.push(line("release", &release(p, lease)));
-    t.push(resolve(p, miss.as_bytes()).0);
+    t.push(resolve(p, hit.as_bytes()));
+    t.push(line("release", &release(p, 1)));
+    t.push(resolve(p, miss.as_bytes()));
     t.push(refresh(p, 2));
-    let (again, lease) = resolve(p, hit.as_bytes());
-    t.push(again);
-    t.push(line("release", &release(p, lease)));
+    t.push(resolve(p, hit.as_bytes()));
+    t.push(line("release", &release(p, 1)));
     t.push(retire(p, 1));
     t.push(line("close", &close(p)));
-    t.push(resolve(p, hit.as_bytes()).0);
+    t.push(resolve(p, hit.as_bytes()));
     t
 }
 
@@ -153,11 +152,11 @@ fn a_linked_and_a_dropped_in_secret_plugin_resolve_identically() {
     // The script reached every answer it names: equal empty transcripts would prove nothing.
     assert!(a[1].contains("Ready"), "{}", a[1]);
     assert!(
-        a[2].contains("Ready") && a[2].contains(MATERIAL) && !a[2].contains("lease=0"),
-        "a hit is READY with its material under a lease: {}",
+        a[2].contains("Ready") && a[2].contains(MATERIAL) && a[2].contains("lease=0"),
+        "a hit is READY with its material in the host's buffer, under no lease: {}",
         a[2]
     );
-    assert!(a[3].contains("Ready"), "{}", a[3]);
+    assert!(a[3].contains("Refused"), "no lease to release: {}", a[3]);
     assert!(
         a[4].contains("Failed") && a[4].contains(&format!("error_kind={ERROR_KIND_NOT_FOUND}")),
         "a miss is FAILED, NOT_FOUND: {}",
@@ -169,6 +168,7 @@ fn a_linked_and_a_dropped_in_secret_plugin_resolve_identically() {
         a[5]
     );
     assert!(a[6].contains(MATERIAL), "a hit after the refresh: {}", a[6]);
+    assert!(a[7].contains("Refused"), "no lease to release: {}", a[7]);
     assert!(
         a[8].contains("Ready") && a[9].contains("Ready"),
         "retire, close"
@@ -183,7 +183,7 @@ fn a_secret_plugin_that_breaks_resolve_is_refused_through_both_doors() {
     let broken = secret_door_plugin::broken::door;
     let run = |p: &Plugin<Secret>| {
         let opened = line("open", &open(p, b"{}"));
-        let (resolved, _) = resolve(p, b"{}");
+        let resolved = resolve(p, b"{}");
         vec![opened, resolved]
     };
     let linked = run(&both::linked::<Secret>(broken).plugin);

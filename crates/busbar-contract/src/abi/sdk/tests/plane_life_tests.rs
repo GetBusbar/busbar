@@ -68,6 +68,22 @@ impl PlaneLife for Echo {
         })
     }
 
+    /// THE APPLIED OWNED SECTIONS (`EXT_OWNED`): a refresh whose document writes an owned section
+    /// the echo plane cannot read is refused, as `open` refuses it; otherwise the settings path.
+    fn refresh_in(&self, input: &Lent<'_, RefreshIn>) -> Result<Published<Vec<u8>>, Refusal> {
+        let owned = crate::abi::mechanism::extensions::get(
+            input.head().extensions().bytes(),
+            crate::abi::plane::EXT_OWNED,
+        )
+        .unwrap_or_default();
+        if owned == b"{\"agent_push\":\"malformed\"}" {
+            return Err(Refusal::refused(
+                "agent_push: not a section this plane reads",
+            ));
+        }
+        self.refresh(input.settings().bytes(), input.generation())
+    }
+
     fn published(&self, generation: u64) {
         PUBLISHED.fetch_add(generation, Ordering::SeqCst);
     }
@@ -93,6 +109,71 @@ mod plugin {
         statement: crate::abi::sdk::door::statement("plane-life-echo", "0", 1),
         lifecycle: plane_life(Echo),
     }
+}
+
+/// The echo plane's own migration: it renames `old` to `new`.
+struct EchoMigration;
+
+impl crate::abi::sdk::migrate::Migrate for EchoMigration {
+    fn migrate(mut settings: serde_json::Value, _: &str) -> crate::abi::sdk::migrate::Migrated {
+        if let Some(v) = settings.as_object_mut().and_then(|m| m.remove("old")) {
+            settings["new"] = v;
+        }
+        crate::abi::sdk::migrate::Migrated::unchanged(settings)
+    }
+}
+
+/// The same plane, its door stating `migrate:` after `lifecycle: plane_life(P)`.
+mod migrating {
+    use super::*;
+    crate::plugin_door! {
+        ops: crate::abi::plane::Ops,
+        statement: crate::abi::sdk::door::statement("plane-life-echo", "0", 1),
+        lifecycle: plane_life(Echo),
+        migrate: crate::abi::sdk::migrate::Migrator<super::EchoMigration>,
+    }
+}
+
+/// `lifecycle: plane_life(P)` takes `migrate:` as the other lifecycle forms do: the door states it
+/// on its tail, and the host's call answers the plane's own migration. A door naming none states
+/// none.
+#[test]
+fn a_plane_life_door_states_migrate_when_it_names_one() {
+    use crate::abi::mechanism::call::{BLOB_JSON, BLOB_OCTETS};
+    use crate::abi::sdk::migrate::read_answer;
+    assert!(plugin::door().migrate().is_none(), "no migrate: none");
+    let op = migrating::door()
+        .migrate()
+        .expect("the door states migrate");
+    let settings = br#"{"old": 1}"#;
+    let from = b"1.5.5";
+    let mut buf = vec![0u8; 4096];
+    let mut input = ValidateIn::default();
+    input.head.size = size_of::<ValidateIn>() as u32;
+    input.head.op = slot::MIGRATE;
+    input.head.extensions = Blob {
+        ptr: from.as_ptr(),
+        len: from.len(),
+        fmt: BLOB_OCTETS,
+        flags: 0,
+    };
+    input.settings = Blob {
+        ptr: settings.as_ptr(),
+        len: settings.len(),
+        fmt: BLOB_JSON,
+        flags: 0,
+    };
+    input.err_buf = buf.as_mut_ptr();
+    input.err_cap = buf.len();
+    let mut out = out_head::<OutHead>();
+    let raw = op(
+        ptr::null_mut(),
+        ptr::from_ref(&input).cast(),
+        ptr::from_mut(&mut out).cast(),
+    );
+    assert_eq!(raw.outcome(), Outcome::Ready);
+    let m = read_answer(raw.outcome(), &buf[..out.error.len]).expect("a migration");
+    assert_eq!(m.settings, serde_json::json!({"new": 1}));
 }
 
 fn table() -> &'static Ops {
@@ -178,8 +259,19 @@ fn open(settings: &[u8]) -> (Outcome, *mut c_void, u64, String) {
 }
 
 fn refresh(inst: *mut c_void, settings: &[u8], generation: u64) -> (Outcome, u64, String) {
+    refresh_with(inst, settings, generation, b"")
+}
+
+/// [`refresh`] with `extensions` lent on the head, as the host lends the applied owned sections.
+fn refresh_with(
+    inst: *mut c_void,
+    settings: &[u8],
+    generation: u64,
+    extensions: &[u8],
+) -> (Outcome, u64, String) {
     let mut input: RefreshIn = zeroed();
     input.head = in_head::<RefreshIn>(slot::REFRESH);
+    input.head.extensions = blob(extensions);
     input.settings = blob(settings);
     input.generation = generation;
     let mut out: PlaneRefreshOut = zeroed();
@@ -290,4 +382,138 @@ fn validate_tick_drive_cancel_and_release_answer_the_defaults_and_the_planes_can
         Outcome::Ready
     );
     assert_eq!(close(inst), Outcome::Ready);
+}
+
+/// RED (a2a's PlaneLife adoption, ruled 2026-10-29): a PlaneLife plane sees the applied owned
+/// sections (`EXT_OWNED`) at `refresh`, so a malformed `agent_push:` an apply carries is still
+/// refused there, as `open` refuses it; an apply that writes none takes the settings path. RED
+/// before: `refresh` got the settings and the generation only, so the apply was accepted.
+#[test]
+fn a_plane_life_plane_sees_the_owned_sections_at_refresh_and_a_malformed_one_is_refused() {
+    let (_, inst, _, _) = open(b"{}");
+    let malformed = crate::abi::mechanism::extensions::encode(&[(
+        crate::abi::plane::EXT_OWNED,
+        br#"{"agent_push":"malformed"}"#,
+    )]);
+    let (o, published, why) = refresh_with(inst, b"{}", 2, &malformed);
+    assert_eq!(
+        (o, published),
+        (Outcome::Refused, 0),
+        "a malformed owned section is refused"
+    );
+    assert_eq!(why, "agent_push: not a section this plane reads");
+    let readable = crate::abi::mechanism::extensions::encode(&[(
+        crate::abi::plane::EXT_OWNED,
+        br#"{"agent_push":{}}"#,
+    )]);
+    let (o, published, _) = refresh_with(inst, b"{}", 3, &readable);
+    assert_eq!(
+        (o, published),
+        (Outcome::Ready, 3),
+        "a readable one publishes"
+    );
+    let (o, published, _) = refresh(inst, b"{}", 4);
+    assert_eq!(
+        (o, published),
+        (Outcome::Ready, 4),
+        "none: the settings path"
+    );
+    assert_eq!(close(inst), Outcome::Ready);
+}
+
+// ── export_plugin!'s plane arm ──────────────────────────────────────────────────────────────────
+
+/// A kind op answering `$outcome` over `$in`/`$out`.
+macro_rules! answers {
+    ($name:ident, $in:ty, $out:ty, $outcome:expr) => {
+        struct $name;
+        impl crate::abi::sdk::door::RawSlot for $name {
+            type In = $in;
+            type Out = $out;
+            unsafe fn call(_: *mut c_void, _: &$in, _: &mut $out) -> Outcome {
+                $outcome
+            }
+        }
+    };
+}
+
+use crate::abi::plane::{
+    ArriveIn, ArriveOut, OnPieceIn, OnPieceOut, ProjectIn, ProjectOut, RefusalIn, RefusalOut,
+    ServeIn, ServeOut,
+};
+
+answers!(Arrive, ArriveIn, ArriveOut, Outcome::Ready);
+answers!(OnPiece, OnPieceIn, OnPieceOut, Outcome::Ready);
+answers!(Refuse, RefusalIn, RefusalOut, Outcome::Ready);
+answers!(Project, ProjectIn, ProjectOut, Outcome::Ready);
+answers!(Served, ServeIn, ServeOut, Outcome::Ready);
+answers!(Hydrated, GenIn, OutHead, Outcome::Failed);
+
+/// A plane naming no `serve`, `hydrate` or `start`: the arm's defaults.
+mod defaulted {
+    use super::*;
+    crate::export_plugin! {
+        plane: Echo,
+        statement: crate::abi::sdk::door::statement("plane-arm-defaults", "0", 1),
+        kind_ops: { arrive: Arrive, on_piece: OnPiece, refusal: Refuse, project: Project },
+    }
+}
+
+/// A plane naming `serve` and `hydrate`: its own, and `start`'s default.
+mod named {
+    use super::*;
+    crate::export_plugin! {
+        plane: Echo,
+        statement: crate::abi::sdk::door::statement("plane-arm-named", "0", 1),
+        kind_ops: {
+            arrive: Arrive, on_piece: OnPiece, refusal: Refuse, serve: Served,
+            hydrate: Hydrated, project: Project,
+        },
+    }
+}
+
+fn arm_table(door: crate::abi::mechanism::door::DoorFn) -> &'static Ops {
+    // SAFETY: the macro's `'static` door and its plane table.
+    unsafe { &*door().ops.cast::<Ops>() }
+}
+
+fn gen_op(op: Option<Op>, index: u32) -> Outcome {
+    let input = GenIn {
+        head: in_head::<GenIn>(index),
+        ..zeroed()
+    };
+    let mut out = out_head::<OutHead>();
+    call(op, ptr::null_mut(), &input, &mut out)
+}
+
+fn serve_op(op: Option<Op>) -> Outcome {
+    let input = ServeIn {
+        head: in_head::<ServeIn>(crate::abi::plane::slot::SERVE),
+        ..zeroed()
+    };
+    let mut out = ServeOut {
+        head: out_head::<ServeOut>(),
+        ..zeroed()
+    };
+    call(op, ptr::null_mut(), &input, &mut out)
+}
+
+#[test]
+fn the_plane_arm_defaults_hydrate_and_start_to_ready_and_serve_to_refused() {
+    use crate::abi::plane::slot::{HYDRATE, START};
+    let t = arm_table(defaulted::door);
+    assert_eq!(gen_op(t.hydrate, HYDRATE), Outcome::Ready);
+    assert_eq!(gen_op(t.start, START), Outcome::Ready);
+    assert_eq!(serve_op(t.serve), Outcome::Refused);
+    assert!(t.catalog.is_none(), "an unnamed catalog stays absent");
+    assert!(t.head.cancel.is_some(), "cancel is the plane's own");
+}
+
+#[test]
+fn the_plane_arm_keeps_the_ops_a_plane_names() {
+    use crate::abi::plane::slot::{HYDRATE, START};
+    let t = arm_table(named::door);
+    assert_eq!(gen_op(t.hydrate, HYDRATE), Outcome::Failed);
+    assert_eq!(gen_op(t.start, START), Outcome::Ready);
+    assert_eq!(serve_op(t.serve), Outcome::Ready);
 }

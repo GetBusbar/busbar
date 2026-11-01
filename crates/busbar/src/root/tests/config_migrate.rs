@@ -11,7 +11,7 @@
 use busbar_contract::abi::sdk::migrate::Migrated;
 use busbar_kernel::config::migrate::migrate_config_with;
 use busbar_kernel::config::migrate_plugins::MigrateHost;
-use busbar_plugin_loader::root_door_fixtures::migrate_stub as stub;
+use busbar_test_kit::root_door_fixtures::migrate_stub as stub;
 
 use super::{Index, IndexPlugin};
 use crate::root::loader::dispatch::{load::raw, migrate::migrate_door};
@@ -113,5 +113,28 @@ fn the_release_index_picks_the_newest_release_built_for_this_core() {
     assert!(
         Index::parse(br#"{"plugins": [], "extra": 1}"#).is_err(),
         "an index with keys this core does not know is refused"
+    );
+}
+
+/// THE CATALOG A PLANE'S MIGRATION READS is the one boot reads: the `providers.yaml` beside the
+/// configuration (the private-destinations corpus fixture's), each entry as written, a
+/// catalog-only private one included.
+#[test]
+fn the_root_hands_the_catalog_boot_reads_to_the_plane_migrations() {
+    let config = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/migration-corpus/private-destinations/config.yaml");
+    let raw = std::fs::read_to_string(&config).expect("the corpus fixture");
+    let host = super::RootHost::for_document(&raw, &config);
+    let catalog = host
+        .providers_catalog()
+        .expect("reads")
+        .expect("a catalog beside the configuration");
+    assert_eq!(
+        catalog["in-rack"]["base_url"],
+        serde_json::json!("http://192.168.40.12:8000/v1")
+    );
+    assert_eq!(
+        catalog["corp-gateway"]["token_url"],
+        serde_json::json!("http://10.9.8.7/oauth2/token")
     );
 }

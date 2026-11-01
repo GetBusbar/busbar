@@ -39,7 +39,8 @@
 //!            refusal_statuses list of { dialect u32, reason u32, status u32 },
 //!            caller_credential_refusal str,
 //!            admin_routes list of { verb str, target str, flags u32, audit_verb str },
-//!            admin_openapi blob, stream_ceiling_secs u64, metric_lanes list of str
+//!            admin_openapi blob, stream_ceiling_secs u64, metric_lanes list of str,
+//!            record_retentions list of { kind u32, rule u32 }
 //! transport  role u32, framing u32, facts u32, handshake_max_steps u32, composes_over list of str,
 //!            claim_rows list of { selector_forms str, egress_selector_forms str, facts list of str,
 //!                                 status_namespace str, session u8, session_bound u8,
@@ -361,6 +362,8 @@ unsafe fn plane_tail(o: &mut Out, t: &plane::PlaneTail) -> Result<(), RenderErro
         stream_ceiling_secs,
         metric_lanes,
         metric_lanes_len,
+        record_retentions,
+        record_retentions_len,
     } = *t;
     o.u32(flags);
     o.u32(ingress);
@@ -508,7 +511,19 @@ unsafe fn plane_tail(o: &mut Out, t: &plane::PlaneTail) -> Result<(), RenderErro
         }
         blob(o, admin_openapi, "plane.admin_openapi")?;
         o.u64(stream_ceiling_secs);
-        texts(o, metric_lanes, metric_lanes_len, "plane.metric_lanes")
+        texts(o, metric_lanes, metric_lanes_len, "plane.metric_lanes")?;
+        let l = list(
+            record_retentions,
+            record_retentions_len,
+            "plane.record_retentions",
+        )?;
+        o.len(l.len(), "plane.record_retentions")?;
+        for r in l {
+            let plane::RecordRetention { kind, rule } = *r;
+            o.u32(kind);
+            o.u32(rule);
+        }
+        Ok(())
     }
 }
 

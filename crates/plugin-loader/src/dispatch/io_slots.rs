@@ -26,10 +26,10 @@ use busbar_contract::abi::host::io::{
     check_addr_buf, check_dir, check_how, check_spawn_in, may_pend, op, AddrIn, HandleIn, IoSlots,
     ListenIn, OpenIn, ReadIn, ReadyIn, ShutIn, SpawnIn, WriteIn, SLOTS,
 };
-use busbar_contract::abi::host::service::{check_head, ServiceHead, ServiceOut};
+use busbar_contract::abi::host::service::{check_head, lent_out, ServiceHead, ServiceOut};
 use busbar_contract::abi::mechanism::call::{AbiStr, Field, Outcome, RawOutcome};
 use busbar_contract::abi::mechanism::ticket::{HostCtx, Ticket};
-use busbar_contract::io_host::{IoHost, IoRefusal, Spawn};
+use busbar_contract::io_host::{Ends, IoHost, IoRefusal, IoResult, Spawn};
 
 use super::services::{write_out, Answered};
 use super::ticket::Waking;
@@ -132,6 +132,18 @@ fn slot<I: Copy>(
     service: u32,
     body: impl FnOnce(&I, &Caller, Ticket) -> Answered,
 ) -> RawOutcome {
+    // THE CALLER'S `out`, as it states it: one below the first `ServiceOut` is REFUSED before the
+    // service runs, and nothing of it is written (an `out` grows by appending, so an older caller's
+    // smaller one is never overrun).
+    let lent = if out.is_null() {
+        0
+    } else {
+        // SAFETY: the caller's non-NULL `out`, its leading `size` readable.
+        match unsafe { lent_out(out) } {
+            Some(lent) => lent,
+            None => return RawOutcome::of(Outcome::Refused),
+        }
+    };
     let a = catch_unwind(AssertUnwindSafe(|| {
         if input.is_null() || out.is_null() {
             return Answered::fault();
@@ -153,8 +165,9 @@ fn slot<I: Copy>(
         body(&i, &c, ticket)
     }))
     .unwrap_or(Answered::fault());
-    // SAFETY: the caller's `out`, as the call shape lends it.
-    unsafe { write_out(out, &a) }
+    // SAFETY: the caller's `out`, as the call shape lends it, writable for the `lent` bytes it
+    // stated.
+    unsafe { write_out(out, &a, lent) }
 }
 
 /// A caller's string, checked: `None` for NULL with a length or bad UTF-8.
@@ -322,14 +335,31 @@ c_entry! {
             if check_addr_buf(i.addr_buf, i.addr_cap, "io.ends.addr").is_err() {
                 return Answered::bare(Outcome::Refused, SHORT_ADDR);
             }
-            match c.io.ends(c.owner, i.handle) {
-                // SAFETY: the caller's buffer, checked at least `MAX_ADDR`.
-                Ok((port, peer)) => Answered::ready(u64::from(port), unsafe {
-                    put(i.addr_buf, i.addr_cap, &peer)
-                }),
-                Err(e) => refusal(e),
-            }
+            // SAFETY: the caller's buffer, checked at least `MAX_ADDR`.
+            unsafe { ends_answer(c.io.ends(c.owner, i.handle), i.addr_buf, i.addr_cap) }
         })
+    }
+}
+
+/// `io.ends`' answer of what the host's I/O reported: a program that has exited answers its exit
+/// code in `value` with `exited` set and writes no far address; any other handle its local port and
+/// its far end's address.
+///
+/// # Safety
+/// `buf` is the caller's, writable for `cap` bytes.
+unsafe fn ends_answer(ends: IoResult<Ends>, buf: *mut u8, cap: usize) -> Answered {
+    match ends {
+        Ok(Ends {
+            exit: Some(code), ..
+        }) => Answered {
+            exited: 1,
+            ..Answered::ready(u64::from(code), 0)
+        },
+        // SAFETY: the caller's buffer (the contract above).
+        Ok(Ends { port, peer, .. }) => {
+            Answered::ready(u64::from(port), unsafe { put(buf, cap, &peer) })
+        }
+        Err(e) => refusal(e),
     }
 }
 

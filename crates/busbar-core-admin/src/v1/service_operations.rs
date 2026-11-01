@@ -141,7 +141,7 @@ impl AdminService {
                 // `snapshot` is the same release-exposed live summary `/stats` reads (ok/err/trips/
                 // dead/inflight — genuinely lane-GLOBAL counters); `available_permits` +
                 // `lane_latency_ms` round it out. `usable`/`cooldown_remaining_seconds` are NOT lane
-                // counters, though — routing ranks a member per-POOL (`select_weighted_in`), so this
+                // counters, though — routing ranks a member per-POOL, so this
                 // endpoint reports the per-pool breaker cell via `ready_in`/`cooldown_remaining_in`,
                 // NOT `snapshot`'s any-cell/max-cell lane aggregates (which would mislabel a member
                 // as usable in a pool where its OWN cell is tripped, or vice versa).
@@ -151,7 +151,7 @@ impl AdminService {
                     weight,
                     // `ready_in`, NOT `usable_in`: `usable_in` delegates to the MUTATING `usable_for`,
                     // which can transition an expired-Open cell to HalfOpen and CAS-steal the
-                    // single-flight recovery probe. `ready_in` is `select_weighted_in`'s own
+                    // single-flight recovery probe. `ready_in` is the pool cell's own
                     // side-effect-free predicate — exactly what this read-only endpoint must report.
                     usable: self.app.store.ready_in(name, idx, now),
                     cooldown_remaining_seconds: self
@@ -1412,6 +1412,7 @@ impl AdminService {
         type Fetched = (
             Vec<busbar_kernel::governance::MeteringRow>,
             std::collections::HashMap<String, String>,
+            Vec<busbar_kernel::governance::UsageAdjustment>,
         );
         type UsageFetchError = (&'static str, busbar_kernel::governance::RecordStoreError);
         let joined = tokio::task::spawn_blocking(move || -> Result<Fetched, UsageFetchError> {
@@ -1425,11 +1426,15 @@ impl AdminService {
                 .into_iter()
                 .map(|k| (k.id, k.name))
                 .collect();
-            Ok((rows, names))
+            // The day's root adjustments, folded into its rows below.
+            let adjustments = gov
+                .usage_adjustments(bucket)
+                .map_err(|e| ("usage.adjustments", e))?;
+            Ok((rows, names, adjustments))
         })
         .await;
         let cost = self.app.cost.clone();
-        let (rows, names) = match joined {
+        let (mut rows, names, adjustments) = match joined {
             Ok(Ok(f)) => f,
             // The real store error is logged here — this is the only place it exists, and the wire
             // body deliberately carries none of it so store internals never reach even an
@@ -1457,59 +1462,28 @@ impl AdminService {
             Some(at) => h.snapshot(at),
             None => h.current(),
         });
-        // THE COUNT CORRECTIONS (item 404, OWNER RULING Q9): every `adjust` the node amendment
-        // journal sealed, read ONCE for the whole response. Each row prices its counts AS CORRECTED
-        // (`row_count_corrections`), never a money figure a correction carried — it carries none.
-        let corrections = amend::node_corrections();
         // THE VERSION THE RESPONSE WAS PRICED AT (#44, Q93): the highest history seq among the
         // cards that priced its rows. It is RECORDED as each row's card resolves and never read back
         // by the pricing: a row's card is resolved by its own instant (#79). `?as_of=<it>` re-derives
         // every figure below, and a card published after these rows were earned leaves it as it was.
         let mut priced_by: Option<u64> = None;
+        // THE ROWS AS ADJUSTED: every root `adjust` of the day moves its rows' counts before any is
+        // priced, so the figures below are counts x card over the one ledger's adjusted counts.
+        if let Err(why) = fold_adjustments(&mut rows, &adjustments) {
+            diag_error!(
+                ADMIN_STORE_OPERATION_FAILED,
+                operation = "usage.adjustments",
+                error = %why,
+                "admin store operation failed"
+            );
+            return Err(AdminError::Internal);
+        }
         // Aggregate in memory — a bucket is bounded by (keys × models) accumulation rows.
         let mut total = UsageBreakdown::default();
         let mut by_model: std::collections::BTreeMap<(String, String), UsageBreakdown> =
             std::collections::BTreeMap::new();
         let mut by_key: std::collections::BTreeMap<String, UsageBreakdown> =
             std::collections::BTreeMap::new();
-        // THE CORRECTIONS A ROW OF THIS WINDOW CAN RECEIVE, indexed once by (key, lane). The node's
-        // list holds every `adjust` it ever sealed and is never trimmed; only one whose card epoch
-        // falls inside this window can land on a row of it, and only on a row of its own key and
-        // lane. Handing each row the whole list made the read rows × lifetime corrections; each
-        // row is handed its own share instead (one pass over each, not their product).
-        let (window_start_ms, window_end_ms) = (
-            window.start.saturating_mul(1_000),
-            window.end.saturating_mul(1_000),
-        );
-        let mut corrections_of: std::collections::HashMap<(&str, &str), Vec<&amend::Amendment>> =
-            std::collections::HashMap::new();
-        for amendment in &corrections {
-            let amend::AmendBody::Adjust(adj) = &amendment.body else {
-                continue;
-            };
-            let amend::Subject::PrincipalId(key_id) = &adj.subject else {
-                continue;
-            };
-            if (window_start_ms..window_end_ms).contains(&adj.card_epoch_ms) {
-                corrections_of
-                    .entry((key_id.as_str(), adj.lane.as_str()))
-                    .or_default()
-                    .push(amendment);
-            }
-        }
-        // When a correction lands in this window, the eras of every (key, lane), grouped once in
-        // row order, so the per-row loop below looks a row's eras up rather than rescanning the
-        // bucket for them (one pass, not quadratic in the rows).
-        let mut eras_of: std::collections::HashMap<(&str, std::borrow::Cow<'_, str>), Vec<u64>> =
-            std::collections::HashMap::new();
-        if !corrections_of.is_empty() {
-            for r in &rows {
-                eras_of
-                    .entry((r.key_id.as_str(), row_lane(&r.model, &r.provider)))
-                    .or_default()
-                    .push(r.priced_from_ms);
-            }
-        }
         for r in &rows {
             // THE ROW'S LANE: a non-pools plane's row is priced as that plane's (`row_lane`) — its
             // requests at the plane's own fee, as the budget book charges them (#47).
@@ -1528,39 +1502,6 @@ impl AdminService {
                 spend_micros: 0,
                 classes: std::collections::BTreeMap::new(),
             };
-            // The row's counts AS CORRECTED — its token columns and its ledgered classes alike. A
-            // correction that leaves a count fractional or below zero REFUSES the read: a figure
-            // over counts nobody recorded is not one this read may serve.
-            let mut corrected_classes = std::borrow::Cow::Borrowed(&r.usage_units);
-            if !corrections_of.is_empty() {
-                let eras = eras_of
-                    .get(&(r.key_id.as_str(), lane.clone()))
-                    .map_or(&[][..], Vec::as_slice);
-                let own = corrections_of
-                    .get(&(r.key_id.as_str(), &*lane))
-                    .map_or(&[][..], Vec::as_slice);
-                for (class, delta) in row_count_corrections(
-                    own,
-                    &r.key_id,
-                    &lane,
-                    (window.start, window.end),
-                    r.priced_from_ms,
-                    eras,
-                ) {
-                    let column = match class.as_str() {
-                        busbar_contract::records::UNIT_INPUT => &mut row_view.tokens_input,
-                        busbar_contract::records::UNIT_OUTPUT => &mut row_view.tokens_output,
-                        busbar_contract::records::UNIT_CACHE_READ => {
-                            &mut row_view.tokens_cache_read
-                        }
-                        busbar_contract::records::UNIT_CACHE_WRITE => {
-                            &mut row_view.tokens_cache_creation
-                        }
-                        _ => corrected_classes.to_mut().entry(class).or_insert(0),
-                    };
-                    *column = corrected_column(*column, delta).ok_or(AdminError::Internal)?;
-                }
-            }
             // **THE RESOLUTION**, and the key is the ROW'S OWN FIRST INSTANT (see
             // `row_priced_at_ms`): the row prices against the card it was earned under rather than
             // the newest card ever authored, and a card edit inside the day opened a second row at
@@ -1584,7 +1525,7 @@ impl AdminService {
             // THE ROW'S LEDGERED CLASSES (`usage_units`) — every count the budget book holds that the
             // token split does not (a plane's declared classes, a pools open class, a plane's session
             // count) — price on the row's lane beside its tokens, as the budget book prices them.
-            let classes: &std::collections::BTreeMap<String, u64> = &corrected_classes;
+            let classes: &std::collections::BTreeMap<String, u64> = &r.usage_units;
             let row_spend = match view.as_ref() {
                 Some(v) => match v.card_at(at) {
                     Some((card_seq, card)) => {
