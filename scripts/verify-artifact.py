@@ -54,6 +54,7 @@ import json
 import os
 import re
 import shutil
+import socket
 import struct
 import subprocess
 import sys
@@ -62,6 +63,7 @@ import tempfile
 import time
 import urllib.error
 import urllib.request
+import uuid
 import zipfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -332,6 +334,38 @@ def http_body(url: str, timeout: float = 5.0) -> str:
         return r.read().decode("utf-8", "replace").strip()
 
 
+def require_free_listener(listen: str) -> None:
+    """A pre-existing listener cannot supply the candidate's boot evidence."""
+    host, port = listen.rsplit(":", 1)
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+            probe.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        try:
+            probe.bind((host, int(port)))
+        except OSError as exc:
+            raise RowFailure("the candidate's listen address %s is unavailable: %s" % (listen, exc)) from exc
+
+
+def child_serves(proc, log_path: str, listen: str) -> bool:
+    """Require this child's completed bind before accepting a health response on its port."""
+    port = listen.rsplit(":", 1)[1]
+    for _ in range(45):
+        if proc.poll() is not None:
+            return False
+        # Use a separate descriptor: seeking the child's inherited stdout would move its write
+        # offset too. The root emits this listener-specific line only after the bind succeeds.
+        with open(log_path, encoding="utf-8", errors="replace") as fh:
+            bound = any("busbar listening" in line and listen in line for line in fh)
+        if bound:
+            try:
+                if http_body("http://127.0.0.1:%s/healthz" % port) == "ok" and proc.poll() is None:
+                    return True
+            except (urllib.error.URLError, OSError):
+                pass
+        time.sleep(2)
+    return False
+
+
 # =================================================================================================
 # THE CONTRACT ROWS
 #
@@ -542,25 +576,22 @@ def row_quickstart_boots(ctx) -> str:
         # Syntactically valid and deliberately fake: this row asserts BOOT and /healthz, which are
         # provider-independent, and must never spend a real provider call.
         ANTHROPIC_KEY="sk-ant-verify-artifact-dummy",
+        RUST_LOG="info",
     )
-    log = open(os.path.join(work, "busbar.log"), "w+")
+    require_free_listener("0.0.0.0:8080")
+    log_path = os.path.join(work, "busbar.log")
+    log = open(log_path, "w+")
     proc = subprocess.Popen([ctx.exe], cwd=work, env=env, stdout=log, stderr=subprocess.STDOUT)
     try:
-        for _ in range(45):
-            if proc.poll() is not None:
-                break
-            try:
-                if http_body("http://127.0.0.1:8080/healthz") == "ok":
-                    return "the documented minimal config boots and /healthz answers `ok`"
-            except (urllib.error.URLError, OSError):
-                pass
-            time.sleep(2)
+        if child_serves(proc, log_path, "0.0.0.0:8080"):
+            return "the documented minimal config boots and /healthz answers `ok`"
     finally:
         proc.terminate()
         try:
             proc.wait(timeout=20)
         except subprocess.TimeoutExpired:
             proc.kill()
+            proc.wait()
         log.flush()
         log.seek(0)
         tail = log.read()[-4000:]
@@ -760,12 +791,12 @@ def _dropin_config(plugins_dir: str, alias: str, listen: str) -> str:
     # plugins on, an ABSOLUTE dir, a trust posture that admits the unsigned probe (trust has its own
     # rows; this one is about the loader), and `store.module` naming it, so boot has to load it.
     return (
-        "listen: \"%s\"\n"
+        "listen: %s\n"
         "providers:\n  anthropic:\n    api_key: { env: ANTHROPIC_KEY }\n"
         "models:\n  claude-sonnet:\n    provider: anthropic\n"
-        "plugins:\n  enabled: true\n  dir: \"%s\"\n"
+        "plugins:\n  enabled: true\n  dir: %s\n"
         "  trust:\n    allow_unsigned: true\n    allow_third_party: true\n"
-        "store:\n  module: %s\n" % (listen, plugins_dir, alias)
+        "store:\n  module: %s\n" % (json.dumps(listen), json.dumps(plugins_dir), json.dumps(alias))
     )
 
 
@@ -792,26 +823,23 @@ def row_dropin_loads(ctx) -> str:
         BUSBAR_CONFIG=os.path.join(work, "config.yaml"),
         BUSBAR_PROVIDERS=os.path.join(work, "providers.yaml"),
         ANTHROPIC_KEY="sk-ant-verify-artifact-dummy",
+        RUST_LOG="info",
     )
-    log = open(os.path.join(work, "busbar.log"), "w+")
+    require_free_listener("127.0.0.1:18089")
+    log_path = os.path.join(work, "busbar.log")
+    log = open(log_path, "w+")
     proc = subprocess.Popen([ctx.exe], cwd=work, env=env, stdout=log, stderr=subprocess.STDOUT)
     try:
-        for _ in range(45):
-            if proc.poll() is not None:
-                break
-            try:
-                if http_body("http://127.0.0.1:18089/healthz") == "ok":
-                    return "booted with store.module: %s loaded from the dropped-in %s" % (
-                        alias, os.path.basename(ctx.dropin_plugin))
-            except (urllib.error.URLError, OSError):
-                pass
-            time.sleep(2)
+        if child_serves(proc, log_path, "127.0.0.1:18089"):
+            return "booted with store.module: %s loaded from the dropped-in %s" % (
+                alias, os.path.basename(ctx.dropin_plugin))
     finally:
         proc.terminate()
         try:
             proc.wait(timeout=20)
         except subprocess.TimeoutExpired:
             proc.kill()
+            proc.wait()
         log.flush()
         log.seek(0)
         tail = log.read()[-4000:]
@@ -856,6 +884,42 @@ def _docker(ctx, args: list, timeout: int = 120):
     return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
 
 
+def _image_boot_log(ctx, args: list) -> str:
+    """Poll this invocation's detached server, then remove that container on every exit path."""
+    name = "busbar-verify-%s" % uuid.uuid4().hex
+    blob = ""
+    created = False
+    try:
+        started = run(["docker", "run", "-d", "--name", name,
+                       "--platform", ctx.spec["platform"]] + args, timeout=90)
+        if started.returncode != 0:
+            raise RowFailure("could not start the image: %s" % (started.stderr or "").strip()[:300])
+        created = True
+        for _ in range(45):
+            logs = run(["docker", "logs", name], timeout=20)
+            if logs.returncode != 0:
+                raise RowFailure("could not read the candidate container's log: %s" % logs.stderr)
+            blob = (logs.stdout or "") + (logs.stderr or "")
+            state = run(["docker", "inspect", "--format", "{{.State.Running}}", name], timeout=20)
+            if state.returncode != 0:
+                raise RowFailure("could not inspect the candidate container: %s" % state.stderr)
+            running = (state.stdout or "").strip()
+            if running == "false":
+                break
+            if running != "true":
+                raise RowFailure("the candidate container returned an unknown running state: %r" % running)
+            if "busbar listening" in blob.lower():
+                return blob
+            time.sleep(2)
+    finally:
+        # The random name belongs only to this invocation, including when docker run times out
+        # after the daemon created the container but before its client returned an id.
+        removed = run(["docker", "rm", "-f", name], timeout=20)
+        if created and removed.returncode != 0:
+            raise RowFailure("could not remove the candidate container %s: %s" % (name, removed.stderr))
+    raise RowFailure("the image did not remain running and report listening:\n%s" % blob.strip()[-1500:])
+
+
 def row_image_boots_documented_quickstart(ctx) -> str:
     """Run the image the way the docs tell a user to run it, and require it to serve."""
     ref = _image_ref(ctx)
@@ -863,12 +927,10 @@ def row_image_boots_documented_quickstart(ctx) -> str:
     # row ran `--version` and PASSED against the 1.5.3 image -- the very artifact that is known to
     # cannot boot. `--version` prints and exits before the config is loaded, so it proves the binary
     # executes and nothing more. The defect lives in the boot path, so the row has to reach it.
-    out = _docker(
+    _image_boot_log(
         ctx,
         ["-e", "BUSBAR_ADMIN_TOKEN=verify-artifact-probe", "-e", "ANTHROPIC_KEY=verify-artifact-probe", ref],
-        timeout=90,
     )
-    blob = ((out.stdout or "") + (out.stderr or "")).strip()
     # REACHING `listening` is the property, and it is the ONLY thing this row asserts.
     #
     # An earlier draft also failed on any `[error]` line, which was wrong in both directions. busbar
@@ -876,13 +938,6 @@ def row_image_boots_documented_quickstart(ctx) -> str:
     # boots and serves, so that draft failed a working image. And a refusal exits the container
     # while `docker run` can still surface 0, so the exit code alone cannot carry the verdict
     # either. "Did it get to serving?" is the question a user's quickstart actually asks.
-    if "listening" not in blob.lower():
-        raise AssertionError(
-            "the image never reported listening, so it did not reach the serving state the "
-            "quickstart tells a user to expect. 1.5.3's image refused every "
-            "documented form because the overlay backend was unwritable for the non-root UID it "
-            "ships.\n  exit=%d\n  %s" % (out.returncode, blob[:600])
-        )
     return "boots and listens under the documented invocation"
 
 
@@ -1043,6 +1098,8 @@ def row_image_dropin_loads(ctx) -> str:
             "no dropped-in plugin, and nothing noticed because nothing ever tried."
         )
     alias = _dropin_manifest(ctx.dropin_plugin).get("alias") or ""
+    if not alias:
+        raise RowFailure("the probe plugin's manifest names no alias to configure it by")
     work = os.path.join(ctx.work, "image-dropin")
     os.makedirs(os.path.join(work, "plugins"), exist_ok=True)
     shutil.copy2(ctx.dropin_plugin, os.path.join(work, "plugins", os.path.basename(ctx.dropin_plugin)))
@@ -1054,32 +1111,12 @@ def row_image_dropin_loads(ctx) -> str:
             os.chmod(os.path.join(root, d), 0o755)
         for f in files:
             os.chmod(os.path.join(root, f), 0o644)
-    # `docker run` blocks for a server, so run detached and read the log until it listens or exits.
-    name = "busbar-verify-dropin-%d" % os.getpid()
-    started = run(["docker", "run", "-d", "--name", name, "--platform", ctx.spec["platform"],
-                   "-e", "BUSBAR_ADMIN_TOKEN=verify-artifact-probe", "-e", "ANTHROPIC_KEY=verify-artifact-probe",
-                   "-v", "%s:/etc/busbar/config.yaml:ro" % os.path.join(work, "config.yaml"),
-                   "-v", "%s:/etc/busbar/plugins:ro" % os.path.join(work, "plugins"), ref])
-    if started.returncode != 0:
-        raise AssertionError("could not start the image: %s" % (started.stderr or "").strip()[:300])
-    try:
-        blob = ""
-        for _ in range(45):
-            logs = run(["docker", "logs", name])
-            blob = (logs.stdout or "") + (logs.stderr or "")
-            if "listening" in blob.lower():
-                return "the image booted with store.module: %s loaded from a dropped-in plugin" % alias
-            state = run(["docker", "inspect", "--format", "{{.State.Running}}", name])
-            if (state.stdout or "").strip() == "false":
-                break
-            time.sleep(2)
-    finally:
-        run(["docker", "rm", "-f", name])
-    raise AssertionError(
-        "the image did not boot on a dropped-in plugin (store.module: %s in /etc/busbar/plugins): it "
-        "never reported listening. The container cannot load dropped-in plugins.\n  %s"
-        % (alias, blob.strip()[-1500:])
-    )
+    _image_boot_log(ctx, [
+        "-e", "BUSBAR_ADMIN_TOKEN=verify-artifact-probe", "-e", "ANTHROPIC_KEY=verify-artifact-probe",
+        "-v", "%s:/etc/busbar/config.yaml:ro" % os.path.join(work, "config.yaml"),
+        "-v", "%s:/etc/busbar/plugins:ro" % os.path.join(work, "plugins"), ref,
+    ])
+    return "the image booted with store.module: %s loaded from a dropped-in plugin" % alias
 
 
 CHECKS = {

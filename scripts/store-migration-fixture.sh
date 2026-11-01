@@ -265,11 +265,14 @@ PY
       # dropped, so the dump is plain SQL any client executes and the same rows dump the same bytes.
       client pg_dump --no-owner --no-privileges --no-comments --inserts --column-inserts "$pg" \
         | grep -v -E '^\\(un)?restrict ' >"$out/$dump"
+      local tables
+      tables="$(client psql -At "$pg" -c "SELECT table_name FROM information_schema.tables WHERE table_schema='public' ORDER BY table_name")" \
+        || die "could not enumerate PostgreSQL fixture tables"
       # One table at a time, so each table's rows are ordered by their own text.
       {
         echo "{"
         local first=1 t
-        for t in $(client psql -At "$pg" -c "SELECT table_name FROM information_schema.tables WHERE table_schema='public' ORDER BY table_name"); do
+        for t in $tables; do
           [ $first = 1 ] || echo ","
           first=0
           printf '"%s": ' "$t"
@@ -285,10 +288,13 @@ PY
       rest="${u#mysql://}"; my_user="${rest%%:*}"; rest="${rest#*:}"; my_pass="${rest%%@*}"; rest="${rest#*@}"
       my_host="${rest%%:*}"; rest="${rest#*:}"; my_port="${rest%%/*}"; my_db="${rest#*/}"
       client mysqldump --skip-comments --skip-dump-date --skip-extended-insert --complete-insert -h "$my_host" -P "$my_port" -u "$my_user" "-p$my_pass" "$my_db" >"$out/$dump"
+      local tables
+      tables="$(client mysql -N -h "$my_host" -P "$my_port" -u "$my_user" "-p$my_pass" "$my_db" -e "SHOW TABLES")" \
+        || die "could not enumerate MySQL fixture tables"
       {
         echo "{"
         local first=1 t
-        for t in $(client mysql -N -h "$my_host" -P "$my_port" -u "$my_user" "-p$my_pass" "$my_db" -e "SHOW TABLES"); do
+        for t in $tables; do
           [ $first = 1 ] || echo ","
           first=0
           printf '"%s": ' "$t"
