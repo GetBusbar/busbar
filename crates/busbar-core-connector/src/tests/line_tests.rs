@@ -20,6 +20,9 @@ use crate::compose::{Dial, Planned, Via, EXCHANGE_STREAM};
 use crate::framer::{Call, Crossed, DoorFacts, FramerDoor};
 use crate::support::{via, worker};
 
+#[path = "line_retirement_tests.rs"]
+mod retirement_tests;
+
 /// One carrier crossing as the stub saw it: the op, the thread it ran on, and whether the line's
 /// lock was held while it ran.
 type Crossing = (&'static str, ThreadId, bool);
