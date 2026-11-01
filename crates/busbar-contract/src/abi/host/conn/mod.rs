@@ -20,7 +20,7 @@
 //! would abort, never unwind. What a slot hands back that borrows the host — a piece's status
 //! numbering, a connection's facts — stays valid until that connection is closed.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::os::raw::c_void;
 use std::sync::{Arc, Mutex};
 
@@ -272,11 +272,39 @@ struct HostState {
     held: Mutex<HashMap<ConnId, Held>>,
 }
 
-/// What the host holds for a connection so the plugin's borrows stay valid until it closes.
+/// What the host holds for a connection so the plugin's borrows stay valid until it closes: every
+/// string a slot exposed to the plugin as a [`DeclStr`] range (a piece's status numbering, and the
+/// six strings of the facts), interned once and never mutated, shrunk, replaced or moved out until
+/// the connection's successful close drops the whole set.
+///
+/// A later `read` or `facts` answer states its own strings; it never takes the storage an earlier
+/// range names. Equal strings share one allocation, so a connection that keeps answering the same
+/// numbering or facts holds each once, and a different one adds to the set. Growing the set
+/// rehashes the `String` headers, not the heap bytes they own, so a range stays where it was
+/// handed out. What the plugin is never shown (the key pin, the client-identity bit) is not kept.
 #[derive(Default)]
 struct Held {
-    facts: Option<ConnFacts>,
-    ns: Option<String>,
+    retention: HashSet<String>,
+}
+
+impl Held {
+    /// `s` as an exposed range that stays valid until this connection's close: the interned copy
+    /// (made now if `s` is new).
+    fn keep(&mut self, s: &str) -> DeclStr {
+        if let Some(kept) = self.retention.get(s) {
+            return range(kept);
+        }
+        self.retention.insert(s.to_owned());
+        self.retention
+            .get(s)
+            .map_or(DeclStr::NONE, |kept| range(kept))
+    }
+
+    /// [`Self::keep`] where the string is stated; an absent one is the NULL range and touches
+    /// nothing already exposed.
+    fn keep_opt(&mut self, s: Option<&str>) -> DeclStr {
+        s.map_or(DeclStr::NONE, |s| self.keep(s))
+    }
 }
 
 impl std::fmt::Debug for ConnHost {
@@ -505,12 +533,11 @@ extern "C" fn host_read(
             return Err(ConnError::Fault);
         }
         // The numbering is held until the connection closes, so the plugin's borrow outlives the
-        // call.
-        let ns = {
-            let mut held = host.held();
-            let entry = held.entry(ConnId(conn)).or_default();
-            entry.ns = piece.status_namespace.clone();
-            entry.ns.as_deref().map_or(DeclStr::NONE, range)
+        // call and every later one: a different numbering is held beside it, an absent one states
+        // the NULL range and leaves what was exposed alone.
+        let ns = match piece.status_namespace.as_deref() {
+            None => DeclStr::NONE,
+            Some(numbering) => host.held().entry(ConnId(conn)).or_default().keep(numbering),
         };
         let mut flags = 0;
         if piece.status_code.is_some() {
@@ -574,35 +601,38 @@ extern "C" fn host_wait(
 
 extern "C" fn host_facts(ctx: ConnCtx, conn: u64, out_facts: *mut WireConnFacts) -> RawConnOutcome {
     hosted(ctx, |host| {
+        // The backend answers outside the lock; `facts` is dropped after the guard below.
         let facts = host.conns.facts(host.instance, ConnId(conn))?;
-        let mut held = host.held();
-        let entry = held.entry(ConnId(conn)).or_default();
-        let f = entry.facts.insert(facts);
-        let opt = |s: Option<&String>| s.map_or(DeclStr::NONE, |s| range(s));
-        let cert = f.peer_cert.as_ref();
+        let cert = facts.peer_cert.as_ref();
+        // Each exposed string is interned in the connection's retention (never the facts value
+        // itself, which a later answer would replace and free under a range the plugin kept).
+        let wire = {
+            let mut held = host.held();
+            let kept = held.entry(ConnId(conn)).or_default();
+            WireConnFacts {
+                size: core::mem::size_of::<WireConnFacts>() as u32,
+                version: 0,
+                sni: kept.keep_opt(facts.sni.as_deref()),
+                alpn: kept.keep_opt(facts.alpn.as_deref()),
+                cert_subject: kept.keep_opt(cert.map(|c| c.subject.as_str())),
+                cert_issuer: kept.keep_opt(cert.map(|c| c.issuer.as_str())),
+                cert_fingerprint: kept.keep_opt(cert.map(|c| c.fingerprint.as_str())),
+                claim: kept.keep_opt(facts.claim.as_deref()),
+            }
+        };
         // SAFETY: the plugin's out-slot; every range borrows what the host holds until close.
-        unsafe {
-            set(
-                out_facts,
-                WireConnFacts {
-                    size: core::mem::size_of::<WireConnFacts>() as u32,
-                    version: 0,
-                    sni: opt(f.sni.as_ref()),
-                    alpn: opt(f.alpn.as_ref()),
-                    cert_subject: opt(cert.map(|c| &c.subject)),
-                    cert_issuer: opt(cert.map(|c| &c.issuer)),
-                    cert_fingerprint: opt(cert.map(|c| &c.fingerprint)),
-                    claim: opt(f.claim.as_ref()),
-                },
-            )
-        }
+        unsafe { set(out_facts, wire) }
     })
 }
 
 extern "C" fn host_close(ctx: ConnCtx, conn: u64) -> RawConnOutcome {
     hosted(ctx, |host| {
+        // A refused close (not the caller's, already closed, the backend failing) ends no borrow:
+        // what was exposed stays held. A successful one ends them all; the retention is taken out
+        // under the lock and dropped after it is let go.
         host.conns.close(host.instance, ConnId(conn))?;
-        host.held().remove(&ConnId(conn));
+        let retired = host.held().remove(&ConnId(conn));
+        drop(retired);
         Ok(())
     })
 }
@@ -830,3 +860,7 @@ impl HostConns {
 #[cfg(test)]
 #[path = "../../tests/conn_lowering_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "../../tests/abi_conn_retention_tests.rs"]
+mod retention_tests;
