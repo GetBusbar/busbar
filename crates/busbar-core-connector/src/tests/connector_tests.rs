@@ -542,6 +542,187 @@ fn writes_held_for_a_pending_judgement_are_capped() {
         Ok(0),
         "an empty write still passes"
     );
+    assert_eq!(
+        c.write(OWNER, id, b"", false, true),
+        Err(ConnError::Pending),
+        "the empty frame must drain before another write is accepted"
+    );
+    c.close(OWNER, id).unwrap();
+}
+
+/// An empty pending write keeps its message flags; a blocked writer waits for judgement and
+/// retries without duplicating either the held frame or the unaccepted write.
+#[test]
+fn a_pending_empty_write_backpressures_until_judgement_and_preserves_frames() {
+    use crate::framer::{Call, Crossed, DoorFacts};
+    use busbar_contract::abi::transport::EMIT_TEXT;
+
+    struct RecordingDoor {
+        door: TestDoor,
+        emits: Mutex<Vec<(usize, bool, bool)>>,
+    }
+
+    impl FramerDoor for RecordingDoor {
+        fn facts(&self) -> &DoorFacts {
+            self.door.facts()
+        }
+
+        fn cross(&self, call: Call<'_>) -> Crossed {
+            if let Call::Emit(i, _) = &call {
+                self.emits.lock().unwrap().push((
+                    i.len,
+                    i.end_of_frame != 0,
+                    i.flags & EMIT_TEXT != 0,
+                ));
+            }
+            self.door.cross(call)
+        }
+    }
+
+    worker().block_on(async {
+        for (end, text) in [(false, false), (false, true), (true, false), (true, true)] {
+            let (listener, far) = far_end().await;
+            let peer = tokio::spawn(async move {
+                use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut bytes = [0; 4];
+                socket.read_exact(&mut bytes).await.unwrap();
+                assert_eq!(&bytes, b"head");
+                socket.write_all(b"ok").await.unwrap();
+            });
+            let door = Arc::new(RecordingDoor {
+                door: TestDoor::new("frames", &["frames"], &["bytes"], Default::default()),
+                emits: Mutex::new(Vec::new()),
+            });
+            let view = Transports::new(vec![
+                Entry {
+                    door: door.clone(),
+                    alpn: Vec::new(),
+                },
+                Entry {
+                    door: Arc::new(TestDoor::identity("bytes")),
+                    alpn: Vec::new(),
+                },
+            ])
+            .unwrap();
+            let answer = Arc::new(Mutex::new(None::<crate::Judged>));
+            let answering = Arc::clone(&answer);
+            let judge = move |_: &str, _: u32, done: crate::Judged| {
+                *answering.lock().unwrap() = Some(done);
+                None
+            };
+            let wakes = Arc::new(Mutex::new(Vec::new()));
+            let waking = Arc::clone(&wakes);
+            let c = Connector::serving(
+                view,
+                Arc::new(judge),
+                None,
+                Arc::new(move |owner, ticket| {
+                    waking.lock().unwrap().push((owner, ticket));
+                }),
+            );
+            c.declare_over(OWNER, NeedId(0), "frames").unwrap();
+            let id = c
+                .open(
+                    OWNER,
+                    NeedId(0),
+                    &OpenDesc {
+                        target: &far,
+                        ..OpenDesc::default()
+                    },
+                )
+                .unwrap();
+            assert_eq!(c.write(OWNER, id, b"head", false, false), Ok(4));
+            assert_eq!(c.write(OWNER, id, b"", end, text), Ok(0));
+            assert_eq!(
+                c.write(OWNER, id, b"", !end, !text),
+                Err(ConnError::Pending)
+            );
+            assert_eq!(
+                c.write(OWNER, id, b"unaccepted", true, true),
+                Err(ConnError::Pending)
+            );
+            assert_eq!(c.wait(OWNER, &[id], 41), Err(ConnError::Pending));
+            assert!(wakes.lock().unwrap().is_empty());
+            answer.lock().unwrap().take().unwrap()(Ok(far.parse().unwrap()));
+            assert_eq!(*wakes.lock().unwrap(), vec![(OWNER, 41)]);
+            assert_eq!(c.write(OWNER, id, b"", !end, !text), Ok(0));
+            let reply = tokio::time::timeout(Duration::from_secs(5), async {
+                let mut reply = Vec::new();
+                while reply.len() < 2 {
+                    let mut bytes = [0; 2];
+                    let piece = std::future::poll_fn(|cx| c.poll_read(OWNER, id, cx, &mut bytes))
+                        .await
+                        .unwrap();
+                    assert!(piece.len > 0, "the peer answers before closing");
+                    reply.extend_from_slice(&bytes[..piece.len]);
+                }
+                reply
+            })
+            .await
+            .unwrap();
+            assert_eq!(reply, b"ok");
+            assert_eq!(
+                *door.emits.lock().unwrap(),
+                vec![(4, false, false), (0, end, text), (0, !end, !text)]
+            );
+            assert_eq!(*door.door.handed.lock().unwrap(), b"head");
+            c.close(OWNER, id).unwrap();
+            peer.await.unwrap();
+        }
+    });
+}
+
+/// A blocked empty-write caller is also woken on refusal and can close the held connection.
+#[test]
+fn a_pending_empty_write_wakes_on_refusal_and_closes() {
+    let answer = Arc::new(Mutex::new(None::<crate::Judged>));
+    let answering = Arc::clone(&answer);
+    let judge = move |_: &str, _: u32, done: crate::Judged| {
+        *answering.lock().unwrap() = Some(done);
+        None
+    };
+    let wakes = Arc::new(Mutex::new(Vec::new()));
+    let waking = Arc::clone(&wakes);
+    let view = Transports::new(vec![Entry {
+        door: Arc::new(TestDoor::identity("bytes")),
+        alpn: Vec::new(),
+    }])
+    .unwrap();
+    let c = Connector::serving(
+        view,
+        Arc::new(judge),
+        None,
+        Arc::new(move |owner, ticket| {
+            waking.lock().unwrap().push((owner, ticket));
+        }),
+    );
+    c.declare_over(OWNER, NeedId(0), "bytes").unwrap();
+    let id = c
+        .open(
+            OWNER,
+            NeedId(0),
+            &OpenDesc {
+                target: "upstream.test:80",
+                ..OpenDesc::default()
+            },
+        )
+        .unwrap();
+    assert_eq!(c.write(OWNER, id, b"", true, true), Ok(0));
+    assert_eq!(
+        c.write(OWNER, id, b"", false, false),
+        Err(ConnError::Pending)
+    );
+    assert_eq!(c.wait(OWNER, &[id], 42), Err(ConnError::Pending));
+    answer.lock().unwrap().take().unwrap()(Err(DEST_PLAINTEXT));
+    assert_eq!(*wakes.lock().unwrap(), vec![(OWNER, 42)]);
+    assert_eq!(c.wait(OWNER, &[id], 42), Ok(0));
+    assert_eq!(
+        c.write(OWNER, id, b"", false, false),
+        Err(ConnError::Refused)
+    );
+    c.close(OWNER, id).unwrap();
+    assert!(c.write(OWNER, id, b"", false, false).is_err());
 }
 
 /// A need dials a hostname through the kernel's one judge, over the plugin's own table. Its one

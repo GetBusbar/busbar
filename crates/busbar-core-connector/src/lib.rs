@@ -2933,6 +2933,11 @@ impl Conns for Connector {
         if !self.settle(&held, None)? {
             if let Some(j) = held.judging.lock().expect("judging").as_mut() {
                 // Held until the judgement answers, under the same cap a connection's buffer has.
+                // An empty frame still carries end/text, but spends no payload room. Hold it
+                // once, then backpressure until judgement wakes the caller to drain and retry.
+                if j.early.last().is_some_and(|(bytes, _, _)| bytes.is_empty()) {
+                    return Err(ConnError::Pending);
+                }
                 let held_bytes: usize = j.early.iter().map(|(b, _, _)| b.len()).sum();
                 let take = bytes
                     .len()
