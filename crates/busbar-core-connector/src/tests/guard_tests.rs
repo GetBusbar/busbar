@@ -443,6 +443,34 @@ fn a_provider_carve_out_admits_only_for_its_own_url_host() {
     );
 }
 
+#[test]
+fn provider_metadata_carveouts_accept_http_schemes_in_any_case() {
+    for scheme in ["http", "HTTP", "hTtPs"] {
+        let g = Guard::from_config(&Destinations {
+            block_private_addresses: true,
+            url_allow: vec![(
+                format!("{scheme}://IMDS-Proxy.test./Case/Path"),
+                vec!["169.254.169.254".into()],
+            )],
+            ..Destinations::default()
+        })
+        .unwrap();
+        let imds = [ip("169.254.169.254")];
+        assert_eq!(
+            g.judge_answer("imds-proxy.test", &imds, EGRESS_PROVIDER),
+            Ok(())
+        );
+        assert_eq!(
+            verdict(g.judge_answer("other.test", &imds, EGRESS_PROVIDER)),
+            Some(DEST_METADATA)
+        );
+        assert_eq!(
+            verdict(g.judge_answer("imds-proxy.test", &imds, C)),
+            Some(DEST_METADATA)
+        );
+    }
+}
+
 /// A config commit re-publishes the metadata lists to every clone of the guard: a carve-out the
 /// commit removes is refused at the next judgement, and one it adds is admitted.
 #[test]

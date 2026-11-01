@@ -8,6 +8,33 @@ use crate::trust::net::*;
 use std::net::{IpAddr, Ipv4Addr};
 
 #[test]
+fn http_scheme_case_does_not_change_url_spelling_or_authority_rules() {
+    for (scheme, secure, port) in [
+        ("HTTPS", true, 443),
+        ("hTtPs", true, 443),
+        ("HTTP", false, 80),
+    ] {
+        let url = format!("{scheme}://Mixed.Example/Case/Path?Key=VaL");
+        assert_eq!(
+            split_url(&url).unwrap(),
+            (
+                secure,
+                "Mixed.Example".to_string(),
+                port,
+                "/Case/Path?Key=VaL".to_string()
+            )
+        );
+        assert!(matches!(
+            split_url(&format!("{scheme}://user:password@host/Case")),
+            Err(AddressRefusal::NoHost(_))
+        ));
+    }
+    for url in ["HTTP:host/Case", "HTTPS:/host/Case", "FTP://host/Case"] {
+        assert!(matches!(split_url(url), Err(AddressRefusal::Scheme { .. })));
+    }
+}
+
+#[test]
 fn is_cgnat_shared_v4_covers_rfc6598_only() {
     // 100.64.0.0/10 = first octet 100, second octet's top two bits == 01 (i.e. 64..=127).
     assert!(is_cgnat_shared_v4(&Ipv4Addr::new(100, 64, 0, 0)));
@@ -165,6 +192,20 @@ fn the_shared_internal_predicate_admits_ordinary_public_addresses() {
             "{ok} is ordinary public space and must remain reachable"
         );
     }
+}
+
+#[test]
+fn metadata_preflight_uses_both_ec2_ipv6_endpoints_and_preserves_carveouts() {
+    for host in ["fd00:ec2::254", "fd00:ec2::23"] {
+        let url = format!("http://[{host}]/metadata");
+        assert_eq!(
+            ssrf_blocked_host(&url, &[], false, &[]).as_deref(),
+            Some(host)
+        );
+        assert!(ssrf_blocked_host(&url, &[host.to_string()], false, &[]).is_none());
+        assert!(ssrf_blocked_host(&url, &[], true, &[]).is_none());
+    }
+    assert!(ssrf_blocked_host("http://[fd00:ec2::24]/metadata", &[], false, &[]).is_none());
 }
 
 /// CLOUD METADATA IS A SEPARATE QUESTION FROM INTERNAL, because the two carry different policies:

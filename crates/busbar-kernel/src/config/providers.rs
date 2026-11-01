@@ -962,7 +962,7 @@ impl std::fmt::Debug for ResolvedProvider {
             .field("subject", subject)
             .field("auth", auth)
             .field("allow_metadata_hosts", allow_metadata_hosts)
-            .field("table", table)
+            .field("table", &table.keys().collect::<Vec<_>>())
             .finish()
     }
 }

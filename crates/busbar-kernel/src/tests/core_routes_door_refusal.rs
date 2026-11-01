@@ -12,6 +12,55 @@ fn a_door_route_pattern_matches_as_the_router_does() {
     assert!(!route_matches("/v1/op", "/v1"));
 }
 
+#[tokio::test]
+async fn a_catchall_refusal_and_ticket_match_the_routers_nonempty_tail() {
+    use busbar_contract::abi::mechanism::route::RouteMethod;
+    use busbar_kernel::plane_routes::{DoorRouteId, PlaneRefusalSpec, PlaneResponse};
+    use std::sync::Arc;
+    use tower::ServiceExt as _;
+
+    let route = "/door/{*rest}";
+    let table = super::CoreRouteTable::default().with_door_refusals(vec![PlaneRefusalSpec {
+        route: DoorRouteId {
+            path: route.to_string(),
+            method: RouteMethod::Get,
+        },
+        refuse: Arc::new(|_, _| PlaneResponse::default()),
+        ticket_prefix: Some("tk_".to_string()),
+        signed_ingress: Arc::from(Vec::<String>::new()),
+    }]);
+    let router = axum::Router::new().route(route, axum::routing::get(|| async { "matched" }));
+    for (path, matches) in [
+        ("/door", false),
+        ("/door/", false),
+        ("/door/x", true),
+        ("/door//", true),
+        ("/door/a/b", true),
+    ] {
+        let response = router
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri(path)
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status().is_success(), matches, "Axum at {path}");
+        assert_eq!(
+            table.door_refusal(path, &axum::http::Method::GET).is_some(),
+            matches,
+            "refusal at {path}"
+        );
+        assert_eq!(
+            table.door_ticket(path, &axum::http::Method::GET),
+            matches.then_some("tk_"),
+            "ticket at {path}"
+        );
+    }
+}
+
 /// A route that takes tickets answers its plane's prefix; every other route, or another method on
 /// it, answers none (row 132).
 #[test]

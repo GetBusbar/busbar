@@ -53,6 +53,18 @@ fn with_read_only_dir<T>(dir: &std::path::Path, f: impl FnOnce() -> T) -> T {
     out
 }
 
+#[test]
+fn an_overlay_path_that_names_a_directory_is_not_a_backend() {
+    let dir = scratch("directory-target");
+    let overlay = dir.join("busbar-overlay.json");
+    std::fs::create_dir(&overlay).unwrap();
+    let resolved =
+        resolve_backend(&ConfigMgmtCfg::default(), &dir.join("config.yaml"), true).unwrap();
+    std::fs::remove_dir_all(&dir).unwrap();
+    assert!(resolved.path.is_none());
+    assert!(resolved.read_only_backend);
+}
+
 /// THE QUICKSTART CASE. A config with no `config:` block at all (so mutable by default, exactly the
 /// minimal config the getting-started guide tells you to write) living in a directory busbar cannot
 /// write to RESOLVES rather than refusing, and resolves to NO overlay backend.

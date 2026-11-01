@@ -1767,6 +1767,14 @@ fn breaker_cfg_default_matches_serde_default_fns() {
     );
 }
 
+#[test]
+fn breaker_trip_default_matches_an_empty_config_object() {
+    let parsed: BreakerTripConfig = serde_yaml::from_str("{}").unwrap();
+    assert_eq!(BreakerTripConfig::default(), parsed);
+    let parsed_breaker: BreakerCfg = serde_yaml::from_str("trip: {}").unwrap();
+    assert_eq!(BreakerCfg::default(), parsed_breaker);
+}
+
 /// The config surface carries NO raw secret material anywhere:
 /// every credential is a SecretRef (module + settings), so debug-logging a whole DeployCfg can
 /// never leak a resolved secret VALUE. This sets a distinctive value in the environment, builds a

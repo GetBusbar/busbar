@@ -197,21 +197,25 @@ fn resolve_rel(file: &str, config_dir: &Path) -> PathBuf {
     }
 }
 
-/// Probe whether the overlay backend path is writable WITHOUT a durable side effect: an existing file
-/// must open for write; a not-yet-created file needs a writable parent dir (create + immediately
-/// remove a probe file). This never routes through `crate::durable` because it writes nothing that
-/// must survive — it is a boot-time capability check, not a config write.
+/// Probe the sibling-file creation and replacement that overlay persistence requires, without
+/// touching the overlay itself. The disposable probes need not survive, so this does not route
+/// through `crate::durable`. Permissions can still change after this boot-time capability check.
 fn is_backend_writable(p: &Path) -> bool {
-    if p.exists() {
-        return std::fs::OpenOptions::new().write(true).open(p).is_ok();
+    match std::fs::symlink_metadata(p) {
+        Ok(metadata) => {
+            if metadata.is_dir() {
+                return false;
+            }
+            #[cfg(windows)]
+            if metadata.permissions().readonly() {
+                return false;
+            }
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(_) => return false,
     }
-    // A not-yet-created overlay is writable iff its PARENT directory is writable. Treat an EMPTY parent
-    // (`p` is a bare filename with no directory component — e.g. `BUSBAR_CONFIG=config.yaml` run from
-    // inside the config dir resolves the default overlay to a bare `busbar-overlay.json`) as the CURRENT
-    // directory. Crucially, do NOT fall back to `OpenOptions::open(p)` WITHOUT `.create(true)`: that
-    // errors `NotFound` for a not-yet-existing file regardless of whether the directory is writable, so
-    // it would wrongly report a perfectly writable cwd as non-writable and REFUSE a valid durable-by-
-    // default boot. Probe with the same create-then-remove dance as a normal directory-qualified path.
+    // Both an existing overlay and a new one are published by sibling rename. A bare filename's
+    // empty parent denotes the current directory, just as it does for the durable writer.
     let dir = p
         .parent()
         .filter(|d| !d.as_os_str().is_empty())
@@ -221,15 +225,25 @@ fn is_backend_writable(p: &Path) -> bool {
     static PROBE_NONCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let nonce = PROBE_NONCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let probe = dir.join(format!("{PROBE_FILE_PREFIX}{}-{nonce}", std::process::id()));
-    match std::fs::File::create(&probe) {
-        Ok(file) => {
-            // Close the handle BEFORE unlinking. On Windows (no `FILE_SHARE_DELETE`) and some network
-            // filesystems an open file cannot be removed; holding it across `remove_file` would leak the
-            // probe on every boot.
+    let replacement = probe.with_extension("replacement");
+    let mut owned = Vec::new();
+    let result = (|| -> std::io::Result<()> {
+        for path in [&probe, &replacement] {
+            let file = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(path)?;
+            owned.push(path);
+            // Close before rename/unlink, including on Windows.
             drop(file);
-            if let Err(e) = std::fs::remove_file(&probe) {
-                // The probe name is pid-scoped, so a leaked probe is never reclaimed by a later boot.
-                // Surface it (WARN) rather than swallowing the error silently.
+        }
+        std::fs::rename(&probe, &replacement)
+    })();
+    let mut removed = true;
+    for probe in owned {
+        if let Err(e) = std::fs::remove_file(probe) {
+            if e.kind() != std::io::ErrorKind::NotFound {
+                removed = false;
                 diag_warn!(
                     CONFIG_OVERLAY_PROBE_LEAK,
                     probe = %probe.display(), error = %e,
@@ -237,10 +251,9 @@ fn is_backend_writable(p: &Path) -> bool {
                      left behind in the config directory"
                 );
             }
-            true
         }
-        Err(_) => false,
     }
+    result.is_ok() && removed
 }
 
 /// Current overlay schema version. Stamped on every write; a missing field (a pre-versioning overlay)

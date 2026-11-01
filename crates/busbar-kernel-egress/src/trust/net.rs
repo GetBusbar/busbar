@@ -58,7 +58,7 @@ impl std::error::Error for AddressRefusal {}
 
 /// Split an `http(s)://host[:port][/path]` URL into `(https, host, port, path)`.
 ///
-/// A STRICT RECOGNISER over the scheme — exactly `https://` or `http://`, anything else is a
+/// A STRICT RECOGNISER over the scheme — case-insensitive `https://` or `http://`, anything else is a
 /// [`AddressRefusal::Scheme`] — with the host read by the one shared reader
 /// ([`parse_url`], WHATWG rules). The authority therefore ends where the dialling stack ends it: at
 /// `/`, `?`, `#` or `\`. A reader that ended it only at `/` read `https://127.0.0.1?x` as the host
@@ -74,15 +74,15 @@ impl std::error::Error for AddressRefusal {}
 /// one part of the recognition that is legitimately per-caller, and it is why this is a public
 /// helper rather than the only door in.
 pub fn split_url(url: &str) -> Result<(bool, String, u16, String), AddressRefusal> {
-    let https = if url.starts_with("https://") {
-        true
-    } else if url.starts_with("http://") {
-        false
-    } else {
-        return Err(AddressRefusal::Scheme {
-            url: redact_userinfo(url),
-            scheme: scheme_of(url),
-        });
+    let https = match url.split_once("://").map(|(scheme, _)| scheme) {
+        Some(scheme) if scheme.eq_ignore_ascii_case("https") => true,
+        Some(scheme) if scheme.eq_ignore_ascii_case("http") => false,
+        _ => {
+            return Err(AddressRefusal::Scheme {
+                url: redact_userinfo(url),
+                scheme: scheme_of(url),
+            });
+        }
     };
     let no_host = || AddressRefusal::NoHost(redact_userinfo(url));
     let parts = parse_url(url).map_err(|_| no_host())?;
@@ -342,7 +342,7 @@ fn judge_against_lists(
     allow_overrides: &HostSet,
     extra_blocked: &HostSet,
 ) -> Option<String> {
-    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+    use std::net::IpAddr;
 
     // A destination may be spelled as a URL or as a bare `host:port`, and the destination check
     // supports both. Judging only the first spelling meant the operator's denylist never fired for
@@ -374,47 +374,9 @@ fn judge_against_lists(
         return Some(host.to_string());
     }
 
-    // The hardcoded metadata IP literals.
-    // * link-local `169.254.0.0/16` (IMDS `169.254.169.254`, ECS `169.254.170.2`, Tencent
-    // `169.254.0.23`, …);
-    // * Alibaba `100.100.100.200`; Azure `168.63.129.16`; Oracle Cloud (OCI) `192.0.0.192`;
-    // EC2 IMDSv6 `fd00:ec2::254`.
-    let imds_v6 = Ipv6Addr::new(0xfd00, 0x0ec2, 0, 0, 0, 0, 0, 0x254);
-    let alibaba_v4 = Ipv4Addr::new(100, 100, 100, 200);
-    let azure_v4 = Ipv4Addr::new(168, 63, 129, 16);
-    // OCI's IMDS lives at the globally-routable-shaped `192.0.0.192` — NOT caught by link-local /
-    // private / CGNAT / unspecified, so it needs an explicit literal like Alibaba/Azure.
-    let oci_v4 = Ipv4Addr::new(192, 0, 0, 192);
-    // Predicate: is this PARSED v4 address a hardcoded metadata target? (link-local /16 + the
-    // non-link-local literals.)
-    let is_metadata_v4 = |v4: &Ipv4Addr| -> bool {
-        v4.is_link_local() || *v4 == alibaba_v4 || *v4 == azure_v4 || *v4 == oci_v4
-    };
-
-    // Alternate / non-canonical IPv4 encodings (decimal int `2852039166` = 169.254.169.254, hex,
-    // octal, short dotted) that `IpAddr::from_str` rejects but the OS resolver still maps to an IPv4
-    // target. Expand them to a canonical address and re-check against the metadata predicate, so an
-    // obfuscated metadata literal is caught while a non-metadata obfuscated form (e.g. a decimal
-    // loopback) is simply allowed (it is not a metadata target).
-    if let Some(expanded) = expand_alternate_ipv4(host) {
-        if is_metadata_v4(&expanded) {
-            return Some(host.to_string());
-        }
-    }
-
-    // Canonical IP-literal checks. A hostname that does not parse as an IP and is not in the lists
-    // above is ALLOWED — private/loopback/CGNAT/public upstreams are all legitimate.
-    let is_blocked = match host.parse::<IpAddr>() {
-        Ok(IpAddr::V4(v4)) => is_metadata_v4(&v4),
-        Ok(IpAddr::V6(v6)) => {
-            // An IPv6 literal embedding an IPv4 address reaches the same v4 target as the bare form,
-            // so apply the IDENTICAL metadata predicate to the embedded v4 (covers `[::ffff:a.b.c.d]`
-            // mapped AND `[::a.b.c.d]` compatible via `to_ipv4()`).
-            let embedded = embedded_ipv4(&v6);
-            v6 == imds_v6 || embedded.is_some_and(|m| is_metadata_v4(&m))
-        }
-        Err(_) => false,
-    };
-
-    is_blocked.then(|| host.to_string())
+    host.parse::<IpAddr>()
+        .ok()
+        .or_else(|| expand_alternate_ipv4(host).map(IpAddr::V4))
+        .filter(ip_is_cloud_metadata)
+        .map(|_| host.to_string())
 }

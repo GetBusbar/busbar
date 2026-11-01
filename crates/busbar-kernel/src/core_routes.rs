@@ -233,14 +233,16 @@ impl CoreRouter {
 }
 
 /// Whether the request `path` is one the route pattern `route` matches: literal segments exactly, a
-/// `{name}` segment as any one non-empty segment, a `{*name}` tail as whatever remains.
+/// `{name}` segment as any one non-empty segment, a `{*name}` tail as a non-empty remainder.
 fn route_matches(route: &str, path: &str) -> bool {
     let mut want = route.split('/');
     let mut got = path.split('/');
     loop {
         match (want.next(), got.next()) {
             (None, None) => return true,
-            (Some(w), _) if w.starts_with("{*") && w.ends_with('}') => return true,
+            (Some(w), Some(g)) if w.starts_with("{*") && w.ends_with('}') => {
+                return !g.is_empty() || got.next().is_some();
+            }
             (Some(w), Some(g)) if w.starts_with('{') && w.ends_with('}') => {
                 if g.is_empty() {
                     return false;
