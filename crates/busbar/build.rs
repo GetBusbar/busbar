@@ -290,9 +290,6 @@ fn main() {
     std::fs::write(out, test_operator_auth_source(&manifest)).expect("write test_operator_auth.rs");
 }
 
-/// `$OUT_DIR/test_operator_auth.rs` from `[package.metadata.busbar.test-linked] operator-auth`:
-/// `extern crate` per listed auth plugin, then a `for_each_operator_auth_row!($f)` macro calling
-/// `($f)(<crate>::door::door)` for each, in list order (the admin tests' operator credential row).
 /// Core's directory (`crates/busbar`): this package's own, or the one a distribution's manifest
 /// names under `[package.metadata.busbar.core] dir` when it compiles core's source.
 fn core_dir(manifest: &str) -> std::path::PathBuf {
@@ -303,6 +300,9 @@ fn core_dir(manifest: &str) -> std::path::PathBuf {
     }
 }
 
+/// `$OUT_DIR/test_operator_auth.rs` from `[package.metadata.busbar.test-linked] operator-auth`:
+/// `extern crate` per listed auth plugin, then a `for_each_operator_auth_row!($f)` macro calling
+/// `($f)(<crate>::door::door)` for each, in list order (the admin tests' operator credential row).
 fn test_operator_auth_source(manifest: &str) -> String {
     let idents: Vec<String> = test_linked_list(manifest, "operator-auth")
         .iter()

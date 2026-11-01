@@ -25,23 +25,49 @@
 /// `pgo=true` with no profile data anywhere near it.
 ///
 /// `-Cprofile-use=<path>` is what a PGO build passes. Cargo may deliver it as one element
-/// (`-Cprofile-use=…`) or as two (`-C`, `profile-use=…`), so the test is a substring over each
-/// element rather than a prefix match on the first.
+/// (`-Cprofile-use=…`) or as two (`-C`, `profile-use=…`). Only that exact codegen option counts;
+/// a profile-generation path or another argument containing the text does not.
 pub(crate) fn pgo_from_flags(flags: &[&str]) -> bool {
-    flags.iter().any(|f| f.contains("profile-use"))
+    flag_value(flags, "profile-use").is_some()
+}
+
+/// The codegen options, preserving the order rustc received them.
+fn codegen_options<'a>(flags: &'a [&'a str]) -> impl Iterator<Item = &'a str> {
+    let mut flags = flags.iter().copied();
+    std::iter::from_fn(move || loop {
+        let flag = flags.next()?;
+        if flag == "-C" {
+            return flags.next();
+        }
+        if let Some(option) = flag.strip_prefix("-C") {
+            return Some(option);
+        }
+    })
 }
 
 /// The value of a `-C<name>=<value>` rustc flag, or `None` when no element carries it. Used for
 /// `target-cpu`, `target-feature` and `lto`, each of which cargo exposes only through the flag list.
 /// The option is matched by its EXACT name (`-Clto=` is not `-Clinker-plugin-lto=`), in either shape
 /// cargo hands it over (`-C<name>=…` as one element, or `-C` then `<name>=…`), and when it is passed
-/// more than once the LAST wins, as it does for rustc.
+/// more than once the LAST wins, except `target-feature`: rustc combines those options in order.
+/// Bare `-Clto` means fat LTO.
 pub(crate) fn flag_value(flags: &[&str], name: &str) -> Option<String> {
-    flags.iter().rev().find_map(|f| {
-        let option = f.strip_prefix("-C").unwrap_or(f);
-        option
-            .strip_prefix(name)?
-            .strip_prefix('=')
-            .map(str::to_string)
-    })
+    let mut value = None;
+    for option in codegen_options(flags) {
+        let found = match option.split_once('=') {
+            Some((key, value)) if key == name => value,
+            None if option == "lto" && name == "lto" => "fat",
+            _ => continue,
+        };
+        if name == "target-feature" {
+            let combined = value.get_or_insert_with(String::new);
+            if !combined.is_empty() && !found.is_empty() {
+                combined.push(',');
+            }
+            combined.push_str(found);
+        } else {
+            value = Some(found.to_string());
+        }
+    }
+    value
 }
