@@ -607,10 +607,16 @@ fn concurrent_flush_driver_cannot_lend_the_same_chunk_twice() {
     assert!(gov.budget_flushes.lock().unwrap().is_empty());
 }
 
-fn final_flush_joins_active_ordinary_runner(reply: Reply) {
+fn final_flush_joins_active_ordinary_runner(reply: Reply, legacy: bool) {
     const EARLY_RETURN_OBSERVATION: std::time::Duration = std::time::Duration::from_secs(1);
-    let (store, gov, key, now) = setup("vk_final_active_ordinary_flush");
-    let gov = Arc::new(gov);
+    let store = Arc::new(ChunkStore {
+        legacy,
+        ..ChunkStore::default()
+    });
+    let key = key("vk_final_active_ordinary_flush", None);
+    store.put_key(&key).unwrap();
+    let gov = Arc::new(GovState::new(store.clone(), None).unwrap());
+    let now = crate::store::now();
     accrue_dated(&gov, &key, CONCURRENT_INPUT, now);
     store.replies.lock().unwrap().push_back(reply);
     let (entered_tx, entered_rx) = std::sync::mpsc::channel();
@@ -668,17 +674,22 @@ fn final_flush_joins_active_ordinary_runner(reply: Reply) {
 
 #[test]
 fn final_budget_flush_waits_for_active_runner_and_persists_later_accrual() {
-    final_flush_joins_active_ordinary_runner(Reply::Confirm);
+    final_flush_joins_active_ordinary_runner(Reply::Confirm, false);
+}
+
+#[test]
+fn final_budget_flush_waits_for_active_legacy_snapshots_and_persists_later_accrual() {
+    final_flush_joins_active_ordinary_runner(Reply::Confirm, true);
 }
 
 #[test]
 fn final_budget_flush_reconciles_unknown_active_runner_commit() {
-    final_flush_joins_active_ordinary_runner(Reply::LoseAfter);
+    final_flush_joins_active_ordinary_runner(Reply::LoseAfter, false);
 }
 
 #[test]
 fn final_budget_flush_recovers_custody_after_active_runner_unwind() {
-    final_flush_joins_active_ordinary_runner(Reply::CancelAfter);
+    final_flush_joins_active_ordinary_runner(Reply::CancelAfter, false);
 }
 
 #[test]
