@@ -15,6 +15,7 @@ no way to.
 from __future__ import annotations
 
 import builtins
+from contextlib import redirect_stdout
 import gzip
 import hashlib
 import io
@@ -27,6 +28,7 @@ import tarfile
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import publish_gate as pg  # noqa: E402
@@ -245,6 +247,157 @@ class Gate(unittest.TestCase):
         r = self.w.verify()
         hit = [x for x in r if x.split()[1] == rule and needle in x]
         self.assertTrue(hit, f"expected a {rule} refusal containing {needle!r}; got {r}")
+
+    def signed_upload_inputs(self):
+        inp = self.w.inputs()
+        if hasattr(inp.net, "remote_tag"):
+            # W28 verifies the real K2-signed tag locally, then requires the same tag object on
+            # the remote. Supply that fixture object only for this exact release, preserving
+            # the real G-15 signature/target checks and all other fake-remote behavior.
+            tag = f"v{VERSION}"
+            local = sh("git", "-C", str(self.w.root), "rev-parse", f"refs/tags/{tag}").decode().strip()
+            remote_tag = inp.net.remote_tag
+            inp.net.remote_tag = lambda repo, ref: local if (repo, ref) == (pg.REPO, tag) else remote_tag(repo, ref)
+        with mock.patch.object(builtins, "input", lambda *_: self.w.commit[:12]):
+            code = pg.cmd_sign(inp, self.w.out, str(self.w.keys / "k1-sign"), str(self.w.keys / "k2"))
+        self.assertEqual(code, pg.EXIT_OK)
+        return inp
+
+    def upload_transport(self, inp, *, missing=None, replacements=None):
+        """Only the registry/forge/log transports are substituted. Verification, sealing and K2
+        signatures run unchanged against the real fixture files and packer."""
+        original_run, original_tool = pg.run, pg.tool
+        remote = {}
+        floating, oci_sources, readbacks = [], [], []
+        external = {"gh", "skopeo", "cosign", "rekor-cli"}
+
+        def find_tool(name):
+            return name if name in external else original_tool(name)
+
+        def run(cmd, *, stdin=None, check=False):
+            name = Path(cmd[0]).name
+            if name not in external:
+                return original_run(cmd, stdin=stdin, check=check)
+            if name == "skopeo":
+                source, dest = cmd[-2:]
+                if source.startswith("oci-archive:"):
+                    archive = Path(source[len("oci-archive:"):])
+                    if not archive.is_file():
+                        raise pg.CannotRun(f"the image transfer cannot read {archive}")
+                    oci_sources.append(archive)
+                if dest.startswith("docker://") and "@" not in dest:
+                    inp.net.registry[dest[len("docker://"):]] = source.rsplit("@", 1)[1]
+                    if dest.rsplit(":", 1)[1] != VERSION:
+                        floating.append(dest)
+            elif name == "gh":
+                action, tag = cmd[2:4]
+                repo = cmd[cmd.index("-R") + 1]
+                key = (repo, tag)
+                if action == "create":
+                    remote[key] = {}
+                    inp.net.released.add(key)
+                elif action == "upload":
+                    files = remote.setdefault(key, {})
+                    i = 4
+                    while i < len(cmd):
+                        if cmd[i] == "-R":
+                            i += 2
+                        elif cmd[i] == "--clobber":
+                            i += 1
+                        else:
+                            path = Path(cmd[i])
+                            files[path.name] = path.read_bytes()
+                            i += 1
+                elif action == "download":
+                    readbacks.append(key)
+                    dest = Path(cmd[cmd.index("-D") + 1])
+                    for filename, data in remote[key].items():
+                        if filename != missing:
+                            (dest / filename).write_bytes((replacements or {}).get(filename, data))
+            return subprocess.CompletedProcess(cmd, 0, b"fixture transport receipt\n", b"")
+
+        return run, find_tool, floating, oci_sources, readbacks
+
+    def legacy_image_copy(self):
+        # Keep the unrelated old images/ typo from masking a readback/binding regression. The
+        # actual candidate still comes from oci/, and the success control supplies no such copy.
+        images = self.w.cand / "images"
+        images.mkdir()
+        shutil.copyfile(self.w.cand / "oci/busbar.oci.tar", images / "busbar.oci.tar")
+
+    def test_upload_transfers_the_verified_oci_and_finishes_the_signed_release(self):
+        inp = self.signed_upload_inputs()
+        run, tool, floating, sources, readbacks = self.upload_transport(inp)
+        with mock.patch.object(pg, "run", run), mock.patch.object(pg, "tool", tool):
+            code = pg.cmd_upload(inp, self.w.out)
+        self.assertEqual(code, pg.EXIT_OK)
+        self.assertTrue(sources)
+        self.assertTrue(all(p == self.w.cand / "oci/busbar.oci.tar" for p in sources))
+        self.assertIn((pg.REPO, f"v{VERSION}"), readbacks, "the signed release must actually reach readback")
+        self.assertTrue(floating, "a fully verified release reaches floating-tag publication")
+        self.assertTrue((self.w.out / "released.tsv").is_file())
+
+    def test_upload_refuses_a_missing_signed_download_before_moving_floating_tags(self):
+        inp = self.signed_upload_inputs()
+        self.legacy_image_copy()
+        missing = "busbar-x86_64-unknown-linux-gnu.tar.gz"
+        run, tool, floating, _, readbacks = self.upload_transport(inp, missing=missing)
+        said = io.StringIO()
+        with redirect_stdout(said), mock.patch.object(pg, "run", run), mock.patch.object(pg, "tool", tool):
+            code = pg.cmd_upload(inp, self.w.out)
+        self.assertEqual(code, pg.EXIT_REFUSED)
+        self.assertIn((pg.REPO, f"v{VERSION}"), readbacks, "the missing artifact must be judged after real readback")
+        self.assertIn(f"REFUSED G-4 published {missing}:", said.getvalue())
+        self.assertNotIn("REFUSED G-15", said.getvalue())
+        self.assertFalse(floating, "an incomplete public release must not move latest or version aliases")
+        self.assertFalse((self.w.out / "released.tsv").exists())
+
+    def test_upload_refuses_replayed_validly_signed_download_metadata(self):
+        inp = self.signed_upload_inputs()
+        self.legacy_image_copy()
+        alternative = self.w.tmp / "older-SHA256SUMS"
+        sums = pg.read_sums(self.w.out / "SHA256SUMS")
+        del sums["busbar-x86_64-unknown-linux-gnu.tar.gz"]
+        alternative.write_text("".join(f"{digest}  {name}\n" for name, digest in sorted(sums.items())))
+        pg.k2_sign_and_check(inp, str(self.w.keys / "k2"), [alternative])
+        replacements = {"SHA256SUMS": alternative.read_bytes(),
+                        "SHA256SUMS.sig": Path(str(alternative) + ".sig").read_bytes()}
+        run, tool, floating, _, readbacks = self.upload_transport(inp, replacements=replacements)
+        said = io.StringIO()
+        with redirect_stdout(said), mock.patch.object(pg, "run", run), mock.patch.object(pg, "tool", tool):
+            code = pg.cmd_upload(inp, self.w.out)
+        self.assertEqual(code, pg.EXIT_REFUSED)
+        self.assertIn((pg.REPO, f"v{VERSION}"), readbacks, "the replayed metadata must reach real signature/readback checks")
+        self.assertIn("REFUSED G-4 published SHA256SUMS:", said.getvalue())
+        self.assertNotIn("REFUSED G-7", said.getvalue(), "the replayed payload still has a genuine valid K2 signature")
+        self.assertNotIn("REFUSED G-15", said.getvalue())
+        self.assertFalse(floating, "another valid signature cannot substitute a different artifact set")
+
+    def test_upload_refuses_signed_images_from_a_different_verified_candidate(self):
+        inp = self.signed_upload_inputs()
+        self.legacy_image_copy()
+        # A changed index remains a good G-10 candidate: same platforms, users and binary bytes.
+        # Its old signed IMAGES and old legacy archive are individually genuine but belong to
+        # the previous candidate, so no image transfer is authorized by the current verification.
+        top = json.loads(self.w.layout[f"blobs/sha256/{self.w.index.split(':')[1]}"])
+        top["annotations"] = {"org.opencontainers.image.description": "revised candidate"}
+        self.w.index = blob(self.w.layout, json.dumps(top).encode())
+        self.w.layout["index.json"] = json.dumps({"schemaVersion": 2, "manifests": [{"digest": self.w.index}]}).encode()
+        self.w.write_layout()
+        (self.w.cand / "IMAGES").write_text(f"busbar {self.w.index}\n")
+        vd, _, _ = pg.verify_all(inp)
+        self.assertEqual(vd.refusals, [], "the revised candidate must independently verify")
+        run, tool, floating, sources, readbacks = self.upload_transport(inp)
+        said = io.StringIO()
+        with redirect_stdout(said), mock.patch.object(pg, "run", run), mock.patch.object(pg, "tool", tool):
+            code = pg.cmd_upload(inp, self.w.out)
+        self.assertEqual(code, pg.EXIT_REFUSED)
+        self.assertIn("REFUSED G-10 IMAGES:", said.getvalue())
+        self.assertNotIn("REFUSED G-15", said.getvalue())
+        self.assertFalse(sources, "mismatched signed image metadata must stop before any registry write")
+        self.assertFalse(readbacks, "image metadata is refused before any public release is uploaded or read back")
+        self.assertFalse(floating)
+
 
     def test_a_good_release_verifies(self):
         self.assertEqual(self.w.verify(), [])
