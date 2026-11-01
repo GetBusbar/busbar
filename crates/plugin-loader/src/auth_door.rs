@@ -1020,3 +1020,7 @@ pub mod login;
 #[cfg(test)]
 #[path = "tests/auth_door_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "tests/auth_instance_carriers_old_api_tests.rs"]
+mod instance_carriers_old_api_tests;
