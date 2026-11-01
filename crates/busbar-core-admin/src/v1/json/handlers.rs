@@ -1427,8 +1427,8 @@ pub(crate) async fn reset_overlay_section(
                 busbar_kernel::build_app_from_config(
                     cfg,
                     loaded.deploy.plugins.clone(),
-                    // Preserve the running generation's exact Store overlay anchor.
-                    snapshot.overlay_path.clone(),
+                    // Publish the loader's fresh carrier only if this candidate commits.
+                    loaded.overlay_path,
                     base_hook_names,
                     base_group_names,
                     (Some(config_path), Some(providers_path)),
@@ -1445,10 +1445,10 @@ pub(crate) async fn reset_overlay_section(
             // engine reverted while the Store still carried the un-cleared overlay — a restart would
             // silently re-apply the section the operator just reset (e.g. re-pin the
             // plugin_versions they cleared). Persisting first means a crash before the swap comes
-            // up already reset (the safe direction). The installed App preserves
-            // `current.overlay_path`, so it uses the same Store anchor. (The sibling section is
-            // preserved verbatim by the read-modify-write inside `clear_section`.)
-            let p = installed.clone();
+            // up already reset (the safe direction). Persist through the CURRENT carrier, which
+            // retains custody if the write's receipt is unknown and no new App can be published.
+            // The candidate's fresh carrier reaches service only after a confirmed write.
+            let persist_overlay = snapshot.overlay_path.clone();
             let version = installed.config_version;
             // `commit_then` (not `commit`): the credential rotation (if any) must fire only once
             // `commit_and_swap` has returned `Ok` — persist AND swap both done — not merely once the
@@ -1459,7 +1459,7 @@ pub(crate) async fn reset_overlay_section(
             Ok(Outcome::commit_then(
                 installed.clone(),
                 move || {
-                    busbar_kernel::config::overlay::clear_section(p.overlay_path.as_deref(), section).map_err(
+                    busbar_kernel::config::overlay::clear_section(persist_overlay.as_deref(), section).map_err(
                         |e| {
                             format!(
                                 "overlay section reset persistence was not confirmed: {e}; \
@@ -2938,7 +2938,7 @@ pub(crate) async fn put_config_settings(
                 busbar_kernel::build_app_from_config(
                     cfg,
                     loaded.deploy.plugins.clone(),
-                    snapshot.overlay_path.clone(),
+                    loaded.overlay_path,
                     base_hook_names,
                     base_group_names,
                     (Some(config_path), Some(providers_path)),
@@ -2951,7 +2951,9 @@ pub(crate) async fn put_config_settings(
             let installed = Arc::new(next);
             // PERSIST-then-SWAP, fail-closed. Persist the merged root section (the sibling
             // hooks/groups sections are preserved verbatim by the read-modify-write).
-            let p = installed.clone();
+            // The published carrier owns any unknown receipt; a failed commit must not strand
+            // custody on the unpublished candidate's fresh carrier.
+            let persist_overlay = snapshot.overlay_path.clone();
             let to_persist = merged.clone();
             // `commit_then`, not `commit`: the rotation must fire only once `commit_and_swap` has
             // fully returned `Ok` (persist AND swap), keeping the running engine unaffected on a
@@ -2962,7 +2964,7 @@ pub(crate) async fn put_config_settings(
                 installed.clone(),
                 move || {
                     busbar_kernel::config::overlay::persist_root(
-                        p.overlay_path.as_deref(),
+                        persist_overlay.as_deref(),
                         &to_persist,
                     )
                     .map_err(|e| {

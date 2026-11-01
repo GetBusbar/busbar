@@ -9216,12 +9216,10 @@ async fn test_admin_v1_config_settings_survives_a_real_store_reload() {
         Some(default_overlay.backend()),
     )
     .expect("fresh boot disk-load");
-    assert!(
-        Arc::ptr_eq(
-            loaded.overlay_path.as_ref().unwrap(),
-            &default_overlay.backend()
-        ),
-        "reload must retain the SAME Store anchor the App persists to"
+    assert_eq!(
+        loaded.overlay_path.as_ref().unwrap().read_bytes().unwrap(),
+        default_overlay.read_bytes(),
+        "the reopened carrier reads the configured Store's persisted generation"
     );
     let root = loaded
         .overlay_doc

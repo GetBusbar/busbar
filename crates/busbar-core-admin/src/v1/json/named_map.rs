@@ -540,8 +540,8 @@ async fn apply(
                 busbar_kernel::build_app_from_config(
                     cfg,
                     loaded.deploy.plugins.clone(),
-                    // Preserve the running generation's exact Store overlay anchor.
-                    snapshot.overlay_path.clone(),
+                    // Publish the loader's fresh carrier only after persistence and rebuild succeed.
+                    loaded.overlay_path,
                     base_hook_names,
                     base_group_names,
                     (Some(config_path), Some(providers_path)),
@@ -579,14 +579,15 @@ async fn apply(
             // PERSIST-then-SWAP, fail-closed: the overlay takes the change FIRST; only if the Store
             // accepts it does the engine swap. `commit_then` (not `commit`) so a governance
             // credential rotation fires only once persist AND swap have both returned `Ok`.
-            let p = installed.clone();
+            // Retain unknown-write custody on the currently published generation's carrier.
+            let persist_overlay = snapshot.overlay_path.clone();
             let persist_name = txn_name.clone();
             let persist_def = next_def.clone();
             Ok(Outcome::commit_then(
                 installed.clone(),
                 move || {
                     busbar_kernel::config::overlay::persist_named_map(
-                        p.overlay_path.as_deref(),
+                        persist_overlay.as_deref(),
                         txn_section,
                         &persist_name,
                         persist_def.as_ref(),
