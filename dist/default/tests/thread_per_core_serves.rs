@@ -161,11 +161,18 @@ fn thread_per_core_boots_and_serves_healthz() {
     });
     if !exited {
         let _ = child.kill();
+        let _ = child.wait();
         panic!(
             "thread-per-core busbar did not drain within 15s of SIGTERM; log:\n{}",
             read_to_string(&log_path)
         );
     }
+    let status = child.wait().expect("reap the exited busbar");
+    assert!(
+        status.success(),
+        "SIGTERM must finish a successful drain, not a crash or signal exit ({status}); log:\n{}",
+        read_to_string(&log_path)
+    );
 
     let _ = std::fs::remove_dir_all(&dir);
 }
