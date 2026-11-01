@@ -127,6 +127,135 @@ fn self_rows(gov: &GovState, sub: &str) -> Vec<crate::governance::VirtualKey> {
         .collect()
 }
 
+fn provisioned_self_app(gov: Arc<GovState>) -> crate::test_support::TestApp {
+    let groups = serde_yaml::from_str(
+        "team-a:\n  child_default:\n    limits:\n      - { budget: 500, per: month }\n\
+         team-b: {}\n\
+         user:sam:\n  parent: team-a\n  limits:\n    - { budget: 37, per: month }\n",
+    )
+    .expect("existing user leaf with customized limits");
+    crate::test_support::TestApp::new()
+        .groups_tree(groups)
+        .governance(gov)
+}
+
+#[tokio::test]
+async fn existing_self_leaf_refuses_a_changed_team_before_issue_or_refresh() {
+    for refresh in [false, true] {
+        let gov = gov();
+        let dir = tempfile::tempdir().expect("writable overlay directory");
+        let overlay = dir.path().join("overlay.json");
+        let handle = Arc::new(crate::state::AppHandle::new(
+            provisioned_self_app(gov.clone())
+                .overlay_path(overlay.clone())
+                .build(),
+        ));
+        let before = handle.load();
+        let provisioner = Arc::new(super::super::self_keys::HandleProvisioner::new(
+            handle.clone(),
+            "sam".into(),
+        ));
+        let verdict = identified("corp", principal("sam", &["eng"]));
+        let old = if refresh {
+            let keys = DeterministicEd25519Keys::new(
+                gov.clone(),
+                "corp".into(),
+                "team-a".into(),
+                None,
+                provisioner.clone(),
+            );
+            Some(
+                issue_key(
+                    &keys,
+                    &principal("sam", &["eng"]),
+                    Duration::from_secs(3600),
+                    false,
+                )
+                .await
+                .expect("the original team can issue a key"),
+            )
+        } else {
+            None
+        };
+        let (principal, team, scopes) =
+            resolve_exchange(&verdict, &bindings("corp", "eng", Some("team-b")), None)
+                .expect("the updated binding resolves the new team");
+        let keys =
+            DeterministicEd25519Keys::new(gov.clone(), "corp".into(), team, scopes, provisioner);
+        let result = issue_key(&keys, principal, Duration::from_secs(3600), refresh).await;
+        assert!(
+            matches!(result, Err(ExchangeError::MintFailed(_))),
+            "{result:?}"
+        );
+        assert!(
+            Arc::ptr_eq(&before, &handle.load()),
+            "refusal must not swap the group tree"
+        );
+        assert!(
+            !overlay.exists(),
+            "refusal must not persist a changed group"
+        );
+        if let Some(old) = old {
+            assert!(
+                gov.verify_token(
+                    old.secret.expose(&crate::seal::lend()),
+                    busbar_kernel::store::now(),
+                    None,
+                )
+                .is_some(),
+                "refused refresh must not invalidate the existing token"
+            );
+        } else {
+            assert!(
+                self_rows(&gov, "sam").is_empty(),
+                "refused issue must not mint a binding"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn existing_self_leaf_with_matching_team_reuses_the_snapshot_without_persistence() {
+    let gov = gov();
+    let handle = Arc::new(crate::state::AppHandle::new(
+        provisioned_self_app(gov.clone()).no_overlay().build(),
+    ));
+    let before = handle.load();
+    let keys = DeterministicEd25519Keys::new(
+        gov.clone(),
+        "corp".into(),
+        "team-a".into(),
+        None,
+        Arc::new(super::super::self_keys::HandleProvisioner::new(
+            handle.clone(),
+            "sam".into(),
+        )),
+    );
+    for refresh in [false, false, true] {
+        let issued = issue_key(
+            &keys,
+            &principal("sam", &["eng"]),
+            Duration::from_secs(3600),
+            refresh,
+        )
+        .await
+        .expect("an existing matching leaf needs no writable overlay");
+        assert_eq!(issued.group, "user:sam");
+        assert!(
+            Arc::ptr_eq(&before, &handle.load()),
+            "re-login must preserve the snapshot and customized limits"
+        );
+        assert!(gov
+            .verify_token(
+                issued.secret.expose(&crate::seal::lend()),
+                busbar_kernel::store::now(),
+                None,
+            )
+            .is_some());
+    }
+    assert_eq!(self_rows(&gov, "sam").len(), 1);
+}
+
 // ── deterministic idempotent mint ────────────────────────────────────────────────────────────────
 
 #[test]
