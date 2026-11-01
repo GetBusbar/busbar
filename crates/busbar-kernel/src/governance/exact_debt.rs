@@ -210,15 +210,52 @@ pub(super) struct BudgetFlushFlight {
     bucket: String,
     window: u64,
     debt: std::sync::Mutex<FlightDebt>,
-    runner: std::sync::Mutex<Option<std::thread::ThreadId>>,
-    runner_released: std::sync::Condvar,
+    runner: BudgetFlushRunner,
 }
 
-struct FlightRun<'a>(&'a BudgetFlushFlight);
-impl Drop for FlightRun<'_> {
+/// A runner's ownership marker, never a mutex held across a store call. Both a whole flush and
+/// each retained flight use this handoff so the final caller can join existing work.
+#[derive(Default)]
+pub(super) struct BudgetFlushRunner {
+    owner: std::sync::Mutex<Option<std::thread::ThreadId>>,
+    released: std::sync::Condvar,
+}
+
+pub(super) struct BudgetFlushRun<'a>(&'a BudgetFlushRunner);
+impl Drop for BudgetFlushRun<'_> {
     fn drop(&mut self) {
-        *self.0.runner.lock().unwrap_or_else(|p| p.into_inner()) = None;
-        self.0.runner_released.notify_all();
+        *self.0.owner.lock().unwrap_or_else(|p| p.into_inner()) = None;
+        self.0.released.notify_all();
+    }
+}
+
+impl BudgetFlushRunner {
+    pub(super) fn enter(&self, final_flush: bool) -> Result<BudgetFlushRun<'_>, &'static str> {
+        let current = std::thread::current().id();
+        let mut owner = self.owner.lock().unwrap_or_else(|p| p.into_inner());
+        loop {
+            match *owner {
+                None => {
+                    *owner = Some(current);
+                    drop(owner);
+                    return Ok(BudgetFlushRun(self));
+                }
+                Some(active) if final_flush && active != current => {
+                    // WriteBehind has no I/O deadline. The authoritative final caller must join
+                    // an existing owner before reconciling its result and capturing later debt.
+                    owner = self.released.wait(owner).unwrap_or_else(|p| p.into_inner());
+                }
+                Some(active) => {
+                    let reentrant_final = final_flush && active == current;
+                    drop(owner);
+                    return Err(if reentrant_final {
+                        "final budget flush reentered its own active store call"
+                    } else {
+                        "budget flush already in flight"
+                    });
+                }
+            }
+        }
     }
 }
 
@@ -313,8 +350,7 @@ impl GovState {
                     chunk: None,
                     finished: false,
                 }),
-                runner: std::sync::Mutex::new(None),
-                runner_released: std::sync::Condvar::new(),
+                runner: BudgetFlushRunner::default(),
             });
             self.budget_flushes
                 .lock()
@@ -348,37 +384,10 @@ impl GovState {
         flight: &Arc<BudgetFlushFlight>,
         final_flush: bool,
     ) -> (usize, Option<RecordStoreError>) {
-        {
-            let current = std::thread::current().id();
-            let mut runner = flight.runner.lock().unwrap_or_else(|p| p.into_inner());
-            loop {
-                match *runner {
-                    None => {
-                        *runner = Some(current);
-                        break;
-                    }
-                    Some(owner) if final_flush && owner != current => {
-                        // WriteBehind has no I/O deadline. The authoritative final caller must
-                        // join an existing owner before reconciling its unknown result.
-                        runner = flight
-                            .runner_released
-                            .wait(runner)
-                            .unwrap_or_else(|p| p.into_inner());
-                    }
-                    Some(owner) => {
-                        let reentrant_final = final_flush && owner == current;
-                        drop(runner);
-                        let message = if reentrant_final {
-                            "final raw usage flush reentered its own active store call"
-                        } else {
-                            "raw usage chunk already in flight"
-                        };
-                        return (0, Some(RecordStoreError(message.into())));
-                    }
-                }
-            }
-        }
-        let _running = FlightRun(flight);
+        let _running = match flight.runner.enter(final_flush) {
+            Ok(running) => running,
+            Err(message) => return (0, Some(RecordStoreError(message.into()))),
+        };
         let mut confirmed = 0;
         loop {
             let chunk = {

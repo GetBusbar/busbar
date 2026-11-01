@@ -153,6 +153,7 @@ impl GovState {
             correction_claims: claims::ClaimSet::new(),
             corrections: std::sync::Mutex::new(HashMap::new()),
             budget_flushes: std::sync::Mutex::new(std::collections::BTreeMap::new()),
+            budget_flush_runner: BudgetFlushRunner::default(),
             deleting_budget_buckets: std::sync::Mutex::new(std::collections::BTreeSet::new()),
             pending_metering: PendingMetering::new(),
             money_view: money_view::MoneyView::default(),
@@ -2588,6 +2589,15 @@ impl GovState {
     }
 
     fn flush_budgets_inner(&self, shutdown: bool) -> usize {
+        let _runner = match self.budget_flush_runner.enter(shutdown) {
+            Ok(runner) => runner,
+            Err(message) => {
+                if shutdown {
+                    diag_error!(BUDGET_FLUSH_PARTIAL_FAILURE, error = message, "{message}");
+                }
+                return 0;
+            }
+        };
         let mut unresolved_corrections = self.retry_usage_corrections();
         // Establish long-lived custody before entering any potentially pending store call. The
         // legacy snapshot vector is built afterwards, so an unwind cannot strand those snapshots.
@@ -2598,7 +2608,7 @@ impl GovState {
                 }
             }
         }
-        let (mut flushed, chunk_errors) = self.resume_budget_flushes();
+        let (mut flushed, chunk_errors) = self.resume_budget_flushes(shutdown);
         unresolved_corrections.extend(chunk_errors);
         /// The baselines a live cell's delta was taken against: they become the acked baseline on
         /// success.
@@ -2822,7 +2832,11 @@ impl GovState {
                 last_error = error.map(|error| error.to_string());
             }
         }
-        let (late_flushed, late_errors) = self.resume_budget_flush_list(new_flights);
+        let (late_flushed, late_errors) = if shutdown {
+            self.resume_budget_flushes(true)
+        } else {
+            self.resume_budget_flush_list(new_flights, false)
+        };
         flushed += late_flushed;
         failed += late_errors.len();
         if let Some(error) = late_errors.last() {

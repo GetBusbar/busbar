@@ -13,7 +13,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, RwLock};
 
 mod exact_debt;
-use exact_debt::{BudgetFlushFlight, ExactUsageDelta};
+use exact_debt::{BudgetFlushFlight, BudgetFlushRunner, ExactUsageDelta};
 
 use crate::diagnostics::{
     diag_debug, diag_warn, GOVERNANCE_KEY_RESERVED_NAMESPACE_COLLISION, LIMIT_WINDOW_UNRECOGNIZED,
@@ -853,6 +853,8 @@ pub struct GovState {
     /// Outbound raw debt and immutable chunk identities, retained until every chunk is confirmed.
     budget_flushes:
         std::sync::Mutex<std::collections::BTreeMap<(String, u64), Arc<BudgetFlushFlight>>>,
+    /// Joins all active budget drivers, including legacy ordinary snapshots, at final flush.
+    budget_flush_runner: BudgetFlushRunner,
     /// Local key deletion excludes creation of another outbound flight until its durable purge.
     deleting_budget_buckets: std::sync::Mutex<std::collections::BTreeSet<String>>,
     /// Write-behind ACCUMULATOR for metering rows, keyed by the stores' own upsert key
