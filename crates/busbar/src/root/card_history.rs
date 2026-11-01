@@ -914,6 +914,8 @@ impl CardStore {
                                  remains held in memory until the store confirms it"
                             );
                         }
+                        #[cfg(all(test, unix))]
+                        super::card_store::save_test::before_reput(this.spool_dir());
                         match put_all(
                             this.calls.as_ref(),
                             &records,

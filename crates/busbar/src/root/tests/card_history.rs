@@ -112,7 +112,11 @@ fn a_failed_spool_barrier_retries_the_exact_owner_until_real_store_confirmation(
         let mut unrelated = cs.entries()[0].clone();
         unrelated.key = EntryKey::new(1, [9; 8], 7);
         let unrelated_write = SpooledWrite::of(&unrelated.key, &unrelated.records().unwrap());
-        Spool::update(&dir, |spool| spool.pending.push(unrelated_write.clone())).unwrap();
+        Spool {
+            pending: vec![unrelated_write.clone()],
+        }
+        .save(&dir)
+        .unwrap();
 
         let mut original = unrelated.clone();
         original.key = EntryKey::new(now_ms() + 1, [8; 8], 3);
@@ -140,31 +144,21 @@ fn a_failed_spool_barrier_retries_the_exact_owner_until_real_store_confirmation(
         let (observed_tx, observed_rx) = mpsc::channel();
         let (allow_tx, allow_rx) = mpsc::channel();
         let allow_rx = Mutex::new(allow_rx);
-        let acknowledged = AtomicBool::new(false);
-        store.on_put({
+        store.refuse(true);
+        save_test::on_reput(&dir, {
             let dir = dir.clone();
             let attempts = attempts.clone();
+            let store = store.clone();
             move || {
-                if std::thread::current().name() == Some("card-reput") {
-                    if acknowledged.load(Ordering::Acquire) {
-                        return None;
-                    }
-                    observed_tx
-                        .send((attempts.load(Ordering::Acquire), Spool::load(&dir).unwrap()))
-                        .unwrap();
-                    if allow_rx
-                        .lock()
-                        .unwrap()
-                        .recv_timeout(Duration::from_secs(10))
-                        .unwrap()
-                    {
-                        acknowledged.store(true, Ordering::Release);
-                        return None;
-                    }
-                }
-                Some(busbar_contract::store_calls::StoreFailure::Refused(
-                    "the exact owner has not been confirmed".into(),
-                ))
+                observed_tx
+                    .send((attempts.load(Ordering::Acquire), Spool::load(&dir).unwrap()))
+                    .unwrap();
+                let allow = allow_rx
+                    .lock()
+                    .unwrap()
+                    .recv_timeout(Duration::from_secs(10))
+                    .unwrap();
+                store.refuse(!allow);
             }
         });
 

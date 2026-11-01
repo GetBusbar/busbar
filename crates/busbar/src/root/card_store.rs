@@ -639,13 +639,16 @@ pub(super) mod save_test {
     }
 
     type Hook = Arc<dyn Fn(Step) -> std::io::Result<()> + Send + Sync>;
+    type ReputHook = Arc<dyn Fn() + Send + Sync>;
     static HOOKS: Mutex<BTreeMap<PathBuf, Hook>> = Mutex::new(BTreeMap::new());
+    static REPUT_HOOKS: Mutex<BTreeMap<PathBuf, ReputHook>> = Mutex::new(BTreeMap::new());
 
     pub(crate) struct Guard(PathBuf);
 
     impl Drop for Guard {
         fn drop(&mut self) {
             HOOKS.lock().unwrap().remove(&self.0);
+            REPUT_HOOKS.lock().unwrap().remove(&self.0);
         }
     }
 
@@ -659,6 +662,21 @@ pub(super) mod save_test {
             .insert(dir.to_path_buf(), Arc::new(hook))
             .is_none());
         Guard(dir.to_path_buf())
+    }
+
+    pub(crate) fn on_reput(dir: &Path, hook: impl Fn() + Send + Sync + 'static) {
+        assert!(REPUT_HOOKS
+            .lock()
+            .unwrap()
+            .insert(dir.to_path_buf(), Arc::new(hook))
+            .is_none());
+    }
+
+    pub(crate) fn before_reput(dir: Option<&Path>) {
+        let hook = dir.and_then(|dir| REPUT_HOOKS.lock().unwrap().get(dir).cloned());
+        if let Some(hook) = hook {
+            hook();
+        }
     }
 
     pub(super) fn before(dir: &Path, step: Step) -> std::io::Result<()> {
