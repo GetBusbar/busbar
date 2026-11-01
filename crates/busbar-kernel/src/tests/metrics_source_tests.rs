@@ -185,3 +185,153 @@ fn the_window_rolls_while_count_and_sum_never_reset() {
         "a sample older than every span is counted, not placed"
     );
 }
+
+fn identity_source() -> &'static Source {
+    // These fixtures do not exercise expiry; use the process's existing retention values.
+    Box::leak(Box::new(Source::new(
+        crate::snapshot::GAUGE_IDLE_TIMEOUT,
+        crate::snapshot::SUMMARY_BUCKETS,
+        crate::snapshot::GAUGE_IDLE_TIMEOUT,
+    )))
+}
+
+fn identity_values(families: &[Family], sample_name: &str) -> Vec<String> {
+    let mut values: Vec<_> = families
+        .iter()
+        .flat_map(|family| &family.samples)
+        .filter(|sample| sample.name == sample_name)
+        .map(|sample| sample.value.clone())
+        .collect();
+    values.sort();
+    values
+}
+
+#[test]
+fn raw_label_values_that_share_presentation_keep_both_series() {
+    const COUNTER: &str = "busbar_identity_counter";
+    const GAUGE: &str = "busbar_identity_gauge";
+    const SUMMARY: &str = "busbar_identity_summary";
+    const SUMMARY_SUM: &str = "busbar_identity_summary_sum";
+    const SUMMARY_COUNT: &str = "busbar_identity_summary_count";
+    for (left, right) in [("\\", "\\\\"), ("\"", "\\\"")] {
+        assert_ne!(left, right);
+        assert_eq!(
+            reference::sanitize_label_value(left),
+            reference::sanitize_label_value(right),
+            "the historical presentation collision is the fixture's premise"
+        );
+        let source = identity_source();
+        let (counters, gauges, histograms) = metrics::with_local_recorder(&source, || {
+            let counters =
+                [left, right].map(|label| metrics::counter!(COUNTER, "identity" => label));
+            let gauges = [left, right].map(|label| metrics::gauge!(GAUGE, "identity" => label));
+            let histograms =
+                [left, right].map(|label| metrics::histogram!(SUMMARY, "identity" => label));
+            (counters, gauges, histograms)
+        });
+        for (at, value) in [17, 23].into_iter().enumerate() {
+            counters[at].increment(value);
+            gauges[at].set(value as f64);
+            histograms[at].record(value as f64);
+        }
+        let first = source.snapshot();
+        assert_eq!(identity_values(&first, COUNTER), ["17", "23"]);
+        assert_eq!(identity_values(&first, GAUGE), ["17", "23"]);
+        assert_eq!(identity_values(&first, SUMMARY_SUM), ["17", "23"]);
+        assert_eq!(identity_values(&first, SUMMARY_COUNT), ["1", "1"]);
+        let summary = first.iter().find(|family| family.name == SUMMARY).unwrap();
+        // Each raw histogram retains its own complete quantile/sum/count block even though both
+        // blocks still carry ambiguous historical presentation labels.
+        let expected_names: Vec<_> = [17, 23]
+            .iter()
+            .flat_map(|_| {
+                std::iter::repeat_n(SUMMARY, QUANTILES.len()).chain([SUMMARY_SUM, SUMMARY_COUNT])
+            })
+            .collect();
+        assert_eq!(
+            summary
+                .samples
+                .iter()
+                .map(|sample| sample.name.as_str())
+                .collect::<Vec<_>>(),
+            expected_names
+        );
+        let again = source.snapshot();
+        assert_eq!(identity_values(&again, COUNTER), ["17", "23"]);
+        assert_eq!(identity_values(&again, SUMMARY_COUNT), ["1", "1"]);
+        std::thread::scope(|threads| {
+            threads.spawn(|| counters[0].increment(5));
+            threads.spawn(|| counters[1].increment(7));
+        });
+        gauges[0].set(41.0);
+        histograms[1].record(7.0);
+        let updated = source.snapshot();
+        assert_eq!(identity_values(&updated, COUNTER), ["22", "30"]);
+        assert_eq!(identity_values(&updated, GAUGE), ["23", "41"]);
+        assert_eq!(identity_values(&updated, SUMMARY_SUM), ["17", "30"]);
+        assert_eq!(identity_values(&updated, SUMMARY_COUNT), ["1", "2"]);
+    }
+}
+
+#[test]
+fn raw_duplicate_labels_keep_registry_identity_and_existing_display_semantics() {
+    const COUNTER: &str = "busbar_identity_duplicate_labels";
+    let source = identity_source();
+    metrics::with_local_recorder(&source, || {
+        let duplicate = vec![
+            metrics::Label::new("key", "first"),
+            metrics::Label::new("other", "middle"),
+            metrics::Label::new("key", "last"),
+        ];
+        let displayed = vec![
+            metrics::Label::new("key", "last"),
+            metrics::Label::new("other", "middle"),
+        ];
+        metrics::counter!(COUNTER, duplicate.clone()).increment(5);
+        metrics::counter!(COUNTER, displayed).increment(11);
+        metrics::counter!(COUNTER, duplicate).increment(2);
+    });
+    let families = source.snapshot();
+    assert_eq!(identity_values(&families, COUNTER), ["11", "7"]);
+    let family = families
+        .iter()
+        .find(|family| family.name == COUNTER)
+        .unwrap();
+    let expected = vec![
+        ("key".to_string(), "last".to_string()),
+        ("other".to_string(), "middle".to_string()),
+    ];
+    assert!(
+        family
+            .samples
+            .iter()
+            .all(|sample| sample.labels == expected),
+        "first label position and last duplicate value remain the presentation"
+    );
+}
+
+#[test]
+fn series_order_remains_presentation_order_with_deterministic_raw_ties() {
+    const COUNTER: &str = "busbar_identity_order";
+    let source = identity_source();
+    // A raw line feed sorts before quote, but its escaped presentation sorts after it. The two
+    // slash inputs share presentation, so their raw keys break that tie.
+    metrics::with_local_recorder(&source, || {
+        for (label, value) in [("\n", 19), ("\"", 17), ("\\\\", 23), ("\\", 31)] {
+            metrics::counter!(COUNTER, "identity" => label).increment(value);
+        }
+    });
+    for _ in [(), ()] {
+        let families = source.snapshot();
+        let family = families
+            .iter()
+            .find(|family| family.name == COUNTER)
+            .unwrap();
+        let values: Vec<_> = family
+            .samples
+            .iter()
+            .map(|sample| sample.value.as_str())
+            .collect();
+        assert_eq!(values, ["17", "31", "23", "19"]);
+    }
+}

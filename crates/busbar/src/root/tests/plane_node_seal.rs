@@ -379,10 +379,60 @@ async fn open_and_finish<U: Units>(
     (key, admitted)
 }
 
+/// Cancellation preserves the facts the open recorded, including its local pinned history.
+#[tokio::test]
+async fn an_unfinished_session_retires_its_facts_and_preserves_its_destination_for_sweep() {
+    let node = Arc::new(Node::new());
+    let book = crate::root::durability::node_book();
+    node.bind_book(Arc::clone(&book.durability));
+    let post = NodeEndPost::new(Arc::clone(&node));
+    let key = node.mint();
+    let arrived = node.arrived();
+    let history = pinned(vec![
+        (0, configured(7)),
+        (arrived.ms() + 60_000, configured(9)),
+    ]);
+    let (opened, _, slot) = node
+        .open_borrowed(
+            key,
+            arrived,
+            &PrincipalId::new("acct:seal"),
+            &post,
+            &ToDestination,
+            Some(history),
+            OpClassId::new("seal"),
+        )
+        .await
+        .expect("the session opens");
+    assert!(matches!(
+        opened,
+        busbar_kernel::teller::SessionOpen::Admitted { .. }
+    ));
+    assert_eq!(post.open_units(), 1);
+    drop(slot);
+    assert_eq!(
+        post.open_units(),
+        0,
+        "the session no longer owns open facts"
+    );
+    assert_eq!(node.sweep(node.arrived()), 1);
+    assert_eq!(node.sweep(node.arrived()), 0);
+    let durability = book.durability.lock().unwrap_or_else(|p| p.into_inner());
+    let records: Vec<_> = durability
+        .audit_records
+        .iter()
+        .filter(|r| r.what.unit_key == key)
+        .collect();
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].what.destination.as_deref(), Some(DESTINATION));
+    assert_eq!(records[0].outcome.finish, RecordFinish::Error);
+    assert_eq!(records[0].controls.policy_epoch, 7);
+    assert_eq!(records[0].usage.rate_card_version, 0);
+}
+
 /// AN ADMITTED DUPLEX SESSION seals its one fixed record when it ends (audit R1#2; THE DESIGN §1
 /// "The audit step writes one fixed record, for every plane"): the session's key, how its audit step
-/// said it went, and the destination its open sealed. RED before the fix: the session's audit pass
-/// was handed back at its open and dropped at `SessionSlot::finish`, so nothing reached the chain.
+/// said it went, and the destination its open sealed.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_admitted_session_seals_one_record_when_it_ends() {
     let node = Arc::new(Node::new());

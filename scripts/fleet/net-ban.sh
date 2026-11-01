@@ -43,7 +43,10 @@ except ImportError:
 nb = d.get("net-ban")
 if not isinstance(nb, dict):
     sys.exit(f"net-ban: {sys.argv[1]} states no [net-ban] table")
-v = nb.get(sys.argv[2], [])
+key = sys.argv[2]
+if key not in nb:
+    sys.exit(f"net-ban: [net-ban] states no {key} list")
+v = nb[key]
 if not isinstance(v, list):
     sys.exit(f"net-ban: [net-ban] {sys.argv[2]} is not a list")
 for e in v:

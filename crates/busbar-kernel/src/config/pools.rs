@@ -368,7 +368,7 @@ pub enum BreakerTripMode {
 }
 
 /// Trip configuration parameters (ADR-0002 defaults).
-#[derive(Debug, Deserialize, serde::Serialize, Clone, Default, PartialEq)]
+#[derive(Debug, Deserialize, serde::Serialize, Clone, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct BreakerTripConfig {
     #[serde(default = "default_trip_mode")]
@@ -385,6 +385,18 @@ pub struct BreakerTripConfig {
     /// the pre-1.0 `n` alias is GONE).
     #[serde(default = "default_consecutive_n")]
     pub consecutive_n: u32,
+}
+
+impl Default for BreakerTripConfig {
+    fn default() -> Self {
+        Self {
+            mode: default_trip_mode(),
+            window_secs: default_window_secs(),
+            threshold: default_threshold(),
+            min_requests: default_min_requests(),
+            consecutive_n: default_consecutive_n(),
+        }
+    }
 }
 
 pub fn default_trip_mode() -> BreakerTripMode {

@@ -288,9 +288,7 @@ pub enum LimitWindow {
 }
 
 impl LimitWindow {
-    /// Every window, so a consumer that has to recognize a window WORD (e.g. `cost::
-    /// is_bucket_of_group`, parsing a bucket id back) enumerates the same five spellings the
-    /// projector writes rather than hard-coding its own list.
+    /// Every window supported by the group projector.
     pub const ALL: [LimitWindow; 5] = [
         LimitWindow::Minute,
         LimitWindow::Hour,

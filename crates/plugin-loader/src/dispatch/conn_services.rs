@@ -266,8 +266,13 @@ fn slot<R: Into<Kept>>(
         if head.op != service || (head.size as usize) < in_size {
             return Answered::fault();
         }
-        let Some((wake, (id, table))) =
-            super::handle::resolve(ctx).and_then(|w| w.conn.get().map(|c| (w, c)))
+        let Some(wake) = super::handle::resolve(ctx) else {
+            return refusal(ConnError::Unarmed);
+        };
+        let binding = super::export_bindings::current();
+        let Some((id, table)) = binding
+            .as_ref()
+            .map_or_else(|| wake.conn.get(), |binding| binding.conn.as_ref())
         else {
             return refusal(ConnError::Unarmed);
         };
@@ -563,7 +568,7 @@ service!(
             // (A request waiting on its auth call drops the call: a client drop.)
             // (A stream being opened outside the lock is closed by the call that opens it.)
             Some(Conn::Held { .. } | Conn::Failed(_) | Conn::Authing(_) | Conn::Opening) => {
-                return Answered::ready(0, 0)
+                return Answered::ready(0, 0);
             }
             Some(Conn::Open(c)) => c,
             None if i.stream & HELD != 0 => return refusal(ConnError::Closed),
@@ -993,10 +998,37 @@ fn replay_raw(input: *const c_void, answer: Answered, kept: &[u8]) -> Answered {
 /// well as by ticket: tickets are minted per dispatcher, so another dispatcher's instance may hold
 /// an identical ticket, and its kept answers are never its neighbour's to drop (dropping them would
 /// make it run a stored establish or write a second time).
-pub(crate) fn forget(id: InstanceId, ticket: Ticket) -> (usize, Closes) {
+pub(crate) struct Forgotten {
+    _closes: Closes,
+    _binding: Option<super::export_bindings::Forgotten>,
+}
+
+pub(crate) fn forget(id: InstanceId, ticket: Ticket) -> (usize, Forgotten) {
     super::handle::supplier_of(id).map_or_else(
-        || (0, Closes(None, Vec::new())),
-        |w| w.conn_state.forget(w.conn.get(), ticket),
+        || {
+            (
+                0,
+                Forgotten {
+                    _closes: Closes(None, Vec::new()),
+                    _binding: None,
+                },
+            )
+        },
+        |w| {
+            let binding = w.exports.forget(w, ticket);
+            let conn = binding
+                .binding()
+                .and_then(|b| b.conn.as_ref())
+                .or_else(|| w.conn.get());
+            let (kept, closes) = w.conn_state.forget(conn, ticket);
+            (
+                kept,
+                Forgotten {
+                    _closes: closes,
+                    _binding: Some(binding),
+                },
+            )
+        },
     )
 }
 
@@ -1005,6 +1037,9 @@ pub(crate) fn forget(id: InstanceId, ticket: Ticket) -> (usize, Closes) {
 pub(crate) fn forget_worker(ids: &[InstanceId], worker: u32) {
     let gone = |t: &Ticket| super::ticket::decode(t.slot).0 == worker;
     for w in ids.iter().filter_map(|id| super::handle::supplier_of(*id)) {
+        for (ticket, binding) in w.exports.worker_pins(worker) {
+            drop(w.conn_state.forget(binding.conn.as_ref(), ticket));
+        }
         w.conn_state.drop_dialling(w.conn.get(), gone);
         lock(&w.conn_state.kept).retain(|t, _| !gone(t));
     }
@@ -1163,7 +1198,7 @@ fn resolve(
             Conn::Open(c) => return Ok(*c),
             Conn::Failed(e) => return Err(*e),
             Conn::Held { head: Some(_), .. } | Conn::Authing(_) | Conn::Opening => {
-                return Err(ConnError::Refused)
+                return Err(ConnError::Refused);
             }
             Conn::Held {
                 need,
@@ -1707,7 +1742,7 @@ fn reply(
                 return (
                     None,
                     Answered::bare(Outcome::Refused, "the request is not whole: write its end"),
-                )
+                );
             }
             Conn::Failed(e) => {
                 // THE FAILED ACK: the stream's refusal, with its text, and the reply has ended.
@@ -1724,7 +1759,7 @@ fn reply(
                         Outcome::Refused,
                         "another call on the stream is opening it; read when it answers",
                     ),
-                )
+                );
             }
         }
     }

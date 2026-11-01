@@ -191,6 +191,7 @@ fn credentials_cross_as_secret_blobs_and_read_back() {
 
 #[test]
 fn plane_records_and_tokens_cross_the_request_path_slots() {
+    const LIVE_REPLAY_DEADLINE: u64 = u64::MAX;
     let store = open();
     let s: &dyn RecordStore = &store;
     s.upsert_plane_record(record("task", "t1", None, 0, b"body".to_vec()).view())
@@ -213,8 +214,12 @@ fn plane_records_and_tokens_cross_the_request_path_slots() {
         s.list_plane_record_parents("event").expect("parents"),
         vec!["t1".to_string()]
     );
-    assert!(s.redeem_plane_token("tok", "x", 100, 1).expect("first"));
-    assert!(!s.redeem_plane_token("tok", "x", 100, 1).expect("second"));
+    assert!(s
+        .redeem_plane_token("tok", "x", LIVE_REPLAY_DEADLINE, 1)
+        .expect("first"));
+    assert!(!s
+        .redeem_plane_token("tok", "x", LIVE_REPLAY_DEADLINE, 1)
+        .expect("second"));
     s.delete_plane_record("task", "t1").expect("delete");
     assert_eq!(s.get_plane_record("task", "t1").expect("get"), None);
 }

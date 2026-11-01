@@ -29,7 +29,7 @@
 //! * A plugin's leased answer (`status`, `describe`) is copied, then its lease released.
 
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::time::{Duration, Instant};
 
 use busbar_contract::abi::hook::{
@@ -43,6 +43,7 @@ use busbar_contract::abi::mechanism::endpoint::{EndpointRequest, EndpointRespons
 use busbar_contract::abi::mechanism::lifecycle::slot as life;
 use busbar_contract::abi::mechanism::route::Route;
 use busbar_contract::abi::mechanism::KindCode;
+use busbar_contract::abi::sdk::hook::{configure_checkpoint, ConfigureCheckpoint};
 use busbar_contract::conn::DeclaredConns;
 use busbar_contract::hook_calls::{Answered, HookAxis, HookCalls, Pending, Probed};
 
@@ -118,32 +119,130 @@ enum State {
     Trialing,
 }
 
-/// One acknowledged `configure`: the instance name, the settings and the version.
-type Configured = Arc<(String, Vec<u8>, u64)>;
+/// One caller-owned push, kept alive through its dispatcher operation.
+type Pushed = Arc<(String, zeroize::Zeroizing<Vec<u8>>, u64)>;
+
+struct Configured {
+    name: String,
+    /// None means an acknowledged push supplied no usable recovery checkpoint. Recovery must
+    /// fail closed; neither the original settings nor the last partial push can replace it.
+    checkpoint: Option<ConfigureCheckpoint>,
+}
+
+struct Configuration {
+    owner: Weak<Plugin<Hook>>,
+    /// One complete configuration, never an event history. None means no push was acknowledged.
+    kept: Option<Arc<Configured>>,
+    /// Submitted configure operations whose result has not yet been recorded by their owner.
+    pending: usize,
+    /// A submitted operation lost its result. Its plugin may have committed; no saved snapshot
+    /// can prove the current state, even if an older READY reply arrives later.
+    uncertain: bool,
+}
+
+struct ConfigureAttempt {
+    inner: Arc<Inner>,
+    target: Option<Weak<Plugin<Hook>>>,
+}
+
+impl ConfigureAttempt {
+    fn target(&mut self, plugin: &Arc<Plugin<Hook>>) -> Result<(), String> {
+        let target = Arc::downgrade(plugin);
+        if self.target.as_ref().is_some_and(|old| old.ptr_eq(&target)) {
+            return Ok(());
+        }
+        self.finish(false);
+        let mut configured = self
+            .inner
+            .configured
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if !configured.owner.ptr_eq(&target) {
+            return Err("hook configuration targeted a retired instance".into());
+        }
+        configured.pending = configured
+            .pending
+            .checked_add(1)
+            .ok_or("too many outstanding hook configurations")?;
+        self.target = Some(target);
+        Ok(())
+    }
+
+    fn finish(&mut self, known: bool) {
+        let Some(target) = self.target.take() else {
+            return;
+        };
+        let mut configured = self
+            .inner
+            .configured
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if configured.owner.ptr_eq(&target) {
+            configured.pending -= 1;
+            configured.uncertain |= !known;
+        }
+    }
+}
+
+impl Drop for ConfigureAttempt {
+    fn drop(&mut self) {
+        // In particular, READY can be queued after commit but never polled by the caller.
+        // Dropping Reply releases that lease; this guard refuses to pretend its state was saved.
+        self.finish(false);
+    }
+}
+
+/// Copy the opaque checkpoint while its answer's secret lease is still held.
+fn checkpoint(out: &ConfigureOut) -> Result<Option<ConfigureCheckpoint>, String> {
+    use busbar_contract::abi::mechanism::call::{BLOB_OCTETS, BLOB_SECRET};
+    let ext = out.head.extensions;
+    if ext.len == 0 {
+        return Ok(None);
+    }
+    if ext.len > configure_checkpoint::MAX_BYTES || ext.ptr.is_null() || ext.fmt != BLOB_OCTETS {
+        return Err("invalid hook configuration checkpoint reply".into());
+    }
+    // SAFETY: the checked configure answer remains live under its plugin lease until release.
+    let bytes = unsafe { std::slice::from_raw_parts(ext.ptr, ext.len) };
+    let checkpoint = ConfigureCheckpoint::decode(bytes).map_err(str::to_owned)?;
+    if checkpoint.is_some() && (out.head.lease == 0 || ext.flags & BLOB_SECRET == 0) {
+        return Err("hook configuration checkpoint has no secret lease".into());
+    }
+    Ok(checkpoint)
+}
 
 /// `configure` `plugin` with `pushed` (ticket-less; the SDK's `configure` never pends): `Ok` when
 /// it acknowledged the version.
-fn reconfigure(plugin: &Plugin<Hook>, pushed: &(String, Vec<u8>, u64)) -> Result<(), String> {
-    let (name, settings, version) = pushed;
+fn reconfigure(plugin: &Plugin<Hook>, pushed: &Configured) -> Result<ConfigureCheckpoint, String> {
+    let saved = pushed
+        .checkpoint
+        .as_ref()
+        .ok_or("hook acknowledged settings without a recovery checkpoint")?;
+    let version = saved.settings_version;
     let mut f = Frame::new(
         ConfigureIn {
             head: in_head(),
-            version: *version,
-            settings: json(settings),
-            name: lend_or_null(name),
+            version,
+            settings: json(saved.settings()),
+            name: lend_or_null(&pushed.name),
         },
         blank_out::<ConfigureOut>(),
     );
     let c = plugin.call(slot::CONFIGURE, &mut f);
-    release(plugin, c.lease);
-    if c.outcome == Outcome::Ready && f.out.acked_version == *version {
-        Ok(())
+    let checkpoint = if c.outcome == Outcome::Ready && f.out.acked_version == version {
+        checkpoint(&f.out)
     } else {
         Err(c.error.map_or_else(
             || format!("it did not acknowledge settings version {version} again"),
             |e| String::from_utf8_lossy(&e).into_owned(),
         ))
+    };
+    release(plugin, c.lease);
+    let restored = checkpoint?.ok_or("hook did not checkpoint its restored configuration")?;
+    if restored.settings_version != version || restored.settings() != saved.settings() {
+        return Err("hook did not restore its complete configuration checkpoint".into());
     }
+    Ok(restored)
 }
 
 struct Inner {
@@ -154,11 +253,9 @@ struct Inner {
     // settings-leak-lint: allow — NON-PROJECTION engine type: the instance's own settings bytes,
     // re-sent to the plugin's `open` on a quarantine trial. `Inner` implements neither `Debug` nor
     // `Serialize`, and `HookInstance`'s hand-written `Debug` prints the name only.
-    settings: Vec<u8>,
-    /// The last `configure` the hook acknowledged (its name, settings and version): a quarantine's
-    /// trial opens its fresh instance over [`Inner::settings`], then pushes this again, so a commit
-    /// the hook acknowledged outlives the instance that acknowledged it.
-    configured: Mutex<Option<Configured>>,
+    settings: zeroize::Zeroizing<Vec<u8>>,
+    /// The plugin's last complete effective configuration, atomically captured with its ACK.
+    configured: Mutex<Configuration>,
     state: Mutex<State>,
     next_worker: AtomicU32,
     /// Whether the hook may answer an order (`declares.hook.orders`); `false`: an order it answers
@@ -173,7 +270,7 @@ impl Inner {
 
     /// The instance to call before `deadline`: the live one, or — once the trial window opens
     /// within `deadline` — a fresh one. `Err` says why there is none.
-    async fn live(&self, deadline: Instant) -> Result<Arc<Plugin<Hook>>, String> {
+    async fn live(self: &Arc<Self>, deadline: Instant) -> Result<Arc<Plugin<Hook>>, String> {
         loop {
             let (wait, retired, trial) = {
                 let mut state = self.lock();
@@ -224,7 +321,45 @@ impl Inner {
                 continue;
             }
             if let Some(window) = trial {
-                return self.trial(window);
+                // One blocking trial per instance, owned by Trialing even when its caller times
+                // out or drops. Its eventual result publishes/retires the fresh instance itself.
+                let inner = Arc::clone(self);
+                let trial = tokio::task::spawn_blocking(move || {
+                    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        inner.trial(window)
+                    })) {
+                        Ok(answer) => answer,
+                        Err(_) => {
+                            let mut state = inner.lock();
+                            if matches!(*state, State::Trialing) {
+                                *state = State::Quarantined {
+                                    trial_at: Instant::now() + window,
+                                    window,
+                                };
+                            }
+                            Err("hook recovery worker panicked".to_owned())
+                        }
+                    }
+                });
+                return match tokio::time::timeout(
+                    deadline.saturating_duration_since(Instant::now()),
+                    trial,
+                )
+                .await
+                {
+                    Ok(Ok(answer)) => answer,
+                    Ok(Err(_)) => {
+                        *self.lock() = State::Quarantined {
+                            trial_at: Instant::now() + window,
+                            window,
+                        };
+                        Err(format!("hook '{}' recovery worker failed", self.name))
+                    }
+                    Err(_) => Err(format!(
+                        "hook '{}' is quarantined past the call's budget",
+                        self.name
+                    )),
+                };
             }
             tokio::time::sleep(wait).await;
         }
@@ -234,11 +369,6 @@ impl Inner {
     /// fresh instance and `open` it outside the lock, then swap the answer in. A failed trial
     /// doubles the window.
     fn trial(&self, window: Duration) -> Result<Arc<Plugin<Hook>>, String> {
-        let configured = self
-            .configured
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .clone();
         let opened = (self.rebind)().and_then(|p| {
             if p.context::<HookContext>()
                 .is_none_or(|context| context.routes != self.routes)
@@ -246,33 +376,150 @@ impl Inner {
                 return Err("hook route declarations changed during recovery".into());
             }
             open(&p, &self.settings)?;
-            if let Some(pushed) = configured {
-                if let Err(e) = reconfigure(&p, &pushed) {
+            Ok(Arc::new(p))
+        });
+        let opened = opened.and_then(|p| loop {
+            let saved = {
+                let configured = self.configured.lock().unwrap_or_else(|e| e.into_inner());
+                if configured.pending != 0 || configured.uncertain {
+                    Err("hook configuration result is unresolved; recovery is unavailable")
+                } else {
+                    Ok(configured.kept.clone())
+                }
+            };
+            let saved = match saved {
+                Ok(saved) => saved,
+                Err(error) => {
                     close(&p);
-                    return Err(e);
+                    return Err(error.to_owned());
+                }
+            };
+            let restored = match saved
+                .as_ref()
+                .map(|saved| reconfigure(&p, saved))
+                .transpose()
+            {
+                Ok(restored) => restored,
+                Err(error) => {
+                    close(&p);
+                    return Err(error);
+                }
+            };
+            // No plugin callback runs under either lock. An old instance's ACK arriving during
+            // replay changes this Arc; replay its newer complete checkpoint before publication.
+            let mut state = self.lock();
+            let mut configured = self.configured.lock().unwrap_or_else(|e| e.into_inner());
+            if configured.pending != 0 || configured.uncertain {
+                drop(configured);
+                drop(state);
+                close(&p);
+                return Err(
+                    "hook configuration result is unresolved; recovery is unavailable".into(),
+                );
+            }
+            let unchanged = match (&saved, &configured.kept) {
+                (None, None) => true,
+                (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+                _ => false,
+            };
+            if !unchanged {
+                continue;
+            }
+            configured.owner = Arc::downgrade(&p);
+            configured.kept = saved.as_ref().map(|saved| {
+                Arc::new(Configured {
+                    name: saved.name.clone(),
+                    checkpoint: restored,
+                })
+            });
+            *state = State::Live(Arc::clone(&p));
+            return Ok(p);
+        });
+        if let Err(error) = &opened {
+            let window = (window * 2).min(QUARANTINE_MAX);
+            *self.lock() = State::Quarantined {
+                trial_at: Instant::now() + window,
+                window,
+            };
+            return Err(format!(
+                "hook '{}' is quarantined: its trial did not open: {error}",
+                self.name
+            ));
+        }
+        opened
+    }
+
+    /// Retain one checkpoint before reporting an ACK to the caller. Revisions are scoped to the
+    /// physical plugin, so a late old-instance reply cannot overwrite a newly restored instance.
+    fn acknowledged(
+        &self,
+        plugin: &Arc<Plugin<Hook>>,
+        name: &str,
+        version: u64,
+        checkpoint: Result<Option<ConfigureCheckpoint>, String>,
+    ) -> Result<(), String> {
+        let mut configured = self.configured.lock().unwrap_or_else(|e| e.into_inner());
+        if !configured.owner.ptr_eq(&Arc::downgrade(plugin)) {
+            return Err("hook configuration was acknowledged by a retired instance".into());
+        }
+        // Once an ACK supplied no usable checkpoint, a delayed older valid reply cannot prove
+        // that physical instance's current state. Keep recovery unavailable until a fresh open.
+        if configured
+            .kept
+            .as_ref()
+            .is_some_and(|kept| kept.checkpoint.is_none())
+        {
+            return checkpoint.map(|_| ());
+        }
+        let checkpoint = checkpoint.and_then(|value| {
+            if value.as_ref().is_some_and(|v| v.settings_version < version) {
+                Err("hook configuration checkpoint predates its acknowledgement".into())
+            } else {
+                Ok(value)
+            }
+        });
+        if let Ok(Some(next)) = &checkpoint {
+            if let Some(previous) = configured.kept.as_ref().and_then(|k| k.checkpoint.as_ref()) {
+                if next.revision < previous.revision {
+                    if next.settings_version <= previous.settings_version {
+                        return Ok(());
+                    }
+                    configured.kept = Some(Arc::new(Configured {
+                        name: name.to_owned(),
+                        checkpoint: None,
+                    }));
+                    return Err("hook configuration checkpoint order is inconsistent".into());
+                }
+                if next.settings_version < previous.settings_version {
+                    configured.kept = Some(Arc::new(Configured {
+                        name: name.to_owned(),
+                        checkpoint: None,
+                    }));
+                    return Err("hook configuration checkpoint version moved backwards".into());
+                }
+                if next.revision == previous.revision {
+                    if next.settings_version == previous.settings_version
+                        && next.settings() == previous.settings()
+                    {
+                        return Ok(());
+                    }
+                    configured.kept = Some(Arc::new(Configured {
+                        name: name.to_owned(),
+                        checkpoint: None,
+                    }));
+                    return Err("hook reused a configuration checkpoint revision".into());
                 }
             }
-            Ok(p)
-        });
-        let mut state = self.lock();
-        match opened {
-            Ok(p) => {
-                let p = Arc::new(p);
-                *state = State::Live(Arc::clone(&p));
-                Ok(p)
-            }
-            Err(e) => {
-                let window = (window * 2).min(QUARANTINE_MAX);
-                *state = State::Quarantined {
-                    trial_at: Instant::now() + window,
-                    window,
-                };
-                Err(format!(
-                    "hook '{}' is quarantined: its trial did not open: {e}",
-                    self.name
-                ))
-            }
         }
+        let (checkpoint, error) = match checkpoint {
+            Ok(checkpoint) => (checkpoint, None),
+            Err(error) => (None, Some(error)),
+        };
+        configured.kept = Some(Arc::new(Configured {
+            name: name.to_owned(),
+            checkpoint,
+        }));
+        error.map_or(Ok(()), Err)
     }
 
     /// A trial (or any) call that ended in FAULT: an instance the watchdog faulted goes to
@@ -284,11 +531,12 @@ impl Inner {
         {
             let mut state = self.lock();
             let window = match &*state {
-                State::Live(_) => Some(QUARANTINE_FIRST),
-                State::Quarantined { window, .. } => Some((*window * 2).min(QUARANTINE_MAX)),
-                // A trial is binding a fresh instance: its answer decides the state, not an
-                // older instance's fault.
-                State::Trialing => None,
+                State::Live(current) if std::ptr::eq(current.as_ref(), plugin) => {
+                    Some(QUARANTINE_FIRST)
+                }
+                // A delayed or duplicate old-instance fault neither quarantines its replacement
+                // nor advances backoff. Only a failed fresh trial doubles the window.
+                _ => None,
             };
             if let Some(window) = window {
                 *state = State::Quarantined {
@@ -305,12 +553,29 @@ impl Inner {
     /// answer), lending `lent` to the op, bounded by `budget`. `None` = no answer could be had
     /// (named).
     async fn submit<I, O>(
-        &self,
+        self: &Arc<Self>,
+        s: u32,
+        budget: Duration,
+        lent: Lent,
+        make: impl Fn() -> Frame<I, O> + Send,
+        regrow: impl FnMut(&O) -> Option<Lent> + Send,
+    ) -> Result<Submitted<O>, Answered<O>>
+    where
+        I: InFrame,
+        O: OutFrame + Copy,
+    {
+        self.submit_tracked(s, budget, lent, make, regrow, None)
+            .await
+    }
+
+    async fn submit_tracked<I, O>(
+        self: &Arc<Self>,
         s: u32,
         budget: Duration,
         lent: Lent,
         make: impl Fn() -> Frame<I, O> + Send,
         mut regrow: impl FnMut(&O) -> Option<Lent> + Send,
+        mut configure: Option<&mut ConfigureAttempt>,
     ) -> Result<Submitted<O>, Answered<O>>
     where
         I: InFrame,
@@ -344,6 +609,9 @@ impl Inner {
                 if plugin.is_faulted() {
                     continue 'route;
                 }
+                if let Some(attempt) = configure.as_deref_mut() {
+                    attempt.target(&plugin).map_err(Answered::Broken)?;
+                }
                 call.submit(
                     &*plugin,
                     s,
@@ -364,6 +632,14 @@ impl Inner {
                 else {
                     return Err(Answered::TimedOut);
                 };
+                // REFUSED commits nothing. In particular cap admission returns a settled refusal
+                // without crossing the plugin. End this attempt before backoff or rerouting, so
+                // its own pending count cannot block a fresh trial and a timeout cannot poison it.
+                if done.outcome == Outcome::Refused {
+                    if let Some(attempt) = configure.as_deref_mut() {
+                        attempt.finish(true);
+                    }
+                }
                 // THE CAP IS BACKPRESSURE, NOT A LATCH (1.5.5's `MAX_INFLIGHT_HOOK_CALLS`, frozen):
                 // an instance whose `max_inflight` units are all held REFUSES the op and never calls
                 // the plugin. The call waits for a unit under its own budget — the units come back
@@ -523,6 +799,7 @@ impl HookInstance {
         rebind: impl Fn() -> Result<Plugin<Hook>, String> + Send + Sync + 'static,
     ) -> Result<Self, String> {
         open(&plugin, settings)?;
+        let plugin = Arc::new(plugin);
         Ok(Self {
             inner: Arc::new(Inner {
                 name: plugin.name().to_string(),
@@ -531,9 +808,14 @@ impl HookInstance {
                     .map_or_else(Vec::new, |f| f.routes.clone()),
                 dispatcher,
                 rebind: Box::new(rebind),
-                settings: settings.to_vec(),
-                configured: Mutex::new(None),
-                state: Mutex::new(State::Live(Arc::new(plugin))),
+                settings: zeroize::Zeroizing::new(settings.to_vec()),
+                configured: Mutex::new(Configuration {
+                    owner: Arc::downgrade(&plugin),
+                    kept: None,
+                    pending: 0,
+                    uncertain: false,
+                }),
+                state: Mutex::new(State::Live(plugin)),
                 next_worker: AtomicU32::new(0),
                 orders,
             }),
@@ -750,7 +1032,7 @@ impl HookCalls for HookInstance {
         let inner = Arc::clone(&self.inner);
         Box::pin(async move {
             let held: Held<NotifyIn> = Held(frame.input());
-            let _ = inner
+            if let Ok(done) = inner
                 .submit(
                     slot::NOTIFY,
                     budget,
@@ -758,7 +1040,10 @@ impl HookCalls for HookInstance {
                     move || Frame::new(held.get(), out_head()),
                     |_: &OutHead| None,
                 )
-                .await;
+                .await
+            {
+                release(&done.plugin, done.lease);
+            }
         })
     }
 
@@ -770,7 +1055,11 @@ impl HookCalls for HookInstance {
         budget: Duration,
     ) -> Pending<Result<(), String>> {
         let inner = Arc::clone(&self.inner);
-        let owned: Configured = Arc::new((name.to_string(), settings.as_bytes().to_vec(), version));
+        let owned: Pushed = Arc::new((
+            name.to_string(),
+            zeroize::Zeroizing::new(settings.as_bytes().to_vec()),
+            version,
+        ));
         Box::pin(async move {
             let lent = Arc::clone(&owned);
             let acked = Arc::clone(&owned);
@@ -786,27 +1075,33 @@ impl HookCalls for HookInstance {
                 )
             };
             let hook = inner.name.clone();
+            let mut attempt = ConfigureAttempt {
+                inner: Arc::clone(&inner),
+                target: None,
+            };
             match inner
-                .submit(
+                .submit_tracked(
                     slot::CONFIGURE,
                     budget,
                     owned as Lent,
                     make,
                     |_: &ConfigureOut| None,
+                    Some(&mut attempt),
                 )
                 .await
             {
                 Ok(done) if done.outcome == Outcome::Ready && done.out.acked_version == version => {
+                    let checkpoint = checkpoint(&done.out);
                     release(&done.plugin, done.lease);
-                    // Acknowledgements may finish out of order: the newest version is kept.
-                    let mut kept = inner.configured.lock().unwrap_or_else(|p| p.into_inner());
-                    if kept.as_ref().is_none_or(|k| k.2 <= version) {
-                        *kept = Some(acked);
-                    }
-                    Ok(())
+                    let result = inner.acknowledged(&done.plugin, &acked.0, version, checkpoint);
+                    attempt.finish(true);
+                    result
                 }
                 Ok(done) => {
                     release(&done.plugin, done.lease);
+                    if done.outcome == Outcome::Failed {
+                        attempt.finish(true);
+                    }
                     // The hook's refusal is its bare words: the host names the hook (H13).
                     Err(done.error.map_or_else(
                         || format!("hook '{hook}' did not acknowledge settings version {version}"),

@@ -502,8 +502,20 @@ pub struct SecretRows {
     /// The host's one disk lane, where a source that declares a disk need resolves at config time.
     /// `None` = no lane is wired (such a source refuses every resolve).
     disk_run: Option<DiskRun>,
-    /// Each plugin bound (never opened) to `check` references, by Statement name.
-    checkers: Mutex<std::collections::HashMap<String, Arc<Plugin<Secret>>>>,
+    /// Each plugin bound (never opened) to `check` references in the current admitted set.
+    checkers: Mutex<Checkers>,
+}
+
+#[derive(Default)]
+struct Checkers {
+    generation: Arc<()>,
+    plugins: std::collections::HashMap<CheckerKey, Arc<Plugin<Secret>>>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+enum CheckerKey {
+    Linked(usize),
+    Dropped(usize),
 }
 
 impl std::fmt::Debug for SecretRows {
@@ -682,7 +694,60 @@ impl SecretRows {
             .into_iter()
             .filter(|c| c.kind == KindCode::Secret)
             .collect();
-        *self.dropped.write().unwrap_or_else(PoisonError::into_inner) = secrets;
+        let retired = {
+            // Match checker's snapshot order: a candidate and its cache generation change together.
+            let mut dropped = self.dropped.write().unwrap_or_else(PoisonError::into_inner);
+            let mut checkers = self.checkers.lock().unwrap_or_else(PoisonError::into_inner);
+            let candidates = std::mem::replace(&mut *dropped, secrets);
+            let checkers = std::mem::take(&mut *checkers);
+            (candidates, checkers)
+        };
+        // Retiring a cached plugin can unload its library: do it outside both host locks.
+        drop(retired);
+    }
+
+    fn checker(&self, module: &str) -> Result<Option<Arc<Plugin<Secret>>>, String> {
+        let (key, candidate, generation) = {
+            let dropped = self.dropped.read().unwrap_or_else(PoisonError::into_inner);
+            let checkers = self.checkers.lock().unwrap_or_else(PoisonError::into_inner);
+            let Some((key, candidate)) = self
+                .linked
+                .iter()
+                .enumerate()
+                .find(|(_, c)| c.answers(module))
+                .map(|(i, c)| (CheckerKey::Linked(i), c))
+                .or_else(|| {
+                    dropped
+                        .iter()
+                        .enumerate()
+                        .find(|(_, c)| c.answers(module))
+                        .map(|(i, c)| (CheckerKey::Dropped(i), c))
+                })
+            else {
+                return Ok(None);
+            };
+            if let Some(plugin) = checkers.plugins.get(&key) {
+                return Ok(Some(Arc::clone(plugin)));
+            }
+            (key, candidate.clone(), Arc::clone(&checkers.generation))
+        };
+        // Staging, dlopen, log sinks and dispatcher/connector callbacks hold no cache or row lock.
+        let loaded = Arc::new(self.load(&candidate, &format!("{}.check", Self::label(module)))?);
+        let plugin = {
+            let mut checkers = self.checkers.lock().unwrap_or_else(PoisonError::into_inner);
+            if Arc::ptr_eq(&generation, &checkers.generation) {
+                Arc::clone(
+                    checkers
+                        .plugins
+                        .entry(key)
+                        .or_insert_with(|| Arc::clone(&loaded)),
+                )
+            } else {
+                // An in-flight check keeps its snapshot, but cannot republish a retired image.
+                Arc::clone(&loaded)
+            }
+        };
+        Ok(Some(plugin))
     }
 
     /// The candidate `module` names, linked first; `None` when no row answers it.
@@ -766,24 +831,9 @@ impl SecretAxis for SecretRows {
     }
 
     fn check(&self, module: &str, settings: &serde_json::Value) -> Result<(), Vec<String>> {
-        let Some(c) = self.find(module) else {
+        let Some(plugin) = self.checker(module).map_err(|e| vec![e])? else {
             // No row answers it: whether the module exists is the registry's to say.
             return Ok(());
-        };
-        let plugin = {
-            let mut checkers = self.checkers.lock().unwrap_or_else(PoisonError::into_inner);
-            match checkers.get(&c.name) {
-                Some(p) => Arc::clone(p),
-                None => {
-                    // Loaded once per plugin to judge references, never opened.
-                    let p = Arc::new(
-                        self.load(&c, &format!("{}.check", Self::label(module)))
-                            .map_err(|e| vec![e])?,
-                    );
-                    checkers.insert(c.name.clone(), Arc::clone(&p));
-                    p
-                }
-            }
         };
         check(&plugin, settings.to_string().as_bytes())
     }

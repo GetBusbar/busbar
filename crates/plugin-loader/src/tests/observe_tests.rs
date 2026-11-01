@@ -219,6 +219,34 @@ fn a_first_party_grant_goes_with_its_last_instance() {
         .expect("a series whose plugin went is free for the plugin that replaces it");
 }
 
+#[test]
+fn a_live_series_name_cannot_be_reclaimed_with_a_different_kind_or_shed_flag() {
+    use busbar_contract::abi::mechanism::observe::SeriesDecl;
+    let observing = testing::observing();
+    let name = "grant_conflicting_metadata_total";
+    let original = [SeriesDecl::new(name, "counter")];
+    let held = grant_series(&observing, "grant-metadata-owner", true, &original)
+        .expect("the first writer owns the series");
+    for conflicting in [
+        SeriesDecl::new(name, "gauge"),
+        SeriesDecl::new(name, "counter").shed(),
+    ] {
+        let refused = grant_series(&observing, "grant-metadata-contender", true, &[conflicting])
+            .expect_err("changing declaration metadata cannot claim another writer's name");
+        assert!(refused.contains(name) && refused.contains("grant-metadata-owner"));
+        assert!(!first_party("grant-metadata-contender"));
+        assert!(first_party_series("grant-metadata-owner", name, "counter"));
+    }
+    drop(held);
+    let _replacement = grant_series(
+        &observing,
+        "grant-metadata-contender",
+        true,
+        &[SeriesDecl::new(name, "gauge")],
+    )
+    .expect("the name is available after its last writer is gone");
+}
+
 // ── ENVELOPE-ALL (ARCHITECT ruling 2026-10-03): every kind's envelope, through a bounded intake ──
 
 /// A binder's own sink, recorded: what the door's binder still receives once the host's

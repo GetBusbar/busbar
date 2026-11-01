@@ -1710,6 +1710,8 @@ fn test_budget_sweep_is_window_agnostic_across_cotenants() {
 
     // A seeded ledger cell with `requests` accrued (spend derives from requests x fee).
     let seeded = |window_start: u64, requests: u64, dirty: bool| BudgetCell {
+        group_owners: Default::default(),
+        flushing: 0,
         window_start,
         requests,
         billable_requests: requests,
@@ -1719,6 +1721,7 @@ fn test_budget_sweep_is_window_agnostic_across_cotenants() {
         fee_eras: Default::default(),
         flushed_fee_eras: Default::default(),
         rolled: Vec::new(),
+        rolled_eras: Vec::new(),
         dirty,
         last_touch: now,
     };
@@ -1789,6 +1792,8 @@ fn test_budget_sweep_staleness_boundary_is_exact() {
     let survivor = sample_key("survivor2", "hs2");
 
     let seeded = |window_start: u64, last_touch: u64| BudgetCell {
+        group_owners: Default::default(),
+        flushing: 0,
         window_start,
         requests: 1,
         billable_requests: 1,
@@ -1798,6 +1803,7 @@ fn test_budget_sweep_staleness_boundary_is_exact() {
         fee_eras: Default::default(),
         flushed_fee_eras: Default::default(),
         rolled: Vec::new(),
+        rolled_eras: Vec::new(),
         dirty: false,
         last_touch,
     };
@@ -1869,6 +1875,8 @@ fn test_budget_sweep_cadence_post_increment_no_off_by_one() {
     let k = sample_key("k1", "h1");
     let now = 1_700_000_040u64;
     let stale = || BudgetCell {
+        group_owners: Default::default(),
+        flushing: 0,
         window_start: now - 40 * SECS_PER_DAY, // genuinely stale (>31 d)
         requests: 1,
         billable_requests: 1,
@@ -1878,6 +1886,7 @@ fn test_budget_sweep_cadence_post_increment_no_off_by_one() {
         fee_eras: Default::default(),
         flushed_fee_eras: Default::default(),
         rolled: Vec::new(),
+        rolled_eras: Vec::new(),
         dirty: false,
         last_touch: now,
     };
@@ -3668,6 +3677,8 @@ fn test_budget_sweep_evicts_idle_attribution_cells_but_never_group_caps() {
     let survivor = sample_key("survivor", "hs");
 
     let all_time = |requests: u64, dirty: bool, last_touch: u64| BudgetCell {
+        group_owners: Default::default(),
+        flushing: 0,
         window_start: 0,
         requests,
         billable_requests: requests,
@@ -3677,6 +3688,7 @@ fn test_budget_sweep_evicts_idle_attribution_cells_but_never_group_caps() {
         fee_eras: Default::default(),
         flushed_fee_eras: Default::default(),
         rolled: Vec::new(),
+        rolled_eras: Vec::new(),
         dirty,
         last_touch,
     };
@@ -3988,6 +4000,8 @@ mod metering_fanout {
             "m".to_string(),
             "p".to_string(),
             0u64,
+            String::new(),
+            String::new(),
         );
         // `accrue` with an all-zero delta inserts a genuinely all-zero cell (key absent, under cap).
         gov.pending_metering.accrue(key, MeterCounts::default());
@@ -3999,6 +4013,33 @@ mod metering_fanout {
             rows.is_empty(),
             "an all-zero entry must never become a store row"
         );
+    }
+
+    #[test]
+    fn a_failed_flush_keeps_each_pinned_groups_units_through_retry() {
+        let store = Arc::new(CountingStore::new(1));
+        let gov = GovState::new(store, None).unwrap();
+        let cost = plane_fee_cost(1_000);
+        let mut key = sample_key("same-key", "h");
+        let units = [("search_units".to_owned(), 3)].into();
+        key.group = Some("first".into());
+        gov.record_usage_served(&cost, &key, "", "m", Some("p"), &units, AT);
+        assert_eq!(
+            gov.flush_metering(),
+            0,
+            "first write fails without committing"
+        );
+        key.group = Some("second".into());
+        gov.record_usage_served(&cost, &key, "", "m", Some("p"), &units, AT);
+        assert_eq!(gov.flush_metering(), 2);
+        let counts: std::collections::BTreeMap<_, _> = gov
+            .metering_for(metering_bucket(AT))
+            .unwrap()
+            .into_iter()
+            .map(|row| (row.key_group_at_use, row.usage_units["search_units"]))
+            .collect();
+        assert_eq!(counts, [("first".into(), 3), ("second".into(), 3)].into());
+        assert_eq!(gov.flush_metering(), 0, "retry commits each count once");
     }
 }
 
@@ -4619,6 +4660,8 @@ fn test_budget_sweep_only_exempts_group_cells_that_still_enforce_a_cap() {
     // Every seeded cell is an all-time (`window_start == 0`) cell, long idle and CLEAN — so the only
     // thing that can keep it alive is the `group:` exemption.
     let idle = || BudgetCell {
+        group_owners: Default::default(),
+        flushing: 0,
         window_start: 0,
         requests: 7,
         billable_requests: 7,
@@ -4628,6 +4671,7 @@ fn test_budget_sweep_only_exempts_group_cells_that_still_enforce_a_cap() {
         fee_eras: Default::default(),
         flushed_fee_eras: Default::default(),
         rolled: Vec::new(),
+        rolled_eras: Vec::new(),
         dirty: false,
         last_touch: now - max_window - 1,
     };
@@ -4684,6 +4728,8 @@ fn test_reclaim_group_cells_drops_every_window_and_scope_of_that_group() {
     let gov = GovState::new(store, None).unwrap();
     let now = 1_700_000_040u64;
     let cell = BudgetCell {
+        group_owners: Default::default(),
+        flushing: 0,
         window_start: 0,
         requests: 1,
         billable_requests: 1,
@@ -4693,6 +4739,7 @@ fn test_reclaim_group_cells_drops_every_window_and_scope_of_that_group() {
         fee_eras: Default::default(),
         flushed_fee_eras: Default::default(),
         rolled: Vec::new(),
+        rolled_eras: Vec::new(),
         dirty: false,
         last_touch: now,
     };
@@ -4703,7 +4750,9 @@ fn test_reclaim_group_cells_drops_every_window_and_scope_of_that_group() {
         "group:doomed@month",
         "group:doomed@day#pool:frontier",
     ] {
-        gov.budget.write(id).insert(id.to_string(), cell.clone());
+        let mut owned = cell.clone();
+        owned.group_owners.insert("doomed".to_string());
+        gov.budget.write(id).insert(id.to_string(), owned);
     }
     // Neighbours that must NOT be collateral: a different group, and one whose name merely PREFIXES
     // the deleted one (the `@` in the prefix is what keeps `doomed-2` safe).
@@ -4856,6 +4905,8 @@ fn test_sweep_exemption_survives_a_group_name_containing_the_id_delimiters() {
     let cost = crate::cost::CostModel::resolve_parts(None, 1, &groups);
 
     let idle = || BudgetCell {
+        group_owners: Default::default(),
+        flushing: 0,
         window_start: 0,
         requests: 7,
         billable_requests: 7,
@@ -4865,6 +4916,7 @@ fn test_sweep_exemption_survives_a_group_name_containing_the_id_delimiters() {
         fee_eras: Default::default(),
         flushed_fee_eras: Default::default(),
         rolled: Vec::new(),
+        rolled_eras: Vec::new(),
         dirty: false,
         last_touch: now - max_window - 1,
     };
@@ -4906,6 +4958,8 @@ fn test_reclaim_group_cells_never_takes_a_longer_name_that_shares_the_at_prefix(
     let gov = GovState::new(store, None).unwrap();
     let now = 1_700_000_040u64;
     let cell = BudgetCell {
+        group_owners: Default::default(),
+        flushing: 0,
         window_start: 0,
         requests: 1,
         billable_requests: 1,
@@ -4915,16 +4969,22 @@ fn test_reclaim_group_cells_never_takes_a_longer_name_that_shares_the_at_prefix(
         fee_eras: Default::default(),
         flushed_fee_eras: Default::default(),
         rolled: Vec::new(),
+        rolled_eras: Vec::new(),
         dirty: false,
         last_touch: now,
     };
-    for id in [
-        "group:user:alice@total",
-        "group:user:alice@day#pool:frontier",
-        "group:user:alice@corp.com@total",
-        "group:user:alice@corp.com@day#pool:frontier",
+    for (id, owner) in [
+        ("group:user:alice@total", "user:alice"),
+        ("group:user:alice@day#pool:frontier", "user:alice"),
+        ("group:user:alice@corp.com@total", "user:alice@corp.com"),
+        (
+            "group:user:alice@corp.com@day#pool:frontier",
+            "user:alice@corp.com",
+        ),
     ] {
-        gov.budget.write(id).insert(id.to_string(), cell.clone());
+        let mut owned = cell.clone();
+        owned.group_owners.insert(owner.to_string());
+        gov.budget.write(id).insert(id.to_string(), owned);
     }
 
     assert_eq!(
@@ -5830,7 +5890,7 @@ fn the_metering_accrual_reads_the_millisecond_clock_not_the_lifted_second() {
         requests: 1,
         ..MeterCounts::default()
     };
-    gov.record_metered_request_dated("vk_dated", "m", "p", add, T0 / 1_000, &clock, &dater);
+    gov.record_metered_request_dated("vk_dated", "", "m", "p", add, T0 / 1_000, &clock, &dater);
 
     let drained = gov.pending_metering.drain();
     assert_eq!(drained.len(), 1, "one response, one cell");
@@ -6090,7 +6150,7 @@ fn a_served_units_open_class_lands_on_its_providers_row() {
     .into_iter()
     .collect();
     gov.record_usage_served(&cost, &k, "", "m", Some("p"), &units, AT);
-    gov.record_lane_metering(&k.id, "m", Some("p"), &units, AT);
+    gov.record_lane_metering_for_key(&k, "m", Some("p"), &units, AT);
     gov.flush_metering();
     let rows = store.list_metering(metering_bucket(AT)).unwrap();
     let mine: Vec<_> = rows.iter().filter(|r| r.key_id == k.id).collect();
@@ -6483,4 +6543,40 @@ async fn a_usage_window_past_the_horizon_is_purged_from_the_durable_store() {
     );
     assert_eq!(requests(0), 1, "the all-time window is never purged");
     assert_eq!(requests(live), 1, "the live window is kept");
+}
+
+#[test]
+fn metering_open_units_keep_the_pinned_keys_historical_group() {
+    let (store, gov, mut key) = team_gov();
+    let cost = plane_fee_cost(1_000);
+    let units = [("search_units".to_owned(), 3)].into();
+    for group in [Some("team"), Some("later"), None, Some("team")] {
+        key.group = group.map(str::to_owned);
+        gov.record_usage_served(&cost, &key, "", "m", Some("p"), &units, AT);
+    }
+    gov.flush_metering();
+    let counts: std::collections::BTreeMap<_, _> = store
+        .list_metering(metering_bucket(AT))
+        .unwrap()
+        .into_iter()
+        .map(|row| {
+            assert_eq!(
+                (
+                    row.key_id.as_str(),
+                    row.model.as_str(),
+                    row.provider.as_str()
+                ),
+                (key.id.as_str(), "m", "p")
+            );
+            assert!(
+                row.pricing_version.is_empty(),
+                "no named price version was supplied"
+            );
+            (row.key_group_at_use, row.usage_units["search_units"])
+        })
+        .collect();
+    assert_eq!(
+        counts,
+        [("team".into(), 6), ("later".into(), 3), (String::new(), 3)].into()
+    );
 }

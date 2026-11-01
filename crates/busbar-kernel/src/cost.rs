@@ -54,37 +54,6 @@ pub use busbar_kernel_ledger::cost::{
 /// since no store persists this literal string durably yet.)
 pub const GROUP_BUCKET_PREFIX: &str = "group:";
 
-/// Whether `bucket_id` is a bucket of the group named `group` — an EXACT structural match against
-/// the construction `project_groups` uses, NOT a prefix test.
-///
-/// A GROUP NAME MAY CONTAIN `@` (and `#`). Nothing rejects it: `validate_groups` checks
-/// parent-existence / acyclicity / pool refs (the `amount > 0` rule lives in
-/// `config_validate::validate`, not here), `build_with_group` checks empty + length, and
-/// `sanitize_self_sub` (the SSO auto-provisioning path that mints `user:<sub>` leaves) rejects only
-/// empty / `/` / control characters / the reserved prefixes — an IdP subject is normally an EMAIL,
-/// so `user:alice@corp.com` is the ORDINARY case, not a pathological one. Any code that splits a
-/// bucket id on `@` therefore gets the wrong answer for the most common deployment there is.
-///
-/// So the test here is anchored at BOTH ends instead: the id must be `group:` + the name VERBATIM +
-/// `@` + one of the five [`crate::config::groups::LimitWindow`] spellings + an optional `#<scope>`.
-/// `group:user:alice@corp.com@total` therefore does NOT belong to `user:alice` (the window token
-/// would have to be `corp.com`), and DOES belong to `user:alice@corp.com`.
-pub fn is_bucket_of_group(bucket_id: &str, group: &str) -> bool {
-    let Some(tail) = bucket_id
-        .strip_prefix(GROUP_BUCKET_PREFIX)
-        .and_then(|rest| rest.strip_prefix(group))
-        .and_then(|t| t.strip_prefix('@'))
-    else {
-        return false;
-    };
-    // The scope suffix (`#<kind>:<value>`) is everything from the FIRST `#` after the window word;
-    // the window word itself can never contain one (it is one of five fixed literals).
-    let window = tail.split('#').next().unwrap_or(tail);
-    crate::config::groups::LimitWindow::ALL
-        .iter()
-        .any(|w| w.as_str() == window)
-}
-
 /// One model's per-token rates in integer NANO-units per token (config micro-units x 1000, rounded
 /// once at resolve). All hot-path math is integer over these.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

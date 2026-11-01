@@ -151,7 +151,16 @@ fn secure_requested(public: &str) -> bool {
                 None => (rest, Vec::new()),
             }
         }
-        None => ("", lower.split_whitespace().collect::<Vec<_>>()),
+        None => {
+            let mut wants = false;
+            let mut socket = false;
+            let parsed = visit_keyword(&lower, |key, value, _| {
+                let value = std::str::from_utf8(&value).map_err(|_| KEYWORD)?;
+                secure_parameter(key, value, &mut wants, &mut socket);
+                Ok(())
+            });
+            return parsed.is_ok() && wants && !socket;
+        }
     };
     let authority = head.split('/').next().unwrap_or_default();
     let host_is_socket = authority
@@ -159,29 +168,34 @@ fn secure_requested(public: &str) -> bool {
         .next()
         .is_some_and(|h| h.starts_with("%2f") || h.starts_with('/'));
     let mut wants = false;
+    let mut socket = host_is_socket;
     for p in params {
         let Some((k, v)) = p.split_once('=') else {
             continue;
         };
         let v = v.trim_matches(['\'', '"']);
-        match k.trim() {
-            "host" if v.starts_with('/') || v.starts_with("%2f") => return false,
-            "sslmode" | "ssl-mode" | "ssl_mode" => {
-                wants |= matches!(
-                    v,
-                    "require"
-                        | "verify-ca"
-                        | "verify-full"
-                        | "required"
-                        | "verify_ca"
-                        | "verify_identity"
-                );
-            }
-            "ssl" | "tls" => wants |= v == "true",
-            _ => {}
-        }
+        secure_parameter(k.trim(), v, &mut wants, &mut socket);
     }
-    wants && !host_is_socket
+    wants && !socket
+}
+
+fn secure_parameter(k: &str, v: &str, wants: &mut bool, socket: &mut bool) {
+    match k {
+        "host" if v.starts_with('/') || v.starts_with("%2f") => *socket = true,
+        "sslmode" | "ssl-mode" | "ssl_mode" => {
+            *wants |= matches!(
+                v,
+                "require"
+                    | "verify-ca"
+                    | "verify-full"
+                    | "required"
+                    | "verify_ca"
+                    | "verify_identity"
+            );
+        }
+        "ssl" | "tls" => *wants |= v == "true",
+        _ => {}
+    }
 }
 
 const TWO: &str = "a URL with one password (userinfo or `password=`, not both)";
@@ -272,10 +286,29 @@ fn looks_keyword(text: &str) -> bool {
 const KEYWORD: &str = "a connection string of key=value pairs";
 
 fn split_keyword(text: &str) -> Result<(String, Option<Bytes>), &'static str> {
+    let mut kept = Vec::new();
+    let mut password = None;
+    visit_keyword(text, |key, value, raw| {
+        if key == "password" {
+            if password.is_some() {
+                return Err(TWO);
+            }
+            password = Some(value);
+        } else {
+            kept.push(raw);
+        }
+        Ok(())
+    })?;
+    Ok((kept.join(" "), password))
+}
+
+/// Visit the same decoded keyword values used for password extraction and TLS policy.
+fn visit_keyword<'a>(
+    text: &'a str,
+    mut visit: impl FnMut(&'a str, Bytes, &'a str) -> Result<(), &'static str>,
+) -> Result<(), &'static str> {
     let b = text.as_bytes();
     let mut i = 0;
-    let mut kept: Vec<&str> = Vec::new();
-    let mut password = None;
     while i < b.len() {
         while i < b.len() && b[i].is_ascii_whitespace() {
             i += 1;
@@ -329,16 +362,9 @@ fn split_keyword(text: &str) -> Result<(String, Option<Bytes>), &'static str> {
                 }
             }
         }
-        if key == "password" {
-            if password.is_some() {
-                return Err(TWO);
-            }
-            password = Some(value);
-        } else {
-            kept.push(&text[start..i]);
-        }
+        visit(key, value, &text[start..i])?;
     }
-    Ok((kept.join(" "), password))
+    Ok(())
 }
 
 fn hex(c: u8) -> Option<u8> {

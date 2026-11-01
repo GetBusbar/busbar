@@ -887,3 +887,167 @@ fn pending_export_disk_append_keeps_old_path_and_cancelled_late_reply_cannot_rea
         std::fs::remove_dir_all(dir).unwrap();
     }
 }
+
+#[test]
+fn forgotten_pending_refresh_wakes_after_the_callers_state_lock_is_released() {
+    use crate::dispatch::ticket::{InstanceWake, WakeRoute};
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    const REFRESH_TICKET: Ticket = Ticket {
+        slot: 0,
+        generation: 1,
+    };
+    const WAITING_DELIVERY: Ticket = Ticket {
+        slot: 1,
+        generation: 1,
+    };
+
+    struct ProbeRoute {
+        state: std::sync::Mutex<()>,
+        woke_without_state_lock: AtomicBool,
+        woken: std::sync::Mutex<Vec<Ticket>>,
+    }
+
+    impl WakeRoute for ProbeRoute {
+        fn wake(&self, ticket: Ticket, _: Option<&'static InstanceWake>) {
+            self.woke_without_state_lock
+                .store(self.state.try_lock().is_ok(), Ordering::SeqCst);
+            self.woken.lock().unwrap().push(ticket);
+        }
+    }
+
+    let route = Arc::new(ProbeRoute {
+        state: std::sync::Mutex::new(()),
+        woke_without_state_lock: AtomicBool::new(false),
+        woken: std::sync::Mutex::new(Vec::new()),
+    });
+    let routed: Arc<dyn WakeRoute> = route.clone();
+    let wake: &'static InstanceWake = Box::leak(Box::new(InstanceWake::default()));
+    assert!(wake.route.set(Arc::downgrade(&routed)).is_ok());
+
+    let admission = wake
+        .exports
+        .admit(wake, life::REFRESH, REFRESH_TICKET)
+        .expect("refresh admitted");
+    wake.exports.pending_refresh(REFRESH_TICKET);
+    drop(admission);
+    assert!(wake
+        .exports
+        .admit(wake, export_slot::DELIVER, WAITING_DELIVERY)
+        .is_none());
+
+    // Ticket retirement is called with a worker state guard held. Its returned cleanup may drop
+    // after that guard; the routed wake is a caller callback and must observe the unlocked state.
+    let state = route.state.lock().unwrap();
+    let forgotten = wake.exports.forget(wake, REFRESH_TICKET);
+    drop(state);
+    drop(forgotten);
+    assert_eq!(&*route.woken.lock().unwrap(), &[WAITING_DELIVERY]);
+    assert!(route.woke_without_state_lock.load(Ordering::SeqCst));
+}
+
+#[test]
+fn worker_delivery_releases_inline_refresh_waiter_after_unlock_both_doors() {
+    use std::sync::atomic::AtomicBool;
+    use std::task::Wake;
+
+    const LOCK_PROBE_TIMEOUT: Duration = Duration::from_secs(1);
+    const CROSSING_CONTROL_TIMEOUT: Duration = Duration::from_secs(5);
+    const CROSSING_WATCHDOG_BUDGET: Duration = Duration::from_secs(20);
+    const PROBE_WORKER_INDEX: u32 = 0;
+    const NEXT_SETTINGS_GENERATION: u64 = 2;
+
+    struct WorkerLockProbe {
+        dispatcher: Arc<Dispatcher>,
+        worker_ticket: Ticket,
+        result: std::sync::mpsc::Sender<bool>,
+    }
+
+    impl Wake for WorkerLockProbe {
+        fn wake(self: Arc<Self>) {
+            let (done, observed) = std::sync::mpsc::channel();
+            let dispatcher = Arc::clone(&self.dispatcher);
+            let ticket = self.worker_ticket;
+            std::thread::spawn(move || {
+                let _ = dispatcher.slot_state(ticket);
+                let _ = done.send(());
+            });
+            let _ = self
+                .result
+                .send(observed.recv_timeout(LOCK_PROBE_TIMEOUT).is_ok());
+        }
+    }
+
+    for dropped in [false, true] {
+        let mut config = DispatchConfig::default();
+        config.budgets.write_behind = CROSSING_WATCHDOG_BUDGET;
+        let dispatcher = Arc::new(Dispatcher::new(config));
+        let worker_ticket = dispatcher
+            .mint(PROBE_WORKER_INDEX)
+            .expect("probe worker slot");
+        let far = Arc::new(Far::default());
+        assert!(far.waker.set(dispatcher.conn_waker()).is_ok());
+        let plugin = loaded(dropped, false, &dispatcher, Arc::clone(&far));
+        let settings = serde_json::json!({"url":"https://collector.example/worker-wake"});
+        let sink = ExportInstance::open(
+            plugin,
+            Arc::clone(&dispatcher),
+            settings.to_string().as_bytes(),
+        )
+        .expect("open export sink");
+        let (entered, entering) = std::sync::mpsc::channel();
+        let (release, released) = std::sync::mpsc::channel();
+        let released = Mutex::new(released);
+        let first_open = AtomicBool::new(false);
+        *far.on_open.lock().unwrap() = Some(Arc::new(move |_| {
+            if !first_open.swap(true, Ordering::SeqCst) {
+                let _ = entered.send(());
+                released
+                    .lock()
+                    .unwrap()
+                    .recv_timeout(CROSSING_CONTROL_TIMEOUT)
+                    .expect("release export connector crossing");
+            }
+        }));
+        let mut unblock = Unblock(Some(release));
+        let (result, woke) = std::sync::mpsc::channel();
+        let inline = dispatcher.inline_ticket().expect("inline refresh ticket");
+        inline.register(&std::task::Waker::from(Arc::new(WorkerLockProbe {
+            dispatcher: Arc::clone(&dispatcher),
+            worker_ticket,
+            result,
+        })));
+        let finished = Arc::new(AtomicUsize::new(0));
+        assert!(matches!(
+            sink.deliver(
+                ExportStream::Logs as u8,
+                b"{\"event\":\"worker-wake\"}".to_vec(),
+                Box::new(LineHeld(Arc::clone(&finished))),
+            ),
+            Delivered::Queued
+        ));
+        entering
+            .recv_timeout(CROSSING_CONTROL_TIMEOUT)
+            .expect("delivery enters the real connector crossing");
+        let next = serde_json::json!({"url":"https://collector.example/next"});
+        let next_bytes = next.to_string();
+        let mut frame = pending_refresh(next_bytes.as_bytes(), NEXT_SETTINGS_GENERATION);
+        assert_eq!(
+            refresh_crossing(sink.plugin(), inline.ticket(), false, &mut frame),
+            Outcome::Refused,
+            "an entering delivery holds the inline refresh barrier"
+        );
+        unblock.0.take().unwrap().send(()).unwrap();
+        assert!(
+            woke.recv_timeout(CROSSING_CONTROL_TIMEOUT)
+                .expect("the inline refresh waiter is woken"),
+            "the user waker must observe the worker state lock released"
+        );
+        until("the queued delivery finishes", || {
+            finished.load(Ordering::SeqCst) == 1
+        });
+        *far.on_open.lock().unwrap() = None;
+        drop(inline);
+        drop(sink);
+    }
+}

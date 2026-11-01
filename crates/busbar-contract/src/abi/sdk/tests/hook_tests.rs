@@ -1009,10 +1009,11 @@ struct Forward;
 impl Hook for Forward {
     fn decide(&self, _: &Decoded<'_>, op: &Op<'_>) -> Poll<Verdict> {
         op.exchange(0, Some("http://far.example"), || {
-            Ok(Request {
-                method: b"POST".to_vec(),
-                target: b"/".to_vec(),
-                ..Request::default()
+            Ok({
+                let mut request = Request::default();
+                request.method = b"POST".to_vec();
+                request.target = b"/".to_vec();
+                request
             })
         })
         .map(|r| match r {
@@ -1481,6 +1482,76 @@ fn configured<P: HookOpen>(p: *mut c_void, raw: &[u8], version: u64) -> (Outcome
         error_text(&out.head)
     };
     (o, out.acked_version, text)
+}
+
+#[test]
+fn configure_sdk_leases_the_atomic_checkpoint_and_preserves_the_pushed_ack_version() {
+    struct Checkpoint;
+    impl Hook for Checkpoint {
+        fn configure(
+            &self,
+            _: &serde_json::Map<String, serde_json::Value>,
+            _: u64,
+        ) -> Result<(), String> {
+            panic!("the checkpoint adapter must make one atomic call, not configure then snapshot")
+        }
+        fn configure_checkpoint(
+            &self,
+            _: &serde_json::Map<String, serde_json::Value>,
+            _: u64,
+        ) -> Result<Option<ConfigureCheckpoint>, String> {
+            ConfigureCheckpoint::new(9, 12, br#"{"credential":"fixture-secret"}"#.to_vec())
+                .map(Some)
+        }
+    }
+    struct OpenCheckpoint;
+    impl HookOpen for OpenCheckpoint {
+        fn open(_: &str) -> Result<Box<dyn Hook>, String> {
+            Ok(Box::new(Checkpoint))
+        }
+    }
+    let instance = opened_with::<OpenCheckpoint>(&zeroed());
+    let raw = b"{}";
+    let mut input: ConfigureIn = zeroed();
+    input.version = 7;
+    input.settings = Blob {
+        ptr: raw.as_ptr(),
+        len: raw.len(),
+        fmt: BLOB_JSON,
+        flags: 0,
+    };
+    let mut out: ConfigureOut = zeroed();
+    assert_eq!(
+        call::<Configure<OpenCheckpoint>>(instance, slot::CONFIGURE, &input, &mut out),
+        Outcome::Ready
+    );
+    assert_eq!(
+        out.acked_version, 7,
+        "the pushed version is still acknowledged exactly"
+    );
+    assert_ne!(out.head.lease, 0);
+    assert_ne!(
+        out.head.extensions.flags & crate::abi::mechanism::call::BLOB_SECRET,
+        0
+    );
+    // SAFETY: the SDK's returned extension remains alive under this unreleased lease.
+    let bytes =
+        unsafe { std::slice::from_raw_parts(out.head.extensions.ptr, out.head.extensions.len) };
+    let checkpoint = ConfigureCheckpoint::decode(bytes).unwrap().unwrap();
+    assert_eq!((checkpoint.revision, checkpoint.settings_version), (9, 12));
+    assert_eq!(checkpoint.settings(), br#"{"credential":"fixture-secret"}"#);
+    let mut release: crate::abi::mechanism::lifecycle::ReleaseIn = zeroed();
+    release.lease = out.head.lease;
+    assert_eq!(
+        call::<life::Release<HookLife<OpenCheckpoint>>>(
+            instance,
+            crate::abi::mechanism::lifecycle::slot::RELEASE,
+            &release,
+            &mut zeroed()
+        ),
+        Outcome::Ready
+    );
+    closed::<OpenCheckpoint>(instance);
 }
 
 /// RED (hook ABI defect 3): a hook that will not take pushed settings says WHY, and the operator
@@ -2219,10 +2290,11 @@ fn bounded_op_failures_keep_the_earlier_head_and_head_only_ops_never_read_a_body
                 || {
                     PROBE.with(|probe| probe.borrow_mut().as_mut().unwrap().built += 1);
                     Ok((
-                        Request {
-                            method: b"POST".to_vec(),
-                            target: b"/".to_vec(),
-                            ..Request::default()
+                        {
+                            let mut request = Request::default();
+                            request.method = b"POST".to_vec();
+                            request.target = b"/".to_vec();
+                            request
                         },
                         Vec::new(),
                     ))

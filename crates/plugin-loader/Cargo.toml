@@ -67,6 +67,11 @@ path = "tests/fixtures/hook_broken_door.rs"
 crate-type = ["cdylib"]
 
 [[example]]
+name = "hook_checkpoint_door"
+path = "tests/fixtures/hook_checkpoint_door.rs"
+crate-type = ["cdylib"]
+
+[[example]]
 name = "json_contract_auth"
 path = "tests/fixtures/json_contract_auth.rs"
 crate-type = ["cdylib"]

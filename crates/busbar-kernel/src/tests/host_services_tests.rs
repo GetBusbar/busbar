@@ -153,6 +153,7 @@ struct Rig {
 fn rig() -> Rig {
     let store = Arc::new(MemoryStore::new());
     let clock = Arc::new(AtomicU64::new(1_000_000));
+    store.pin_token_clock(clock.load(Ordering::SeqCst) / 1_000);
     let c = Arc::clone(&clock);
     let s = KernelServices::new()
         .with_records(Arc::new(Mem(Arc::clone(&store))))
@@ -351,6 +352,8 @@ fn a_claim_is_won_once_and_taken_after_until_it_lapses() {
     .unwrap();
     assert_eq!(claim(&caller("other")).value, svc::CLAIM_WON);
     r.clock.fetch_add(3_000, Ordering::SeqCst);
+    r.store
+        .pin_token_clock(r.clock.load(Ordering::SeqCst) / 1_000);
     assert_eq!(claim(&me).value, svc::CLAIM_WON);
 }
 
@@ -2651,4 +2654,25 @@ fn an_instance_whose_trust_records_cannot_be_read_is_not_admitted() {
         }
         other => panic!("an unreadable trust record must refuse the admit, got {other:?}"),
     }
+}
+
+#[test]
+fn record_claim_replay_uses_store_time_when_the_host_clock_runs_ahead() {
+    const CLAIM_TTL_MS: u64 = 2_000;
+    const HOST_SKEW_MS: u64 = 3_000;
+    let r = rig();
+    let me = caller("inst");
+    let claim = || {
+        run(|l| {
+            r.s.records_claim(&me, "approval", b"clock-skew", CLAIM_TTL_MS, l)
+        })
+    };
+    assert_eq!(claim().value, svc::CLAIM_WON);
+    // The node moves ahead independently; the shared store has not expired the winner.
+    r.clock.fetch_add(HOST_SKEW_MS, Ordering::SeqCst);
+    assert_eq!(claim().value, svc::CLAIM_TAKEN);
+    // Only store expiry makes a future absolute deadline eligible for a new claim.
+    r.store
+        .pin_token_clock(r.clock.load(Ordering::SeqCst) / 1_000);
+    assert_eq!(claim().value, svc::CLAIM_WON);
 }

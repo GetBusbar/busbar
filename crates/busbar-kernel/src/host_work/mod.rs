@@ -60,16 +60,21 @@ pub struct WorkBounds {
 }
 
 impl Default for WorkBounds {
-    /// The legacy work registries' bounds: 4096 retained, a settled one kept five minutes.
     fn default() -> Self {
-        WorkBounds {
-            max_live: 4096,
-            retain_ms: 300_000,
-        }
+        Self::DEFAULT
     }
 }
 
 impl WorkBounds {
+    /// The legacy work registries' bounds: 4096 live handles and five minutes for settled ones.
+    pub const DEFAULT: Self = Self {
+        max_live: 4096,
+        retain_ms: 300_000,
+    };
+
+    /// Milliseconds per second, for the section's `retain_s` to `retain_ms` conversion.
+    const MILLIS_PER_SECOND: u64 = 1_000;
+
     /// THE PLANE'S OWN BOUNDS: its section's reserved `work: {max_live, retain_s}` sub-key
     /// (`busbar_contract::section::RESERVED_WORK_KEY`), each key it leaves out taken from
     /// `fallback` (the host's bounds); no `work:` at all is `fallback` whole.
@@ -108,14 +113,12 @@ impl WorkBounds {
                         })?;
                 }
                 Some(WORK_RETAIN_S_KEY) => {
-                    bounds.retain_ms =
-                        v.as_u64()
-                            .and_then(|s| s.checked_mul(1000))
-                            .ok_or_else(|| {
-                                format!(
-                                    "{at}.{WORK_RETAIN_S_KEY}: must be a whole number of seconds"
-                                )
-                            })?;
+                    bounds.retain_ms = v
+                        .as_u64()
+                        .and_then(|s| s.checked_mul(Self::MILLIS_PER_SECOND))
+                        .ok_or_else(|| {
+                            format!("{at}.{WORK_RETAIN_S_KEY}: must be a whole number of seconds")
+                        })?;
                 }
                 _ => {
                     let named = key.as_str().unwrap_or("?");

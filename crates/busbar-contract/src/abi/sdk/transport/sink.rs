@@ -203,15 +203,44 @@ pub fn fill<B: AsRef<[u8]>, F: Owed<B>>(
         };
         // A head's words ride its stream's head slots, in the answer that carries the head's first
         // piece, their bytes in the frame ahead of the piece's. A host that takes no slots (or a
-        // frame too small ever to hold them) is not handed them.
-        if let Some(words) = piece.head.take() {
+        // frame too small to hold them together with a first piece) is not handed them. Decide
+        // how much of BOTH fits before consuming either, so a deferred piece keeps its words.
+        let mut send_head = false;
+        let mut head_len = 0;
+        if let Some(words) = piece.head.as_ref() {
             let need = words.len();
-            if head_slots.cap() == 0 || need > frame.cap() {
-                // Dropped.
-            } else if heads == head_slots.cap() || need > frame.cap() - frame_len {
-                piece.head = Some(words);
-                break;
+            if head_slots.cap() != 0 && need <= frame.cap() {
+                if heads == head_slots.cap() || need > frame.cap() - frame_len {
+                    break;
+                }
+                send_head = true;
+                head_len = need;
+            }
+        }
+        let bytes = piece.bytes.as_ref();
+        let cut = |room| {
+            if piece.fields {
+                field_cut(bytes, room, piece.continued)
             } else {
+                bytes.len().min(room)
+            }
+        };
+        let mut take = cut(frame.cap() - frame_len - head_len);
+        if take == 0 && !bytes.is_empty() && frame_len == 0 {
+            // If the whole sink cannot hold words and a first fragment, omit the optional words.
+            // A field name longer than even the whole frame is cut for the host to refuse,
+            // rather than leaving the framing unable to make progress.
+            send_head = false;
+            take = cut(frame.cap());
+            if take == 0 {
+                take = bytes.len().min(frame.cap());
+            }
+        }
+        if take == 0 && !bytes.is_empty() {
+            break;
+        }
+        if let Some(words) = piece.head.take() {
+            if send_head {
                 // The words fit the frame's room and `heads < heads_cap`.
                 let mut span = |b: &B| {
                     let b = b.as_ref();
@@ -233,22 +262,6 @@ pub fn fill<B: AsRef<[u8]>, F: Owed<B>>(
                 head_slots.push(slots);
                 heads += 1;
             }
-        }
-        let bytes = piece.bytes.as_ref();
-        let room = frame.cap() - frame_len;
-        // A field block is cut only where the host takes a continuation: at a line's start or
-        // inside a value. A name longer than the whole frame is cut anyway (the host refuses it by
-        // name) rather than never moving.
-        let take = if piece.fields {
-            match field_cut(bytes, room, piece.continued) {
-                0 if frame_len == 0 => bytes.len().min(room),
-                cut => cut,
-            }
-        } else {
-            bytes.len().min(room)
-        };
-        if take == 0 && !bytes.is_empty() {
-            break;
         }
         let whole = take == bytes.len();
         let mut flags = if piece.writable {
@@ -299,7 +312,7 @@ pub fn fill<B: AsRef<[u8]>, F: Owed<B>>(
             fp.declared_len = declared;
         }
         fp.flags = flags;
-        // `take <= room` and `n < pieces_cap`: both fit.
+        // The words and `take` bytes fit together, and `n < pieces_cap`.
         frame.extend(&bytes[..take]);
         pieces.push(fp);
         frame_len += take;

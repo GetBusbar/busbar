@@ -96,6 +96,7 @@ pub(crate) trait WakeRoute: Send + Sync {
 /// dispatcher is bound is dropped.
 #[derive(Default)]
 pub(crate) struct InstanceWake {
+    pub(crate) exports: super::export_bindings::Bindings,
     pub(crate) route: OnceLock<Weak<dyn WakeRoute>>,
     /// The instance as the host services see it, stated once at bind.
     pub(crate) caller: OnceLock<busbar_contract::services::Caller>,

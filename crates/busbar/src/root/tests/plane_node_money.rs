@@ -240,11 +240,54 @@ fn lose_a_unit(node: &Node, key: UnitKey, op_class: &'static str) {
         .expect("the uncapped table takes the unit");
     drop(Occupied {
         node,
+        post: None,
         slot,
         arrived: Arrived::at(EPOCH * 1_000, key.get()),
         op_class: busbar_contract::caps::OpClassId::new(op_class),
         reached_end: false,
     });
+}
+
+/// A competing sweep cannot take a hold whose facts are already owned by the first sweep.
+#[test]
+fn a_competing_sweep_leaves_a_claimed_units_hold_and_slot_with_its_owner() {
+    let (node, book) = swept_node();
+    let key = UnitKey::new(93);
+    lose_a_unit(&node, key, "widget_call");
+    // Stage the ownership boundary without timing: the first sweeper has removed the facts,
+    // but has not yet taken the hold. The second sweeper sees the same marked slot.
+    let owned = node
+        .lost
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .remove(&key)
+        .unwrap();
+    assert_eq!(node.sweep(Arrived::at(EPOCH * 1_000 + 5, 99)), 0);
+    assert!(
+        node.parent(key).is_some(),
+        "the losing sweep cannot retire the owner's slot"
+    );
+    assert!(book
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .audit_records
+        .is_empty());
+    node.lost
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .insert(key, owned);
+    node.marked.fetch_add(1, Ordering::AcqRel);
+    assert_eq!(node.sweep(Arrived::at(EPOCH * 1_000 + 5, 100)), 1);
+    assert_eq!(node.sweep(Arrived::at(EPOCH * 1_000 + 5, 101)), 0);
+    assert_eq!(
+        book.lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .audit_records
+            .iter()
+            .filter(|r| r.what.unit_key == key)
+            .count(),
+        1
+    );
 }
 
 /// Q128 p29#5: A SWEPT UNIT SEALS EXACTLY ONE AUDIT RECORD, AND ITS AMOUNT IS ITS LEDGER LINE.
@@ -543,6 +586,8 @@ struct DoorUnit {
     decode_refusal: Option<ReasonCode>,
     /// Screen the unit out before the door with this reason (SEAM-4j).
     screen: Option<ReasonCode>,
+    /// Leave the pre-door screen pending so cancellation happens before the loop's guard exists.
+    pause_screen: bool,
     /// The Arrival seat ran.
     reached_arrival: AtomicBool,
     /// The Admit seat (the door) ran.
@@ -554,6 +599,7 @@ impl DoorUnit {
         DoorUnit {
             decode_refusal: None,
             screen: None,
+            pause_screen: false,
             reached_arrival: AtomicBool::new(false),
             reached_admit: AtomicBool::new(false),
         }
@@ -735,12 +781,62 @@ impl RouteAwait for DoorUnit {
     fn screen<'a>(&'a self, _ctx: &'a UnitCtx) -> Screen<'a> {
         let screen = self.screen;
         Box::pin(async move {
+            if self.pause_screen {
+                std::future::pending::<()>().await;
+            }
             match screen {
                 Some(reason) => Err(Refusal::new(reason)),
                 None => Ok(()),
             }
         })
     }
+}
+
+#[test]
+fn cancelling_before_the_door_retires_the_borrowed_facts_and_sweeps_once() {
+    use std::future::Future as _;
+    let book = crate::root::durability::node_book();
+    let (node, post) = door_node(&book);
+    let unit = DoorUnit {
+        pause_screen: true,
+        ..DoorUnit::served()
+    };
+    let key = node.mint();
+    let principal = PrincipalId::new(PRINCIPAL);
+    let mut run = Box::pin(node.drive_borrowed(
+        key,
+        node.arrived(),
+        &principal,
+        &post,
+        &unit,
+        no_late(),
+        None,
+        None,
+        DoorUnit::op_class(),
+    ));
+    let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+    assert!(run.as_mut().poll(&mut cx).is_pending());
+    assert!(unit.reached_arrival.load(Ordering::Relaxed));
+    assert!(!unit.reached_admit.load(Ordering::Relaxed));
+    assert_eq!(post.open_units(), 1);
+    drop(run);
+    assert_eq!(
+        post.open_units(),
+        0,
+        "the cancelled future owns no orphan facts"
+    );
+    assert_eq!(node.sweep(node.arrived()), 1);
+    assert_eq!(node.sweep(node.arrived()), 0);
+    assert!(node.parent(key).is_none());
+    let durability = book.durability.lock().unwrap_or_else(|p| p.into_inner());
+    assert_eq!(
+        durability
+            .audit_records
+            .iter()
+            .filter(|r| r.what.unit_key == key)
+            .count(),
+        1
+    );
 }
 
 /// A node bound to `book`, and the door's posting site over it (`root::serve` holds one per

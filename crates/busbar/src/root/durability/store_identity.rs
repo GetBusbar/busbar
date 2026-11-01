@@ -749,11 +749,18 @@ pub(super) fn registered(calls: &dyn StoreCalls) -> Result<Vec<(String, u64)>, S
 ///
 /// # Errors
 ///
-/// The store refused or failed the read.
+/// The store refused or failed the read, or the present row is not UTF-8 keyset text.
 pub fn stored_keyset(calls: &dyn StoreCalls) -> Result<Option<String>, String> {
     wait_for(calls.record_get(KEYSET_SCHEMA, KEYSET_KEY))
         .map_err(|f| format!("the store would not read the deployment keyset: {f}"))
-        .map(|value| value.and_then(|v| String::from_utf8(v.as_slice().to_vec()).ok()))
+        .and_then(|value| {
+            value
+                .map(|v| {
+                    String::from_utf8(v.as_slice().to_vec())
+                        .map_err(|_| "the store's deployment keyset is not valid UTF-8".to_string())
+                })
+                .transpose()
+        })
 }
 
 /// THE DEPLOYMENT KEYSET, minted once: the seed the store keeps, or `seed_hex` kept now by the

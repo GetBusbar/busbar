@@ -76,6 +76,123 @@ fn a_userinfo_read_as_text_is_sent_as_1_5_5_sent_it() {
     }
 }
 
+#[test]
+fn a_basic_username_cannot_change_the_user_password_boundary() {
+    for read in [Userinfo::Octets, Userinfo::Utf8] {
+        for username in ["alice:admin", "alice%3aadmin", "alice%3Aadmin", "%3A", ":"] {
+            for password in [None, Some("password-canary"), Some("")] {
+                assert!(
+                    basic_authorization(username, password, read).is_none(),
+                    "a colon in {username:?} must not become a different Basic username"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn valid_basic_credentials_keep_their_decoded_wire_octets() {
+    for (username, password, read, expected) in [
+        (
+            "alice%253Aadmin",
+            Some("p%3Ass"),
+            Userinfo::Octets,
+            b"alice%3Aadmin:p:ss".as_slice(),
+        ),
+        (
+            "%FFuser",
+            Some("p%FF"),
+            Userinfo::Octets,
+            b"\xFFuser:p\xFF".as_slice(),
+        ),
+        (
+            "jos%C3%A9",
+            Some("p%3Ass"),
+            Userinfo::Utf8,
+            "josé:p:ss".as_bytes(),
+        ),
+        ("user", Some("%FF"), Userinfo::Utf8, b"user:".as_slice()),
+        ("", Some("p%3Ass"), Userinfo::Utf8, b":p:ss".as_slice()),
+        ("user", None, Userinfo::Octets, b"user:".as_slice()),
+    ] {
+        let field = basic_authorization(username, password, read).expect("valid userinfo");
+        let encoded = field.strip_prefix("Basic ").expect("Basic scheme");
+        assert_eq!(STANDARD.decode(encoded).expect("standard base64"), expected);
+    }
+    assert_eq!(basic_authorization("%FF", Some("pw"), Userinfo::Utf8), None);
+}
+
+#[test]
+fn userinfo_redaction_does_not_depend_on_an_authority_separator() {
+    // WHATWG special schemes accept omitted slashes, backslashes, and ASCII whitespace
+    // normalization. The redactor also accepts malformed input: it must not need a successful
+    // parse before removing the credential from an error message.
+    for prefix in [
+        "https:",
+        "https:/",
+        "https://",
+        "https:///",
+        "http:",
+        "ws:/",
+        "wss:",
+        "ftp:/",
+        "file:",
+        "https:\\",
+        "https:\\\\",
+        "https:/\\",
+        "https:\\/",
+        "\0 \tht\ntp\rs:",
+        "\r\nhttps:/",
+        "https:\t/\n/",
+        "//",
+        "",
+        "not a URL ",
+    ] {
+        let url = format!("{prefix}user-canary:password-canary@collector.example/in");
+        for replacement in ["", "***@"] {
+            let redacted = cut_userinfo(&url, replacement);
+            assert!(!redacted.contains("user-canary"), "{url:?}: {redacted:?}");
+            assert!(
+                !redacted.contains("password-canary"),
+                "{url:?}: {redacted:?}"
+            );
+            assert!(redacted.ends_with("collector.example/in"), "{redacted:?}");
+            assert_eq!(
+                redacted.matches('@').count(),
+                usize::from(!replacement.is_empty())
+            );
+        }
+    }
+}
+
+#[test]
+fn malformed_and_ambiguous_credentials_are_cut_through_the_last_at() {
+    for url in [
+        "https:user-canary/password-canary@collector.example/in",
+        "https:/user-canary?password-canary@collector.example/in",
+        "https:\\user-canary#password-canary@collector.example/in",
+        "https://user-canary:first@password-canary@collector.example/in",
+        "user-canary:password-canary://bad@collector.example/in",
+        "https://user-canary:password-canary@bad://collector.example/in",
+    ] {
+        let redacted = cut_userinfo(url, "***@");
+        let refusal = ambiguous_url(url, "/password-canary@collector.example/in")
+            .expect("an at sign after the parsed host is ambiguous");
+        for text in [&redacted, &refusal] {
+            assert!(!text.contains("user-canary"), "{text}");
+            assert!(!text.contains("password-canary"), "{text}");
+            assert!(text.contains("collector.example/in"), "{text}");
+        }
+    }
+    // No actual at sign means there is no userinfo boundary for this helper to cut.
+    for url in [
+        "https:collector.example/%40in",
+        "https:\\collector.example/in",
+    ] {
+        assert_eq!(cut_userinfo(url, "***@"), url);
+    }
+}
+
 /// export-otlp and export-webhook (owner ruling 2026-10-24): a url whose `@` comes after its host
 /// is refused, its credential cut from the url shown; a credential written as the grammar wants
 /// it is not.
@@ -194,4 +311,138 @@ fn a_quoted_credential_is_cut_in_its_escaped_spelling_too() {
         ),
         "key *** and ***"
     );
+}
+
+// This uses the existing test allocator's OS-copy observer, never a Rust read through a freed
+// allocation. The only registered ranges are initialized Vec/String payload prefixes.
+pub(super) fn watch_scratch(bytes: &[u8]) {
+    // SAFETY: URL instrumentation registers owned allocation bases; each active probe below keeps
+    // all those buffers on this thread until they are freed or observation ends.
+    unsafe { crate::alloc_counter::watch_initialized_payload(bytes) }
+}
+
+fn scratch_probe() -> crate::alloc_counter::InitializedPayloadProbe {
+    // SAFETY: these synchronous tests neither move observed allocations across threads nor retype
+    // their payloads. Returned public values are wiped and dropped before ending observation.
+    unsafe { crate::alloc_counter::InitializedPayloadProbe::start().expect("open memory observer") }
+}
+
+fn assert_scratch_wiped(probe: crate::alloc_counter::InitializedPayloadProbe, minimum: usize) {
+    let observations = probe.finish();
+    assert!(!observations.reentered, "OS read reentered allocator");
+    assert!(
+        observations.payloads.len() >= minimum,
+        "scratch was not observed"
+    );
+    for record in observations.payloads {
+        assert!(
+            record.freed,
+            "scratch owner did not free its buffer: {record:?}"
+        );
+        #[cfg(target_os = "linux")]
+        {
+            assert_eq!(record.read_error, None, "memory observation failed");
+            assert!(record.complete_read, "incomplete observation: {record:?}");
+            assert_eq!(record.bytes_read, record.len);
+            assert!(record.wiped, "URL scratch reached free unwiped: {record:?}");
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            assert_eq!(record.read_error, Some(std::io::ErrorKind::Unsupported));
+            assert!(!record.complete_read);
+        }
+    }
+}
+
+#[test]
+fn basic_scratch_is_wiped_on_success_and_each_refusal() {
+    use zeroize::Zeroize;
+    for (username, password, read, expected, minimum) in [
+        (
+            "operator",
+            Some("password-canary"),
+            Userinfo::Octets,
+            Some("Basic b3BlcmF0b3I6cGFzc3dvcmQtY2FuYXJ5"),
+            3,
+        ),
+        (
+            "operator",
+            Some("%FF"),
+            Userinfo::Utf8,
+            Some("Basic b3BlcmF0b3I6"),
+            3,
+        ),
+        ("%FFuser", Some("password-canary"), Userinfo::Utf8, None, 2),
+        (
+            "operator%3Aadmin",
+            Some("password-canary"),
+            Userinfo::Octets,
+            None,
+            1,
+        ),
+    ] {
+        let probe = scratch_probe();
+        let mut result = basic_authorization(username, password, read);
+        assert_eq!(result.as_deref(), expected);
+        result.zeroize();
+        drop(result);
+        assert_scratch_wiped(probe, minimum);
+    }
+}
+
+#[test]
+fn decoded_and_quoted_redaction_scratch_is_wiped_without_changing_words() {
+    use zeroize::Zeroize;
+    let probe = scratch_probe();
+    let mut decoded = and_decoded(vec!["a%20b%FF".to_owned()]);
+    assert_eq!(decoded, ["a%20b%FF", "a b\u{fffd}"]);
+    decoded.zeroize();
+    drop(decoded);
+    assert_scratch_wiped(probe, 1);
+
+    let probe = scratch_probe();
+    let mut output = scrub(
+        "first secret and a\"b and secret",
+        vec![
+            "secret".to_owned(),
+            "a\"b".to_owned(),
+            "secret".to_owned(),
+            String::new(),
+        ],
+        true,
+    );
+    assert_eq!(output, "first *** and *** and ***");
+    output.zeroize();
+    drop(output);
+    assert_scratch_wiped(probe, 7);
+}
+
+#[test]
+fn url_scratch_observer_detects_unwiped_and_live_buffers() {
+    let probe = scratch_probe();
+    let unwiped = b"unwiped-url-canary".to_vec();
+    watch_scratch(&unwiped);
+    drop(unwiped);
+    let live = b"still-owned-url-canary".to_vec();
+    watch_scratch(&live);
+    let observations = probe.finish();
+    assert!(!observations.reentered);
+    assert_eq!(observations.payloads.len(), 2);
+    assert!(observations.payloads[0].freed);
+    assert!(
+        !observations.payloads[1].freed,
+        "a live owner is not a wipe receipt"
+    );
+    #[cfg(target_os = "linux")]
+    {
+        let record = &observations.payloads[0];
+        assert_eq!(record.read_error, None);
+        assert!(record.complete_read);
+        assert_eq!(record.bytes_read, record.len);
+        assert!(
+            !record.wiped,
+            "negative control must detect unchanged bytes"
+        );
+    }
+    drop(live);
 }

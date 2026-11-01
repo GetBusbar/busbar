@@ -7,7 +7,7 @@
 //! * [`percent_decode`]: a URL component's `%XX` escapes as octets;
 //! * [`basic_authorization`]: the `Authorization: Basic …` value the URL's userinfo becomes;
 //! * [`ambiguous_url`]: the refusal of a url whose credential a parser reads as host and path;
-//! * [`cut_userinfo`]: everything between `://` and the last `@` replaced;
+//! * [`cut_userinfo`]: the credential-bearing prefix through the last `@` replaced;
 //! * [`scrub`] (over [`and_decoded`] parts): a text with every credential-bearing part of a URL, or
 //!   every credential string of a setting, cut out.
 //!
@@ -17,6 +17,7 @@
 
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine as _;
+use zeroize::{Zeroize, Zeroizing};
 
 /// What a cut part reads as.
 const CUT: &str = "***";
@@ -48,6 +49,8 @@ pub fn percent_decode(s: &[u8]) -> Vec<u8> {
         out.push(c);
         i += 1;
     }
+    #[cfg(test)]
+    tests::watch_scratch(&out);
     out
 }
 
@@ -64,45 +67,75 @@ pub enum Userinfo {
 
 /// THE USERINFO AS A BASIC CREDENTIAL: `Basic ` and the padded standard base64 (RFC 4648 section 4)
 /// of the percent-decoded `{username}:{password}` (`{username}:` with no password), read as
-/// `read` says; `None` when the username is empty and there is no password. `username` and
-/// `password` are the parsed URL's, as written (still percent-encoded).
+/// `read` says; `None` when the username is empty and there is no password, or its decoded bytes
+/// contain `:` (RFC 7617 forbids that delimiter in a user-id). `username` and `password` are the
+/// parsed URL's, as written (still percent-encoded).
 #[must_use]
 pub fn basic_authorization(
     username: &str,
     password: Option<&str>,
     read: Userinfo,
 ) -> Option<String> {
-    let mut user_pass = percent_decode(username.as_bytes());
-    let password = password.map(|p| percent_decode(p.as_bytes()));
+    let username = Zeroizing::new(percent_decode(username.as_bytes()));
+    if username.contains(&b':') {
+        return None;
+    }
+    let password = password.map(|p| Zeroizing::new(percent_decode(p.as_bytes())));
     let password = match read {
         Userinfo::Octets => password,
         Userinfo::Utf8 => {
-            std::str::from_utf8(&user_pass).ok()?;
+            std::str::from_utf8(&username).ok()?;
             password.filter(|p| std::str::from_utf8(p).is_ok())
         }
     };
-    if user_pass.is_empty() && password.is_none() {
+    if username.is_empty() && password.is_none() {
         return None;
     }
+    // Reserve once: growing a credential buffer would free its old allocation before wiping it.
+    let mut user_pass = Zeroizing::new(Vec::with_capacity(
+        username.len() + 1 + password.as_ref().map_or(0, |p| p.len()),
+    ));
+    user_pass.extend_from_slice(&username);
     user_pass.push(b':');
-    user_pass.extend(password.unwrap_or_default());
-    Some(format!("Basic {}", STANDARD.encode(&user_pass)))
+    if let Some(password) = &password {
+        user_pass.extend_from_slice(password);
+    }
+    #[cfg(test)]
+    tests::watch_scratch(&user_pass);
+    let encoded = Zeroizing::new(STANDARD.encode(&*user_pass));
+    #[cfg(test)]
+    tests::watch_scratch(encoded.as_bytes());
+    Some(format!("Basic {}", encoded.as_str()))
 }
 
-/// `url` with everything between `://` and the LAST `@` after it replaced by `with` (`with` names
-/// its own `@`, when one is wanted). A password may hold an unescaped `/`, `?` or `#`, so no
-/// delimiter bounds the userinfo here; an `@` in the path or query is over-cut, which is accepted:
-/// a shortened line is better than a leaked secret. A string with no `@` after `://` is returned
-/// unchanged.
+/// `url` with its credential-bearing prefix through the LAST `@` replaced by `with` (`with`
+/// names its own `@`, when one is wanted). Only an explicit, syntactically valid `scheme://`
+/// before that `@` is retained. Special-scheme URLs can omit slashes, use backslashes or undergo
+/// control-character normalization; uncertain prefixes are discarded rather than echoed.
+/// A password may hold an unescaped `/`, `?` or `#`, so no delimiter bounds the userinfo here;
+/// an `@` in the path or query is over-cut, which is accepted: a shortened line is better than
+/// a leaked secret. A string with no `@` is returned unchanged. This is diagnostic redaction,
+/// not URL parsing or normalization of a destination.
 #[must_use]
 pub fn cut_userinfo(url: &str, with: &str) -> String {
-    let Some((scheme, rest)) = url.split_once("://") else {
+    let Some(at) = url.rfind('@') else {
         return url.to_string();
     };
-    match rest.rfind('@') {
-        Some(at) => format!("{scheme}://{with}{}", &rest[at + 1..]),
-        None => url.to_string(),
+    // Never retain an arbitrary string before ://: malformed credentials can contain that
+    // sequence too. A scheme starts with an ASCII letter, then letters, digits, '+', '-' or '.'.
+    if let Some((scheme, _)) = url[..at].split_once("://") {
+        if scheme
+            .as_bytes()
+            .first()
+            .is_some_and(u8::is_ascii_alphabetic)
+            && scheme
+                .bytes()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'+' | b'-' | b'.'))
+        {
+            return format!("{scheme}://{with}{}", &url[at + 1..]);
+        }
     }
+    format!("{with}{}", &url[at + 1..])
 }
 
 /// THE AMBIGUOUS-URL REFUSAL (owner ruling 2026-10-24): `Some(the refusal)` when the parsed `url`
@@ -133,7 +166,10 @@ pub fn ambiguous_url(url: &str, from_path: &str) -> Option<String> {
 pub fn and_decoded(mut parts: Vec<String>) -> Vec<String> {
     let decoded: Vec<String> = parts
         .iter()
-        .map(|p| String::from_utf8_lossy(&percent_decode(p.as_bytes())).into_owned())
+        .map(|p| {
+            let decoded = Zeroizing::new(percent_decode(p.as_bytes()));
+            String::from_utf8_lossy(&decoded).into_owned()
+        })
         .collect();
     parts.extend(decoded);
     parts
@@ -144,27 +180,48 @@ pub fn and_decoded(mut parts: Vec<String>) -> Vec<String> {
 /// a serde refusal's quotation of it is cut too). Empty parts are dropped, and the longest is cut
 /// first, so no part is left half-cut.
 #[must_use]
-pub fn scrub(text: &str, mut parts: Vec<String>, quoted: bool) -> String {
+pub fn scrub(text: &str, parts: Vec<String>, quoted: bool) -> String {
+    let mut parts = Zeroizing::new(parts);
+    #[cfg(test)]
+    for part in &*parts {
+        tests::watch_scratch(part.as_bytes());
+    }
     if quoted {
-        parts = parts
-            .into_iter()
-            .flat_map(|s| {
-                let escaped = format!("{s:?}");
-                let escaped = escaped[1..escaped.len() - 1].to_string();
-                [s, escaped]
-            })
-            .collect();
+        // Keep the original interleaved order and own every string until it is wiped, including
+        // duplicate parts and the full quoted temporary.
+        let mut expanded = Zeroizing::new(Vec::with_capacity(parts.len() * 2));
+        for part in parts.iter_mut() {
+            let escaped = Zeroizing::new(format!("{part:?}"));
+            #[cfg(test)]
+            tests::watch_scratch(escaped.as_bytes());
+            expanded.push(std::mem::take(part));
+            expanded.push(escaped[1..escaped.len() - 1].to_string());
+        }
+        parts = expanded;
     }
     parts.retain(|p| !p.is_empty());
     parts.sort_by_key(|p| std::cmp::Reverse(p.len()));
-    parts.dedup();
-    let mut out = text.to_string();
-    for p in &parts {
+    parts.dedup_by(|removed, kept| {
+        if removed == kept {
+            removed.zeroize();
+            true
+        } else {
+            false
+        }
+    });
+    let mut out = Zeroizing::new(text.to_string());
+    #[cfg(test)]
+    tests::watch_scratch(out.as_bytes());
+    for p in &*parts {
         if out.contains(p.as_str()) {
-            out = out.replace(p.as_str(), CUT);
+            // Replacing the guard wipes the previous intermediate, which can still hold another
+            // credential. Replacing only the inner String would silently drop it unwiped.
+            out = Zeroizing::new(out.replace(p.as_str(), CUT));
+            #[cfg(test)]
+            tests::watch_scratch(out.as_bytes());
         }
     }
-    out
+    std::mem::take(&mut *out)
 }
 
 #[cfg(test)]

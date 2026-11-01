@@ -128,3 +128,191 @@ fn a_stub_plugin_declaring_a_credential_public_is_refused() {
         "{refused}"
     );
 }
+
+#[test]
+fn indirect_public_marks_are_refused_instead_of_silently_hidden() {
+    use crate::settings_schema::public_settings_of_schema;
+    let property = serde_json::json!({"region": {"type": "string", "x-busbar-public": true}});
+    for keyword in ["oneOf", "anyOf", "allOf"] {
+        let schema = serde_json::json!({keyword: [{"properties": property.clone()}]});
+        assert!(
+            public_settings_of_schema(&serde_json::to_vec(&schema).unwrap()).is_err(),
+            "{keyword}"
+        );
+    }
+    for keyword in ["if", "then", "else"] {
+        let schema = serde_json::json!({keyword: {"properties": property.clone()}});
+        assert!(
+            public_settings_of_schema(&serde_json::to_vec(&schema).unwrap()).is_err(),
+            "{keyword}"
+        );
+    }
+    for schema in [
+        serde_json::json!({"$defs": {"Region": {"properties": property.clone()}}, "$ref": "#/$defs/Region"}),
+        serde_json::json!({"$defs": {"Region": {"type": "string", "x-busbar-public": true}}, "properties": {"region": {"$ref": "#/$defs/Region"}}}),
+    ] {
+        assert!(public_settings_of_schema(&serde_json::to_vec(&schema).unwrap()).is_err());
+    }
+    let schema = serde_json::json!({
+        "$defs": {"Region": {"type": "string"}},
+        "properties": {"region": {"$ref": "#/$defs/Region", "x-busbar-public": true}}
+    });
+    assert_eq!(
+        public_settings_of_schema(&serde_json::to_vec(&schema).unwrap()).unwrap(),
+        ["region".to_owned()].into_iter().collect()
+    );
+}
+
+#[test]
+fn repeated_reference_dag_keeps_its_small_effective_schema() {
+    for branch in ["allOf", "oneOf", "anyOf", "properties"] {
+        let mut defs = serde_json::Map::new();
+        defs.insert("Leaf".into(), serde_json::json!({"type": "string"}));
+        let mut previous = "Leaf".to_owned();
+        for depth in 0..30 {
+            let name = format!("Layer{depth}");
+            let reference = format!("#/$defs/{previous}");
+            let node = if branch == "properties" {
+                serde_json::json!({"properties": {"left": {"$ref": reference}, "right": {"$ref": reference}}})
+            } else {
+                serde_json::json!({branch: [{"$ref": reference}, {"$ref": reference}]})
+            };
+            defs.insert(name.clone(), node);
+            previous = name;
+        }
+        let schema = serde_json::json!({
+            "$defs": defs,
+            "properties": {"region": {"$ref": format!("#/$defs/{previous}"), "x-busbar-public": true}}
+        });
+        assert_eq!(
+            crate::settings_schema::public_settings_of_schema(
+                &serde_json::to_vec(&schema).unwrap()
+            )
+            .unwrap(),
+            ["region".to_owned()].into_iter().collect()
+        );
+        let mut invalid = schema;
+        invalid["$defs"]["Leaf"] =
+            serde_json::json!({"properties": {"api_token": {"type": "string"}}});
+        assert!(
+            crate::settings_schema::validate_secret_fields(&invalid)
+                .unwrap_err()
+                .contains("api_token"),
+            "{branch} must still inspect the leaf"
+        );
+    }
+}
+
+#[test]
+fn reused_definitions_keep_depth_and_cycle_refusals() {
+    use crate::settings_schema::validate_secret_fields;
+    let mut defs = serde_json::Map::new();
+    defs.insert("Leaf".into(), serde_json::json!({"type": "string"}));
+    let mut previous = "Leaf".to_owned();
+    for depth in 0..40 {
+        let name = format!("Layer{depth}");
+        defs.insert(
+            name.clone(),
+            serde_json::json!({"$ref": format!("#/$defs/{previous}")}),
+        );
+        previous = name;
+    }
+    let long = previous.clone();
+    for depth in 0..30 {
+        let name = format!("Wrapper{depth}");
+        defs.insert(
+            name.clone(),
+            serde_json::json!({"$ref": format!("#/$defs/{previous}")}),
+        );
+        previous = name;
+    }
+    let schema = serde_json::json!({
+        "$defs": defs,
+        "allOf": [{"$ref": format!("#/$defs/{long}")}, {"$ref": format!("#/$defs/{previous}")}]
+    });
+    assert!(validate_secret_fields(&schema)
+        .unwrap_err()
+        .contains("deeper"));
+    let cycle = serde_json::json!({
+        "$defs": {"Loop": {"allOf": [{"$ref": "#/$defs/Loop"}]}},
+        "$ref": "#/$defs/Loop"
+    });
+    assert!(validate_secret_fields(&cycle)
+        .unwrap_err()
+        .contains("cyclic"));
+}
+
+#[test]
+fn a_scanned_definition_keeps_the_position_of_each_reference() {
+    let schema = serde_json::json!({
+        "$defs": {"Fields": {"properties": {"api_token": {"type": "string", "x-busbar-secret": true}}}},
+        "oneOf": [
+            {"oneOf": [{"$ref": "#/$defs/Fields"}]},
+            {"properties": {"boxed": {"$ref": "#/$defs/Fields"}}}
+        ]
+    });
+    assert!(crate::settings_schema::validate_secret_fields(&schema)
+        .unwrap_err()
+        .contains("direct root-level"));
+}
+
+#[test]
+fn allof_properties_merging_refuses_a_nonobject_without_panicking() {
+    let mut schema = serde_json::json!({
+        "properties": false,
+        "allOf": [{"properties": {"region": {"type": "string"}}}]
+    });
+    let bytes = serde_json::to_vec(&schema).unwrap();
+    assert!(crate::settings_schema::public_settings_of_schema(&bytes).is_err());
+    schema["properties"] = serde_json::json!({});
+    assert!(crate::settings_schema::public_settings_of_schema(
+        &serde_json::to_vec(&schema).unwrap()
+    )
+    .unwrap()
+    .is_empty());
+}
+
+#[test]
+fn reference_property_override_keeps_inherited_allof_validation() {
+    let mut schema = serde_json::json!({
+        "$ref": "#/$defs/Base",
+        "properties": {"region": {"type": "string"}},
+        "$defs": {"Base": {"allOf": [{"properties": {"password": {"type": "string"}}}]}}
+    });
+    assert!(crate::settings_schema::validate_secret_fields(&schema)
+        .unwrap_err()
+        .contains("password"));
+    schema["$defs"]["Base"]["allOf"][0]["properties"]["password"]["x-busbar-secret"] = true.into();
+    assert!(crate::settings_schema::validate_secret_fields(&schema).is_ok());
+}
+
+#[test]
+fn reference_allof_and_local_siblings_keep_their_precedence() {
+    let schema = serde_json::json!({
+        "$defs": {
+            "Plain": {"allOf": [{"type": "integer"}]},
+            "Text": {"allOf": [{"type": "string"}]}
+        },
+        "properties": {
+            "client_secret": {
+                "$ref": "#/$defs/Plain",
+                "type": "string",
+                "x-busbar-secret": true,
+                "allOf": [{"contentEncoding": "base64"}]
+            },
+            "region": {"$ref": "#/$defs/Text", "x-busbar-public": true}
+        }
+    });
+    assert_eq!(
+        crate::settings_schema::public_settings_of_schema(&serde_json::to_vec(&schema).unwrap())
+            .unwrap(),
+        ["region".to_owned()].into_iter().collect()
+    );
+    let mut invalid = schema;
+    invalid["properties"]["client_secret"]["allOf"] =
+        serde_json::json!([{"contentEncoding": "hex"}]);
+    assert!(
+        crate::settings_schema::validate_secret_fields(&invalid).is_err(),
+        "local allOf still participates after a resolved reference"
+    );
+}

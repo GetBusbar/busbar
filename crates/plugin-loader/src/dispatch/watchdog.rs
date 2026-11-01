@@ -123,6 +123,7 @@ fn ticketless(pool: &Pool) {
             quarantined = breach(pool, &inst);
         }
         if quarantined {
+            inst.wake.exports.wake_waiters(inst.wake);
             // A quarantined instance never crosses again: what it holds goes now.
             inst.let_go_held();
         }
@@ -153,6 +154,7 @@ fn replace(pool: &Pool, i: usize, old: &Arc<Worker>, started: u64) {
     };
     // A quarantined instance never crosses again: what it holds goes now, outside the locks.
     if quarantined {
+        breached.wake.exports.wake_waiters(breached.wake);
         breached.let_go_held();
     }
     pool.env.services.forget_worker(old.index);

@@ -516,25 +516,35 @@ impl PlaneAuditLog {
 // admit the newest failure and that eviction is COUNTED and reported LOUDLY — a DETECTED gap, never a
 // silent one.
 
-/// Bound on [`PendingAudit`] rows held in RAM at once. An order of magnitude short of
+/// Bound on waiting [`PendingAudit`] rows, excluding the single row owned by the drainer.
+/// An order of magnitude short of
 /// [`MAX_AUDIT_ENTRIES`] on purpose: this queue exists to bridge a TRANSIENT durable outage, not to
 /// become a second, unbounded audit log riding in RAM.
 const MAX_PENDING_AUDIT: usize = 256;
 
-/// One admin-audit mutation whose durable write failed on its first attempt. `scope` plus the
+/// One admin-audit mutation waiting for its durable write. `scope` plus the
 /// already pre-framed `suffix` are everything a retry needs to replay the write byte-identically to
 /// what would have been sent the first time — nothing is re-derived, so a recovered record is
 /// indistinguishable from one that landed on the first try.
+/// Only host-originated export-operation failures are excluded from Events redispatch. This
+/// transient tag never comes from record text and never changes the persisted audit format.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum EventOrigin {
+    Mutation,
+    ExportFailure,
+}
+
 #[derive(Clone)]
 struct PendingAudit {
     scope: String,
     suffix: Vec<u8>,
+    origin: EventOrigin,
 }
 
-/// A BOUNDED FIFO of [`PendingAudit`] rows a durable-write failure could not persist, drained oldest-
-/// first the next time a write through it succeeds. See the section header above for the design.
+/// A bounded FIFO of pending admin-audit rows. New arrivals and failed writes share one drain
+/// owner, so recovery and live writes cannot overtake each other.
 struct PendingAuditQueue {
-    rows: Mutex<VecDeque<PendingAudit>>,
+    rows: Mutex<PendingAuditRows>,
     /// THE WATERMARK: rows evicted from `rows` to admit a newer failure once the queue was already at
     /// `cap` — each one a PERMANENT, DETECTED gap (as opposed to a row still queued, which is merely
     /// delayed). Zero means every failure since boot has either recovered or is still queued.
@@ -542,10 +552,36 @@ struct PendingAuditQueue {
     cap: usize,
 }
 
+struct PendingAuditRows {
+    queued: VecDeque<PendingAudit>,
+    draining: bool,
+}
+
+/// A logical drain claim, never a queue lock held across a store callback.
+struct PendingAuditDrain<'a> {
+    queue: &'a PendingAuditQueue,
+    active: bool,
+}
+
+impl Drop for PendingAuditDrain<'_> {
+    fn drop(&mut self) {
+        if self.active {
+            self.queue
+                .rows
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .draining = false;
+        }
+    }
+}
+
 impl PendingAuditQueue {
     const fn new(cap: usize) -> Self {
         Self {
-            rows: Mutex::new(VecDeque::new()),
+            rows: Mutex::new(PendingAuditRows {
+                queued: VecDeque::new(),
+                draining: false,
+            }),
             dropped: AtomicU64::new(0),
             cap,
         }
@@ -558,24 +594,28 @@ impl PendingAuditQueue {
     /// the gap is visible rather than riding only on an aggregate nobody reads.
     fn enqueue(&self, p: PendingAudit) {
         let mut q = self.rows.lock().unwrap_or_else(|e| e.into_inner());
-        let evicted = q.len() >= self.cap;
+        let evicted = q.queued.len() >= self.cap;
         if evicted {
-            q.pop_front();
+            q.queued.pop_front();
         }
-        q.push_back(p);
+        q.queued.push_back(p);
         drop(q);
         if evicted {
-            let dropped_total = self.dropped.fetch_add(1, Ordering::Relaxed) + 1;
-            crate::diagnostics::diag_error!(
-                crate::diagnostics::PLANE_AUDITLOG_WRITE_FAILED,
-                gap_detected = true,
-                dropped_total,
-                "the admin audit recovery queue is full (bound {MAX_PENDING_AUDIT}); the OLDEST \
+            self.record_gap();
+        }
+    }
+
+    fn record_gap(&self) {
+        let dropped_total = self.dropped.fetch_add(1, Ordering::Relaxed) + 1;
+        crate::diagnostics::diag_error!(
+            crate::diagnostics::PLANE_AUDITLOG_WRITE_FAILED,
+            gap_detected = true,
+            dropped_total,
+            "the admin audit recovery queue is full (bound {MAX_PENDING_AUDIT}); the OLDEST \
                  queued record was evicted to admit this new failure and its evidence is now \
                  PERMANENTLY LOST — a DETECTED GAP in the audit trail, not a delayed recovery. \
                  {dropped_total} record(s) lost to this gap since boot."
-            );
-        }
+        );
     }
 
     /// Replay every queued row, oldest first, through `mint`, stopping at the FIRST failure (the
@@ -588,22 +628,46 @@ impl PendingAuditQueue {
         mint: impl Fn(&str, &[u8]) -> Result<(u64, String, String), ()>,
         mut on_recovered: impl FnMut(&PendingAudit, u64, String, String),
     ) {
+        {
+            let mut q = self.rows.lock().unwrap_or_else(|e| e.into_inner());
+            if q.draining {
+                return;
+            }
+            q.draining = true;
+        }
+        let mut owner = PendingAuditDrain {
+            queue: self,
+            active: true,
+        };
         loop {
-            let next = self
-                .rows
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .pop_front();
-            let Some(p) = next else { return };
+            let p = {
+                let mut q = self.rows.lock().unwrap_or_else(|e| e.into_inner());
+                let Some(p) = q.queued.pop_front() else {
+                    // Release under the same lock used by enqueue, so a new row either belongs
+                    // to this drain or can acquire its own owner. No empty-queue handoff gap.
+                    q.draining = false;
+                    owner.active = false;
+                    return;
+                };
+                p
+            };
             match mint(&p.scope, &p.suffix) {
                 Ok((seq, prev_hash, hash)) => on_recovered(&p, seq, prev_hash, hash),
                 Err(()) => {
-                    // Still down: put it back at the FRONT so order is preserved, and stop for this
-                    // call — no point burning through the rest of the queue right now.
-                    self.rows
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner())
-                        .push_front(p);
+                    let mut q = self.rows.lock().unwrap_or_else(|e| e.into_inner());
+                    // Enqueue may have filled the waiting queue during the store call. The failed
+                    // in-flight row is the oldest: apply the existing oldest-eviction policy to it
+                    // rather than overfilling the queue when returning it to the front.
+                    let evicted = q.queued.len() >= self.cap;
+                    if !evicted {
+                        q.queued.push_front(p);
+                    }
+                    q.draining = false;
+                    owner.active = false;
+                    drop(q);
+                    if evicted {
+                        self.record_gap();
+                    }
                     return;
                 }
             }
@@ -613,7 +677,11 @@ impl PendingAuditQueue {
     /// TEST ONLY: how many rows are currently queued.
     #[cfg(test)]
     fn len(&self) -> usize {
-        self.rows.lock().unwrap_or_else(|e| e.into_inner()).len()
+        self.rows
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .queued
+            .len()
     }
 
     /// TEST ONLY: the watermark — how many rows have been permanently evicted by overflow.
@@ -628,19 +696,19 @@ impl PendingAuditQueue {
 /// what an earlier configuration's outage left pending.
 static PENDING_AUDIT: PendingAuditQueue = PendingAuditQueue::new(MAX_PENDING_AUDIT);
 
-/// Queue one failed write for later recovery — see [`PendingAuditQueue::enqueue`].
-fn enqueue_pending_audit(scope: &str, suffix: Vec<u8>) {
+/// Queue one event behind every older pending write — see [`PendingAuditQueue::enqueue`].
+fn enqueue_pending_audit(scope: &str, suffix: Vec<u8>, origin: EventOrigin) {
     PENDING_AUDIT.enqueue(PendingAudit {
         scope: scope.to_string(),
         suffix,
+        origin,
     });
 }
 
-/// A durable audit write failed: QUEUE the record for the next successful write on this stream
+/// A durable audit write failed: report that its record remains pending for recovery
 /// (recoverable, not terminal) and say so — an error the first time `latch` trips, a debug line
 /// while it stays latched. The caller clears `latch` on its next successful write.
-fn queue_unwritten(latch: &AtomicBool, scope: &str, suffix: Vec<u8>) {
-    enqueue_pending_audit(scope, suffix);
+fn report_unwritten(latch: &AtomicBool) {
     if !latch.swap(true, Ordering::Relaxed) {
         crate::diagnostics::diag_error!(
             crate::diagnostics::PLANE_AUDITLOG_WRITE_FAILED,
@@ -661,17 +729,27 @@ fn queue_unwritten(latch: &AtomicBool, scope: &str, suffix: Vec<u8>) {
 }
 
 /// Drain [`PENDING_AUDIT`] through the REAL stream — [`KIND_ID_AUDIT`], hostless (a queued row may
-/// outlive the call that queued it). Called by [`emit_admin_hostless`] before its own write, so a
-/// healthy backend recovers everything an earlier outage queued before today's mutation is recorded.
+/// outlive the call that queued it). Called by [`emit_admin_hostless`] after enqueueing its event,
+/// so a healthy backend recovers older rows before today's mutation is recorded.
 /// A row that recovers is rebuilt into an [`AuditEntry`] via [`parse_audit_suffix`] (the same decode
 /// [`audit_entry_from_body`] uses) and pushed into [`AUDIT_LOG`], so it becomes visible on
 /// `GET /audit` exactly as a live write would — recovery is not merely durable, it is also VISIBLE.
 fn drain_pending_audit() {
+    static WRITE_FAILED_LATCHED: AtomicBool = AtomicBool::new(false);
     PENDING_AUDIT.drain_with(
-        |scope, suffix| stream_registry::append_full(KIND_ID_AUDIT, scope, suffix).map_err(|_| ()),
+        |scope, suffix| match stream_registry::append_full(KIND_ID_AUDIT, scope, suffix) {
+            Ok(written) => {
+                WRITE_FAILED_LATCHED.store(false, Ordering::Relaxed);
+                Ok(written)
+            }
+            Err(_) => {
+                report_unwritten(&WRITE_FAILED_LATCHED);
+                Err(())
+            }
+        },
         |p, seq, prev_hash, hash| {
             let (ts, action, resource, outcome, principal, scheme) = parse_audit_suffix(&p.suffix);
-            AUDIT_LOG.push_entry(AuditEntry {
+            let entry = AuditEntry {
                 seq,
                 ts,
                 action,
@@ -682,9 +760,42 @@ fn drain_pending_audit() {
                 hash,
                 scheme,
                 recorded_here: true,
-            });
+            };
+            AUDIT_LOG.push_entry(entry.clone());
+            if p.origin != EventOrigin::ExportFailure {
+                deliver_audit_event(&entry);
+            }
         },
     );
+}
+
+/// Offer only accepted live records to the existing per-sink projection and admission path.
+/// Restore and migration populate the read model without reaching this producer.
+fn deliver_audit_event(entry: &AuditEntry) {
+    use busbar_contract::abi::export::ExportStream;
+
+    crate::export::plugin::deliver(ExportStream::Events, &entry.action, |projection| {
+        Arc::new(project_audit_event(projection, entry))
+    });
+}
+
+fn project_audit_event(
+    projection: crate::export::projection::Projection,
+    entry: &AuditEntry,
+) -> serde_json::Value {
+    use busbar_contract::abi::export::{ExportField as F, ExportStream};
+
+    let mut record =
+        crate::export::projection::ProjectedRecord::new(projection, ExportStream::Events);
+    record
+        .set(F::Seq, entry.seq)
+        .set(F::Ts, entry.ts)
+        .set(F::PrevHash, entry.prev_hash.as_str())
+        .set(F::Kind, entry.action.as_str())
+        .set(F::Actor, entry.principal.as_str())
+        .set(F::Resource, entry.resource.as_str())
+        .set(F::Outcome, entry.outcome.as_str());
+    record.finish()
 }
 
 /// ONE-TIME DATA MIGRATION: copy the legacy durable audit TABLE (`list_audit`/`append_audit`) into the
@@ -853,36 +964,31 @@ pub(crate) fn emit_admin_hostless(
     outcome: &str,
     principal: &str,
 ) {
-    static WRITE_FAILED_LATCHED: AtomicBool = AtomicBool::new(false);
-    // Recover whatever an EARLIER failure left queued before this event, so records land in the
-    // chain in their original order ahead of today's — see the `PendingAuditQueue` section above.
+    emit_admin_hostless_from(
+        ts,
+        action,
+        resource,
+        outcome,
+        principal,
+        EventOrigin::Mutation,
+    );
+}
+
+fn emit_admin_hostless_from(
+    ts: u64,
+    action: &str,
+    resource: &str,
+    outcome: &str,
+    principal: &str,
+    origin: EventOrigin,
+) {
+    let (suffix, _) = admin_suffix(ts, action, resource, outcome, principal);
+    // A recovered backend can empty a full backlog before this arrival needs a waiting slot.
     drain_pending_audit();
-    let (suffix, scheme) = admin_suffix(ts, action, resource, outcome, principal);
-    match stream_registry::append_full(KIND_ID_AUDIT, ADMIN_LOG, &suffix) {
-        Ok((seq, prev_hash, hash)) => {
-            WRITE_FAILED_LATCHED.store(false, Ordering::Relaxed);
-            AUDIT_LOG.push_entry(AuditEntry {
-                seq,
-                ts,
-                action: action.to_string(),
-                resource: resource.to_string(),
-                outcome: outcome.to_string(),
-                principal: principal.to_string(),
-                prev_hash,
-                hash,
-                // The scheme `admin_suffix` sealed this content under, so `crate::audit::digest`
-                // of this entry is the `hash` just minted.
-                scheme,
-                recorded_here: true,
-            });
-        }
-        Err(_e) => {
-            // RECOVERABLE, not terminal: queue this record so the next successful write (through
-            // this function's own `drain_pending_audit()` above) delivers it instead of losing
-            // it — see the `PendingAuditQueue` section above.
-            queue_unwritten(&WRITE_FAILED_LATCHED, ADMIN_LOG, suffix);
-        }
-    }
+    // New events share the recovery FIFO and its drain owner. A busy or failed older write must
+    // never let this event append directly around it.
+    enqueue_pending_audit(ADMIN_LOG, suffix, origin);
+    drain_pending_audit();
 }
 
 /// THE NEUTRAL, HOSTLESS AUDIT EMIT for plane call sites. Reads `busbar_kernel::store::now()` ONCE for
@@ -996,6 +1102,7 @@ struct HeldRefusal {
     ts: u64,
     refusal: PluginRefusal,
     resource: String,
+    origin: EventOrigin,
 }
 
 /// THE HOLD: refusals kept (in raise order, bounded) until the chain opens, sealed at once after.
@@ -1100,12 +1207,13 @@ impl Drop for OpenOnDrop<'_> {
 static PLUGIN_REFUSALS: RefusalHold = RefusalHold::new();
 
 fn seal_refusal(row: &HeldRefusal) {
-    emit_admin_hostless(
+    emit_admin_hostless_from(
         row.ts,
         row.refusal.action(),
         &row.resource,
         row.refusal.outcome(),
         PLUGIN_REFUSAL_PRINCIPAL,
+        row.origin,
     );
 }
 
@@ -1113,11 +1221,21 @@ fn seal_refusal(row: &HeldRefusal) {
 /// label; for a trust skip its tarball's file name) of `kind`, for `reason` (a host code). Held
 /// until the chain opens, sealed at once after.
 pub fn record_plugin_refusal(refusal: PluginRefusal, kind: &str, subject: &str, reason: &str) {
+    // Delivery failures arrive later on dispatcher workers: a thread-local recursion guard
+    // cannot cover them. Classify host-known origin before rendering text and retain it through
+    // holding and write retries. Ordinary emitter text never supplies this tag.
+    let origin =
+        if refusal == PluginRefusal::Op && kind == busbar_contract::plugin::Kind::Export.root() {
+            EventOrigin::ExportFailure
+        } else {
+            EventOrigin::Mutation
+        };
     PLUGIN_REFUSALS.raise(
         HeldRefusal {
             ts: busbar_kernel::store::now(),
             refusal,
             resource: plugin_refusal_resource(kind, subject, reason),
+            origin,
         },
         seal_refusal,
     );

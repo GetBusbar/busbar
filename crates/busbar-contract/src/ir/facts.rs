@@ -378,7 +378,30 @@ impl Shape {
         let mut text_chars = 0usize;
         let mut system_chars = 0usize;
         for item in items {
-            let n = item.screenable_text().chars().count();
+            let n = match item {
+                ContentItem::Data { value, .. } => {
+                    use std::fmt::Write as _;
+                    struct CharCount(usize);
+                    impl std::fmt::Write for CharCount {
+                        fn write_str(&mut self, text: &str) -> std::fmt::Result {
+                            self.0 += text.chars().count();
+                            Ok(())
+                        }
+                    }
+                    let mut count = CharCount(0);
+                    // Value's compact Display is also what screenable_text uses. Counting the
+                    // borrowed fragments avoids an owned copy of the serialized arguments.
+                    write!(&mut count, "{value}").expect("the character counter cannot fail");
+                    count.0
+                }
+                _ => {
+                    let text = item.screenable_text();
+                    let n = text.chars().count();
+                    #[cfg(test)]
+                    shape_custody_tests::retiring_count_text(&text);
+                    n
+                }
+            };
             text_chars += n;
             if matches!(item.slot(), Slot::System) {
                 system_chars += n;
@@ -487,3 +510,7 @@ impl IrFacts for NeutralFacts {
 #[cfg(test)]
 #[path = "../tests/screening_tests.rs"]
 mod screening_tests;
+
+#[cfg(test)]
+#[path = "tests/shape_custody_tests.rs"]
+mod shape_custody_tests;

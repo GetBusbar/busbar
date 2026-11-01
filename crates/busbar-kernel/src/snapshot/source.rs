@@ -30,6 +30,12 @@ use metrics_util::storage::{AtomicBucket, Summary};
 /// The quantiles every distribution reports (1.5.5's set).
 const QUANTILES: [f64; 7] = [0.0, 0.5, 0.9, 0.95, 0.99, 0.999, 1.0];
 
+/// Prometheus text-format summary fields (exposition_formats/#text-format-details), retained
+/// byte-for-byte from the historical recorder's presentation.
+const QUANTILE_LABEL: &str = "quantile";
+const SUMMARY_SUM_SUFFIX: &str = "_sum";
+const SUMMARY_COUNT_SUFFIX: &str = "_count";
+
 /// One histogram's samples, each stamped with when it was recorded, until a drain folds them into
 /// its distribution's window.
 pub struct Samples(AtomicBucket<(f64, Instant)>);
@@ -191,8 +197,15 @@ fn labels_of(key: &Key) -> Vec<(String, String)> {
     labels.into_iter().map(sanitize).collect()
 }
 
-/// The families being built: by kind then name, each family's series by their labels.
-type Building = BTreeMap<(u8, String), BTreeMap<Vec<(String, String)>, Vec<Sample>>>;
+/// One raw recorder key's presentation. Escaped labels are not an identity: historical escaping
+/// can spell distinct raw values alike. Keep them only for output and its established ordering.
+struct Series {
+    labels: Vec<(String, String)>,
+    samples: Vec<Sample>,
+}
+
+/// The families being built: by kind then displayed name, each series by its full raw recorder key.
+type Building = BTreeMap<(u8, String), BTreeMap<Key, Series>>;
 
 /// One series' lines: `(suffix, extra label, value)` each.
 fn put(out: &mut Building, kind: u8, key: &Key, lines: Vec<(&str, Option<String>, String)>) {
@@ -200,7 +213,7 @@ fn put(out: &mut Building, kind: u8, key: &Key, lines: Vec<(&str, Option<String>
     let labels = labels_of(key);
     let samples = lines.into_iter().map(|(suffix, quantile, value)| {
         let mut labels = labels.clone();
-        labels.extend(quantile.map(|q| ("quantile".to_string(), q)));
+        labels.extend(quantile.map(|q| (QUANTILE_LABEL.to_string(), q)));
         Sample {
             name: format!("{name}{suffix}"),
             labels,
@@ -208,7 +221,13 @@ fn put(out: &mut Building, kind: u8, key: &Key, lines: Vec<(&str, Option<String>
         }
     });
     let series = out.entry((kind, name.clone())).or_default();
-    series.insert(labels.clone(), samples.collect());
+    series.insert(
+        key.clone(),
+        Series {
+            labels: labels.clone(),
+            samples: samples.collect(),
+        },
+    );
 }
 
 impl Source {
@@ -282,17 +301,25 @@ impl Source {
             let window = d.window(now, self.width, self.buckets);
             let at = |q: f64| window.quantile(q).unwrap_or(0.0).to_string();
             let mut lines: Vec<_> = QUANTILES.map(|q| ("", Some(q.to_string()), at(q))).into();
-            lines.push(("_sum", None, d.sum.to_string()));
-            lines.push(("_count", None, d.count.to_string()));
+            lines.push((SUMMARY_SUM_SUFFIX, None, d.sum.to_string()));
+            lines.push((SUMMARY_COUNT_SUFFIX, None, d.count.to_string()));
             put(&mut out, SCRAPE_KIND_SUMMARY, key, lines);
         }
         let help = lock(&self.help);
-        let family = |((kind, name), series): ((u8, String), BTreeMap<_, Vec<Sample>>)| Family {
-            help: help.get(&name).cloned(),
-            name,
-            unit: None,
-            kind,
-            samples: series.into_values().flatten().collect(),
+        let family = |((kind, name), series): ((u8, String), BTreeMap<_, Series>)| {
+            let mut series: Vec<_> = series.into_iter().collect();
+            // Preserve historical presentation ordering. A raw-key tie-breaker makes collisions
+            // deterministic without dropping either recorder handle's samples.
+            series.sort_by(|(a_key, a), (b_key, b)| {
+                a.labels.cmp(&b.labels).then_with(|| a_key.cmp(b_key))
+            });
+            Family {
+                help: help.get(&name).cloned(),
+                name,
+                unit: None,
+                kind,
+                samples: series.into_iter().flat_map(|(_, s)| s.samples).collect(),
+            }
         };
         out.into_iter().map(family).collect()
     }

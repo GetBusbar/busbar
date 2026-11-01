@@ -282,6 +282,18 @@ async fn consent_screen(
         )
             .into_response();
     };
+    let pending = match pending_request(plane, target).await {
+        Ok(pending) => pending,
+        Err(error) => {
+            tracing::warn!(%error, "oauth_as: the consent grant could not be resolved");
+            return (
+                axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                [(axum::http::header::CACHE_CONTROL, "no-store")],
+                axum::response::Html(PAGE_UNRESOLVED_GRANT),
+            )
+                .into_response();
+        }
+    };
     // The session is opened HERE, not at the POST: the operator has already been authenticated by
     // the admin chain to get this far, so this is the moment the fact is true. The id is opaque and
     // unguessable, and it is the value the cookie carries.
@@ -294,7 +306,7 @@ async fn consent_screen(
         return no_entropy();
     };
     plane.open_session(ADMIN_SUBJECT, id.clone()).await;
-    let page = consent_page(target, &pending_request(plane, target).await);
+    let page = consent_page(target, &pending);
 
     let mut response = axum::response::Html(page).into_response();
     let headers = response.headers_mut();
@@ -480,7 +492,10 @@ struct Pending {
     revisit: bool,
 }
 
-async fn pending_request(plane: &super::plane::AsPlane, target: &str) -> Pending {
+async fn pending_request(
+    plane: &super::plane::AsPlane,
+    target: &str,
+) -> Result<Pending, oauth_as::store::StorageError> {
     let (client_id, scope, redirect_host) = client_and_scope_of(target)
         .unwrap_or_else(|| ("(unnamed)".to_string(), None, String::new()));
     let mut pushed = None;
@@ -498,12 +513,14 @@ async fn pending_request(plane: &super::plane::AsPlane, target: &str) -> Pending
         Some((p, revisit)) => (p.scope, host_of(&p.redirect_uri), revisit),
         None => (scope, redirect_host, false),
     };
-    Pending {
-        scope: plane.granted_scope(&client_id, requested.as_deref()).await,
+    Ok(Pending {
+        scope: plane
+            .granted_scope(&client_id, requested.as_deref())
+            .await?,
         client_id,
         redirect_host,
         revisit,
-    }
+    })
 }
 
 /// Is this a path on THIS server rather than a URL somewhere else?
@@ -705,6 +722,10 @@ const PAGE_NO_REQUEST: &str = "<!doctype html><meta charset=utf-8><title>busbar<
 /// a browser should be told about.
 const PAGE_NO_SESSION: &str = "<!doctype html><meta charset=utf-8><title>busbar</title>\
     <p>This server could not start a session. Try again, and tell your operator if it persists.</p>";
+
+const PAGE_UNRESOLVED_GRANT: &str = "<!doctype html><meta charset=utf-8><title>busbar</title>\
+    <p>This server could not resolve the requested permissions. Try again, and tell your operator \
+    if it persists.</p>";
 
 /// The consent screen.
 ///

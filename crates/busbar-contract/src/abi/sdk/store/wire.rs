@@ -30,7 +30,7 @@
 use std::any::Any;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 use std::task::{Context, Poll, Waker};
 
 use super::op::{Checkout, Op, Step};
@@ -333,9 +333,41 @@ struct PoolState {
     /// Established connections: idle plus held by an op.
     live: usize,
     /// Ops waiting for a connection, woken when one comes back.
-    waiters: Vec<(Host, Ticket)>,
+    waiters: Vec<Weak<Waiter>>,
     /// The host tables the idle connections are closed through when the set goes.
     host: Option<Host>,
+}
+
+#[derive(Default)]
+struct Waiter(Mutex<Option<(Host, Ticket)>>);
+
+impl Waiter {
+    fn wake(&self) {
+        let wake = self.0.lock().unwrap_or_else(PoisonError::into_inner).take();
+        if let Some((host, ticket)) = wake {
+            host.wake(ticket);
+        }
+    }
+}
+
+impl PoolState {
+    fn wait(&mut self, waiter: &Arc<Waiter>, host: Host, ticket: Ticket) {
+        *waiter.0.lock().unwrap_or_else(PoisonError::into_inner) = Some((host, ticket));
+        let weak = Arc::downgrade(waiter);
+        if !self.waiters.iter().any(|w| w.ptr_eq(&weak)) {
+            self.waiters.push(weak);
+        }
+    }
+
+    fn unwait(&mut self, waiter: &Arc<Waiter>) {
+        waiter
+            .0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take();
+        let weak = Arc::downgrade(waiter);
+        self.waiters.retain(|w| !w.ptr_eq(&weak));
+    }
 }
 
 /// A STORE INSTANCE'S KEPT CONNECTIONS: at most `max` established at once (the store's 1.5.5
@@ -388,9 +420,11 @@ impl Pool {
     }
 
     /// Wake every waiting op (outside the lock).
-    fn wake_all(waiters: Vec<(Host, Ticket)>) {
-        for (h, t) in waiters {
-            h.wake(t);
+    fn wake_all(waiters: Vec<Weak<Waiter>>) {
+        for waiter in waiters {
+            if let Some(waiter) = waiter.upgrade() {
+                waiter.wake();
+            }
         }
     }
 
@@ -484,10 +518,38 @@ struct Running<T> {
     body: Mutex<Body<T>>,
     wire: Wire,
     pool: Option<Arc<Pool>>,
+    waiter: Mutex<Option<Arc<Waiter>>>,
     /// The op's claim on one of the set's connections.
     lease: Mutex<Option<Lease>>,
     /// The read buffer the op took on its first read, kept across a PENDING answer.
     buf: Mutex<Option<Vec<u8>>>,
+}
+
+impl<T> Running<T> {
+    fn take_waiter(&self) -> Option<Arc<Waiter>> {
+        self.waiter
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take()
+    }
+
+    fn unwait(&self) {
+        if let (Some(waiter), Some(pool)) = (self.take_waiter(), &self.pool) {
+            pool.state().unwait(&waiter);
+        }
+    }
+
+    fn unwait_in(&self, state: &mut PoolState) {
+        if let Some(waiter) = self.take_waiter() {
+            state.unwait(&waiter);
+        }
+    }
+}
+
+impl<T> Drop for Running<T> {
+    fn drop(&mut self) {
+        self.unwait();
+    }
 }
 
 /// RUN `start`'s body over the op's own connection, across the op's entries: a fresh entry starts
@@ -580,6 +642,7 @@ fn run<T: 'static>(
                 body: Mutex::new(start(wire.clone())),
                 wire,
                 pool: pool.cloned(),
+                waiter: Mutex::new(None),
                 lease: Mutex::new(None),
                 buf: Mutex::new(None),
             }
@@ -600,6 +663,7 @@ fn run<T: 'static>(
             .as_mut()
             .poll(&mut poll_cx);
         if let Poll::Ready(t) = polled {
+            running.unwait();
             finish(cx, &running);
             if let (Some(b), Some(reads)) = (buf.take(), cx.reads()) {
                 reads.give(b);
@@ -612,9 +676,12 @@ fn run<T: 'static>(
         };
         let bound = bound_check(cx, &running.wire);
         let served = match bound {
-            Bound::Passed => Served::Answer(Err(ConnFailure::Failed(
-                crate::conn::ConnError::Timeout.text().to_owned(),
-            ))),
+            Bound::Passed => {
+                running.unwait();
+                Served::Answer(Err(ConnFailure::Failed(
+                    crate::conn::ConnError::Timeout.text().to_owned(),
+                )))
+            }
             _ => {
                 // Only a read reads into the buffer: it is taken on the op's first read.
                 let read = if matches!(ask, Ask::Read) {
@@ -743,6 +810,7 @@ fn connect<T>(
             .flatten();
         if let Some(at) = at {
             let idle = st.idle.swap_remove(at);
+            running.unwait_in(&mut st);
             drop(st);
             *lease = Some(Lease {
                 pool: pool.clone(),
@@ -758,6 +826,7 @@ fn connect<T>(
         }
         if st.live < pool.max {
             st.live += 1;
+            running.unwait_in(&mut st);
             drop(st);
             *lease = Some(Lease {
                 pool: pool.clone(),
@@ -766,6 +835,7 @@ fn connect<T>(
         } else if st.live >= pool.max && !st.idle.is_empty() && st.live == st.idle.len() {
             // Every connection is idle but none for this need and target: make room.
             let idle = st.idle.remove(0);
+            running.unwait_in(&mut st);
             drop(st);
             cx.adopt(idle.conn);
             cx.close_checkout();
@@ -775,7 +845,11 @@ fn connect<T>(
             });
         } else {
             if let Some(h) = cx.host().copied() {
-                st.waiters.push((h, cx.ticket()));
+                let mut waiter = running
+                    .waiter
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner);
+                st.wait(waiter.get_or_insert_with(Arc::default), h, cx.ticket());
             }
             drop(st);
             drop(lease);

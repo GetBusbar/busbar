@@ -308,8 +308,10 @@ where
     // (4) apply the plan — atomic mutate → persist → swap, then any deferred steps — on ONE blocking
     // thread that owns the guard. A panic in the section is a JoinError, mapped fail-closed.
     tokio::task::spawn_blocking(move || {
-        let _guard = guard; // dropped here, and ONLY here: when the section is genuinely over
-        apply(&handle, outcome)
+        let result = apply(&handle, outcome);
+        drop(guard);
+        crate::export::plugin::refresh_pending();
+        result
     })
     .await
     .map_err(|_| E::from(TxnError::Internal))?

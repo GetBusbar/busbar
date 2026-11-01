@@ -579,8 +579,8 @@ scripts/build-provenance-gate.sh "$OUT" release true \
   echo "profile_bytes=$MERGED_SIZE"
   echo "profraw_count=$RAW_COUNT"
   echo "target=${TARGET:-<host>}"
-  # Which ISA variant this arm64 binary is: `+lse` (armv8.1 floor, the default arm64 artifact) or
-  # `baseline` (armv8.0-compatible, the explicitly-suffixed compat artifact / any non-arm64 target).
+  # `lse` identifies the armv8.1 floor of the default arm64 artifact. An empty value identifies
+  # the armv8.0-compatible compat artifact or a non-arm64 target.
   # Extra marker keys are ignored by older readers; verify-artifact.py's pgo_applied row parses
   # key=value lines generically.
   echo "target_features=${LSE_FLAG:+lse}"

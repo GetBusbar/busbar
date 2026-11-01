@@ -621,6 +621,161 @@ fn install_catalog_remove_roundtrip() {
     ));
 }
 
+/// Filesystem failures are server errors even when admission accepted the upload. A malformed
+/// upload still fails validation before the same obstructed directory is touched.
+#[test]
+fn install_filesystem_failures_are_internal_errors() {
+    let dir = tmp_plugins_dir("install-io-errors");
+    let blocked_dir = dir.join("not-a-directory");
+    std::fs::write(&blocked_dir, b"keep this file").unwrap();
+    let publish_dir = dir.join("publish");
+    std::fs::create_dir(&publish_dir).unwrap();
+    std::fs::create_dir(publish_dir.join("plugin.tar.gz")).unwrap();
+    let tarball = fake_tarball("acme-store-io", "io", "1.0.0", "allowed");
+
+    for plugins_dir in [&blocked_dir, &publish_dir] {
+        let svc = svc_with(plugins_dir.clone(), unsigned_ok_posture());
+        let invalid = svc
+            .install_store_plugin("plugin.tar.gz", b"not a tarball")
+            .unwrap_err();
+        assert_eq!(invalid.http_status(), 400);
+        assert_eq!(invalid.code(), "invalid_request");
+
+        let err = svc
+            .install_store_plugin("plugin.tar.gz", &tarball)
+            .unwrap_err();
+        assert!(matches!(err, AdminError::Internal), "{err:?}");
+        assert_eq!(err.http_status(), 500);
+        assert_eq!(err.code(), "internal");
+        assert_eq!(err.message(), AdminError::Internal.message());
+    }
+    assert_eq!(std::fs::read(&blocked_dir).unwrap(), b"keep this file");
+    assert!(publish_dir.join("plugin.tar.gz").is_dir());
+    assert_eq!(std::fs::read_dir(&publish_dir).unwrap().count(), 1);
+
+    let svc = svc_with(dir.clone(), unsigned_ok_posture());
+    svc.install_store_plugin("ok.tar.gz", &tarball).unwrap();
+    assert_eq!(std::fs::read(dir.join("ok.tar.gz")).unwrap(), tarball);
+    assert!(svc.remove_store_plugin("ok.tar.gz").unwrap().removed);
+    let missing = svc.remove_store_plugin("ok.tar.gz").unwrap_err();
+    assert_eq!(missing.http_status(), 404);
+    assert_eq!(missing.code(), "not_found");
+}
+
+/// A present plugin whose directory refuses unlink is a server failure. Privileged test runners
+/// can bypass Unix mode bits; report that explicitly rather than claiming removal-error coverage.
+#[cfg(unix)]
+#[test]
+fn remove_filesystem_failure_is_internal_error() {
+    use std::os::unix::fs::PermissionsExt;
+
+    struct RestorePermissions(std::path::PathBuf, std::fs::Permissions);
+    impl Drop for RestorePermissions {
+        fn drop(&mut self) {
+            let _ = std::fs::set_permissions(&self.0, self.1.clone());
+        }
+    }
+
+    let dir = tmp_plugins_dir("remove-io-error");
+    let file = dir.join("plugin.tar.gz");
+    let probe = dir.join("unlink-probe");
+    std::fs::write(&file, b"keep this plugin").unwrap();
+    std::fs::write(&probe, b"probe").unwrap();
+    let svc = svc_with(dir.clone(), unsigned_ok_posture());
+    let _restore = RestorePermissions(dir.clone(), std::fs::metadata(&dir).unwrap().permissions());
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+    match std::fs::remove_file(&probe) {
+        Ok(()) => {
+            eprintln!(
+                "remove failure regression not exercised: runner bypasses directory mode bits"
+            );
+            return;
+        }
+        Err(e) => assert_eq!(e.kind(), std::io::ErrorKind::PermissionDenied),
+    }
+    assert!(file.is_file(), "the existing-file guard must pass");
+    let err = svc.remove_store_plugin("plugin.tar.gz").unwrap_err();
+    assert!(matches!(err, AdminError::Internal), "{err:?}");
+    assert_eq!(err.http_status(), 500);
+    assert_eq!(err.code(), "internal");
+    assert_eq!(err.message(), AdminError::Internal.message());
+    assert_eq!(std::fs::read(file).unwrap(), b"keep this plugin");
+}
+
+/// The shared inventory retains each recognized manifest kind. Store/db queries filter that
+/// inventory, while reload includes all kinds and keeps corrupt/unknown rows visible.
+#[tokio::test]
+async fn catalog_preserves_manifest_kinds_and_filters_store_queries() {
+    let dir = tmp_plugins_dir("catalog-kinds");
+    for kind in [
+        "store",
+        "auth",
+        "secret",
+        "hook",
+        "export",
+        "transport",
+        "plane",
+        "unknown",
+    ] {
+        let mut manifest: serde_json::Value = serde_json::from_slice(
+            &fake_tarball(kind, kind, "1.0.0", "allowed")[FAKE_HEAD.len()..],
+        )
+        .unwrap();
+        manifest["kind"] = kind.into();
+        let mut bytes = FAKE_HEAD.to_vec();
+        bytes.extend_from_slice(&serde_json::to_vec(&manifest).unwrap());
+        std::fs::write(dir.join(format!("{kind}.tar.gz")), bytes).unwrap();
+    }
+    std::fs::write(dir.join("corrupt.tar.gz"), b"invalid manifest").unwrap();
+    let svc = svc_with(dir, unsigned_ok_posture());
+    let reload = svc.reload_store_plugins().unwrap();
+    for kind in [
+        "store",
+        "auth",
+        "secret",
+        "hook",
+        "export",
+        "transport",
+        "plane",
+        "unknown",
+        "corrupt",
+    ] {
+        let file = format!("{kind}.tar.gz");
+        let row = reload
+            .plugins
+            .iter()
+            .find(|p| p.file.as_deref() == Some(file.as_str()))
+            .unwrap();
+        let expected = if matches!(kind, "unknown" | "corrupt") {
+            "store"
+        } else {
+            kind
+        };
+        assert_eq!(row.r#type, expected, "{file}");
+    }
+    for query in ["store", "db"] {
+        let mut files: Vec<_> = svc
+            .list_plugins(query)
+            .await
+            .unwrap()
+            .items
+            .into_iter()
+            .filter_map(|p| p.file)
+            .collect();
+        files.sort();
+        assert_eq!(files, ["corrupt.tar.gz", "store.tar.gz", "unknown.tar.gz"]);
+    }
+    for query in ["export", "transport", "plane"] {
+        assert!(
+            matches!(
+                svc.list_plugins(query).await,
+                Err(AdminError::Validation(_))
+            ),
+            "the catalog correction adds no new query type"
+        );
+    }
+}
+
 /// THE CATALOG'S PROJECTION OF THE INVENTORY: a ready signed row reads `trusted` with its
 /// publisher, a ready unsigned one `unverified`, a skipped one `rejected` and not loadable with the
 /// skip reason surfaced, and a row whose manifest could not be read carries no trust word at all.

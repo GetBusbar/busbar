@@ -338,7 +338,7 @@ impl PlaneMoney {
         if metered(counts) {
             let units = checked.unwrap_or_default();
             self.gov
-                .record_lane_metering(&m.key.id, &m.lane, provider, &units, m.arrived);
+                .record_lane_metering_for_key(&m.key, &m.lane, provider, &units, m.arrived);
         }
     }
 

@@ -15,6 +15,7 @@ const NOW: u64 = 1_000;
 
 fn gov_with(seed: u8) -> Arc<GovState> {
     let store = Arc::new(MemoryStore::new());
+    store.pin_token_clock(NOW);
     let signer = TokenSigner::from_secret_bytes(&[seed; 32], DEFAULT_KID);
     Arc::new(GovState::new_with_signer(store, None, Some(signer)).expect("gov"))
 }
@@ -63,7 +64,10 @@ fn a_ticket_admits_its_key_once_with_its_record() {
 
 #[test]
 fn a_foreign_or_expired_or_misprefixed_ticket_is_refused() {
-    let g = gov();
+    let memory = Arc::new(MemoryStore::new());
+    memory.pin_token_clock(NOW);
+    let signer = TokenSigner::from_secret_bytes(&[9; 32], DEFAULT_KID);
+    let g = GovState::new_with_signer(memory.clone(), None, Some(signer)).unwrap();
     let (id, _) = key(&g, NOW + 86_400);
     // RED: minted by another deployment's signer.
     let other = gov_with(7);
@@ -76,6 +80,7 @@ fn a_foreign_or_expired_or_misprefixed_ticket_is_refused() {
     let (expired, exp) = g
         .mint_ticket(&id, PREFIX, 10, None, b"{}", NOW)
         .expect("mint");
+    memory.pin_token_clock(exp + 1);
     assert!(g.admit_ticket(PREFIX, &expired, exp).is_none());
     // RED: presented on a route whose plane declares another prefix, or none.
     let (ticket, _) = g
@@ -310,6 +315,7 @@ fn ticket_records(store: &MemoryStore) -> usize {
 #[test]
 fn a_lapsed_tickets_record_goes_through_the_rule_carrying_purge_on_the_next_mint() {
     let memory = Arc::new(MemoryStore::new());
+    memory.pin_token_clock(NOW);
     let signer = TokenSigner::from_secret_bytes(&[9; 32], DEFAULT_KID);
     let g = GovState::new_with_signer(
         Arc::new(RuleCarryingOnly(Arc::clone(&memory))),
@@ -325,6 +331,7 @@ fn a_lapsed_tickets_record_goes_through_the_rule_carrying_purge_on_the_next_mint
         .expect("mint");
     assert_eq!(ticket_records(&memory), 2);
     // At NOW + 20 the first has lapsed and goes; the second lapses at this very instant and stays.
+    memory.pin_token_clock(NOW + 20);
     g.mint_ticket(&id, PREFIX, 600, None, b"{}", NOW + 20)
         .expect("mint");
     assert_eq!(
@@ -333,11 +340,80 @@ fn a_lapsed_tickets_record_goes_through_the_rule_carrying_purge_on_the_next_mint
         "the record of the ticket lapsed before the mint goes; the one lapsing at it stays"
     );
     // At NOW + 21 the second has lapsed too.
+    memory.pin_token_clock(NOW + 21);
     g.mint_ticket(&id, PREFIX, 600, None, b"{}", NOW + 21)
         .expect("mint");
     assert_eq!(
         ticket_records(&memory),
         2,
         "only the two live tickets' records stay"
+    );
+}
+
+#[test]
+fn ticket_deadline_and_record_follow_store_clock_despite_node_skew() {
+    const TICKET_TTL_SECS: u64 = 600;
+    const NODE_SKEW_SECS: u64 = TICKET_TTL_SECS * 2;
+    const KEY_TTL_SECS: u64 = 86_400;
+    let store_now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let memory = Arc::new(MemoryStore::new());
+    let signer = TokenSigner::from_secret_bytes(&[9; 32], DEFAULT_KID);
+    let g = GovState::new_with_signer(memory, None, Some(signer)).unwrap();
+    let (id, _) = key(&g, store_now + KEY_TTL_SECS);
+    let (ticket, _) = g
+        .mint_ticket(&id, PREFIX, TICKET_TTL_SECS, None, b"original", store_now)
+        .unwrap();
+    let fast_node = store_now + NODE_SKEW_SECS;
+    assert!(
+        g.peek_ticket(PREFIX, &ticket, fast_node).is_some(),
+        "fast node must not refuse a store-valid ticket"
+    );
+    g.mint_ticket(&id, PREFIX, TICKET_TTL_SECS, None, b"later", fast_node)
+        .unwrap();
+    assert!(
+        g.peek_ticket(PREFIX, &ticket, fast_node).is_some(),
+        "fast mint must not purge its live record"
+    );
+    assert_eq!(
+        g.admit_ticket(PREFIX, &ticket, fast_node).unwrap().1,
+        b"original"
+    );
+    assert!(
+        g.admit_ticket(PREFIX, &ticket, store_now).is_none(),
+        "preflight never spent, admission spends once"
+    );
+    let slow_node = store_now - NODE_SKEW_SECS;
+    let (expired, _) = g
+        .mint_ticket(&id, PREFIX, TICKET_TTL_SECS, None, b"expired", slow_node)
+        .unwrap();
+    assert!(g.peek_ticket(PREFIX, &expired, slow_node).is_none());
+    assert!(
+        g.admit_ticket(PREFIX, &expired, slow_node).is_none(),
+        "slow caller cannot reopen expired authority"
+    );
+}
+
+#[test]
+fn ticket_preflight_and_first_admission_include_the_store_deadline_second() {
+    const TICKET_TTL_SECS: u64 = 10;
+    let store = Arc::new(MemoryStore::new());
+    store.pin_token_clock(NOW);
+    let signer = TokenSigner::from_secret_bytes(&[9; 32], DEFAULT_KID);
+    let g = GovState::new_with_signer(store.clone(), None, Some(signer)).unwrap();
+    let (id, key_token) = key(&g, NOW + 86_400);
+    let (ticket, exp) = g
+        .mint_ticket(&id, PREFIX, TICKET_TTL_SECS, None, b"record", NOW)
+        .unwrap();
+    store.pin_token_clock(exp);
+    assert!(g.peek_ticket(PREFIX, &ticket, exp + 1).is_some());
+    assert!(g.peek_ticket(PREFIX, &ticket, exp - 1).is_some());
+    assert!(g.admit_ticket(PREFIX, &ticket, exp + 1).is_some());
+    assert!(g.admit_ticket(PREFIX, &ticket, exp - 1).is_none());
+    assert!(
+        g.verify_token(&key_token, NOW + 86_400, None).is_none(),
+        "ordinary bearer expiry is unchanged"
     );
 }

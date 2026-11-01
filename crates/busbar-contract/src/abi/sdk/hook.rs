@@ -62,6 +62,8 @@ use crate::hooks::{
 };
 use crate::signal::{Signal, SignalBag, SignalValue};
 
+pub mod configure_checkpoint;
+pub use configure_checkpoint::ConfigureCheckpoint;
 mod projection;
 
 // ── reading the host's views ─────────────────────────────────────────────────────────────────────
@@ -804,6 +806,21 @@ pub trait Hook: Send + Sync {
         let _ = (settings, version);
         Ok(())
     }
+    /// Apply a push and return its complete effective configuration under the same plugin lock.
+    /// A checkpoint is replayable through `configure` on a fresh instance; partial pushes and
+    /// null/alias normalization remain entirely plugin-owned. Build the checkpoint before the
+    /// state commit so an encoding refusal cannot leave a failed push applied.
+    ///
+    /// The default preserves existing plugins' configure behavior but reports no recovery
+    /// checkpoint. A host cannot safely reconstruct such an instance after an acknowledged push.
+    fn configure_checkpoint(
+        &self,
+        settings: &serde_json::Map<String, serde_json::Value>,
+        version: u64,
+    ) -> Result<Option<ConfigureCheckpoint>, String> {
+        self.configure(settings, version)?;
+        Ok(None)
+    }
     /// `status`: the 1.5.5 status envelope (`{"status": {...}}`, or `{}` = unsupported).
     fn status(&self) -> serde_json::Value {
         serde_json::json!({})
@@ -1199,8 +1216,17 @@ hook_op!(
         let Ok(serde_json::Value::Object(settings)) = serde_json::from_str::<serde_json::Value>(&text) else {
             return out.fail(Refusal::failed("settings: must be a JSON object"));
         };
-        match held.life().hook().configure(&settings, input.version) {
-            Ok(()) => {
+        match held.life().hook().configure_checkpoint(&settings, input.version) {
+            Ok(checkpoint) => {
+                if let Some(checkpoint) = checkpoint {
+                    let mut bytes = checkpoint.encode();
+                    out.lease_secret(
+                        |o| &o.head.extensions,
+                        held.leases(),
+                        std::mem::take(&mut *bytes),
+                        crate::abi::mechanism::call::BLOB_OCTETS,
+                    );
+                }
                 out.set(|o| &o.acked_version, input.version);
                 Outcome::Ready
             }

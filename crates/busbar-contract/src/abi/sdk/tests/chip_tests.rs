@@ -267,6 +267,50 @@ ijJ7b5W7pYuuReJdv9h481JKwwV75KY1M6dRf7kpYFOCA4Zo8xgdso69qxPTVUXL
         out
     }
 
+    #[test]
+    fn rsa_public_api_accepts_pkcs1_or_one_spki_but_refuses_nested_spki() {
+        use base64::Engine as _;
+        let b64 = base64::engine::general_purpose::STANDARD;
+        let der = b64
+            .decode(
+                std::str::from_utf8(PEM)
+                    .unwrap()
+                    .lines()
+                    .filter(|line| !line.starts_with("-----"))
+                    .collect::<String>(),
+            )
+            .unwrap();
+        // This fixture's SPKI prefix has a 15-byte rsaEncryption AlgorithmIdentifier
+        // and a BIT STRING with zero unused bits. Its PKCS #1 body starts at byte 22.
+        assert_eq!(&der[..4], &[0x30, 0x81, 0x9f, 0x30]);
+        assert_eq!(&der[18..22], &[0x03, 0x81, 0x8d, 0x00]);
+        let pem = |body: &[u8]| {
+            format!(
+                "-----BEGIN PUBLIC KEY-----\n{}\n-----END PUBLIC KEY-----\n",
+                b64.encode(body)
+            )
+        };
+        let direct = pem(&der[22..]);
+        assert!(cred("pw")
+            .mysql_rsa_packet(1, b"nonce", direct.as_bytes())
+            .is_ok());
+        assert!(cred("pw").mysql_rsa_packet(1, b"nonce", PEM).is_ok());
+
+        let mut nested = vec![0x30, 0x81, 0xb5];
+        nested.extend_from_slice(&der[3..18]);
+        nested.extend_from_slice(&[0x03, 0x81, 0xa3, 0x00]);
+        nested.extend_from_slice(&der);
+        assert_eq!(nested.len(), 184);
+        assert!(cred("pw")
+            .mysql_rsa_packet(1, b"nonce", pem(&nested).as_bytes())
+            .is_err());
+        assert!(crate::abi::sdk::chip::rsa::key_sha256(pem(&nested).as_bytes()).is_err());
+        assert_eq!(
+            crate::abi::sdk::chip::rsa::key_sha256(PEM).unwrap(),
+            *crate::abi::sdk::chip::digests::sha256(&[&der])
+        );
+    }
+
     /// RFC 8017 7.1.2 decryption, so the test checks what the server would read.
     fn decrypt(ct: &[u8]) -> Vec<u8> {
         let n = BigUint::parse_bytes(N.as_bytes(), 16).expect("n");

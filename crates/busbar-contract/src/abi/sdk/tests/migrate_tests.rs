@@ -120,6 +120,41 @@ fn an_answer_larger_than_the_buffer_is_refused_and_writes_nothing() {
     );
 }
 
+/// The host can explain an oversized migration without printing any of its settings. The reason
+/// names only the boundary; bytes beyond the named reason remain untouched.
+#[test]
+fn an_oversized_answer_names_a_nonsecret_reason_when_it_fits() {
+    let secret = "private-setting-sentinel".repeat(32);
+    let settings = serde_json::to_vec(&serde_json::json!({ "secret": secret })).unwrap();
+    let mut buf = vec![0xa5; 128];
+    let (outcome, answer) = call(&settings, b"1.5.5", &mut buf);
+    assert_eq!(outcome, Outcome::Refused);
+    let reason = read_answer(outcome, &answer).expect_err("the oversized migration is refused");
+    assert_eq!(reason, "migrate: the answer is larger than the host buffer");
+    assert!(!reason.contains("private-setting-sentinel"));
+    assert!(buf[answer.len()..].iter().all(|b| *b == 0xa5));
+}
+
+/// A reason that exactly fills the lent buffer is named in full. One byte less cannot carry it,
+/// so the refusal names nothing and does not partially overwrite the host's buffer.
+#[test]
+fn an_overflow_reason_fits_exactly_or_writes_nothing() {
+    let settings = serde_json::to_vec(&serde_json::json!({ "data": "x".repeat(512) })).unwrap();
+    let reason = b"migrate: the answer is larger than the host buffer";
+    for capacity in [reason.len(), reason.len() - 1] {
+        let mut buf = vec![0xa5; capacity];
+        let (outcome, answer) = call(&settings, b"1.5.5", &mut buf);
+        assert_eq!(outcome, Outcome::Refused);
+        if capacity == reason.len() {
+            assert_eq!(answer, reason);
+            assert_eq!(buf, reason);
+        } else {
+            assert!(answer.is_empty());
+            assert!(buf.iter().all(|b| *b == 0xa5));
+        }
+    }
+}
+
 #[test]
 fn the_needs_are_one_closed_vocabulary_on_the_wire() {
     let wire = serde_json::to_value(MigrateNeed::AllowDestination("db.internal".into())).unwrap();

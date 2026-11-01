@@ -350,18 +350,33 @@ pub fn read_response(value: &Value, sent_id: &Value) -> Result<Reply, NotAnAnswe
 /// number case: JSON has a single number type, so `1` and `1.0` are the same value, and
 /// `serde_json`'s own `Number` equality — which compares the parsed REPRESENTATION — would refuse a
 /// peer that echoed `1` as `1.0`. Refusing a correct answer is as much a correlation failure as
-/// accepting a wrong one, so the comparison is on the numeric value. It is still exact: no
-/// cross-type coercion, and `"1"` never matches `1`.
+/// accepting a wrong one, so the comparison is on the numeric value. Integers never pass through
+/// floating-point rounding: a mixed pair compares the float's exact integral value against the
+/// integer. There is no cross-type coercion, and `"1"` never matches `1`.
 fn same_id(got: &Value, sent: &Value) -> bool {
     match (got, sent) {
         (Value::String(a), Value::String(b)) => a == b,
         (Value::Number(a), Value::Number(b)) => {
             a == b
-                || match (a.as_f64(), b.as_f64()) {
-                    (Some(x), Some(y)) => x == y,
+                || match (a.is_f64(), b.is_f64()) {
+                    (false, true) => integer_matches_float(a, b),
+                    (true, false) => integer_matches_float(b, a),
                     _ => false,
                 }
         }
+        _ => false,
+    }
+}
+
+fn integer_matches_float(integer: &serde_json::Number, float: &serde_json::Number) -> bool {
+    let integer = integer
+        .as_i64()
+        .map(i128::from)
+        .or_else(|| integer.as_u64().map(i128::from));
+    match (integer, float.as_f64()) {
+        // i128 contains the entire i64/u64 ID range. An integral float in that range converts
+        // exactly; outside i128's range the cast saturates to values no i64/u64 ID can equal.
+        (Some(integer), Some(float)) => float.fract() == 0.0 && float as i128 == integer,
         _ => false,
     }
 }
@@ -459,23 +474,69 @@ pub fn unitless_kernel_body(reason: u32) -> Option<&'static [u8]> {
 // Members passed as bytes are copied verbatim, so they are serde_json's compact bytes when the
 // caller wrote them with it, and the far end's own bytes when it spliced them out.
 
-/// `s` as a JSON string, escaped by serde_json's own escaper.
-fn push_str(out: &mut Vec<u8>, s: &str) {
-    // Writing a `str` into a `Vec` cannot fail.
-    let _ = serde_json::to_writer(&mut *out, s);
+// Compact JSON-RPC members retain the historical serde_json map ordering.
+const ID_PREFIX: &[u8] = b"{\"id\":";
+const RESULT_MEMBER: &[u8] = b",\"jsonrpc\":\"2.0\",\"result\":";
+const ERROR_PREFIX: &[u8] = b"{\"error\":{\"code\":";
+const ERROR_DATA_MEMBER: &[u8] = b",\"data\":";
+const ERROR_MESSAGE_MEMBER: &[u8] = b",\"message\":";
+const ERROR_ID_MEMBER: &[u8] = b"},\"id\":";
+const RESPONSE_END: &[u8] = b",\"jsonrpc\":\"2.0\"}";
+const CALL_PREFIX: &[u8] = b"\"jsonrpc\":\"2.0\",\"method\":";
+const PARAMS_MEMBER: &[u8] = b",\"params\":";
+const OBJECT_START: &[u8] = b"{";
+const OBJECT_END: &[u8] = b"}";
+const MEMBER_SEPARATOR: &[u8] = b",";
+
+/// Count serializer output without retaining any of the serialized payload.
+#[derive(Default)]
+struct JsonLength(usize);
+
+impl std::io::Write for JsonLength {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0 = self
+            .0
+            .checked_add(bytes.len())
+            .ok_or(std::io::ErrorKind::InvalidInput)?;
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// Count and emit the same borrowed envelope twice. The first pass retains no payload; the second
+/// can only write within the initialized, guarded output slice, so no write can grow an allocation.
+fn envelope_bytes(write: impl Fn(&mut dyn std::io::Write) -> std::io::Result<()>) -> Vec<u8> {
+    let mut length = JsonLength::default();
+    write(&mut length).expect("JSON-RPC envelope length overflow");
+    let mut out = zeroize::Zeroizing::new(vec![0; length.0]);
+    let mut remaining = out.as_mut_slice();
+    write(&mut remaining).expect("counted JSON-RPC envelope fits its output");
+    assert!(
+        remaining.is_empty(),
+        "counted JSON-RPC envelope fills its output"
+    );
+    std::mem::take(&mut *out)
+}
+
+fn push_str(out: &mut dyn std::io::Write, value: &str) -> std::io::Result<()> {
+    // serde_json escapes directly into the writer; no escaped String is ever materialized.
+    serde_json::to_writer(out, value).map_err(std::io::Error::other)
 }
 
 /// A success response: `{"id":<id>,"jsonrpc":"2.0","result":<result>}`. `id` and `result` are
 /// JSON bytes.
 #[must_use]
 pub fn result_bytes(id: &[u8], result: &[u8]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(id.len() + result.len() + 32);
-    out.extend_from_slice(b"{\"id\":");
-    out.extend_from_slice(id);
-    out.extend_from_slice(b",\"jsonrpc\":\"2.0\",\"result\":");
-    out.extend_from_slice(result);
-    out.push(b'}');
-    out
+    envelope_bytes(|out| {
+        out.write_all(ID_PREFIX)?;
+        out.write_all(id)?;
+        out.write_all(RESULT_MEMBER)?;
+        out.write_all(result)?;
+        out.write_all(OBJECT_END)
+    })
 }
 
 /// An error response:
@@ -483,52 +544,56 @@ pub fn result_bytes(id: &[u8], result: &[u8]) -> Vec<u8> {
 /// no `data` member when `data` is `None`. `id` and `data` are JSON bytes.
 #[must_use]
 pub fn error_bytes(id: &[u8], code: i64, message: &str, data: Option<&[u8]>) -> Vec<u8> {
-    let mut out = Vec::with_capacity(id.len() + message.len() + data.map_or(0, <[u8]>::len) + 64);
-    out.extend_from_slice(b"{\"error\":{\"code\":");
-    out.extend_from_slice(code.to_string().as_bytes());
-    if let Some(data) = data {
-        out.extend_from_slice(b",\"data\":");
-        out.extend_from_slice(data);
-    }
-    out.extend_from_slice(b",\"message\":");
-    push_str(&mut out, message);
-    out.extend_from_slice(b"},\"id\":");
-    out.extend_from_slice(id);
-    out.extend_from_slice(b",\"jsonrpc\":\"2.0\"}");
-    out
+    envelope_bytes(|out| {
+        out.write_all(ERROR_PREFIX)?;
+        serde_json::to_writer(&mut *out, &code).map_err(std::io::Error::other)?;
+        if let Some(data) = data {
+            out.write_all(ERROR_DATA_MEMBER)?;
+            out.write_all(data)?;
+        }
+        out.write_all(ERROR_MESSAGE_MEMBER)?;
+        push_str(out, message)?;
+        out.write_all(ERROR_ID_MEMBER)?;
+        out.write_all(id)?;
+        out.write_all(RESPONSE_END)
+    })
 }
 
 /// A request: `{"id":<id>,"jsonrpc":"2.0","method":<method>,"params":<params>}`, with no `params`
 /// member when `params` is `None`. `id` and `params` are JSON bytes.
 #[must_use]
 pub fn request_bytes(id: &[u8], method: &str, params: Option<&[u8]>) -> Vec<u8> {
-    let mut out = Vec::with_capacity(id.len() + method.len() + params.map_or(0, <[u8]>::len) + 48);
-    out.extend_from_slice(b"{\"id\":");
-    out.extend_from_slice(id);
-    out.push(b',');
-    push_call(&mut out, method, params);
-    out
+    envelope_bytes(|out| {
+        out.write_all(ID_PREFIX)?;
+        out.write_all(id)?;
+        out.write_all(MEMBER_SEPARATOR)?;
+        push_call(out, method, params)
+    })
 }
 
 /// A notification: `{"jsonrpc":"2.0","method":<method>,"params":<params>}`, with no `params`
 /// member when `params` is `None`. `params` is JSON bytes.
 #[must_use]
 pub fn notification_bytes(method: &str, params: Option<&[u8]>) -> Vec<u8> {
-    let mut out = Vec::with_capacity(method.len() + params.map_or(0, <[u8]>::len) + 40);
-    out.push(b'{');
-    push_call(&mut out, method, params);
-    out
+    envelope_bytes(|out| {
+        out.write_all(OBJECT_START)?;
+        push_call(out, method, params)
+    })
 }
 
 /// The members a request and a notification share, and the closing brace.
-fn push_call(out: &mut Vec<u8>, method: &str, params: Option<&[u8]>) {
-    out.extend_from_slice(b"\"jsonrpc\":\"2.0\",\"method\":");
-    push_str(out, method);
+fn push_call(
+    out: &mut dyn std::io::Write,
+    method: &str,
+    params: Option<&[u8]>,
+) -> std::io::Result<()> {
+    out.write_all(CALL_PREFIX)?;
+    push_str(out, method)?;
     if let Some(params) = params {
-        out.extend_from_slice(b",\"params\":");
-        out.extend_from_slice(params);
+        out.write_all(PARAMS_MEMBER)?;
+        out.write_all(params)?;
     }
-    out.push(b'}');
+    out.write_all(OBJECT_END)
 }
 
 #[cfg(test)]

@@ -79,9 +79,9 @@ pub(crate) trait SelfServeKeys: Send + Sync {
 pub(crate) trait SelfGroupProvisioner: Send + Sync {
     /// Ensure `leaf` exists as an enabled child of `parent`, limits copied from the nearest-ancestor
     /// `child_default` (inherit-only when none up the chain) — exactly the admin auto-provision shape.
-    /// IDEMPOTENT: a no-op (never a reset) when `leaf` already exists, so N logins for one subject
-    /// leave exactly one leaf with its usage intact. `Err(msg)` fails the mint closed (a key with no
-    /// resolvable budget group is worse than no key).
+    /// IDEMPOTENT: a no-op (never a reset) when `leaf` already exists under `parent`, so N logins
+    /// for one subject leave exactly one leaf with its usage intact. A different parent is refused;
+    /// a mint cannot re-home an existing leaf. `Err(msg)` fails the mint closed.
     async fn ensure_leaf(&self, leaf: &str, parent: &str) -> Result<(), String>;
 }
 
@@ -229,13 +229,8 @@ impl SelfGroupProvisioner for HandleProvisioner {
         let actor = self.actor.clone();
         crate::config::transaction::config_transaction(&self.handle, move |txn| {
             let current = txn.app();
-            // IDEMPOTENT no-op: the leaf is already a live enforcement bucket (the steady-state
-            // re-login path — no swap, no overlay churn, no usage reset).
-            if current.cost.group_named(&leaf).is_some() {
-                return Ok(txn.done(()));
-            }
             // Same plan the admin mint runs: build the leaf under `parent` from the nearest-ancestor
-            // `child_default`, validated at the door (cost rebuilt in the candidate snapshot).
+            // `child_default`, or validate that an existing leaf still belongs to that parent.
             let Some(installed) = crate::governance::group_provision::plan_mint_group(
                 current,
                 &leaf,
@@ -243,8 +238,7 @@ impl SelfGroupProvisioner for HandleProvisioner {
                 &actor,
             )?
             else {
-                // `plan_mint_group` returns `None` only when the group already exists (a race with
-                // the `group_named` check above lost) — nothing to commit.
+                // Existing leaf, matching parent: no swap, overlay churn, or usage reset.
                 return Ok(txn.done(()));
             };
             // PERSIST-then-SWAP the new leaf, fail-closed — routed through `commit_and_swap` by the

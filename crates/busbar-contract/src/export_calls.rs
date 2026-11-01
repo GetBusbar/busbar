@@ -254,6 +254,15 @@ pub enum Delivered {
 
 /// ONE EXPORT INSTANCE'S CALLS, as the kernel makes them.
 pub trait ExportCalls: Send + Sync {
+    /// Apply settings to this instance. A refusal retains its current settings and bindings.
+    ///
+    /// # Errors
+    /// The instance refused the refresh or cannot refresh in place.
+    fn refresh(&self, settings: &serde_json::Value, generation: u64) -> Result<(), String> {
+        let _ = (settings, generation);
+        Err("this export instance does not support refresh".into())
+    }
+
     /// The streams this instance carries (its Statement tail's `streams[]`), as
     /// [`crate::abi::export::ExportStream`] bytes.
     fn streams(&self) -> &[u8];

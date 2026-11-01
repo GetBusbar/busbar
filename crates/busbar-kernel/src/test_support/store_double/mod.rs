@@ -53,6 +53,9 @@ const MAX_RETENTION_SECS: u64 = 31 * 86_400;
 /// `DEFAULT_RATE_SWEEP_INTERVAL` (`crates/busbar-core/src/config/mod.rs`).
 const SWEEP_INTERVAL: u64 = 256;
 
+/// Reserved host ticket kind: record timestamp is its absolute deadline.
+const TICKET_RECORD_KIND: &str = "ticket";
+
 /// The `records` map: `(schema, key) -> body`, in KEY ORDER because `record_scan` promises a
 /// prefix walk answers in it.
 type RecordMap = std::collections::BTreeMap<(String, Vec<u8>), RecordBytes>;
@@ -68,12 +71,13 @@ fn now() -> u64 {
 /// the per-key listing/cascade are SCANS over that one map, not secondary indexes — the RAM backend
 /// holds a fixture-sized table and a second map to keep in step with every sweep, tombstone cascade
 /// and rotation is more failure surface than the scan costs), token ledgers keyed by (bucket_id,
-/// window_start), metering rows keyed by (key_id, bucket, model, provider, priced_from_ms).
-/// A metering row's key: (key_id, bucket, model, provider, priced_from_ms).
-type MeteringKey = (String, u64, String, String, u64);
+/// window_start), metering rows keyed by (key_id, bucket, model, provider, priced_from_ms, group, version).
+/// A metering row's key: (key_id, bucket, model, provider, priced_from_ms, group, version).
+type MeteringKey = (String, u64, String, String, u64, String, String);
 
 #[derive(Default)]
 pub struct MemoryStore {
+    token_clock: RwLock<Option<u64>>,
     keys: RwLock<HashMap<String, VirtualKey>>,
     creds: RwLock<HashMap<String, CredentialSecret>>,
     usage: RwLock<HashMap<(String, u64), UsageLedger>>,
@@ -146,6 +150,20 @@ pub struct MemoryStore {
 }
 
 impl MemoryStore {
+    pub(crate) fn pin_token_clock(&self, now: u64) {
+        *self.token_clock.write().unwrap_or_else(|e| e.into_inner()) = Some(now);
+    }
+
+    fn token_now(&self) -> StoreResult<u64> {
+        if let Some(now) = *self.token_clock.read().unwrap_or_else(|e| e.into_inner()) {
+            return Ok(now);
+        }
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|elapsed| elapsed.as_secs())
+            .map_err(|_| StoreError("store double token clock is before Unix epoch".into()))
+    }
+
     pub fn new() -> Self {
         Self::default()
     }
@@ -499,6 +517,8 @@ impl Store for MemoryStore {
                 d.model.clone(),
                 d.provider.clone(),
                 d.priced_from_ms,
+                d.key_group_at_use.clone(),
+                d.pricing_version.clone(),
             ))
             .or_insert_with(|| MeteringRow {
                 key_id: d.key_id.clone(),
@@ -535,7 +555,7 @@ impl Store for MemoryStore {
             .is_multiple_of(SWEEP_INTERVAL);
         if sweep_needed {
             let n = now();
-            m.retain(|(_, bucket, _, _, _), _| bucket.saturating_add(MAX_RETENTION_SECS) > n);
+            m.retain(|(_, bucket, ..), _| bucket.saturating_add(MAX_RETENTION_SECS) > n);
         }
         Ok(())
     }
@@ -544,7 +564,7 @@ impl Store for MemoryStore {
         Ok(self
             .metering_read()
             .iter()
-            .filter(|((_, b, _, _, _), _)| *b == bucket)
+            .filter(|((_, b, ..), _)| *b == bucket)
             .map(|(_, row)| row.clone())
             .collect())
     }
@@ -840,6 +860,11 @@ impl Store for MemoryStore {
         // an older ACTIVE row is kept (the row nothing rewrites for the longest is exactly the one
         // that must survive), under `Age` every row older than `before` goes.
         let mut records = self.plane_records();
+        let before = if kind == TICKET_RECORD_KIND {
+            before.min(self.token_now()?)
+        } else {
+            before
+        };
         let before_len = records.len();
         records.retain(|(k, _, _), r| k != kind || !retention.drops(r.ts, before, r.disposition));
         Ok((before_len - records.len()) as u64)
@@ -858,20 +883,21 @@ impl Store for MemoryStore {
         kind: &str,
         token: &str,
         expires_at: u64,
-        now: u64,
+        _now: u64,
     ) -> StoreResult<bool> {
-        // TEST-AND-SET under ONE guard. The trait's default is `Ok(true)` — "this store keeps no
-        // ledger" — which on the DEFAULT backend makes every single-use approval token replayable:
-        // a confirm-once tool re-executes for anyone who replays the nonce, and the store reports
-        // each replay as the first redemption. Governance's out-of-the-box posture cannot be that.
         let mut spent = self.plane_tokens.write().unwrap_or_else(|e| e.into_inner());
-        // Lapsed rows go in the same call: a token past its own expiry can never be presented
-        // again, so retaining it only grows the map.
-        spent.retain(|_, exp| *exp > now);
-        let first = spent
-            .insert((kind.to_string(), token.to_string()), expires_at)
-            .is_none();
-        Ok(first)
+        let now = self.token_now()?;
+        if expires_at < now {
+            return Ok(false);
+        }
+        spent.retain(|_, exp| *exp >= now);
+        match spent.entry((kind.to_string(), token.to_string())) {
+            std::collections::hash_map::Entry::Occupied(_) => Ok(false),
+            std::collections::hash_map::Entry::Vacant(row) => {
+                row.insert(expires_at);
+                Ok(true)
+            }
+        }
     }
 
     fn plane_token_live(
@@ -881,22 +907,20 @@ impl Store for MemoryStore {
         expires_at: u64,
         now: u64,
     ) -> StoreResult<bool> {
-        // MULTI-use and SPENDS NOTHING — the opposite of `redeem_plane_token`'s single-use
-        // test-and-set. This is a plain READ of the `(kind, token)` upsert record (an upsert kind
-        // lives at `seq` 0, exactly where `get_plane_record` point-reads it), live only while that
-        // record is present, its disposition is still `Active` (non-terminal), and `now` has not
-        // reached `expires_at`. Nothing is inserted, removed or mutated, so asking twice answers the
-        // same twice — the whole point of the verb.
-        //
-        // The trait default is `Ok(false)` precisely so a backend that keeps no records refuses these
-        // callbacks fail-closed. This backend DOES keep them, in the same `plane_records` map the
-        // upsert leg wrote to, so it answers from there — and it stays fail-closed for the same three
-        // reasons: an unknown `(kind, token)`, a terminal disposition, and a lapsed deadline each
-        // yield `Ok(false)`.
-        Ok(self
-            .plane_records_read()
+        let records = self.plane_records_read();
+        if kind == TICKET_RECORD_KIND {
+            let now = self.token_now()?;
+            return Ok(records
+                .get(&(kind.to_string(), token.to_string(), 0))
+                .is_some_and(|row| {
+                    row.disposition == PlaneDisposition::Terminal
+                        && row.ts == expires_at
+                        && now <= expires_at
+                }));
+        }
+        Ok(records
             .get(&(kind.to_string(), token.to_string(), 0))
-            .is_some_and(|r| r.disposition == PlaneDisposition::Active && now < expires_at))
+            .is_some_and(|row| row.disposition == PlaneDisposition::Active && now < expires_at))
     }
 }
 

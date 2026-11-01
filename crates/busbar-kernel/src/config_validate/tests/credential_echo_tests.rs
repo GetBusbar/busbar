@@ -13,7 +13,10 @@ use busbar_contract::auth_calls::AuthAxis;
 
 /// An auth axis whose outbound check answers the refusals it was built with, `{cred}` in each
 /// replaced by the credential it was handed (a third-party plugin that echoes it).
-struct Echoing(Vec<&'static str>);
+struct Echoing {
+    words: Vec<&'static str>,
+    fail_open: bool,
+}
 
 impl AuthAxis for Echoing {
     fn linked_names(&self) -> Vec<String> {
@@ -45,15 +48,20 @@ impl AuthAxis for Echoing {
         let cred = String::from_utf8_lossy(credential);
         let b64 = base64::engine::general_purpose::STANDARD.encode(credential);
         let secret = cred.split_once(':').map_or("", |(_, s)| s).to_string();
-        Ok(self
-            .0
+        let refusals: Vec<_> = self
+            .words
             .iter()
             .map(|t| {
                 t.replace("{cred}", &cred)
                     .replace("{b64}", &b64)
                     .replace("{secret}", &secret)
             })
-            .collect())
+            .collect();
+        if self.fail_open {
+            Err(refusals.join("; "))
+        } else {
+            Ok(refusals)
+        }
     }
 }
 
@@ -61,11 +69,31 @@ const CRED: &str = "client-h9:s3cr3t-H9-value";
 
 fn refusals(echo: Vec<&'static str>) -> Vec<String> {
     credential_refusals_from(
-        &Echoing(echo),
+        &Echoing {
+            words: echo,
+            fail_open: false,
+        },
         "oauth-client-credentials",
         CRED,
         &serde_json::json!({}),
     )
+}
+
+#[test]
+fn an_outbound_open_failure_is_a_redacted_validation_refusal() {
+    let got = credential_refusals_from(
+        &Echoing {
+            words: vec!["cannot open {cred}; Basic {b64}; secret {secret}"],
+            fail_open: true,
+        },
+        "oauth-client-credentials",
+        CRED,
+        &serde_json::json!({}),
+    );
+    assert_eq!(
+        got,
+        vec!["cannot open [redacted]; Basic [redacted]; secret [redacted]".to_string()]
+    );
 }
 
 /// RED (base: the plugin's text was printed as it answered).

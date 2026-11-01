@@ -240,3 +240,67 @@ fn a_full_stream_is_marked_after_the_fill() {
     mark_stream_full(&mut Out::new(&mut out));
     assert_eq!(out.yielded.flags, YIELD_STREAM_FULL);
 }
+
+#[test]
+fn a_head_that_fits_without_its_first_field_waits_with_that_field() {
+    let mut f = Framing::default();
+    f.pieces.push_back(Piece::data(1, b"earlier!".to_vec()));
+    f.pieces.push_back(Piece {
+        head: Some(HeadWords::reason(b"OK".to_vec())),
+        ..Piece::fields(3, b"long-name: v\r\n".to_vec())
+    });
+    let first = fill_into(&mut f, 0, 16, 4, 2);
+    assert_eq!(first.frame, b"earlier!");
+    assert_eq!(first.pieces.len(), 1);
+    assert!(first.heads.is_empty(), "no head without its first piece");
+    assert_eq!(first.yielded.flags & YIELD_MORE, YIELD_MORE);
+    assert!(f.pieces.front().unwrap().head.is_some());
+    let second = fill_into(&mut f, 0, 16, 4, 2);
+    assert_eq!(second.frame, b"OKlong-name: v\r\n");
+    assert_eq!(second.heads.len(), 1);
+    assert_eq!(second.pieces.len(), 1);
+    assert_eq!(second.heads[0].stream, second.pieces[0].stream);
+    assert_eq!(second.pieces[0].offset, 2);
+    assert_eq!(second.yielded.flags & YIELD_MORE, 0);
+    assert!(f.pieces.is_empty());
+}
+
+#[test]
+fn a_whole_sink_too_small_for_words_and_a_fragment_still_makes_progress() {
+    for fields in [false, true] {
+        let mut f = Framing::default();
+        f.pieces.push_back(Piece {
+            head: Some(HeadWords::reason(b"reason".to_vec())),
+            fields,
+            ..Piece::data(1, b"x: v\r\n".to_vec())
+        });
+        let got = fill_into(&mut f, 0, 6, 1, 1);
+        assert!(got.heads.is_empty());
+        assert_eq!(got.frame, b"x: v\r\n");
+        assert_eq!(got.pieces.len(), 1);
+        assert!(f.pieces.is_empty());
+    }
+    let mut f = Framing::default();
+    f.pieces.push_back(Piece {
+        head: Some(HeadWords::reason(b"word".to_vec())),
+        ..Piece::fields(1, b"x: v\r\n".to_vec())
+    });
+    let empty = fill_into(&mut f, 0, 0, 1, 1);
+    assert!(empty.pieces.is_empty() && empty.heads.is_empty());
+    assert!(f.pieces.front().unwrap().head.is_some());
+    let got = fill_into(&mut f, 0, 6, 1, 1);
+    assert!(got.heads.is_empty());
+    assert_eq!(got.frame, b"x: v\r\n", "the field name fits without words");
+    assert!(f.pieces.is_empty());
+    let mut f = Framing::default();
+    f.pieces.push_back(Piece {
+        head: Some(HeadWords::reason(b"OK".to_vec())),
+        ..Piece::fields(1, Vec::new())
+    });
+    let got = fill_into(&mut f, 0, 2, 1, 1);
+    assert_eq!(got.frame, b"OK");
+    assert_eq!(got.heads.len(), 1);
+    assert_eq!(got.pieces.len(), 1);
+    assert_eq!(got.pieces[0].len, 0);
+    assert!(f.pieces.is_empty());
+}

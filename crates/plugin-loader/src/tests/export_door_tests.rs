@@ -181,6 +181,128 @@ fn a_dropped_instance_is_closed() {
     assert!(!instance.is_open(), "the dropped instance was never closed");
 }
 
+extern "C" fn stop_accounting_door() -> &'static busbar_contract::abi::mechanism::door::Door {
+    use busbar_contract::abi::mechanism::door::{Door, DoorParts};
+    let door = SCRAPE_DOOR();
+    // SAFETY: the real fixture publishes an immutable Statement for the process.
+    let mut statement = unsafe { *door.statement() };
+    statement.name = busbar_contract::abi::sdk::door::abi_str("export-stop-accounting");
+    let statement = Box::leak(Box::new(statement));
+    // SAFETY: only the test identity changes; the fixture's complete ABI table is preserved.
+    Box::leak(Box::new(unsafe {
+        Door::__from_parts(DoorParts {
+            statement,
+            ..door.parts()
+        })
+    }))
+}
+
+struct QueueRelease {
+    shared: std::sync::Weak<Shared>,
+    observed: Arc<Mutex<Vec<bool>>>,
+}
+
+impl Drop for QueueRelease {
+    fn drop(&mut self) {
+        let unlocked = self
+            .shared
+            .upgrade()
+            .is_some_and(|s| s.queue.try_lock().is_ok());
+        self.observed.lock().unwrap().push(unlocked);
+    }
+}
+
+#[test]
+fn stopping_counts_queued_lines_and_releases_their_holds_outside_the_queue_lock() {
+    let guard = crate::observe::testing::exclusive();
+    let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
+    let plugin = load_linked::<Export>(
+        &LinkedRow::of(stop_accounting_door).unwrap(),
+        Bind {
+            instance: Arc::from("export.stop-accounting"),
+            max_inflight_cap: 8,
+            sink: Arc::new(NoSink),
+            dispatcher: dispatcher.adopter(),
+            conns: crate::dispatch::ConnTable::NoNeeds,
+        },
+    )
+    .unwrap();
+    let opened = plugin.call(
+        lc::OPEN,
+        &mut open_frame(blob(br#"{"buffer_seconds":60}"#, BLOB_JSON)),
+    );
+    assert_eq!(opened.outcome, Outcome::Ready);
+    let mut series = busbar_contract::abi::mechanism::observe::SeriesDecl::new(
+        "busbar_export_stop_test_shed",
+        "counter",
+    );
+    series.shed = true;
+    let grant =
+        crate::observe::grant_series(dispatcher.observing(), plugin.name(), true, &[series])
+            .unwrap();
+    let shared = Arc::new(Shared {
+        facts: plugin.context::<ExportFacts>().unwrap().clone(),
+        plugin,
+        dispatcher,
+        queue: Mutex::default(),
+        flusher: Mutex::default(),
+        stop: AtomicBool::new(false),
+        abandon: AtomicBool::new(false),
+        node: node_id(),
+        minted: AtomicU64::new(0),
+    });
+    // Drive the real flusher synchronously after queueing, so its stop wins deterministically
+    // before any queued line is delivered. No test-only production hook is needed.
+    let sink = ExportInstance {
+        shared: Arc::clone(&shared),
+        flusher: Mutex::new(None),
+        _grant: Some(grant),
+    };
+    let released = Arc::new(Mutex::new(Vec::new()));
+    for line in [br#"{"line":1}"#.to_vec(), br#"{"line":2}"#.to_vec()] {
+        assert_eq!(
+            sink.deliver(
+                ExportStream::Metrics as u8,
+                line,
+                Box::new(QueueRelease {
+                    shared: Arc::downgrade(&shared),
+                    observed: Arc::clone(&released)
+                })
+            ),
+            Delivered::Queued
+        );
+    }
+    crate::observe::testing::clear(&guard);
+    shared.stop.store(true, Ordering::Release);
+    Arc::clone(&shared).flush();
+    assert_eq!(sink.queued(), 0);
+    assert_eq!(
+        *released.lock().unwrap(),
+        vec![true, true],
+        "both accepted holds released with queue unlocked"
+    );
+    let shed_total = || {
+        crate::observe::testing::folds()
+            .iter()
+            .flat_map(|(_, _, metrics, _)| metrics)
+            .filter(|metric| metric["name"] == "busbar_export_stop_test_shed")
+            .map(|metric| metric["value"].as_u64().unwrap())
+            .sum::<u64>()
+    };
+    assert_eq!(
+        shed_total(),
+        2,
+        "every accepted but undelivered line is reported"
+    );
+    Arc::clone(&shared).flush();
+    assert_eq!(
+        shed_total(),
+        2,
+        "empty stop neither recounts nor fabricates a shed"
+    );
+    drop(sink);
+}
+
 /// A host I/O that holds nothing and records whose handles the host reaps.
 #[derive(Default)]
 struct Reaps(std::sync::Mutex<Vec<u64>>);

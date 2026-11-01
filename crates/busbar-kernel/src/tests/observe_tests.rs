@@ -221,6 +221,39 @@ fn a_granted_first_party_series_renders_as_declared_and_nothing_else_is_granted(
     );
 }
 
+#[test]
+fn a_reported_metric_name_keeps_one_type_across_plugins_and_label_sets() {
+    let name = "fold_type_custody_total";
+    let first = "fold-type-owner";
+    let second = "fold-type-other";
+    forget_cardinality(first);
+    forget_cardinality(second);
+    let entry = |kind: &str, dimension: &str| {
+        serde_json::json!({"name": name, "type": kind, "value": 2,
+            "labels": {"dimension": dimension}})
+    };
+    let recorder = Registered::default();
+    metrics::with_local_recorder(&recorder, || {
+        fold_metrics(&*TEST_GRANTS, first, &[entry("counter", "first")]);
+        fold_metrics(&*TEST_GRANTS, first, &[entry("gauge", "first")]);
+        fold_metrics(&*TEST_GRANTS, first, &[entry("histogram", "second")]);
+        fold_metrics(&*TEST_GRANTS, second, &[entry("gauge", "third")]);
+        fold_metrics(&*TEST_GRANTS, second, &[entry("counter", "third")]);
+        fold_metrics(&*TEST_GRANTS, first, &[entry("counter", "first")]);
+    });
+    let seen = recorder.0.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    forget_cardinality(first);
+    forget_cardinality(second);
+    assert_eq!(
+        seen,
+        [
+            "fold_type_custody_total{plugin=fold-type-owner,dimension=first}",
+            "fold_type_custody_total{plugin=fold-type-other,dimension=third}",
+            "fold_type_custody_total{plugin=fold-type-owner,dimension=first}",
+        ]
+    );
+}
+
 /// THE RESERVED NAMESPACE. A plugin metric named `busbar_*` is dropped so no plugin can impersonate
 /// a first-party series or type-conflict with one. Asserted on the predicate the fold branches on,
 /// because the fold itself writes to a process-global recorder no unit test may install into.

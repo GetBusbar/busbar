@@ -79,8 +79,9 @@ pub const SHIFT_FAILED: &str = "BUSBAR-7076";
 /// The catalogue code a rotation raises when renaming the live file to its first archive failed.
 pub const ROTATE_RENAME_FAILED: &str = "BUSBAR-7077";
 
-/// The streams this sink carries: the request log.
-const STREAMS: &[u8] = &[ExportStream::Logs as u8];
+/// Neutral test-only carrier for request logs and accepted audit-event conformance. The shipped
+/// file exporter is a separate repository and retains its own declared streams.
+const STREAMS: &[u8] = &[ExportStream::Logs as u8, ExportStream::Events as u8];
 
 /// The export kind's Statement tail: `logs`, and no route (a push-only sink).
 const TAIL: Tail = Tail {

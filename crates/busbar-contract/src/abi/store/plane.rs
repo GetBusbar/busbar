@@ -153,7 +153,8 @@ abi_struct! {
         pub token: AbiStr,
         /// Valid until (Unix seconds).
         pub expires_at: u64,
-        /// Now (Unix seconds).
+        /// Caller time (Unix seconds). Redemption ignores it in favor of the store clock;
+        /// ordinary multi-use checks retain it. Reserved ticket preflight uses store time.
         pub now: u64,
     }
 }

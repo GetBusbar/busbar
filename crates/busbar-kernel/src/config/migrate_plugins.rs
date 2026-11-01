@@ -31,6 +31,14 @@ use busbar_contract::abi::sdk::migrate::{MigrateNeed, Migrated};
 use busbar_contract::plugin::Kind;
 use serde_yaml::{Mapping, Value};
 
+use super::migrate::vocabulary::field;
+
+/// `plugins.fetch` source selector retained from the existing configuration grammar.
+const FETCH_GITHUB_PIN_KEY: &str = "github";
+/// RFC 6761 section 6.3 reserves localhost and its subdomains for loopback.
+const LOCALHOST_NAME: &str = "localhost";
+const LOCALHOST_SUFFIX: &str = ".localhost";
+
 /// The busbar version a configuration is migrated from when nothing says otherwise: the release
 /// before this one.
 pub const FROM_DEFAULT: &str = "1.5.5";
@@ -203,7 +211,10 @@ pub(super) fn migrate_over(
         Ok(None) => {}
         Ok(Some((file, lines))) => {
             ledger.changes.extend(lines);
-            root.insert(Value::from("providers_file"), Value::from(file.as_str()));
+            root.insert(
+                Value::from(field::PROVIDERS_FILE),
+                Value::from(file.as_str()),
+            );
             ledger.changes.push(format!(
                 "providers_file: '{file}' (the providers catalog without the keys 1.6.0 refuses, \
                  written beside the old one, which is left as it was; a `--providers` flag still \
@@ -217,6 +228,19 @@ pub(super) fn migrate_over(
     }
 }
 
+fn migration_json(
+    value: Option<&Value>,
+    path: &str,
+    ledger: &mut Ledger<'_>,
+) -> Result<serde_json::Value, ()> {
+    match value {
+        None => Ok(serde_json::Value::Null),
+        Some(value) => serde_json::to_value(value).map_err(|_| {
+            ledger.todos.push(format!("{path}: cannot be represented as plugin JSON; the original YAML was preserved and the affected plugin migration was not called"));
+        }),
+    }
+}
+
 /// Every plugin section the configuration selects, in document order: the store, each named
 /// instance of the named-map kinds, and each plane's sections (with the ones it consumes,
 /// read-only).
@@ -227,10 +251,6 @@ fn sites(
     ledger: &mut Ledger<'_>,
 ) -> Vec<Site> {
     let mut out = Vec::new();
-    let json = |v: Option<&Value>| -> serde_json::Value {
-        v.and_then(|v| serde_json::to_value(v).ok())
-            .unwrap_or(serde_json::Value::Null)
-    };
     for kind in [
         Kind::Store,
         Kind::Secret,
@@ -244,13 +264,22 @@ fn sites(
             continue;
         };
         if kind == Kind::Store {
-            if let Some(module) = section.get(Value::from("module")).and_then(Value::as_str) {
+            if let Some(module) = section
+                .get(Value::from(field::MODULE))
+                .and_then(Value::as_str)
+            {
+                let path = format!("{key}.settings");
+                let Ok(settings) =
+                    migration_json(section.get(Value::from(field::SETTINGS)), &path, ledger)
+                else {
+                    continue;
+                };
                 out.push(Site {
-                    path: format!("{key}.settings"),
-                    at: vec![key.to_string(), "settings".to_string()],
+                    path,
+                    at: vec![key.to_string(), field::SETTINGS.to_string()],
                     kind: word.to_string(),
                     module: module.to_string(),
-                    settings: json(section.get(Value::from("settings"))),
+                    settings,
                     read_only: Vec::new(),
                 });
             }
@@ -260,25 +289,41 @@ fn sites(
             let (Some(name), Value::Mapping(entry)) = (name.as_str(), entry) else {
                 continue;
             };
-            let Some(module) = entry.get(Value::from("module")).and_then(Value::as_str) else {
+            let Some(module) = entry
+                .get(Value::from(field::MODULE))
+                .and_then(Value::as_str)
+            else {
+                continue;
+            };
+            let path = format!("{key}.{name}.settings");
+            let Ok(settings) =
+                migration_json(entry.get(Value::from(field::SETTINGS)), &path, ledger)
+            else {
                 continue;
             };
             out.push(Site {
-                path: format!("{key}.{name}.settings"),
-                at: vec![key.to_string(), name.to_string(), "settings".to_string()],
+                path,
+                at: vec![
+                    key.to_string(),
+                    name.to_string(),
+                    field::SETTINGS.to_string(),
+                ],
                 kind: word.to_string(),
                 module: module.to_string(),
-                settings: json(entry.get(Value::from("settings"))),
+                settings,
                 read_only: Vec::new(),
             });
         }
     }
-    let mut providers: Option<Option<serde_json::Value>> = None;
-    for plane in planes {
+    let mut providers: Option<Result<Option<serde_json::Value>, ()>> = None;
+    'planes: for plane in planes {
         let mut sections = serde_json::Map::new();
         for s in &plane.owns {
             if let Some(v) = root.get(Value::from(*s)) {
-                sections.insert((*s).to_string(), json(Some(v)));
+                let Ok(value) = migration_json(Some(v), s, ledger) else {
+                    continue 'planes;
+                };
+                sections.insert((*s).to_string(), value);
             }
         }
         // A plane none of whose own sections is written is not configured: nothing to migrate.
@@ -291,11 +336,21 @@ fn sites(
                 continue;
             }
             let value = if *s == Kind::Transport.root() {
-                providers
+                match providers
                     .get_or_insert_with(|| merged_providers(root, host, ledger))
                     .clone()
+                {
+                    Ok(value) => value,
+                    Err(()) => continue 'planes,
+                }
             } else {
-                root.get(Value::from(*s)).map(|v| json(Some(v)))
+                match root.get(Value::from(*s)) {
+                    None => None,
+                    Some(v) => match migration_json(Some(v), s, ledger) {
+                        Ok(value) => Some(value),
+                        Err(()) => continue 'planes,
+                    },
+                }
             };
             if let Some(v) = value {
                 sections.insert((*s).to_string(), v);
@@ -305,7 +360,7 @@ fn sites(
         out.push(Site {
             path: plane.owns.join(", "),
             at: Vec::new(),
-            kind: "plane".to_string(),
+            kind: busbar_contract::abi::mechanism::kind::PLANE.to_string(),
             module: plane.key.to_string(),
             settings: serde_json::Value::Object(sections),
             read_only,
@@ -323,11 +378,12 @@ fn merged_providers(
     root: &Mapping,
     host: &dyn MigrateHost,
     ledger: &mut Ledger<'_>,
-) -> Option<serde_json::Value> {
+) -> Result<Option<serde_json::Value>, ()> {
     let key = Kind::Transport.root();
     let deployment = root
         .get(Value::from(key))
-        .and_then(|v| serde_json::to_value(v).ok());
+        .map(|value| migration_json(Some(value), key, ledger))
+        .transpose()?;
     let catalog = match host.providers_catalog() {
         Ok(catalog) => catalog,
         Err(why) => {
@@ -341,10 +397,10 @@ fn merged_providers(
         }
     };
     let Some(mut merged) = catalog else {
-        return deployment;
+        return Ok(deployment);
     };
     let Some(serde_json::Value::Object(entries)) = deployment else {
-        return Some(serde_json::Value::Object(merged));
+        return Ok(Some(serde_json::Value::Object(merged)));
     };
     for (name, entry) in entries {
         let entry = match (merged.remove(&name), entry) {
@@ -355,7 +411,7 @@ fn merged_providers(
         };
         merged.insert(name, entry);
     }
-    Some(serde_json::Value::Object(merged))
+    Ok(Some(serde_json::Value::Object(merged)))
 }
 
 /// The sections a plane's migration is handed and may answer: the one that declares it and the
@@ -373,13 +429,13 @@ fn plane_sections(d: &crate::plane_driver::registry::PlaneDecl) -> Vec<&'static 
 /// The word a kind's plugins are named by in the migration (`store`, `auth`, ...).
 fn kind_word(kind: Kind) -> &'static str {
     match kind {
-        Kind::Plane => "plane",
-        Kind::Transport => "transport",
-        Kind::Auth => "auth",
-        Kind::Store => "store",
-        Kind::Secret => "secret",
-        Kind::Hook => "hook",
-        Kind::Export => "export",
+        Kind::Plane => busbar_contract::abi::mechanism::kind::PLANE,
+        Kind::Transport => busbar_contract::abi::mechanism::kind::TRANSPORT,
+        Kind::Auth => busbar_contract::abi::mechanism::kind::AUTH,
+        Kind::Store => busbar_contract::abi::mechanism::kind::STORE,
+        Kind::Secret => busbar_contract::abi::mechanism::kind::SECRET,
+        Kind::Hook => busbar_contract::abi::mechanism::kind::HOOK,
+        Kind::Export => busbar_contract::abi::mechanism::kind::EXPORT,
     }
 }
 
@@ -429,7 +485,7 @@ fn apply(
 /// Put `settings` where `site` read its section from.
 fn write_back(root: &mut Mapping, site: &Site, settings: serde_json::Value) -> Result<(), String> {
     let value = |v: &serde_json::Value| serde_yaml::to_value(v).map_err(|e| e.to_string());
-    if site.kind == "plane" {
+    if site.kind == busbar_contract::abi::mechanism::kind::PLANE {
         let serde_json::Value::Object(sections) = settings else {
             return Err("a plane answers its sections as one object".into());
         };
@@ -495,7 +551,7 @@ fn allow_destination(root: &mut Mapping, plugin: &str, host: &str, ledger: &mut 
 /// was added, `Ok(false)` when it was there already, or the TODO naming what is in its way.
 fn push_allowed(root: &mut Mapping, plugin: &str, host: &str) -> Result<bool, String> {
     let advanced = root
-        .entry(Value::from("advanced"))
+        .entry(Value::from(field::ADVANCED))
         .or_insert_with(|| Value::Mapping(Mapping::new()));
     let Value::Mapping(advanced) = advanced else {
         return Err(format!(
@@ -504,7 +560,7 @@ fn push_allowed(root: &mut Mapping, plugin: &str, host: &str) -> Result<bool, St
         ));
     };
     let list = advanced
-        .entry(Value::from("allow_destinations"))
+        .entry(Value::from(field::ALLOW_DESTINATIONS))
         .or_insert_with(|| Value::Sequence(Vec::new()));
     let Value::Sequence(list) = list else {
         return Err(format!(
@@ -522,10 +578,10 @@ fn push_allowed(root: &mut Mapping, plugin: &str, host: &str) -> Result<bool, St
 /// Whether `advanced.allow_destinations` already names `name` (as the guard folds an entry:
 /// unbracketed, one trailing dot dropped, case-blind). Nothing is made.
 fn already_allowed(root: &Mapping, name: &str) -> bool {
-    let Some(Value::Mapping(advanced)) = root.get(Value::from("advanced")) else {
+    let Some(Value::Mapping(advanced)) = root.get(Value::from(field::ADVANCED)) else {
         return false;
     };
-    let Some(Value::Sequence(list)) = advanced.get(Value::from("allow_destinations")) else {
+    let Some(Value::Sequence(list)) = advanced.get(Value::from(field::ALLOW_DESTINATIONS)) else {
         return false;
     };
     list.iter().filter_map(Value::as_str).any(|e| {
@@ -593,7 +649,7 @@ fn allow_if_private(
     }
     let (answers, resolved) = if let Some(ip) = host_ip(&name) {
         (vec![ip], format!("{ip} (an address literal)"))
-    } else if name == "localhost" || name.ends_with(".localhost") {
+    } else if name == LOCALHOST_NAME || name.ends_with(LOCALHOST_SUFFIX) {
         (
             Vec::new(),
             "loopback (a `localhost` name is loopback by definition)".to_string(),
@@ -671,10 +727,10 @@ fn allow_if_private(
 
 /// The `plugins.fetch` list, when the configuration has one.
 fn fetch_list(root: &mut Mapping) -> Option<&mut Vec<Value>> {
-    let Some(Value::Mapping(plugins)) = root.get_mut(Value::from("plugins")) else {
+    let Some(Value::Mapping(plugins)) = root.get_mut(Value::from(field::PLUGINS)) else {
         return None;
     };
-    match plugins.get_mut(Value::from("fetch")) {
+    match plugins.get_mut(Value::from(field::FETCH)) {
         Some(Value::Sequence(list)) => Some(list),
         _ => None,
     }
@@ -692,7 +748,7 @@ fn repin_fetch(root: &mut Mapping, host: &dyn MigrateHost, ledger: &mut Ledger<'
             continue;
         };
         let Some(old) = entry
-            .get(Value::from("github"))
+            .get(Value::from(FETCH_GITHUB_PIN_KEY))
             .and_then(Value::as_str)
             .map(str::to_string)
         else {
@@ -700,8 +756,8 @@ fn repin_fetch(root: &mut Mapping, host: &dyn MigrateHost, ledger: &mut Ledger<'
         };
         match host.repin(&old) {
             Ok(Some(new)) if new != old => {
-                entry.insert(Value::from("github"), Value::from(new.as_str()));
-                let pinned = entry.remove(Value::from("sha256")).is_some();
+                entry.insert(Value::from(FETCH_GITHUB_PIN_KEY), Value::from(new.as_str()));
+                let pinned = entry.remove(Value::from(field::SHA256)).is_some();
                 ledger.changes.push(format!(
                     "plugins.fetch: '{old}' -> '{new}' (the release the old pin names was built \
                      for an earlier busbar and is refused at boot; this is the release of the same \
@@ -756,7 +812,11 @@ fn pin_unserved(
     let have: Vec<String> = fetch_list(root)
         .map(|list| {
             list.iter()
-                .filter_map(|e| e.get("github").and_then(Value::as_str).map(repo_of))
+                .filter_map(|e| {
+                    e.get(FETCH_GITHUB_PIN_KEY)
+                        .and_then(Value::as_str)
+                        .map(repo_of)
+                })
                 .collect()
         })
         .unwrap_or_default();
@@ -765,19 +825,21 @@ fn pin_unserved(
             continue;
         }
         let plugins = root
-            .entry(Value::from("plugins"))
+            .entry(Value::from(field::PLUGINS))
             .or_insert_with(|| Value::Mapping(Mapping::new()));
         let Value::Mapping(plugins) = plugins else {
+            ledger.todos.push("plugins: is not a mapping; required plugin pins could not be added. The original value was preserved; fix plugins and re-run migration".into());
             return;
         };
         let list = plugins
-            .entry(Value::from("fetch"))
+            .entry(Value::from(field::FETCH))
             .or_insert_with(|| Value::Sequence(Vec::new()));
         let Value::Sequence(list) = list else {
+            ledger.todos.push("plugins.fetch: is not a list; required plugin pins could not be added. The original value was preserved; fix plugins.fetch and re-run migration".into());
             return;
         };
         let mut entry = Mapping::new();
-        entry.insert(Value::from("github"), Value::from(pin.as_str()));
+        entry.insert(Value::from(FETCH_GITHUB_PIN_KEY), Value::from(pin.as_str()));
         list.push(Value::Mapping(entry));
         ledger.changes.push(format!(
             "plugins.fetch: added '{pin}' (the configuration uses this plugin, no build of it is \

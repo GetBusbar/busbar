@@ -3777,6 +3777,45 @@ fn test_validate_rejects_empty_affinity_header_name() {
 }
 
 #[test]
+fn test_validate_affinity_header_names_follow_the_http_token_grammar() {
+    for (name, accepted) in [
+        ("X-Session_1", true),
+        ("!#$%&'*+-.^_`|~", true),
+        ("X Session", false),
+        ("X:Session", false),
+        ("X\tSession", false),
+        ("X\r\nSession", false),
+        ("X\0Session", false),
+        ("X/Session", false),
+        ("X\u{7f}Session", false),
+    ] {
+        let (providers, models, _) = valid_maps();
+        let mut pool = make_pool(vec![make_member("mymodel")]);
+        pool.affinity = Some(config::AffinityCfg {
+            mode: config::AffinityMode::Session,
+            header_name: Some(name.to_string()),
+        });
+        let cfg = make_root_cfg(
+            providers,
+            models,
+            HashMap::from([("mypool".to_string(), pool)]),
+        );
+        let result = validate(&cfg);
+        if accepted {
+            assert!(result.is_ok(), "valid field-name {name:?}: {result:?}");
+        } else {
+            let errors = result.expect_err("invalid HTTP field-name must fail validation");
+            assert!(
+                errors
+                    .iter()
+                    .any(|error| error.contains("affinity.header_name")),
+                "{name:?}: {errors:?}"
+            );
+        }
+    }
+}
+
+#[test]
 fn test_pool_member_model_with_unresolvable_provider_is_not_unknown_model() {
     // A pool member that names a model which IS defined, but whose provider does not resolve,
     // must NOT be reported as an "unknown model" (the model exists). The model loop already
@@ -7200,6 +7239,27 @@ fn test_a_provider_the_destination_guard_will_refuse_is_named_at_validate() {
         assert!(
             warned("http://10.1.2.3/", true, allow).is_empty(),
             "{allow:?}"
+        );
+    }
+    for (url, allow) in [
+        ("http://localhost/", "LOCALHOST."),
+        ("http://service.localhost/", "*.LOCALHOST."),
+        ("http://[::1]/", "[::1]"),
+        ("http://[::1]/", "[::1]/128"),
+    ] {
+        assert!(
+            warned(url, true, &[allow]).is_empty(),
+            "the guard admits {url} through {allow}"
+        );
+    }
+    for (url, allow) in [
+        ("http://localhost/", "*.localhost."),
+        ("http://other.localhost/", "service.localhost."),
+        ("http://[::1]/", "[::2]"),
+    ] {
+        assert!(
+            !warned(url, true, &[allow]).is_empty(),
+            "{allow} does not admit {url}"
         );
     }
     assert!(warned("http://10.1.2.3/", true, &["10.2.0.0/16"]).len() == 1);

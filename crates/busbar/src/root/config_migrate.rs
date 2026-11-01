@@ -25,11 +25,35 @@ use busbar_kernel::config::PluginsCfg;
 
 use crate::root::loader::PluginRegistry;
 
+/// The release index's existing JSON schema. Unknown fields still refuse the whole index.
+mod index_field {
+    pub const PLUGINS: &str = "plugins";
+    pub const REPO: &str = "repo";
+    pub const FORMER_REPOS: &str = "former_repos";
+    pub const KIND: &str = "kind";
+    pub const ANSWERS_TO: &str = "answers_to";
+    pub const RELEASES: &str = "releases";
+    pub const TAG: &str = "tag";
+    pub const ABI_VERSION: &str = "abi_version";
+}
+
+/// The existing release source and asset name. Naming these preserves routing; it does not
+/// change the configured index override or where historical releases are fetched from.
+const RELEASE_DOWNLOAD_ROOT: &str = "https://github.com/GetBusbar/busbar/releases/download";
+const RELEASE_INDEX_ASSET: &str = "plugin-index.json";
+/// HTTP(S) source prefixes admitted by the release-index reader (RFC 3986 scheme syntax).
+const HTTPS_SOURCE_PREFIX: &str = "https://";
+const HTTP_SOURCE_PREFIX: &str = "http://";
+const CONFIG_PLUGINS_KEY: &str = "plugins";
+const CONFIG_PROVIDERS_FILE_KEY: &str = "providers_file";
+const DEFAULT_PROVIDERS_CATALOG: &str = "providers.yaml";
+const UNNAMED_PROVIDERS_CATALOG_STEM: &str = "providers";
+
 /// Where the release index is read from when `BUSBAR_PLUGIN_INDEX` names none: this release's own
 /// `plugin-index.json` asset.
 fn default_index() -> String {
     format!(
-        "https://github.com/GetBusbar/busbar/releases/download/v{}/plugin-index.json",
+        "{RELEASE_DOWNLOAD_ROOT}/v{}/{RELEASE_INDEX_ASSET}",
         env!("CARGO_PKG_VERSION")
     )
 }
@@ -118,9 +142,9 @@ impl Index {
             }
         }
         let doc: Value = serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
-        let top = object(&doc, "the index", &["plugins"])?;
+        let top = object(&doc, "the index", &[index_field::PLUGINS])?;
         let list = top
-            .get("plugins")
+            .get(index_field::PLUGINS)
             .and_then(Value::as_array)
             .ok_or_else(|| "the index's plugins is not a list".to_string())?;
         let mut plugins = Vec::new();
@@ -129,33 +153,39 @@ impl Index {
             let m = object(
                 p,
                 &at,
-                &["repo", "former_repos", "kind", "answers_to", "releases"],
+                &[
+                    index_field::REPO,
+                    index_field::FORMER_REPOS,
+                    index_field::KIND,
+                    index_field::ANSWERS_TO,
+                    index_field::RELEASES,
+                ],
             )?;
             let releases = m
-                .get("releases")
+                .get(index_field::RELEASES)
                 .and_then(Value::as_array)
                 .ok_or_else(|| format!("{at}.releases is not a list"))?
                 .iter()
                 .enumerate()
                 .map(|(j, r)| {
                     let rat = format!("{at}.releases[{j}]");
-                    let r = object(r, &rat, &["tag", "abi_version"])?;
+                    let r = object(r, &rat, &[index_field::TAG, index_field::ABI_VERSION])?;
                     let abi = r
-                        .get("abi_version")
+                        .get(index_field::ABI_VERSION)
                         .and_then(Value::as_u64)
                         .and_then(|n| u32::try_from(n).ok())
                         .ok_or_else(|| format!("{rat}.abi_version is not a version number"))?;
                     Ok(IndexRelease {
-                        tag: text(r, "tag", &rat)?,
+                        tag: text(r, index_field::TAG, &rat)?,
                         abi_version: abi,
                     })
                 })
                 .collect::<Result<Vec<_>, String>>()?;
             plugins.push(IndexPlugin {
-                repo: text(m, "repo", &at)?,
-                former_repos: texts(m, "former_repos", &at)?,
-                kind: text(m, "kind", &at)?,
-                answers_to: texts(m, "answers_to", &at)?,
+                repo: text(m, index_field::REPO, &at)?,
+                former_repos: texts(m, index_field::FORMER_REPOS, &at)?,
+                kind: text(m, index_field::KIND, &at)?,
+                answers_to: texts(m, index_field::ANSWERS_TO, &at)?,
                 releases,
             });
         }
@@ -230,11 +260,11 @@ impl RootHost {
         let doc = serde_yaml::from_str::<serde_yaml::Value>(raw).ok();
         let plugins = doc
             .as_ref()
-            .and_then(|doc| doc.get("plugins").cloned())
+            .and_then(|doc| doc.get(CONFIG_PLUGINS_KEY).cloned())
             .and_then(|p| serde_yaml::from_value::<PluginsCfg>(p).ok());
         let providers_file = doc
             .as_ref()
-            .and_then(|doc| doc.get("providers_file"))
+            .and_then(|doc| doc.get(CONFIG_PROVIDERS_FILE_KEY))
             .and_then(|f| f.as_str())
             .map(str::to_string);
         Self {
@@ -278,7 +308,9 @@ impl RootHost {
         self.index
             .get_or_init(|| {
                 let source = std::env::var(INDEX_ENV).unwrap_or_else(|_| default_index());
-                let bytes = if source.starts_with("https://") || source.starts_with("http://") {
+                let bytes = if source.starts_with(HTTPS_SOURCE_PREFIX)
+                    || source.starts_with(HTTP_SOURCE_PREFIX)
+                {
                     crate::root::plugin_fetch::downloader(&[])(&source)?
                 } else {
                     std::fs::read(&source).map_err(|e| format!("{source}: {e}"))?
@@ -297,7 +329,7 @@ impl RootHost {
         match kind {
             // A plane is named by its registry key; its linked door is the one whose Statement
             // declares the plane's section.
-            "plane" => {
+            busbar_contract::abi::mechanism::kind::PLANE => {
                 let section = busbar_kernel::plane_driver::registry::plane_decls()
                     .iter()
                     .find(|d| d.key == module)
@@ -312,8 +344,9 @@ impl RootHost {
                     .map(|door| (module.to_string(), *door))
             }
             // A linked hook or secret door answers to its Statement's name and aliases.
-            "hook" | "secret" => {
-                let doors = if kind == "hook" {
+            busbar_contract::abi::mechanism::kind::HOOK
+            | busbar_contract::abi::mechanism::kind::SECRET => {
+                let doors = if kind == busbar_contract::abi::mechanism::kind::HOOK {
                     crate::LINKED.hook_doors
                 } else {
                     crate::LINKED.secrets
@@ -374,16 +407,24 @@ impl RootHost {
             .parent()
             .map(std::path::Path::to_path_buf)
             .unwrap_or_default();
-        let path = crate::root::cli::value_flag(std::env::args().skip(1), "--providers", None)
-            .or_else(|| {
-                std::env::var(busbar_kernel::ENV_PROVIDERS)
-                    .ok()
-                    .filter(|v| !v.is_empty())
-            })
-            .map(PathBuf::from)
-            .unwrap_or_else(|| {
-                dir.join(self.providers_file.as_deref().unwrap_or("providers.yaml"))
-            });
+        let path = crate::root::cli::value_flag(
+            std::env::args().skip(1),
+            crate::root::cli::OPTION_PROVIDERS,
+            None,
+        )
+        .or_else(|| {
+            std::env::var(busbar_kernel::ENV_PROVIDERS)
+                .ok()
+                .filter(|v| !v.is_empty())
+        })
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            dir.join(
+                self.providers_file
+                    .as_deref()
+                    .unwrap_or(DEFAULT_PROVIDERS_CATALOG),
+            )
+        });
         (dir, path)
     }
 }
@@ -410,7 +451,7 @@ impl MigrateHost for RootHost {
         }
         // A plane the registry holds is served by this build; one with no linked door to ask
         // migrates nothing here.
-        if kind == "plane" {
+        if kind == busbar_contract::abi::mechanism::kind::PLANE {
             return Ok(None);
         }
         let local = self.local();
@@ -456,9 +497,10 @@ impl MigrateHost for RootHost {
         let Some(m) = busbar_kernel::config::migrate_catalog::migrate_catalog(&raw, &shown)? else {
             return Ok(None);
         };
-        let stem = path
-            .file_stem()
-            .map_or_else(|| "providers".into(), |s| s.to_string_lossy().into_owned());
+        let stem = path.file_stem().map_or_else(
+            || UNNAMED_PROVIDERS_CATALOG_STEM.into(),
+            |s| s.to_string_lossy().into_owned(),
+        );
         let out = path.with_file_name(format!("{stem}.migrated.yaml"));
         std::fs::write(&out, &m.yaml).map_err(|e| format!("{}: {e}", out.display()))?;
         // Named beside the configuration when it sits there, as `providers_file:` resolves.
@@ -498,7 +540,7 @@ impl MigrateHost for RootHost {
 
     fn release_for(&self, kind: &str, module: &str) -> Result<Option<String>, String> {
         // A plane's site comes from the plane registry: this build serves it.
-        if kind == "plane" || self.served(kind, module) {
+        if kind == busbar_contract::abi::mechanism::kind::PLANE || self.served(kind, module) {
             return Ok(None);
         }
         // An index that cannot be read changes nothing: the configuration is left as written.

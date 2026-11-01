@@ -467,7 +467,7 @@ impl Shared {
     ) -> Result<bool, StorageError> {
         let now = now_secs();
         self.calls
-            .redeem_plane_token(&kind(kind_name), token, expires_at.max(now + 1), now)
+            .redeem_plane_token(&kind(kind_name), token, expires_at, now)
             .await
             .map_err(|f| failed(kind_name, f))
     }

@@ -19,13 +19,17 @@
 //! WHICH KINDS THE HOST REFRESHES. The host calls `refresh` on an `auth` and a `plane` instance,
 //! on a configuration apply. A `store`, `secret`, `hook` or `transport` instance is never
 //! refreshed: a changed configuration reaches it through a fresh instance (a reload that replaces
-//! it, or a restart), opened over the new settings. An `export` instance is RESTART-TO-APPLY: it
-//! is opened once, at boot, and a configuration apply neither refreshes nor replaces it — the apply
-//! is validated and stored, the running instance keeps the settings, streams and fields it was
-//! opened with, and the change applies at the next restart (the apply names only a new route path
-//! awaiting the restart). Every kind's `refresh` slot must still be present (every slot is), and
+//! it, or a restart), opened over the new settings. An `export` instance is opened at boot;
+//! committed settings changes refresh that same instance after the configuration transaction
+//! releases its guard. New deliveries wait for the refresh verdict. Pending deliveries retain
+//! their prior connector and disk bindings, and a refused refresh retains the current bindings.
+//! A pending refresh keeps its staged bindings and admission barrier through every resume until
+//! its terminal verdict or cancellation; existing pending deliveries can still finish meanwhile.
+//! The host states this ticket custody in DELIVER's `busbar.export.ticket-bindings` extension,
+//! value `1`. Export instance membership, streams and field projections remain boot-time choices.
+//! Every kind's `refresh` slot must still be present (every slot is), and
 //! the SDK's default (`abi::sdk::life::Life::refresh`) answers it REFUSED; nothing a plugin of
-//! those kinds does in `refresh` reaches an operator.
+//! the kinds that are replaced rather than refreshed does in `refresh` reaches an operator.
 //! The store SDK refuses refresh with a reason naming the restart that applies a changed store
 //! section, so no store claims settings applied that were not.
 //!

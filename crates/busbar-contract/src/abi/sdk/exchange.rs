@@ -17,8 +17,9 @@
 //! buffer the SDK holds either in is wiped when it goes: the [`Request`] [`Exchange::request`]
 //! consumes, the head it frames, the body it sends, the read buffer (after each piece is applied as
 //! well), and the reply it gathers (a body that outgrows its allocation wipes the one it leaves).
-//! [`Request`], [`ExchangeResponse`] and [`Ack`] are [`Zeroize`]: a plugin wipes the ones it holds
-//! (`zeroize::Zeroizing::new(reply)`). The bytes on the wire are unchanged.
+//! [`Request`] wipes its owned bytes on drop. [`ExchangeResponse`] and [`Ack`] are [`Zeroize`]: a
+//! plugin wipes the ones it holds (`zeroize::Zeroizing::new(reply)`). The bytes on the wire are
+//! unchanged.
 
 use std::any::Any;
 use std::cell::RefCell;
@@ -51,6 +52,8 @@ pub const REPLY_OVER_BOUND: &str = "the reply passed the exchange's bound";
 pub type SealedField = (usize, Vec<u8>, crate::abi::sdk::cred::Seal);
 
 /// ONE REQUEST, as [`exchange`] sends it through a framed need.
+/// Its owned bytes wipe on drop, including clones and requests abandoned before framing. Borrow
+/// fields when inspecting them; transfer a field with [`std::mem::take`] into another wiping owner.
 #[derive(Clone, Default, PartialEq, Eq)]
 pub struct Request {
     /// The method.
@@ -86,6 +89,12 @@ impl Zeroize for Request {
         self.fields.zeroize();
         self.body.zeroize();
         self.timeout_ms.zeroize();
+    }
+}
+
+impl Drop for Request {
+    fn drop(&mut self) {
+        self.zeroize();
     }
 }
 

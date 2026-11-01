@@ -136,6 +136,41 @@ fn keyword_connection_strings_are_split_out() {
 }
 
 #[test]
+fn keyword_tls_policy_uses_the_password_parsers_spacing_and_escaping() {
+    for parameters in [
+        "host = db sslmode = require",
+        "host=db sslmode= 'verify-full'",
+        r"host=db sslmode = requ\ire",
+        "host=db application_name='sslmode=disable with spaces' sslmode = require",
+        "host=db sslmode=prefer sslmode = require",
+    ] {
+        for password in ["", " password = 'p a\\'ss'"] {
+            let text = format!("{parameters}{password}");
+            let parsed = CredUrl::parse(&text).expect("valid keyword DSN");
+            assert_eq!(parsed.public(), parameters);
+            assert!(parsed.credential().secure_required(), "{text}");
+            if !password.is_empty() {
+                assert_eq!(pw(&parsed).as_deref(), Some(&b"p a'ss"[..]));
+            }
+        }
+    }
+    for parameters in [
+        "host = '/var/run/postgresql' sslmode = require",
+        r"host = \/var/run/postgresql sslmode = require",
+        "host=db sslmode = prefer",
+        "host=db application_name='sslmode=require'",
+    ] {
+        assert!(
+            !CredUrl::parse(parameters)
+                .expect("valid keyword DSN")
+                .credential()
+                .secure_required(),
+            "{parameters}"
+        );
+    }
+}
+
+#[test]
 fn plain_text_passes_through() {
     let u = split("/var/run/sock");
     assert_eq!(u.public(), "/var/run/sock");

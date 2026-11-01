@@ -47,8 +47,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BUILD_RS="$ROOT/crates/busbar/build.rs"
 WORKSPACE_MANIFEST="$ROOT/Cargo.toml"
 
-# The LTO posture a release binary must have. `fat` is what [profile.release] pins and what
-# scripts/profile-lock.sh locks; anything else is a weakened optimized build.
+# The LTO posture this check expects from the release profile.
 RELEASE_LTO="fat"
 
 field() { printf '%s\n' "$1" | tr ' ' '\n' | awk -F= -v k="$2" '$1==k{print $2; exit}'; }

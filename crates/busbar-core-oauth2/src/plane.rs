@@ -566,25 +566,29 @@ impl AsPlane {
     /// scope is granted that set (sorted, deduplicated); one naming none is granted the client's
     /// registered default, trimmed to what the registration allows. That default is the whole
     /// `default_grant` for a provisioned client, and for a metadata-document client whose document
-    /// names no scope, so the screen names it rather than saying nothing is asked. A client this
-    /// server does not know is granted nothing.
-    pub(crate) async fn granted_scope(&self, client_id: &str, requested: Option<&str>) -> String {
+    /// names no scope, so the screen names it rather than saying nothing is asked. If the client
+    /// cannot be resolved, the screen must refuse approval rather than describe an empty grant.
+    pub(crate) async fn granted_scope(
+        &self,
+        client_id: &str,
+        requested: Option<&str>,
+    ) -> Result<String, oauth_as::store::StorageError> {
         use oauth_as::store::Storage as _;
         if let Some(raw) = requested {
             // A scope that does not parse is refused at the authorization endpoint; the screen
             // names it as it was sent.
-            return oauth_as::scope::ScopeSet::parse(raw)
-                .map_or_else(|_| raw.to_string(), |set| set.to_string());
+            return Ok(oauth_as::scope::ScopeSet::parse(raw)
+                .map_or_else(|_| raw.to_string(), |set| set.to_string()));
         }
         let client = self
             .server
             .store()
             .get_client(&oauth_as::client::ClientId::new(client_id))
-            .await;
-        match client {
-            Ok(Some(client)) => granted_default(&client).to_string(),
-            _ => String::new(),
-        }
+            .await?
+            .ok_or_else(|| {
+                oauth_as::store::StorageError::new("the client could not be resolved")
+            })?;
+        Ok(granted_default(&client).to_string())
     }
 
     /// The display summary of a pushed request that has not been redeemed yet. See

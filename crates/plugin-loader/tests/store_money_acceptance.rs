@@ -506,31 +506,46 @@ fn a_rate_card_edit_splits_the_metering_day() {
     }
 }
 
-/// 1.5.5 `MemoryStore::add_metering` (`or_insert_with`): the row's `key_group_at_use` and
-/// `pricing_version` are the FIRST delta's; later deltas add counts and never rewrite them.
 #[test]
-fn a_metering_row_keeps_its_first_group_and_pricing_version() {
+fn metering_rows_keep_each_groups_and_versions_counts() {
     for s in subjects() {
         let mut first = meter("k", DAY, "m", "p", 1, 1);
         first.key_group_at_use = "g-old".into();
         first.pricing_version = "v1".into();
-        let mut later = first.clone();
-        later.key_group_at_use = "g-new".into();
-        later.pricing_version = "v2".into();
-        s.store.add_metering(&first).expect("first");
-        s.store.add_metering(&later).expect("later");
+        first.usage_units.insert("audio".into(), 2);
+        let mut regrouped = first.clone();
+        regrouped.key_group_at_use = "g-new".into();
+        let mut versioned = first.clone();
+        versioned.pricing_version = "v2".into();
+        let mut unknown = first.clone();
+        unknown.key_group_at_use.clear();
+        unknown.pricing_version.clear();
+        for delta in [&first, &regrouped, &versioned, &unknown, &first] {
+            s.store.add_metering(delta).expect("metering");
+        }
         let rows = s.store.list_metering(DAY).expect("list");
-        assert_eq!(rows.len(), 1, "{}", s.door);
+        assert_eq!(rows.len(), 4, "{}", s.door);
+        let counts: std::collections::BTreeMap<_, _> = rows
+            .into_iter()
+            .map(|row| {
+                (
+                    (row.key_group_at_use, row.pricing_version),
+                    (row.requests, row.usage_units["audio"]),
+                )
+            })
+            .collect();
         assert_eq!(
-            (
-                rows[0].key_group_at_use.as_str(),
-                rows[0].pricing_version.as_str()
-            ),
-            ("g-old", "v1"),
+            counts,
+            [
+                (("g-old".into(), "v1".into()), (2, 4)),
+                (("g-new".into(), "v1".into()), (1, 2)),
+                (("g-old".into(), "v2".into()), (1, 2)),
+                ((String::new(), String::new()), (1, 2)),
+            ]
+            .into(),
             "{}",
             s.door
         );
-        assert_eq!(rows[0].requests, 2, "{}", s.door);
     }
 }
 

@@ -1505,12 +1505,18 @@ pub struct EnvFetch {
 /// The tarball filename inside `plugins.dir` a fetch URL writes to: the last path segment (before any
 /// `?`/`#`), which must be non-empty. Errors if the URL has no usable basename.
 fn fetch_filename_from_url(url: &str) -> Result<String, String> {
-    let path = url.split_once("://").map(|(_, rest)| rest).unwrap_or(url);
-    let path = path.split(['?', '#']).next().unwrap_or(path);
+    let path = url.split(['?', '#']).next().unwrap_or(url);
+    let path = match path.split_once("://") {
+        Some((_, authority_and_path)) => authority_and_path
+            .split_once('/')
+            .map_or("", |(_, path)| path),
+        None => path,
+    };
     let base = path.rsplit('/').next().unwrap_or("");
     if base.is_empty() {
+        let shown = busbar_kernel_egress::trust::net::strip_userinfo(url);
         return Err(format!(
-            "plugins.fetch url '{url}' has no filename (a signed tarball basename is required)"
+            "plugins.fetch url '{shown}' has no filename (a signed tarball basename is required)"
         ));
     }
     Ok(base.to_string())

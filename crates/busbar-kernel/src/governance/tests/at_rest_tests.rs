@@ -147,6 +147,7 @@ fn an_at_rest_key_is_32_bytes_or_64_hex_characters() {
 }
 
 fn signing_gov(store: Arc<MemoryStore>, seed: u8) -> GovState {
+    store.pin_token_clock(NOW);
     let signer = crate::governance::signing::TokenSigner::from_secret_bytes(
         &[seed; 32],
         crate::governance::signing::DEFAULT_KID,

@@ -45,8 +45,22 @@ fn rsa_public_key(der: &[u8]) -> Option<(BigUint, BigUint)> {
         if t2 != 0x03 || bits.first() != Some(&0) {
             return None;
         }
-        return rsa_public_key(&bits[1..]);
+        // RFC 3279: the BIT STRING directly holds PKCS #1, never another SPKI.
+        return pkcs1_public_key(&bits[1..]);
     }
+    pkcs1_integers(t1, first, rest)
+}
+
+fn pkcs1_public_key(der: &[u8]) -> Option<(BigUint, BigUint)> {
+    let (tag, body, _) = der_item(der)?;
+    if tag != 0x30 {
+        return None;
+    }
+    let (t1, first, rest) = der_item(body)?;
+    pkcs1_integers(t1, first, rest)
+}
+
+fn pkcs1_integers(t1: u8, first: &[u8], rest: &[u8]) -> Option<(BigUint, BigUint)> {
     // RSAPublicKey (PKCS #1): modulus, public exponent.
     let (t2, e, _) = der_item(rest)?;
     (t1 == 0x02 && t2 == 0x02).then(|| (BigUint::from_bytes_be(first), BigUint::from_bytes_be(e)))

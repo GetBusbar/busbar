@@ -114,3 +114,37 @@ fn a_plain_base_url_prints_as_written() {
         "{def:?}"
     );
 }
+
+#[test]
+fn resolved_provider_debug_names_opaque_keys_without_printing_their_values() {
+    let mut resolved = ResolvedProvider::from(provider_cfg());
+    let opaque = serde_json::json!({
+        "credential": "opaque-secret-value",
+        "headers": ["opaque-bearer-value"]
+    });
+    resolved
+        .table
+        .insert("extension".to_string(), opaque.clone());
+    resolved
+        .table
+        .insert("label".to_string(), serde_json::json!("opaque-label-value"));
+    for printed in [format!("{resolved:?}"), format!("{resolved:#?}")] {
+        assert!(printed.contains("extension"));
+        assert!(printed.contains("label"));
+        for value in [
+            "opaque-secret-value",
+            "opaque-bearer-value",
+            "opaque-label-value",
+        ] {
+            assert!(
+                !printed.contains(value),
+                "opaque provider values must not be printed"
+            );
+        }
+        assert_redacted("ResolvedProvider", &printed);
+    }
+    assert_eq!(
+        resolved.table["extension"], opaque,
+        "the plane still receives its data"
+    );
+}

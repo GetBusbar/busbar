@@ -1280,6 +1280,8 @@ impl Worker {
                         Self::owe_drive(st, idx);
                     } else if e.current.as_ref().is_some_and(|c| c.pending) {
                         Self::schedule(st, idx, Action::Resume);
+                    } else if e.current.is_none() && !e.queue.is_empty() {
+                        Self::schedule(st, idx, Action::Start);
                     } else {
                         // LATCHED: the op has not answered PENDING yet (or none is running).
                         e.latched = true;
@@ -1565,6 +1567,18 @@ impl Worker {
             Action::Start => {
                 if e.current.is_some() {
                     return Some(st);
+                }
+                let admission = match e.queue.front() {
+                    Some((meta, _)) => meta.instance.export_admission(meta.slot, ticket),
+                    None => return Some(st),
+                };
+                let Ok(admission) = admission else {
+                    return Some(st);
+                };
+                if let Some(admission) = admission {
+                    // Keep the entry barrier through this crossing, then let its wake callbacks
+                    // run with the worker state lock released.
+                    drop_after_lock(Box::new(admission));
                 }
                 let Some((meta, mut job)) = e.queue.pop_front() else {
                     return Some(st);
@@ -1917,6 +1931,7 @@ impl Worker {
         let mut orphans = Vec::new();
         let mut rest = Vec::new();
         for (idx, e) in gone.into_iter().enumerate() {
+            let ticket = self.ticket(idx as u32, e.generation);
             let pending = e.driver.is_none()
                 && e.current.as_ref().is_some_and(|c| {
                     c.pending
@@ -1925,9 +1940,11 @@ impl Worker {
                         && !c.meta.instance.faulted.load(Ordering::Acquire)
                 });
             if pending {
-                let ticket = self.ticket(idx as u32, e.generation);
                 orphans.push(Orphan { ticket, entry: e });
             } else {
+                for id in &e.conns {
+                    drop(super::conn_services::forget(*id, ticket));
+                }
                 rest.push(e);
             }
         }
@@ -1939,6 +1956,14 @@ impl Worker {
 pub(crate) struct Orphan {
     ticket: Ticket,
     entry: Entry,
+}
+
+impl Drop for Orphan {
+    fn drop(&mut self) {
+        for id in &self.entry.conns {
+            drop(super::conn_services::forget(*id, self.ticket));
+        }
+    }
 }
 
 impl Orphan {
@@ -1971,7 +1996,6 @@ impl Orphan {
                 );
             }
         }
-        drop(self.entry);
     }
 }
 

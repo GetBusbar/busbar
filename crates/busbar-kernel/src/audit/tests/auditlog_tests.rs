@@ -815,6 +815,7 @@ fn parse_audit_suffix_does_not_panic_on_a_truncated_safe_body() {
 
 fn pending(scope: &str, tag: u8) -> PendingAudit {
     PendingAudit {
+        origin: EventOrigin::Mutation,
         scope: scope.to_string(),
         suffix: vec![tag],
     }
@@ -897,6 +898,7 @@ fn a_panicking_store_behind_its_door_is_a_queued_fault_not_an_unwind() {
     // The emitter's own recovery step over the SAME path: the failed record stays queued.
     let q = PendingAuditQueue::new(4);
     q.enqueue(PendingAudit {
+        origin: EventOrigin::Mutation,
         scope: ADMIN_LOG.to_string(),
         suffix,
     });
@@ -1619,6 +1621,7 @@ fn a_1_5_5_audit_table_reads_back_whole_and_the_next_record_continues_its_chain(
 /// A held refusal named `n`.
 fn held(n: u64) -> HeldRefusal {
     HeldRefusal {
+        origin: EventOrigin::Mutation,
         ts: n,
         refusal: PluginRefusal::Need,
         resource: plugin_refusal_resource("export", "hook", &format!("need.{n}.refused")),
@@ -1726,4 +1729,88 @@ fn a_refusal_resource_is_clamped_to_host_words() {
     let long = "a".repeat(200);
     let clamped = plugin_refusal_resource(&long, &long, &long);
     assert_eq!(clamped.len(), "plugin:/#".len() + 3 * REFUSAL_PART_MAX);
+}
+
+#[test]
+fn overlapping_pending_drains_cannot_overtake_the_oldest_row() {
+    let q = PendingAuditQueue::new(4);
+    q.enqueue(pending("admin", 1));
+    q.enqueue(pending("admin", 2));
+    let delivered = std::sync::Mutex::new(Vec::new());
+    q.drain_with(
+        |_scope, suffix| {
+            if suffix == [1] {
+                // The store callback re-enters the same drain while row 1 is still in flight.
+                // This also proves no queue mutex is held over the callback.
+                q.drain_with(
+                    |_, _| Ok((2, String::new(), String::new())),
+                    |row, _, _, _| delivered.lock().unwrap().push(row.suffix[0]),
+                );
+            }
+            Ok((1, String::new(), String::new()))
+        },
+        |row, _, _, _| delivered.lock().unwrap().push(row.suffix[0]),
+    );
+    assert_eq!(*delivered.lock().unwrap(), vec![1, 2]);
+    assert_eq!(q.len(), 0);
+}
+
+#[test]
+fn a_failed_in_flight_row_cannot_overfill_the_pending_queue() {
+    let q = PendingAuditQueue::new(1);
+    q.enqueue(pending("admin", 1));
+    let cap = DiagCapture::default();
+    {
+        let _capture = capture_into(&cap);
+        q.drain_with(
+            |_, _| {
+                // A new emitter fills the waiting slot during the older store write.
+                q.enqueue(pending("admin", 2));
+                Err(())
+            },
+            |_, _, _, _| panic!("the write was refused"),
+        );
+    }
+    assert_eq!(q.len(), 1);
+    assert_eq!(
+        q.dropped(),
+        1,
+        "the failed oldest row was evicted, not hidden"
+    );
+    let mut delivered = Vec::new();
+    q.drain_with(
+        |_, _| Ok((1, String::new(), String::new())),
+        |row, _, _, _| delivered.push(row.suffix[0]),
+    );
+    assert_eq!(delivered, vec![2]);
+    assert!(cap
+        .0
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|line| line.contains("BUSBAR-2044")));
+}
+
+#[test]
+fn an_enqueued_event_cannot_pass_an_older_failed_drain() {
+    let q = PendingAuditQueue::new(4);
+    q.enqueue(pending("admin", 1));
+    let delivered = std::sync::Mutex::new(Vec::new());
+    q.drain_with(
+        |_, _| {
+            q.enqueue(pending("admin", 2));
+            q.drain_with(
+                |_, _| Ok((1, String::new(), String::new())),
+                |row, _, _, _| delivered.lock().unwrap().push(row.suffix[0]),
+            );
+            Err(())
+        },
+        |_, _, _, _| panic!("the oldest write was refused"),
+    );
+    assert!(delivered.lock().unwrap().is_empty());
+    q.drain_with(
+        |_, _| Ok((1, String::new(), String::new())),
+        |row, _, _, _| delivered.lock().unwrap().push(row.suffix[0]),
+    );
+    assert_eq!(*delivered.lock().unwrap(), vec![1, 2]);
 }
