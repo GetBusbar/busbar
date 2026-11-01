@@ -1664,8 +1664,12 @@ fn a_pending_final_write_preserves_accepted_parts_until_the_channel_is_named() {
             st.piece_flags = busbar_contract::abi::transport::PIECE_FIELDS;
         }
         assert!(!deliver_dialled(&d, &door, at).await);
+        assert!(pairing.published().await.failure.is_none());
         assert_eq!(d.write(b"tail", true, false), Ok(4));
+        assert_eq!(d.write(b"next", true, false), Err(ConnError::Pending));
+        assert!(pairing.published().await.failure.is_none());
         assert_eq!(d.write(b"next", true, false), Ok(4));
+        assert!(pairing.published().await.failure.is_none());
         assert_eq!(
             door.st.lock().unwrap().emitted,
             vec![b"accepted-tail".to_vec(), b"next".to_vec()],
@@ -1714,16 +1718,31 @@ fn a_channel_failure_yielded_by_a_write_stays_terminal_for_the_reader() {
             st.piece_flags = busbar_contract::abi::transport::PIECE_FIELDS;
         }
         assert!(!deliver_dialled(&d, &door, at).await);
+        assert!(pairing.published().await.failure.is_none());
         {
             let mut st = door.st.lock().unwrap();
             st.pieces.push((3, b"channel failed".to_vec()));
             st.piece_flags = busbar_contract::abi::transport::PIECE_STREAM_FAILED;
         }
-        assert_eq!(d.write(b"message", true, false), Err(ConnError::Fault));
+        assert_eq!(d.write(b"message", true, false), Ok(7));
+        let publication = pairing.published().await;
+        assert!(
+            publication.failure.is_some(),
+            "the actual crossing retains its terminal failure"
+        );
+        assert_eq!(publication.original_bytes, 7);
+        assert_eq!(publication.original_handed_bytes, 7);
         assert!(pairing.closed());
+        assert!(d.ready(std::task::Waker::noop()));
         assert_eq!(
             d.read(std::task::Waker::noop(), &mut [0; 8]),
             Err(ConnError::Fault)
+        );
+        assert_eq!(d.write(b"message", true, false), Err(ConnError::Fault));
+        assert_eq!(
+            door.st.lock().unwrap().emitted,
+            vec![b"message".to_vec()],
+            "accepted input was crossed once and is never replayed after failure"
         );
         d.close();
     });
@@ -1798,6 +1817,7 @@ fn a_close_during_settlement_stays_closed_after_the_crossing_returns() {
 
 struct LineGate {
     gate: Mutex<Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>>,
+    pairing: Mutex<std::sync::Weak<super::Pairing>>,
 }
 
 impl super::LegSink for LineGate {
@@ -1810,6 +1830,19 @@ impl super::LegSink for LineGate {
     }
 
     fn close(&self) {}
+
+    fn pairing(&self) -> Option<Arc<super::Pairing>> {
+        self.pairing.lock().unwrap().upgrade()
+    }
+}
+
+/// Release even if an inspector or its observation panics. Assertions follow release/join.
+struct Unpark(std::sync::mpsc::Sender<()>);
+
+impl Drop for Unpark {
+    fn drop(&mut self) {
+        let _ = self.0.send(());
+    }
 }
 
 struct PortWake(tokio::sync::mpsc::UnboundedSender<()>);
@@ -1827,11 +1860,11 @@ impl std::task::Wake for RetryWrite {
 
 #[test]
 fn a_woken_writer_can_accept_bytes_as_soon_as_the_association_comes_home() {
-    use busbar_contract::conn::PieceKind;
+    use busbar_contract::conn::{ConnError, PieceKind};
     let rt = crate::support::worker();
     let handle = rt.handle().clone();
     rt.block_on(async {
-        let (d, door, _, at) = observed_dialled();
+        let (d, door, pairing, at) = observed_dialled();
         d.exchanged(piece(PieceKind::Completion), b"").unwrap();
         {
             let mut st = door.st.lock().unwrap();
@@ -1839,35 +1872,59 @@ fn a_woken_writer_can_accept_bytes_as_soon_as_the_association_comes_home() {
             st.piece_flags = busbar_contract::abi::transport::PIECE_FIELDS;
         }
         assert!(!deliver_dialled(&d, &door, at).await);
+        assert!(pairing.published().await.failure.is_none());
         let (entered, release) = park(&door, Parks::Emit);
+        let unpark = Unpark(release);
         let writing = d.clone();
+        let on = handle.clone();
         let first = std::thread::spawn(move || {
-            let _rt = handle.enter();
+            let _rt = on.enter();
             writing.write(b"first", true, false)
         });
-        entered.recv_timeout(Duration::from_secs(5)).unwrap();
         let retry = Arc::new(RetryWrite {
             dialled: d.clone(),
             result: Mutex::new(None),
         });
-        let waker = std::task::Waker::from(retry.clone());
-        let ready = d.ready(&waker);
-        release.send(()).unwrap();
+        let inspecting = d.clone();
+        let interest = retry.clone();
+        let inspector = std::thread::spawn(move || {
+            let _rt = handle.enter();
+            let ready = entered.recv_timeout(Duration::from_secs(5)).map(|()| {
+                let waker = std::task::Waker::from(interest);
+                inspecting.ready(&waker)
+            });
+            drop(unpark);
+            ready
+        });
+        // The inspector exists before joining, so even an unexpectedly synchronous crossing
+        // is released. Source acceptance returns before this runtime polls the actor.
         let wrote = first.join().unwrap();
+        let blocked = d.write(b"unaccepted", false, false);
+        let publication = tokio::time::timeout(Duration::from_secs(10), pairing.published()).await;
+        let ready = inspector.join().unwrap();
         let accepted = retry.result.lock().unwrap().take();
-        let final_part = d.write(b"tail", true, false);
-        d.close();
-        assert!(
-            !ready,
-            "the association was still out when interest was registered"
+        assert!(publication.unwrap().failure.is_none());
+        assert_eq!(
+            ready,
+            Ok(false),
+            "the actual Emit was out when interest was registered"
         );
         assert_eq!(wrote, Ok(5));
+        assert_eq!(
+            blocked,
+            Err(ConnError::Pending),
+            "one accepted write keeps bounded source admission"
+        );
         assert_eq!(
             accepted,
             Some(Ok(5)),
             "publication makes write ownership available before waking"
         );
+        let final_part = d.write(b"tail", true, false);
+        let publication = pairing.published().await;
+        d.close();
         assert_eq!(final_part, Ok(4));
+        assert!(publication.failure.is_none());
         assert_eq!(
             door.st.lock().unwrap().emitted,
             vec![b"first".to_vec(), b"next-tail".to_vec()]
@@ -1887,7 +1944,7 @@ fn a_pending_final_write_never_overwrites_another_writers_accepted_part() {
     let rt = crate::support::worker();
     let handle = rt.handle().clone();
     rt.block_on(async {
-        let (d, door, _, at) = observed_dialled();
+        let (d, door, pairing, at) = observed_dialled();
         d.exchanged(piece(PieceKind::Completion), b"").unwrap();
         {
             let mut st = door.st.lock().unwrap();
@@ -1895,11 +1952,13 @@ fn a_pending_final_write_never_overwrites_another_writers_accepted_part() {
             st.piece_flags = busbar_contract::abi::transport::PIECE_FIELDS;
         }
         assert!(!deliver_dialled(&d, &door, at).await);
+        assert!(pairing.published().await.failure.is_none());
         assert_eq!(d.write(b"accepted-", false, false), Ok(9));
         let (wake_tx, mut wake_rx) = tokio::sync::mpsc::unbounded_channel();
         let waker = std::task::Waker::from(Arc::new(PortWake(wake_tx)));
         assert!(!d.ready(&waker));
         let (entered, release) = park(&door, Parks::Ingest);
+        let unpark = Unpark(release);
         let peer = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
         peer.send_to(&check(HOST_UFRAG, FAR_UFRAG, HOST_PWD, 2), at)
             .await
@@ -1913,7 +1972,7 @@ fn a_pending_final_write_never_overwrites_another_writers_accepted_part() {
             let _rt = handle.enter();
             driving.ready(&waker)
         });
-        entered.recv_timeout(Duration::from_secs(5)).unwrap();
+        let entered = entered.recv_timeout(Duration::from_secs(5));
         let other = d.clone();
         let result = Arc::new(Mutex::new(None));
         let observed = result.clone();
@@ -1922,20 +1981,30 @@ fn a_pending_final_write_never_overwrites_another_writers_accepted_part() {
             *observed.lock().unwrap() = Some(writing.join().unwrap());
         });
         let final_part = d.write(b"tail", true, false);
-        release.send(()).unwrap();
-        drive.join().unwrap();
+        drop(unpark);
+        let driven = drive.join();
+        assert!(
+            entered.is_ok(),
+            "the ordinary crossing must own the real framing"
+        );
+        driven.unwrap();
+        assert!(pairing.published().await.failure.is_none());
         let concurrent = result.lock().unwrap().take().unwrap();
-        if concurrent == Err(ConnError::Pending) {
-            assert_eq!(d.write(b"middle-", false, false), Ok(7));
-        }
-        assert_eq!(d.write(b"tail", true, false), Ok(4));
-        d.close();
         assert_eq!(final_part, Err(ConnError::Pending));
         assert_eq!(
             concurrent,
             Err(ConnError::Pending),
             "the first final write owns its prefix"
         );
+        assert_eq!(d.write(b"middle-", false, false), Ok(7));
+        assert_eq!(d.write(b"tail", true, false), Ok(4));
+        assert_eq!(
+            d.write(b"unaccepted", false, false),
+            Err(ConnError::Pending)
+        );
+        let publication = pairing.published().await;
+        d.close();
+        assert!(publication.failure.is_none());
         assert_eq!(
             door.st.lock().unwrap().emitted,
             vec![b"accepted-middle-tail".to_vec()]
@@ -1951,14 +2020,16 @@ fn a_read_cannot_overtake_the_older_channel_message_a_wait_is_publishing() {
     rt.block_on(async {
         let caller = Arc::new(LineGate {
             gate: Mutex::new(None),
+            pairing: Mutex::new(std::sync::Weak::new()),
         });
         let pairing = super::Pairing::new(caller.clone(), p("127.0.0.1:3478"));
+        *caller.pairing.lock().unwrap() = Arc::downgrade(&pairing);
         pairing.sort(
             super::Leg::Caller,
             vec![got(10, b"kind: audio\r\n", true)],
             Instant::now(),
         );
-        let (d, door, _, at) = observed_dialled_for(pairing);
+        let (d, door, _, at) = observed_dialled_for(pairing.clone());
         {
             let mut st = door.st.lock().unwrap();
             st.pieces.push((20, b"kind: audio\r\n".to_vec()));
@@ -1976,6 +2047,7 @@ fn a_read_cannot_overtake_the_older_channel_message_a_wait_is_publishing() {
         }
         let (entered_tx, entered) = std::sync::mpsc::channel();
         let (release, held_back) = std::sync::mpsc::channel();
+        let unpark = Unpark(release);
         *caller.gate.lock().unwrap() = Some((entered_tx, held_back));
         peer.send_to(&check(HOST_UFRAG, FAR_UFRAG, HOST_PWD, 1), at)
             .await
@@ -1986,45 +2058,103 @@ fn a_read_cannot_overtake_the_older_channel_message_a_wait_is_publishing() {
             .unwrap();
         let waiting = d.clone();
         let wait_waker = waker.clone();
+        let on = handle.clone();
         let wait = std::thread::spawn(move || {
-            let _rt = handle.enter();
+            let _rt = on.enter();
             waiting.ready(&wait_waker)
         });
-        entered.recv_timeout(Duration::from_secs(5)).unwrap();
-        // The older read drained the port, registering its waker again, and is now paused in
-        // pairing.sort before it can publish the older session message. Await a fresh port edge.
-        while wake_rx.try_recv().is_ok() {}
-        door.st.lock().unwrap().pieces.push((3, b"newer".to_vec()));
-        peer.send_to(&check(HOST_UFRAG, FAR_UFRAG, HOST_PWD, 2), at)
-            .await
-            .unwrap();
-        tokio::time::timeout(Duration::from_secs(5), wake_rx.recv())
-            .await
-            .unwrap()
-            .unwrap();
-        let mut buf = [0; 16];
-        let first = d.read(&waker, &mut buf);
-        let mut messages = Vec::new();
-        if let Ok(piece) = &first {
-            messages.push(buf[..piece.len].to_vec());
+        let inspecting = d.clone();
+        let scripted = door.clone();
+        let read_waker = waker.clone();
+        // Keep the same peer address, but send without needing to poll the blocked runtime.
+        let peer = peer.into_std().unwrap();
+        let inspector = std::thread::spawn(move || {
+            let _rt = handle.enter();
+            let observed = entered.recv_timeout(Duration::from_secs(5)).map(|()| {
+                let ready = inspecting.ready(&read_waker);
+                let mut prefix = [0; 2];
+                let first = inspecting.read(&read_waker, &mut prefix);
+                let prefix = first
+                    .as_ref()
+                    .ok()
+                    .map(|piece| prefix[..piece.len].to_vec());
+                let mut buf = [0; 16];
+                let second = inspecting.read(&read_waker, &mut buf);
+                let suffix = second.as_ref().ok().map(|piece| buf[..piece.len].to_vec());
+                scripted
+                    .st
+                    .lock()
+                    .unwrap()
+                    .pieces
+                    .push((3, b"newer".to_vec()));
+                let sent = peer.send_to(&check(HOST_UFRAG, FAR_UFRAG, HOST_PWD, 2), at);
+                let later = inspecting.read(&read_waker, &mut buf);
+                let newer = later.as_ref().ok().map(|piece| buf[..piece.len].to_vec());
+                (ready, first, prefix, second, suffix, sent, later, newer)
+            });
+            drop(unpark);
+            (observed, peer)
+        });
+        // The older CHANNEL is already queued when ready returns. The actor's independent
+        // LINE callback can block only after the current-thread runtime gets to poll it.
+        let waited = wait.join();
+        let publication = tokio::time::timeout(Duration::from_secs(10), pairing.published()).await;
+        let (observed, _peer) = inspector.join().unwrap();
+        let observed = observed.unwrap();
+        let (ready, first, prefix, second, suffix, sent, later, newer) = observed;
+        assert!(waited.unwrap());
+        assert!(publication.unwrap().failure.is_none());
+        assert!(
+            ready,
+            "the older CHANNEL is readable while LINE delivery is parked"
+        );
+        let first = first.unwrap();
+        let second = second.unwrap();
+        assert_eq!(first.kind, PieceKind::Body);
+        assert_eq!(second.kind, PieceKind::Body);
+        assert!(!first.end);
+        assert!(second.end);
+        assert_eq!(prefix.unwrap(), b"ol");
+        assert_eq!(suffix.unwrap(), b"der");
+        assert_eq!(
+            sent.unwrap(),
+            check(HOST_UFRAG, FAR_UFRAG, HOST_PWD, 2).len()
+        );
+        let mut messages = vec![b"older".to_vec()];
+        match later {
+            Ok(piece) => {
+                assert_eq!(piece.kind, PieceKind::Body);
+                assert!(piece.end);
+                messages.push(newer.unwrap());
+            }
+            Err(error) => assert_eq!(error, ConnError::Pending),
         }
-        release.send(()).unwrap();
-        assert!(wait.join().unwrap());
-        while messages.len() < 2 {
-            let piece = futures::future::poll_fn(|cx| match d.read(cx.waker(), &mut buf) {
-                Err(ConnError::Pending) => std::task::Poll::Pending,
-                answer => std::task::Poll::Ready(answer),
-            })
-            .await
-            .unwrap();
-            messages.push(buf[..piece.len].to_vec());
-        }
+        tokio::time::timeout(Duration::from_secs(5), async {
+            let mut buf = [0; 16];
+            while messages.len() < 2 {
+                let piece = futures::future::poll_fn(|cx| match d.read(cx.waker(), &mut buf) {
+                    Err(ConnError::Pending) => std::task::Poll::Pending,
+                    answer => std::task::Poll::Ready(answer),
+                })
+                .await
+                .unwrap();
+                assert_eq!(piece.kind, PieceKind::Body);
+                assert!(piece.end);
+                messages.push(buf[..piece.len].to_vec());
+            }
+        })
+        .await
+        .expect("the newer CHANNEL follows the already consumed older message");
+        assert!(pairing.published().await.failure.is_none());
+        let extra = d.read(std::task::Waker::noop(), &mut [0; 16]);
+        let publication = pairing.published().await;
         d.close();
+        assert!(publication.failure.is_none());
         assert_eq!(messages, vec![b"older".to_vec(), b"newer".to_vec()]);
         assert_eq!(
-            first,
+            extra,
             Err(ConnError::Pending),
-            "the older crossing owns publication"
+            "neither message is replayed after publication"
         );
     });
 }
