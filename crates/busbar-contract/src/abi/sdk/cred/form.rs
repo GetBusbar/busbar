@@ -18,6 +18,8 @@ pub struct CredUrl {
     password: Option<Cred>,
     at: Option<PasswordAt>,
     floor: AuthFloor,
+    echoes: Vec<Cred>,
+    parsing_error: Option<&'static str>,
 }
 
 /// Where in the text the password was written (public: a plugin keeps its own URL rules).
@@ -76,6 +78,43 @@ impl CredUrl {
         Self::split(text)
     }
 
+    /// Capture PostgreSQL's keyword or URL password, with the last occurrence winning.
+    ///
+    /// # Errors
+    /// A malformed keyword string or invalid percent-encoded UTF-8.
+    pub fn parse_postgres(text: &str) -> Result<Self, &'static str> {
+        native::postgres(text)
+    }
+
+    /// Capture a Valkey URL without passing a plaintext password to a URL parser.
+    /// Native URL validation still runs on [`Self::public`]. Safe capture refusals are retained
+    /// in [`Self::parsing_error`] so typed settings retain the driver's error text.
+    ///
+    /// # Errors
+    /// Reserved for capture failures; malformed URLs retain safe refusal metadata instead.
+    pub fn parse_valkey(text: &str) -> Result<Self, &'static str> {
+        Ok(native::valkey(text))
+    }
+
+    /// A safe native refusal discovered while capturing a URL.
+    pub fn parsing_error(&self) -> Option<&'static str> {
+        self.parsing_error
+    }
+
+    /// The public URL, or the safe refusal discovered while capturing it.
+    ///
+    /// # Errors
+    /// The safe refusal returned by [`Self::parsing_error`].
+    pub fn parsed(&self) -> Result<&str, &'static str> {
+        self.parsing_error.map_or(Ok(self.public()), Err)
+    }
+
+    /// Replace credential echoes (including percent and form spellings) with `<redacted>`.
+    /// Comparison happens while the credential remains sealed; no plaintext is returned.
+    pub fn redact_echo(&self, text: &str) -> String {
+        native::redact(self, text)
+    }
+
     /// Take a URL setting out of a parsed settings document: split it, and wipe the string where
     /// it was. `None`: `v` is not a string (left as it was).
     pub fn take(v: &mut serde_json::Value) -> Option<Result<Self, &'static str>> {
@@ -123,6 +162,8 @@ impl CredUrl {
             password,
             at,
             floor,
+            echoes: Vec::new(),
+            parsing_error: None,
         })
     }
 }
@@ -406,6 +447,45 @@ fn decode(s: &str) -> Bytes {
 pub struct UserinfoUrl(pub CredUrl);
 
 impl core::ops::Deref for UserinfoUrl {
+    type Target = CredUrl;
+    fn deref(&self) -> &CredUrl {
+        &self.0
+    }
+}
+
+#[path = "native.rs"]
+mod native;
+
+/// A PostgreSQL setting captured with PostgreSQL decoding and duplicate-password rules.
+#[allow(missing_debug_implementations)]
+#[derive(Clone, PartialEq, Eq)]
+pub struct PostgresUrl(pub CredUrl);
+
+impl core::ops::Deref for PostgresUrl {
+    type Target = CredUrl;
+    fn deref(&self) -> &CredUrl {
+        &self.0
+    }
+}
+
+/// A Valkey setting captured before native validation of its public URL.
+#[allow(missing_debug_implementations)]
+#[derive(Clone, PartialEq, Eq)]
+pub struct ValkeyUrl(pub CredUrl);
+
+impl core::ops::Deref for ValkeyUrl {
+    type Target = CredUrl;
+    fn deref(&self) -> &CredUrl {
+        &self.0
+    }
+}
+
+/// A MySQL setting trimmed before generic password capture, as the native settings reader does.
+#[allow(missing_debug_implementations)]
+#[derive(Clone, PartialEq, Eq)]
+pub struct MysqlUrl(pub CredUrl);
+
+impl core::ops::Deref for MysqlUrl {
     type Target = CredUrl;
     fn deref(&self) -> &CredUrl {
         &self.0

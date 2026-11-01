@@ -11,7 +11,7 @@ use serde::forward_to_deserialize_any;
 use serde_json::Value;
 use zeroize::{Zeroize, Zeroizing};
 
-use super::{Cred, CredUrl, UserinfoUrl};
+use super::{Cred, CredUrl, MysqlUrl, PostgresUrl, UserinfoUrl, ValkeyUrl};
 
 /// Why settings did not parse: the field path and what was wrong, never the value.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -309,7 +309,14 @@ impl<'de> de::Deserializer<'de> for Node {
                 let Value::String(s) = self.take() else {
                     unreachable!()
                 };
-                visitor.visit_string(s)
+                let s = Zeroizing::new(s);
+                #[cfg(test)]
+                // SAFETY: the String's initialized base prefix stays on this thread and is
+                // wiped by Zeroizing before the allocator observes its current deallocation.
+                unsafe {
+                    crate::alloc_counter::watch_initialized_payload(s.as_bytes());
+                }
+                visitor.visit_str(&s)
             }
             Value::Array(_) => {
                 let items = self.items();
@@ -449,3 +456,69 @@ impl<'de> de::Deserialize<'de> for UserinfoUrl {
 #[cfg(test)]
 #[path = "../tests/cred_lent_tests.rs"]
 mod lent_tests;
+
+struct PostgresUrlVisitor;
+impl<'de> Visitor<'de> for PostgresUrlVisitor {
+    type Value = PostgresUrl;
+    fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("a string")
+    }
+    fn visit_str<E: de::Error>(self, s: &str) -> Result<PostgresUrl, E> {
+        CredUrl::parse_postgres(s.trim())
+            .map(PostgresUrl)
+            .map_err(|why| E::invalid_value(Unexpected::Other("a string"), &why))
+    }
+    fn visit_string<E: de::Error>(self, s: String) -> Result<PostgresUrl, E> {
+        let s = Zeroizing::new(s);
+        self.visit_str(&s)
+    }
+}
+impl<'de> de::Deserialize<'de> for PostgresUrl {
+    fn deserialize<D: de::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        d.deserialize_string(PostgresUrlVisitor)
+    }
+}
+
+struct ValkeyUrlVisitor;
+impl<'de> Visitor<'de> for ValkeyUrlVisitor {
+    type Value = ValkeyUrl;
+    fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("a string")
+    }
+    fn visit_str<E: de::Error>(self, s: &str) -> Result<ValkeyUrl, E> {
+        CredUrl::parse_valkey(s)
+            .map(ValkeyUrl)
+            .map_err(|why| E::invalid_value(Unexpected::Other("a string"), &why))
+    }
+    fn visit_string<E: de::Error>(self, s: String) -> Result<ValkeyUrl, E> {
+        let s = Zeroizing::new(s);
+        self.visit_str(&s)
+    }
+}
+impl<'de> de::Deserialize<'de> for ValkeyUrl {
+    fn deserialize<D: de::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        d.deserialize_string(ValkeyUrlVisitor)
+    }
+}
+
+struct MysqlUrlVisitor;
+impl<'de> Visitor<'de> for MysqlUrlVisitor {
+    type Value = MysqlUrl;
+    fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("a string")
+    }
+    fn visit_str<E: de::Error>(self, s: &str) -> Result<MysqlUrl, E> {
+        CredUrl::parse(s.trim())
+            .map(MysqlUrl)
+            .map_err(|why| E::invalid_value(Unexpected::Other("a string"), &why))
+    }
+    fn visit_string<E: de::Error>(self, s: String) -> Result<MysqlUrl, E> {
+        let s = Zeroizing::new(s);
+        self.visit_str(&s)
+    }
+}
+impl<'de> de::Deserialize<'de> for MysqlUrl {
+    fn deserialize<D: de::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        d.deserialize_string(MysqlUrlVisitor)
+    }
+}
