@@ -907,7 +907,14 @@ fn cross_claim(rows: &[LoadablePlugin], new: usize) -> Result<Vec<(usize, String
     for (i, a) in rows.iter().enumerate().take(new) {
         for (j, b) in rows.iter().enumerate().skip(i + 1) {
             if a.manifest.name == b.manifest.name {
-                if !b.linked() && !copies.iter().any(|(k, _)| *k == j) {
+                if b.linked() {
+                    return Err(format!(
+                        "plugin claim conflict: '{}' is declared by two linked rows ({} and {}); \
+                         a canonical name must resolve to one linked plugin",
+                        a.manifest.name, a.manifest.kind, b.manifest.kind
+                    ));
+                }
+                if !copies.iter().any(|(k, _)| *k == j) {
                     copies.push((j, one_version(a, &b.file, &b.plugin_version()?)?));
                 }
                 continue;
@@ -1025,12 +1032,28 @@ pub fn discover(dir: &Path) -> Result<Vec<PathBuf>, String> {
         let entry =
             entry.map_err(|e| format!("error reading plugins dir {}: {e}", dir.display()))?;
         let path = entry.path();
-        let Some(file) = path.file_name().and_then(|f| f.to_str()) else {
+        // Match the archive suffix before asking for UTF-8, so an archive cannot disappear
+        // from admission just because another byte of its filename is not UTF-8.
+        let archive = path.file_name().is_some_and(|name| {
+            let bytes = name.as_encoded_bytes();
+            bytes.ends_with(b".tar.gz") || bytes.ends_with(b".tgz")
+        });
+        if !archive {
             continue;
-        };
-        if path.is_file() && tarball::is_plugin_tarball(file) {
-            out.push(path);
         }
+        let metadata = path
+            .metadata()
+            .map_err(|e| format!("cannot inspect plugin archive {}: {e}", path.display()))?;
+        if !metadata.is_file() {
+            continue;
+        }
+        if path.file_name().and_then(|f| f.to_str()).is_none() {
+            return Err(format!(
+                "plugin archive filename is not UTF-8: {}",
+                path.display()
+            ));
+        }
+        out.push(path);
     }
     out.sort();
     Ok(out)
