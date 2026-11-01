@@ -3,6 +3,9 @@
 
 use super::*;
 
+#[path = "pool_retirement_tests.rs"]
+mod pool_retirement_tests;
+
 const OWNER: InstanceId = InstanceId(1);
 const OTHER: InstanceId = InstanceId(2);
 
