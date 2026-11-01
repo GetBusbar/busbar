@@ -685,13 +685,17 @@ pub struct UnparseableNamedDef {
 pub fn unparseable_named_map_entries(
     store: Option<&OverlayStore>,
     section: crate::config::named_map::NamedMapSection,
-) -> BTreeMap<String, UnparseableNamedDef> {
+) -> Result<BTreeMap<String, UnparseableNamedDef>, String> {
     let mut out = BTreeMap::new();
-    let Some(doc) = store.and_then(read) else {
-        return out;
+    let Some(doc) = store
+        .map(OverlayStore::read_required)
+        .transpose()?
+        .flatten()
+    else {
+        return Ok(out);
     };
     let Some(entries) = doc.named_maps.get(section.key()) else {
-        return out;
+        return Ok(out);
     };
     for (name, def) in entries {
         if let Err(error) = section.validate_def(name, def) {
@@ -704,7 +708,7 @@ pub fn unparseable_named_map_entries(
             );
         }
     }
-    out
+    Ok(out)
 }
 pub fn apply_pre_resolve_sections(deploy: &mut DeployCfg, doc: &OverlayDoc) {
     apply_plugin_versions_to_deploy(deploy, doc);
