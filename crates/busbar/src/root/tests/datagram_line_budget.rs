@@ -173,8 +173,15 @@ fn expected_paths(depth: u8, prefix: &[u8]) -> Vec<Vec<u8>> {
 async fn complete_feedback(limit: Option<usize>, depth: u8, per_batch: usize) {
     let actual = ActualPair::new(limit, per_batch, Terminals::Paths);
     assert_eq!(actual.pair.memory_account().limit(), limit);
+    // Recall controls fill more than half of the real frame loan per child. Two children
+    // genuinely cannot fit together; MORE is caused by loan capacity, not an invented pause.
+    let prefix = if per_batch == 1 {
+        vec![b'r'; FRAME_CAP / 2]
+    } else {
+        b"root".to_vec()
+    };
     let mut token = vec![depth];
-    token.extend_from_slice(b"root");
+    token.extend_from_slice(&prefix);
     assert!(
         tokio::time::timeout(COMPLETION_WAIT, actual.caller.write(&token, false))
             .await
@@ -194,7 +201,7 @@ async fn complete_feedback(limit: Option<usize>, depth: u8, per_batch: usize) {
         (actual.upstream_messages(), actual.caller_messages())
     };
     terminals.sort();
-    assert_eq!(terminals, expected_paths(depth, b"root"));
+    assert_eq!(terminals, expected_paths(depth, &prefix));
     assert!(other.is_empty());
     assert_eq!(
         actual.a.emitted().len() + actual.b.emitted().len(),
@@ -218,7 +225,7 @@ async fn unlimited_actual_pair_completes_distinct_finite_feedback_in_both_direct
 #[tokio::test]
 async fn configured_ample_actual_pair_preserves_paths_and_same_operation_recalls() {
     // Layout sizes setup; exact independent paths, counts and non-replay remain the oracle.
-    let ample = datagram_output_reservation_bytes() + 16 * FRAME_CAP;
+    let ample = datagram_output_reservation_bytes() + 128 * FRAME_CAP;
     complete_feedback(Some(ample), 4, 1).await;
     complete_feedback(Some(ample), 5, 2).await;
 }

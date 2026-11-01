@@ -56,7 +56,8 @@ pub struct Branching {
 }
 
 impl Branching {
-    /// An independently identified association. `per_batch=1` exercises legitimate same-op MORE.
+    /// An independently identified association. With `per_batch=1`, use tokens over half the
+    /// frame loan so a second child genuinely needs a same-operation recall.
     pub fn new(
         line: u64,
         channel: u64,
@@ -271,6 +272,14 @@ impl FramerDoor for Branching {
                     !pieces.is_empty(),
                     "fixture token fits at least one host loan"
                 );
+                if self.per_batch == 1 {
+                    if let Some(next) = state.pending.front() {
+                        assert!(
+                            frame.len() + next.bytes.len() > input.sink.frame_cap,
+                            "MORE control must fill the actual loan before deferring a child"
+                        );
+                    }
+                }
                 write(&input.sink, out, &frame, &pieces);
                 if !state.pending.is_empty() {
                     out.yielded.flags = YIELD_MORE;
