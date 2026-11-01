@@ -356,6 +356,23 @@ async fn cap_is_read_from_the_post_lock_snapshot() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn concurrent_mints_never_bind_a_deleted_group() {
     busbar_kernel::snapshot::init();
+    // A separate positive fixture proves the same group bind can commit and be read back. It
+    // must not seed the race fixture: an existing bound key would make deletion-first impossible.
+    {
+        let g = gov(Arc::new(MemoryStore::new()));
+        let app = crate::new_test_app()
+            .governance(g.clone())
+            .groups_tree(tree(&["team"]))
+            .build();
+        let handle = handle_for(app);
+        assert_eq!(
+            mint(&handle, "bound-control", Some("team")).await,
+            StatusCode::CREATED
+        );
+        let keys = g.all_keys().expect("control key readable");
+        assert_eq!(keys.len(), 1);
+        assert_eq!(keys[0].group.as_deref(), Some("team"));
+    }
     for round in 0..10u32 {
         let store = Arc::new(MemoryStore::new());
         let g = gov(store);
@@ -380,13 +397,34 @@ async fn concurrent_mints_never_bind_a_deleted_group() {
             }
         }
         let deleting = deleting.expect("delete spawned");
+        let mut created = 0;
         for m in minting {
-            m.await.expect("mint task joins");
+            match m.await.expect("mint task joins") {
+                StatusCode::CREATED => created += 1,
+                StatusCode::BAD_REQUEST => {}
+                status => panic!("mint must create or refuse the deleted group, got {status}"),
+            }
         }
-        deleting.await.expect("delete task joins");
+        let deleted = deleting.await.expect("delete task joins");
+        assert_eq!(
+            deleted,
+            if created == 0 {
+                StatusCode::NO_CONTENT
+            } else {
+                StatusCode::CONFLICT
+            },
+            "deletion succeeds only if no bound mint committed"
+        );
 
         let live = handle.load();
-        for key in g.all_keys().expect("keys readable") {
+        let keys = g.all_keys().expect("keys readable");
+        assert_eq!(keys.len(), created, "every successful mint is durable");
+        assert_eq!(
+            live.groups_registry.contains_key("team"),
+            created != 0,
+            "the group remains exactly when a bound mint prevented deletion"
+        );
+        for key in keys {
             if let Some(bound) = key.group.as_deref() {
                 assert!(
                     live.groups_registry.contains_key(bound)
