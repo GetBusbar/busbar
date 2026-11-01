@@ -681,3 +681,41 @@ fn line_publication_wakes_only_the_latest_read_context_as_the_stream_and_reactor
         assert!(latest.load(Ordering::SeqCst) > 0);
     });
 }
+
+#[test]
+fn the_latest_pending_read_is_woken_on_close_and_on_a_queued_publication_unwind() {
+    use crate::datagram::LegSink as _;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    for unwind in [false, true] {
+        crate::support::worker().block_on(async {
+            let (dialled, _, caller) = line_outputs();
+            let woke = Arc::new(AtomicUsize::new(0));
+            let waker = std::task::Waker::from(Arc::new(LatestReadWake {
+                woke: Arc::clone(&woke),
+                dropped: Arc::new(AtomicUsize::new(0)),
+                leg: Arc::downgrade(&dialled.leg),
+            }));
+            let mut buf = [0; 16];
+            assert_eq!(
+                dialled.read(&waker, &mut buf),
+                Err(crate::ConnError::Pending)
+            );
+            assert_eq!(woke.load(Ordering::SeqCst), 0);
+            if unwind {
+                *caller.1.lock().unwrap() = Some(Box::new(|| panic!("publication unwinds")));
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    dialled.leg.turn(
+                        (),
+                        |_, ()| panic!("the association starts at home"),
+                        |()| panic!("the association starts open"),
+                        |_, ()| dialled.leg.line(incoming_line(), std::time::Instant::now()),
+                    );
+                }));
+                assert!(result.is_err());
+            } else {
+                dialled.close();
+            }
+            assert!(woke.load(Ordering::SeqCst) > 0);
+        });
+    }
+}

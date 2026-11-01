@@ -116,8 +116,9 @@ struct Held {
     lines: Vec<(Across, Instant)>,
     /// The drives that found it out, woken when it is back.
     missed: Vec<Waker>,
-    /// Readers waiting for channel output, including output from an incoming LINE Emit.
-    readers: Vec<Waker>,
+    /// Latest interest in this held connection's channel output, as with the line's per-stream
+    /// registration and the port's read direction. Re-polling replaces the previous context.
+    reader: Option<Waker>,
 }
 
 /// An association out of its slot. Only an unwind drops it still holding the association: the
@@ -135,7 +136,7 @@ impl Drop for Taken<'_> {
                 held.closing = true;
                 held.out = false;
                 let mut waiting = std::mem::take(&mut held.missed);
-                waiting.append(&mut held.readers);
+                waiting.extend(held.reader.take());
                 waiting
             };
             drop(f);
@@ -263,14 +264,21 @@ impl UpstreamLeg {
         }
     }
 
-    /// Register before checking the ready queue: publication cannot fall between the check and
-    /// registration. Clone and discard wakers with no host guard held.
+    /// Register this connection's latest read context before checking the ready queue, matching
+    /// Line::FanOut's registration for one held stream and the reactor's read direction. Replacing
+    /// a context neither grows custody nor wakes an old poll without progress.
     fn wait_ready(&self, waker: &Waker) {
-        let waiter = waker.clone();
-        let mut held = lock(&self.framing);
-        if !held.closing && !held.readers.iter().any(|w| w.will_wake(&waiter)) {
-            held.readers.push(waiter);
-        }
+        let incoming = waker.clone();
+        let displaced = {
+            let mut held = lock(&self.framing);
+            if held.closing || held.reader.as_ref().is_some_and(|w| w.will_wake(&incoming)) {
+                Some(incoming)
+            } else {
+                held.reader.replace(incoming)
+            }
+        };
+        // Waker cloning/destruction may call reader code; neither crosses a host guard.
+        drop(displaced);
     }
 
     /// Whether the association has presented its keying-material item (`false` once closed).
@@ -321,8 +329,10 @@ impl UpstreamLeg {
             queued = true;
         }
         if queued {
-            let waiting = std::mem::take(&mut lock(&self.framing).readers);
-            wake(waiting);
+            let waiting = lock(&self.framing).reader.take();
+            if let Some(waker) = waiting {
+                waker.wake();
+            }
         }
         Ok(())
     }
@@ -455,7 +465,7 @@ impl LegSink for UpstreamLeg {
             held.closing = true;
             held.lines.clear();
             let mut waiting = std::mem::take(&mut held.missed);
-            waiting.append(&mut held.readers);
+            waiting.extend(held.reader.take());
             (held.framing.take(), waiting)
         };
         drop(framing);
