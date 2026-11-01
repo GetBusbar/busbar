@@ -17,6 +17,8 @@ struct UncertainStore {
     replies: Mutex<VecDeque<Reply>>,
     calls: Mutex<Vec<(OpId, Vec<MeteringDelta>)>>,
     legacy_calls: AtomicUsize,
+    supported: bool,
+    reenter: Mutex<Option<std::sync::Weak<GovState>>>,
 }
 
 impl UncertainStore {
@@ -26,11 +28,17 @@ impl UncertainStore {
             replies: Mutex::new(replies.into_iter().collect()),
             calls: Mutex::new(Vec::new()),
             legacy_calls: AtomicUsize::new(0),
+            supported: true,
+            reenter: Mutex::new(None),
         }
     }
 
     fn attempt(&self, op: OpId, deltas: &[MeteringDelta]) -> RecordStoreResult<()> {
         self.calls.lock().unwrap().push((op, deltas.to_vec()));
+        let reenter = self.reenter.lock().unwrap().take();
+        if let Some(gov) = reenter.and_then(|gov| gov.upgrade()) {
+            assert_eq!(gov.flush_metering_final(), 0);
+        }
         let reply = self.replies.lock().unwrap().pop_front();
         if matches!(reply, Some(Reply::Unknown)) {
             return Err(RecordStoreError("still unknown".into()));
@@ -74,7 +82,7 @@ impl RecordStore for UncertainStore {
         self.attempt(crate::door::op_id(), std::slice::from_ref(delta))
     }
     fn supports_metering_batch_deduped(&self) -> bool {
-        true
+        self.supported
     }
     fn add_metering_batch_deduped(
         &self,
@@ -183,17 +191,15 @@ fn concurrent_flush_and_abandoned_caller_leave_one_replay_owner() {
         0,
         "another caller cannot replace the active operation"
     );
-    assert_eq!(
-        gov.flush_metering_final(),
-        0,
-        "final flush cannot wait on a reentrant blocked owner"
-    );
     assert_eq!(gov.pending_metering_totals().1.requests, 2);
+    let final_flush = {
+        let gov = gov.clone();
+        std::thread::spawn(move || gov.flush_metering_final())
+    };
     drop(held); // dropping a caller's join handle cannot release its running operation
     release.wait();
     assert_eq!(completion.recv().unwrap(), 0);
-    assert_eq!(gov.flush_metering(), 1);
-    gov.flush_metering();
+    assert_eq!(final_flush.join().unwrap(), 2);
     assert_eq!(requests(&gov), 2);
     let calls = store.calls.lock().unwrap();
     assert_eq!(calls[0], calls[1]);
@@ -214,4 +220,48 @@ fn acknowledged_independent_operations_each_apply_and_empty_flush_is_noop() {
     assert_eq!(calls.len(), 2);
     assert_eq!(calls[0].1, calls[1].1);
     assert_ne!(calls[0].0, calls[1].0);
+}
+
+#[test]
+fn final_flush_reentry_does_not_wait_for_itself_or_change_the_operation() {
+    let store = Arc::new(UncertainStore::new([]));
+    let gov = Arc::new(GovState::new(store.clone(), None).unwrap());
+    *store.reenter.lock().unwrap() = Some(Arc::downgrade(&gov));
+    accrue(&gov, 3, 123);
+    assert_eq!(gov.flush_metering_final(), 1);
+    assert_eq!(requests(&gov), 1);
+    assert_eq!(store.calls.lock().unwrap().len(), 1);
+}
+
+#[test]
+fn legacy_implementation_keeps_its_successful_ordinary_add_path() {
+    let mut legacy = UncertainStore::new([]);
+    legacy.supported = false;
+    let store = Arc::new(legacy);
+    let gov = GovState::new(store.clone(), None).unwrap();
+    accrue(&gov, 3, 123);
+    assert_eq!(gov.flush_metering(), 1);
+    assert_eq!(requests(&gov), 1);
+    assert_eq!(store.legacy_calls.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn repeated_unknowns_retain_one_snapshot_and_coalesce_fresh_pending_separately() {
+    let store = Arc::new(UncertainStore::new(
+        std::iter::once(Reply::Lost).chain(std::iter::repeat_with(|| Reply::Unknown).take(8)),
+    ));
+    let gov = GovState::new(store.clone(), None).unwrap();
+    accrue(&gov, 3, 123);
+    assert_eq!(gov.flush_metering(), 0);
+    for _ in 0..8 {
+        accrue(&gov, 5, 123);
+        assert_eq!(gov.flush_metering(), 0);
+        assert_eq!(gov.pending_metering_totals().0, 2);
+    }
+    let calls = store.calls.lock().unwrap().clone();
+    assert!(calls.iter().all(|call| call == &calls[0]));
+    assert_eq!(gov.pending_metering_totals().1.requests, 9);
+    assert_eq!(gov.flush_metering(), 1);
+    assert_eq!(gov.flush_metering(), 1);
+    assert_eq!(requests(&gov), 9);
 }
