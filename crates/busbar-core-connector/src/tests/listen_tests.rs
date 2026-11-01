@@ -18,6 +18,268 @@ use crate::compose::Failure;
 use crate::framer::Got;
 use crate::support::{worker, TestDoor};
 
+struct LifecycleDoor {
+    inner: TestDoor,
+    listen: Option<Outcome>,
+    accept: Option<Outcome>,
+    bound: std::sync::Mutex<Option<(u64, String)>>,
+    accepted: std::sync::Mutex<Option<(u64, Vec<u8>)>>,
+    cancelled: std::sync::atomic::AtomicUsize,
+}
+
+impl LifecycleDoor {
+    #[allow(unsafe_code)]
+    fn replay_peer(peer: &[u8], into: &mut AcceptIn) {
+        assert!(peer.len() <= into.peer_cap);
+        // SAFETY: this fixture is a carrier; the host supplied peer_cap writable bytes.
+        unsafe {
+            std::ptr::copy_nonoverlapping(peer.as_ptr(), into.peer_buf, peer.len());
+        }
+    }
+
+    fn new(listen: Option<Outcome>, accept: Option<Outcome>) -> Self {
+        Self {
+            inner: TestDoor::identity("listener-lifecycle"),
+            listen,
+            accept,
+            bound: std::sync::Mutex::new(None),
+            accepted: std::sync::Mutex::new(None),
+            cancelled: std::sync::atomic::AtomicUsize::new(0),
+        }
+    }
+}
+
+impl crate::framer::FramerDoor for LifecycleDoor {
+    fn facts(&self) -> &crate::framer::DoorFacts {
+        self.inner.facts()
+    }
+
+    fn cross(&self, call: crate::framer::Call<'_>) -> crate::framer::Crossed {
+        self.inner.cross(call)
+    }
+
+    fn side(&self) -> Option<Box<dyn crate::carrier::Side>> {
+        self.inner.side()
+    }
+
+    fn carry(
+        &self,
+        side: &dyn crate::carrier::Side,
+        resume: bool,
+        call: crate::carrier::Carry<'_>,
+    ) -> crate::framer::Crossed {
+        match call {
+            Carry::Listen(i, o) => {
+                let crossed = self.inner.carry(side, resume, Carry::Listen(i, o));
+                if crossed.outcome != Outcome::Ready {
+                    return crossed;
+                }
+                let address = crate::support::lent(i.addr_buf, o.addr_written as usize);
+                *self.bound.lock().unwrap() =
+                    Some((o.listener, String::from_utf8_lossy(&address).into_owned()));
+                crate::framer::Crossed {
+                    outcome: self.listen.unwrap_or(Outcome::Ready),
+                    error: Some(b"scripted listen result".to_vec()),
+                }
+            }
+            Carry::Accept(i, o) => {
+                if resume {
+                    if let Some((conn, peer)) = self.accepted.lock().unwrap().as_ref() {
+                        Self::replay_peer(peer, i);
+                        o.conn = *conn;
+                        o.peer_written = peer.len() as u64;
+                        return crate::framer::Crossed {
+                            outcome: Outcome::Ready,
+                            error: None,
+                        };
+                    }
+                }
+                let crossed = self.inner.carry(side, resume, Carry::Accept(i, o));
+                if crossed.outcome != Outcome::Ready {
+                    return crossed;
+                }
+                let peer = crate::support::lent(i.peer_buf, o.peer_written as usize);
+                *self.accepted.lock().unwrap() = Some((o.conn, peer));
+                crate::framer::Crossed {
+                    outcome: self.accept.unwrap_or(Outcome::Ready),
+                    error: Some(b"scripted accept result".to_vec()),
+                }
+            }
+            Carry::Cancel(i, o) => {
+                self.cancelled.fetch_add(1, Ordering::SeqCst);
+                self.inner.carry(side, resume, Carry::Cancel(i, o))
+            }
+            other => self.inner.carry(side, resume, other),
+        }
+    }
+}
+
+fn lifecycle_via(door: &Arc<LifecycleDoor>) -> Via {
+    Via {
+        door: Arc::clone(door) as Arc<dyn FramerDoor>,
+        io: crate::hostio::process(),
+    }
+}
+
+#[test]
+fn a_failed_or_pending_listen_retires_the_socket_it_made() {
+    use busbar_contract::io_host::IoHost;
+    worker().block_on(async {
+        for outcome in [
+            Outcome::Failed,
+            Outcome::Refused,
+            Outcome::Fault,
+            Outcome::Pending,
+        ] {
+            let door = Arc::new(LifecycleDoor::new(Some(outcome), None));
+            let via = lifecycle_via(&door);
+            let result = Listening::bind_stream(Some(&via), "127.0.0.1:0", AcceptLimits::default());
+            let (handle, address) = door.bound.lock().unwrap().clone().unwrap();
+            let retired = via.io.ends(crate::support::OWNER, handle).is_err();
+            let stopped = Client::connect(&address).await.is_err();
+            // Reclaim the pre-fix leak before asserting.
+            via.io.retire_listener(handle);
+            assert!(result.is_err(), "the carrier did not finish listening");
+            assert!(
+                retired && stopped,
+                "a failed {outcome:?} bind left its socket live"
+            );
+            assert_eq!(
+                door.cancelled.load(Ordering::SeqCst),
+                usize::from(outcome == Outcome::Pending)
+            );
+        }
+    });
+}
+
+#[test]
+fn a_completed_accept_transfers_its_handle_and_withdraws_its_ticket_record() {
+    use busbar_contract::io_host::IoHost;
+    worker().block_on(async {
+        for pending in [false, true] {
+            let door = Arc::new(LifecycleDoor::new(
+                None,
+                pending.then_some(Outcome::Pending),
+            ));
+            let via = lifecycle_via(&door);
+            let mut listening = Listening::bind(
+                None,
+                &via,
+                "127.0.0.1:0",
+                None,
+                Vec::new(),
+                AcceptLimits::default(),
+            )
+            .unwrap();
+            let ticket = match &listening.source {
+                Source::Carrier { side, .. } => side.ticket(),
+                Source::Host(_) => unreachable!(),
+            };
+            let client = Client::connect(listening.local_addr()).await.unwrap();
+            if pending {
+                let waker = std::task::Waker::noop();
+                let mut cx = Context::from_waker(waker);
+                while door.accepted.lock().unwrap().is_none() {
+                    assert!(listening.poll_accept(&mut cx).is_pending());
+                    tokio::task::yield_now().await;
+                }
+            }
+            let accepted = accept(&mut listening).await;
+            let handle = door.accepted.lock().unwrap().as_ref().unwrap().0;
+            let withdrawn = via.io.made(ticket).is_none();
+            let _ = via.io.settle(ticket);
+            drop(listening);
+            let transferred = via.io.ends(crate::support::OWNER, handle).is_ok();
+            accepted.conn.close();
+            drop(client);
+            assert!(
+                withdrawn,
+                "a terminal accept left its ticket's made handle behind"
+            );
+            assert!(
+                transferred,
+                "dropping the listener closed an accepted connection"
+            );
+        }
+    });
+}
+
+#[test]
+fn dropping_a_listener_cancels_and_retires_a_partly_made_accept() {
+    use busbar_contract::io_host::IoHost;
+    worker().block_on(async {
+        let door = Arc::new(LifecycleDoor::new(None, Some(Outcome::Pending)));
+        let via = lifecycle_via(&door);
+        let mut listening = Listening::bind(
+            None,
+            &via,
+            "127.0.0.1:0",
+            None,
+            Vec::new(),
+            AcceptLimits::default(),
+        )
+        .unwrap();
+        let ticket = match &listening.source {
+            Source::Carrier { side, .. } => side.ticket(),
+            Source::Host(_) => unreachable!(),
+        };
+        let client = Client::connect(listening.local_addr()).await.unwrap();
+        let waker = std::task::Waker::noop();
+        let mut cx = Context::from_waker(waker);
+        while door.accepted.lock().unwrap().is_none() {
+            assert!(listening.poll_accept(&mut cx).is_pending());
+            tokio::task::yield_now().await;
+        }
+        let handle = door.accepted.lock().unwrap().as_ref().unwrap().0;
+        drop(listening);
+        let withdrawn = via.io.made(ticket).is_none();
+        let retired = via.io.ends(crate::support::OWNER, handle).is_err();
+        let _ = via.io.settle(ticket);
+        let _ = via.io.close(crate::support::OWNER, handle);
+        drop(client);
+        assert!(
+            withdrawn && retired,
+            "a cancelled accept retained its record or socket"
+        );
+        assert_eq!(door.cancelled.load(Ordering::SeqCst), 1);
+    });
+}
+
+#[test]
+fn a_failed_accept_retires_its_untransferred_socket() {
+    use busbar_contract::io_host::IoHost;
+    worker().block_on(async {
+        let door = Arc::new(LifecycleDoor::new(None, Some(Outcome::Refused)));
+        let via = lifecycle_via(&door);
+        let mut listening = Listening::bind(
+            None,
+            &via,
+            "127.0.0.1:0",
+            None,
+            Vec::new(),
+            AcceptLimits::default(),
+        )
+        .unwrap();
+        let client = Client::connect(listening.local_addr()).await.unwrap();
+        let Source::Carrier { listener, side, .. } = &mut listening.source else {
+            unreachable!()
+        };
+        let ticket = side.ticket();
+        let result = futures::future::poll_fn(|cx| accept_through(&via, *listener, side, cx)).await;
+        let handle = door.accepted.lock().unwrap().as_ref().unwrap().0;
+        let withdrawn = via.io.made(ticket).is_none();
+        let retired = via.io.ends(crate::support::OWNER, handle).is_err();
+        let _ = via.io.settle(ticket);
+        let _ = via.io.close(crate::support::OWNER, handle);
+        drop((listening, client));
+        assert!(result.is_err());
+        assert!(
+            withdrawn && retired,
+            "a failed accept retained its record or socket"
+        );
+    });
+}
+
 async fn accept(l: &mut Listening) -> Accepted {
     futures::future::poll_fn(|cx| l.poll_accept(cx))
         .await

@@ -193,9 +193,9 @@ pub(crate) fn listen_through(via: &Via, bind: &str) -> std::io::Result<Bound> {
     i.addr_cap = addr.len();
     let mut o: ListenOut = blank_out();
     let c = side.cross(via.door.as_ref(), Carry::Listen(&mut i, &mut o), None);
-    let (made, _) = via.io.settle(side.ticket());
     match c {
         Some(c) if c.outcome == Outcome::Ready => {
+            let (made, _) = via.io.settle(side.ticket());
             let n = usize::try_from(o.addr_written).unwrap_or(0).min(addr.len());
             let Ok(local) = String::from_utf8_lossy(&addr[..n]).parse::<SocketAddr>() else {
                 if let Some(h) = made {
@@ -205,8 +205,17 @@ pub(crate) fn listen_through(via: &Via, bind: &str) -> std::io::Result<Bound> {
             };
             Ok((o.listener, side, made, local))
         }
-        Some(c) => Err(other(text(&c))),
-        None => Err(other("a listen may not pend".into())),
+        failed => {
+            side.cancel(via.door.as_ref());
+            let (made, _) = via.io.settle(side.ticket());
+            if let Some(h) = made {
+                via.io.retire_listener(h);
+            }
+            Err(other(failed.map_or_else(
+                || "a listen may not pend".into(),
+                |c| text(&c),
+            )))
+        }
     }
 }
 
@@ -410,12 +419,17 @@ impl Listening {
 impl Drop for Listening {
     fn drop(&mut self) {
         if let Source::Carrier {
-            via,
-            bound: Some(h),
-            ..
-        } = &self.source
+            via, side, bound, ..
+        } = &mut self.source
         {
-            via.io.retire_listener(*h);
+            side.cancel(via.door.as_ref());
+            let (made, _) = via.io.settle(side.ticket());
+            if let Some(h) = made {
+                via.io.retire_handle(h);
+            }
+            if let Some(h) = bound {
+                via.io.retire_listener(*h);
+            }
         }
     }
 }
@@ -463,13 +477,19 @@ pub(crate) fn accept_through(
     let Some(c) = side.cross(via.door.as_ref(), Carry::Accept(&mut i, &mut o), Some(cx)) else {
         return Poll::Pending;
     };
+    let (handle, _) = via.io.settle(side.ticket());
     if c.outcome != Outcome::Ready {
+        if let Some(h) = handle {
+            via.io.retire_handle(h);
+        }
         return Poll::Ready(Err(text(&c)));
     }
-    let handle = via.io.made(side.ticket());
     let Some(carried) =
         Carried::accepted(Arc::clone(&via.door), Arc::clone(&via.io), o.conn, handle)
     else {
+        if let Some(h) = handle {
+            via.io.retire_handle(h);
+        }
         return Poll::Ready(Err("the transport is no carrier the host drives".into()));
     };
     let n = usize::try_from(o.peer_written).unwrap_or(0).min(peer.len());

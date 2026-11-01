@@ -386,6 +386,13 @@ impl HostIo {
         }
     }
 
+    /// Retire a handle made for an operation that did not transfer it to a connection.
+    pub(crate) fn retire_handle(&self, id: u64) {
+        if let Some(e) = self.handles.release(id, |_| true) {
+            ended(&e);
+        }
+    }
+
     fn release(&self, owner: u64, id: u64) -> IoResult<Arc<Entry>> {
         self.handles
             .release(id, |e| e.owner == owner)
