@@ -851,7 +851,7 @@ pub fn send_and_ack(
 }
 
 /// What an op parks its exchange on: its instance, whatever the instance state's type.
-trait Parks {
+pub(crate) trait Parks {
     fn ticket(&self) -> Ticket;
     fn park(&self, exchange: Exchange);
     fn resume(&self) -> Option<Box<Exchange>>;
@@ -923,6 +923,11 @@ impl<'a> Op<'a> {
         host: Option<&'a Host>,
     ) -> Self {
         Self { on: instance, host }
+    }
+
+    /// A kind SDK's composite continuation, still owned and cleaned up by its safe instance.
+    pub(crate) fn over(on: &'a dyn Parks, host: Option<&'a Host>) -> Self {
+        Self { on, host }
     }
 
     /// The host tables the op runs over (`None`: the instance was handed none): what an op that
