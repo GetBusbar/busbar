@@ -1561,6 +1561,18 @@ impl Framing {
         Ok((f, y.unwrap_or_default()))
     }
 
+    /// Input still held by the framer, plus pieces copied off earlier yields of operations that
+    /// later parked. Neither has yet been handed to the connection's inbox.
+    pub(crate) fn retained_input(&self) -> usize {
+        let plugin = self.context.as_ref().map_or(0, |scope| {
+            usize::try_from(scope.retained_input()).unwrap_or(usize::MAX)
+        });
+        self.parked
+            .iter()
+            .flat_map(|p| &p.yielded.pieces)
+            .fold(plugin, |n, p| n.saturating_add(p.bytes.len()))
+    }
+
     /// Whether any ticketed op is parked, waiting for its ticket's wake.
     #[must_use]
     pub fn parked(&self) -> bool {

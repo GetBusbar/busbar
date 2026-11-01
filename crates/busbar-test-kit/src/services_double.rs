@@ -35,6 +35,16 @@ fn refused() -> Ran {
 /// override only what the test serves. Each method is the [`HostServices`] method of the same
 /// name; the blanket impl forwards one to the other.
 pub trait ServicesDouble: Send + Sync {
+    /// Optional read-only main-extension host inspection. Unserved: Unsupported.
+    fn inspect(
+        &self,
+        _caller: &Caller,
+        _unit: Option<u64>,
+        _query: &busbar_contract::abi::mechanism::inspection::InspectionQuery,
+    ) -> busbar_contract::abi::mechanism::inspection::InspectionResult {
+        Err(busbar_contract::abi::mechanism::inspection::InspectionError::Unsupported)
+    }
+
     /// `clock.now`. Unserved: the zero reading.
     fn now(&self) -> Reading {
         Reading {
@@ -288,6 +298,15 @@ impl<T> std::ops::Deref for Double<T> {
 }
 
 impl<T: ServicesDouble> HostServices for Double<T> {
+    fn inspect(
+        &self,
+        caller: &Caller,
+        unit: Option<u64>,
+        query: &busbar_contract::abi::mechanism::inspection::InspectionQuery,
+    ) -> busbar_contract::abi::mechanism::inspection::InspectionResult {
+        ServicesDouble::inspect(&self.0, caller, unit, query)
+    }
+
     fn now(&self) -> Reading {
         ServicesDouble::now(&self.0)
     }

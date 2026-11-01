@@ -45,6 +45,7 @@ pub struct FramingContext {
     connection: u64,
     leg: u64,
     state: Mutex<State>,
+    retained_input: AtomicU64,
     host: Option<Weak<dyn AuthHandleHost>>,
     opening: Option<StreamPolicy>,
     inherited: Option<SessionTransfer>,
@@ -99,6 +100,7 @@ impl FramingContext {
             connection: if connection == 0 { leg } else { connection },
             leg,
             state: Mutex::new(State::Opening(None)),
+            retained_input: AtomicU64::new(0),
             host,
             opening,
             inherited: None,
@@ -151,6 +153,7 @@ impl FramingContext {
             connection: source.connection(),
             leg,
             state: Mutex::new(State::Opening(None)),
+            retained_input: AtomicU64::new(0),
             host,
             opening: None,
             inherited,
@@ -336,6 +339,14 @@ impl Drop for FramingContext {
 }
 
 impl FramingScope for FramingContext {
+    fn retained_input(&self) -> u64 {
+        self.retained_input.load(Ordering::Acquire)
+    }
+
+    fn set_retained_input(&self, bytes: u64) {
+        self.retained_input.store(bytes, Ordering::Release);
+    }
+
     fn owner(&self) -> u64 {
         self.owner()
     }

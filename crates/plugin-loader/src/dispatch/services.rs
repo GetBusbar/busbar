@@ -173,6 +173,8 @@ struct Held {
     /// (a new op or tick on the ticket, or its recycle) ends it.
     epoch: u64,
     entries: HashMap<Issue, (Bound, Entry)>,
+    /// Inspection receipts share this epoch, but never a completion-handle namespace.
+    inspections: HashMap<usize, inspection_store::Kept>,
 }
 
 /// What one result is kept under on its ticket: the CALLER whose context issued the handle (THE
@@ -248,14 +250,25 @@ impl ServiceStore {
     /// Forget every result under `ticket` (it was recycled, a driver ticket's tick started, or a
     /// new op started on it), ending its epoch; how many there were.
     pub(crate) fn forget(&self, ticket: Ticket) -> usize {
-        self.lock(ticket)
-            .remove(&ticket)
-            .map_or(0, |held| held.entries.len())
+        let held = { self.lock(ticket).remove(&ticket) };
+        held.map_or(0, |held| held.entries.len())
     }
 
     /// Forget every result of worker `worker` (it was replaced).
     pub(crate) fn forget_worker(&self, worker: u32) {
-        self.shard(worker).retain(|t, _| decode(t.slot).0 != worker);
+        let removed = {
+            let mut shard = self.shard(worker);
+            let tickets: Vec<_> = shard
+                .keys()
+                .filter(|t| decode(t.slot).0 == worker)
+                .copied()
+                .collect();
+            tickets
+                .into_iter()
+                .filter_map(|ticket| shard.remove(&ticket))
+                .collect::<Vec<_>>()
+        };
+        drop(removed);
     }
 
     /// TEST ONLY: a READY result kept under `ticket`'s handle `seq`, as a service an op on the
@@ -268,6 +281,7 @@ impl ServiceStore {
             .or_insert_with(|| Held {
                 epoch,
                 entries: HashMap::new(),
+                inspections: HashMap::new(),
             })
             .entries
             .insert(
@@ -594,6 +608,7 @@ fn serve_kept(
         let held = map.entry(h.ticket).or_insert_with(|| Held {
             epoch: store.epochs.fetch_add(1, Ordering::Relaxed) + 1,
             entries: HashMap::new(),
+            inspections: HashMap::new(),
         });
         let epoch = held.epoch;
         match held.entries.entry(issue) {
@@ -2520,3 +2535,6 @@ service! {
         }
     }
 }
+
+#[path = "inspection_store.rs"]
+mod inspection_store;

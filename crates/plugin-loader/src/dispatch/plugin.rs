@@ -295,6 +295,8 @@ pub(crate) struct Crossed {
     pub(crate) outcome: Outcome,
     pub(crate) error: Option<Vec<u8>>,
     pub(crate) lease: u64,
+    /// A copied inspection request owns this PENDING answer's intermediate lease.
+    pub(crate) inspection: bool,
     pub(crate) wake_at_ns: u64,
     /// A FAILED answer the kind calls short ([`Kind::short`]).
     pub(crate) short: bool,
@@ -313,6 +315,7 @@ impl Crossed {
             outcome,
             error: None,
             lease: 0,
+            inspection: false,
             wake_at_ns: 0,
             short: false,
             disposition: None,
@@ -1166,11 +1169,11 @@ impl Instance {
         }
     }
 
-    /// RELEASE A LEASE NO CALLER WAS HANDED (export ABI defect 6): the plugin named `lease` on an
-    /// answer that was not READY, so no caller reads under it and none releases it; the host does,
+    /// RELEASE A LEASE NO CALLER WAS HANDED: an unhanded outcome's lease, including a copied
+    /// inspection on an ordinary PENDING or DRIVE. No caller reads it; the host releases it,
     /// ticket-less, once the crossing that named it is over. An instance no longer open (or
     /// faulted) is not crossed again: what it held goes with it.
-    fn release_unread(&self, lease: u64) {
+    pub(crate) fn release_unread(&self, lease: u64) {
         if !self.is_open() || self.faulted.load(Ordering::Acquire) {
             return;
         }
@@ -1417,6 +1420,13 @@ impl Instance {
         let unit = (self.unit_of)(s, input.cast_const(), in_size);
         let _unit = super::services::serving(unit);
         let _ticket = super::services::crossing(ticket);
+        // The copied receipt uses the existing epoch; its composed input loan lasts this call.
+        // SAFETY: this crossing owns the host input frame and its original extension blob.
+        let _inspection_input =
+            match unsafe { super::inspection::prepare(self.wake, s, input, unit) } {
+                Ok(loan) => loan,
+                Err(()) => return Crossed::host(Outcome::Fault),
+            };
         // The deadline of the op this crossing is, for the host services it calls (`auth.call`).
         // SAFETY: the host's own `in`, led by its head, live for the crossing.
         let _deadline = super::services::op_deadline(unsafe { &*input });
@@ -1509,6 +1519,22 @@ impl Instance {
                 return Crossed::host(Outcome::Fault).unread(head.lease);
             }
         }
+        // SAFETY: the validated answer is still under its lease. Inspection requests are
+        // copied before release; no plugin callback runs inside the host's receipt locks.
+        let inspection_ticket = if s == slot::CANCEL {
+            // SAFETY: the host's validated cancel frame starts with CancelIn.
+            unsafe {
+                (*input.cast::<busbar_contract::abi::mechanism::lifecycle::CancelIn>()).ticket
+            }
+        } else {
+            ticket
+        };
+        let inspection = match unsafe {
+            super::inspection::answer(self.wake, s, inspection_ticket, unit, outcome, &head)
+        } {
+            Ok(requested) => requested,
+            Err(()) => return Crossed::host(Outcome::Fault).unread(head.lease),
+        };
         if self.kind == KindCode::Transport {
             use busbar_contract::abi::mechanism::{call::BLOB_OCTETS, extensions};
             use busbar_contract::abi::transport::{guest_policy, FramerOut, YIELD_MORE};
@@ -1523,6 +1549,22 @@ impl Instance {
             else {
                 return Crossed::host(Outcome::Fault).unread(head.lease);
             };
+            match busbar_contract::abi::sdk::transport::receive::decode(bytes) {
+                Ok(Some(retained)) => {
+                    if head.extensions.fmt != BLOB_OCTETS
+                        || !matches!(outcome, Outcome::Ready | Outcome::Pending)
+                        || (out_size as usize) < size_of::<FramerOut>()
+                    {
+                        return Crossed::host(Outcome::Fault).unread(head.lease);
+                    }
+                    let Some(scope) = &scope else {
+                        return Crossed::host(Outcome::Fault).unread(head.lease);
+                    };
+                    scope.set_retained_input(retained);
+                }
+                Ok(None) => {}
+                Err(_) => return Crossed::host(Outcome::Fault).unread(head.lease),
+            }
             if let Some(value) = extensions::get(bytes, guest_policy::EXT_GUEST_OPEN) {
                 if head.extensions.fmt != BLOB_OCTETS
                     || outcome != Outcome::Ready
@@ -1619,6 +1661,7 @@ impl Instance {
             outcome,
             error,
             lease: if handed { head.lease } else { 0 },
+            inspection,
             unread: if handed { 0 } else { head.lease },
             wake_at_ns: if outcome == Outcome::Pending {
                 head.wake_at_ns

@@ -575,6 +575,19 @@ pub fn far_end(at: &'static str, answer: Answer) {
     });
 }
 
+/// Serve an already bound listener over the suite's TLS identity. Each call starts its own far
+/// end; unlike [`far_end`], it does not share the process's first address. Binding loopback port
+/// zero before this call keeps ownership continuous while a test learns its endpoint.
+/// The server thread owns the listener for the process's lifetime, as with [`far_end`].
+///
+/// # Errors
+/// The listener's local address cannot be read.
+pub fn far_end_on(listener: TcpListener, answer: Answer) -> std::io::Result<std::net::SocketAddr> {
+    let address = listener.local_addr()?;
+    serve(listener, answer);
+    Ok(address)
+}
+
 /// Serve `listener` over TLS with a leaf the test CA signed, answering each connection by `answer`.
 fn serve(listener: TcpListener, answer: Answer) {
     let tls = ServerTls::new(&[ca().leaf_der.clone()], &ca().key_der, None, &[])

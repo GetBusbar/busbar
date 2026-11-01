@@ -49,6 +49,8 @@ fn conforming() -> Vec<Step> {
         step("facts", "Secret secret-test max_inflight=1".into()),
         step("validate bad #0", "Failed lease=false no source".into()),
         step("validate bad #1", "Failed lease=false bad prefix".into()),
+        step("open bad #0", "Failed lease=false no source".into()),
+        step("open bad #1", "Failed lease=false bad prefix".into()),
         step(
             "resolve unopened",
             format!(
@@ -84,6 +86,9 @@ fn conforming() -> Vec<Step> {
         step("release", "Refused lease=false ".into()),
         step("refresh bad", "Failed lease=false no source".into()),
         step("resolve after a refused refresh", hit()),
+        step("refresh before bad #1", "Ready lease=false ".into()),
+        step("refresh bad #1", "Failed lease=false bad prefix".into()),
+        step("resolve after a refused refresh #1", hit()),
         step("tick", "Ready lease=false  next=0".into()),
         step("refresh", "Ready lease=false ".into()),
         step("resolve after refresh", hit()),

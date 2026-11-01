@@ -369,6 +369,7 @@ fn secret_script(lib: &Path, stated: &[u8], inputs: &serde_json::Value) {
 
     for b in &bad {
         let v = validate(&p, b.as_bytes());
+        heard("validate, bad", &v);
         assert_eq!(v.outcome, Outcome::Failed, "{}", line("validate, bad", &v));
         assert!(
             v.error.as_deref().is_some_and(|e| !e.is_empty()),
@@ -378,9 +379,12 @@ fn secret_script(lib: &Path, stated: &[u8], inputs: &serde_json::Value) {
     }
     let v = validate(&p, settings);
     assert_eq!(v.outcome, Outcome::Ready, "{}", line("validate", &v));
-    let o = open(&p, bad[0].as_bytes());
-    assert_eq!(o.outcome, Outcome::Failed, "{}", line("open, bad", &o));
-    assert!(!p.is_open(), "a refused open leaves no instance");
+    for b in &bad {
+        let o = open(&p, b.as_bytes());
+        heard("open, bad", &o);
+        assert_eq!(o.outcome, Outcome::Failed, "{}", line("open, bad", &o));
+        assert!(!p.is_open(), "a refused open leaves no instance");
+    }
     let o = open(&p, settings);
     assert_eq!(o.outcome, Outcome::Ready, "{}", line("open", &o));
     assert!(p.is_open());
@@ -513,25 +517,26 @@ fn secret_script(lib: &Path, stated: &[u8], inputs: &serde_json::Value) {
     let mut tk: Frame<TickIn, TickOut> = Frame::new(input(), output());
     let t = p.call(life::TICK, &mut tk);
     assert_eq!(t.outcome, Outcome::Ready, "{}", line("tick", &t));
-    let r = refresh(&p, bad[0].as_bytes());
-    heard("refresh, bad", &r);
-    assert_eq!(r.outcome, Outcome::Failed, "{}", line("refresh, bad", &r));
-    // The refused refresh kept the instance as it was: the known name still resolves, BEFORE the
-    // good refresh re-reads anything.
-    let r = resolve(&p, known);
-    heard("resolve after a refused refresh", &r.c);
-    assert_eq!(
-        r.c.outcome,
-        Outcome::Ready,
-        "{}",
-        line("resolve after a refused refresh", &r.c)
-    );
-    assert_eq!(r.kind, secret::ERROR_KIND_UNSET);
-    assert_eq!(
-        r.got, material,
-        "a refused refresh keeps the known secret's material"
-    );
-    assert_eq!(r.c.lease, 0);
+    for b in &bad {
+        let r = refresh(&p, b.as_bytes());
+        heard("refresh, bad", &r);
+        assert_eq!(r.outcome, Outcome::Failed, "{}", line("refresh, bad", &r));
+        // Read before any good refresh can restore material lost by the refusal.
+        let r = resolve(&p, known);
+        heard("resolve after a refused refresh", &r.c);
+        assert_eq!(
+            r.c.outcome,
+            Outcome::Ready,
+            "{}",
+            line("resolve after a refused refresh", &r.c)
+        );
+        assert_eq!(r.kind, secret::ERROR_KIND_UNSET);
+        assert_eq!(
+            r.got, material,
+            "a refused refresh keeps the known secret's material"
+        );
+        assert_eq!(r.c.lease, 0);
+    }
     let r = refresh(&p, settings);
     assert_eq!(r.outcome, Outcome::Ready, "{}", line("refresh", &r));
     // After the good refresh: the known name resolves.

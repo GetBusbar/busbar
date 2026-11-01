@@ -641,6 +641,57 @@ impl<'a, T: AbiOut> Out<'a, T> {
         unsafe { &mut *ptr::from_mut::<T>(self.out).cast::<OutHead>() }
     }
 
+    /// Append one negotiated inspection request to the existing main reply extensions, holding
+    /// every copied byte under this answer's lease. A second different query returns Busy and
+    /// preserves the first request and all unrelated extension bytes.
+    pub fn inspection_request(
+        &mut self,
+        leases: &Leases,
+        request: &crate::abi::mechanism::inspection::InspectionRequest,
+    ) -> Result<(), crate::abi::mechanism::inspection::InspectionError> {
+        use crate::abi::mechanism::inspection::{self, InspectionError};
+        let ext = self.head().extensions;
+        if ext.len > inspection::MAX_BYTES
+            || (ext.len != 0
+                && (ext.ptr.is_null() || ext.fmt != crate::abi::mechanism::call::BLOB_OCTETS))
+        {
+            return Err(InspectionError::Invalid);
+        }
+        let existing = if ext.len == 0 {
+            &[][..]
+        } else {
+            // SAFETY: only SDK writers can name this output field; their owned/lent bytes are
+            // still live for this call, and the bounded nonempty range was checked above.
+            unsafe { std::slice::from_raw_parts(ext.ptr, ext.len) }
+        };
+        if let Some(held) = inspection::read_request(existing)? {
+            return if held == *request {
+                Ok(())
+            } else {
+                Err(InspectionError::Busy)
+            };
+        }
+        if !inspection::query_fits(&request.query, existing.len()) {
+            return Err(InspectionError::Invalid);
+        }
+        let bytes = inspection::append_request(existing, request)?;
+        self.held_by(&leases.alive);
+        let mut blob = if ext.flags & crate::abi::mechanism::call::BLOB_SECRET != 0 {
+            leases.secret_blob(self.head(), bytes, crate::abi::mechanism::call::BLOB_OCTETS)
+        } else {
+            leases.blob(self.head(), bytes, crate::abi::mechanism::call::BLOB_OCTETS)
+        };
+        blob.flags = ext.flags;
+        self.put(
+            |out| {
+                // SAFETY: AbiOut starts with OutHead; this selects a field inside that head.
+                unsafe { &(*ptr::from_ref(out).cast::<OutHead>()).extensions }
+            },
+            blob,
+        );
+        Ok(())
+    }
+
     /// For a PENDING answer: resume this op no later than `mono_ns` on the host's monotonic clock
     /// (`clock.now`'s `mono_ns`) even if nothing wakes it — the host's timer, never earlier than
     /// `mono_ns` (a wake may still resume it sooner: see `abi::sdk::conn::not_before`).

@@ -53,6 +53,7 @@ pub mod framing_context;
 pub mod handle;
 pub(crate) mod held;
 pub mod inline;
+pub(crate) mod inspection;
 pub mod io_slots;
 pub mod kinds;
 pub(crate) mod lifecycle;

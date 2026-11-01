@@ -21,8 +21,8 @@
 //!
 //! `malformed` may be one input (the original key) or a list; every entry is judged INVALID, and
 //! the suite adds `{"name": 5}` (a reference whose settings are the wrong shape) to the list. A
-//! refresh over `bad_settings[0]` is recorded; if refused, it leaves the instance serving its last
-//! settings: a resolve after a refused refresh still answers the known material. `bad_references` is
+//! Every bad setting is also tried at open and refresh. A refused refresh leaves the instance
+//! serving its last settings: a resolve after each refused refresh still answers the known material. `bad_references` is
 //! optional and adds separately labelled malformed references.
 //!
 //! Every step is one ticket-less crossing of the secret table, but those the HOST answers without
@@ -239,6 +239,9 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     }
     // The host refuses an op on an unopened instance before the crossing (`Instance::refuse`).
     r.line("resolve unopened", 0, || resolve(&p, &d, &known, &material));
+    for (i, b) in bad.iter().enumerate() {
+        r.line(&format!("open bad #{i}"), 1, || called(&open(&p, b)));
+    }
     opened(&mut r, (s, &p, &d), &settings, &asis);
     // The host refuses a second `open` of an open instance before the crossing.
     r.line("open again", 0, || called(&open(&p, &settings)));
@@ -268,12 +271,28 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     }
     // No lease was granted: a release of one is the plugin's refusal.
     r.line("release", 1, || called(&release(&p, 1)));
-    // A refresh over the bad settings, then a resolve BEFORE the good refresh: a refused refresh
-    // keeps the instance as it was, so the known name still resolves ([`contract`]).
-    r.line("refresh bad", 1, || called(&refresh(&p, &bad[0])));
-    r.line("resolve after a refused refresh", 1, || {
-        resolve(&p, &d, &known, &material)
-    });
+    for (i, b) in bad.iter().enumerate() {
+        if i > 0 {
+            r.judged(
+                &format!("refresh before bad #{i}"),
+                1,
+                Want::Starts("Ready "),
+                || called(&refresh(&p, &settings)),
+            );
+        }
+        let label = if i == 0 {
+            "refresh bad".to_string()
+        } else {
+            format!("refresh bad #{i}")
+        };
+        r.line(&label, 1, || called(&refresh(&p, b)));
+        let after = if i == 0 {
+            "resolve after a refused refresh".to_string()
+        } else {
+            format!("resolve after a refused refresh #{i}")
+        };
+        r.line(&after, 1, || resolve(&p, &d, &known, &material));
+    }
     refreshed(&mut r, &p, None, &settings, &asis);
     r.line("resolve after refresh", 1, || {
         resolve(&p, &d, &known, &material)
@@ -318,13 +337,20 @@ fn contract(fold: &Fold) {
             at(label)
         );
     }
-    if at("refresh bad").starts_with("Failed ") {
-        let after = at("resolve after a refused refresh");
-        assert!(
-            after.starts_with("Ready lease=false ") && after.ends_with(&known),
-            "a refused refresh keeps the instance as it was, so the known name still resolves: \
-             resolve after a refused refresh: {after}"
-        );
+    for step in fold.iter().filter(|s| s.label.starts_with("refresh bad")) {
+        if step.answer.starts_with("Failed ") {
+            let suffix = step
+                .label
+                .strip_prefix("refresh bad")
+                .expect("matched prefix");
+            let label = format!("resolve after a refused refresh{suffix}");
+            let after = at(&label);
+            assert!(
+                after.starts_with("Ready lease=false ") && after.ends_with(&known),
+                "a refused refresh keeps the instance as it was, so the known name still resolves: \
+                 {label}: {after}"
+            );
+        }
     }
     let short = format!(
         "kind={} material=none secret_flag=false in_host_buffer=false needed=true",
@@ -375,6 +401,16 @@ fn contract(fold: &Fold) {
                 && refused.len() > "Failed lease=false ".len(),
             "a refused validate names why: {}: {refused}",
             s.label
+        );
+        let suffix = s
+            .label
+            .strip_prefix("validate bad #")
+            .expect("matched prefix");
+        let label = format!("open bad #{suffix}");
+        let opened = at(&label);
+        assert!(
+            opened.starts_with("Failed lease=false ") && opened.len() > "Failed lease=false ".len(),
+            "a refused open names why: {label}: {opened}"
         );
     }
     // Before `open` the HOST answers (`Instance::refuse`: REFUSED; FAULT for a faulted or closed

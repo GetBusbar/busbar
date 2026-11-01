@@ -39,6 +39,8 @@ struct Cycle {
     fresh: HashSet<u32>,
     /// The handles whose last call answered PENDING: one per held exchange.
     pending: HashSet<u32>,
+    /// One inspection per issuing instance, outside the completion-handle namespace.
+    inspections: HashSet<usize>,
 }
 
 /// The driver tickets' cycles, by ticket.
@@ -124,14 +126,29 @@ impl Held {
     pub(crate) fn drained(&self, driver: Ticket) {
         if let Some(c) = self.lock().get_mut(&driver) {
             c.pending.clear();
+            c.inspections.clear();
         }
     }
 
     /// How many exchanges are held on `driver`.
     pub(crate) fn held(&self, driver: Ticket) -> u32 {
-        self.lock()
-            .get(&driver)
-            .map_or(0, |c| u32::try_from(c.pending.len()).unwrap_or(u32::MAX))
+        self.lock().get(&driver).map_or(0, |c| {
+            u32::try_from(c.pending.len().saturating_add(c.inspections.len())).unwrap_or(u32::MAX)
+        })
+    }
+
+    /// Count an inspection while its receipt awaits the driver's next crossing.
+    pub(crate) fn inspection(&self, ticket: Ticket, caller: usize, pending: bool) {
+        if !self.tracks(ticket) {
+            return;
+        }
+        if let Some(c) = self.lock().get_mut(&ticket) {
+            if pending {
+                c.inspections.insert(caller);
+            } else {
+                c.inspections.remove(&caller);
+            }
+        }
     }
 
     /// A call under `h` is about to be served: `false` when it reuses a handle another exchange

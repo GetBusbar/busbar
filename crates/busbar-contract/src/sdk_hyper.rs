@@ -342,6 +342,13 @@ macro_rules! hyper_io {
                     p.eof |= end;
                 }
 
+                /// Carrier input not yet consumed by the protocol machine. Report after driving
+                /// it so the host can include this queue in its existing receive backpressure.
+                #[must_use]
+                pub fn pending_input(&self) -> usize {
+                    self.pipe.lock().expect("pipe").rx.len()
+                }
+
                 /// Take up to `cap` wire bytes owed to the far side.
                 #[must_use]
                 pub fn take_wire(&self, cap: usize) -> Vec<u8> {

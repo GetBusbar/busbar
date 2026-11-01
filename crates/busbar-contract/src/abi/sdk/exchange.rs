@@ -895,6 +895,16 @@ impl From<ConnFailure> for OpFailure {
     }
 }
 
+/// Retained inspection state for one outer operation or kept driver cycle. Keep it across
+/// PENDING/RESUME (and TICK-to-DRIVE); dropping it on cancellation discards plugin-side custody.
+/// It does not park into the connection exchange's continuation. IDs never wrap within an epoch.
+#[derive(Debug, Default)]
+pub struct Inspection {
+    pending: Option<crate::abi::mechanism::inspection::InspectionRequest>,
+    completed: Option<crate::abi::mechanism::inspection::InspectionReceipt>,
+    last: Option<(crate::abi::mechanism::ticket::Ticket, u64, u64)>,
+}
+
 /// ONE OP'S EXCHANGE ON ITS TICKET (THE DESIGN, the plugin ABI: every call is Ready or
 /// Pending(wake); the replay rule of `abi::sdk::conn`), for a kind SDK whose author answers
 /// [`Poll`]: [`Op::exchange`] resumes the exchange the op's last PENDING entry parked, or starts
@@ -936,6 +946,109 @@ impl<'a> Op<'a> {
     #[must_use]
     pub fn ticket(&self) -> Ticket {
         self.on.ticket()
+    }
+
+    /// Read one negotiated generic host observation. The first supported entry appends a leased
+    /// request and returns Pending. Retain `state` and re-enter on the same op's RESUME or the
+    /// driver's DRIVE. An older host without the capability returns Unsupported immediately.
+    /// The host enforces the copied receipt's epoch, caller and unit; this helper verifies its
+    /// complete ticket, epoch, ID and query before returning owned values.
+    pub fn inspect<I: super::door::AbiIn, O: super::door::AbiOut>(
+        &self,
+        input: super::Lent<'_, I>,
+        out: &mut super::Out<'_, O>,
+        leases: &super::life::Leases,
+        state: &mut Inspection,
+        id: u64,
+        query: &crate::abi::mechanism::inspection::InspectionQuery,
+    ) -> Poll<crate::abi::mechanism::inspection::InspectionResult> {
+        use crate::abi::mechanism::call::{InHead, FLAG_RESUME};
+        use crate::abi::mechanism::inspection::{self, InspectionError, InspectionRequest};
+        // SAFETY: AbiIn starts with InHead, and Lent's host-owned pointers live for this entry.
+        let head = unsafe { &*std::ptr::from_ref(input.get()).cast::<InHead>() };
+        // SAFETY: the extensions are part of the host's lent head, not plugin-provided memory.
+        let ext = unsafe { super::Lent::new(&head.extensions) }.bytes();
+        let capability = match inspection::read_capability(ext) {
+            Ok(Some(capability)) => capability,
+            Ok(None) => return Poll::Ready(Err(InspectionError::Unsupported)),
+            Err(error) => return Poll::Ready(Err(error)),
+        };
+        if head.ticket != self.ticket() || head.ticket.is_none() {
+            return Poll::Ready(Err(InspectionError::Unticketed));
+        }
+        if !inspection::query_fits(query, 0) {
+            return Poll::Ready(Err(InspectionError::Invalid));
+        }
+        let request = InspectionRequest {
+            ticket: head.ticket,
+            epoch: capability.epoch,
+            id,
+            query: query.clone(),
+        };
+        if let Err(error) = inspection::encode_request(&request) {
+            return Poll::Ready(Err(error));
+        }
+        if let Some(completed) = state.completed.as_ref().filter(|r| {
+            r.request.ticket == request.ticket
+                && r.request.epoch == request.epoch
+                && r.request.id == id
+        }) {
+            return if completed.request == request {
+                Poll::Ready(completed.result.clone())
+            } else {
+                Poll::Ready(Err(InspectionError::Correlation))
+            };
+        }
+        if let Some(pending) = state.pending.as_ref() {
+            if pending.ticket != request.ticket || pending.epoch != request.epoch {
+                state.pending = None;
+                return Poll::Ready(Err(InspectionError::Correlation));
+            }
+            if pending != &request {
+                return Poll::Ready(Err(InspectionError::Busy));
+            }
+            match inspection::read_receipt(ext) {
+                Ok(Some(receipt)) if receipt.request == request => {
+                    state.pending = None;
+                    let result = receipt.result.clone();
+                    state.completed = Some(receipt);
+                    return Poll::Ready(result);
+                }
+                Ok(Some(_)) => return Poll::Ready(Err(InspectionError::Correlation)),
+                Ok(None) if head.flags & FLAG_RESUME != 0 => {
+                    state.pending = None;
+                    return Poll::Ready(Err(InspectionError::MissingReceipt));
+                }
+                Ok(None) => {}
+                Err(error) => return Poll::Ready(Err(error)),
+            }
+        } else if state.last.is_some_and(|(ticket, epoch, last)| {
+            ticket == request.ticket && epoch == request.epoch && id <= last
+        }) {
+            return Poll::Ready(Err(InspectionError::Invalid));
+        }
+        let retained = crate::abi::mechanism::extensions::entries(ext)
+            .filter(|(key, _)| {
+                ![
+                    inspection::EXT_CAPABILITY,
+                    inspection::EXT_REQUEST,
+                    inspection::EXT_REPLY,
+                ]
+                .iter()
+                .any(|known| *key == known.as_bytes())
+            })
+            .map(|(key, value)| 2 + key.len() + 4 + value.len())
+            .sum();
+        if !inspection::query_fits(query, retained) {
+            return Poll::Ready(Err(InspectionError::Invalid));
+        }
+        if let Err(error) = out.inspection_request(leases, &request) {
+            return Poll::Ready(Err(error));
+        }
+        state.completed = None;
+        state.last = Some((request.ticket, request.epoch, id));
+        state.pending = Some(request);
+        Poll::Pending
     }
 
     /// [`exchange`] over the declared framed need `need` to `target`: `request` is built only on
@@ -1012,3 +1125,7 @@ impl<'a> Op<'a> {
 #[cfg(test)]
 #[path = "tests/exchange_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "tests/inspection_tests.rs"]
+mod inspection_tests;

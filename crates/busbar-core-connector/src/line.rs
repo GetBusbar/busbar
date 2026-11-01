@@ -98,6 +98,7 @@ impl Wake for FanOut {
 #[derive(Default)]
 struct Seen {
     multiplexes: bool,
+    buffered_input: usize,
     flushed: u64,
     reusable: bool,
     established: Established,
@@ -113,6 +114,7 @@ impl Seen {
     /// Bring what is seen up to `conn`; what did not change is not copied again.
     fn refresh(&mut self, conn: &Connection) {
         self.multiplexes = conn.multiplexes();
+        self.buffered_input = conn.buffered_input();
         self.flushed = conn.flushed();
         self.reusable = conn.reusable();
         if self.established != *conn.established() {
@@ -274,12 +276,13 @@ impl Line {
         if s.closing {
             return Turn::Closed;
         }
-        let Some(conn) = s.conn.take() else {
+        let Some(mut conn) = s.conn.take() else {
             if let Some(w) = missed {
                 s.miss(w);
             }
             return Turn::Out;
         };
+        conn.set_receive_held(s.parked_bytes());
         drop(s);
         let mut taken = Taken {
             line: self,
@@ -488,6 +491,7 @@ impl Line {
                 let mut parked = parked;
                 let mut read = Vec::new();
                 loop {
+                    conn.set_receive_held(parked);
                     if parked >= RECEIVE_BUFFER_BYTES {
                         return (None, read);
                     }
@@ -544,9 +548,10 @@ impl Line {
         if let Some(f) = s.refused.remove(&stream) {
             return Poll::Ready(Err(f));
         }
-        let full = s.parked_bytes() >= RECEIVE_BUFFER_BYTES;
+        let full = s.conn.is_none()
+            || s.parked_bytes().saturating_add(s.seen.buffered_input) >= RECEIVE_BUFFER_BYTES;
         if let Some(got) = s.parked.get_mut(&stream).and_then(VecDeque::pop_front) {
-            if full && s.parked_bytes() < RECEIVE_BUFFER_BYTES {
+            if full && !got.bytes.is_empty() {
                 // Under the cap again: the connection is read again, for whoever waits on it.
                 self.fan.wake_by_ref();
             }
@@ -554,7 +559,12 @@ impl Line {
         }
         let end = self.park_pieces(s, cx.waker());
         let mut s = self.state();
+        let full = s.conn.is_none()
+            || s.parked_bytes().saturating_add(s.seen.buffered_input) >= RECEIVE_BUFFER_BYTES;
         if let Some(got) = s.parked.get_mut(&stream).and_then(VecDeque::pop_front) {
+            if full && !got.bytes.is_empty() {
+                self.fan.wake_by_ref();
+            }
             return Poll::Ready(Ok(Some(got)));
         }
         if let Some(f) = s.refused.remove(&stream) {

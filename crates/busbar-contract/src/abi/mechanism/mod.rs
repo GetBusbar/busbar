@@ -47,6 +47,8 @@ pub mod decl;
 pub mod door;
 pub mod endpoint;
 pub mod extensions;
+/// Negotiated generic read-only host observations through main-call extensions.
+pub use crate::abi::sdk::inspection_wire as inspection;
 pub mod layout;
 pub mod lifecycle;
 pub mod observe;

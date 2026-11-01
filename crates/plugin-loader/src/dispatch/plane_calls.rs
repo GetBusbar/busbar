@@ -224,7 +224,7 @@ impl PlaneCalls for PlaneInstance {
         driver: Ticket,
         now_ns: u64,
     ) -> Pin<Box<dyn Future<Output = Option<u64>> + Send>> {
-        let reply = self.dispatcher.tick(&*self.plugin, driver, now_ns);
+        let reply = self.dispatcher.tick_copy(&*self.plugin, driver, now_ns);
         Box::pin(async move {
             let done = reply.await;
             matches!(done.outcome, Outcome::Ready | Outcome::Pending)

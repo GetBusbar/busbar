@@ -545,6 +545,8 @@ pub(crate) struct Meta {
     drainable: bool,
     /// An admitted unit's op ([`Dispatcher::submit_unit`]): counted in [`Instance::unit_ops`].
     unit: bool,
+    /// PlaneCalls reads only TickOut's scalar schedule; no answer lease is handed to it.
+    tick_copy: bool,
     pub(crate) reply: Arc<dyn Settle>,
 }
 
@@ -555,6 +557,8 @@ enum Admit {
     Cap,
     /// On a driver ticket: outside `max_inflight`.
     Driver,
+    /// A plane driver tick whose caller only copies the scalar schedule.
+    DriverCopy,
     /// An op of an admitted unit: outside `max_inflight`, and in flight for `close`.
     Unit,
 }
@@ -1319,16 +1323,38 @@ impl Worker {
         framing: Option<Arc<dyn busbar_contract::framing_scope::FramingScope>>,
     ) -> Option<(MutexGuard<'a, WorkerState>, Crossed)> {
         st.crossing = Some(instance.clone());
+        // Only a driver's TICK hands its PENDING frame to a caller. Ordinary PENDING and
+        // DRIVE keep their frame inside the worker; a copied inspection lease has no recipient.
+        // SAFETY: this crossing owns the host input frame.
+        let ticket = unsafe { (*heads.0).ticket };
+        let entry = st.entries.get(decode(ticket.slot).1 as usize);
+        let tick_copy = s == slot::TICK
+            && entry
+                .and_then(|e| e.current.as_ref())
+                .is_some_and(|c| c.meta.tick_copy);
+        let pending_is_handed =
+            s == slot::TICK && !tick_copy && entry.is_some_and(|e| e.driver.is_some());
         let budget = u64::try_from(budget.as_nanos()).unwrap_or(u64::MAX);
         self.crossing_budget.store(budget, Ordering::Relaxed);
         self.crossing_since
             .store(now_ns().max(1), Ordering::Release);
         drop(st);
-        let crossed = {
+        let mut crossed = {
             let _framing = super::framing_context::enter(framing);
             // SAFETY: the frame is boxed and owned by this crossing; `s` passed `refuse` at submit.
             unsafe { instance.cross(s, heads.0, heads.1, heads.2) }
         };
+        if tick_copy
+            || (crossed.inspection && crossed.outcome == Outcome::Pending && !pending_is_handed)
+        {
+            let lease = std::mem::take(&mut crossed.lease);
+            if lease != 0 {
+                // No worker or custody lock is held while release enters plugin code. For
+                // the scalar-only plane TICK this happens before ReplySlot publication, so
+                // dropping an unpolled future cannot orphan a queued answer lease.
+                instance.release_unread(lease);
+            }
+        }
         self.crossing_since.store(0, Ordering::Release);
         let mut st = self.lock();
         st.crossing = None;
@@ -2428,6 +2454,27 @@ impl Dispatcher {
         driver: Ticket,
         now_ns: u64,
     ) -> Reply<TickIn, TickOut> {
+        self.tick_with(plugin, driver, now_ns, Admit::Driver)
+    }
+
+    /// The plane driver copies only the scalar schedule. Its answer lease is released by the
+    /// worker before completing the reply, including when nobody ever polls that reply.
+    pub(crate) fn tick_copy<K: Kind>(
+        &self,
+        plugin: &Plugin<K>,
+        driver: Ticket,
+        now_ns: u64,
+    ) -> Reply<TickIn, TickOut> {
+        self.tick_with(plugin, driver, now_ns, Admit::DriverCopy)
+    }
+
+    fn tick_with<K: Kind>(
+        &self,
+        plugin: &Plugin<K>,
+        driver: Ticket,
+        now_ns: u64,
+        admit: Admit,
+    ) -> Reply<TickIn, TickOut> {
         let frame = Frame::new(
             TickIn {
                 head: in_head(),
@@ -2447,7 +2494,7 @@ impl Dispatcher {
             0,
             None,
             Duration::ZERO,
-            Admit::Driver,
+            admit,
         );
         // Dropping it cancels nothing: a client drop would end the instance's driver ticket.
         reply.owner = None;
@@ -2527,6 +2574,7 @@ impl Dispatcher {
             lifecycle,
             drainable,
             unit,
+            tick_copy: admit == Admit::DriverCopy,
             reply: slot.clone(),
         };
         let job = Box::new(JobOf {

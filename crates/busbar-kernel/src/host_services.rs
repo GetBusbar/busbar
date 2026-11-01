@@ -1677,6 +1677,63 @@ pub fn claim_token(instance: &str, kind: &str, key: &[u8]) -> String {
 }
 
 impl HostServices for KernelServices {
+    fn inspect(
+        &self,
+        caller: &Caller,
+        unit: Option<u64>,
+        query: &busbar_contract::abi::mechanism::inspection::InspectionQuery,
+    ) -> busbar_contract::abi::mechanism::inspection::InspectionResult {
+        use busbar_contract::abi::mechanism::inspection::{
+            InspectionError, InspectionObservation, InspectionQuery, SessionObservation,
+            WorkObservation,
+        };
+        if self.facts(caller).is_none() {
+            return Err(InspectionError::Refused);
+        }
+        match query {
+            InspectionQuery::Work { reference } => {
+                // Authority is the current host unit, exactly as for work.find. No principal
+                // or handle claimed by the plugin can authorize reading another owner's work.
+                let owner = self.owner_of_unit(unit).ok_or(InspectionError::Refused)?;
+                let reference = parse_reference(reference).ok_or(InspectionError::NotFound)?;
+                let (_, work) = self
+                    .work
+                    .by_reference(&caller.instance, &reference)
+                    .filter(|(_, work)| work.owner == owner)
+                    .ok_or(InspectionError::NotFound)?;
+                let retain_ms = self.work_bounds_of(&caller.instance).retain_ms;
+                let observed_ms = (self.wall_ms)();
+                if !work.live && work.settled_ms.saturating_add(retain_ms) <= observed_ms {
+                    return Err(InspectionError::NotFound);
+                }
+                Ok(InspectionObservation::Work(WorkObservation {
+                    observed_ms,
+                    opened_ms: work.opened_ms,
+                    retain_ms,
+                    settled_ms: (!work.live).then_some(work.settled_ms),
+                }))
+            }
+            InspectionQuery::CarrierSessions { sessions } => {
+                // Driver ticks have no unit. They inspect only known IDs owned by their
+                // validated instance; this observation never authorizes a future emission.
+                let open = self
+                    .sessions
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let observations = sessions
+                    .iter()
+                    .map(|session| SessionObservation {
+                        session: *session,
+                        live: open
+                            .get(session)
+                            .is_some_and(|held| held.instance == caller.instance),
+                    })
+                    .collect();
+                Ok(InspectionObservation::CarrierSessions(observations))
+            }
+        }
+    }
+
     fn now(&self) -> Reading {
         let wall = SystemTime::now()
             .duration_since(UNIX_EPOCH)

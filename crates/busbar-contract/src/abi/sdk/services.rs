@@ -1529,6 +1529,24 @@ impl Services {
         scope: u32,
         buf: &mut [u64],
     ) -> Result<Option<Vec<crate::export_calls::Family>>, ServiceError> {
+        self.snapshot_read_with_used(handle, scope, buf)
+            .map(|snapshot| snapshot.map(|(families, _used)| families))
+    }
+
+    /// [`Self::snapshot_read`] together with the exact successful layout size, in bytes. The
+    /// receipt describes the bytes the host wrote, not the caller's buffer capacity, so a caller
+    /// can size its next scratch buffer from the latest snapshot rather than a historical peak.
+    /// A not-ready answer carries no size receipt.
+    ///
+    /// # Errors
+    /// The same errors as [`Self::snapshot_read`]; a size is returned only after every pointer in
+    /// the successful layout has been checked.
+    pub fn snapshot_read_with_used(
+        &self,
+        handle: CompletionHandle,
+        scope: u32,
+        buf: &mut [u64],
+    ) -> Result<Option<(Vec<crate::export_calls::Family>, usize)>, ServiceError> {
         let bytes = std::mem::size_of_val(buf);
         let at = buf.as_mut_ptr().cast::<u8>();
         let input = SnapshotReadIn {
@@ -1554,7 +1572,7 @@ impl Services {
         // SAFETY: `buf` is ours, `bytes` long; the check held `len` within it.
         let laid = unsafe { std::slice::from_raw_parts(at.cast_const(), out.len as usize) };
         snapshot::read(laid, out.value)
-            .map(Some)
+            .map(|families| Some((families, laid.len())))
             .ok_or(ServiceError::Broken)
     }
 
