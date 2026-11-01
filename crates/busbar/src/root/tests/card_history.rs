@@ -604,3 +604,124 @@ fn the_migration_prices_every_instant_as_devs_rebuild_did_with_a_refused_correct
         assert_eq!(our_card, dev_card, "the card at {t} is dev's");
     }
 }
+#[cfg(unix)]
+fn spool_dir(label: &str) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!(
+        "card-spool-{label}-{}-{}",
+        std::process::id(),
+        hex::encode(crate::root::card_store::boot_rand())
+    ));
+    std::fs::create_dir(&dir).unwrap();
+    dir
+}
+
+#[cfg(unix)]
+#[test]
+fn a_failed_spool_barrier_retries_the_exact_owner_until_real_store_confirmation() {
+    use crate::root::card_store::{save_test, Spool, SpooledWrite};
+    use save_test::Step;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::{mpsc, Mutex};
+
+    for fault in [
+        Step::SyncFile,
+        Step::Rename,
+        Step::OpenDirectory,
+        Step::SyncDirectory,
+    ] {
+        let store = RecordSlots::new();
+        let dir = spool_dir("barrier-retry");
+        let cs = CardStore::new(store.calls(), 1, Some(dir.clone()));
+        cs.boot(&card(1.0, 0), "boot", Vec::new()).unwrap();
+        let mut unrelated = cs.entries()[0].clone();
+        unrelated.key = EntryKey::new(1, [9; 8], 7);
+        let unrelated_write = SpooledWrite::of(&unrelated.key, &unrelated.records().unwrap());
+        Spool {
+            pending: vec![unrelated_write.clone()],
+        }
+        .save(&dir)
+        .unwrap();
+
+        let mut original = unrelated.clone();
+        original.key = EntryKey::new(now_ms() + 1, [8; 8], 3);
+        original.author = EntryAuthor::Change;
+        original.actor = "private-original-actor".into();
+        original.correction = Some(b"private-original-correction".to_vec());
+        original.card = card(1.0, 7);
+        let key = original.key;
+        let original_write = SpooledWrite::of(&key, &original.records().unwrap());
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let failed = AtomicBool::new(false);
+        let guard = save_test::install(&dir, {
+            let attempts = attempts.clone();
+            move |step| {
+                if step == Step::SyncFile {
+                    attempts.fetch_add(1, Ordering::AcqRel);
+                }
+                if step == fault && !failed.swap(true, Ordering::AcqRel) {
+                    Err(std::io::Error::other("private-disk-refusal"))
+                } else {
+                    Ok(())
+                }
+            }
+        });
+        let (observed_tx, observed_rx) = mpsc::channel();
+        let (allow_tx, allow_rx) = mpsc::channel();
+        let allow_rx = Mutex::new(allow_rx);
+        store.refuse(true);
+        save_test::on_reput(&dir, {
+            let dir = dir.clone();
+            let attempts = attempts.clone();
+            let store = store.clone();
+            move || {
+                observed_tx
+                    .send((attempts.load(Ordering::Acquire), Spool::load(&dir).unwrap()))
+                    .unwrap();
+                let allow = allow_rx
+                    .lock()
+                    .unwrap()
+                    .recv_timeout(Duration::from_secs(10))
+                    .unwrap();
+                store.refuse(!allow);
+            }
+        });
+
+        cs.write(original.clone(), true);
+        assert_eq!(cs.pending(), Some(key));
+        assert_eq!(cs.own(), Some((key, original.card.clone())));
+        for round in 0..2 {
+            let (attempts, spool) = observed_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+            assert!(
+                attempts >= 2,
+                "an encoded pending owner must retry local persistence"
+            );
+            assert_eq!(
+                spool.pending,
+                vec![unrelated_write.clone(), original_write.clone()]
+            );
+            assert_eq!(
+                cs.pending(),
+                Some(key),
+                "local durability is not a store acknowledgment"
+            );
+            assert!(cs.pending_refusal().is_some());
+            assert_eq!(
+                cs.entries().into_iter().find(|e| e.key == key),
+                Some(original.clone())
+            );
+            // First re-put remains unconfirmed even though local persistence succeeded.
+            // The next re-put receives the actual record acknowledgments.
+            allow_tx.send(round == 1).unwrap();
+        }
+        wait_until(
+            "the exact owner to receive every record acknowledgment",
+            || cs.pending().is_none(),
+        );
+        assert_eq!(Spool::load(&dir).unwrap().pending, vec![unrelated_write]);
+        let scanned = crate::root::card_store::scan(store.calls().as_ref(), None).unwrap();
+        assert!(scanned.entries.contains(&original));
+        drop(cs);
+        drop(guard);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+}

@@ -815,6 +815,8 @@ impl CardStore {
                         return;
                     }
                     for (key, records) in pending {
+                        #[cfg(all(test, unix))]
+                        super::card_store::save_test::before_reput(this.spool_dir());
                         match put_all(
                             this.calls.as_ref(),
                             &records,

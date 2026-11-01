@@ -536,9 +536,22 @@ impl Spool {
         let step = |e: std::io::Error| format!("{}: {e}", path.display());
         let mut file = std::fs::File::create(&tmp).map_err(step)?;
         file.write_all(&bytes).map_err(step)?;
+        #[cfg(all(test, unix))]
+        save_test::before(dir, save_test::Step::SyncFile).map_err(step)?;
         file.sync_all().map_err(step)?;
+        #[cfg(all(test, unix))]
+        save_test::before(dir, save_test::Step::Rename).map_err(step)?;
         std::fs::rename(&tmp, &path).map_err(step)?;
-        if let Ok(d) = std::fs::File::open(dir) {
+        #[cfg(all(test, unix))]
+        let directory = save_test::before(dir, save_test::Step::OpenDirectory)
+            .and_then(|()| std::fs::File::open(dir));
+        #[cfg(not(all(test, unix)))]
+        let directory = std::fs::File::open(dir);
+        if let Ok(d) = directory {
+            #[cfg(all(test, unix))]
+            let _ =
+                save_test::before(dir, save_test::Step::SyncDirectory).and_then(|()| d.sync_all());
+            #[cfg(not(all(test, unix)))]
             let _ = d.sync_all();
         }
         Ok(())
@@ -548,6 +561,67 @@ impl Spool {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.pending.is_empty()
+    }
+}
+
+/// Private, per-directory fault injection; unrelated tests never share a fault or schedule.
+#[cfg(all(test, unix))]
+pub(super) mod save_test {
+    use super::*;
+    use std::sync::Mutex;
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub(crate) enum Step {
+        SyncFile,
+        Rename,
+        OpenDirectory,
+        SyncDirectory,
+    }
+
+    type Hook = Arc<dyn Fn(Step) -> std::io::Result<()> + Send + Sync>;
+    type ReputHook = Arc<dyn Fn() + Send + Sync>;
+    static HOOKS: Mutex<BTreeMap<PathBuf, Hook>> = Mutex::new(BTreeMap::new());
+    static REPUT_HOOKS: Mutex<BTreeMap<PathBuf, ReputHook>> = Mutex::new(BTreeMap::new());
+
+    pub(crate) struct Guard(PathBuf);
+
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            HOOKS.lock().unwrap().remove(&self.0);
+            REPUT_HOOKS.lock().unwrap().remove(&self.0);
+        }
+    }
+
+    pub(crate) fn install(
+        dir: &Path,
+        hook: impl Fn(Step) -> std::io::Result<()> + Send + Sync + 'static,
+    ) -> Guard {
+        assert!(HOOKS
+            .lock()
+            .unwrap()
+            .insert(dir.to_path_buf(), Arc::new(hook))
+            .is_none());
+        Guard(dir.to_path_buf())
+    }
+
+    pub(crate) fn on_reput(dir: &Path, hook: impl Fn() + Send + Sync + 'static) {
+        assert!(REPUT_HOOKS
+            .lock()
+            .unwrap()
+            .insert(dir.to_path_buf(), Arc::new(hook))
+            .is_none());
+    }
+
+    pub(crate) fn before_reput(dir: Option<&Path>) {
+        let hook = dir.and_then(|dir| REPUT_HOOKS.lock().unwrap().get(dir).cloned());
+        if let Some(hook) = hook {
+            hook();
+        }
+    }
+
+    pub(super) fn before(dir: &Path, step: Step) -> std::io::Result<()> {
+        let hook = HOOKS.lock().unwrap().get(dir).cloned();
+        hook.map_or(Ok(()), |hook| hook(step))
     }
 }
 
