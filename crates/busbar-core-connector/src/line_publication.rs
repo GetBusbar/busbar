@@ -138,10 +138,12 @@ fn other(leg: Leg) -> Leg {
 pub struct SessionBatch {
     /// Channel pieces, in crossing order.
     pub pieces: Vec<crate::framer::Got>,
-    /// Retain this custody alongside every queued or partially consumed payload.
-    pub custody: Custody,
     /// Per-piece reservations, parallel to `pieces`. Old uncharged/manual batches may omit them.
     pub owners: Vec<Custody>,
+    /// Retain this custody alongside every queued or partially consumed payload.
+    pub custody: Custody,
+    /// Keep the producer active until all channel handoffs complete too.
+    pub producer: crate::publication::ProducerCustody,
 }
 
 /// Fresh input has not been accepted when reservation is unavailable.
@@ -155,7 +157,10 @@ pub enum SubmitError {
     Closed,
 }
 
-struct Driving(Arc<Pairing>);
+struct Driving {
+    pairing: Arc<Pairing>,
+    armed: bool,
+}
 
 struct Crossing<'a> {
     pairing: &'a Pairing,
@@ -187,8 +192,8 @@ impl Drop for Crossing<'_> {
 
 impl Drop for Driving {
     fn drop(&mut self) {
-        if self.0.lock().publications.running {
-            self.0
+        if self.armed && self.pairing.lock().publications.running {
+            self.pairing
                 .publication_failed("datagram publication was cancelled".into());
         }
     }
@@ -358,23 +363,27 @@ impl Pairing {
         preaccepted: usize,
         admission: Option<Box<dyn Send + 'static>>,
     ) -> Result<(), SubmitError> {
+        let job = Job {
+            to: leg,
+            across,
+            now: Instant::now(),
+            text,
+            original: true,
+            unpaired: None,
+            _custody: custody,
+            _admission: admission,
+        };
         let (schedule, caller) = {
             let mut state = self.lock();
             state.publications.retained_input -= preaccepted;
             if state.closed {
+                drop(state);
+                drop(job);
                 return Err(SubmitError::Closed);
             }
-            state.publications.outcome.original_bytes += (across.bytes.len() - preaccepted) as u64;
-            state.publications.inputs.push(Job {
-                to: leg,
-                across,
-                now: Instant::now(),
-                text,
-                original: true,
-                unpaired: None,
-                _admission: admission,
-                _custody: custody,
-            });
+            state.publications.outcome.original_bytes +=
+                (job.across.bytes.len() - preaccepted) as u64;
+            state.publications.inputs.push(job);
             let schedule = !state.publications.running;
             state.publications.running = true;
             (schedule, state.caller.clone())
@@ -447,10 +456,16 @@ impl Pairing {
     }
 
     fn schedule_publication(self: &Arc<Self>, caller: Option<Arc<dyn LegSink>>) {
-        let driving = Driving(Arc::clone(self));
+        let driving = Driving {
+            pairing: Arc::clone(self),
+            armed: true,
+        };
         let future = Box::pin(async move {
-            let guard = driving;
-            guard.0.drive_publication().await;
+            let mut guard = driving;
+            guard.pairing.drive_publication().await;
+            // Quiescence can admit a new actor before this completed future is dropped.
+            // This guard owns cancellation of its own task only.
+            guard.armed = false;
         });
         if !caller.is_some_and(|caller| caller.schedule(future)) {
             self.publication_failed("no reactor for datagram publication".into());
@@ -483,6 +498,7 @@ impl Pairing {
                     pieces: Vec::new(),
                     custody: Custody::default(),
                     owners: Vec::new(),
+                    producer: crate::publication::ProducerCustody::default(),
                 };
             };
             yielded.custody = credit;
@@ -587,7 +603,6 @@ impl Pairing {
             (session, owners, schedule, state.caller.clone())
         };
         drop(retired);
-        drop(producer);
         if schedule {
             // Construct the guard before spawn, so cancellation before first poll closes the
             // accepted episode too. The real caller schedules on its captured reactor/tracker.
@@ -597,6 +612,7 @@ impl Pairing {
             pieces,
             custody,
             owners,
+            producer,
         }
     }
 

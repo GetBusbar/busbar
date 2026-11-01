@@ -401,12 +401,20 @@ impl Drop for HeldInputs {
 
 struct Draining(Arc<CallerLeg>);
 
-struct CallerPublication<'a>(&'a CallerLeg);
+struct CallerPublication<'a> {
+    leg: &'a CallerLeg,
+    producer: Option<busbar_core_connector::publication::ProducerCustody>,
+    custody: Option<Custody>,
+    activity: Option<busbar_core_connector::publication::Transfer>,
+}
 
 impl Drop for CallerPublication<'_> {
     fn drop(&mut self) {
-        let id = *lock(&self.0.id);
-        if let Some((door, id)) = self.0.door.upgrade().zip(id) {
+        drop(self.producer.take());
+        drop(self.custody.take());
+        drop(self.activity.take());
+        let id = *lock(&self.leg.id);
+        if let Some((door, id)) = self.leg.door.upgrade().zip(id) {
             door.assocs.published(id);
         }
     }
@@ -481,6 +489,7 @@ impl CallerLeg {
                     pieces: session,
                     custody: Custody::default(),
                     owners: Vec::new(),
+                    producer: busbar_core_connector::publication::ProducerCustody::default(),
                 },
                 _now,
             )
@@ -491,10 +500,27 @@ impl CallerLeg {
     }
 
     fn take_batch(&self, session: SessionBatch, _now: Instant) -> Result<(), String> {
-        let _publication = CallerPublication(self);
-        let mut owners = session.owners.into_iter();
-        for g in session.pieces {
-            let owner = owners.next().unwrap_or_else(|| session.custody.clone());
+        let SessionBatch {
+            pieces,
+            custody,
+            owners,
+            producer,
+        } = session;
+        let activity = custody.publishing();
+        let _publication = CallerPublication {
+            leg: self,
+            producer: Some(producer),
+            custody: Some(custody),
+            activity: Some(activity),
+        };
+        let fallback = _publication
+            .custody
+            .as_ref()
+            .expect("publication owns its container")
+            .clone();
+        let mut owners = owners.into_iter();
+        for g in pieces {
+            let owner = owners.next().unwrap_or_else(|| fallback.clone());
             if g.fields {
                 let release = {
                     let mut out = lock(&self.outbound);
@@ -513,6 +539,8 @@ impl CallerLeg {
                             if let Some(leg) = leg {
                                 door.spawn(leg.release());
                             } else {
+                                drop(g);
+                                drop(owner);
                                 return Err("the caller leg was not joined".into());
                             }
                         }

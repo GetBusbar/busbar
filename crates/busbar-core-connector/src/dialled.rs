@@ -360,22 +360,34 @@ impl UpstreamLeg {
     }
 
     fn take_channels(&self, batch: SessionBatch) -> Result<(), ConnError> {
-        let _publication = ChannelPublication(self);
         let SessionBatch {
             pieces,
             custody,
             owners,
+            producer,
         } = batch;
+        let activity = custody.publishing();
+        let _publication = ChannelPublication {
+            leg: self,
+            producer: Some(producer),
+            custody: Some(custody),
+            activity: Some(activity),
+        };
+        let fallback = _publication
+            .custody
+            .as_ref()
+            .expect("publication owns its container")
+            .clone();
         let mut owners = owners.into_iter();
         if lock(&self.framing).closing {
             drop(pieces);
             drop(owners);
-            drop(custody);
+            drop(fallback);
             return Err(ConnError::Closed);
         }
         let mut queued = false;
         for g in pieces {
-            let owner = owners.next().unwrap_or_else(|| custody.clone());
+            let owner = owners.next().unwrap_or_else(|| fallback.clone());
             // Closing takes this same handoff before clearing the ready queue. No channel
             // output can be inserted after that clear, including after a reentrant LINE close.
             let held = lock(&self.framing);
@@ -414,7 +426,7 @@ impl UpstreamLeg {
             queued = true;
         }
         drop(owners);
-        drop(custody);
+        drop(fallback);
         if queued {
             let waiting = lock(&self.framing).reader.take();
             if let Some(waker) = waiting {
@@ -635,12 +647,20 @@ impl LegSink for UpstreamLeg {
 
 /// A pending batch remains ordered while exclusive framer custody has already returned home.
 /// Unwind and terminal cancellation release the barrier and notify actual waiting contexts.
-struct ChannelPublication<'a>(&'a UpstreamLeg);
+struct ChannelPublication<'a> {
+    leg: &'a UpstreamLeg,
+    producer: Option<crate::publication::ProducerCustody>,
+    custody: Option<Custody>,
+    activity: Option<crate::publication::Transfer>,
+}
 
 impl Drop for ChannelPublication<'_> {
     fn drop(&mut self) {
+        drop(self.producer.take());
+        drop(self.custody.take());
+        drop(self.activity.take());
         let (scheduler, reader) = {
-            let mut held = lock(&self.0.framing);
+            let mut held = lock(&self.leg.framing);
             held.publishing = false;
             let reader = if held.drive_waiting
                 && !held.out
@@ -971,6 +991,9 @@ impl Dialled {
         if !end {
             if !self.pairing.retain_input(bytes.len()) {
                 self.pairing.cancel_retained_input(preaccepted);
+                drop(message);
+                drop(custody);
+                drop(writing);
                 return Err(ConnError::Closed);
             }
             let mut gather = lock(&self.gather);

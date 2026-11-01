@@ -1069,6 +1069,61 @@ fn accepted_application_writes_remain_bounded_until_actual_emission() {
 }
 
 #[test]
+fn a_publication_completion_wake_can_admit_the_next_episode_before_the_old_task_retires() {
+    use std::future::Future;
+    struct NextWrite {
+        dialled: std::sync::Weak<super::Dialled>,
+        result: Mutex<Option<Result<usize, crate::ConnError>>>,
+        fired: tokio::sync::Notify,
+    }
+    impl std::task::Wake for NextWrite {
+        fn wake(self: Arc<Self>) {
+            self.wake_by_ref();
+        }
+        fn wake_by_ref(self: &Arc<Self>) {
+            let mut result = self.result.lock().unwrap();
+            if result.is_none() {
+                *result = Some(self.dialled.upgrade().unwrap().write(b"next", true, false));
+            }
+            drop(result);
+            self.fired.notify_one();
+        }
+    }
+    crate::support::worker().block_on(async {
+        let (dialled, door, _) = line_outputs();
+        *dialled.leg.channel.lock().unwrap() = Some(3);
+        assert_eq!(dialled.write(b"first", true, false), Ok(5));
+        let next = Arc::new(NextWrite {
+            dialled: Arc::downgrade(&dialled),
+            result: Mutex::new(None),
+            fired: tokio::sync::Notify::new(),
+        });
+        let waker = std::task::Waker::from(Arc::clone(&next));
+        let mut context = std::task::Context::from_waker(&waker);
+        let mut first = Box::pin(dialled.pairing.published());
+        assert!(first.as_mut().poll(&mut context).is_pending());
+        // Notify invokes this waker synchronously after the first actor declares quiescence,
+        // while its completed future still owns its cancellation guard.
+        tokio::time::timeout(Duration::from_secs(5), next.fired.notified())
+            .await
+            .expect("the first publication reached actual quiescence");
+        drop(first);
+        assert_eq!(*next.result.lock().unwrap(), Some(Ok(4)));
+        let outcome = dialled.pairing.published().await;
+        assert!(outcome.failure.is_none());
+        assert_eq!(outcome.original_bytes, 9);
+        assert_eq!(outcome.original_handed_bytes, 9);
+        assert_eq!(outcome.original_cancelled_bytes, 0);
+        assert_eq!(
+            *door.inputs.lock().unwrap(),
+            vec![b"first".to_vec(), b"next".to_vec()]
+        );
+        assert!(!dialled.pairing.closed());
+        dialled.close();
+    });
+}
+
+#[test]
 fn a_busy_final_write_preserves_the_prefix_and_waits_for_real_progress_without_self_waking() {
     crate::support::worker().block_on(async {
         let (dialled, door, _) = line_outputs_with_limit(Some(usize::MAX));

@@ -737,6 +737,17 @@ impl DatagramFraming {
                     .and_then(|routes| routes.checked_mul(3))
                     .and_then(|routes| n.checked_add(routes))
             })
+            .and_then(|bound| {
+                let queued = self.send.iter().try_fold(0_usize, |bytes, (_, datagram)| {
+                    bytes.checked_add(datagram.capacity())
+                })?;
+                let slots = self
+                    .send
+                    .capacity()
+                    .checked_mul(2)?
+                    .checked_mul(std::mem::size_of::<(SocketAddr, Vec<u8>)>())?;
+                bound.checked_add(queued)?.checked_add(slots)
+            })
             .ok_or_else(|| fault(LINE_MEMORY_EXHAUSTED))?;
         memory
             .reserve(bound)

@@ -349,6 +349,11 @@ impl PartialEq for Custody {
 impl Eq for Custody {}
 
 impl Custody {
+    /// Mark publication of reserved storage as an actual in-flight handoff.
+    #[must_use]
+    pub fn publishing(&self) -> Transfer {
+        Transfer::new(self.0.as_ref().map(|lease| &lease.memory))
+    }
     pub(crate) fn tracked(&self) -> bool {
         self.0.is_some()
     }
