@@ -109,6 +109,8 @@ impl Caller {
 struct RawFramer {
     facts: DoorFacts,
     inputs: Mutex<Vec<Vec<u8>>>,
+    fingerprint: [u8; 32],
+    bind: bool,
 }
 
 #[allow(unsafe_code)]
@@ -144,7 +146,7 @@ impl FramerDoor for RawFramer {
                         local_secret: span(b"host-password-0123456789"),
                         remote_user: span(b"far"),
                         remote_secret: span(b"far-password-0123456789"),
-                        peer_fingerprint: span(&[0; 32]),
+                        peer_fingerprint: span(&self.fingerprint),
                         ..RendezvousTerms::ZERO
                     };
                     assert!(frame.len() <= input.sink.frame_cap);
@@ -183,6 +185,13 @@ impl FramerDoor for RawFramer {
                     }
                     out.yielded.frame_len = bytes.len() as u64;
                     out.yielded.pieces_len = 1;
+                } else if self.bind
+                    && lane.lane == LANE_CLEAR
+                    && lane.bound == 0
+                    && bytes.starts_with(&[0, 1])
+                {
+                    out.datagram.request = busbar_contract::abi::transport::PATH_REQUEST_BIND;
+                    out.datagram.request_to = lane.path;
                 }
             }
             _ => {}
@@ -192,6 +201,75 @@ impl FramerDoor for RawFramer {
             error: None,
         }
     }
+}
+
+fn binding_answer(request: &[u8], secret: &[u8]) -> Vec<u8> {
+    let mut answer = vec![1, 1, 0, 24, 0x21, 0x12, 0xa4, 0x42];
+    answer.extend_from_slice(&request[8..20]);
+    let key = ::ring::hmac::Key::new(::ring::hmac::HMAC_SHA1_FOR_LEGACY_USE_ONLY, secret);
+    let signature = ::ring::hmac::sign(&key, &answer);
+    answer.extend_from_slice(&[0, 8, 0, 20]);
+    answer.extend_from_slice(signature.as_ref());
+    answer
+}
+
+/// Drive the real host and peer DTLS associations, answering their integrity-checked probes.
+fn establish_keying(
+    host: &mut DatagramFraming,
+    host_cert: Arc<crate::dtls::SessionCert>,
+    far_cert: Arc<crate::dtls::SessionCert>,
+    host_addr: std::net::SocketAddr,
+    far_addr: std::net::SocketAddr,
+) {
+    use crate::dtls::{Association, IceCredentials, Role, Verdict};
+    let mut far = Association::new(
+        far_cert,
+        Role::Client,
+        &IceCredentials {
+            ufrag: "far".into(),
+            pwd: "far-password-0123456789".into(),
+        },
+        &IceCredentials {
+            ufrag: "host".into(),
+            pwd: "host-password-0123456789".into(),
+        },
+        host_cert.fingerprint(),
+    );
+    let mut now = Instant::now();
+    // Match the existing datagram handshake fixtures' finite clock pump; no sleeps or socket
+    // timings establish the presented state used by the readiness control below.
+    for _ in 0..200 {
+        while let Some((to, packet)) = host.poll_send() {
+            assert_eq!(to, far_addr);
+            if far.ingest(host_addr, &packet, now) == Verdict::Raw && packet.starts_with(&[0, 1]) {
+                host.datagram(
+                    far_addr,
+                    &binding_answer(&packet, b"far-password-0123456789"),
+                    now,
+                )
+                .unwrap();
+            }
+        }
+        let _ = far.bind_path(host_addr, now);
+        while let Some((to, packet)) = far.poll_wire() {
+            assert_eq!(to, host_addr);
+            host.datagram(far_addr, &packet, now).unwrap();
+            if packet.starts_with(&[0, 1]) {
+                far.ingest(
+                    host_addr,
+                    &binding_answer(&packet, b"host-password-0123456789"),
+                    now,
+                );
+            }
+        }
+        if host.presented() && far.peer_verified() {
+            return;
+        }
+        now += Duration::from_millis(10);
+        far.handle_timeout(now);
+        host.timeout(now).unwrap();
+    }
+    panic!("the real handshake must present its verified keying material");
 }
 
 struct Rig {
@@ -206,6 +284,12 @@ struct Rig {
 
 impl Rig {
     fn new(limit: Option<usize>) -> Self {
+        Self::settings(limit, false)
+    }
+
+    fn settings(limit: Option<usize>, keyed: bool) -> Self {
+        let host_cert = Arc::new(crate::dtls::SessionCert::mint().unwrap());
+        let far_cert = keyed.then(|| Arc::new(crate::dtls::SessionCert::mint().unwrap()));
         let port = udp::bind("127.0.0.1:0").unwrap();
         let socket = port.get_ref().try_clone().unwrap();
         let far = udp::bind("127.0.0.1:0").unwrap();
@@ -221,12 +305,14 @@ impl Rig {
                 datagram: true,
             },
             inputs: Mutex::default(),
+            fingerprint: far_cert.as_ref().map_or([0; 32], |cert| cert.fingerprint()),
+            bind: keyed,
         });
         let (mut framing, _) =
-            DatagramFraming::accept_minted(door.clone(), port.local_addr()).unwrap();
+            DatagramFraming::accept(door.clone(), host_cert.clone(), port.local_addr()).unwrap();
         framing.rendezvous(b"terms", Instant::now()).unwrap();
-        // Admit the real sender through an integrity-checked STUN request. No bind is requested:
-        // raw media can cross this known path with neither handshake nor framer deadline.
+        // Admit the real sender through an integrity-checked STUN request. The ordinary raw
+        // fixture requests no bind and has no deadline; the keyed control completes DTLS below.
         let username = b"host:far";
         let mut check = vec![0, 1, 0, 36, 0x21, 0x12, 0xa4, 0x42];
         check.extend_from_slice(&[7; 12]);
@@ -242,8 +328,19 @@ impl Rig {
         framing
             .datagram(far.local_addr(), &check, Instant::now())
             .unwrap();
+        if let Some(cert) = far_cert {
+            establish_keying(
+                &mut framing,
+                host_cert,
+                cert,
+                port.local_addr(),
+                far.local_addr(),
+            );
+        }
         while framing.poll_send().is_some() {}
-        assert!(framing.deadline().is_none());
+        if !keyed {
+            assert!(framing.deadline().is_none());
+        }
         let caller = Arc::new(Caller::default());
         let pairing = Pairing::with_memory_limit(caller.clone(), port.local_addr(), limit);
         for (leg, stream) in [(Leg::Caller, 10), (Leg::Upstream, 20)] {
@@ -451,4 +548,98 @@ fn cancellation_before_actor_poll_and_terminal_storage_failure_do_not_rewake() {
             assert_eq!(exhausted.woke.count.load(Ordering::SeqCst), 0);
         }
     });
+}
+
+#[test]
+fn an_expired_unkeyed_leg_is_ready_for_timeout_without_rearming_the_past_timer() {
+    crate::support::worker().block_on(async {
+        let mut rig = Rig::new(None);
+        rig.dialled.due = Some(Instant::now() - Duration::from_nanos(1));
+        assert!(!rig.dialled.leg.presented());
+        *rig.dialled.leg.ready.lock().unwrap() = super::ready_messages(&[(b"queued", true)]);
+        assert!(rig.dialled.ready(&rig.waker));
+        let mut queued = [0; 8];
+        let piece = rig.dialled.read(&rig.waker, &mut queued).unwrap();
+        assert_eq!(&queued[..piece.len], b"queued");
+        assert!(piece.end);
+        for _ in 0..3 {
+            assert!(rig.dialled.ready(&rig.waker));
+            assert_eq!(
+                rig.dialled.read(&rig.waker, &mut [0; 8]),
+                Err(ConnError::Timeout)
+            );
+            assert_eq!(rig.woke.count.load(Ordering::SeqCst), 0);
+            assert!(rig.dialled.leg.timer.lock().unwrap().is_none());
+        }
+        assert!(rig.door.inputs.lock().unwrap().is_empty());
+        rig.dialled.close();
+        rig.woke.clear();
+        assert!(rig.dialled.ready(&rig.waker));
+        assert_eq!(
+            rig.dialled.read(&rig.waker, &mut [0; 8]),
+            Err(ConnError::Closed)
+        );
+        assert_eq!(rig.woke.count.load(Ordering::SeqCst), 0);
+    });
+}
+
+#[test]
+fn conn_wait_reports_the_keying_timeout_after_the_exchange_spent_the_outer_deadline() {
+    use busbar_contract::conn::{Conns as _, InstanceId, NeedId};
+    crate::support::worker().block_on(async {
+        let mut rig = Rig::new(None);
+        rig.dialled.due = Some(Instant::now() - Duration::from_nanos(1));
+        let wake_count = Arc::new(AtomicUsize::new(0));
+        let counted = wake_count.clone();
+        let connector = crate::Connector {
+            wake: Arc::new(move |_, _| {
+                counted.fetch_add(1, Ordering::SeqCst);
+            }),
+            ..crate::Connector::default()
+        };
+        let owner = InstanceId(17);
+        let need = NeedId(23);
+        let held = crate::Held::over(None, None, None)
+            .bounded(1)
+            .dialling(rig.dialled);
+        // The exchange head already began the answer: Conns::wait must now use the leg's
+        // keying readiness instead of being rescued by Held::within_due's initial-head bound.
+        held.answered();
+        assert!(held.due.lock().unwrap().is_none());
+        connector.slab.declare(owner, need);
+        let conn = connector.slab.insert(owner, need, held).unwrap();
+        for _ in 0..3 {
+            assert_eq!(connector.wait(owner, &[conn], 7), Ok(0));
+            assert_eq!(
+                connector.read(owner, conn, 7, &mut [0; 8]),
+                Err(ConnError::Timeout)
+            );
+            assert_eq!(wake_count.load(Ordering::SeqCst), 0);
+        }
+        connector.close(owner, conn).unwrap();
+    });
+}
+
+#[test]
+fn an_unexpired_or_successfully_keyed_leg_stays_pending_without_a_timeout_spin() {
+    for keyed in [false, true] {
+        crate::support::worker().block_on(async {
+            let mut rig = Rig::settings(None, keyed);
+            rig.dialled.due = Some(if keyed {
+                Instant::now() - Duration::from_nanos(1)
+            } else {
+                Instant::now() + Duration::from_secs(60)
+            });
+            assert_eq!(rig.dialled.leg.presented(), keyed);
+            for _ in 0..3 {
+                assert!(!rig.dialled.ready(&rig.waker));
+                assert_eq!(
+                    rig.dialled.read(&rig.waker, &mut [0; 8]),
+                    Err(ConnError::Pending)
+                );
+                assert_eq!(rig.woke.count.load(Ordering::SeqCst), 0);
+            }
+            rig.dialled.close();
+        });
+    }
 }

@@ -1068,7 +1068,7 @@ impl Dialled {
         Ok(bytes.len())
     }
 
-    /// Whether a read would answer now (a message waits, or the leg is over).
+    /// Whether a read would answer now (a message waits, the keying bound passed, or the leg is over).
     pub(crate) fn ready(&self, waker: &Waker) -> bool {
         match self.running(waker) {
             Err(ConnError::Pending) => return false,
@@ -1080,6 +1080,9 @@ impl Dialled {
         }
         self.leg.wait_ready(waker);
         if !lock(&self.leg.ready).is_empty() {
+            return true;
+        }
+        if !self.leg.presented() && self.due.is_some_and(|d| Instant::now() >= d) {
             return true;
         }
         let mut cx = Context::from_waker(waker);
