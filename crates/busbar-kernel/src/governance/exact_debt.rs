@@ -210,13 +210,15 @@ pub(super) struct BudgetFlushFlight {
     bucket: String,
     window: u64,
     debt: std::sync::Mutex<FlightDebt>,
-    running: std::sync::atomic::AtomicBool,
+    runner: std::sync::Mutex<Option<std::thread::ThreadId>>,
+    runner_released: std::sync::Condvar,
 }
 
-struct FlightRun<'a>(&'a std::sync::atomic::AtomicBool);
+struct FlightRun<'a>(&'a BudgetFlushFlight);
 impl Drop for FlightRun<'_> {
     fn drop(&mut self) {
-        self.0.store(false, Ordering::Release);
+        *self.0.runner.lock().unwrap_or_else(|p| p.into_inner()) = None;
+        self.0.runner_released.notify_all();
     }
 }
 
@@ -311,7 +313,8 @@ impl GovState {
                     chunk: None,
                     finished: false,
                 }),
-                running: std::sync::atomic::AtomicBool::new(false),
+                runner: std::sync::Mutex::new(None),
+                runner_released: std::sync::Condvar::new(),
             });
             self.budget_flushes
                 .lock()
@@ -343,18 +346,39 @@ impl GovState {
     fn drive_budget_flush_flight(
         &self,
         flight: &Arc<BudgetFlushFlight>,
+        final_flush: bool,
     ) -> (usize, Option<RecordStoreError>) {
-        if flight
-            .running
-            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
-            .is_err()
         {
-            return (
-                0,
-                Some(RecordStoreError("raw usage chunk already in flight".into())),
-            );
+            let current = std::thread::current().id();
+            let mut runner = flight.runner.lock().unwrap_or_else(|p| p.into_inner());
+            loop {
+                match *runner {
+                    None => {
+                        *runner = Some(current);
+                        break;
+                    }
+                    Some(owner) if final_flush && owner != current => {
+                        // WriteBehind has no I/O deadline. The authoritative final caller must
+                        // join an existing owner before reconciling its unknown result.
+                        runner = flight
+                            .runner_released
+                            .wait(runner)
+                            .unwrap_or_else(|p| p.into_inner());
+                    }
+                    Some(owner) => {
+                        let reentrant_final = final_flush && owner == current;
+                        drop(runner);
+                        let message = if reentrant_final {
+                            "final raw usage flush reentered its own active store call"
+                        } else {
+                            "raw usage chunk already in flight"
+                        };
+                        return (0, Some(RecordStoreError(message.into())));
+                    }
+                }
+            }
         }
-        let _running = FlightRun(&flight.running);
+        let _running = FlightRun(flight);
         let mut confirmed = 0;
         loop {
             let chunk = {
@@ -444,7 +468,7 @@ impl GovState {
         }
     }
 
-    pub(super) fn resume_budget_flushes(&self) -> (usize, Vec<String>) {
+    pub(super) fn resume_budget_flushes(&self, final_flush: bool) -> (usize, Vec<String>) {
         let flights: Vec<_> = self
             .budget_flushes
             .lock()
@@ -452,17 +476,18 @@ impl GovState {
             .values()
             .cloned()
             .collect();
-        self.resume_budget_flush_list(flights)
+        self.resume_budget_flush_list(flights, final_flush)
     }
 
     pub(super) fn resume_budget_flush_list(
         &self,
         flights: Vec<Arc<BudgetFlushFlight>>,
+        final_flush: bool,
     ) -> (usize, Vec<String>) {
         let mut confirmed = 0;
         let mut errors = Vec::new();
         for flight in flights {
-            let (done, error) = self.drive_budget_flush_flight(&flight);
+            let (done, error) = self.drive_budget_flush_flight(&flight, final_flush);
             confirmed += done;
             if let Some(error) = error {
                 errors.push(format!("{}@{}: {error}", flight.bucket, flight.window));
@@ -481,7 +506,7 @@ impl GovState {
             .map(|(_, flight)| flight.clone())
             .collect();
         for flight in flights {
-            if let (_, Some(error)) = self.drive_budget_flush_flight(&flight) {
+            if let (_, Some(error)) = self.drive_budget_flush_flight(&flight, false) {
                 return Err(error);
             }
         }
