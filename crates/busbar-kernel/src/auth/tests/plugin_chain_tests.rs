@@ -77,6 +77,7 @@ impl busbar_contract::auth::AuthModule for PlatformRole {
 #[test]
 fn auth_plugin_role_binding_and_scope_cap_apply() {
     use busbar_contract::authz::Scope;
+    crate::snapshot::init();
 
     let mut cfg = chain_with("idp", serde_json::Map::new());
     // The chain entry caps this module at `read-only`, below the `full` the role would otherwise
@@ -123,16 +124,27 @@ fn auth_plugin_role_binding_and_scope_cap_apply() {
         busbar_contract::authz::Grants::of(Scope::Full),
         "role binds full under the provider name"
     );
-    // ..but the module's `max_admin_scope: read-only` ceiling caps the effective scope. Calling the
-    // actual `Grants::capped_by` production method (instead of re-implementing the ceiling with
-    // `std::cmp::min`) proves the real ceiling arithmetic under a provider name — a `full`
-    // binding capped by a `read-only` ceiling collapses to read-only.
-    let capped = bound.capped_by(Scope::ReadOnly);
-    assert_eq!(
-        capped,
-        busbar_contract::authz::Grants::of(Scope::ReadOnly),
-        "max_admin_scope caps the plugin module"
-    );
+    // Consume the configured ceiling through both production seams: the boot projection and the
+    // admin chain's credential -> provider -> binding -> ceiling resolution. Full is the positive
+    // control: merely ignoring the configured map would default this provider to read-only.
+    for (configured, expected) in [("read-only", Scope::ReadOnly), ("full", Scope::Full)] {
+        cfg.chain[0].max_admin_scope = Some(configured.into());
+        let mut app = crate::test_support::TestApp::new()
+            .admin_chain(vec!["idp".into()])
+            .admin_module("idp", Box::new(PlatformRole))
+            .role_bindings(cfg.role_bindings.clone())
+            .build();
+        std::sync::Arc::get_mut(&mut app)
+            .expect("fresh app is unshared")
+            .auth_scope_caps = crate::router::project_auth_scope_caps(&cfg);
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert("authorization", "Bearer alice".parse().unwrap());
+        assert_eq!(
+            crate::auth::dry_run_admin_scope(&app, &headers),
+            busbar_contract::authz::Grants::of(expected),
+            "the configured {configured} ceiling must reach the real admin authorization path"
+        );
+    }
 }
 
 /// FAIL-CLOSED: a configured auth plugin with NO matching tarball is a loud boot error at both
