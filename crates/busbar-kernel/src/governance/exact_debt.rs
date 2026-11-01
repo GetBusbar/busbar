@@ -210,13 +210,52 @@ pub(super) struct BudgetFlushFlight {
     bucket: String,
     window: u64,
     debt: std::sync::Mutex<FlightDebt>,
-    running: std::sync::atomic::AtomicBool,
+    runner: BudgetFlushRunner,
 }
 
-struct FlightRun<'a>(&'a std::sync::atomic::AtomicBool);
-impl Drop for FlightRun<'_> {
+/// A runner's ownership marker, never a mutex held across a store call. Both a whole flush and
+/// each retained flight use this handoff so the final caller can join existing work.
+#[derive(Default)]
+pub(super) struct BudgetFlushRunner {
+    owner: std::sync::Mutex<Option<std::thread::ThreadId>>,
+    released: std::sync::Condvar,
+}
+
+pub(super) struct BudgetFlushRun<'a>(&'a BudgetFlushRunner);
+impl Drop for BudgetFlushRun<'_> {
     fn drop(&mut self) {
-        self.0.store(false, Ordering::Release);
+        *self.0.owner.lock().unwrap_or_else(|p| p.into_inner()) = None;
+        self.0.released.notify_all();
+    }
+}
+
+impl BudgetFlushRunner {
+    pub(super) fn enter(&self, final_flush: bool) -> Result<BudgetFlushRun<'_>, &'static str> {
+        let current = std::thread::current().id();
+        let mut owner = self.owner.lock().unwrap_or_else(|p| p.into_inner());
+        loop {
+            match *owner {
+                None => {
+                    *owner = Some(current);
+                    drop(owner);
+                    return Ok(BudgetFlushRun(self));
+                }
+                Some(active) if final_flush && active != current => {
+                    // WriteBehind has no I/O deadline. The authoritative final caller must join
+                    // an existing owner before reconciling its result and capturing later debt.
+                    owner = self.released.wait(owner).unwrap_or_else(|p| p.into_inner());
+                }
+                Some(active) => {
+                    let reentrant_final = final_flush && active == current;
+                    drop(owner);
+                    return Err(if reentrant_final {
+                        "final budget flush reentered its own active store call"
+                    } else {
+                        "budget flush already in flight"
+                    });
+                }
+            }
+        }
     }
 }
 
@@ -254,9 +293,10 @@ impl GovState {
             .contains(bucket)
     }
 
-    /// Called with this bucket's shard held. Transfer exact debt only when a single legacy delta
-    /// cannot represent it. Small ordinary writes retain their established path.
-    pub(super) fn capture_large_budget_flushes(
+    /// Called with this bucket's shard held. Capable stores give every nonzero outbound delta
+    /// retained custody. Legacy stores retain their ordinary path for representable debt;
+    /// oversized debt still requires the existing exact batch primitive.
+    pub(super) fn capture_budget_flushes(
         &self,
         bucket: &str,
         cell: &mut BudgetCell,
@@ -296,7 +336,9 @@ impl GovState {
                 dated.merge(&current_dated);
             }
             requires_chunks |= plain.signed().is_none() || dated.signed().is_none();
-            if !requires_chunks {
+            if (plain.is_zero() && dated.is_zero())
+                || (!requires_chunks && !self.store.supports_usage_batch_deduped())
+            {
                 continue;
             }
             let flight = Arc::new(BudgetFlushFlight {
@@ -308,7 +350,7 @@ impl GovState {
                     chunk: None,
                     finished: false,
                 }),
-                running: std::sync::atomic::AtomicBool::new(false),
+                runner: BudgetFlushRunner::default(),
             });
             self.budget_flushes
                 .lock()
@@ -340,18 +382,12 @@ impl GovState {
     fn drive_budget_flush_flight(
         &self,
         flight: &Arc<BudgetFlushFlight>,
+        final_flush: bool,
     ) -> (usize, Option<RecordStoreError>) {
-        if flight
-            .running
-            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
-            .is_err()
-        {
-            return (
-                0,
-                Some(RecordStoreError("raw usage chunk already in flight".into())),
-            );
-        }
-        let _running = FlightRun(&flight.running);
+        let _running = match flight.runner.enter(final_flush) {
+            Ok(running) => running,
+            Err(message) => return (0, Some(RecordStoreError(message.into()))),
+        };
         let mut confirmed = 0;
         loop {
             let chunk = {
@@ -441,7 +477,7 @@ impl GovState {
         }
     }
 
-    pub(super) fn resume_large_budget_flushes(&self) -> (usize, Vec<String>) {
+    pub(super) fn resume_budget_flushes(&self, final_flush: bool) -> (usize, Vec<String>) {
         let flights: Vec<_> = self
             .budget_flushes
             .lock()
@@ -449,17 +485,18 @@ impl GovState {
             .values()
             .cloned()
             .collect();
-        self.resume_budget_flush_list(flights)
+        self.resume_budget_flush_list(flights, final_flush)
     }
 
     pub(super) fn resume_budget_flush_list(
         &self,
         flights: Vec<Arc<BudgetFlushFlight>>,
+        final_flush: bool,
     ) -> (usize, Vec<String>) {
         let mut confirmed = 0;
         let mut errors = Vec::new();
         for flight in flights {
-            let (done, error) = self.drive_budget_flush_flight(&flight);
+            let (done, error) = self.drive_budget_flush_flight(&flight, final_flush);
             confirmed += done;
             if let Some(error) = error {
                 errors.push(format!("{}@{}: {error}", flight.bucket, flight.window));
@@ -478,7 +515,7 @@ impl GovState {
             .map(|(_, flight)| flight.clone())
             .collect();
         for flight in flights {
-            if let (_, Some(error)) = self.drive_budget_flush_flight(&flight) {
+            if let (_, Some(error)) = self.drive_budget_flush_flight(&flight, false) {
                 return Err(error);
             }
         }
