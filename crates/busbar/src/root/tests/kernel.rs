@@ -471,22 +471,96 @@ fn the_holder_hands_a_reader_the_whole_history_and_an_unresolved_node_none() {
 /// the date half's `history` (what `busbar_kernel::rate_apply::dated_history` hands the admin
 /// usage read and the budget book) is the holder's.
 ///
-/// A delegation is the whole implementation, so the assertion is that the two readings agree —
-/// an implementor that built its own history would answer a different length the moment the
-/// process's moved, and an invoice would be priced against a history no apply ever reached.
+/// Run the populated process-history witness in its own test process so publishing its cards cannot
+/// change a concurrently running test's prices. The parent always kills and reaps an overdue child.
 #[test]
 fn the_usage_read_answers_with_the_process_history() {
     use busbar_kernel::rate_apply::RateEpoch as _;
-    assert_eq!(
-        CardRepricer.history().map(|h| h.len()),
-        ROOT_CARD.history().map(|h| h.len()),
-        "the read answers from a history the process never resolved"
+    const CHILD: &str = "BUSBAR_CARD_REPRICER_TEST_CHILD";
+    const WITNESS: &str = "populated CardRepricer history witness completed";
+    if std::env::var_os(CHILD).is_none() {
+        struct Child(std::process::Child);
+        impl Drop for Child {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+        let module = module_path!()
+            .split_once("::")
+            .expect("a crate-qualified module")
+            .1;
+        let mut child = Child(
+            std::process::Command::new(std::env::current_exe().unwrap())
+                .arg("--exact")
+                .arg(format!(
+                    "{module}::the_usage_read_answers_with_the_process_history"
+                ))
+                .arg("--nocapture")
+                .env(CHILD, "1")
+                .stdout(std::process::Stdio::piped())
+                .spawn()
+                .expect("the isolated test process starts"),
+        );
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        loop {
+            if let Some(status) = child.0.try_wait().expect("the test process status reads") {
+                use std::io::Read as _;
+                let mut output = String::new();
+                child
+                    .0
+                    .stdout
+                    .take()
+                    .unwrap()
+                    .read_to_string(&mut output)
+                    .unwrap();
+                assert!(
+                    status.success(),
+                    "the populated process-history witness failed: {status}"
+                );
+                assert!(
+                    output.contains(WITNESS),
+                    "the exact child test did not complete its witness: {output}"
+                );
+                return;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the isolated history test did not exit"
+            );
+            std::thread::park_timeout(std::time::Duration::from_millis(5));
+        }
+    }
+    assert!(
+        ROOT_CARD.history().is_none(),
+        "the child starts with no resolved history"
     );
-    assert_eq!(
-        CardRepricer.history().and_then(|h| h.head()),
-        ROOT_CARD.history().and_then(|h| h.head()),
-        "the read and the holder disagree about which entry is the head"
+    ROOT_CARD.apply(busbar_kernel_ledger::cost::RateCard::absent(3), 1_000);
+    ROOT_CARD.apply(busbar_kernel_ledger::cost::RateCard::absent(11), 2_000);
+    let held = CardRepricer
+        .history()
+        .expect("two actual applies are visible to the usage read");
+    let process = ROOT_CARD
+        .history()
+        .expect("the process holds those applies");
+    assert!(
+        Arc::ptr_eq(&held, &process),
+        "the read shares the actual process history"
     );
+    assert_eq!(held.len(), 2);
+    assert_eq!(
+        held.head(),
+        Some(busbar_kernel_ledger::cost::HistorySeq(1)),
+        "the read names the second real entry"
+    );
+    ROOT_CARD.apply(busbar_kernel_ledger::cost::RateCard::absent(29), 3_000);
+    let next = CardRepricer
+        .history()
+        .expect("the subsequent apply is visible");
+    assert_eq!(next.len(), 3);
+    assert!(Arc::ptr_eq(&next, &ROOT_CARD.history().unwrap()));
+    assert_eq!(held.len(), 2, "the earlier reader keeps its own snapshot");
+    println!("{WITNESS}");
 }
 
 /// The module names `[package.metadata.busbar.root-units]` lists, in manifest order.

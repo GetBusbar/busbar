@@ -63,6 +63,7 @@ pub mod carrier;
 pub mod compose;
 pub mod datagram;
 mod dialled;
+pub mod doors;
 pub mod dtls;
 pub mod endpoint;
 pub mod fetch;

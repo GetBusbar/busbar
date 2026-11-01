@@ -13,7 +13,8 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, RwLock};
 
 mod exact_debt;
-use exact_debt::{BudgetFlushFlight, ExactUsageDelta};
+use exact_debt::{BudgetFlushFlight, BudgetFlushRunner, ExactUsageDelta};
+mod metering_flush;
 
 use crate::diagnostics::{
     diag_debug, diag_warn, GOVERNANCE_KEY_RESERVED_NAMESPACE_COLLISION, LIMIT_WINDOW_UNRECOGNIZED,
@@ -853,6 +854,8 @@ pub struct GovState {
     /// Outbound raw debt and immutable chunk identities, retained until every chunk is confirmed.
     budget_flushes:
         std::sync::Mutex<std::collections::BTreeMap<(String, u64), Arc<BudgetFlushFlight>>>,
+    /// Joins all active budget drivers, including legacy ordinary snapshots, at final flush.
+    budget_flush_runner: BudgetFlushRunner,
     /// Local key deletion excludes creation of another outbound flight until its durable purge.
     deleting_budget_buckets: std::sync::Mutex<std::collections::BTreeSet<String>>,
     /// Write-behind ACCUMULATOR for metering rows, keyed by the stores' own upsert key
@@ -865,10 +868,10 @@ pub struct GovState {
     /// DRAINS this map (not a baseline like `budget`): metering cells are authoritative for
     /// nothing — nothing enforces against them, the store is the only consumer — so there is no
     /// running total to protect and a drained-empty entry needs no reaper. It IS growth-capped,
-    /// though: a sustained store-write outage keeps `flush_metering` re-queuing failed cells while new
-    /// ones arrive, so all accrual routes through `accrue_pending`, which bounds the map at
+    /// though: all fresh accrual routes through `accrue_pending`, which bounds each map at
     /// [`MAX_PENDING_METERING`] (as [`MAX_PENDING_METERING_PER_SHARD`] per shard) and coalesces the
-    /// overflow into a per-bucket sentinel rather than growing without bound or dropping billable usage.
+    /// overflow into a per-bucket sentinel rather than dropping billable usage. Supplied-ID stores
+    /// additionally retain at most one drained snapshot; legacy failures requeue into the shards.
     pending_metering: PendingMetering,
     /// Each bucket's last derived figure, read by the `/metrics` scrape (see [`money_view`]).
     money_view: state::money_view::MoneyView,
@@ -905,17 +908,10 @@ pub struct GovState {
     /// [`CacheOrder`] tickets every load and every patch: a load older than the last swap is
     /// dropped, and a load older than the last patch is redone. See [`CacheOrder`].
     refresh_order: Arc<CacheOrder>,
-    /// Serializes `revoke` per subject: two revokes of one key would otherwise each write a fresh
-    /// generation and patch the cache in the opposite order to their store writes.
-    revoke_claims: claims::ClaimSet<String>,
-    /// Serializes the SELF-SERVE mint upsert (`issue_self`/`refresh_self`) PER SUBJECT: each does a
-    /// current-binding CHECK then a write, and without this an issue racing a refresh could strand a
-    /// second enabled binding for the same `user:<sub>` (breaking the one-key-per-sub invariant that
-    /// justifies excluding self-keys from the anti-sprawl cap). A claim, not a lock: no lock is held
-    /// across the store writes, so a mint parked in the store holds up only its own subject's
-    /// logins (§11.13 M1). (The deterministic id already makes two concurrent *issues* idempotent
-    /// by id; this closes the issue/refresh interleaving and non-idempotent stores.)
-    self_mint_claims: claims::ClaimSet<String>,
+    /// Serializes existing-key mutations and self-serve minting per subject. One claim set
+    /// recognizes nested callback contention across both namespaces and refuses wait cycles.
+    /// Its mutex is released before store calls; unrelated keys keep progressing.
+    mutation_claims: claims::ClaimSet<MutationKey>,
     /// Whether the self-serve mint holds an admin's state and the minting provider
     /// ([`SELF_MINT_HOLDS_ADMIN_AND_PROVIDER_STATE`]); set from that const at construction.
     self_mint_holds: std::sync::atomic::AtomicBool,
@@ -939,6 +935,12 @@ pub struct GovState {
     /// material nor a deployment keyset, so a verified principal is never lent the empty reference.
     /// Zeroised on drop and never logged (`GovState` has no `Debug`).
     boot_caller_ref: zeroize::Zeroizing<[u8; 32]>,
+}
+
+#[derive(Clone, Eq, Ord, PartialEq, PartialOrd)]
+enum MutationKey {
+    Key(String),
+    Subject(String),
 }
 
 /// The order of the key caches' writes (see `GovState::refresh_order`). Every reload takes a
@@ -1138,7 +1140,7 @@ impl std::fmt::Display for SelfMintError {
 }
 
 /// THE single async door onto the self-serve mint path (`GovState::issue_self` /
-/// `GovState::refresh_self`). Both mint fns claim the subject in `self_mint_claims` — a blocking
+/// `GovState::refresh_self`). Both mint fns claim the subject in `mutation_claims` — a blocking
 /// wait, NOT an async one — and, still holding the claim, perform SYNCHRONOUS
 /// store I/O (`write_self_binding` -> `store.put_key`, and on refresh `store.delete_key`). A
 /// durable `Store` plugin implements those with real network/disk I/O. Calling either fn directly
@@ -1655,7 +1657,8 @@ impl MeterCounts {
 /// The price instant permits later back-dated corrections; it is never a pricing-version name.
 pub type MeterKey = (String, u64, String, String, u64, String, String);
 
-/// The cap on how many distinct [`MeterKey`] cells may sit unflushed in `pending_metering` at once.
+/// The cap on fresh [`MeterKey`] cells in the pending accumulator. Supplied-ID flushes can retain
+/// one additional drained snapshot of the same bounded shape until acknowledgement.
 ///
 /// Normal operation drains every ~100ms flush tick, so live cardinality is arrival-rate x the flush
 /// interval — nowhere near this. The cap only bites under a SUSTAINED governance-store WRITE OUTAGE
@@ -1685,7 +1688,7 @@ pub const METERING_OVERFLOW_LABEL: &str = "__aggregated__";
 /// Accrue `add` into the metering cell for `key`, holding the accumulator BOUNDED at
 /// [`MAX_PENDING_METERING`] distinct cells.
 ///
-/// The exactly-once contract: an EXISTING cell (including the overflow sentinel) always accumulates,
+/// The accumulation contract: an EXISTING cell (including the overflow sentinel) always accumulates,
 /// so retries and re-arriving keys never grow the map; a NEW cell is inserted only while there is
 /// room. When the map is full a new cell's counts are COALESCED into a per-bucket overflow sentinel —
 /// billable token/request totals are preserved (nothing is dropped), only per-key/model/provider/group/version
@@ -1775,16 +1778,18 @@ impl CoalesceWarn {
 /// is byte-identical to the single-lock version — only accruals whose key_ids land in DIFFERENT
 /// shards stop serializing.
 ///
-/// EXACTLY ONCE, preserved: the single-lock design leaned on `mem::take` being an atomic full-map
-/// swap so two concurrent flushes partition the arrivals and never double-send. Here each shard is
-/// `mem::take`n under its OWN lock, and a key never migrates shards, so that same partition argument
-/// holds per shard: every cell belongs to exactly one drain, and [`drain`](Self::drain) visits ALL
-/// shards so nothing is stranded. Accrual and drain on the same shard serialize on that shard's lock,
-/// so an accrual is either wholly before a drain (flushed this tick) or wholly after (next tick),
-/// never split.
+/// Every cell belongs to exactly one drain: each shard is swapped under its own lock and a key
+/// never migrates shards. Accrual is wholly before or after that swap. For supplied-ID stores,
+/// the immutable flight retains drained operations until acknowledgement; another drain waits
+/// until that snapshot is finished. Legacy stores retain their existing additive retry semantics.
 pub struct PendingMetering {
     shards: Box<[std::sync::Mutex<HashMap<MeterKey, MeterCounts>>]>,
     coalesce_warn: CoalesceWarn,
+    // One drained snapshot at most. New arrivals remain in the existing bounded shards until
+    // every immutable write here is acknowledged.
+    flight: std::sync::Mutex<std::collections::VecDeque<metering_flush::MeteringWrite>>,
+    flushing: std::sync::Mutex<Option<std::thread::ThreadId>>,
+    flush_finished: std::sync::Condvar,
 }
 
 impl Default for PendingMetering {
@@ -1800,6 +1805,9 @@ impl PendingMetering {
         Self {
             shards: shards.into_boxed_slice(),
             coalesce_warn: CoalesceWarn::default(),
+            flight: std::sync::Mutex::new(std::collections::VecDeque::new()),
+            flushing: std::sync::Mutex::new(None),
+            flush_finished: std::sync::Condvar::new(),
         }
     }
 
@@ -1853,6 +1861,11 @@ impl PendingMetering {
             for counts in map.values() {
                 sum.merge(counts.clone());
             }
+        }
+        let flight = self.flight.lock().unwrap_or_else(|p| p.into_inner());
+        len += flight.len();
+        for write in flight.iter() {
+            sum.merge(write.counts());
         }
         (len, sum)
     }
@@ -1999,6 +2012,10 @@ pub async fn purge_usage_windows(gov: &GovState) {
 #[cfg(test)]
 #[path = "tests/tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "tests/metering_flush_custody.rs"]
+mod metering_flush_custody_tests;
 
 #[cfg(test)]
 #[path = "tests/limits_tests.rs"]

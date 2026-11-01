@@ -18,7 +18,7 @@ use super::super::self_keys::{
 use super::super::{ChainVerdict, Principal};
 use crate::config::groups::{provision_child, GroupCfg};
 use crate::config::{RoleBindingCfg, RoleBindings};
-use crate::governance::{GovState, MemoryStore};
+use crate::governance::{GovState, MemoryStore, RecordStore as _};
 
 const SEED: [u8; 32] = [7u8; 32];
 
@@ -482,9 +482,8 @@ fn re_login_updates_allowed_pools_when_they_change() {
     );
 }
 
-/// N concurrent `issue_self` for ONE sub yield exactly ONE binding row (the deterministic id makes
-/// `put_key` idempotent; the self-mint lock also serializes the check→write so an issue/refresh
-/// interleaving can't strand a second enabled binding).
+/// Concurrent issue-only calls deduplicate to one deterministic binding. The separate overlap
+/// witness below exercises serialization against a refresh rather than relying on idempotent puts.
 #[test]
 fn concurrent_issue_self_yields_one_binding() {
     let gov = gov(); // Arc<GovState>
@@ -504,6 +503,248 @@ fn concurrent_issue_self_yields_one_binding() {
         1,
         "concurrent self-logins for one sub must leave exactly one binding"
     );
+}
+
+/// Pause one real mint's store write before it commits, without holding the backing store lock.
+struct RefreshOverlapStore {
+    inner: MemoryStore,
+    next_put: std::sync::Mutex<
+        Option<(
+            tokio::sync::oneshot::Sender<()>,
+            std::sync::mpsc::Receiver<()>,
+        )>,
+    >,
+}
+
+impl crate::governance::RecordStore for RefreshOverlapStore {
+    fn put_key(
+        &self,
+        key: &crate::governance::VirtualKey,
+    ) -> crate::governance::RecordStoreResult<()> {
+        let pause = self.next_put.lock().unwrap().take();
+        if let Some((entered, release)) = pause {
+            let _ = entered.send(());
+            release.recv_timeout(Duration::from_secs(10)).map_err(|_| {
+                crate::governance::RecordStoreError("test write was not released".into())
+            })?;
+        }
+        self.inner.put_key(key)
+    }
+
+    fn get_key(
+        &self,
+        id: &str,
+    ) -> crate::governance::RecordStoreResult<Option<crate::governance::VirtualKey>> {
+        self.inner.get_key(id)
+    }
+
+    fn list_keys(
+        &self,
+    ) -> crate::governance::RecordStoreResult<Vec<crate::governance::VirtualKey>> {
+        self.inner.list_keys()
+    }
+
+    fn delete_key(&self, id: &str) -> crate::governance::RecordStoreResult<()> {
+        self.inner.delete_key(id)
+    }
+
+    fn get_usage(
+        &self,
+        id: &str,
+        window: u64,
+    ) -> crate::governance::RecordStoreResult<crate::governance::UsageLedger> {
+        self.inner.get_usage(id, window)
+    }
+
+    fn put_usage(
+        &self,
+        id: &str,
+        window: u64,
+        ledger: &crate::governance::UsageLedger,
+    ) -> crate::governance::RecordStoreResult<()> {
+        self.inner.put_usage(id, window, ledger)
+    }
+
+    fn add_metering(
+        &self,
+        delta: &crate::governance::MeteringDelta,
+    ) -> crate::governance::RecordStoreResult<()> {
+        self.inner.add_metering(delta)
+    }
+
+    fn list_metering(
+        &self,
+        bucket: u64,
+    ) -> crate::governance::RecordStoreResult<Vec<crate::governance::MeteringRow>> {
+        self.inner.list_metering(bucket)
+    }
+}
+
+/// Exercise the hosted-login entry point, including admission, real group provisioning and the
+/// offloaded mint. A same-subject login/refresh must follow the parked refresh; another subject
+/// must still complete. Returning the old token or failing after a stale read is not serialization.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_login_or_refresh_overlapping_refresh_uses_the_surviving_binding() {
+    use crate::auth::login::{issue_self_key, SelfKeyIssue};
+
+    fn issued(answer: SelfKeyIssue) -> busbar_contract::redacted::Secret<String> {
+        match answer {
+            SelfKeyIssue::Issued { secret, .. } => secret,
+            other => panic!("the admitted identity must receive a key: {other:?}"),
+        }
+    }
+
+    for contender_refresh in [false, true] {
+        let store = Arc::new(RefreshOverlapStore {
+            inner: MemoryStore::new(),
+            next_put: std::sync::Mutex::new(None),
+        });
+        let gov = Arc::new(
+            GovState::new_with_signer(
+                store.clone(),
+                None,
+                Some(crate::governance::signing::TokenSigner::from_secret_bytes(
+                    &SEED,
+                    crate::governance::signing::DEFAULT_KID,
+                )),
+            )
+            .unwrap(),
+        );
+        let groups = serde_yaml::from_str(
+            "team: {}\nuser:sam: {parent: team}\nuser:other: {parent: team}\n",
+        )
+        .unwrap();
+        let app = crate::test_support::TestApp::new()
+            .governance(gov.clone())
+            .groups_tree(groups)
+            .role_bindings(bindings("corp", "eng", Some("team")))
+            .build();
+        let handle = Arc::new(crate::state::AppHandle::new(app));
+        let app = handle.snapshot();
+        let original =
+            issued(issue_self_key(&app, &handle, "corp", principal("sam", &["eng"]), false).await);
+        let now = busbar_kernel::store::now();
+        let original_id = gov
+            .verify_token(original.expose(&crate::seal::lend()), now, None)
+            .expect("the initial token verifies")
+            .id
+            .clone();
+
+        let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        *store.next_put.lock().unwrap() = Some((entered_tx, release_rx));
+        let first_handle = handle.clone();
+        let first = tokio::spawn(async move {
+            let app = first_handle.snapshot();
+            issue_self_key(
+                &app,
+                &first_handle,
+                "corp",
+                principal("sam", &["eng"]),
+                true,
+            )
+            .await
+        });
+        if !matches!(
+            tokio::time::timeout(Duration::from_secs(5), entered_rx).await,
+            Ok(Ok(()))
+        ) {
+            let _ = release_tx.send(());
+            let _ = first.await;
+            panic!("refresh did not reach the real store write");
+        }
+
+        let waiting = gov.observe_self_mint_wait("sam");
+        let next_handle = handle.clone();
+        let contender = tokio::spawn(async move {
+            let app = next_handle.snapshot();
+            issue_self_key(
+                &app,
+                &next_handle,
+                "corp",
+                principal("sam", &["eng"]),
+                contender_refresh,
+            )
+            .await
+        });
+        let contended = tokio::time::timeout(Duration::from_secs(5), async {
+            while !waiting.load(std::sync::atomic::Ordering::Acquire) {
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+        })
+        .await
+        .is_ok();
+        // This control walks the same provisioning/offload/store path while Sam's write is held.
+        // It also prevents a process-wide mint lock from passing the same-subject assertion.
+        let other_handle = handle.clone();
+        let mut other = tokio::spawn(async move {
+            let app = other_handle.snapshot();
+            issue_self_key(
+                &app,
+                &other_handle,
+                "corp",
+                principal("other", &["eng"]),
+                false,
+            )
+            .await
+        });
+        let other_progress = tokio::time::timeout(Duration::from_secs(2), &mut other).await;
+        let other_completed_while_parked = other_progress.is_ok();
+        let completed_while_parked = contender.is_finished();
+
+        // Release and join before assertions, including when the broken path completed early.
+        let _ = release_tx.send(());
+        let first = first.await;
+        let contender = contender.await;
+        let other = match other_progress {
+            Ok(answer) => answer,
+            Err(_) => other.await,
+        };
+        assert!(contended, "the overlapping caller must reach the subject's contended wait while refresh is parked");
+        assert!(
+            other_completed_while_parked,
+            "another subject progresses while this refresh is parked"
+        );
+        let other = issued(other.unwrap());
+        let first = issued(first.unwrap());
+        let contender = issued(contender.unwrap());
+        assert!(
+            !completed_while_parked,
+            "the same subject must wait for its refresh transfer"
+        );
+
+        let now = busbar_kernel::store::now();
+        assert!(gov
+            .verify_token(original.expose(&crate::seal::lend()), now, None)
+            .is_none());
+        let surviving = gov
+            .verify_token(contender.expose(&crate::seal::lend()), now, None)
+            .expect("the overlapping caller receives the surviving token");
+        assert_ne!(surviving.id, original_id);
+        let first_live = gov.verify_token(first.expose(&crate::seal::lend()), now, None);
+        if contender_refresh {
+            assert!(
+                first_live.is_none(),
+                "the second refresh invalidates the first refresh's token"
+            );
+        } else {
+            assert_eq!(
+                first_live.expect("a login reuses the refreshed binding").id,
+                surviving.id
+            );
+        }
+        assert!(gov
+            .verify_token(other.expose(&crate::seal::lend()), now, None)
+            .is_some());
+        let live = self_rows(&gov, "sam");
+        assert_eq!(live.len(), 1, "overlap leaves one live self binding");
+        assert_eq!(live[0].id, surviving.id);
+        let old = store.get_key(&original_id).unwrap().unwrap();
+        assert!(
+            !old.enabled && old.deleted_at.is_some(),
+            "the original binding stays tombstoned"
+        );
+    }
 }
 
 // ── admit_self_mint: the mint ceiling binds the self-serve mint (X-1001) ─────────────────────────

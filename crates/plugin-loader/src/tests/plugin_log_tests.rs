@@ -693,6 +693,47 @@ fn a_failed_rotation_is_reported_once_and_keeps_every_line() {
     );
 }
 
+#[test]
+fn a_successful_live_rename_resets_the_byte_retry_even_when_retention_fails() {
+    let dir = scratch("rotate-partial-recovery");
+    let mut cfg = config(&dir, LogLevel::Info);
+    cfg.rotate_bytes = Some(200);
+    cfg.keep = 2;
+    let s = cfg
+        .sink("partial", witness::KIND, Arc::new(NoSink))
+        .expect("the sink opens")
+        .with_clock(fixed_clock);
+    let live = dir.join("export.partial.log");
+    let first = dir.join("export.partial.log.1");
+    let second = dir.join("export.partial.log.2");
+    std::fs::create_dir_all(first.join("held")).expect("block live rename");
+    std::fs::create_dir_all(second.join("held")).expect("block retention");
+    info(&s, format!("initial {}", "x".repeat(1024)).as_bytes());
+    s.flush();
+    info(&s, format!("failed {}", "x".repeat(1024)).as_bytes());
+    s.flush();
+    let failed = std::fs::read_to_string(&live).expect("failed rotation keeps live file");
+    assert!(failed.contains("could not be rotated"));
+    std::fs::remove_dir_all(&first).expect("allow the live rename alone");
+    info(
+        &s,
+        format!("partial-success {}", "x".repeat(1024)).as_bytes(),
+    );
+    s.flush();
+    let archived = std::fs::read_to_string(&first).expect("live file renamed despite retention");
+    assert!(archived.contains("initial") && archived.contains("failed"));
+    std::fs::remove_dir_all(&second).expect("allow all subsequent rotation steps");
+    info(&s, b"next-file");
+    s.flush();
+    let archived = std::fs::read_to_string(&first).expect("the new file reaches its own limit");
+    let current = std::fs::read_to_string(&live).expect("a third file is open");
+    drop(s);
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(archived.contains("partial-success"), "{archived}");
+    assert!(!current.contains("partial-success"), "{current}");
+    assert!(current.contains("next-file"), "{current}");
+}
+
 /// **RED ARM: A PATH IS ROTATED AS ITSELF.** A directory whose name is not UTF-8 rotates its own
 /// file: no lossy copy of its name is renamed in its place.
 #[cfg(target_os = "linux")]

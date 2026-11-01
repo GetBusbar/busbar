@@ -81,6 +81,30 @@ fn b64(bytes: &[u8]) -> Bytes {
     )
 }
 
+/// A fresh 24-character PostgreSQL SCRAM nonce (printable ASCII excluding comma).
+///
+/// # Errors
+/// The operating system could not provide cryptographic randomness.
+pub fn pg_scram_nonce() -> Result<String, Refused> {
+    let mut nonce = String::with_capacity(24);
+    while nonce.len() < 24 {
+        let mut random = [0u8; 32];
+        getrandom::fill(&mut random).map_err(|_| Refused("no randomness for the SCRAM nonce"))?;
+        for b in random {
+            // Rejection sampling gives each of postgres-protocol's 93 characters equal weight.
+            if b >= 186 {
+                continue;
+            }
+            let c = 0x21 + b % 93;
+            nonce.push(if c == b',' { '~' } else { c as char });
+            if nonce.len() == 24 {
+                break;
+            }
+        }
+    }
+    Ok(nonce)
+}
+
 /// What a SCRAM exchange left to check: the server's signature, held until the server-final
 /// message arrives. Use it once.
 #[allow(missing_debug_implementations)]
@@ -89,9 +113,29 @@ pub struct ScramLink(Held<Zeroizing<[u8; 32]>>);
 impl ScramLink {
     /// Whether `server_final` (`v=<base64>`) proves the server knew the password.
     pub fn verify(self, server_final: &str) -> bool {
-        let Some(v) = server_final.split(',').find_map(|a| a.strip_prefix("v=")) else {
+        // A verifier is the first attribute; an error, duplicate, or malformed extension
+        // cannot accompany it. Keep extension parsing deterministic and allocation-free.
+        let mut attrs = server_final.split(',');
+        let Some(v) = attrs.next().and_then(|a| a.strip_prefix("v=")) else {
             return false;
         };
+        let mut seen = [false; 128];
+        seen[b'v' as usize] = true;
+        for attr in attrs {
+            let b = attr.as_bytes();
+            if b.len() < 3
+                || !b[0].is_ascii_alphabetic()
+                || b[1] != b'='
+                || matches!(b[0], b'e' | b'm')
+                || seen[b[0] as usize]
+                || !b[2..]
+                    .iter()
+                    .all(|b| matches!(b, b'!'..=b'+' | b'-'..=b'~'))
+            {
+                return false;
+            }
+            seen[b[0] as usize] = true;
+        }
         let Ok(got) = base64::engine::general_purpose::STANDARD.decode(v) else {
             return false;
         };
@@ -308,6 +352,9 @@ impl Cred {
     /// S4; none written allows only SCRAM-SHA-256).
     pub fn pg_password_message(&self) -> Result<Seal, Refused> {
         self.pg_allows(PgAuth::Password, PG_CLEARTEXT_REFUSED)?;
+        if self.wire().contains(&0) {
+            return Err(Refused("NUL byte in PostgreSQL cleartext password"));
+        }
         Ok(pg_message(self, self.wire()))
     }
 
@@ -344,7 +391,26 @@ impl Cred {
     ) -> Result<(Seal, ScramLink), Refused> {
         self.pg_allows(PgAuth::ScramSha256, PG_SCRAM_REFUSED)?;
         let (client_final, link) =
-            self.scram_sha256(client_first_bare, server_first, channel_binding)?;
+            self.scram_sha256(client_first_bare, server_first, channel_binding, false)?;
+        Ok((pg_message_raw(self, &client_final), link))
+    }
+
+    /// PostgreSQL store counterpart with its native positive iteration range 1..=100000.
+    /// Password preparation uses the shared frozen Unicode 3.2 profile; modern-Unicode native
+    /// preparation may differ. The public generic recipe retains its existing iteration policy.
+    ///
+    /// # Errors
+    /// A malformed SCRAM exchange, a nonpositive/leading-zero count, a count above 100000,
+    /// or a method excluded by the operator's auth floor.
+    pub fn pg_scram_sha256_postgres(
+        &self,
+        client_first_bare: &str,
+        server_first: &str,
+        channel_binding: &[u8],
+    ) -> Result<(Seal, ScramLink), Refused> {
+        self.pg_allows(PgAuth::ScramSha256, PG_SCRAM_REFUSED)?;
+        let (client_final, link) =
+            self.scram_sha256(client_first_bare, server_first, channel_binding, true)?;
         Ok((pg_message_raw(self, &client_final), link))
     }
 
@@ -353,6 +419,7 @@ impl Cred {
         client_first_bare: &str,
         server_first: &str,
         channel_binding: &[u8],
+        postgres: bool,
     ) -> Result<(Bytes, ScramLink), Refused> {
         const BAD: Refused = Refused("the SCRAM server-first message is malformed");
         let attr = |msg: &'_ str, k: &str| -> Option<String> {
@@ -370,11 +437,19 @@ impl Cred {
         let salt = base64::engine::general_purpose::STANDARD
             .decode(attr(server_first, "s=").ok_or(BAD)?)
             .map_err(|_| BAD)?;
-        let iterations: u32 = attr(server_first, "i=")
-            .ok_or(BAD)?
-            .parse()
-            .map_err(|_| BAD)?;
-        if !(4096..=1_000_000).contains(&iterations) {
+        let iteration_text = attr(server_first, "i=").ok_or(BAD)?;
+        if postgres
+            && (!matches!(iteration_text.as_bytes().first(), Some(b'1'..=b'9'))
+                || !iteration_text.bytes().all(|b| b.is_ascii_digit()))
+        {
+            return Err(BAD);
+        }
+        let iterations: u32 = iteration_text.parse().map_err(|_| BAD)?;
+        if postgres {
+            if !(1..=100_000).contains(&iterations) {
+                return Err(Refused("the SCRAM iteration count is outside 1..=100000"));
+            }
+        } else if !(4096..=1_000_000).contains(&iterations) {
             return Err(Refused(
                 "the SCRAM iteration count is outside 4096..=1000000",
             ));

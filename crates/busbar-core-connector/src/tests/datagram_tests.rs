@@ -42,6 +42,9 @@ const HOST_PWD: &str = "host-password-0123456789";
 const FAR_UFRAG: &str = "farfrag";
 const FAR_PWD: &str = "far-password-0123456789";
 
+#[path = "datagram_turn_tests.rs"]
+mod turn_tests;
+
 fn p(s: &str) -> SocketAddr {
     s.parse().expect("addr")
 }
@@ -2185,7 +2188,14 @@ fn what_an_association_out_on_a_crossing_is_owed_its_holder_runs_in_order() {
     let _ = release.send(());
     let (ok, answered) = holder.join().unwrap();
     assert!(ok);
-    assert!(matches!(answered.as_slice(), [(id, Ok(_))] if *id == a));
+    assert!(
+        matches!(
+            answered.as_slice(),
+            [(first, Ok(_)), (datagram, Ok(_)), (second, Ok(_))]
+                if *first == a && *datagram == a && *second == a
+        ),
+        "both Emits and the intervening datagram retain their answers in order"
+    );
     assert_eq!(
         lanes(&da)[before..],
         [0, LANE_CLEAR, 0],

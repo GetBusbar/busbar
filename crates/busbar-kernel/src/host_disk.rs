@@ -10,8 +10,8 @@
 //! * **One thread, in order.** Appends run one at a time in the order they were submitted, so the
 //!   lines one sink hands over land in that order and two instances writing one file never
 //!   interleave inside a write.
-//! * **Bounded.** At most [`LANE_BOUND`] appends are held; past it an append is answered FAILED at
-//!   once ([`LANE_FULL`]), never queued without bound.
+//! * **Bounded.** At most [`LANE_BOUND`] appends are queued, beside one running append; past it an
+//!   append is answered FAILED at once ([`LANE_FULL`]), never queued without bound.
 //! * **1.5.5's write.** Each append opens the file for append (created if absent) and writes the
 //!   bytes whole: a file an external rotator moved aside is never written through a stale handle,
 //!   and an unopenable path is a per-append failure the plugin reports, never a refused boot.
@@ -38,33 +38,34 @@ use busbar_contract::abi::host::service::{
 };
 use busbar_contract::services::{DiskDest, DiskReport, DiskRotate, Later};
 
-/// The most appends the lane holds, queued or running.
+/// The most queued jobs each executor holds, beside its one running job.
 pub const LANE_BOUND: usize = 4096;
 
 /// The most archives one rotation may keep: a bound on the renames one append can cost.
 pub const MAX_KEEP: u32 = 64;
 
-/// A FAILED append's text when the lane holds [`LANE_BOUND`] appends already.
+/// A refusal's text when the relevant executor's queue holds [`LANE_BOUND`] jobs already.
 pub const LANE_FULL: &str = "the host's disk lane is full";
 
 /// A FAILED append's text when the lane thread could not be started or has gone.
 pub const LANE_GONE: &str = "the host's disk lane is not running";
 
-/// One job the lane owes: an append, or a config-time read a disk-declared secret source runs here
-/// (THE DESIGN §11.11 R4 as the OWNER amended it, 2026-10-13).
-enum Job {
-    Append {
-        dest: DiskDest,
-        bytes: Vec<u8>,
-        later: Later,
-    },
-    Run(Box<dyn FnOnce() + Send>),
+/// One append the FIFO executor owes.
+struct Append {
+    dest: DiskDest,
+    bytes: Vec<u8>,
+    later: Later,
 }
 
-/// THE LANE: one thread, started on the first append, fed through a bounded queue.
+type SecretJob = Box<dyn FnOnce() + Send>;
+
+/// The FIFO append executor and an isolated config-time secret executor, each lazy and bounded.
+/// A filesystem read cannot be interrupted by a caller deadline. It may occupy the secret thread
+/// until it returns, but can never occupy the append thread or reserve append queue space.
 #[derive(Debug, Default)]
 pub struct DiskLane {
-    tx: OnceLock<Option<SyncSender<Job>>>,
+    tx: OnceLock<Option<SyncSender<Append>>>,
+    secrets: OnceLock<Option<SyncSender<SecretJob>>>,
 }
 
 impl DiskLane {
@@ -77,25 +78,26 @@ impl DiskLane {
         let Some(tx) = self.tx.get_or_init(start) else {
             return Err(refused(LANE_GONE));
         };
-        match tx.try_send(Job::Append { dest, bytes, later }) {
+        match tx.try_send(Append { dest, bytes, later }) {
             Ok(()) => Ok(()),
             Err(TrySendError::Full(_)) => Err(refused(LANE_FULL)),
             Err(TrySendError::Disconnected(_)) => Err(refused(LANE_GONE)),
         }
     }
 
-    /// Run `job` on the lane thread, in order with the appends: a disk-declared secret source's
-    /// config-time `resolve` (THE DESIGN §11.11 R4, OWNER 2026-10-13). The lane's bound holds it as
-    /// it holds an append; the caller waits for the job's own answer with its own deadline.
+    /// Run a disk-declared secret source's config-time `resolve` on its own thread. Its queue
+    /// holds at most [`LANE_BOUND`] jobs, independently of appends, with one running job. A blocked
+    /// filesystem read keeps that one thread until it returns; the caller's deadline does not
+    /// cancel a running read. No worker is created per job, even after a deadline expires.
     ///
     /// # Errors
     ///
     /// The lane is full ([`LANE_FULL`]) or not running ([`LANE_GONE`]); `job` is dropped unrun.
     pub fn run(&self, job: Box<dyn FnOnce() + Send>) -> Result<(), &'static str> {
-        let Some(tx) = self.tx.get_or_init(start) else {
+        let Some(tx) = self.secrets.get_or_init(start_secrets) else {
             return Err(LANE_GONE);
         };
-        match tx.try_send(Job::Run(job)) {
+        match tx.try_send(job) {
             Ok(()) => Ok(()),
             Err(TrySendError::Full(_)) => Err(LANE_FULL),
             Err(TrySendError::Disconnected(_)) => Err(LANE_GONE),
@@ -103,7 +105,7 @@ impl DiskLane {
     }
 }
 
-/// The name of the lane's one thread: a job can tell it runs there.
+/// The name of the FIFO append thread.
 pub const LANE_THREAD: &str = "busbar-disk-lane";
 
 /// A FAILED report for an append that never reached the file.
@@ -117,27 +119,31 @@ const fn refused(why: &'static str) -> DiskReport {
 }
 
 /// Start the lane thread; `None` when the operating system will not give one.
-fn start() -> Option<SyncSender<Job>> {
-    let (tx, rx) = sync_channel::<Job>(LANE_BOUND);
+fn start() -> Option<SyncSender<Append>> {
+    let (tx, rx) = sync_channel::<Append>(LANE_BOUND);
     std::thread::Builder::new()
         .name(LANE_THREAD.into())
         .spawn(move || {
+            for Append { dest, bytes, later } in rx {
+                let report = append(&dest, &bytes);
+                // A completion panic cannot disconnect appends queued behind it.
+                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+                    later(report.stored());
+                }));
+            }
+        })
+        .ok()
+        .map(|_| tx)
+}
+
+/// Start the one secret executor separately: a hung read cannot starve the append executor.
+fn start_secrets() -> Option<SyncSender<SecretJob>> {
+    let (tx, rx) = sync_channel::<SecretJob>(LANE_BOUND);
+    std::thread::Builder::new()
+        .name("busbar-disk-secrets".into())
+        .spawn(move || {
             for job in rx {
-                match job {
-                    // An append whose completion panics is its own failure, never the lane's: the
-                    // appends behind it still run and answer.
-                    Job::Append { dest, bytes, later } => {
-                        let report = append(&dest, &bytes);
-                        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
-                            later(report.stored());
-                        }));
-                    }
-                    // A job that panics is its own failure, never the lane's: the appends behind it
-                    // still run.
-                    Job::Run(run) => {
-                        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(run));
-                    }
-                }
+                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(job));
             }
         })
         .ok()

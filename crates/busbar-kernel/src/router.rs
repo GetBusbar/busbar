@@ -24,15 +24,17 @@ pub(crate) const NO_UPSTREAM_RTT: u64 = u64::MAX;
 
 tokio::task_local! {
     // A router's physical ownership, retained across its middleware and handler future.
-    static PHYSICAL_REFUSER: Option<crate::plane_routes::PlaneRefuseByPathFn>;
+    static PHYSICAL_REFUSER: (bool, Option<crate::plane_routes::PlaneRefuseByPathFn>);
 }
 
 pub(crate) fn is_private_listener() -> bool {
-    PHYSICAL_REFUSER.try_with(|_| ()).is_ok()
+    PHYSICAL_REFUSER
+        .try_with(|(private, _)| *private)
+        .unwrap_or(false)
 }
 
 pub(crate) fn private_listener_scope<T>(f: impl FnOnce() -> T) -> T {
-    PHYSICAL_REFUSER.sync_scope(None, f)
+    PHYSICAL_REFUSER.sync_scope((true, None), f)
 }
 
 /// Render a native ingress error envelope (`application/json`) for the fallback handlers, in the
@@ -117,7 +119,7 @@ pub(crate) fn kernel_refusal_response(
             target,
         };
         let rendered = PHYSICAL_REFUSER
-            .try_with(|render| render.as_ref().and_then(|render| render(&refusal)))
+            .try_with(|(_, render)| render.as_ref().and_then(|render| render(&refusal)))
             .unwrap_or_else(|_| handle.door_refusal(&refusal));
         if let Some(rendered) = rendered {
             return rendered;
@@ -140,11 +142,12 @@ fn target_of(uri: &axum::http::Uri) -> &str {
 /// so an SDK sees a vendor-shaped error instead of a bare proxy tell.
 pub(crate) async fn method_not_allowed_handler(
     axum::extract::State(handle): axum::extract::State<std::sync::Arc<state::AppHandle>>,
+    state::CurrentApp(app): state::CurrentApp,
     uri: axum::http::Uri,
 ) -> axum::response::Response {
     kernel_refusal_response(
         &handle,
-        &handle.snapshot().planes,
+        &app.planes,
         busbar_contract::caps::ReasonCode::MethodNotAllowed,
         uri.path(),
         target_of(&uri),
@@ -156,11 +159,12 @@ pub(crate) async fn method_not_allowed_handler(
 
 async fn private_not_found(
     axum::extract::State(handle): axum::extract::State<std::sync::Arc<state::AppHandle>>,
+    state::CurrentApp(app): state::CurrentApp,
     uri: axum::http::Uri,
 ) -> axum::response::Response {
     kernel_refusal_response(
         &handle,
-        &handle.snapshot().planes,
+        &app.planes,
         busbar_contract::caps::ReasonCode::NoDestination,
         uri.path(),
         target_of(&uri),
@@ -214,6 +218,7 @@ pub(crate) const AXUM_BODY_LIMIT_413_MARKER: &[u8] = b"length limit exceeded";
 /// answered in the residual-default dialect's envelope.
 pub(crate) async fn reshape_body_limit_413(
     axum::extract::State(handle): axum::extract::State<std::sync::Arc<state::AppHandle>>,
+    state::CurrentApp(app): state::CurrentApp,
     req: axum::http::Request<axum::body::Body>,
     next: axum::middleware::Next,
 ) -> axum::response::Response {
@@ -226,12 +231,11 @@ pub(crate) async fn reshape_body_limit_413(
     if resp.status() != axum::http::StatusCode::PAYLOAD_TOO_LARGE {
         return resp;
     }
-    // The snapshot is taken AFTER the inner stack runs, so a config apply mid-request shapes the
-    // answer with the mount table that is live when the answer is written.
+    // The admitted mount table shapes this answer even if a new generation is published meanwhile.
     let render = || {
         kernel_refusal_response(
             &handle,
-            &handle.snapshot().planes,
+            &app.planes,
             busbar_contract::caps::ReasonCode::BodyTooLarge,
             &path,
             &target,
@@ -798,9 +802,7 @@ fn mount_plane_session(
         RouteMethod::Get,
         auth,
         move |upgrade: busbar_kernel::ingress::duplex_ws::SessionUpgrade,
-              axum::extract::State(handle): axum::extract::State<
-            std::sync::Arc<state::AppHandle>,
-        >,
+              state::CurrentApp(app): state::CurrentApp,
               _: axum::extract::RawPathParams,
               uri: axum::http::Uri,
               gov: Option<axum::extract::Extension<busbar_contract::records::PlaneRequestCtx>>,
@@ -826,7 +828,7 @@ fn mount_plane_session(
             let slot = slot.clone();
             let ctx_path = ctx_path.clone();
             async move {
-                let engine: std::sync::Arc<dyn std::any::Any + Send + Sync> = handle;
+                let engine: std::sync::Arc<dyn std::any::Any + Send + Sync> = app;
                 let ctx = busbar_kernel::plane_routes::PlaneReqCtx {
                     path: ctx_path,
                     uri,
@@ -867,16 +869,27 @@ pub(crate) fn apply_common_layers(
     request_body_max_bytes: usize,
     server_timing_enabled: bool,
 ) -> Router {
-    // THIS ROUTER's core route-auth table, handed to the auth middleware as a `&'static`
-    // borrow rather than through `axum::Extension`. The Extension form cost every request an
-    // insert into its extensions map plus two `Arc` refcount round-trips (the layer's clone in,
-    // the extractor's clone out) to deliver a value that never changes after this function runs:
-    // routers are built ONCE at boot and a config apply only `swap`s the `AppHandle` snapshot, so
-    // the table is process-immutable and the leak is one small allocation per router per process
-    // lifetime — not per apply, and nothing at request rate. Per-router (not per-process) on
-    // purpose, still: the data plane and the admin plane each leak THEIR OWN table, and a route's
-    // bypass belongs to the plane that serves it.
-    let core_routes: &'static crate::core_routes::CoreRouteTable = Box::leak(Box::new(core_routes));
+    let observe_mounts = handle.load().planes.has_mounts();
+    apply_common_layers_for_mounts(
+        router,
+        core_routes,
+        handle,
+        request_body_max_bytes,
+        server_timing_enabled,
+        observe_mounts,
+    )
+}
+
+fn apply_common_layers_for_mounts(
+    router: Router<std::sync::Arc<state::AppHandle>>,
+    core_routes: crate::core_routes::CoreRouteTable,
+    handle: &std::sync::Arc<state::AppHandle>,
+    request_body_max_bytes: usize,
+    server_timing_enabled: bool,
+    observe_mounts: bool,
+) -> Router {
+    // A discarded listener generation releases its table with its router.
+    let core_routes = std::sync::Arc::new(core_routes);
     let router = router
         // The router's state is a swappable `AppHandle` (the config-apply hot-swap seam). Every
         // handler reads the CURRENT snapshot via the `CurrentApp` extractor; the auth middleware
@@ -886,7 +899,8 @@ pub(crate) fn apply_common_layers(
             move |app: crate::state::CurrentApp,
                   req: axum::extract::Request,
                   next: axum::middleware::Next| {
-                auth::auth_middleware(app, core_routes, req, next)
+                let core_routes = core_routes.clone();
+                async move { auth::auth_middleware(app, &core_routes, req, next).await }
             },
         ))
         // Cap request body size (buffered before the handler) to bound per-request memory. Driven by
@@ -916,7 +930,7 @@ pub(crate) fn apply_common_layers(
     // the layer is behaviour-identical to running its no-op arm. This is the plugins-cost-nothing
     // contract made structural: a deployment that configured no plane carries NONE of the
     // plane machinery on its request path.
-    let router = if handle.load().planes.has_mounts() {
+    let router = if observe_mounts {
         router.layer(axum::middleware::from_fn_with_state(
             handle.clone(),
             crate::ingress::observe::observe,
@@ -1041,6 +1055,16 @@ where
         // tower's clone-out-of-`self` idiom (see `InboundAdmissionService::call`).
         let mut inner = self.inner.clone();
         let handle = self.handle.clone();
+        let selected = req
+            .extensions()
+            .get::<crate::inbound::RequestAdmission>()
+            .map(crate::inbound::RequestAdmission::app)
+            .or_else(|| {
+                req.extensions()
+                    .get::<std::sync::Arc<state::App>>()
+                    .cloned()
+            })
+            .unwrap_or_else(|| handle.load());
         let uri = req.uri().clone();
         let method = req.method().clone();
         Box::pin(async move {
@@ -1073,7 +1097,13 @@ where
             };
             match outcome {
                 Ok(r) => r,
-                Err(payload) => Ok(request_panicked(&handle, &method, &uri, payload.as_ref())),
+                Err(payload) => Ok(request_panicked(
+                    &handle,
+                    &selected,
+                    &method,
+                    &uri,
+                    payload.as_ref(),
+                )),
             }
         })
     }
@@ -1082,6 +1112,7 @@ where
 /// Log the caught panic once, with its location, and shape the one request's `500`.
 fn request_panicked(
     handle: &std::sync::Arc<state::AppHandle>,
+    selected: &state::App,
     method: &axum::http::Method,
     uri: &axum::http::Uri,
     payload: &(dyn std::any::Any + Send),
@@ -1106,7 +1137,7 @@ fn request_panicked(
     );
     kernel_refusal_response(
         handle,
-        &handle.load().planes,
+        &selected.planes,
         busbar_contract::caps::ReasonCode::Internal,
         uri.path(),
         target_of(uri),
@@ -1316,7 +1347,6 @@ pub fn build_split_routers_serving_listener(
     max_inbound_concurrent: usize,
     server_timing_enabled: bool,
 ) -> (Router, Router, std::sync::Arc<state::AppHandle>) {
-    let plugin_routes = app.plugin_routes.clone();
     let plane_slots = app.plane_slots.clone();
     let oauth_as = app.oauth_as.clone();
     let handle = std::sync::Arc::new(state::AppHandle::new(app));
@@ -1337,6 +1367,17 @@ pub fn build_split_routers_serving_listener(
         server_timing_enabled,
     );
     let data = apply_inbound_concurrency_limit(data, max_inbound_concurrent);
+    let admin = build_admin_router_on(&handle, request_body_max_bytes, server_timing_enabled);
+    (data, admin, handle)
+}
+
+/// The separate admin surface on the same publication handle as the physical data listeners.
+pub fn build_admin_router_on(
+    handle: &std::sync::Arc<state::AppHandle>,
+    request_body_max_bytes: usize,
+    server_timing_enabled: bool,
+) -> Router {
+    let plugin_routes = handle.load().plugin_routes.clone();
     // ADMIN plane: a liveness probe (unauthenticated, like the data plane's) + the admin surface +
     // the `admin`-auth plugin routes (confined to this listener exactly like `/api/v1/admin/*`).
     // `/healthz` bypasses auth so probes work on the admin port too; every `/api/v1/admin/*` route
@@ -1351,14 +1392,13 @@ pub fn build_split_routers_serving_listener(
         .into_parts();
     let admin = crate::admin::seam::mount_admin(admin);
     let admin = crate::plugin_routes::mount_plugin_routes(admin, &plugin_routes, true);
-    let admin = apply_common_layers(
+    apply_common_layers(
         admin,
         admin_core_routes,
-        &handle,
+        handle,
         request_body_max_bytes,
         server_timing_enabled,
-    );
-    (data, admin, handle)
+    )
 }
 
 /// Mount one additional physical data listener on the process's existing application handle.
@@ -1393,9 +1433,181 @@ pub fn build_data_router_on(
     apply_inbound_concurrency_limit(data, max_inbound_concurrent).layer(axum::middleware::from_fn(
         move |request: axum::extract::Request, next: axum::middleware::Next| {
             let refuse = refuse_by_path.clone();
-            async move { PHYSICAL_REFUSER.scope(refuse, next.run(request)).await }
+            async move {
+                PHYSICAL_REFUSER
+                    .scope((true, refuse), next.run(request))
+                    .await
+            }
         },
     ))
+}
+
+/// One candidate's fully constructed physical route partition, before publication. It owns no
+/// application handle, so discarding a candidate releases its handlers without a reference cycle.
+pub struct PreparedListener {
+    router: Router<std::sync::Arc<state::AppHandle>>,
+    core_routes: crate::core_routes::CoreRouteTable,
+    /// The same refusals lent to this physical listener's inbound auth host.
+    pub refusals: Vec<crate::plane_routes::PlaneRefusalSpec>,
+    refuse_by_path: Option<crate::plane_routes::PlaneRefuseByPathFn>,
+    root_surface: bool,
+}
+
+impl std::fmt::Debug for PreparedListener {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PreparedListener")
+            .field("root_surface", &self.root_surface)
+            .finish_non_exhaustive()
+    }
+}
+
+impl PreparedListener {
+    /// Construct and collision-check the actual router before a candidate can be kept.
+    ///
+    /// # Errors
+    /// A refusal has no matching route or the physical routes cannot be mounted together.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        app: &state::App,
+        plugins: &crate::plugin_routes::PluginRouteTable,
+        doors: Vec<crate::plane_routes::PlaneRouteSpec>,
+        sessions: Vec<crate::plane_routes::PlaneSessionSpec>,
+        refusals: Vec<crate::plane_routes::PlaneRefusalSpec>,
+        refuse_by_path: Option<crate::plane_routes::PlaneRefuseByPathFn>,
+        root_surface: bool,
+    ) -> Result<Self, String> {
+        crate::plane_routes::pair_door_refusals(&doors, &sessions, &refusals)?;
+        let (router, core_routes) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let empty_slots = std::collections::BTreeMap::new();
+            base_data_router_scoped(
+                plugins,
+                if root_surface {
+                    &app.plane_slots
+                } else {
+                    &empty_slots
+                },
+                if root_surface {
+                    app.oauth_as.as_ref()
+                } else {
+                    None
+                },
+                doors,
+                sessions,
+                root_surface,
+            )
+        }))
+        .map_err(|_| "candidate physical routes cannot be mounted together".to_string())?;
+        Ok(Self {
+            router,
+            core_routes: core_routes.with_door_refusals(refusals.clone()),
+            refusals,
+            refuse_by_path,
+            root_surface,
+        })
+    }
+
+    fn bind(
+        &self,
+        handle: &std::sync::Arc<state::AppHandle>,
+        app: &state::App,
+        body_limit: usize,
+        server_timing: bool,
+    ) -> Router {
+        let body_limit = app
+            .limits
+            .as_ref()
+            .map_or(body_limit, |limits| limits.request_body_max_bytes);
+        let router = apply_common_layers_for_mounts(
+            self.router.clone(),
+            self.core_routes.clone(),
+            handle,
+            body_limit,
+            server_timing,
+            app.planes.has_mounts(),
+        );
+        let refuse = self.refuse_by_path.clone();
+        let private = !self.root_surface;
+        router.layer(axum::middleware::from_fn(
+            move |request: axum::extract::Request, next: axum::middleware::Next| {
+                let refuse = refuse.clone();
+                async move {
+                    PHYSICAL_REFUSER
+                        .scope((private, refuse), next.run(request))
+                        .await
+                }
+            },
+        ))
+    }
+}
+
+struct CachedListener {
+    app: std::sync::Weak<state::App>,
+    router: Router,
+}
+
+/// Select actual handlers from the same immutable generation that admitted the request. Only
+/// the last bound router is cached here; candidate-owned prepared routers never retain this handle.
+pub fn serve_listener_generations(
+    handle: std::sync::Arc<state::AppHandle>,
+    select: impl Fn(&state::App) -> Option<std::sync::Arc<PreparedListener>> + Send + Sync + 'static,
+    request_body_max_bytes: usize,
+    max_inbound_concurrent: usize,
+    server_timing_enabled: bool,
+) -> Router {
+    use axum::response::IntoResponse as _;
+    use std::sync::{Arc, Mutex, Weak};
+    use tower::ServiceExt as _;
+    let cache: Arc<Mutex<Option<CachedListener>>> = Arc::default();
+    let select = Arc::new(select);
+    let serving_handle = Arc::clone(&handle);
+    let router = Router::new()
+        .fallback(
+            move |state::CurrentApp(app): state::CurrentApp,
+                  mut request: axum::extract::Request| {
+                let (cache, select, handle) =
+                    (cache.clone(), select.clone(), serving_handle.clone());
+                async move {
+                    request.extensions_mut().insert(Arc::clone(&app));
+                    let cached = cache
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .as_ref()
+                        .filter(|previous| Weak::ptr_eq(&previous.app, &Arc::downgrade(&app)))
+                        .map(|cached| cached.router.clone());
+                    let router = if let Some(router) = cached {
+                        router
+                    } else {
+                        let Some(prepared) = select(&app) else {
+                            return axum::http::StatusCode::SERVICE_UNAVAILABLE.into_response();
+                        };
+                        let router = prepared.bind(
+                            &handle,
+                            &app,
+                            request_body_max_bytes,
+                            server_timing_enabled,
+                        );
+                        let retired = {
+                            let mut cache = cache
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner);
+                            cache.replace(CachedListener {
+                                app: Arc::downgrade(&app),
+                                router: router.clone(),
+                            })
+                        };
+                        drop(retired);
+                        router
+                    };
+                    match router.oneshot(request).await {
+                        Ok(response) => response,
+                        Err(never) => match never {},
+                    }
+                }
+            },
+        )
+        .with_state(handle);
+    // Keep one admission gate across router generations, including old requests finishing late.
+    apply_inbound_concurrency_limit(router, max_inbound_concurrent)
 }
 
 /// Project the resolved `auth:` block onto [`state::App::auth_scope_caps`] — the per-PROVIDER admin

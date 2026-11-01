@@ -48,6 +48,85 @@ async fn an_empty_plane_set_still_stages_the_core_listener_lines() {
     );
 }
 
+#[tokio::test(flavor = "current_thread")]
+async fn detached_session_caller_preserves_text_and_closes_its_pipe_on_worker_shutdown() {
+    use busbar_kernel::plane_driver::{CallerEnd as _, SessionCaller as _};
+    use std::future::Future as _;
+    let tracker = busbar_kernel::detached::DetachedTasks::new();
+    busbar_kernel::detached::set_worker_detached(tracker.clone());
+    let (shutdown, stopped) = tokio::sync::watch::channel(false);
+    busbar_kernel::detached::set_worker_shutdown(stopped);
+    let (from, input) = tokio::sync::mpsc::channel(super::SESSION_QUEUE);
+    let (output, mut to) = tokio::sync::mpsc::channel(super::SESSION_QUEUE);
+    let caller = super::ClosingCaller::new(super::PipeCaller {
+        from: tokio::sync::Mutex::new(input),
+        to: output,
+    });
+    assert!(caller.write_text(b"session text").await);
+    let text = to.recv().await.unwrap();
+    assert!(
+        text.text,
+        "the shutdown wrapper preserves the caller's text framing"
+    );
+    assert_eq!(text.bytes, b"session text");
+    let task = busbar_kernel::detached::spawn_detached(async move { caller.read().await });
+    let mut drain = Box::pin(tracker.drained());
+    let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+    assert!(drain.as_mut().poll(&mut context).is_pending());
+    shutdown.send(true).unwrap();
+    assert!(
+        task.await.unwrap().is_none(),
+        "shutdown ends the pending caller read"
+    );
+    drain.await;
+    assert!(
+        from.is_closed(),
+        "the session releases its accepted input after closing"
+    );
+    assert!(
+        to.recv().await.is_none(),
+        "the session releases its output after closing"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_listener_subscribed_after_the_shutdown_broadcast_observes_the_level() {
+    let (broadcast, _earlier) = tokio::sync::broadcast::channel(1);
+    broadcast.send(()).unwrap();
+    let (shutdown, stopped) = tokio::sync::watch::channel(false);
+    busbar_kernel::detached::set_worker_shutdown(stopped);
+    shutdown.send(true).unwrap();
+    tokio::time::timeout(
+        busbar_kernel::detached::DETACHED_DRAIN_GRACE,
+        crate::recv_shutdown(broadcast.subscribe()),
+    )
+    .await
+    .expect("a late listener cannot miss the process shutdown");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_dropped_session_future_closes_its_admitted_carrier() {
+    let (started, running) = tokio::sync::oneshot::channel();
+    let (ended, closed) = tokio::sync::oneshot::channel();
+    let task = tokio::spawn(async move {
+        let _carrier = super::CarrierEnd {
+            unit: busbar_contract::UnitKey::new(1).get(),
+            ended: Some(Box::new(move |unit| {
+                let _ = ended.send(unit);
+            })),
+        };
+        let _ = started.send(());
+        std::future::pending::<()>().await;
+    });
+    running.await.unwrap();
+    task.abort();
+    assert!(task.await.unwrap_err().is_cancelled());
+    assert_eq!(
+        closed.await.unwrap(),
+        busbar_contract::UnitKey::new(1).get()
+    );
+}
+
 #[cfg(feature = "plane-decisions")]
 use std::collections::BTreeMap;
 #[cfg(feature = "plane-decisions")]
@@ -2070,6 +2149,81 @@ pub(super) mod session_door {
             next.contains("input_audio_buffer.commit"),
             "the next event carried is the readable one after it: {next}"
         );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn an_accepted_session_drains_and_settles_while_its_external_caller_stays_connected() {
+        use std::future::Future as _;
+        let _one = PUBLISHING.lock().await;
+        let detached = busbar_kernel::detached::DetachedTasks::new();
+        busbar_kernel::detached::set_worker_detached(detached.clone());
+        let (shutdown, stopped) = tokio::sync::watch::channel(false);
+        busbar_kernel::detached::set_worker_shutdown(stopped);
+        let far_end = far_socket_silent().await;
+        let mut s = session_with(
+            "serve-door-session-shutdown",
+            Opts {
+                far_end: Some(far_end),
+                ..Opts::default()
+            },
+        )
+        .await
+        .expect("the build links the session door");
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let router = s.router.clone();
+        let serving = tokio::spawn(async move {
+            let _ = axum::serve(listener, router.into_make_service()).await;
+        });
+        let mut caller = tokio::net::TcpStream::connect(address).await.unwrap();
+        let open = format!(
+            "GET {REALTIME} HTTP/1.1\r\nhost: {address}\r\nupgrade: websocket\r\nconnection: Upgrade\r\n\
+             sec-websocket-key: dGhlIHNhbXBsZSBub25jZQ==\r\nsec-websocket-version: 13\r\n\
+             authorization: Bearer {}\r\n\r\n", s.plain,
+        );
+        caller.write_all(open.as_bytes()).await.unwrap();
+        let head = tokio::time::timeout(
+            busbar_kernel::detached::DETACHED_DRAIN_GRACE,
+            read_head(&mut caller),
+        )
+        .await
+        .expect("the real session opens")
+        .unwrap();
+        assert!(
+            head.starts_with("HTTP/1.1 101"),
+            "the session is accepted: {head}"
+        );
+        caller
+            .write_all(&client_text(
+                r#"{"type":"input_audio_buffer.append","audio":"AAAA"}"#,
+            ))
+            .await
+            .unwrap();
+        assert!(
+            next_heard(&mut s.heard)
+                .await
+                .unwrap()
+                .contains("input_audio_buffer.append"),
+            "the accepted session has reached its actual provider before shutdown"
+        );
+        let mut draining = Box::pin(detached.drained());
+        let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+        assert!(
+            draining.as_mut().poll(&mut context).is_pending(),
+            "accepted session work belongs to the listener even while its caller is idle"
+        );
+        shutdown.send(true).unwrap();
+        tokio::time::timeout(busbar_kernel::detached::DETACHED_DRAIN_GRACE, draining)
+            .await
+            .expect("the session closes through its normal driver path inside the existing grace");
+        assert_eq!(
+            s.lines(),
+            1,
+            "the accepted session settles exactly once before drain returns"
+        );
+        drop(caller);
+        serving.abort();
+        let _ = serving.await;
     }
 
     /// HEAD-FIELDS (`BUSBAR-1.6.0.md` l.736: a transport always hands the response head up as the

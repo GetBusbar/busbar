@@ -700,3 +700,75 @@ fn an_empty_password_keeps_the_operators_floor() {
         .floor()
         .mysql_clear());
 }
+
+#[test]
+fn postgres_store_scram_keeps_native_positive_iteration_bounds() {
+    let c = cred("pencil");
+    for iterations in [1, 4095, 4096, 100_000] {
+        let first = format!("r=abcdef,s=QUJD,i={iterations}");
+        assert!(c
+            .pg_scram_sha256_postgres("n=,r=abc", &first, b"n,,")
+            .is_ok());
+    }
+    for iterations in ["0", "01", "+1", "-1", "100001", "4294967296", "1x", ""] {
+        let first = format!("r=abcdef,s=QUJD,i={iterations}");
+        assert!(c
+            .pg_scram_sha256_postgres("n=,r=abc", &first, b"n,,")
+            .is_err());
+    }
+    // The established generic recipe retains its stronger minimum.
+    assert!(c
+        .pg_scram_sha256("n=,r=abc", "r=abcdef,s=QUJD,i=4095", b"n,,")
+        .is_err());
+    let md5 = from_url("host=db user=u password=pencil require_auth=md5");
+    assert!(md5
+        .pg_scram_sha256_postgres("n=,r=abc", "r=abcdef,s=QUJD,i=1", b"n,,")
+        .is_err());
+}
+
+#[test]
+fn scram_server_final_rejects_ambiguous_or_malformed_attributes() {
+    const SIG: &str = "6rriTRBi23WpRR/wtup+mMhUZUn/dB5nLTJRsjl95G4=";
+    fn link() -> super::ScramLink {
+        cred("pencil").pg_scram_sha256_postgres(
+            "n=user,r=rOprNGfwEbeRWgbNEkqO",
+            "r=rOprNGfwEbeRWgbNEkqO%hvYDpWUa2RaTCAfuxFIlj)hNlF$k0,s=W22ZaJ0SNY7soEsUEjb6gQ==,i=4096",
+            b"n,,",
+        ).unwrap().1
+    }
+    assert!(link().verify(&format!("v={SIG}")));
+    assert!(link().verify(&format!("v={SIG},x=extension")));
+    for value in [
+        format!("e=failed,v={SIG}"),
+        format!("v={SIG},e=failed"),
+        format!("v={SIG},v={SIG}"),
+        format!("v={SIG},"),
+        format!("v={SIG},xx=bad"),
+        format!("v={SIG},x="),
+        format!("v={SIG},m=required"),
+        format!("v={SIG},x=bad value"),
+        format!("v={SIG},x=one,x=two"),
+        format!("x=one,v={SIG}"),
+    ] {
+        assert!(!link().verify(&value));
+    }
+}
+
+#[test]
+fn postgres_nonce_has_native_shape_and_cleartext_refuses_nul_only_at_its_recipe() {
+    let nonce = super::pg_scram_nonce().unwrap();
+    assert_eq!(nonce.len(), 24);
+    assert!(nonce
+        .bytes()
+        .all(|b| matches!(b, b'!'..=b'+' | b'-'..=b'~')));
+    let c = CredUrl::parse_postgres(
+        "user=u password='p\0word' require_auth=password,md5,scram-sha-256",
+    )
+    .unwrap()
+    .credential();
+    assert!(c.pg_password_message().is_err());
+    assert!(c.pg_md5_message("u", [1, 2, 3, 4]).is_ok());
+    assert!(c
+        .pg_scram_sha256_postgres("n=,r=abc", "r=abcdef,s=QUJD,i=1", b"n,,")
+        .is_ok());
+}

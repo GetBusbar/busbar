@@ -22,7 +22,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, RwLock};
 
 use crate::open_once::OpenOnce;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use busbar_contract::abi::mechanism::call::{
     Blob, DeadlineClass, Outcome, BLOB_JSON, BLOB_OCTETS, BLOB_SECRET,
@@ -58,9 +58,43 @@ const WAIT: Duration = Duration::from_secs(40);
 /// How many calls one secret instance holds in flight, at most.
 const MAX_INFLIGHT_CAP: u32 = 16;
 
-/// The host's hook onto its one bounded disk lane (THE DESIGN §11.11 R4): run a job on the lane
-/// thread, or say why it was not taken (the lane is full or not running).
+/// The host's bounded config-time disk executor, isolated from ordered appends: run a job off
+/// the caller's thread, or say why it was not taken (the lane is full or not running).
 pub type DiskRun = fn(Box<dyn FnOnce() + Send>) -> Result<(), String>;
+
+type DiskJob = Box<dyn FnOnce() + Send>;
+
+/// Shared custody of a resolve that has not started. Both the queued callback and its waiter
+/// withdraw it on drop; only a running crossing can retain the instance beyond its deadline.
+/// Taking custody is the only operation under this mutex. Running or dropping it (which can
+/// close a plugin and reenter the host) always happens after the guard is released.
+struct QueuedDiskResolve {
+    pending: Arc<Mutex<Option<DiskJob>>>,
+    deadline: Instant,
+}
+
+impl QueuedDiskResolve {
+    fn take(&self) -> Option<DiskJob> {
+        let mut pending = self.pending.lock().unwrap_or_else(PoisonError::into_inner);
+        pending.take()
+    }
+
+    fn run(self) {
+        let Some(job) = self.take() else {
+            return;
+        };
+        if Instant::now() < self.deadline {
+            job();
+        }
+        // An expired job is dropped here even if its waiter has not been scheduled again.
+    }
+}
+
+impl Drop for QueuedDiskResolve {
+    fn drop(&mut self) {
+        drop(self.take());
+    }
+}
 
 /// Where a secret instance's `resolve` runs.
 #[derive(Debug, Clone, Copy)]
@@ -300,19 +334,30 @@ impl LoadedSecret {
         settings: &[u8],
     ) -> Result<SecretValue<Vec<u8>>, SecretRefused> {
         let name = self.name().to_string();
+        let deadline = Instant::now() + WAIT;
         let opened = Arc::clone(&self.opened);
         let owned = settings.to_vec();
         let (tx, rx) = std::sync::mpsc::sync_channel(1);
-        lane(Box::new(move || {
+        let work: DiskJob = Box::new(move || {
             let _ = tx.send(opened.resolve_here(&owned));
-        }))
-        .map_err(|e| {
+        });
+        let pending = Arc::new(Mutex::new(Some(work)));
+        let waiting = QueuedDiskResolve {
+            pending: Arc::clone(&pending),
+            deadline,
+        };
+        let queued = QueuedDiskResolve { pending, deadline };
+        lane(Box::new(move || queued.run())).map_err(|e| {
             refused(
                 ERROR_KIND_UNAVAILABLE,
                 format!("secret module '{name}' could not reach the host's disk lane: {e}"),
             )
         })?;
-        rx.recv_timeout(WAIT).unwrap_or_else(|_| {
+        let answer = rx.recv_timeout(deadline.saturating_duration_since(Instant::now()));
+        // Withdraw a still-queued resolve now. A running crossing owns its memory until it
+        // returns; timing out never pretends to interrupt a blocking filesystem operation.
+        drop(waiting);
+        answer.unwrap_or_else(|_| {
             Err(refused(
                 ERROR_KIND_INTERNAL,
                 format!("secret module '{name}' did not answer its resolve on the disk lane"),

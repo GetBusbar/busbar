@@ -23,6 +23,7 @@ pub struct Recording {
     observer: Mutex<Option<Observer>>,
     user: Vec<u8>,
     echo: std::sync::atomic::AtomicBool,
+    echo_stream: Mutex<Option<u64>>,
     refuse: std::sync::atomic::AtomicBool,
 }
 
@@ -49,6 +50,7 @@ impl Recording {
             observer: Mutex::new(None),
             user: user.to_vec(),
             echo: std::sync::atomic::AtomicBool::new(false),
+            echo_stream: Mutex::new(None),
             refuse: std::sync::atomic::AtomicBool::new(false),
         })
     }
@@ -66,6 +68,12 @@ impl Recording {
     /// Have Emit also yield the input as a channel piece for the session.
     pub fn echo_emits(&self) {
         self.echo.store(true, std::sync::atomic::Ordering::Release);
+    }
+
+    /// Have a LINE Emit produce its answer on this originating association's channel.
+    pub fn echo_emits_on(&self, stream: u64) {
+        *self.echo_stream.lock().unwrap() = Some(stream);
+        self.echo_emits();
     }
 
     /// Refuse application messages after recording their actual Emit crossing.
@@ -138,6 +146,7 @@ impl FramerDoor for Recording {
                     };
                 }
                 if self.echo.load(std::sync::atomic::Ordering::Acquire) {
+                    let stream = self.echo_stream.lock().unwrap().unwrap_or(input.stream);
                     assert!(bytes.len() <= input.sink.frame_cap && input.sink.pieces_cap > 0);
                     // SAFETY: the lent frame and piece buffers have the checked capacities,
                     // and both writes remain within this Emit crossing.
@@ -150,7 +159,7 @@ impl FramerDoor for Recording {
                             );
                         }
                         input.sink.pieces.write(FramePiece {
-                            stream: input.stream,
+                            stream,
                             len: bytes.len() as u64,
                             flags: PIECE_END_OF_FRAME,
                             ..FramePiece::ZERO

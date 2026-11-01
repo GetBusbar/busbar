@@ -153,6 +153,7 @@ impl GovState {
             correction_claims: claims::ClaimSet::new(),
             corrections: std::sync::Mutex::new(HashMap::new()),
             budget_flushes: std::sync::Mutex::new(std::collections::BTreeMap::new()),
+            budget_flush_runner: BudgetFlushRunner::default(),
             deleting_budget_buckets: std::sync::Mutex::new(std::collections::BTreeSet::new()),
             pending_metering: PendingMetering::new(),
             money_view: money_view::MoneyView::default(),
@@ -166,8 +167,7 @@ impl GovState {
             at_rest: RwLock::new(None),
             denylist,
             refresh_order,
-            revoke_claims: claims::ClaimSet::new(),
-            self_mint_claims: claims::ClaimSet::new(),
+            mutation_claims: claims::ClaimSet::new(),
             self_mint_holds: std::sync::atomic::AtomicBool::new(
                 SELF_MINT_HOLDS_ADMIN_AND_PROVIDER_STATE,
             ),
@@ -324,20 +324,26 @@ impl GovState {
         // killed the SigV4 credential (or was never live to begin with) before the cheaper,
         // faster-to-propagate denylist write is attempted.
         //
-        // One revoke of this subject at a time (see `revoke_claims`); no lock is held across the
-        // store writes below (§11.13 M1). The targeted cache patch at the end goes through
+        // One mutation of this key at a time (see `mutation_claims`); no lock is held across the
+        // store writes below (§11.13 M1). Each targeted cache patch goes through
         // `refresh_order`, which is the lost-update guard: a concurrent `refresh()` whose `load()`
         // began before the patch is applied never swaps its snapshot in after it (it reloads), so
         // it cannot revert the just-revoked key's cache entry to enabled.
-        let _claim = self.revoke_claims.claim(sub.to_string());
-        let mut revoked_creds = Vec::new();
+        let _claim = self.claim_key_mutation(sub)?;
         for cred in self.store.list_credentials(sub)? {
             if cred.revoked_at.is_none() {
                 self.store.revoke_credential(&cred.id, reason)?;
-                revoked_creds.push((cred.kind, cred.public_id));
             }
+            // Retire each durable success before the next store call can fail. Include rows
+            // already revoked by an earlier partial attempt whose cache was not reconciled.
+            self.refresh_order.patch(|| {
+                self.caches_write()
+                    .by_credential
+                    .remove(&(cred.kind, cred.public_id));
+            });
         }
         self.store.add_denylist(sub, reason)?;
+        self.refresh_order.patch(|| self.denylist.insert(sub));
         let mut new_key = None;
         if let Some(mut key) = self.store.get_key(sub)? {
             if key.deleted_at.is_none() {
@@ -348,20 +354,13 @@ impl GovState {
                 new_key = Some(Arc::new(key));
             }
         }
-        // TARGETED cache update, not a full `refresh()`: a revoke is a single-key mutation, and
-        // `refresh()`'s `list_keys()` + `list_credentials_since(0)` are full-table scans — the same
-        // discipline `POST /revoke` is held to on the admin-handler side (one `get_key`, never a
-        // table scan). Everything the caches need to reflect is already known from the writes
-        // above: the (possibly) updated key row, and exactly which `(kind, public_id)` pairs were
-        // just revoked.
+        // The credential and denylist patches already reflect their durable writes, including
+        // when a later step fails. Finish with the known key row, without a full-table reload.
         self.refresh_order.patch(|| {
             let mut c = self.caches_write();
             self.denylist.insert(sub);
             if let Some(key) = new_key {
                 c.by_id.insert(sub.to_string(), key);
-            }
-            for (kind, public_id) in &revoked_creds {
-                c.by_credential.remove(&(kind.clone(), public_id.clone()));
             }
         });
         Ok(())
@@ -915,32 +914,29 @@ impl GovState {
         self.pending_metering.totals()
     }
 
-    /// Drain `pending_metering` and write each entry to the store as one `MeteringDelta`. A DRAIN,
-    /// not a baseline (contrast `flush_budgets`): nothing in the tree enforces against a metering
-    /// cell, so there is no authoritative running total to protect, and a successfully-flushed
-    /// entry is simply gone. In steady state cardinality is bounded by arrival rate x the flush
-    /// interval; under a SUSTAINED store outage the re-queue below plus fresh arrivals would grow it
-    /// without bound, so the re-queue goes through `accrue_pending`, which caps the map at
-    /// [`MAX_PENDING_METERING`] and coalesces the overflow into a per-bucket sentinel (totals kept,
-    /// attribution collapsed) rather than dropping billable usage. On a store error the entry's
-    /// counts are merged BACK into whatever
-    /// accumulated meanwhile (saturating add, not overwrite) so the next tick retries the full
-    /// amount exactly once — this is what makes two concurrently-running flushes safe without a
-    /// gate: [`PendingMetering::drain`] `mem::take`s each shard under its own lock (an atomic
-    /// per-shard swap) and a key never migrates shards, so any two calls partition the arrivals
-    /// between them by construction and cannot double-send. Returns the number of deltas written.
+    /// Write pending raw metering counts. Stores explicitly supporting supplied operation IDs
+    /// retain one immutable drained snapshot until acknowledgement; unknown outcomes replay the
+    /// same ID and body, while fresh arrivals stay in the bounded accumulator. Concurrent ordinary
+    /// callers skip its active runner. Returns the number of acknowledged deltas.
+    ///
+    /// Legacy `RecordStore` implementations keep their additive drain/requeue path. Its separate
+    /// drains partition arrivals, but an error after application cannot provide retry deduplication.
     pub fn flush_metering(&self) -> usize {
         self.flush_metering_inner(false)
     }
 
-    /// The SHUTDOWN flush: [`Self::flush_metering`], except that a failure is reported as the
-    /// terminal loss it is (one error naming the unrecorded cells), not as a retry that will never
-    /// run because the process is about to exit.
+    /// Final metering flush. Supplied-ID stores wait another thread's active runner, replay its
+    /// retained operation and then flush fresh arrivals. Same-thread reentry is diagnosed rather
+    /// than waiting on itself. WriteBehind I/O retains its existing absence of a deadline.
+    /// Unacknowledged counts at exit are reported as terminal uncertainty, not persisted success.
     pub fn flush_metering_final(&self) -> usize {
         self.flush_metering_inner(true)
     }
 
     fn flush_metering_inner(&self, shutdown: bool) -> usize {
+        if self.store.supports_metering_batch_deduped() {
+            return self.flush_metering_deduped(shutdown);
+        }
         let taken = self.pending_metering.drain();
         let mut flushed = 0usize;
         // Aggregate failures: during a store outage EVERY pending key fails on the same tick, so a
@@ -1460,6 +1456,7 @@ impl GovState {
     /// DEGRADED-BUT-APPLIED ([`REVOCATION_DURABLE_MARKER`]), never as a bare error implying nothing
     /// happened. Same discipline `refresh_self` already applies to its tombstone path.
     pub fn delete_key(&self, id: &str) -> RecordStoreResult<()> {
+        let _claim = self.claim_key_mutation(id)?;
         let _correction = self.correction_claims.claim(id.to_string());
         self.settle_correction_for_delete(id)?;
         let _budget_delete = self.hold_budget_flush_deletion(id);
@@ -1508,9 +1505,29 @@ impl GovState {
     /// just-revoked or just-rotated credential still verifying against a store that no longer agrees)
     /// is closed immediately, even if the rest of the cache stays stale until the next refresh.
     fn evict_key_from_caches(&self, id: &str) {
-        let mut c = self.caches_write();
-        c.by_id.remove(id);
-        c.by_credential.retain(|_, (key, _)| key.id != id);
+        self.refresh_order.patch(|| {
+            let mut c = self.caches_write();
+            c.by_id.remove(id);
+            c.by_credential.retain(|_, (key, _)| key.id != id);
+        });
+    }
+
+    fn patch_key_in_caches(&self, key: Arc<VirtualKey>) {
+        self.refresh_order.patch(|| {
+            let mut c = self.caches_write();
+            for (owner, _) in c.by_credential.values_mut() {
+                if owner.id == key.id {
+                    *owner = key.clone();
+                }
+            }
+            c.by_id.insert(key.id.clone(), key);
+        });
+    }
+
+    fn claim_key_mutation(&self, id: &str) -> RecordStoreResult<claims::Claim<'_, MutationKey>> {
+        self.mutation_claims
+            .claim_checked(MutationKey::Key(id.to_string()))
+            .ok_or_else(|| RecordStoreError("reentrant key mutation refused".into()))
     }
 
     /// Reclaim the in-memory budget CELLS of a group that no longer exists — the group-shaped twin of
@@ -1600,6 +1617,7 @@ impl GovState {
     /// FAIL-CLOSED: rotating a signed-token binding with no signer configured is an error rather
     /// than a silent fallback to the legacy secret.
     pub fn rotate_key(&self, id: &str, exp: u64) -> RecordStoreResult<Option<RotatedCredential>> {
+        let _claim = self.claim_key_mutation(id)?;
         let Some(mut key) = self.store.get_key(id)? else {
             return Ok(None);
         };
@@ -1661,6 +1679,7 @@ impl GovState {
         enabled: Option<bool>,
         group: Option<Option<String>>,
     ) -> RecordStoreResult<Option<VirtualKey>> {
+        let _claim = self.claim_key_mutation(id)?;
         let Some(mut key) = self.store.get_key(id)? else {
             return Ok(None);
         };
@@ -1682,6 +1701,7 @@ impl GovState {
         // update of the existing row (no secret rotation). Refresh the in-memory cache so the change
         // takes effect on the next request.
         self.store.put_key(&key)?;
+        self.patch_key_in_caches(Arc::new(key.clone()));
         self.refresh()?;
         Ok(Some(key))
     }
@@ -2541,22 +2561,19 @@ impl GovState {
     /// the shared store reflects the TRUE FLEET TOTAL. Runs OFF the request hot path (the periodic
     /// flusher + the graceful-shutdown arm).
     ///
-    /// Under each shard lock, snapshot every dirty cell's DELTA since its last acknowledged flush
-    /// (current - flushed baseline) and clear its dirty flag; then OFF the lock, `add_usage`
-    /// (atomic accumulate in the store) each delta and advance the cell's acked baseline on
-    /// success. With N nodes sharing one store, each node's deltas SUM into the durable record —
-    /// where the old absolute `put_usage` overwrite made the record whichever node flushed last.
+    /// Under each shard lock, transfer each dirty cell's raw delta to a retained flight. Stores
+    /// advertising provided-ID batches receive its plain and dated rows atomically, under one
+    /// immutable identity and body retained until acknowledgement, including across errors or
+    /// caller unwind. New accrual stays beyond the capture watermarks. All store calls run off
+    /// the shard lock, and each node's deltas add to the shared fleet total.
     ///
     /// A ROLLED WINDOW'S DELTA ([`BudgetCell::roll`]) is drained with the cell and written under the
     /// window it was earned in, never the cell's current one.
     ///
-    /// On a store error, log, RE-MARK the cell dirty, and do NOT advance the baseline, so the
-    /// unacked delta is retried next tick (at-least-once: an ack lost after the write landed can
-    /// double-count at most one flush interval — the honest trade for fleet additivity; the
-    /// in-memory admission cap is unaffected). A rolled window's failed delta is parked back under
-    /// its window, so a store outage across a boundary is retried, not dropped. Snapshotting under
-    /// the lock but writing off it keeps the hot-path lock hold O(dirty). Returns the number of
-    /// deltas flushed.
+    /// Legacy stores that do not advertise this capability retain the historical ordinary
+    /// additive path: an unknown commit result can duplicate that delta on retry, and plain and
+    /// dated rows are separately acknowledged. No unknown provided-ID operation falls back to
+    /// that path. Returns the number of acknowledged nonzero batches plus legacy snapshots.
     pub fn flush_budgets(&self) -> usize {
         self.flush_budgets_inner(false)
     }
@@ -2569,18 +2586,26 @@ impl GovState {
     }
 
     fn flush_budgets_inner(&self, shutdown: bool) -> usize {
+        let _runner = match self.budget_flush_runner.enter(shutdown) {
+            Ok(runner) => runner,
+            Err(message) => {
+                if shutdown {
+                    diag_error!(BUDGET_FLUSH_PARTIAL_FAILURE, error = message, "{message}");
+                }
+                return 0;
+            }
+        };
         let mut unresolved_corrections = self.retry_usage_corrections();
-        // Establish long-lived custody before entering any potentially pending chunk call. The
-        // ordinary snapshot vector is built afterwards, so cancellation of this driver cannot
-        // strand unrelated short-lived legacy snapshots prepared by this invocation.
+        // Establish long-lived custody before entering any potentially pending store call. The
+        // legacy snapshot vector is built afterwards, so an unwind cannot strand those snapshots.
         for mut map in self.budget.write_all() {
             for (id, cell) in map.iter_mut() {
                 if cell.dirty {
-                    let _ = self.capture_large_budget_flushes(id, cell);
+                    let _ = self.capture_budget_flushes(id, cell);
                 }
             }
         }
-        let (mut flushed, chunk_errors) = self.resume_large_budget_flushes();
+        let (mut flushed, chunk_errors) = self.resume_budget_flushes(shutdown);
         unresolved_corrections.extend(chunk_errors);
         /// The baselines a live cell's delta was taken against: they become the acked baseline on
         /// success.
@@ -2606,16 +2631,26 @@ impl GovState {
         // time (the `write_all` iterator acquires each guard lazily), so a concurrent charge
         // blocks only on the single shard the snapshot currently holds, not the whole map.
         let mut dirty: Vec<DirtySnap> = Vec::new();
-        let mut new_large = Vec::new();
+        let mut new_flights = Vec::new();
         for mut map in self.budget.write_all() {
             for (id, cell) in map.iter_mut() {
                 if !cell.dirty || self.budget_bucket_deleting(id) {
                     continue;
                 }
-                // Accrual or a roll may have enlarged debt since the first capture pass. Give it
-                // an owner under this same shard guard; drive these flights only after every
-                // ordinary snapshot below has been consumed.
-                new_large.extend(self.capture_large_budget_flushes(id, cell));
+                // Accrual or a roll may have added debt since the first pass. Give it an owner
+                // under this same shard guard; drive it after all legacy snapshots are consumed.
+                new_flights.extend(self.capture_budget_flushes(id, cell));
+                if self.store.supports_usage_batch_deduped() {
+                    let correcting = cell.correction.is_some();
+                    cell.mutate(|cell| {
+                        cell.dirty = correcting
+                            || !ExactUsageDelta::of(cell, false).is_zero()
+                            || !ExactUsageDelta::of(cell, true).is_zero()
+                            || !cell.rolled.is_empty()
+                            || !cell.rolled_eras.is_empty();
+                    });
+                    continue;
+                }
                 let reserved_window = cell.correction.as_ref().map(|branch| branch.window);
                 let mut rolled = BTreeMap::<u64, (UsageDelta, UsageDelta)>::new();
                 let mut drained_plain = std::collections::BTreeSet::new();
@@ -2794,7 +2829,11 @@ impl GovState {
                 last_error = error.map(|error| error.to_string());
             }
         }
-        let (late_flushed, late_errors) = self.resume_budget_flush_list(new_large);
+        let (late_flushed, late_errors) = if shutdown {
+            self.resume_budget_flushes(true)
+        } else {
+            self.resume_budget_flush_list(new_flights, false)
+        };
         flushed += late_flushed;
         failed += late_errors.len();
         if let Some(error) = late_errors.last() {
@@ -2819,8 +2858,8 @@ impl GovState {
                 failed,
                 flushed,
                 error = last_error.as_deref().unwrap_or(""),
-                "budget flush: {failed} bucket(s) failed to persist this tick; re-marked dirty and \
-                 will retry next tick (per-bucket detail at debug)"
+                "budget flush: {failed} bucket(s) failed to persist this tick; retained for \
+                 retry next tick (per-bucket detail at debug)"
             );
         }
         flushed

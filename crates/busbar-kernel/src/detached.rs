@@ -42,6 +42,44 @@ impl DetachedTasks {
             notified.await;
         }
     }
+
+    /// Spawn on the captured serving reactor, including from an ordinary host callback thread.
+    /// Reserve custody before scheduling so even a future dropped before its first poll settles it.
+    pub fn spawn_on<F>(
+        self: &std::sync::Arc<Self>,
+        runtime: &tokio::runtime::Handle,
+        fut: F,
+    ) -> tokio::task::JoinHandle<F::Output>
+    where
+        F: std::future::Future + Send + 'static,
+        F::Output: Send + 'static,
+    {
+        self.count.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        let guard = DetachedGuard(std::sync::Arc::clone(self));
+        runtime.spawn(DetachedFuture {
+            future: Box::pin(fut),
+            _guard: guard,
+        })
+    }
+}
+
+/// Rust drops struct fields in declaration order: user-future cleanup precedes the count's final
+/// decrement, including an unpolled cancellation. The boxed pin permits safe projection for !Unpin
+/// futures without relying on an async closure's capture-drop order.
+struct DetachedFuture<F: std::future::Future> {
+    future: std::pin::Pin<Box<F>>,
+    _guard: DetachedGuard,
+}
+
+impl<F: std::future::Future> std::future::Future for DetachedFuture<F> {
+    type Output = F::Output;
+
+    fn poll(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Self::Output> {
+        self.get_mut().future.as_mut().poll(cx)
+    }
 }
 
 /// Count guard living INSIDE the spawned future, so an abort (future dropped) decrements exactly
@@ -70,6 +108,11 @@ thread_local! {
 /// Register the current worker thread's tracker (composition root, once per worker, at spawn).
 pub fn set_worker_detached(t: std::sync::Arc<DetachedTasks>) {
     DETACHED.with(|d| *d.borrow_mut() = Some(t));
+}
+
+/// Capture the serving worker's custody for callbacks that later run off that worker.
+pub fn worker_detached() -> Option<std::sync::Arc<DetachedTasks>> {
+    DETACHED.with(|d| d.borrow().clone())
 }
 
 thread_local! {
@@ -121,16 +164,9 @@ where
     F: std::future::Future + Send + 'static,
     F::Output: Send + 'static,
 {
-    let tracker = DETACHED.with(|d| d.borrow().clone());
+    let tracker = worker_detached();
     match tracker {
-        Some(t) => {
-            t.count.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
-            let guard = DetachedGuard(t);
-            tokio::spawn(async move {
-                let _guard = guard;
-                fut.await
-            })
-        }
+        Some(t) => t.spawn_on(&tokio::runtime::Handle::current(), fut),
         None => tokio::spawn(fut),
     }
 }

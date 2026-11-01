@@ -1258,6 +1258,35 @@ pub trait RecordStore: Send + Sync + 'static {
         Err(RecordStoreError("deduped usage batches unsupported".into()))
     }
 
+    /// Whether this implementation accepts caller-owned immutable usage batch identities.
+    /// Legacy implementations retain their ordinary additive path unless they explicitly opt in.
+    fn supports_usage_batch_deduped(&self) -> bool {
+        false
+    }
+
+    /// Whether this implementation accepts caller-owned immutable metering batch identities.
+    fn supports_metering_batch_deduped(&self) -> bool {
+        false
+    }
+
+    /// Apply the immutable metering body once under `op`. Replaying the same id and body
+    /// returns its acknowledgement; changing that body refuses. After any uncertain error,
+    /// callers must retain this exact id and body rather than use `add_metering` as a fallback.
+    ///
+    /// # Errors
+    /// Unsupported by default before effects. An implementation's error can leave application
+    /// unknown, so support is detected explicitly before the first attempt.
+    fn add_metering_batch_deduped(
+        &self,
+        op: crate::abi::store::OpId,
+        deltas: &[MeteringDelta],
+    ) -> RecordStoreResult<()> {
+        let _ = (op, deltas);
+        Err(RecordStoreError(
+            "deduped metering batches unsupported".into(),
+        ))
+    }
+
     /// Accumulate one completed response's RAW consumption into the per-(key, bucket, model,
     /// provider) metering row (UPSERT/add; +1 request). Metering is observability — best-effort,
     /// never consulted for enforcement.

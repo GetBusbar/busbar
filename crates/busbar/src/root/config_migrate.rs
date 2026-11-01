@@ -17,7 +17,7 @@
 //! build here serves), once per run.
 
 use std::cell::OnceCell;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use busbar_contract::abi::sdk::migrate::Migrated;
 use busbar_kernel::config::migrate_plugins::MigrateHost;
@@ -225,15 +225,79 @@ impl IndexPlugin {
 
 /// The semver order of two tags (`v1.6.0` < `v1.6.10`); a tag that is not one sorts first.
 fn version_order(a: &str, b: &str) -> std::cmp::Ordering {
-    let parts = |t: &str| -> Option<(u64, u64, u64)> {
-        let mut it = t.trim_start_matches('v').split(['.', '-']);
-        Some((
-            it.next()?.parse().ok()?,
-            it.next()?.parse().ok()?,
-            it.next()?.parse().ok()?,
-        ))
+    use std::cmp::Ordering;
+    fn parts(tag: &str) -> Option<([u64; 3], Option<&str>)> {
+        let tag = tag.strip_prefix('v').unwrap_or(tag);
+        let identifiers = |text: &str| {
+            text.split('.').all(|id| {
+                !id.is_empty() && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+            })
+        };
+        let version = if let Some((version, build)) = tag.split_once('+') {
+            if !identifiers(build) {
+                return None;
+            }
+            version
+        } else {
+            tag
+        };
+        let (core, pre) = version
+            .split_once('-')
+            .map_or((version, None), |(core, pre)| (core, Some(pre)));
+        if let Some(pre) = pre {
+            if !identifiers(pre)
+                || pre.split('.').any(|id| {
+                    id.len() > 1 && id.starts_with('0') && id.bytes().all(|b| b.is_ascii_digit())
+                })
+            {
+                return None;
+            }
+        }
+        let mut numbers = core.split('.');
+        let mut core = [0; 3];
+        for number in &mut core {
+            let text = numbers.next()?;
+            if text.is_empty()
+                || (text.len() > 1 && text.starts_with('0'))
+                || !text.bytes().all(|b| b.is_ascii_digit())
+            {
+                return None;
+            }
+            *number = text.parse().ok()?;
+        }
+        numbers.next().is_none().then_some((core, pre))
+    }
+    let (Some((ac, ap)), Some((bc, bp))) = (parts(a), parts(b)) else {
+        return parts(a).is_some().cmp(&parts(b).is_some());
     };
-    parts(a).cmp(&parts(b))
+    ac.cmp(&bc).then_with(|| match (ap, bp) {
+        (None, None) => Ordering::Equal,
+        (None, Some(_)) => Ordering::Greater,
+        (Some(_), None) => Ordering::Less,
+        (Some(a), Some(b)) => {
+            let mut a = a.split('.');
+            let mut b = b.split('.');
+            loop {
+                let order = match (a.next(), b.next()) {
+                    (None, None) => return Ordering::Equal,
+                    (None, Some(_)) => return Ordering::Less,
+                    (Some(_), None) => return Ordering::Greater,
+                    (Some(a), Some(b)) => match (
+                        a.bytes().all(|v| v.is_ascii_digit()),
+                        b.bytes().all(|v| v.is_ascii_digit()),
+                    ) {
+                        (true, true) => a.len().cmp(&b.len()).then_with(|| a.cmp(b)),
+                        (true, false) => Ordering::Less,
+                        (false, true) => Ordering::Greater,
+                        (false, false) => a.cmp(b),
+                    },
+                };
+                if order != Ordering::Equal {
+                    return order;
+                }
+            }
+        }
+    })
 }
 
 /// THE ROOT'S MIGRATION HOST over one configuration: its plugins block, the doors this build links,
@@ -249,7 +313,43 @@ pub struct RootHost {
     /// The release index, or why it could not be read.
     index: OnceCell<Result<Index, String>>,
     /// Builds downloaded for this run, in a directory of its own.
-    fetched: OnceCell<PathBuf>,
+    fetched: OnceCell<FetchedDir>,
+}
+
+/// A fresh staging name carries 128 bits of OS randomness and is private to this process user.
+const STAGING_RANDOM_BYTES: usize = 16;
+const STAGING_DIRECTORY_PREFIX: &str = "busbar-migrate-";
+#[cfg(unix)]
+const STAGING_DIRECTORY_MODE: u32 = 0o700;
+
+struct FetchedDir(PathBuf);
+
+impl FetchedDir {
+    fn create_in(parent: &Path) -> std::io::Result<Self> {
+        loop {
+            let mut random = [0_u8; STAGING_RANDOM_BYTES];
+            getrandom::fill(&mut random)
+                .map_err(|error| std::io::Error::other(error.to_string()))?;
+            let path = parent.join(format!("{STAGING_DIRECTORY_PREFIX}{}", hex::encode(random)));
+            let mut builder = std::fs::DirBuilder::new();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::DirBuilderExt;
+                builder.mode(STAGING_DIRECTORY_MODE);
+            }
+            match builder.create(&path) {
+                Ok(()) => return Ok(Self(path)),
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => return Err(error),
+            }
+        }
+    }
+}
+
+impl Drop for FetchedDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
 }
 
 impl RootHost {
@@ -381,10 +481,16 @@ impl RootHost {
         })?;
         let target = crate::root::plugin_fetch::release_asset(&pin)
             .ok_or_else(|| format!("'{pin}' is not an org/repo@tag pin"))?;
-        let dir = self.fetched.get_or_init(|| {
-            std::env::temp_dir().join(format!("busbar-migrate-{}", std::process::id()))
-        });
-        std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        if self.fetched.get().is_none() {
+            let dir = FetchedDir::create_in(&std::env::temp_dir())
+                .map_err(|e| format!("creating migration staging directory: {e}"))?;
+            let _ = self.fetched.set(dir);
+        }
+        let dir = &self
+            .fetched
+            .get()
+            .expect("the staging directory was created")
+            .0;
         let bytes = crate::root::plugin_fetch::downloader(&[])(&target.url)
             .map_err(|e| format!("downloading {}: {e}", target.url))?;
         std::fs::write(dir.join(&target.filename), bytes)
@@ -426,14 +532,6 @@ impl RootHost {
             )
         });
         (dir, path)
-    }
-}
-
-impl Drop for RootHost {
-    fn drop(&mut self) {
-        if let Some(dir) = self.fetched.get() {
-            let _ = std::fs::remove_dir_all(dir);
-        }
     }
 }
 

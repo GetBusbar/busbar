@@ -581,6 +581,12 @@ pub trait RootRules: Send + Sync {
         Ok(())
     }
 
+    /// Actual mounted plugin paths after the completed candidate passed its physical route checks.
+    /// Roots with fixed routers keep the boot path set by returning `None`.
+    fn mounted_plugin_paths(&self, _app: &App) -> Option<std::collections::HashSet<String>> {
+        None
+    }
+
     /// THE PLANES `cfg` WRITES THAT THIS PROCESS CANNOT SERVE UNTIL IT RESTARTS: the declaring
     /// sections `cfg` writes whose plane the composition root did not open at boot. A door plane is
     /// opened, driven and ticked once, at boot (Law 7 selection, BUSBAR-1.6.0.md l.547), so an
@@ -1538,10 +1544,8 @@ pub fn build_app_from_config(
     let mut route_decls = crate::export::route_decls(&cfg_export);
     route_decls.extend(hook_route_decls);
     let plugin_routes = std::sync::Arc::new(crate::plugin_routes::build_route_table(route_decls)?);
-    // Seeded ONCE, on a fresh boot (`prior == None`) from the table that is about to be mounted;
-    // every rebuild inherits the boot value unchanged. Deliberately NOT recomputed per rebuild — a
-    // recomputed set would say every newly declared path is already mounted, which is the exact
-    // silent no-op this exists to report.
+    // A root with fixed routers inherits its boot mounts. A root that constructs new physical
+    // partitions replaces this set through mounted_plugin_paths only after check_built succeeds.
     let boot_route_paths = prior.map_or_else(
         || std::sync::Arc::new(plugin_routes.paths()),
         |p| p.boot_route_paths.clone(),
@@ -1723,7 +1727,7 @@ pub fn build_app_from_config(
         crate::export::plugin::record_reads_on(&amendments);
     }
 
-    let app = App {
+    let mut app = App {
         // The limits this generation goes live with: `AppHandle::swap` publishes them before any
         // reader of the new generation runs, and carries them onto the plane breaker store.
         limits: Some(limits_resolved.clone()),
@@ -1936,6 +1940,9 @@ pub fn build_app_from_config(
             .collect(),
     };
     rules.check_built(&app)?;
+    if let Some(paths) = rules.mounted_plugin_paths(&app) {
+        app.boot_route_paths = Arc::new(paths);
+    }
     // PRUNE the verify-on-call gates to the subjects THIS generation still fronts. `flights` and
     // `drift_latch` are per-subject coordination CARRIED across every apply (above); without a prune
     // they leak one dead entry per server/agent an operator ever removed. Done here, on the same

@@ -428,12 +428,11 @@ pub fn build_route_table(decls: Vec<RouteDecl>) -> Result<PluginRouteTable, Stri
 /// THE RESTART-TO-APPLY SIGNAL for plugin routes: the paths a just-applied config
 /// declares that this process CANNOT serve, because they were never registered on the axum router.
 ///
-/// Each declared path is registered ONCE, at boot ([`mount_plugin_routes`], `on(filter,
-/// plugin_route_dispatch)`); a config apply swaps only `Arc<App>` and never rebuilds the router. So the
-/// two directions are not symmetric — a REMOVED path keeps 404ing correctly (the dispatcher resolves
-/// the owner from the current snapshot and finds nothing), while an ADDED path that was not mounted at
-/// boot keeps 404ing however many times the operator applies it. `boot_mounted` is the boot table's
-/// [`PluginRouteTable::paths`], carried forward unchanged on every rebuild (`App::boot_route_paths`).
+/// A root with fixed routers carries its boot table's paths in `App::boot_route_paths`. A root
+/// preparing actual physical routers for each candidate replaces that set through
+/// [`crate::appbuild::RootRules::mounted_plugin_paths`] after its completed candidate checks. Only
+/// a path absent from those real mounts needs a restart, including an unopened plugin's new route
+/// or a new path on the fixed admin router.
 ///
 /// Keyed on the DELTA (`installed` minus `previous`), the same discipline
 /// `handlers::reload_to_apply_fields` uses in keying on the REQUEST: only a mutation that ITSELF

@@ -329,12 +329,43 @@ fn a_far_end_piece_is_lent_to_the_plane_without_a_copy() {
         bytes,
         ..FarPiece::default()
     };
-    let mut input = Vec::with_capacity(64);
+    let mut input = SessionInput {
+        bytes: Vec::with_capacity(64),
+        custody: None,
+    };
     lend_piece(&mut input, &mut piece);
-    assert_eq!(input, b"a far-end chunk");
+    assert_eq!(input.bytes, b"a far-end chunk");
     assert_eq!(
-        input.as_ptr(),
+        input.bytes.as_ptr(),
         at,
         "the plane's input is the piece's own bytes, never a copy"
     );
+}
+
+#[test]
+fn clearing_input_does_not_release_its_allocation_custody() {
+    struct Owner(Arc<std::sync::atomic::AtomicUsize>);
+    impl Drop for Owner {
+        fn drop(&mut self) {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+    let dropped = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let mut b = bufs(0);
+    b.input = SessionInput {
+        bytes: b"retained input".to_vec(),
+        custody: Some(Arc::new(Owner(dropped.clone()))),
+    };
+    b.input.bytes.clear();
+    assert_eq!(dropped.load(std::sync::atomic::Ordering::SeqCst), 0);
+    let mut far = FarPiece {
+        bytes: b"replacement".to_vec(),
+        ..FarPiece::default()
+    };
+    lend_piece(&mut b.input, &mut far);
+    assert_eq!(dropped.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert_eq!(b.input.bytes, b"replacement");
+    assert!(b.input.custody.is_none());
+    drop(b);
+    assert_eq!(dropped.load(std::sync::atomic::Ordering::SeqCst), 1);
 }

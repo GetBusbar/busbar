@@ -11,7 +11,23 @@ use crate::config::RateEntryCfg;
 use busbar_contract::records::{
     VirtualKey, RESERVED_UNITS, UNIT_CACHE_READ, UNIT_CACHE_WRITE, UNIT_INPUT, UNIT_OUTPUT,
 };
+use busbar_kernel_ledger::cost::{whole, Money, MoneyError, Tally, STANDARD_TIER_BP};
 use std::collections::BTreeMap;
+
+/// Feed the resolved configuration's counts to the canonical accumulator. Expected amounts below
+/// are independent arithmetic fixtures; projection and narrowing remain the money type's job.
+fn bucket_money<'a>(
+    model: &CostModel,
+    rows: impl IntoIterator<Item = (&'a str, &'a BTreeMap<String, u64>)>,
+    billable_requests: u64,
+) -> Result<Money, MoneyError> {
+    let mut tally = Tally::at_card(model.card());
+    for (lane, units) in rows {
+        tally.row(lane, 0, STANDARD_TIER_BP, unit_counts(units), whole(0))?;
+    }
+    tally.fee(0, STANDARD_TIER_BP, whole(billable_requests))?;
+    tally.money()
+}
 
 fn card(entries: &[(&str, f64, f64)]) -> BTreeMap<String, RateEntryCfg> {
     entries
@@ -106,8 +122,8 @@ fn absent_rate_card_prices_tokens_at_zero() {
     assert!(!cm.pricing_enabled());
     assert!(!cm.model_unpriced("anything"), "no card = nothing to miss");
     let t = toks(1_000_000, 1_000_000);
-    let spend = cm
-        .derive_spend_cents([("anything", &t)].into_iter(), 5, true)
+    let spend = bucket_money(&cm, [("anything", &t)], 5)
+        .and_then(Money::minor_i64)
         .expect("the one function prices");
     assert_eq!(spend, 15, "tokens derive to 0; 5 requests x 3c fee remain");
 }
@@ -120,13 +136,13 @@ fn present_rate_card_derives_integer_spend() {
     let cm = resolve_card_fee(Some(&c), 0);
     assert!(cm.pricing_enabled());
     let t = toks(1_000_000, 1_000_000);
-    let spend = cm
-        .derive_spend_cents([("gpt-5", &t)].into_iter(), 0, false)
+    let spend = bucket_money(&cm, [("gpt-5", &t)], 0)
+        .and_then(Money::minor_i64)
         .expect("the one function prices");
     assert_eq!(spend, 1250);
     // Micro projection: 12.5 units = 12_500_000 micro-units.
-    let micros = cm
-        .derive_spend_micros([("gpt-5", &t)].into_iter(), 0, false)
+    let micros = bucket_money(&cm, [("gpt-5", &t)], 0)
+        .and_then(Money::micros_i64)
         .expect("the one function prices");
     assert_eq!(micros, 12_500_000);
 }
@@ -148,7 +164,7 @@ fn nano_scale_keeps_sub_micro_precision() {
     let cm = resolve_card_fee(Some(&c), 0);
     let t = toks(8, 0);
     assert_eq!(
-        cm.derive_spend_micros([("m", &t)].into_iter(), 0, false),
+        bucket_money(&cm, [("m", &t)], 0).and_then(Money::micros_i64),
         Ok(25)
     );
 }
@@ -164,7 +180,7 @@ fn unknown_model_with_card_is_unpriced_and_refuses() {
     assert!(!cm.model_unpriced("gpt-5"));
     let t = toks(1_000_000, 0);
     assert_eq!(
-        cm.derive_spend_cents([("mystery-model", &t)].into_iter(), 0, false),
+        bucket_money(&cm, [("mystery-model", &t)], 0).and_then(Money::minor_i64),
         Err(busbar_kernel_ledger::cost::MoneyError::LaneUnpriced {
             card_seq: busbar_kernel_ledger::cost::HistorySeq::OPENING,
             lane: "mystery-model".to_string(),
@@ -180,11 +196,11 @@ fn reprice_on_read_recomputes_derived_spend() {
     let wrong = resolve_card_fee(Some(&card(&[("m", 10.0, 0.0)])), 0);
     let fixed = resolve_card_fee(Some(&card(&[("m", 5.0, 0.0)])), 0);
     assert_eq!(
-        wrong.derive_spend_cents([("m", &t)].into_iter(), 0, false),
+        bucket_money(&wrong, [("m", &t)], 0).and_then(Money::minor_i64),
         Ok(1000)
     );
     assert_eq!(
-        fixed.derive_spend_cents([("m", &t)].into_iter(), 0, false),
+        bucket_money(&fixed, [("m", &t)], 0).and_then(Money::minor_i64),
         Ok(500),
         "same tokens, corrected rate: derived spend halves on next read"
     );
@@ -194,18 +210,18 @@ fn reprice_on_read_recomputes_derived_spend() {
 /// never a pin at `i64::MAX` (a bill nobody consumed, the defect the saturation introduced). The
 /// door blocks on the refusal; a read fails on it.
 #[test]
-fn derive_spend_cents_refuses_an_overflow_never_wraps_or_pins() {
+fn canonical_money_refuses_an_overflow_never_wraps_or_pins() {
     // 1e15 micro-units/token -> 1e18 nano-units/token; x u64::MAX tokens ~= 1.8e37 nanos
     // -> ~1.8e30 cents, far past i64::MAX.
     let cm = resolve_card_fee(Some(&card(&[("m", 1e15, 0.0)])), 0);
     let t = toks(u64::MAX, 0);
     assert_eq!(
-        cm.derive_spend_cents([("m", &t)].into_iter(), 0, false),
+        bucket_money(&cm, [("m", &t)], 0).and_then(Money::minor_i64),
         Err(busbar_kernel_ledger::cost::MoneyError::Overflow),
         "an over-range total is a refusal, never a pinned figure"
     );
     assert_eq!(
-        cm.derive_spend_micros([("m", &t)].into_iter(), 0, false),
+        bucket_money(&cm, [("m", &t)], 0).and_then(Money::micros_i64),
         Err(busbar_kernel_ledger::cost::MoneyError::Overflow)
     );
 }
@@ -400,7 +416,7 @@ fn four_tier_card_prices_each_tier_against_its_own_rate() {
     );
     // sum 15_000_000_000 nanos / 10_000_000 = 1500 cents exactly.
     assert_eq!(
-        cm.derive_spend_cents([("quad", &t)].into_iter(), 0, false),
+        bucket_money(&cm, [("quad", &t)], 0).and_then(Money::minor_i64),
         Ok(1500),
         "each tier must bill against its own rate; a swapped cache_read/cache_write mapping changes this"
     );
@@ -421,19 +437,19 @@ fn four_tier_card_prices_each_tier_against_its_own_rate() {
 #[test]
 fn cent_derivation_truncates_toward_zero_never_rounds_up() {
     let cm = resolve_card_fee(Some(&card(&[("m", 1.0, 0.0)])), 0);
-    let just_under = cm
-        .derive_spend_cents([("m", &toks(19_999, 0))].into_iter(), 0, false)
+    let just_under = bucket_money(&cm, [("m", &toks(19_999, 0))], 0)
+        .and_then(Money::minor_i64)
         .expect("the one function prices");
     assert_eq!(
         just_under, 1,
         "1.9999 cents must floor to 1, not round up to 2"
     );
-    let on_boundary = cm
-        .derive_spend_cents([("m", &toks(20_000, 0))].into_iter(), 0, false)
+    let on_boundary = bucket_money(&cm, [("m", &toks(20_000, 0))], 0)
+        .and_then(Money::minor_i64)
         .expect("the one function prices");
     assert_eq!(on_boundary, 2, "exactly 2.0 cents is 2");
-    let just_over = cm
-        .derive_spend_cents([("m", &toks(20_001, 0))].into_iter(), 0, false)
+    let just_over = bucket_money(&cm, [("m", &toks(20_001, 0))], 0)
+        .and_then(Money::minor_i64)
         .expect("the one function prices");
     assert_eq!(just_over, 2, "2.0001 cents still floors to 2");
 }
@@ -449,12 +465,12 @@ fn sub_cent_contributions_across_models_sum_before_flooring() {
     let ta = toks(1_000, 0);
     let tb = toks(1_000, 0);
     assert_eq!(
-        cm.derive_spend_cents([("a", &ta)].into_iter(), 0, false),
+        bucket_money(&cm, [("a", &ta)], 0).and_then(Money::minor_i64),
         Ok(0),
         "one 0.5-cent model alone floors to 0"
     );
     assert_eq!(
-        cm.derive_spend_cents([("a", &ta), ("b", &tb)].into_iter(), 0, false),
+        bucket_money(&cm, [("a", &ta), ("b", &tb)], 0).and_then(Money::minor_i64),
         Ok(1),
         "two 0.5-cent models sum to a whole cent — nanos accumulate before the single divide"
     );
@@ -483,7 +499,7 @@ fn explicit_zero_rate_model_is_known_and_derives_zero() {
     );
     let t = toks4(u64::MAX, u64::MAX, u64::MAX, u64::MAX);
     assert_eq!(
-        cm.derive_spend_cents([("freebie", &t)].into_iter(), 0, false),
+        bucket_money(&cm, [("freebie", &t)], 0).and_then(Money::minor_i64),
         Ok(0),
         "a zero-rated model bills nothing regardless of volume"
     );
@@ -502,11 +518,7 @@ fn partial_card_prices_known_models_and_refuses_the_missing_one() {
     let known = toks(1_000_000, 0); // 2 utok * 1M = 200 cents
     let absent = toks(9_999_999, 0);
     assert_eq!(
-        cm.derive_spend_cents(
-            [("priced", &known), ("absent", &absent)].into_iter(),
-            0,
-            false
-        ),
+        bucket_money(&cm, [("priced", &known), ("absent", &absent)], 0).and_then(Money::minor_i64),
         Err(busbar_kernel_ledger::cost::MoneyError::LaneUnpriced {
             card_seq: busbar_kernel_ledger::cost::HistorySeq::OPENING,
             lane: "absent".to_string(),
@@ -514,28 +526,27 @@ fn partial_card_prices_known_models_and_refuses_the_missing_one() {
         "the missing model refuses the derivation; it never derives 0"
     );
     assert_eq!(
-        cm.derive_spend_cents([("priced", &known)].into_iter(), 0, false),
+        bucket_money(&cm, [("priced", &known)], 0).and_then(Money::minor_i64),
         Ok(200),
         "the priced model alone prices as it always did"
     );
 }
 
-/// The flat per-request fee is `price_per_request_cents * fee_requests`, added ONLY when
-/// `include_request_fee`. A product past the range REFUSES (item 28) — never a wrap toward free,
-/// never a pinned figure. With the flag off, the fee contributes nothing.
+/// The flat per-request fee is `price_per_request_cents * billable_requests`. A product past
+/// the range refuses; no billable requests contribute no fee.
 #[test]
-fn flat_fee_refuses_an_overflow_and_is_gated_by_the_flag() {
+fn flat_fee_refuses_an_overflow_and_zero_billable_requests_add_nothing() {
     let cm = resolve_card_fee(None, i64::MAX);
     let z = toks(0, 0);
     assert_eq!(
-        cm.derive_spend_cents([("m", &z)].into_iter(), u64::MAX, true),
+        bucket_money(&cm, [("m", &z)], u64::MAX).and_then(Money::minor_i64),
         Err(busbar_kernel_ledger::cost::MoneyError::Overflow),
         "i64::MAX fee * u64::MAX requests is refused, never wrapped and never pinned"
     );
     assert_eq!(
-        cm.derive_spend_cents([("m", &z)].into_iter(), u64::MAX, false),
+        bucket_money(&cm, [("m", &z)], 0).and_then(Money::minor_i64),
         Ok(0),
-        "with include_request_fee=false the flat fee contributes nothing"
+        "with no billable requests the flat fee contributes nothing"
     );
 }
 
@@ -547,14 +558,14 @@ fn negative_per_request_fee_clamps_to_zero() {
     let cm = resolve_card_fee(None, -5);
     assert_eq!(cm.request_fee_on(""), 0);
     assert_eq!(
-        cm.derive_spend_cents([("m", &toks(0, 0))].into_iter(), 100, true),
+        bucket_money(&cm, [("m", &toks(0, 0))], 100).and_then(Money::minor_i64),
         Ok(0),
         "a negative fee must never credit a bucket: 100 requests at a clamped-0 fee is 0"
     );
 }
 
 /// The MICRO projection's flat-fee component is `cents * 10_000 * requests` (1 cent = 10_000
-/// micro-units), added only when `include_request_fee`. Pins the micro-scale fee against the
+/// micro-units). Pins the micro-scale fee against the
 /// cent-scale one so the hook-seam projection can never drift from the ledger's cents.
 #[test]
 fn micro_projection_fee_is_cents_times_ten_thousand() {
@@ -562,18 +573,18 @@ fn micro_projection_fee_is_cents_times_ten_thousand() {
     let z = toks(0, 0);
     // 3 cents/request * 5 requests = 15 cents = 150_000 micro-units.
     assert_eq!(
-        cm.derive_spend_micros([("m", &z)].into_iter(), 5, true),
+        bucket_money(&cm, [("m", &z)], 5).and_then(Money::micros_i64),
         Ok(150_000)
     );
     assert_eq!(
-        cm.derive_spend_cents([("m", &z)].into_iter(), 5, true),
+        bucket_money(&cm, [("m", &z)], 5).and_then(Money::minor_i64),
         Ok(15),
         "the same fee in cents is 15 — the micro projection is exactly 10_000x"
     );
     assert_eq!(
-        cm.derive_spend_micros([("m", &z)].into_iter(), 5, false),
+        bucket_money(&cm, [("m", &z)], 0).and_then(Money::micros_i64),
         Ok(0),
-        "flag off: no fee in the micro projection either"
+        "no billable requests: no fee in the micro projection either"
     );
 }
 
@@ -587,12 +598,12 @@ fn derived_spend_lands_exactly_on_an_integer_budget_cap() {
     // 1 utok = 1000 nano/token; 1_000_000 tokens = 1_000_000_000 nanos = 100 cents exactly.
     let cm = resolve_card_fee(Some(&card(&[("m", 1.0, 0.0)])), 0);
     assert_eq!(
-        cm.derive_spend_cents([("m", &toks(1_000_000, 0))].into_iter(), 0, false),
+        bucket_money(&cm, [("m", &toks(1_000_000, 0))], 0).and_then(Money::minor_i64),
         Ok(100),
         "spend lands exactly on the integer cap value the budget check compares against"
     );
     assert_eq!(
-        cm.derive_spend_cents([("m", &toks(1_010_000, 0))].into_iter(), 0, false),
+        bucket_money(&cm, [("m", &toks(1_010_000, 0))], 0).and_then(Money::minor_i64),
         Ok(101),
         "one full cent more of tokens derives strictly above the cap"
     );
@@ -1053,7 +1064,7 @@ fn a_fractional_cent_rate_prices_exactly_through_the_live_intake() {
     );
     assert_eq!(one_nanos(&r, &toks(3, 7)), Ok(3 * 100 + 7 * 200));
     assert_eq!(
-        cm.derive_spend_micros([("m", &toks(1_000_000, 1_000_000))].into_iter(), 0, false),
+        bucket_money(&cm, [("m", &toks(1_000_000, 1_000_000))], 0).and_then(Money::micros_i64),
         Ok(300_000),
         "0.1 + 0.2 units per Mtok over a million of each is 300 000 micro-units exactly"
     );
@@ -1083,7 +1094,7 @@ fn a_large_count_times_a_rate_has_no_float_drift() {
         "every token of a count past f64's integer range is billed"
     );
     assert_eq!(
-        cm.derive_spend_micros([("m", &toks(count, 0))].into_iter(), 0, false),
+        bucket_money(&cm, [("m", &toks(count, 0))], 0).and_then(Money::micros_i64),
         Ok(i64::try_from(u128::from(count) * 300 / 1_000).expect("fits")),
         "the micro projection truncates the exact figure once"
     );

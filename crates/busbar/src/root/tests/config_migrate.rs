@@ -116,6 +116,87 @@ fn the_release_index_picks_the_newest_release_built_for_this_core() {
     );
 }
 
+#[test]
+fn release_index_orders_prereleases_before_stable_and_numeric_identifiers_numerically() {
+    let abi = crate::root::loader::registry::supported_abi("store")[0];
+    for tags in [
+        vec!["v1.6.0", "v1.6.0-rc.10"],
+        vec!["v1.6.0-rc.10", "v1.6.0"],
+        vec!["v1.6.0-rc.2", "v1.6.0-rc.10"],
+    ] {
+        let stable = tags.contains(&"v1.6.0");
+        let plugin = IndexPlugin {
+            repo: "Acme/stub".into(),
+            former_repos: vec![],
+            kind: "store".into(),
+            answers_to: vec!["stub".into()],
+            releases: tags
+                .into_iter()
+                .map(|tag| super::IndexRelease {
+                    tag: tag.into(),
+                    abi_version: abi,
+                })
+                .collect(),
+        };
+        assert_eq!(
+            plugin.pin_for_this_core().as_deref(),
+            Some(if stable {
+                "Acme/stub@v1.6.0"
+            } else {
+                "Acme/stub@v1.6.0-rc.10"
+            })
+        );
+    }
+    assert_eq!(
+        super::version_order("v1.6.0+build.2", "v1.6.0+build.9"),
+        std::cmp::Ordering::Equal
+    );
+    assert!(super::version_order("v1.6.0-alpha", "v1.6.0-alpha.1").is_lt());
+    assert!(super::version_order("v1.6.0-11", "v1.6.0-alpha").is_lt());
+}
+
+#[test]
+fn migration_paths_do_not_consume_later_provider_options() {
+    for (option, path) in [
+        ("--migrate-config", "--config"),
+        ("--migrate-config", "--providers"),
+        ("--migrate-config", "-c"),
+        ("--config", "--migrate-config"),
+    ] {
+        let args = [option, path, "--providers", "selected-catalog.yaml"];
+        assert_eq!(
+            crate::root::cli::value_flag(
+                args.into_iter().map(str::to_owned),
+                crate::root::cli::OPTION_PROVIDERS,
+                None,
+            ),
+            Some("selected-catalog.yaml".to_owned()),
+            "the literal migration path {path} is not a providers option"
+        );
+    }
+}
+
+#[test]
+fn migration_staging_owns_only_its_fresh_private_directory() {
+    let first = super::FetchedDir::create_in(&std::env::temp_dir()).unwrap();
+    let second = super::FetchedDir::create_in(&std::env::temp_dir()).unwrap();
+    assert_ne!(first.0, second.0);
+    std::fs::write(first.0.join("owned"), b"first").unwrap();
+    std::fs::write(second.0.join("other"), b"second").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            std::fs::metadata(&first.0).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+    }
+    let gone = first.0.clone();
+    drop(first);
+    assert!(!gone.exists());
+    assert_eq!(std::fs::read(second.0.join("other")).unwrap(), b"second");
+}
+
 /// THE CATALOG A PLANE'S MIGRATION READS is the one boot reads: the `providers.yaml` beside the
 /// configuration (the private-destinations corpus fixture's), each entry as written, a
 /// catalog-only private one included.

@@ -3119,32 +3119,17 @@ async fn the_resolved_op_loop_leaves_the_money_where_run_gauntlet_leaves_it() {
     assert_eq!(field(&refused, "metering_rows"), "");
 }
 
-/// THE `ROOT_CARD` PIN THE FUNNEL PRICES AGAINST DOES NOT MOVE across the shadow — so both legs of a
-/// delivered unit resolve their late accrual against the SAME card snapshot, which is what makes
-/// `ledger_spend_cents` an identity rather than a coincidence.
-///
-/// The card is the process holder `crate::root::kernel::ROOT_CARD`; a live config apply may append to
-/// it, but nothing in this test applies. Read its snapshot seq on both sides of the drive and assert
-/// it is unchanged, then assert the priced money matched — the pin the loop took at admission is the
-/// pin the legacy leg's late accrual took, and the money proves it.
+/// The legacy and loop legs report the same ledger spend for the delivered fixture. This rig
+/// prices through its governance ledger; real pinned-history provenance is covered by the active
+/// plane_node_seal tests with explicit local histories, independently of the process-global card.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn both_legs_price_against_the_same_root_card_pin() {
-    // The snapshot seq on each side of the drive. `None` where no rate card is applied in-process
-    // (the bare test rig prices through the governance ledger, so the process holder is empty) — and
-    // `None == None` is still the identity this asserts: whatever the two legs pinned, they pinned
-    // the same thing, because nothing here appends to the history between them.
-    let before = crate::root::kernel::ROOT_CARD.pin().map(|p| p.seq());
+async fn both_legs_report_the_same_ledger_spend() {
     let shipped = leg_native_run(Fixture::BufferedOk).await;
     let looped = leg_native_run_via_loop(Fixture::BufferedOk).await;
-    let after = crate::root::kernel::ROOT_CARD.pin().map(|p| p.seq());
-    assert_eq!(
-        before, after,
-        "the rate-card history moved under the shadow, so the two legs did not price against one card"
-    );
     assert_eq!(
         field(&shipped, "ledger_spend_cents"),
         field(&looped, "ledger_spend_cents"),
-        "the two legs priced the same unit to different money against one card pin"
+        "the two legs reported different ledger spend for the same delivered unit"
     );
 }
 

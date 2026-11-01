@@ -248,3 +248,45 @@ fn provided_id_batch_retains_exact_identity_after_pending_and_unknown_commit() {
         "the caller retained the committed operation identity"
     );
 }
+
+#[test]
+fn provided_metering_id_replays_across_handles_and_refuses_changed_counts() {
+    use busbar_contract::records::MeteringDelta;
+    const ID: OpId = OpId([0x79; 16]);
+    let first = open("provided-metering-id", must_not_mint);
+    let delta = MeteringDelta {
+        key_id: "metered".into(),
+        bucket: 60,
+        model: "model".into(),
+        provider: "provider".into(),
+        tokens_input: 3,
+        tokens_output: 5,
+        tokens_cache_read: 7,
+        tokens_cache_write: 11,
+        requests: 1,
+        billable_requests: 1,
+        key_group_at_use: "historical-group".into(),
+        pricing_version: "historical-version".into(),
+        priced_from_ms: 123,
+        usage_units: std::collections::BTreeMap::from([("bytes".into(), 13)]),
+    };
+    assert!(RecordStore::supports_metering_batch_deduped(&first));
+    RecordStore::add_metering_batch_deduped(&first, ID, std::slice::from_ref(&delta)).unwrap();
+    let reopened = open("provided-metering-id", must_not_mint);
+    RecordStore::add_metering_batch_deduped(&reopened, ID, std::slice::from_ref(&delta)).unwrap();
+    let mut changed = delta.clone();
+    changed.tokens_input += 1;
+    let error = RecordStore::add_metering_batch_deduped(&reopened, ID, &[changed]).unwrap_err();
+    assert!(error
+        .0
+        .contains(busbar_contract::abi::store::DIAG_OPID_CONFLICT));
+    let rows = RecordStore::list_metering(&reopened, 60).unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].requests, 1);
+    assert_eq!(rows[0].tokens_input, 3);
+    assert_eq!(rows[0].tokens_output, 5);
+    assert_eq!(rows[0].usage_units.get("bytes"), Some(&13));
+    assert_eq!(rows[0].priced_from_ms, 123);
+    assert_eq!(rows[0].pricing_version, "historical-version");
+    assert_eq!(rows[0].key_group_at_use, "historical-group");
+}

@@ -171,6 +171,15 @@ impl AuthFloor {
         f
     }
 
+    // Protocol capture already decoded this value with PostgreSQL's native grammar. Preserve
+    // every other operator flag while replacing only the PostgreSQL methods.
+    pub(super) fn postgres(mut self, require_auth: Option<&str>) -> Self {
+        self.pg = require_auth
+            .and_then(|v| RequireAuth::parse(v).ok())
+            .unwrap_or(RequireAuth::DEFAULT);
+        self
+    }
+
     /// The Postgres methods allowed.
     #[must_use]
     pub const fn pg(&self) -> RequireAuth {

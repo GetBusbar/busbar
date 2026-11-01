@@ -17,6 +17,8 @@ arc-swap = { workspace = true }
 # One-way: busbar-kernel names nothing in this crate.
 busbar-kernel = { path = "../busbar-kernel", default-features = false }
 busbar-kernel-egress = { path = "../busbar-kernel-egress" }
+busbar-plugin-loader = { path = "../plugin-loader" }
+serde_json = { workspace = true }
 rustls = { workspace = true }
 rustls-pki-types = { workspace = true }
 tokio-rustls = { workspace = true }
@@ -45,8 +47,6 @@ test-support = ["rcgen/pem"]
 sha2 = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "io-util", "time", "sync"] }
 busbar-kernel = { path = "../busbar-kernel", default-features = false, features = ["test-support"] }
-busbar-plugin-loader = { path = "../plugin-loader" }
-serde_json = { workspace = true }
 rcgen = { workspace = true, features = ["pem"] }
 busbar-stub-transport-plugin = { path = "../plugin-loader/stubs/transport/plugin" }
 busbar-test-kit = { path = "../busbar-test-kit" }

@@ -5063,9 +5063,22 @@ fn test_validate_rate_card_entry_omitting_a_tier_is_accepted_and_bills_that_clas
     // micro-units: 1,000 micro-units is one whole unit.
     let micros = |card: &std::collections::BTreeMap<String, config::RateEntryCfg>,
                   units: &std::collections::BTreeMap<String, u64>| {
-        crate::cost::CostModel::resolve_parts(Some(card), 0, &std::collections::BTreeMap::new())
-            .derive_spend_micros([("claude-sonnet", units)].into_iter(), 0, false)
-            .expect("the model is on the card")
+        let model = crate::cost::CostModel::resolve_parts(
+            Some(card),
+            0,
+            &std::collections::BTreeMap::new(),
+        );
+        let entry = units.iter().fold(
+            busbar_kernel_ledger::cost::LedgerEntry::new("claude-sonnet", 0),
+            |entry, (class, count)| entry.with_whole(class, *count),
+        );
+        busbar_kernel_ledger::cost::price_ledger(
+            &[entry],
+            &busbar_kernel_ledger::cost::History::opening(model.card().clone(), 0),
+        )
+        .expect("the model is on the card")
+        .micros_i64()
+        .expect("the fixture fits")
     };
     let a_day_of_cache_reads =
         std::collections::BTreeMap::from([("cache_read".to_string(), 10_000_000u64)]);
@@ -5975,6 +5988,35 @@ fn test_validate_limits_request_body_max_bytes_floor_and_ceiling_are_exact() {
     assert!(
         errs.iter().any(|e| e.contains("exceeds the")),
         "one byte over the ceiling must be rejected; got {errs:?}"
+    );
+}
+
+#[test]
+fn datagram_line_memory_limit_accepts_unset_or_any_positive_usize() {
+    for value in [None, Some(1), Some(usize::MAX)] {
+        let limits = config::LimitsResolved {
+            datagram_line_memory_bytes: value,
+            ..config::LimitsResolved::default()
+        };
+        let mut errors = Vec::new();
+        validate_limits(&limits, &mut errors);
+        assert!(errors.is_empty(), "{value:?}: {errors:?}");
+    }
+}
+
+#[test]
+fn datagram_line_memory_limit_zero_is_a_config_validation_error() {
+    let deploy = crate::config::deploy_from_yaml_str(
+        "providers: {}\nmodels: {}\nlimits:\n  datagram_line_memory_bytes: 0\n",
+    )
+    .expect("zero has the right type; validation must reject it");
+    let cfg = crate::config::resolve(&deploy, &HashMap::new()).expect("resolve the config");
+    assert_eq!(cfg.limits.datagram_line_memory_bytes, Some(0));
+    let mut errors = Vec::new();
+    validate_limits(&cfg.limits, &mut errors);
+    assert_eq!(
+        errors,
+        ["limits.datagram_line_memory_bytes must be >= 1 when set (omit it or use null to disable the limit)"],
     );
 }
 

@@ -1,11 +1,31 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The read-time derivation, kept verbatim from the older release because the legacy usage
-//! projection still reprices at read time. Quantities are the truth; the amount is derived.
+//! Canonical accumulation and checked projections. Quantities are the truth; the amount is derived.
 
 use super::*;
-use crate::cost::{derive_spend_cents, derive_spend_micros, LaneClass, MoneyError, RateCard};
+use crate::cost::{whole, LaneClass, Money, MoneyError, RateCard, Tally, STANDARD_TIER_BP};
+
+fn bucket_money<'a>(
+    card: &RateCard,
+    lanes: impl IntoIterator<Item = (&'a str, &'a [busbar_contract::caps::UsageLine])>,
+    billable_requests: u64,
+) -> Result<Money, MoneyError> {
+    let mut tally = Tally::at_card(card);
+    for (lane, lines) in lanes {
+        tally.row(
+            lane,
+            0,
+            STANDARD_TIER_BP,
+            lines
+                .iter()
+                .map(|line| (line.class.as_str(), whole(line.quantity))),
+            whole(0),
+        )?;
+    }
+    tally.fee(0, STANDARD_TIER_BP, whole(billable_requests))?;
+    tally.money()
+}
 
 /// With NO card, quantities derive to nothing and only the flat fee counts. This is the
 /// all-or-nothing switch in its off position.
@@ -14,7 +34,7 @@ fn an_absent_card_prices_quantities_at_zero() {
     let c = RateCard::absent(3);
     let l = lines(&[(INPUT, 1_000_000), (OUTPUT, 1_000_000)]);
     assert_eq!(
-        derive_spend_cents(&c, [("anything", l.as_slice())].into_iter(), 5, true),
+        bucket_money(&c, [("anything", l.as_slice())], 5).and_then(Money::minor_i64),
         Ok(15),
         "quantities derive to nothing; five requests at three cents remain"
     );
@@ -28,11 +48,11 @@ fn a_present_card_derives_integer_spend() {
     let c = card("lane-5", 2.5, 10.0, 0);
     let l = lines(&[(INPUT, 1_000_000), (OUTPUT, 1_000_000)]);
     assert_eq!(
-        derive_spend_cents(&c, [("lane-5", l.as_slice())].into_iter(), 0, false),
+        bucket_money(&c, [("lane-5", l.as_slice())], 0).and_then(Money::minor_i64),
         Ok(1250)
     );
     assert_eq!(
-        derive_spend_micros(&c, [("lane-5", l.as_slice())].into_iter(), 0, false),
+        bucket_money(&c, [("lane-5", l.as_slice())], 0).and_then(Money::micros_i64),
         Ok(12_500_000)
     );
 }
@@ -44,7 +64,7 @@ fn the_nano_scale_keeps_sub_micro_precision() {
     let c = card("m", 3.125, 0.0, 0);
     let l = lines(&[(INPUT, 8)]);
     assert_eq!(
-        derive_spend_micros(&c, [("m", l.as_slice())].into_iter(), 0, false),
+        bucket_money(&c, [("m", l.as_slice())], 0).and_then(Money::micros_i64),
         Ok(25)
     );
 }
@@ -59,7 +79,7 @@ fn an_unknown_lane_with_a_card_is_unpriced_and_refuses() {
     assert!(!c.lane_unpriced("lane-5"));
     let l = lines(&[(INPUT, 1_000_000)]);
     assert_eq!(
-        derive_spend_cents(&c, [("mystery-lane", l.as_slice())].into_iter(), 0, false),
+        bucket_money(&c, [("mystery-lane", l.as_slice())], 0).and_then(Money::minor_i64),
         Err(MoneyError::LaneUnpriced {
             card_seq: crate::cost::HistorySeq::OPENING,
             lane: "mystery-lane".to_string(),
@@ -75,11 +95,11 @@ fn repricing_on_read_recomputes_the_derived_spend() {
     let wrong = card("m", 10.0, 0.0, 0);
     let fixed = card("m", 5.0, 0.0, 0);
     assert_eq!(
-        derive_spend_cents(&wrong, [("m", l.as_slice())].into_iter(), 0, false),
+        bucket_money(&wrong, [("m", l.as_slice())], 0).and_then(Money::minor_i64),
         Ok(1000)
     );
     assert_eq!(
-        derive_spend_cents(&fixed, [("m", l.as_slice())].into_iter(), 0, false),
+        bucket_money(&fixed, [("m", l.as_slice())], 0).and_then(Money::minor_i64),
         Ok(500),
         "the same quantities under a corrected rate halve on the next read"
     );
@@ -93,11 +113,11 @@ fn the_derivation_refuses_an_overflow_and_never_pins_or_wraps() {
     let c = card("m", 1e15, 0.0, 0);
     let l = lines(&[(INPUT, u64::MAX)]);
     assert_eq!(
-        derive_spend_cents(&c, [("m", l.as_slice())].into_iter(), 0, false),
+        bucket_money(&c, [("m", l.as_slice())], 0).and_then(Money::minor_i64),
         Err(MoneyError::Overflow)
     );
     assert_eq!(
-        derive_spend_micros(&c, [("m", l.as_slice())].into_iter(), 0, false),
+        bucket_money(&c, [("m", l.as_slice())], 0).and_then(Money::micros_i64),
         Err(MoneyError::Overflow)
     );
 }
@@ -114,7 +134,7 @@ fn a_four_class_card_prices_each_class_against_its_own_rate() {
         (CACHE_WRITE, 500_000),
     ]);
     assert_eq!(
-        derive_spend_cents(&c, [("quad", l.as_slice())].into_iter(), 0, false),
+        bucket_money(&c, [("quad", l.as_slice())], 0).and_then(Money::minor_i64),
         Ok(1500)
     );
 }
@@ -126,7 +146,7 @@ fn the_cent_derivation_truncates_toward_zero() {
     let c = card("m", 1.0, 0.0, 0);
     let at = |tokens: u64| {
         let l = lines(&[(INPUT, tokens)]);
-        derive_spend_cents(&c, [("m", l.as_slice())].into_iter(), 0, false)
+        bucket_money(&c, [("m", l.as_slice())], 0).and_then(Money::minor_i64)
     };
     assert_eq!(at(19_999), Ok(1));
     assert_eq!(at(20_000), Ok(2));
@@ -148,17 +168,13 @@ fn sub_cent_contributions_across_lanes_sum_before_flooring() {
     let la = lines(&[(INPUT, 1_000)]);
     let lb = lines(&[(INPUT, 1_000)]);
     assert_eq!(
-        derive_spend_cents(&c, [("a", la.as_slice())].into_iter(), 0, false),
+        bucket_money(&c, [("a", la.as_slice())], 0).and_then(Money::minor_i64),
         Ok(0),
         "one half-cent lane alone floors to nothing"
     );
     assert_eq!(
-        derive_spend_cents(
-            &c,
-            [("a", la.as_slice()), ("b", lb.as_slice())].into_iter(),
-            0,
-            false
-        ),
+        bucket_money(&c, [("a", la.as_slice()), ("b", lb.as_slice())], 0)
+            .and_then(Money::minor_i64),
         Ok(1),
         "two half-cent lanes sum to a whole cent before the single divide"
     );
@@ -176,7 +192,7 @@ fn an_explicit_zero_rate_lane_derives_zero() {
         (CACHE_WRITE, u64::MAX),
     ]);
     assert_eq!(
-        derive_spend_cents(&c, [("freebie", l.as_slice())].into_iter(), 0, false),
+        bucket_money(&c, [("freebie", l.as_slice())], 0).and_then(Money::minor_i64),
         Ok(0)
     );
 }
@@ -192,39 +208,39 @@ fn a_partial_card_prices_the_known_lane_and_refuses_the_missing_one() {
     let known = lines(&[(INPUT, 1_000_000)]);
     let absent = lines(&[(INPUT, 9_999_999)]);
     assert_eq!(
-        derive_spend_cents(
+        bucket_money(
             &c,
-            [("priced", known.as_slice()), ("absent", absent.as_slice())].into_iter(),
+            [("priced", known.as_slice()), ("absent", absent.as_slice())],
             0,
-            false
-        ),
+        )
+        .and_then(Money::minor_i64),
         Err(MoneyError::LaneUnpriced {
             card_seq: crate::cost::HistorySeq::OPENING,
             lane: "absent".to_string(),
         })
     );
     assert_eq!(
-        derive_spend_cents(&c, [("priced", known.as_slice())].into_iter(), 0, false),
+        bucket_money(&c, [("priced", known.as_slice())], 0).and_then(Money::minor_i64),
         Ok(200),
         "the named lane alone prices as it always did"
     );
 }
 
-/// The flat fee is the fee times the billable request count, added only when asked for. A product
+/// The flat fee is the fee times the billable request count. A product
 /// past the range REFUSES (item 28): it can never wrap the fee negative into a free bucket, and it
 /// no longer pins a ceiling nobody was charged either.
 #[test]
-fn the_flat_fee_refuses_an_overflow_and_is_gated_by_the_flag() {
+fn the_flat_fee_refuses_an_overflow_and_zero_billable_requests_add_nothing() {
     let c = RateCard::absent(i64::MAX);
     let l = lines(&[]);
     assert_eq!(
-        derive_spend_cents(&c, [("m", l.as_slice())].into_iter(), u64::MAX, true),
+        bucket_money(&c, [("m", l.as_slice())], u64::MAX).and_then(Money::minor_i64),
         Err(MoneyError::Overflow)
     );
     assert_eq!(
-        derive_spend_cents(&c, [("m", l.as_slice())].into_iter(), u64::MAX, false),
+        bucket_money(&c, [("m", l.as_slice())], 0).and_then(Money::minor_i64),
         Ok(0),
-        "with the fee excluded it contributes nothing"
+        "with no billable requests the fee contributes nothing"
     );
 }
 
@@ -237,7 +253,7 @@ fn a_negative_fee_can_never_credit_a_bucket() {
     assert_eq!(c.fee(), 0);
     assert_eq!(c.fee_unit_price_nanos(), 0);
     assert_eq!(
-        derive_spend_cents(&c, [("m", l.as_slice())].into_iter(), 100, true),
+        bucket_money(&c, [("m", l.as_slice())], 100).and_then(Money::minor_i64),
         Ok(0)
     );
 }
@@ -249,15 +265,15 @@ fn the_micro_projection_fee_is_ten_thousand_times_the_cent_fee() {
     let c = RateCard::absent(3);
     let l = lines(&[]);
     assert_eq!(
-        derive_spend_micros(&c, [("m", l.as_slice())].into_iter(), 5, true),
+        bucket_money(&c, [("m", l.as_slice())], 5).and_then(Money::micros_i64),
         Ok(150_000)
     );
     assert_eq!(
-        derive_spend_cents(&c, [("m", l.as_slice())].into_iter(), 5, true),
+        bucket_money(&c, [("m", l.as_slice())], 5).and_then(Money::minor_i64),
         Ok(15)
     );
     assert_eq!(
-        derive_spend_micros(&c, [("m", l.as_slice())].into_iter(), 5, false),
+        bucket_money(&c, [("m", l.as_slice())], 0).and_then(Money::micros_i64),
         Ok(0)
     );
 }
@@ -270,7 +286,7 @@ fn the_derived_spend_lands_exactly_on_an_integer_cap() {
     let c = card("m", 1.0, 0.0, 0);
     let at = |tokens: u64| {
         let l = lines(&[(INPUT, tokens)]);
-        derive_spend_cents(&c, [("m", l.as_slice())].into_iter(), 0, false)
+        bucket_money(&c, [("m", l.as_slice())], 0).and_then(Money::minor_i64)
     };
     assert_eq!(at(1_000_000), Ok(100));
     assert_eq!(at(1_010_000), Ok(101));

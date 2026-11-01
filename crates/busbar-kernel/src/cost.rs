@@ -646,64 +646,6 @@ impl CostModel {
         self.card.lane_unpriced(model)
     }
 
-    /// DERIVE the spend (in cents, abstract minor units) of a ledger view: every model the bucket
-    /// used, plus - when `include_request_fee` - the flat per-request fee times the BILLABLE request
-    /// count (`fee_requests`: admitted minus refunded, so the fee bills 2xx only).
-    ///
-    /// **THE ONE FUNCTION, NOT A COPY OF IT** (items 104, 25, 124, 28, 31). This used to be its own
-    /// loop, and its loop answered #42 backwards: `if let Some(rate) = self.rate_for(model)` DROPPED
-    /// a model the present card did not name, so its whole consumption derived as nothing — on the
-    /// live LLM admission gate (`try_admit`) and on every customer read ("the designed behavior").
-    /// It is now `busbar_kernel_ledger::cost::Tally` at this card, so:
-    ///
-    /// - card ABSENT: tokens price at 0, the fee posts — #42's only silent zero;
-    /// - card PRESENT, model or hit class unpriced: `Err` — the door BLOCKS and a read FAILS (#42);
-    /// - overflow: `Err(Overflow)` — never pinned at `i64::MAX` (item 28).
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn derive_spend_cents<'m>(
-        &self,
-        models: impl Iterator<Item = (&'m str, &'m BTreeMap<String, u64>)>,
-        fee_requests: u64,
-        include_request_fee: bool,
-    ) -> Result<i64, busbar_kernel_ledger::cost::MoneyError> {
-        self.tally(models, fee_requests, include_request_fee)?
-            .money()?
-            .minor_i64()
-    }
-
-    /// As [`Self::derive_spend_cents`] but in MICRO-units, for the hook seam / admin projections.
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn derive_spend_micros<'m>(
-        &self,
-        models: impl Iterator<Item = (&'m str, &'m BTreeMap<String, u64>)>,
-        fee_requests: u64,
-        include_request_fee: bool,
-    ) -> Result<i64, busbar_kernel_ledger::cost::MoneyError> {
-        self.tally(models, fee_requests, include_request_fee)?
-            .money()?
-            .micros_i64()
-    }
-
-    /// Drive the one function over a bucket view: one row per model (every class it counted, item
-    /// 123, at the standard tier — the enforcement book carries no tier), then the bucket's fee row.
-    #[cfg(any(test, feature = "test-support"))]
-    fn tally<'m>(
-        &self,
-        models: impl Iterator<Item = (&'m str, &'m BTreeMap<String, u64>)>,
-        fee_requests: u64,
-        include_request_fee: bool,
-    ) -> Result<busbar_kernel_ledger::cost::Tally<'_>, busbar_kernel_ledger::cost::MoneyError> {
-        use busbar_kernel_ledger::cost::{whole, Tally, STANDARD_TIER_BP};
-        let mut tally = Tally::at_card(&self.card);
-        for (model, units) in models {
-            tally.row(model, 0, STANDARD_TIER_BP, unit_counts(units), whole(0))?;
-        }
-        if include_request_fee {
-            tally.fee(0, STANDARD_TIER_BP, whole(fee_requests))?;
-        }
-        Ok(tally)
-    }
-
     /// Resolve the ENFORCEMENT CHAIN for a key: [key's attribution bucket] -> key.group's window
     /// buckets -> parent's -> ... root, innermost first. Borrows the key + this model's group
     /// table; allocates only the chain vectors themselves.

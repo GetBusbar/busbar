@@ -354,7 +354,7 @@ fn a_walk_spanning_a_config_apply_records_into_the_new_store() {
     let (first, second) = (generation(), generation());
     let handle = Arc::new(busbar_kernel::state::AppHandle::new(Arc::clone(&first)));
     let live = Arc::new(std::sync::OnceLock::new());
-    let _ = live.set(Arc::clone(&handle));
+    let _ = live.set(Arc::downgrade(&handle));
     let cells = cells_routing(LiveApp::new(live, Arc::clone(&first)), &["p"], &[]);
     let dest = DestinationId::new(0);
     let token = busbar_kernel::test_support::tokens::pass();
@@ -375,6 +375,34 @@ fn a_walk_spanning_a_config_apply_records_into_the_new_store() {
         first.store.error_rate_in("p", 0, now),
         Some(0.0),
         "the retired store took nothing after the apply"
+    );
+}
+
+#[test]
+fn live_egress_borrows_its_owner_and_never_reverts_after_that_owner_retires() {
+    let boot = TestApp::new().build();
+    let retired_boot = Arc::downgrade(&boot);
+    let slot = Arc::new(std::sync::OnceLock::new());
+    let source = LiveApp::new(slot.clone(), boot.clone());
+    assert!(
+        Arc::ptr_eq(&source.load(), &boot),
+        "boot remains usable before the handle exists"
+    );
+    let current = TestApp::new().build();
+    let owner = Arc::new(busbar_kernel::state::AppHandle::new(current.clone()));
+    let _ = slot.set(Arc::downgrade(&owner));
+    assert!(Arc::ptr_eq(&source.load(), &current));
+    drop(boot);
+    assert!(
+        retired_boot.upgrade().is_none(),
+        "the fallback is a backreference"
+    );
+    let owner_lifetime = Arc::downgrade(&owner);
+    drop(owner);
+    assert!(owner_lifetime.upgrade().is_none());
+    assert!(
+        source.try_load().is_none(),
+        "a retired owner never selects its older fallback"
     );
 }
 

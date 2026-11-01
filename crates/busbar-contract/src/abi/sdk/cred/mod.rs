@@ -59,7 +59,7 @@ pub(crate) mod write;
 use zeroize::{Zeroize, Zeroizing};
 
 pub use floor::{AuthFloor, PgAuth, RequireAuth};
-pub use form::{CredUrl, PasswordAt, UserinfoUrl};
+pub use form::{CredUrl, MysqlUrl, PasswordAt, PostgresUrl, UserinfoUrl, ValkeyUrl};
 pub use form_body::{FormBody, FormValue};
 pub use resolved::{resolved, EMPTY_VALUE};
 pub use settings::{settings, SettingsError};

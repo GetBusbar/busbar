@@ -2603,6 +2603,9 @@ fn reload_to_apply_fields(req: &busbar_kernel::config::overlay::RootSettings) ->
             // dotted would mis-state that the WHOLE field is stored-not-live when three of its four
             // consumers are live.
             max_keys_per_principal: _,
+            // New datagram LINE pairings capture the resolved setting; existing connections keep
+            // their chosen limit. Applying config requires no process restart.
+            datagram_line_memory_bytes: _,
             max_auto_provisioned_groups: _,
             // GENUINELY LIVE — the hook seam reads the installed ceiling with a single relaxed
             // atomic load, and every config apply re-installs it, so a `PUT` takes effect on the

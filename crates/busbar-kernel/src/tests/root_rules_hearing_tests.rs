@@ -35,6 +35,55 @@ impl Hearing {
 }
 
 #[test]
+fn boot_refusal_releases_the_completed_candidates_routes_without_committing_limits() {
+    #[derive(Default)]
+    struct RefuseBoot {
+        routes: Mutex<Option<std::sync::Weak<crate::plugin_routes::PluginRouteTable>>>,
+        committed: std::sync::atomic::AtomicBool,
+    }
+    impl RootRules for RefuseBoot {
+        fn check(&self, _: &crate::config::RootCfg) -> Result<(), String> {
+            Ok(())
+        }
+        fn check_built(&self, candidate: &crate::state::App) -> Result<(), String> {
+            assert_eq!(
+                candidate.config_version, 0,
+                "this is the actual startup candidate"
+            );
+            *self.routes.lock().unwrap() = Some(Arc::downgrade(&candidate.plugin_routes));
+            Err("startup listener has no owning SERVE dispatcher".into())
+        }
+        fn destinations_applied(&self, _: &Destinations) {
+            self.committed
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+    crate::test_support::register_neutral_test_plane();
+    crate::snapshot::init();
+    let mut cfg = crate::test_support::cfg_with_provider_api_key(crate::config::SecretRef::none());
+    cfg.allow_all_metadata = true;
+    let refusing = Arc::new(RefuseBoot::default());
+    let rules: Arc<dyn RootRules> = refusing.clone();
+    let refusal = match crate::test_support::build_once_under(cfg, None, &rules) {
+        Err(refusal) => refusal,
+        Ok(_) => panic!("startup published a refused candidate"),
+    };
+    assert_eq!(refusal, "startup listener has no owning SERVE dispatcher");
+    assert!(
+        refusing
+            .routes
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .upgrade()
+            .is_none(),
+        "the rejected candidate's actual route table is released"
+    );
+    assert!(!refusing.committed.load(std::sync::atomic::Ordering::SeqCst));
+}
+
+#[test]
 fn boot_builds_a_pool_of_nine_unbounded_lanes_without_overflowing_its_banner() {
     crate::test_support::register_neutral_test_plane();
     crate::snapshot::init();

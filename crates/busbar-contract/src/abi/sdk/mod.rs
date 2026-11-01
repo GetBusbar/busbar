@@ -15,6 +15,7 @@
 // lanes; the SDK keeps the discipline it was written and reviewed under, unchanged by the merge.
 #![allow(unsafe_op_in_unsafe_fn)]
 
+pub mod aead;
 pub mod boundary;
 pub mod completion_retirement;
 /// Rust-only codec and typed facts for negotiated main-call host inspection.

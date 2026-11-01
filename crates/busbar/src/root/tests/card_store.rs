@@ -147,3 +147,94 @@ fn saving_a_spool_does_not_reuse_another_writers_staged_file() {
     assert_eq!(std::fs::read(staged).unwrap(), other);
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[cfg(unix)]
+fn spool_save_fault_preserves_the_correct_side_of_rename(fault: save_test::Step) {
+    use save_test::Step;
+
+    let dir = std::env::temp_dir().join(format!(
+        "card-spool-boundary-{}-{}",
+        std::process::id(),
+        hex::encode(boot_rand())
+    ));
+    std::fs::create_dir(&dir).unwrap();
+    let old_entry = entry(EntryKey::new(5, [2; 8], 0));
+    let old = Spool {
+        pending: vec![SpooledWrite::of(
+            &old_entry.key,
+            &old_entry.records().unwrap(),
+        )],
+    };
+    old.save(&dir).unwrap();
+    let mut original = entry(EntryKey::new(6, [2; 8], 0));
+    original.actor = "private-original-actor".into();
+    original.correction = Some(b"private-original-correction".to_vec());
+    let mut latest = old.clone();
+    latest.pending.push(SpooledWrite::of(
+        &original.key,
+        &original.records().unwrap(),
+    ));
+    let guard = save_test::install(&dir, move |step| {
+        if step == fault {
+            Err(std::io::Error::other("private-filesystem-error-content"))
+        } else {
+            Ok(())
+        }
+    });
+    let error = latest
+        .save(&dir)
+        .expect_err("a failed barrier is not durable");
+    for private in [
+        "private-original-actor",
+        "private-original-correction",
+        "private-filesystem-error-content",
+    ] {
+        assert!(
+            !error.contains(private),
+            "persistence error exposed contents"
+        );
+    }
+    let expected = match fault {
+        Step::SyncFile | Step::Rename => &old,
+        Step::OpenDirectory | Step::SyncDirectory => &latest,
+    };
+    assert_eq!(&Spool::load(&dir).unwrap(), expected, "{fault:?}");
+    assert_eq!(
+        std::fs::read_dir(&dir).unwrap().count(),
+        1,
+        "only the published spool remains"
+    );
+    drop(guard);
+    latest.save(&dir).unwrap();
+    assert_eq!(Spool::load(&dir).unwrap(), latest);
+    let writes = Spool::load(&dir).unwrap().pending;
+    assert_eq!(
+        Scanned::of(writes[1].records().unwrap()).entries,
+        vec![original]
+    );
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn spool_file_sync_refusal_preserves_the_previous_spool() {
+    spool_save_fault_preserves_the_correct_side_of_rename(save_test::Step::SyncFile);
+}
+
+#[cfg(unix)]
+#[test]
+fn spool_rename_refusal_preserves_the_previous_spool() {
+    spool_save_fault_preserves_the_correct_side_of_rename(save_test::Step::Rename);
+}
+
+#[cfg(unix)]
+#[test]
+fn spool_directory_open_refusal_reports_uncertain_published_bytes() {
+    spool_save_fault_preserves_the_correct_side_of_rename(save_test::Step::OpenDirectory);
+}
+
+#[cfg(unix)]
+#[test]
+fn spool_directory_sync_refusal_reports_uncertain_published_bytes() {
+    spool_save_fault_preserves_the_correct_side_of_rename(save_test::Step::SyncDirectory);
+}

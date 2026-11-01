@@ -52,17 +52,14 @@ use std::time::{Duration, Instant};
 use busbar_contract::abi::host::conn::connector::{
     DIRECTION_OUTBOUND, EGRESS_OPERATOR_INFRASTRUCTURE,
 };
-use busbar_contract::abi::mechanism::call::{Blob, Outcome};
-use busbar_contract::abi::mechanism::lifecycle::{slot as life, OpenIn, OpenOut};
 use busbar_contract::abi::mechanism::rendering::{ReadBlob, ReadNeed};
-use busbar_contract::abi::sdk::door::{blank_in, blank_out, MacroDoor};
-use busbar_contract::abi::transport::slot;
+use busbar_contract::abi::sdk::door::MacroDoor;
 use busbar_contract::conn::{
     ConnError, ConnId, InstanceId, NeedId, OpenDesc, PieceKind, NO_TICKET,
 };
 pub use busbar_contract::conn::{ConnWake, DeclaredConns};
-use busbar_contract::transport::EgressTrust;
-use busbar_core_connector::framer::{Call, Crossed, DoorFacts, FramerDoor};
+use busbar_contract::transport::{EgressTrust, TransportSettings};
+use busbar_core_connector::doors::Dispatched;
 use busbar_core_connector::registry::{Entry, Transports};
 use busbar_core_connector::test_support::{
     private_ca, ClientTls, ServerTls, StdClientSession, StdServerSession, TestCa,
@@ -70,10 +67,9 @@ use busbar_core_connector::test_support::{
 use busbar_core_connector::{Connector, DialJudge, Judged, Verdict};
 use busbar_kernel::config::sections::DEFAULT_BLOCK_PRIVATE_ADDRESSES;
 use busbar_kernel::config::Destinations;
-use busbar_plugin_loader::dispatch::kinds::transport::{Transport, TransportFacts};
+use busbar_plugin_loader::dispatch::kinds::transport::Transport;
 use busbar_plugin_loader::dispatch::{
-    load_linked, Bind, ConnTable, DispatchConfig, Dispatcher, Frame, InFrame, LinkedRow, NoSink,
-    OutFrame, Plugin,
+    load_linked, Bind, ConnTable, DispatchConfig, Dispatcher, LinkedRow, NoSink,
 };
 
 /// The framer doors a host serves, as the root links them: (claim, door). The plugin names them
@@ -306,18 +302,18 @@ fn pem_certs(pem: &str) -> Vec<Vec<u8>> {
 /// The dispatcher the host's transport doors are adopted by. As the root's: its workers run inside
 /// the connector's I/O runtime, and a CARRIER door moves its bytes over the process's one host I/O
 /// (`io.*`, `busbar_core_connector::hostio::process`), the connector's.
-fn transport_dispatcher() -> &'static Dispatcher {
-    static ONE: OnceLock<Dispatcher> = OnceLock::new();
+fn transport_dispatcher() -> &'static Arc<Dispatcher> {
+    static ONE: OnceLock<Arc<Dispatcher>> = OnceLock::new();
     ONE.get_or_init(|| {
         let d = Dispatcher::new(DispatchConfig::default());
         d.install_runtime(io_reactor());
         d.install_io(busbar_core_connector::hostio::process());
-        d
+        Arc::new(d)
     })
 }
 
-/// The framer entries: each door loaded through the one loader and opened with no settings, as
-/// the root opens a transport door that declares none it reads.
+/// The framer entries: each door loaded through the one loader and opened through the connector
+/// with the default deployment settings, as the root opens a transport door.
 fn entries(doors: Doors) -> Vec<Entry> {
     doors
         .iter()
@@ -334,224 +330,20 @@ fn entries(doors: Doors) -> Vec<Entry> {
                 .and_then(|row| load_linked::<Transport>(&row, bind))
                 .unwrap_or_else(|e| panic!("the host's transport `{claim}` does not load: {e}"));
             Entry {
-                door: Arc::new(Opened::open(plugin, claim)),
+                door: Arc::new(
+                    Dispatched::open_on(
+                        plugin,
+                        &TransportSettings::default(),
+                        Arc::clone(transport_dispatcher()),
+                    )
+                    .unwrap_or_else(|e| {
+                        panic!("the host's transport `{claim}` does not open: {e}")
+                    }),
+                ),
                 alpn: Vec::new(),
             }
         })
         .collect()
-}
-
-/// One transport door, opened, as the connector reaches it (the root's `doors::Dispatched`).
-struct Opened {
-    plugin: Plugin<Transport>,
-    facts: DoorFacts,
-}
-
-impl Opened {
-    fn open(plugin: Plugin<Transport>, claim: &str) -> Self {
-        let stated = plugin
-            .context::<TransportFacts>()
-            .cloned()
-            .unwrap_or_else(|| panic!("the host's transport `{claim}` states no transport tail"));
-        let mut i: OpenIn = blank_in();
-        i.settings = Blob::ABSENT;
-        let mut f = Frame::new(i, blank_out::<OpenOut>());
-        let opened = plugin.call(life::OPEN, &mut f);
-        assert_eq!(
-            opened.outcome,
-            Outcome::Ready,
-            "the host's transport `{claim}` does not open"
-        );
-        plugin
-            .ready(transport_dispatcher(), Duration::from_secs(10))
-            .unwrap_or_else(|e| panic!("the host's transport `{claim}` is not ready: {e}"));
-        let facts = DoorFacts {
-            name: plugin.name().to_owned(),
-            claims: stated.claims,
-            role: stated.role,
-            composes_over: stated.composes_over,
-            ported: stated.ported,
-            status_rows: stated.status_rows,
-            datagram: stated.datagram,
-            duplex: stated
-                .upgrades
-                .iter()
-                .chain(&stated.sessions)
-                .copied()
-                .collect(),
-        };
-        Self { plugin, facts }
-    }
-}
-
-/// One crossing through the dispatcher: the host's `in`/`out` copied in, the answer copied back.
-fn go<I: InFrame, O: OutFrame>(p: &Plugin<Transport>, s: u32, i: &mut I, o: &mut O) -> Crossed {
-    let mut f = Frame::new(*i, *o);
-    let c = p.call(s, &mut f);
-    *i = f.input;
-    *o = f.out;
-    Crossed {
-        outcome: c.outcome,
-        error: c.error,
-    }
-}
-
-/// One side of a carried connection: an inline ticket of the transport dispatcher, the one every
-/// transport door is adopted by (its wakes route there), as the root's.
-struct InlineSide(busbar_plugin_loader::dispatch::InlineTicket);
-
-impl busbar_core_connector::carrier::Side for InlineSide {
-    fn ticket(&self) -> busbar_contract::abi::mechanism::ticket::Ticket {
-        self.0.ticket()
-    }
-
-    fn register(&self, waker: &std::task::Waker) {
-        self.0.register(waker);
-    }
-}
-
-/// One INLINE crossing on `ticket` (a RESUME when `resume`): the host's `in`/`out` copied in, the
-/// answer copied back.
-fn go_inline<I: InFrame, O: OutFrame>(
-    p: &Plugin<Transport>,
-    ticket: busbar_contract::abi::mechanism::ticket::Ticket,
-    resume: bool,
-    s: u32,
-    i: &mut I,
-    o: &mut O,
-) -> Crossed {
-    let mut f = Frame::new(*i, *o);
-    let c = p.call_inline(ticket, resume, s, &mut f);
-    *i = f.input;
-    *o = f.out;
-    Crossed {
-        outcome: c.outcome,
-        error: c.error,
-    }
-}
-
-impl FramerDoor for Opened {
-    fn instance(&self) -> Option<u64> {
-        Some(self.plugin.instance().0)
-    }
-
-    fn framing_context(
-        &self,
-        listener: u64,
-        connection: u64,
-    ) -> Result<
-        Option<Arc<dyn busbar_contract::framing_scope::FramingScope>>,
-        busbar_core_connector::framer::Refused,
-    > {
-        transport_dispatcher()
-            .framing_context(self.plugin.instance().0, listener, connection)
-            .map(|c| Some(c as Arc<dyn busbar_contract::framing_scope::FramingScope>))
-            .map_err(|e| busbar_core_connector::framer::Refused {
-                outcome: Outcome::Refused,
-                error: e.into(),
-            })
-    }
-
-    fn framing_side(&self) -> Option<Box<dyn busbar_core_connector::carrier::Side>> {
-        if self.facts.role != busbar_contract::abi::transport::ROLE_FRAMER {
-            return None;
-        }
-        transport_dispatcher()
-            .inline_ticket()
-            .map(|t| Box::new(InlineSide(t)) as Box<dyn busbar_core_connector::carrier::Side>)
-    }
-
-    fn cross_on(
-        &self,
-        side: &dyn busbar_core_connector::carrier::Side,
-        resume: bool,
-        call: Call<'_>,
-    ) -> Crossed {
-        let (p, t) = (&self.plugin, side.ticket());
-        match call {
-            Call::Begin(i, o) => go_inline(p, t, resume, slot::BEGIN, i, o),
-            Call::Ingest(i, o) => go_inline(p, t, resume, slot::INGEST, i, o),
-            Call::Emit(i, o) => go_inline(p, t, resume, slot::EMIT, i, o),
-            Call::Adopt(i, o) => go_inline(p, t, resume, slot::ADOPT, i, o),
-            other => self.cross(other),
-        }
-    }
-
-    fn cross_scoped(
-        &self,
-        context: Option<&Arc<dyn busbar_contract::framing_scope::FramingScope>>,
-        side: Option<&dyn busbar_core_connector::carrier::Side>,
-        resume: bool,
-        call: Call<'_>,
-    ) -> Crossed {
-        busbar_plugin_loader::dispatch::framing_context::with_context(context.cloned(), || {
-            match side {
-                Some(side) => self.cross_on(side, resume, call),
-                None => self.cross(call),
-            }
-        })
-    }
-
-    fn cancel_scoped(
-        &self,
-        context: Option<&Arc<dyn busbar_contract::framing_scope::FramingScope>>,
-        side: &dyn busbar_core_connector::carrier::Side,
-        call: busbar_core_connector::carrier::Carry<'_>,
-    ) -> Crossed {
-        busbar_plugin_loader::dispatch::framing_context::with_context(context.cloned(), || {
-            self.carry(side, false, call)
-        })
-    }
-
-    fn facts(&self) -> &DoorFacts {
-        &self.facts
-    }
-
-    fn side(&self) -> Option<Box<dyn busbar_core_connector::carrier::Side>> {
-        if self.facts.role != busbar_contract::abi::transport::ROLE_CARRIER {
-            return None;
-        }
-        transport_dispatcher()
-            .inline_ticket()
-            .map(|t| Box::new(InlineSide(t)) as Box<dyn busbar_core_connector::carrier::Side>)
-    }
-
-    fn carry(
-        &self,
-        side: &dyn busbar_core_connector::carrier::Side,
-        resume: bool,
-        call: busbar_core_connector::carrier::Carry<'_>,
-    ) -> Crossed {
-        use busbar_core_connector::carrier::Carry;
-        let (p, t) = (&self.plugin, side.ticket());
-        match call {
-            Carry::Listen(i, o) => go_inline(p, t, resume, slot::LISTEN, i, o),
-            Carry::Accept(i, o) => go_inline(p, t, resume, slot::ACCEPT, i, o),
-            Carry::Dial(i, o) => go_inline(p, t, resume, slot::DIAL, i, o),
-            Carry::Read(i, o) => go_inline(p, t, resume, slot::READ, i, o),
-            Carry::Write(i, o) => go_inline(p, t, resume, slot::WRITE, i, o),
-            Carry::Flush(i, o) => go_inline(p, t, resume, slot::FLUSH, i, o),
-            Carry::Shut(i, o) => go_inline(p, t, resume, slot::SHUT, i, o),
-            // `cancel` is made on no ticket: the ticket it cancels rides its `in`.
-            Carry::Cancel(i, o) => go(p, life::CANCEL, i, o),
-        }
-    }
-
-    fn cross(&self, call: Call<'_>) -> Crossed {
-        let p = &self.plugin;
-        match call {
-            Call::Locate(i, o) => go(p, slot::LOCATE, i, o),
-            Call::Begin(i, o) => go(p, slot::BEGIN, i, o),
-            Call::Ingest(i, o) => go(p, slot::INGEST, i, o),
-            Call::Emit(i, o) => go(p, slot::EMIT, i, o),
-            Call::Encode(i, o) => go(p, slot::ENCODE, i, o),
-            Call::Refuse(i, o) => go(p, slot::REFUSE, i, o),
-            Call::Finish(i, o) => go(p, slot::FINISH, i, o),
-            Call::Detach(i, o) => go(p, slot::DETACH, i, o),
-            Call::Adopt(i, o) => go(p, slot::ADOPT, i, o),
-            Call::Timer(i, o) => go(p, slot::TIMER, i, o),
-        }
-    }
 }
 
 // ---- the far end ----

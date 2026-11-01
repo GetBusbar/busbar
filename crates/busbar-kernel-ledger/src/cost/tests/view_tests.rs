@@ -11,11 +11,11 @@
 use busbar_contract::count::Count;
 
 use crate::cost::{
-    derive_spend_cents, derive_spend_micros, price_exact, price_in_view, price_ledger, Author,
-    CardEntryDraft, History, LaneClass, LedgerEntry, Money, MoneyError, RateCard,
+    price_exact, price_in_view, price_ledger, Author, CardEntryDraft, History, LaneClass,
+    LedgerEntry, Money, MoneyError, RateCard,
 };
 
-use super::{lines, CACHE_READ, INPUT, OUTPUT};
+use super::{CACHE_READ, INPUT, OUTPUT};
 
 /// The lane every case below serves on.
 const LANE: &str = "lane-4o";
@@ -324,13 +324,10 @@ fn the_same_slice_against_the_same_history_is_one_figure_with_no_scale_to_choose
 /// The conditions under which every implementation in the tree is supposed to answer the same
 /// figure: one card, whole counts, the standard tier, a priced lane, every hit class priced.
 #[test]
-fn it_equals_the_legacy_micro_derivation_on_a_single_entry_history() {
+fn a_single_entry_history_prices_micro_units_and_fees_exactly() {
     let card = super::card4(LANE, [3.0, 16.0, 0.5, 4.0], 2);
-    let history = History::opening(card.clone(), 0);
+    let history = History::opening(card, 0);
     let usage = [(INPUT, 1_000u64), (OUTPUT, 250), (CACHE_READ, 7_000)];
-
-    let legacy = derive_spend_micros(&card, [(LANE, &lines(&usage)[..])].into_iter(), 3, true)
-        .expect("the one function prices");
 
     let slice = vec![usage
         .iter()
@@ -341,20 +338,17 @@ fn it_equals_the_legacy_micro_derivation_on_a_single_entry_history() {
     let one = price_in_view(&slice, &history.current()).expect("prices");
 
     assert_eq!(
-        i128::from(legacy),
         one.micros(),
-        "the one function equals `derive_spend_micros` where the card is silent about nothing"
+        70_500,
+        "1,000×3 + 250×16 + 7,000×0.5 + 3×2×10,000"
     );
 }
 
 #[test]
-fn it_equals_the_legacy_cent_derivation_on_a_single_entry_history() {
+fn a_single_entry_history_projects_whole_minor_units_once() {
     let card = super::card4(LANE, [3.0, 16.0, 0.5, 4.0], 2);
-    let history = History::opening(card.clone(), 0);
+    let history = History::opening(card, 0);
     let usage = [(INPUT, 1_000_000u64), (OUTPUT, 250_000)];
-
-    let legacy = derive_spend_cents(&card, [(LANE, &lines(&usage)[..])].into_iter(), 3, true)
-        .expect("the one function prices");
 
     let slice = vec![usage
         .iter()
@@ -364,7 +358,11 @@ fn it_equals_the_legacy_cent_derivation_on_a_single_entry_history() {
         .with_fee_count(3)];
     let one = price_in_view(&slice, &history.current()).expect("prices");
 
-    assert_eq!(i128::from(legacy), one.minor());
+    assert_eq!(
+        one.minor(),
+        706,
+        "(1,000,000×3 + 250,000×16) / 10,000 + 3×2"
+    );
 }
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────

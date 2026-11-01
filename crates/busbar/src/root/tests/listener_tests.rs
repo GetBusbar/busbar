@@ -834,11 +834,48 @@ async fn server_posture_matches_the_1_5_5_defaults() {
         "request_body_read_timeout_secs default"
     );
 
-    // The hyper HTTP/1 connection builder: `header_read_timeout` requires a `Timer` or hyper
-    // panics on the call, so simply building it without panicking is a live regression guard on
-    // the `.timer(...)` wiring that makes the 30s `header_read_timeout` at this call site (see its
-    // doc comment) actually take effect rather than being silently ignored.
-    let _ = super::hardened_conn_builder();
+    // Arming the timer requires serving a connection. A partial real HTTP/1 head remains pending
+    // before the deadline and fails at it, on the existing paused Tokio clock (no wallclock wait).
+    use std::future::Future as _;
+    use tokio::io::AsyncWriteExt as _;
+    tokio::time::pause();
+    let (mut client, server) = tokio::io::duplex(1024);
+    client.write_all(b"GET / HTTP/1.1\r\nhost:").await.unwrap();
+    let service = hyper::service::service_fn(|_: hyper::Request<hyper::body::Incoming>| async {
+        Ok::<_, std::convert::Infallible>(hyper::Response::new(
+            http_body_util::Empty::<bytes::Bytes>::new(),
+        ))
+    });
+    let builder = super::hardened_conn_builder();
+    let mut conn =
+        Box::pin(builder.serve_connection(hyper_util::rt::TokioIo::new(server), service));
+    let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+    let armed_at = tokio::time::Instant::now();
+    assert!(conn.as_mut().poll(&mut cx).is_pending());
+    tokio::time::advance(Duration::from_secs(29)).await;
+    assert!(
+        conn.as_mut().poll(&mut cx).is_pending(),
+        "a valid reader still has its 30-second header window"
+    );
+    tokio::time::advance(Duration::from_secs(1)).await;
+    // `advance` moves the clock before every timer is necessarily dispatched. Await with the
+    // task's real waker so the driver can deliver the elapsed header timer, bounded by one more
+    // virtual second if that timer was never armed.
+    let error = tokio::time::timeout(Duration::from_secs(1), conn)
+        .await
+        .expect("the armed header timer must end the incomplete request")
+        .expect_err("an incomplete header ends with a timeout error");
+    assert_eq!(
+        tokio::time::Instant::now(),
+        armed_at + Duration::from_secs(30),
+        "the watchdog permits scheduling progress, not a later header deadline"
+    );
+    assert!(
+        error
+            .downcast_ref::<hyper::Error>()
+            .is_some_and(hyper::Error::is_timeout),
+        "the connection ended for the header timeout: {error}"
+    );
 }
 
 // ── THE TLS LISTENER over the connector's production wrap ───────────────────────────────────────

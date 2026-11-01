@@ -31,64 +31,6 @@ use busbar_core_connector::{carrier, compose, framer, hostio};
 #[path = "../src/tests/support.rs"]
 mod support;
 
-/// A dropped-in transport door, as the connector reaches it: the one dispatcher's crossing, the
-/// host's `in`/`out` copied in and the answer copied back.
-struct DroppedDoor {
-    plugin: busbar_plugin_loader::dispatch::Plugin<
-        busbar_plugin_loader::dispatch::kinds::transport::Transport,
-    >,
-    facts: busbar_core_connector::framer::DoorFacts,
-}
-
-fn cross<I, O>(
-    p: &busbar_plugin_loader::dispatch::Plugin<
-        busbar_plugin_loader::dispatch::kinds::transport::Transport,
-    >,
-    s: u32,
-    i: &mut I,
-    o: &mut O,
-) -> busbar_core_connector::framer::Crossed
-where
-    I: busbar_plugin_loader::dispatch::InFrame,
-    O: busbar_plugin_loader::dispatch::OutFrame,
-{
-    let mut f = busbar_plugin_loader::dispatch::Frame::new(*i, *o);
-    let c = p.call(s, &mut f);
-    *i = f.input;
-    *o = f.out;
-    busbar_core_connector::framer::Crossed {
-        outcome: c.outcome,
-        error: c.error,
-    }
-}
-
-impl busbar_core_connector::framer::FramerDoor for DroppedDoor {
-    fn facts(&self) -> &busbar_core_connector::framer::DoorFacts {
-        &self.facts
-    }
-
-    fn cross(
-        &self,
-        call: busbar_core_connector::framer::Call<'_>,
-    ) -> busbar_core_connector::framer::Crossed {
-        use busbar_contract::abi::transport::slot;
-        use busbar_core_connector::framer::Call;
-        let p = &self.plugin;
-        match call {
-            Call::Locate(i, o) => cross(p, slot::LOCATE, i, o),
-            Call::Begin(i, o) => cross(p, slot::BEGIN, i, o),
-            Call::Ingest(i, o) => cross(p, slot::INGEST, i, o),
-            Call::Emit(i, o) => cross(p, slot::EMIT, i, o),
-            Call::Encode(i, o) => cross(p, slot::ENCODE, i, o),
-            Call::Refuse(i, o) => cross(p, slot::REFUSE, i, o),
-            Call::Finish(i, o) => cross(p, slot::FINISH, i, o),
-            Call::Detach(i, o) => cross(p, slot::DETACH, i, o),
-            Call::Adopt(i, o) => cross(p, slot::ADOPT, i, o),
-            Call::Timer(i, o) => cross(p, slot::TIMER, i, o),
-        }
-    }
-}
-
 /// The libraries beside this test binary: uplifted, under `deps/`, or an example `cdylib`.
 fn libraries_beside_the_test() -> Vec<std::path::PathBuf> {
     let Some(profile) = std::env::current_exe()
@@ -137,54 +79,31 @@ fn open_stated(
     std::sync::Arc<dyn busbar_core_connector::framer::FramerDoor>,
     busbar_plugin_loader::dispatch::kinds::transport::TransportFacts,
 )> {
-    use busbar_contract::abi::mechanism::lifecycle::{slot as life, OpenIn, OpenOut};
-    use busbar_contract::abi::sdk::door::{blank_in, blank_out};
     use busbar_plugin_loader::dispatch::kinds::transport::{Transport, TransportFacts};
     use busbar_plugin_loader::dispatch::{
-        load_dropped, rendering_of_library, Bind, DispatchConfig, Dispatcher, Frame, NoSink,
+        load_dropped, rendering_of_library, Bind, DispatchConfig, Dispatcher, NoSink,
     };
-    static ONE: OnceLock<Dispatcher> = OnceLock::new();
+    static ONE: OnceLock<std::sync::Arc<Dispatcher>> = OnceLock::new();
     // The library's own Statement rendering, as its signed manifest would state it.
     let rendering = rendering_of_library(path).ok()??;
+    let on = ONE.get_or_init(|| std::sync::Arc::new(Dispatcher::new(DispatchConfig::default())));
     let bind = Bind {
         instance: std::sync::Arc::from("the-instance"),
         max_inflight_cap: 64,
         sink: std::sync::Arc::new(NoSink),
-        dispatcher: ONE
-            .get_or_init(|| Dispatcher::new(DispatchConfig::default()))
-            .adopter(),
+        dispatcher: on.adopter(),
         // A transport door is a framer the connector drives: it declares no need.
         conns: busbar_plugin_loader::dispatch::ConnTable::NoNeeds,
     };
     let plugin = load_dropped::<Transport>(path, &rendering, bind).ok()?;
     let stated = plugin.context::<TransportFacts>().cloned()?;
-    let mut f = Frame::new(blank_in::<OpenIn>(), blank_out::<OpenOut>());
-    assert_eq!(
-        plugin.call(life::OPEN, &mut f).outcome,
-        busbar_contract::abi::mechanism::call::Outcome::Ready
-    );
-    let facts = stated.clone();
-    Some((
-        std::sync::Arc::new(DroppedDoor {
-            facts: busbar_core_connector::framer::DoorFacts {
-                name: plugin.name().to_owned(),
-                claims: stated.claims,
-                role: stated.role,
-                composes_over: stated.composes_over,
-                ported: stated.ported,
-                status_rows: stated.status_rows,
-                datagram: stated.datagram,
-                duplex: stated
-                    .upgrades
-                    .iter()
-                    .chain(&stated.sessions)
-                    .copied()
-                    .collect(),
-            },
-            plugin,
-        }),
-        facts,
-    ))
+    let door = busbar_core_connector::doors::Dispatched::open_on(
+        plugin,
+        &busbar_contract::transport::TransportSettings::default(),
+        std::sync::Arc::clone(on),
+    )
+    .expect("the dropped transport opens");
+    Some((std::sync::Arc::new(door), stated))
 }
 
 /// THE CONNECTOR DRIVES THE DROPPED-IN HTTP DOOR AGAINST A REAL SERVER: the connector dials the

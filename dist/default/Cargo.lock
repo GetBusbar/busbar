@@ -644,6 +644,7 @@ dependencies = [
  "busbar-contract",
  "ed25519-dalek",
  "ring",
+ "serde_json",
  "zeroize",
 ]
 

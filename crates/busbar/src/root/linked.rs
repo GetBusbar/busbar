@@ -482,9 +482,9 @@ pub fn link_secrets(
     Ok(SECRETS.get_or_init(|| rows))
 }
 
-/// THE PROCESS'S ONE DISK LANE (THE DESIGN §11.11 R4): the kernel's host services append on it
+/// THE PROCESS'S DISK SERVICE (THE DESIGN §11.11 R4): the kernel's host services append on it
 /// ([`crate::root::serve::kernel_services`]) and a disk-declared secret source's config-time
-/// `resolve` runs on it ([`disk_run`]).
+/// `resolve` runs on its isolated secret executor ([`disk_run`]).
 static DISK: std::sync::OnceLock<std::sync::Arc<busbar_kernel::host_disk::DiskLane>> =
     std::sync::OnceLock::new();
 
@@ -493,7 +493,7 @@ pub fn disk_lane() -> std::sync::Arc<busbar_kernel::host_disk::DiskLane> {
     DISK.get_or_init(std::sync::Arc::default).clone()
 }
 
-/// The secret axis's hook onto [`disk_lane`]: a job submitted to the lane thread.
+/// The secret axis's hook onto [`disk_lane`]'s bounded secret executor, separate from appends.
 fn disk_run(job: Box<dyn FnOnce() + Send>) -> Result<(), String> {
     disk_lane().run(job).map_err(str::to_string)
 }
@@ -835,13 +835,13 @@ pub fn register_diagnostics(linked: &Linked) -> busbar_kernel::diagnostics::Cata
             std::process::exit(2);
         }
     }
-    if let Some(registry) = DROPPED.get() {
-        match declared_diagnostics(registry, &installed) {
-            Ok(declared) => installed.extend(declared),
-            Err(refusal) => {
-                eprintln!("busbar: {refusal}");
-                std::process::exit(2);
-            }
+    let declared = catalogue_registry(linked, DROPPED.get().copied())
+        .and_then(|registry| declared_diagnostics(&registry, &installed));
+    match declared {
+        Ok(declared) => installed.extend(declared),
+        Err(refusal) => {
+            eprintln!("busbar: {refusal}");
+            std::process::exit(2);
         }
     }
     let catalogue = busbar_kernel::diagnostics::Catalogue::lent(installed.leak());
@@ -860,7 +860,11 @@ pub fn declared_diagnostics(
 ) -> Result<Vec<&'static busbar_contract::diagnostic::Diagnostic>, String> {
     let mut declared = Vec::new();
     for p in registry.linked().iter().chain(registry.loadable()) {
-        let (name, decls) = (p.key(), &p.manifest.declares.diagnostics);
+        let name = p.key();
+        let declarations = p.declarations().map_err(|e| {
+            format!("plugin '{name}' states a `declares` section that does not read: {e}")
+        })?;
+        let decls = &declarations.diagnostics;
         if !decls.is_empty() && !p.first_party() {
             return Err(format!(
                 "plugin '{name}' declares diagnostics but is not first-party; only a first-party \
@@ -871,6 +875,46 @@ pub fn declared_diagnostics(
         declared.extend(catalogue_entries(name, decls, &held)?);
     }
     Ok(declared)
+}
+
+/// The auth and hook declarations linked into this build, even when no instance is configured.
+/// Plane and export declarations retain their existing separate registration paths.
+///
+/// # Errors
+/// A linked declaration is malformed or collides with an installed code.
+pub fn linked_declared_diagnostics(
+    linked: &Linked,
+    taken: &[&'static busbar_contract::diagnostic::Diagnostic],
+) -> Result<Vec<&'static busbar_contract::diagnostic::Diagnostic>, String> {
+    declared_diagnostics(&catalogue_registry(linked, None)?, taken)
+}
+
+fn catalogue_registry(
+    linked: &Linked,
+    scanned: Option<&crate::root::loader::PluginRegistry>,
+) -> Result<crate::root::loader::PluginRegistry, String> {
+    use crate::root::loader::{LinkedPlugin, PluginRegistry};
+
+    let mut rows: Vec<_> = linked
+        .auths
+        .iter()
+        .map(|(key, canonical, door)| LinkedPlugin::auth_door_named(canonical, key, *door))
+        .collect();
+    for door in linked.hook_doors {
+        let stated =
+            crate::root::loader::dispatch::LinkedRow::of(*door).map_err(|e| e.to_string())?;
+        let statement = busbar_contract::abi::mechanism::rendering::read(&stated.statement)
+            .map_err(|e| e.to_string())?;
+        rows.push(LinkedPlugin::door_of_kind(
+            busbar_contract::abi::mechanism::kind::HOOK,
+            &statement.name,
+            *door,
+        ));
+    }
+    scanned
+        .cloned()
+        .unwrap_or_else(PluginRegistry::empty)
+        .link(rows)
 }
 
 /// THE DIAGNOSTICS LINKED PLANE DOORS DECLARE (`declares.json`, first-party by being linked), each
@@ -990,3 +1034,7 @@ mod linked_hook_ranking;
 #[cfg(test)]
 #[path = "tests/linked_store_double.rs"]
 mod linked_store_double;
+
+#[cfg(test)]
+#[path = "tests/linked_declarations.rs"]
+mod linked_declarations;

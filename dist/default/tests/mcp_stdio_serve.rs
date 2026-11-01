@@ -173,6 +173,10 @@ identity-providers:
 type StdioChild = common::lines::LineChild;
 
 fn spawn(dir: &Path, credential: Option<&str>) -> StdioChild {
+    common::lines::spawn(command(dir, credential))
+}
+
+fn command(dir: &Path, credential: Option<&str>) -> Command {
     let mut cmd = Command::new(common::boot::exe());
     cmd.arg(surface("serve_flag"))
         .env("MOCK_KEY", "test-key-value")
@@ -190,7 +194,67 @@ fn spawn(dir: &Path, credential: Option<&str>) -> StdioChild {
     if let Some(c) = credential {
         cmd.env(surface("credential_env"), c);
     }
-    common::lines::spawn(cmd)
+    cmd
+}
+
+#[test]
+fn a_broken_stdout_ends_the_line_session_without_waiting_for_stdin_eof() {
+    use std::io::Write;
+    use std::process::Stdio;
+    let dir = fixture_dir("broken-output");
+    install_auth_plugin(&dir);
+    write_configs(
+        &dir,
+        &governed_config(&dir, include_str!("fixtures/stdio_budget_bindings.yaml")),
+    );
+    let token = token_for(canonical());
+    let mut child = command(&dir, Some(&token))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("line child");
+    drop(child.stdout.take());
+    let mut input = child.stdin.take().unwrap();
+    writeln!(input, "{}", serde_json::json!({"jsonrpc":"2.0","id":"broken-output","method":"ping","params":{"_meta":meta()}})).unwrap();
+    let code = wait_bounded(&mut child, Duration::from_secs(120));
+    drop(input);
+    let output = child.wait_with_output().unwrap();
+    let error = String::from_utf8_lossy(&output.stderr);
+    assert_ne!(code, 0, "a failed output is not EOF: {error}");
+    assert!(
+        error.contains("line output failed"),
+        "must reach the actual writer: {error}"
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_stdin_read_error_is_not_a_successful_eof() {
+    use std::process::Stdio;
+    let dir = fixture_dir("broken-input");
+    install_auth_plugin(&dir);
+    write_configs(
+        &dir,
+        &governed_config(&dir, include_str!("fixtures/stdio_budget_bindings.yaml")),
+    );
+    let token = token_for(canonical());
+    let mut child = command(&dir, Some(&token))
+        .stdin(Stdio::from(std::fs::File::open(&dir).unwrap()))
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("line child");
+    let code = wait_bounded(&mut child, Duration::from_secs(120));
+    let output = child.wait_with_output().unwrap();
+    let error = String::from_utf8_lossy(&output.stderr);
+    assert_ne!(code, 0, "read error is not EOF: {error}");
+    assert!(
+        error.contains("line input failed"),
+        "must reach the actual reader: {error}"
+    );
+    let _ = std::fs::remove_dir_all(dir);
 }
 
 fn wait_bounded(child: &mut std::process::Child, bound: Duration) -> i32 {

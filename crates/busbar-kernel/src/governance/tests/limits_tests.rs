@@ -1179,9 +1179,18 @@ fn an_open_class_the_present_card_does_not_price_refuses_and_absent_reads_zero()
     let silent: BTreeMap<String, crate::config::RateEntryCfg> =
         serde_yaml::from_str("rerank: { input_utok: 1 }\n").expect("parses");
     let cm = CostModel::resolve_parts(Some(&silent), 0, &groups);
+    let usage = busbar_contract::billing::Usage {
+        usage_units: units.clone(),
+    };
+    let entry =
+        busbar_kernel_ledger::cost::LedgerEntry::new("rerank", 0).with_whole("search_units", 1);
+    let priced = busbar_kernel_ledger::cost::price_ledger(
+        &[entry],
+        &busbar_kernel_ledger::cost::History::opening(cm.card().clone(), 0),
+    );
     assert!(
         matches!(
-            cm.derive_spend_cents([("rerank", &units)].into_iter(), 0, true),
+            priced,
             Err(busbar_kernel_ledger::cost::MoneyError::ClassUnpriced { ref class, .. })
                 if class == "search_units"
         ),
@@ -1199,8 +1208,8 @@ fn an_open_class_the_present_card_does_not_price_refuses_and_absent_reads_zero()
 
     let absent = CostModel::resolve_parts(None, 0, &groups);
     assert_eq!(
-        absent.derive_spend_cents([("rerank", &units)].into_iter(), 0, true),
-        Ok(0),
+        absent.price_usage_nanos("rerank", &usage),
+        Some(0),
         "billing off reads 0"
     );
 }

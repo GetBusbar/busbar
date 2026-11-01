@@ -21,6 +21,9 @@ mod hook_cases;
 #[path = "support/plane_driver_close_cases.rs"]
 mod close_cases;
 
+#[path = "support/plane_driver_session_input_cases.rs"]
+mod session_input_cases;
+
 use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
@@ -262,9 +265,21 @@ struct WakeLine {
 struct Sessions {
     open: Mutex<Vec<u64>>,
     read: Mutex<Vec<(u64, Vec<u8>)>>,
+    read_at: Mutex<Vec<usize>>,
     collects: AtomicU64,
     named: Mutex<Vec<u64>>,
     told: tokio::sync::Notify,
+    input_mode: Mutex<SessionInputMode>,
+    /// A controlled crossing that still borrows the session input after its answer or drop.
+    borrowed: Mutex<Option<(SendIn, Lent)>>,
+}
+
+#[derive(Default, Clone, Copy, PartialEq, Eq)]
+enum SessionInputMode {
+    #[default]
+    Ready,
+    Pending,
+    Fault,
 }
 // SAFETY: the held `out`s are plain data the double wrote.
 unsafe impl Send for Double {}
@@ -385,7 +400,13 @@ impl Double {
             .unwrap()
             .push(text(i.caller_ref).to_vec());
         if i.stream != 0 {
-            return (self.session_piece(i, o), Hold::No);
+            let answer = self.session_piece(i, o);
+            let mode = *self.sessions.input_mode.lock().unwrap();
+            return match (i.from == FROM_CALLER && i.bytes.len != 0, mode) {
+                (true, SessionInputMode::Pending) => (answer, Hold::Forever),
+                (true, SessionInputMode::Fault) => (ready(Outcome::Fault), Hold::No),
+                _ => (answer, Hold::No),
+            };
         }
         let Some(head) = self.heads.lock().unwrap().get(&i.unit).cloned() else {
             // A piece of a unit that never arrived: the caller's head is not re-sent.
@@ -696,6 +717,7 @@ impl Double {
             }
             FROM_CALLER => {
                 let body = bytes(i.bytes).to_vec();
+                s.read_at.lock().unwrap().push(i.bytes.ptr as usize);
                 s.read.lock().unwrap().push((i.stream, body.clone()));
                 s.open.lock().unwrap().push(i.stream);
                 o.reply_status = 200;
@@ -1309,6 +1331,19 @@ impl PlaneCalls for Double {
         })));
         // SAFETY: the driver's `in`, whose buffers outlive the answer.
         let (answer, hold) = unsafe { self.piece(ticket, &input, &mut out) };
+        if input.stream != 0
+            && input.from == FROM_CALLER
+            && input.bytes.len != 0
+            && *self.sessions.input_mode.lock().unwrap() != SessionInputMode::Ready
+        {
+            let previous = self
+                .sessions
+                .borrowed
+                .lock()
+                .unwrap()
+                .replace((SendIn(input), lent.clone()));
+            assert!(previous.is_none(), "only one controlled session crossing");
+        }
         // A done answer with a retry verdict keeps the unit for the kernel's next attempt, unless
         // its answer was marked final (`PIECE_FINAL`).
         let final_answer = (self.units.lock().unwrap())
