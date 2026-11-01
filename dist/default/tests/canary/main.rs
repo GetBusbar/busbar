@@ -157,10 +157,15 @@ fn self_test_the_search_finds_what_was_planted() {
         Sink::text("log:c", "z", format!("prefix-{}", c.forms[0])),
         Sink::text("log:d", "w", "Basic ZW5jb2RlZA=="),
         Sink::text("far-end:e", "v", c.value.clone()),
+        Sink::text("far-end:elsewhere", "another provider", c.value.clone()),
     ];
     let hits = canary::search(&c.clone().delivered_to("far-end:e"), &sinks);
     let found: Vec<&str> = hits.iter().map(|h| h.sink.as_str()).collect();
-    assert_eq!(found, ["log:a", "abi:b", "log:c", "log:d"], "{hits:?}");
+    assert_eq!(
+        found,
+        ["log:a", "abi:b", "log:c", "log:d", "far-end:elsewhere"],
+        "a designed destination does not exempt another provider with the same name prefix: {hits:?}"
+    );
     assert_eq!(hits[0].at, "x line 2", "the hit names its line");
     assert!(
         !hits[0].context.contains(&c.value),
