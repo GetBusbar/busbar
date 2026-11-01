@@ -1003,3 +1003,29 @@ fn an_uncertain_opening_commit_recovers_the_same_original_in_a_fresh_host() {
     assert_eq!(restarted.entries(), vec![original.clone()]);
     assert_eq!(restarted.own(), Some((original.key, boot)));
 }
+
+#[test]
+fn repeated_refusals_after_an_unknown_outcome_alarm_without_dropping_the_owner() {
+    let store = RecordSlots::new();
+    let cs = booted(&store, 1, &card(1.0, 0));
+    store.lose_acks(true);
+    let key = cs.apply(&card(1.0, 8), "unknown then refused").unwrap();
+    let original = cs.entry(&key).unwrap();
+    store.lose_acks(false);
+    store.refuse(true);
+    wait_until("repeated unconfirmed retries to alarm", || {
+        cs.alarms()
+            .iter()
+            .any(|why| why.contains(&key.hex()) && why.contains("repeated retries"))
+    });
+    assert_eq!(cs.pending(), Some(key));
+    assert_eq!(cs.entry(&key), Some(original.clone()));
+    store.refuse(false);
+    wait_until("the same original to be confirmed", || {
+        cs.pending().is_none()
+    });
+    assert!(crate::root::card_store::scan(store.calls().as_ref(), None)
+        .unwrap()
+        .entries
+        .contains(&original));
+}
