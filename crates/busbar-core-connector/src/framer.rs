@@ -311,6 +311,8 @@ pub enum StreamFlow {
 pub struct Yielded {
     /// Host storage custody, retained when output moves to publication or a channel reader.
     pub custody: crate::publication::Custody,
+    /// A datagram producer still owes a same-op recall or secure-layer settle.
+    pub continuing: bool,
     /// Head slots, in order.
     pub heads: Vec<Head>,
     /// Bytes owed to the far side, in order.
@@ -500,14 +502,18 @@ impl Buffers {
         use std::mem::size_of;
         let pieces = self.pieces.len();
         let heads = self.heads.len();
-        let payload = pieces.checked_mul(self.frame.len())?
+        let payload = pieces
+            .checked_mul(self.frame.len())?
             .checked_add(heads.checked_mul(5)?.checked_mul(self.frame.len())?)?
             .checked_add(self.wire.len())?;
-        let metadata = pieces.checked_mul(
-            4 * size_of::<Got>() + 4 * size_of::<StreamFlow>()
-                + 4 * size_of::<crate::publication::Message>()
-                + 16 * size_of::<usize>()
-        )?.checked_add(heads.checked_mul(4 * size_of::<Head>())?)?
+        let metadata = pieces
+            .checked_mul(
+                4 * size_of::<Got>()
+                    + 4 * size_of::<StreamFlow>()
+                    + 4 * size_of::<crate::publication::Message>()
+                    + 16 * size_of::<usize>(),
+            )?
+            .checked_add(heads.checked_mul(4 * size_of::<Head>())?)?
             .checked_add(4 * size_of::<Yielded>() + 32 * size_of::<usize>())?;
         payload.checked_add(metadata)
     }

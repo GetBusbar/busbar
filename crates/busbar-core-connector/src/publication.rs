@@ -15,6 +15,7 @@ pub struct Memory {
     limit: Option<usize>,
     state: Mutex<State>,
     pub(crate) changed: tokio::sync::Notify,
+    wake: futures::task::AtomicWaker,
 }
 
 #[derive(Debug, Default)]
@@ -32,6 +33,7 @@ impl Memory {
             limit,
             state: Mutex::new(State::default()),
             changed: tokio::sync::Notify::new(),
+            wake: futures::task::AtomicWaker::new(),
         })
     }
 
@@ -47,20 +49,27 @@ impl Memory {
         lock(&self.state).used
     }
 
-    pub(crate) fn readers(&self) -> bool { lock(&self.state).readers != 0 }
-
-    pub(crate) fn can_fit(&self, bytes: usize) -> bool {
-        bytes.checked_add(std::mem::size_of::<Lease>() + 2 * std::mem::size_of::<usize>())
-            .is_some_and(|bytes| self.limit.is_none_or(|limit| bytes <= limit))
+    pub(crate) fn readers(&self) -> bool {
+        lock(&self.state).readers != 0
     }
 
+    pub(crate) fn register(&self, waker: &std::task::Waker) {
+        self.wake.register(waker);
+    }
+
+    pub(crate) fn can_fit(&self, bytes: usize) -> bool {
+        bytes
+            .checked_add(std::mem::size_of::<Lease>() + 2 * std::mem::size_of::<usize>())
+            .is_some_and(|bytes| self.limit.is_none_or(|limit| bytes <= limit))
+    }
 
     /// Reserve before allocating or crossing a framer. Failed reservations allocate nothing.
     pub(crate) fn reserve(self: &Arc<Self>, bytes: usize) -> Option<Custody> {
         if self.limit.is_none() {
             return Some(Custody::default());
         }
-        let bytes = bytes.checked_add(std::mem::size_of::<Lease>())?
+        let bytes = bytes
+            .checked_add(std::mem::size_of::<Lease>())?
             .checked_add(2 * std::mem::size_of::<usize>())?;
         {
             let mut state = lock(&self.state);
@@ -95,6 +104,7 @@ impl Memory {
     pub(crate) fn close(&self) {
         lock(&self.state).closed = true;
         self.changed.notify_waiters();
+        self.wake.wake();
     }
 }
 
@@ -112,6 +122,7 @@ impl Drop for Lease {
             state.used -= self.bytes;
         }
         self.memory.changed.notify_waiters();
+        self.memory.wake.wake();
     }
 }
 
@@ -122,7 +133,9 @@ pub struct Custody(Option<Arc<Lease>>);
 
 // Storage identity is deliberately absent from semantic output equality.
 impl PartialEq for Custody {
-    fn eq(&self, _: &Self) -> bool { true }
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
 }
 impl Eq for Custody {}
 
@@ -130,7 +143,9 @@ impl Custody {
     /// Chain a fresh batch's reservation to older eager output without another allocation.
     pub fn prepend(&mut self, older: Self) {
         if let Some(lease) = self.0.as_mut() {
-            Arc::get_mut(lease).expect("a fresh batch has exclusive reservation custody").previous = older;
+            Arc::get_mut(lease)
+                .expect("a fresh batch has exclusive reservation custody")
+                .previous = older;
         } else {
             *self = older;
         }
@@ -143,7 +158,10 @@ impl Custody {
         if let Some(memory) = &memory {
             lock(&memory.state).readers += 1;
         }
-        ReaderCustody { custody: self.clone(), memory }
+        ReaderCustody {
+            custody: self.clone(),
+            memory,
+        }
     }
 }
 
@@ -156,9 +174,12 @@ pub struct ReaderCustody {
 
 impl Drop for ReaderCustody {
     fn drop(&mut self) {
+        let custody = std::mem::take(&mut self.custody);
+        drop(custody);
         if let Some(memory) = &self.memory {
             lock(&memory.state).readers -= 1;
             memory.changed.notify_waiters();
+            memory.wake.wake();
         }
     }
 }
@@ -176,3 +197,124 @@ pub struct Message {
     pub custody: ReaderCustody,
 }
 
+impl<T: AsRef<[u8]>> PartialEq<T> for Message {
+    fn eq(&self, other: &T) -> bool {
+        self.bytes == other.as_ref()
+    }
+}
+
+/// A bounded channel-reader queue with one charged allocation per live message. It retains
+/// no spare descriptor capacity after a message is consumed.
+#[derive(Debug)]
+pub struct Messages {
+    capacity: usize,
+    state: Mutex<MessagesState>,
+    ready: tokio::sync::Notify,
+}
+
+#[derive(Debug, Default)]
+struct MessagesState {
+    head: Option<Box<MessageNode>>,
+    len: usize,
+    closed: bool,
+}
+
+#[derive(Debug)]
+struct MessageNode {
+    message: Message,
+    next: Option<Box<MessageNode>>,
+}
+
+impl Messages {
+    /// Create the existing endpoint's descriptor-count bound without allocating its slots.
+    #[must_use]
+    pub fn new(capacity: usize) -> Arc<Self> {
+        Arc::new(Self {
+            capacity,
+            state: Mutex::new(MessagesState::default()),
+            ready: tokio::sync::Notify::new(),
+        })
+    }
+
+    /// Transfer an already charged message; no payload copy is made.
+    ///
+    /// # Errors
+    /// The endpoint closed or its existing descriptor bound is reached. The message is returned.
+    pub fn send(&self, message: Message) -> Result<(), Message> {
+        {
+            let mut state = lock(&self.state);
+            if state.closed || state.len == self.capacity {
+                return Err(message);
+            }
+            let mut tail = &mut state.head;
+            while let Some(node) = tail {
+                tail = &mut node.next;
+            }
+            *tail = Some(Box::new(MessageNode {
+                message,
+                next: None,
+            }));
+            state.len += 1;
+        }
+        self.ready.notify_one();
+        Ok(())
+    }
+
+    /// Wait for and take one message. Custody moves with it until actual reader retirement.
+    pub async fn recv(&self) -> Option<Message> {
+        loop {
+            let ready = self.ready.notified();
+            tokio::pin!(ready);
+            ready.as_mut().enable();
+            {
+                let mut state = lock(&self.state);
+                if let Some(node) = state.head.take() {
+                    let MessageNode { message, next } = *node;
+                    state.head = next;
+                    state.len -= 1;
+                    return Some(message);
+                }
+                if state.closed {
+                    return None;
+                }
+            }
+            ready.await;
+        }
+    }
+
+    /// Take an already queued message, for source controls and nonblocking readers.
+    ///
+    /// # Errors
+    /// No message is queued.
+    pub fn try_recv(&self) -> Result<Message, std::sync::mpsc::TryRecvError> {
+        let mut state = lock(&self.state);
+        let node = state
+            .head
+            .take()
+            .ok_or(std::sync::mpsc::TryRecvError::Empty)?;
+        let MessageNode { message, next } = *node;
+        state.head = next;
+        state.len -= 1;
+        Ok(message)
+    }
+
+    /// Close and retire all unread ownership outside the queue lock.
+    pub fn close(&self) {
+        let mut head = {
+            let mut state = lock(&self.state);
+            state.closed = true;
+            state.len = 0;
+            state.head.take()
+        };
+        while let Some(mut node) = head {
+            head = node.next.take();
+        }
+        self.ready.notify_waiters();
+    }
+}
+
+impl Drop for Messages {
+    fn drop(&mut self) {
+        self.close();
+    }
+}

@@ -62,8 +62,8 @@ use busbar_contract::abi::transport::{
 
 use crate::dtls::{Association, IceCredentials, Role, SessionCert, SrtpKeying, Up, Verdict};
 use crate::framer::{instant_of, ready, Buffers, Call, Crossed, FramerDoor, Refused, Yielded};
-use crate::DialJudge;
 use crate::publication::{Custody, Memory};
+use crate::DialJudge;
 
 /// The routes one framer answer may write.
 const ROUTES_CAP: usize = 64;
@@ -353,24 +353,23 @@ impl<'f> DatagramTurn<'f> {
             if let Some(bytes) = self.opened.pop_front() {
                 let from = self.framing.bound();
                 let answer = self.cross(Op::Ingest {
-                        lane: LANE_SECURED,
-                        from,
-                        bytes: &bytes,
-                        end: false,
-                    });
+                    lane: LANE_SECURED,
+                    from,
+                    bytes: &bytes,
+                    end: false,
+                });
                 if answer.as_ref().is_err_and(needs_credit) {
                     self.opened.push_front(bytes);
                 }
                 return answer.map(Some);
             }
             if self.closed {
-                let answer = self
-                    .cross(Op::Ingest {
-                        lane: 0,
-                        from: None,
-                        bytes: &[],
-                        end: true,
-                    });
+                let answer = self.cross(Op::Ingest {
+                    lane: 0,
+                    from: None,
+                    bytes: &[],
+                    end: true,
+                });
                 if answer.is_ok() {
                     self.closed = false;
                 }
@@ -514,6 +513,129 @@ impl std::fmt::Debug for DatagramFraming {
 }
 
 impl DatagramFraming {
+    /// Reserve the next checked batch before reading fresh input from the port. A failed
+    /// reservation crosses no ABI and allocates no fallback output.
+    pub fn prepare_output(&mut self) -> bool {
+        if self.credit.is_some() {
+            return true;
+        }
+        match self.reserve_output() {
+            Ok(credit) => {
+                self.credit = Some(credit);
+                true
+            }
+            Err(_) => false,
+        }
+    }
+
+    /// One fresh raw datagram, producing at most one checked output batch. Call only when the
+    /// prior producer completed; subsequent batches resume through `line_step(None, ...)`.
+    ///
+    /// # Errors
+    /// The association failed or a previous producer still owns it.
+    pub fn datagram_step(
+        &mut self,
+        from: SocketAddr,
+        bytes: &[u8],
+        now: Instant,
+    ) -> Result<LineStep, Refused> {
+        if self.continuing() {
+            return Err(fault("fresh datagram while a same-op continuation is owed"));
+        }
+        if !self.prepare_output() {
+            return Ok(LineStep::Credit);
+        }
+        let unadmitted = self
+            .secure
+            .as_ref()
+            .is_some_and(|secure| secure.unadmitted_check(from, bytes));
+        if unadmitted && !self.admit_heard(from, now) {
+            return self.settle_step(now);
+        }
+        let Some(secure) = self.secure.as_mut() else {
+            self.credit = None;
+            return Ok(LineStep::Complete);
+        };
+        let raw = secure.ingest(from, bytes, now) == Verdict::Raw && secure.knows(from);
+        if !raw {
+            return self.settle_step(now);
+        }
+        let known =
+            |address: SocketAddr| secure.knows(address) || secure.bound_path() == Some(address);
+        if self.book.number(from, known).is_none() {
+            return self.settle_step(now);
+        }
+        self.start_step(
+            Op::Ingest {
+                lane: LANE_CLEAR,
+                from: Some(from),
+                bytes,
+                end: false,
+            },
+            now,
+        )
+    }
+
+    /// The clock, producing at most one checked output batch. Continuations retain same-op
+    /// identity and are resumed without supplying fresh datagrams.
+    ///
+    /// # Errors
+    /// The association failed or a previous producer still owns it.
+    pub fn timeout_step(&mut self, now: Instant) -> Result<LineStep, Refused> {
+        if self.continuing() {
+            return Err(fault("fresh timer while a same-op continuation is owed"));
+        }
+        if !self.prepare_output() {
+            return Ok(LineStep::Credit);
+        }
+        if let Some(secure) = self.secure.as_mut() {
+            secure.handle_timeout(now);
+        }
+        if self.deadline_ns.is_some_and(|ns| instant_of(ns) <= now) {
+            self.deadline_ns = None;
+            self.start_step(Op::Timer, now)
+        } else {
+            self.settle_step(now)
+        }
+    }
+
+    fn start_step(&mut self, op: Op<'_>, now: Instant) -> Result<LineStep, Refused> {
+        let mut turn = DatagramTurn::start(self, op, now)?;
+        let result = turn.next_batch();
+        let continuation = turn.pause();
+        self.keep_step(continuation, result, true)
+    }
+
+    fn settle_step(&mut self, now: Instant) -> Result<LineStep, Refused> {
+        let mut turn = DatagramTurn::settling(self, now);
+        let result = turn.next_batch();
+        let continuation = turn.pause();
+        self.keep_step(continuation, result, false)
+    }
+
+    fn keep_step(
+        &mut self,
+        continuation: Continuation,
+        result: Result<Option<Yielded>, Refused>,
+        accepted: bool,
+    ) -> Result<LineStep, Refused> {
+        match result {
+            Ok(Some(mut yielded)) => {
+                yielded.continuing = true;
+                self.continuation = Some(continuation);
+                Ok(LineStep::Batch { yielded, accepted })
+            }
+            Ok(None) => {
+                self.credit = None;
+                Ok(LineStep::Complete)
+            }
+            Err(error) if needs_credit(&error) => {
+                self.continuation = Some(continuation);
+                Ok(LineStep::Credit)
+            }
+            Err(error) => Err(error),
+        }
+    }
     /// Capture this pairing's storage account. Existing framings keep the account thereafter.
     pub fn memory(&mut self, memory: Arc<Memory>) {
         self.memory = Some(memory);
@@ -528,12 +650,19 @@ impl DatagramFraming {
         };
         // Routes may independently overlap the entire wire buffer. Their copies coexist with
         // the checked output, and sealing may briefly retain plaintext and ciphertext together.
-        let bound = self.bufs.retention_bound()
-            .and_then(|n| ROUTES_CAP.checked_mul(crate::framer::WIRE_CAP)
-                .and_then(|routes| routes.checked_mul(3))
-                .and_then(|routes| n.checked_add(routes)))
+        let bound = self
+            .bufs
+            .retention_bound()
+            .and_then(|n| {
+                ROUTES_CAP
+                    .checked_mul(crate::framer::WIRE_CAP)
+                    .and_then(|routes| routes.checked_mul(3))
+                    .and_then(|routes| n.checked_add(routes))
+            })
             .ok_or_else(|| fault(LINE_MEMORY_EXHAUSTED))?;
-        memory.reserve(bound).ok_or_else(|| fault(LINE_MEMORY_EXHAUSTED))
+        memory
+            .reserve(bound)
+            .ok_or_else(|| fault(LINE_MEMORY_EXHAUSTED))
     }
 
     /// Whether a producer still owes a same-operation recall or secure-layer settle.
@@ -547,7 +676,12 @@ impl DatagramFraming {
     ///
     /// # Errors
     /// The framer or secure layer failed. Already accepted bytes must not be retried.
-    pub fn line_step(&mut self, input: Option<&Across>, text: bool, now: Instant) -> Result<LineStep, Refused> {
+    pub fn line_step(
+        &mut self,
+        input: Option<&Across>,
+        text: bool,
+        now: Instant,
+    ) -> Result<LineStep, Refused> {
         let continuation = self.continuation.take();
         let accepted = continuation.is_none() && input.is_some();
         let mut turn = if let Some(continuation) = continuation {
@@ -559,29 +693,22 @@ impl DatagramFraming {
                 Err(error) if needs_credit(&error) => return Ok(LineStep::Credit),
                 Err(error) => return Err(error),
             }
-            DatagramTurn::start(self, Op::Emit {
-                stream: input.stream,
-                bytes: &input.bytes,
-                end_of_frame: input.end_of_frame,
-                text,
-            }, now)?
+            DatagramTurn::start(
+                self,
+                Op::Emit {
+                    stream: input.stream,
+                    bytes: &input.bytes,
+                    end_of_frame: input.end_of_frame,
+                    text,
+                },
+                now,
+            )?
         } else {
             return Ok(LineStep::Complete);
         };
         let result = turn.next_batch();
         let continuation = turn.pause();
-        match result {
-            Ok(Some(yielded)) => {
-                self.continuation = Some(continuation);
-                Ok(LineStep::Batch { yielded, accepted })
-            }
-            Ok(None) => Ok(LineStep::Complete),
-            Err(error) if needs_credit(&error) => {
-                self.continuation = Some(continuation);
-                Ok(LineStep::Credit)
-            }
-            Err(error) => Err(error),
-        }
+        self.keep_step(continuation, result, accepted)
     }
 
     /// Begin an ACCEPTING association on `door`: the host's certificate `cert` (the framer gets its
@@ -1612,14 +1739,29 @@ impl PortAssociations {
                 let Some(f) = assocs.framings.remove(&id) else {
                     return std::task::Poll::Ready(Err(fault("the association is closed")));
                 };
-                assocs.out.insert(id, Out { deadline: f.deadline(), ..Out::default() });
+                assocs.out.insert(
+                    id,
+                    Out {
+                        deadline: f.deadline(),
+                        ..Out::default()
+                    },
+                );
                 f
             }
         };
-        let mut taken = Taken { port: self, id, framing: Some(f) };
-        let f = taken.framing.as_mut().expect("the producer owns its framing");
+        let mut taken = Taken {
+            port: self,
+            id,
+            framing: Some(f),
+        };
+        let f = taken
+            .framing
+            .as_mut()
+            .expect("the producer owns its framing");
         let result = f.line_step(input, text, now);
-        while let Some((to, bytes)) = f.poll_send() { send(to, &bytes); }
+        while let Some((to, bytes)) = f.poll_send() {
+            send(to, &bytes);
+        }
         let mut assocs = self.lock();
         let closing = assocs.out.get(&id).is_none_or(|out| out.closing);
         if closing || result.is_err() {
@@ -1629,18 +1771,30 @@ impl PortAssociations {
             emission.order.close();
             emission.ready.notify_waiters();
             emission.wake.wake();
-            return std::task::Poll::Ready(result.and_then(|_| Err(fault("the association closed during publication"))));
+            return std::task::Poll::Ready(
+                result.and_then(|_| Err(fault("the association closed during publication"))),
+            );
         }
         if matches!(result, Ok(LineStep::Complete)) {
-            let out = assocs.out.get_mut(&id).expect("the producer's routing record");
+            let out = assocs
+                .out
+                .get_mut(&id)
+                .expect("the producer's routing record");
             if out.owed.is_empty() {
                 assocs.out.remove(&id);
-                assocs.framings.insert(id, taken.framing.take().expect("the producer owns its framing"));
+                assocs.framings.insert(
+                    id,
+                    taken.framing.take().expect("the producer owns its framing"),
+                );
             } else {
                 out.continuing = taken.framing.take();
             }
         } else {
-            assocs.out.get_mut(&id).expect("the producer's routing record").continuing = taken.framing.take();
+            assocs
+                .out
+                .get_mut(&id)
+                .expect("the producer's routing record")
+                .continuing = taken.framing.take();
         }
         drop(assocs);
         emission.ready.notify_waiters();
@@ -1653,26 +1807,40 @@ impl PortAssociations {
     pub fn resume_owed(&self, now: Instant, send: &dyn Fn(SocketAddr, &[u8])) -> Answered {
         let ready: Vec<_> = {
             let mut assocs = self.lock();
-            let ids: Vec<_> = assocs.out.iter().filter_map(|(id, out)| {
-                out.continuing.as_ref().is_some_and(|f| !f.continuing()).then_some(*id)
-            }).collect();
-            ids.into_iter().filter_map(|id| {
-                let mut out = assocs.out.remove(&id)?;
-                let f = out.continuing.take()?;
-                if out.closing {
-                    // Finish outside the guard below.
-                    Some((id, Some(f), out.owed, true))
-                } else {
-                    assocs.framings.insert(id, f);
-                    Some((id, None, out.owed, false))
-                }
-            }).collect()
+            let ids: Vec<_> = assocs
+                .out
+                .iter()
+                .filter_map(|(id, out)| {
+                    out.continuing
+                        .as_ref()
+                        .is_some_and(|f| !f.continuing())
+                        .then_some(*id)
+                })
+                .collect();
+            ids.into_iter()
+                .filter_map(|id| {
+                    let mut out = assocs.out.remove(&id)?;
+                    let f = out.continuing.take()?;
+                    if out.closing {
+                        // Finish outside the guard below.
+                        Some((id, Some(f), out.owed, true))
+                    } else {
+                        assocs.framings.insert(id, f);
+                        Some((id, None, out.owed, false))
+                    }
+                })
+                .collect()
         };
         let mut answered = Vec::new();
         for (id, gone, owed, closing) in ready {
             drop(gone);
-            if closing { self.remove(id); continue; }
-            for op in owed { answered.extend(self.turn(id, op, now, send).1); }
+            if closing {
+                self.remove(id);
+                continue;
+            }
+            for op in owed {
+                answered.extend(self.turn(id, op, now, send).1);
+            }
         }
         answered
     }
@@ -2229,20 +2397,30 @@ pub trait LegSink: Send + Sync {
     ) -> std::task::Poll<Result<LineStep, Refused>> {
         if let Some(input) = input {
             self.line(input.clone(), now);
-            std::task::Poll::Ready(Ok(LineStep::Batch { yielded: Yielded::default(), accepted: true }))
+            std::task::Poll::Ready(Ok(LineStep::Batch {
+                yielded: Yielded::default(),
+                accepted: true,
+            }))
         } else {
             std::task::Poll::Ready(Ok(LineStep::Complete))
         }
     }
     /// The paired connection, without creating a strong ownership cycle.
-    fn pairing(&self) -> Option<Arc<Pairing>> { None }
+    fn pairing(&self) -> Option<Arc<Pairing>> {
+        None
+    }
     /// Transfer channel storage to its real reader owner, or explicitly fail publication.
-    fn channels(&self, _batch: SessionBatch, _now: Instant) -> Result<(), String> { Ok(()) }
+    fn channels(&self, _batch: SessionBatch, _now: Instant) -> Result<(), String> {
+        Ok(())
+    }
     /// Schedule on the leg's captured reactor and task tracker. A rejected task is dropped,
     /// preserving its pre-spawn cancellation guard.
     fn schedule(&self, task: PublicationTask) -> bool {
         match tokio::runtime::Handle::try_current() {
-            Ok(runtime) => { runtime.spawn(task); true }
+            Ok(runtime) => {
+                runtime.spawn(task);
+                true
+            }
             Err(_) => false,
         }
     }
@@ -2273,8 +2451,8 @@ struct PairState {
 
 #[path = "line_publication.rs"]
 mod publication_scheduler;
-pub use publication_scheduler::{PublicationOutcome, PublicationTask, SessionBatch, SubmitError};
 use publication_scheduler::PublicationState;
+pub use publication_scheduler::{PublicationOutcome, PublicationTask, SessionBatch, SubmitError};
 
 impl std::fmt::Debug for Pairing {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -2295,7 +2473,11 @@ impl Pairing {
     /// A pairing with an optional advanced shared live-storage limit. The default is unset;
     /// a configured limit can explicitly end a finite expanding feedback chain.
     #[must_use]
-    pub fn with_memory_limit(caller: Arc<dyn LegSink>, local: SocketAddr, limit: Option<usize>) -> Arc<Self> {
+    pub fn with_memory_limit(
+        caller: Arc<dyn LegSink>,
+        local: SocketAddr,
+        limit: Option<usize>,
+    ) -> Arc<Self> {
         Arc::new(Pairing {
             state: std::sync::Mutex::new(PairState {
                 bridge: Bridge::new(),
@@ -2372,21 +2554,28 @@ impl Pairing {
             return Err("the session closed before its upstream leg answered".into());
         }
         st.bridge.mirrored()?;
+        if st.upstream.is_some() {
+            return Err("the session already has an upstream leg".into());
+        }
         st.upstream = Some(upstream);
+        drop(st);
+        self.published.notify_waiters();
         Ok(())
     }
 
     /// CLOSE, exactly once: the bridge stops, then both legs close. A second close does nothing.
     pub fn close(&self) {
-        let legs = {
+        let (legs, abandoned) = {
             let mut st = self.lock();
             if st.closed {
                 return;
             }
             st.closed = true;
             st.bridge.stop();
-            [st.caller.take(), st.upstream.take()]
+            let abandoned = st.publications.stop();
+            ([st.caller.take(), st.upstream.take()], abandoned)
         };
+        drop(abandoned);
         self.memory.close();
         self.published.notify_waiters();
         for leg in legs.into_iter().flatten() {
