@@ -309,12 +309,8 @@ pub enum StreamFlow {
 /// Everything one op answered, across its `YIELD_MORE` re-calls.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Yielded {
-    /// Host storage custody, retained when output moves to publication or a channel reader.
-    pub custody: crate::publication::Custody,
     /// A datagram producer still owes a same-op recall or secure-layer settle.
     pub continuing: bool,
-    /// Independent reservations for each `pieces` allocation and its later queue/reader owners.
-    pub piece_custody: Vec<crate::publication::Custody>,
     /// Head slots, in order.
     pub heads: Vec<Head>,
     /// Bytes owed to the far side, in order.
@@ -334,10 +330,41 @@ pub struct Yielded {
     /// The protocol the framer last stated it agreed on an accepted connection
     /// (`FramerYield::agreed`): a 1-based position in its accepting offer; `0` = not stated.
     pub agreed: u32,
+    /// Independent reservations for each `pieces` allocation and its later queue/reader owners.
+    pub piece_custody: Vec<crate::publication::Custody>,
+    /// Host storage custody, declared after payloads so allocation retirement precedes credit.
+    pub custody: crate::publication::Custody,
+    /// A crossing/output owner retained until the pairing classifies even a late closed batch.
+    pub producer: crate::publication::ProducerCustody,
 }
 
 impl Yielded {
+    pub(crate) fn adoption_bound(&self) -> Option<usize> {
+        use std::mem::size_of;
+        let containers = self.retained_capacity().checked_add(
+            self.pieces
+                .len()
+                .checked_mul(size_of::<crate::publication::Custody>())?,
+        )?;
+        self.pieces.iter().try_fold(containers, |sum, piece| {
+            let bytes = piece
+                .bytes
+                .capacity()
+                .checked_add(piece.reason.as_ref().map_or(0, Vec::capacity))?
+                .checked_add(if piece.fields { piece.bytes.len() } else { 0 })?
+                .checked_add(
+                    3 * size_of::<Got>()
+                        + 3 * size_of::<crate::publication::Message>()
+                        + 16 * size_of::<usize>(),
+                )?;
+            sum.checked_add(crate::publication::Memory::reservation_size(bytes)?)
+        })
+    }
+
     pub(crate) fn split_piece_custody(&mut self) {
+        if !self.custody.tracked() {
+            return;
+        }
         use std::mem::size_of;
         self.piece_custody = Vec::with_capacity(self.pieces.len());
         for piece in &self.pieces {

@@ -15,8 +15,10 @@ pub struct PublicationOutcome {
     pub original_bytes: u64,
     /// Accepted application bytes actually taken by the framer.
     pub original_handed_bytes: u64,
-    /// Accepted application bytes explicitly cancelled before their framer crossing.
+    /// Accepted application bytes cancelled without a confirmed taking result.
     pub original_cancelled_bytes: u64,
+    /// Subset of cancelled application bytes whose crossing outcome became unknown.
+    pub original_uncertain_bytes: u64,
     /// LINE frames retained for publication.
     pub accepted_frames: u64,
     /// Payload bytes in those frames.
@@ -29,6 +31,10 @@ pub struct PublicationOutcome {
     pub cancelled_frames: u64,
     /// Retained bytes explicitly cancelled by a terminal outcome.
     pub cancelled_bytes: u64,
+    /// Subset of cancelled LINE frames whose crossing outcome became unknown.
+    pub uncertain_frames: u64,
+    /// Subset of cancelled LINE bytes whose crossing outcome became unknown.
+    pub uncertain_bytes: u64,
     /// A terminal failure, including configured resource exhaustion or cancellation.
     pub failure: Option<String>,
 }
@@ -40,6 +46,7 @@ pub(super) struct PublicationState {
     recall: [bool; 2],
     running: bool,
     outcome: PublicationOutcome,
+    retained_input: usize,
 }
 
 impl PublicationState {
@@ -48,6 +55,7 @@ impl PublicationState {
             || self.recall.iter().any(|recall| *recall)
             || self.queue.0.is_some()
             || self.inputs.0.is_some()
+            || self.retained_input != 0
         {
             self.outcome
                 .failure
@@ -148,6 +156,34 @@ pub enum SubmitError {
 
 struct Driving(Arc<Pairing>);
 
+struct Crossing<'a> {
+    pairing: &'a Pairing,
+    original: bool,
+    bytes: u64,
+    armed: bool,
+}
+
+impl Crossing<'_> {
+    fn uncertain(&mut self) {
+        if !std::mem::take(&mut self.armed) {
+            return;
+        }
+        let mut state = self.pairing.lock();
+        if self.original {
+            state.publications.outcome.original_uncertain_bytes += self.bytes;
+        } else {
+            state.publications.outcome.uncertain_frames += 1;
+            state.publications.outcome.uncertain_bytes += self.bytes;
+        }
+    }
+}
+
+impl Drop for Crossing<'_> {
+    fn drop(&mut self) {
+        self.uncertain();
+    }
+}
+
 impl Drop for Driving {
     fn drop(&mut self) {
         if self.0.lock().publications.running {
@@ -158,22 +194,90 @@ impl Drop for Driving {
 }
 
 impl Pairing {
-    /// Register a synchronous reader/driver for genuine storage retirement. `false` explicitly
-    /// fails only this pairing when no existing publication or reader can release custody.
-    pub fn wait_storage(&self, waker: &std::task::Waker) -> bool {
-        self.memory.register(waker);
-        if self.closed() {
+    /// A storage-retirement generation captured before a reservation attempt.
+    #[must_use]
+    pub fn storage_generation(&self) -> u64 {
+        self.memory.generation()
+    }
+    /// Record accepted early/gathered bytes before they have a destination producer job.
+    pub fn retain_input(&self, bytes: usize) -> bool {
+        let mut state = self.lock();
+        if state.closed {
             return false;
         }
-        if self.lock().publications.running || self.memory.readers() {
-            return true;
+        state.publications.retained_input += bytes;
+        state.publications.outcome.original_bytes += bytes as u64;
+        true
+    }
+
+    /// Retire a previously accepted prefix after an explicit refusal or teardown.
+    pub fn cancel_retained_input(&self, bytes: usize) {
+        let mut state = self.lock();
+        state.publications.retained_input -= bytes;
+        if !state.closed {
+            state.publications.outcome.original_cancelled_bytes += bytes as u64;
         }
-        self.publication_failed(LINE_MEMORY_EXHAUSTED.into());
-        false
+    }
+    pub(crate) fn retire_metadata_if_closed(&self) {
+        if !self.memory.retired() {
+            return;
+        }
+        let retired = {
+            let mut state = self.lock();
+            if !state.closed {
+                return;
+            }
+            let mut empty = Bridge::new();
+            empty.stop();
+            std::mem::replace(&mut state.bridge, empty)
+        };
+        drop(retired);
+    }
+    /// Register a synchronous reader/driver for genuine storage retirement. `false` explicitly
+    /// fails only this pairing when no existing publication or reader can release custody.
+    pub fn wait_storage(&self, waker: &std::task::Waker, generation: u64) -> bool {
+        self.memory.register(waker);
+        let progress = {
+            let mut state = self.lock();
+            if state.closed {
+                return false;
+            }
+            let progress = self.memory.progress(generation, state.publications.running);
+            if matches!(progress, crate::publication::Progress::Exhausted) {
+                state.closed = true;
+                state.bridge.stop();
+            }
+            progress
+        };
+        match progress {
+            crate::publication::Progress::Changed => {
+                waker.wake_by_ref();
+                true
+            }
+            crate::publication::Progress::Pending => true,
+            crate::publication::Progress::Closed => false,
+            crate::publication::Progress::Exhausted => {
+                self.publication_failed(LINE_MEMORY_EXHAUSTED.into());
+                false
+            }
+        }
     }
     /// Reserve before growing accepted input. `capacity` is requested capacity, rather than
     /// payload length. Include the old live capacity when a growth temporarily retains both.
     pub fn reserve_input(&self, capacity: usize) -> Result<Custody, SubmitError> {
+        self.reserve_input_from(None, capacity)
+    }
+
+    /// Reserve a writer's input while excluding its own unread queue as a progress dependency.
+    pub fn reserve_input_for(&self, leg: Leg, capacity: usize) -> Result<Custody, SubmitError> {
+        self.reserve_input_from(Some(index(leg)), capacity)
+    }
+
+    fn reserve_input_from(
+        &self,
+        source_leg: Option<usize>,
+        capacity: usize,
+    ) -> Result<Custody, SubmitError> {
         let bytes = capacity.checked_add(
             std::mem::size_of::<Node>()
                 + std::mem::size_of::<Across>()
@@ -183,18 +287,32 @@ impl Pairing {
             self.publication_failed(LINE_MEMORY_EXHAUSTED.into());
             return Err(SubmitError::Exhausted);
         };
-        if self.closed() {
-            return Err(SubmitError::Closed);
+        let attempt = {
+            let mut state = self.lock();
+            if state.closed {
+                return Err(SubmitError::Closed);
+            }
+            let attempt = self
+                .memory
+                .input(bytes, state.publications.running, source_leg);
+            if matches!(
+                attempt,
+                Err(crate::publication::ReservationError::Exhausted)
+            ) {
+                state.closed = true;
+                state.bridge.stop();
+            }
+            attempt
+        };
+        match attempt {
+            Ok(custody) => Ok(custody),
+            Err(crate::publication::ReservationError::Pending) => Err(SubmitError::Pending),
+            Err(crate::publication::ReservationError::Closed) => Err(SubmitError::Closed),
+            Err(crate::publication::ReservationError::Exhausted) => {
+                self.publication_failed(LINE_MEMORY_EXHAUSTED.into());
+                Err(SubmitError::Exhausted)
+            }
         }
-        if let Some(custody) = self.memory.reserve(bytes) {
-            return Ok(custody);
-        }
-        if self.memory.can_fit(bytes) && (self.lock().publications.running || self.memory.readers())
-        {
-            return Err(SubmitError::Pending);
-        }
-        self.publication_failed(LINE_MEMORY_EXHAUSTED.into());
-        Err(SubmitError::Exhausted)
     }
 
     /// Queue already charged application input without copying or claiming delivery. The
@@ -220,12 +338,27 @@ impl Pairing {
         custody: Custody,
         admission: Option<Box<dyn Send + 'static>>,
     ) -> Result<(), SubmitError> {
+        self.submit_preaccepted_owned(leg, across, text, custody, 0, admission)
+    }
+
+    /// Transfer early/gathered bytes into their producer job. `preaccepted` has already been
+    /// recorded with `retain_input`; only the remaining new bytes are accepted by this call.
+    pub fn submit_preaccepted_owned(
+        self: &Arc<Self>,
+        leg: Leg,
+        across: Across,
+        text: bool,
+        custody: Custody,
+        preaccepted: usize,
+        admission: Option<Box<dyn Send + 'static>>,
+    ) -> Result<(), SubmitError> {
         let (schedule, caller) = {
             let mut state = self.lock();
+            state.publications.retained_input -= preaccepted;
             if state.closed {
                 return Err(SubmitError::Closed);
             }
-            state.publications.outcome.original_bytes += across.bytes.len() as u64;
+            state.publications.outcome.original_bytes += (across.bytes.len() - preaccepted) as u64;
             state.publications.inputs.push(Job {
                 to: leg,
                 across,
@@ -249,7 +382,7 @@ impl Pairing {
     /// Borrowed application write: wait before copying when live publication can free credit,
     /// then await the honest output result. Cancellation after acceptance ends the pairing.
     pub async fn send(self: &Arc<Self>, leg: Leg, stream: u64, bytes: &[u8], text: bool) -> bool {
-        let Ok(custody) = self.input_credit(bytes.len()).await else {
+        let Ok(custody) = self.input_credit_for(leg, bytes.len()).await else {
             return false;
         };
         let across = Across {
@@ -278,11 +411,28 @@ impl Pairing {
     /// Wait for fresh input credit without copying or accepting its bytes. Cancellation while
     /// waiting leaves the input with its caller and never ends an unrelated accepted write.
     pub async fn input_credit(&self, capacity: usize) -> Result<Custody, SubmitError> {
+        self.input_credit_from(None, capacity).await
+    }
+
+    /// Wait for capacity that can be retired independently of this writer's own reader task.
+    pub async fn input_credit_for(
+        &self,
+        leg: Leg,
+        capacity: usize,
+    ) -> Result<Custody, SubmitError> {
+        self.input_credit_from(Some(index(leg)), capacity).await
+    }
+
+    async fn input_credit_from(
+        &self,
+        source_leg: Option<usize>,
+        capacity: usize,
+    ) -> Result<Custody, SubmitError> {
         loop {
             let changed = self.memory.changed.notified();
             tokio::pin!(changed);
             changed.as_mut().enable();
-            match self.reserve_input(capacity) {
+            match self.reserve_input_from(source_leg, capacity) {
                 Ok(custody) => return Ok(custody),
                 Err(SubmitError::Pending) => changed.await,
                 Err(error) => return Err(error),
@@ -309,12 +459,33 @@ impl Pairing {
 
     /// Queue checked output in FIFO order. No framer callback runs before this method returns;
     /// the scheduler crosses one producer batch at a time after its association is returned.
-    pub fn publish(self: &Arc<Self>, leg: Leg, yielded: Yielded, now: Instant) -> SessionBatch {
+    pub fn publish(self: &Arc<Self>, leg: Leg, mut yielded: Yielded, now: Instant) -> SessionBatch {
+        if self.memory.limit().is_some() && !yielded.custody.tracked() {
+            // An opening batch or legacy caller transfers existing owned storage into the
+            // pairing here. Reserve its actual capacities before parsing/copying any heads.
+            let credit = yielded
+                .adoption_bound()
+                .and_then(|bytes| self.memory.reserve(bytes));
+            let Some(credit) = credit else {
+                self.publication_failed(LINE_MEMORY_EXHAUSTED.into());
+                return SessionBatch {
+                    pieces: Vec::new(),
+                    custody: Custody::default(),
+                    owners: Vec::new(),
+                };
+            };
+            yielded.custody = credit;
+            yielded.producer = self.memory.producer().unwrap_or_default();
+            yielded.split_piece_custody();
+            let retained = yielded.retained_capacity();
+            yielded.custody.reduce(retained);
+        }
         let Yielded {
             pieces,
             custody,
             continuing,
             piece_custody,
+            producer,
             ..
         } = yielded;
         let mut retired = Vec::new();
@@ -405,6 +576,7 @@ impl Pairing {
             (session, owners, schedule, state.caller.clone())
         };
         drop(retired);
+        drop(producer);
         if schedule {
             // Construct the guard before spawn, so cancellation before first poll closes the
             // accepted episode too. The real caller schedules on its captured reactor/tracker.
@@ -467,7 +639,7 @@ impl Pairing {
         outcome.original_cancelled_bytes = outcome.original_bytes - outcome.original_handed_bytes;
     }
 
-    async fn drive_publication(&self) {
+    async fn drive_publication(self: &Arc<Self>) {
         let mut current: Option<Job> = None;
         loop {
             let attached = self.published.notified();
@@ -547,10 +719,25 @@ impl Pairing {
             }
             let input = current.as_ref().map(|job| &job.across);
             let text = current.as_ref().is_some_and(|job| job.text);
+            let mut crossing = Crossing {
+                pairing: self,
+                original: current.as_ref().is_some_and(|job| job.original),
+                bytes: input.map_or(0, |input| input.bytes.len() as u64),
+                armed: input.is_some(),
+            };
+            let generation = self.storage_generation();
             let result = std::future::poll_fn(|cx| sink.poll_line(cx, input, text, now)).await;
+            if result
+                .as_ref()
+                .is_err_and(|error| error.outcome != Outcome::Refused)
+            {
+                crossing.uncertain();
+            } else {
+                crossing.armed = false;
+            }
             match result {
                 Ok(LineStep::Credit) => {
-                    if self.memory.reader_progress().await {
+                    if self.memory.reader_progress(generation).await {
                         continue;
                     }
                     if let Some(job) = current.take() {
@@ -587,12 +774,7 @@ impl Pairing {
                     }
                     // This enqueues feedback only. It cannot await this producer or cross a
                     // destination while the source's exclusive association is still out.
-                    let pair = sink.pairing();
-                    let Some(pair) = pair else {
-                        self.publication_failed("publication lost its pairing".into());
-                        return;
-                    };
-                    let session = pair.publish(leg, yielded, now);
+                    let session = self.publish(leg, yielded, now);
                     if let Err(error) = sink.channels(session, now) {
                         self.publication_failed(error);
                         return;

@@ -67,6 +67,7 @@ pub(crate) fn take_ready(ready: &Mutex<Messages>, buf: &mut [u8]) -> Option<(usi
     // in between, and a partial read retains the original allocation and its reservation.
     let mut queue = lock(ready);
     let message = &mut queue.first.as_mut()?.message;
+    let transfer = message.custody.copying();
     #[cfg(test)]
     tests::after_ready_pop();
     let n = (message.bytes.len() - message.consumed).min(buf.len());
@@ -78,6 +79,7 @@ pub(crate) fn take_ready(ready: &Mutex<Messages>, buf: &mut [u8]) -> Option<(usi
     drop(queue);
     // Reader custody can notify the actor. Retire payload and metadata outside the queue lock.
     drop(retired);
+    drop(transfer);
     Some((n, end))
 }
 
@@ -366,6 +368,9 @@ impl UpstreamLeg {
         } = batch;
         let mut owners = owners.into_iter();
         if lock(&self.framing).closing {
+            drop(pieces);
+            drop(owners);
+            drop(custody);
             return Err(ConnError::Closed);
         }
         let mut queued = false;
@@ -375,23 +380,36 @@ impl UpstreamLeg {
             // output can be inserted after that clear, including after a reentrant LINE close.
             let held = lock(&self.framing);
             if held.closing {
+                drop(held);
+                drop(g);
+                drop(owner);
                 return Err(ConnError::Closed);
             }
             if g.fields {
                 lock(&self.channel).get_or_insert(g.stream);
+                drop(held);
+                drop(g);
+                drop(owner);
                 continue;
             }
             if g.failed && g.stream != 0 {
+                drop(held);
+                drop(g);
+                drop(owner);
                 return Err(ConnError::Fault);
             }
             if g.stream == 0 || g.ends_stream() {
+                drop(held);
+                drop(g);
+                drop(owner);
                 continue;
             }
+            drop(g.reason);
             lock(&self.ready).push_back(Message {
                 bytes: g.bytes,
                 end: g.end_of_frame,
                 consumed: 0,
-                custody: owner.reader(),
+                custody: owner.reader_on(Leg::Upstream),
             });
             queued = true;
         }
@@ -430,11 +448,12 @@ impl UpstreamLeg {
                 *lock(&self.recv) = buf;
                 let mut yielded = read?;
                 if yielded.is_none() && f.deadline().is_some_and(|d| d <= now) {
+                    let generation = pairing.storage_generation();
                     yielded = match f.timeout_step(now).map_err(|_| ConnError::Fault)? {
                         LineStep::Batch { yielded, .. } => Some(yielded),
                         LineStep::Complete => None,
                         LineStep::Credit => {
-                            if !pairing.wait_storage(cx.waker()) {
+                            if !pairing.wait_storage(cx.waker(), generation) {
                                 return Err(ConnError::Fault);
                             }
                             None
@@ -502,8 +521,9 @@ impl UpstreamLeg {
             if room == 0 {
                 break;
             }
+            let generation = pairing.storage_generation();
             if !f.prepare_output() {
-                if !pairing.wait_storage(cx.waker()) {
+                if !pairing.wait_storage(cx.waker(), generation) {
                     return Err(ConnError::Fault);
                 }
                 break;
@@ -522,8 +542,11 @@ impl UpstreamLeg {
                     }
                 }
                 // A per-datagram error (an unreachable far end reported back): the port stands.
-                Poll::Ready(Err(_)) => {}
-                Poll::Pending => break,
+                Poll::Ready(Err(_)) => f.release_output_reservation(),
+                Poll::Pending => {
+                    f.release_output_reservation();
+                    break;
+                }
             }
         }
         Ok(None)
@@ -545,7 +568,7 @@ impl LegSink for UpstreamLeg {
         let Some(pairing) = self.pairing.upgrade() else {
             return;
         };
-        let custody = match pairing.reserve_input(across.bytes.capacity()) {
+        let custody = match pairing.reserve_input_for(Leg::Upstream, across.bytes.capacity()) {
             Ok(custody) => custody,
             Err(_) => {
                 pairing.close();
@@ -887,6 +910,7 @@ impl Dialled {
             let custody = std::mem::take(&mut gather.custody);
             gather.reserved = false;
             drop(gather);
+            self.pairing.cancel_retained_input(old.len());
             drop(old);
             drop(custody);
             return Err(ConnError::Refused);
@@ -911,12 +935,13 @@ impl Dialled {
         // Reserve for simultaneous old and new allocations before copying accepted parts or
         // this call's bytes. Failure leaves this call unaccepted and restores the old prefix.
         let total = prefix.len() + bytes.len();
+        let preaccepted = prefix.len();
         let reuse = reserved && prefix.capacity() >= total;
         let (mut message, custody) = if reuse {
             (prefix, old_custody)
         } else {
             let requested = total + std::mem::size_of::<Writing>();
-            let custody = match self.pairing.reserve_input(requested) {
+            let custody = match self.pairing.reserve_input_for(Leg::Upstream, requested) {
                 Ok(custody) => custody,
                 Err(error) => {
                     let mut gather = lock(&self.gather);
@@ -940,6 +965,10 @@ impl Dialled {
         };
         message.extend_from_slice(bytes);
         if !end {
+            if !self.pairing.retain_input(bytes.len()) {
+                self.pairing.cancel_retained_input(preaccepted);
+                return Err(ConnError::Closed);
+            }
             let mut gather = lock(&self.gather);
             gather.bytes = message;
             gather.custody = custody;
@@ -973,11 +1002,14 @@ impl Dialled {
                 drop(writing);
                 Err(ConnError::Pending)
             },
-            |_| Err(ConnError::Closed),
+            |_| {
+                self.pairing.cancel_retained_input(preaccepted);
+                Err(ConnError::Closed)
+            },
             |_, (message, custody, mut writing)| {
                 writing.notify = true;
                 self.pairing
-                    .submit_owned_guarded(
+                    .submit_preaccepted_owned(
                         Leg::Upstream,
                         Across {
                             stream,
@@ -986,6 +1018,7 @@ impl Dialled {
                         },
                         text,
                         custody,
+                        preaccepted,
                         Some(Box::new(writing)),
                     )
                     .map_err(|error| match error {
@@ -1088,6 +1121,7 @@ impl Dialled {
                 std::mem::take(&mut gather.custody),
             )
         };
+        self.pairing.cancel_retained_input(discarded.0.len());
         drop(discarded);
     }
 }

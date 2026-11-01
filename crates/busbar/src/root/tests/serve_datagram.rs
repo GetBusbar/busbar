@@ -10,8 +10,8 @@ use std::time::Instant;
 
 use busbar_core_connector::datagram::Pairing;
 use busbar_core_connector::framer::Got;
+use busbar_core_connector::publication::{Custody, Message, Messages};
 use busbar_core_connector::udp::{bind, ReadyPort};
-use tokio::sync::mpsc;
 
 use super::{lock, CallerLeg, ClaimDoor, ClaimDoors, CALLER_QUEUE};
 
@@ -34,16 +34,10 @@ fn got(stream: u64, bytes: &[u8], fields: bool) -> Got {
     }
 }
 
-fn leg(
-    capacity: usize,
-) -> (
-    Arc<ClaimDoor>,
-    Arc<CallerLeg>,
-    Arc<Pairing>,
-    mpsc::Receiver<Vec<u8>>,
-) {
+fn leg(capacity: usize) -> (Arc<ClaimDoor>, Arc<CallerLeg>, Arc<Pairing>, Arc<Messages>) {
     let door = ClaimDoor::serve(ReadyPort::open(bind("127.0.0.1:0").unwrap()).unwrap());
-    let (tx, rx) = mpsc::channel(capacity);
+    let rx = Messages::new(capacity);
+    let tx = Arc::clone(&rx);
     let leg = CallerLeg::new(&door, tx);
     let pairing = Pairing::new(
         Arc::clone(&leg) as Arc<dyn busbar_core_connector::datagram::LegSink>,
@@ -55,7 +49,7 @@ fn leg(
 
 #[tokio::test]
 async fn a_channels_messages_are_the_sessions_pieces_and_early_writes_wait_for_the_channel() {
-    let (door, leg, pairing, mut rx) = leg(8);
+    let (door, leg, pairing, rx) = leg(8);
     let framer = busbar_test_kit::root_door_fixtures::datagram_order::Recording::new();
     join_recording(&door, &leg, &framer);
     let mut doors = ClaimDoors::default();
@@ -93,7 +87,7 @@ async fn a_channels_messages_are_the_sessions_pieces_and_early_writes_wait_for_t
 /// the caller's queue with it.
 #[tokio::test]
 async fn a_plane_that_falls_behind_its_caller_ends_the_session() {
-    let (_door, leg, pairing, mut rx) = leg(2);
+    let (_door, leg, pairing, rx) = leg(2);
     let now = Instant::now();
     let mut pieces = vec![got(1, b"label: events\r\n", true)];
     pieces.extend((0..3).map(|_| got(1, b"m", false)));
@@ -139,7 +133,7 @@ async fn early_writes_up_to_the_bound_wait_for_the_channel() {
 /// on holding writes.
 #[tokio::test]
 async fn a_plane_that_writes_past_the_bound_before_the_channel_opens_ends_the_session() {
-    let (_door, leg, pairing, mut rx) = leg(8);
+    let (_door, leg, pairing, rx) = leg(8);
     for _ in 0..CALLER_QUEUE {
         assert!(leg.write(b"early", false).await);
     }
@@ -297,19 +291,26 @@ async fn a_plane_that_states_no_head_in_time_answers_nothing() {
 async fn the_caller_side_opens_with_one_empty_piece() {
     use busbar_kernel::plane_driver::SessionCaller;
     let (_door, leg, _pairing, _rx) = leg(8);
-    let (to, from) = mpsc::channel(8);
+    let from = Messages::new(8);
+    let to = Arc::clone(&from);
     let (head, _rx) = tokio::sync::oneshot::channel();
     let caller = super::DatagramCaller {
         leg,
-        from: tokio::sync::Mutex::new(from),
+        from,
         head: std::sync::Mutex::new(Some(head)),
         stated: std::sync::atomic::AtomicU32::new(0),
         opened: std::sync::atomic::AtomicBool::new(false),
     };
-    to.send(b"{\"type\":\"x\"}".to_vec()).await.unwrap();
+    to.send(Message {
+        bytes: b"{\"type\":\"x\"}".to_vec(),
+        end: true,
+        consumed: 0,
+        custody: Custody::default().reader(),
+    })
+    .unwrap();
     assert_eq!(caller.read().await, Some(Vec::new()), "the open");
     assert_eq!(caller.read().await, Some(b"{\"type\":\"x\"}".to_vec()));
-    drop(to);
+    to.close();
     assert_eq!(caller.read().await, None);
 }
 
@@ -364,11 +365,11 @@ const SESSION_CHANNEL: u64 = 1;
 const FRAMER_PARK_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
 
 fn caller_for(leg: Arc<CallerLeg>) -> super::DatagramCaller {
-    let (_to, from) = mpsc::channel(8);
+    let from = Messages::new(8);
     let (head, _answer) = tokio::sync::oneshot::channel();
     super::DatagramCaller {
         leg,
-        from: tokio::sync::Mutex::new(from),
+        from,
         head: std::sync::Mutex::new(Some(head)),
         stated: std::sync::atomic::AtomicU32::new(0),
         opened: std::sync::atomic::AtomicBool::new(false),
@@ -408,7 +409,7 @@ struct ControlledDoor {
     door: Arc<ClaimDoor>,
     leg: Arc<CallerLeg>,
     pairing: Arc<Pairing>,
-    _rx: mpsc::Receiver<Vec<u8>>,
+    _rx: Arc<Messages>,
     framer: Arc<busbar_test_kit::root_door_fixtures::datagram_order::Recording>,
     id: u64,
     tracker: Arc<busbar_kernel::detached::DetachedTasks>,
@@ -645,7 +646,8 @@ async fn admission_finishing_after_shutdown_retires_its_new_pairing_and_associat
     tokio::time::timeout(FRAMER_PARK_WAIT, control.tracker.drained())
         .await
         .expect("serving loop retired");
-    let (tx, mut rx) = mpsc::channel(8);
+    let rx = Messages::new(8);
+    let tx = Arc::clone(&rx);
     let leg = CallerLeg::new(&control.door, tx);
     let pairing = Pairing::new(
         Arc::clone(&leg) as Arc<dyn busbar_core_connector::datagram::LegSink>,
@@ -688,7 +690,7 @@ async fn session_delivery_and_close_allow_the_receiver_waker_to_reenter_the_leg(
     }
 
     for deliver in [true, false] {
-        let (_door, leg, pairing, mut rx) = leg(8);
+        let (_door, leg, pairing, rx) = leg(8);
         let wake = Arc::new(Reenter {
             leg: Arc::downgrade(&leg),
             locked: std::sync::atomic::AtomicBool::new(false),
@@ -806,7 +808,7 @@ async fn busy_caller_writes_wait_without_accepting_cancelled_bytes_and_other_ass
     );
     tokio::task::yield_now().await;
     let caller = caller_for(Arc::clone(&leg));
-    let (tx, _rx_b) = mpsc::channel(8);
+    let tx = Messages::new(8);
     let leg_b = CallerLeg::new(&door, tx);
     let framer_b = Recording::with_user(b"otherfrag");
     let id_b = join_recording(&door, &leg_b, &framer_b);
@@ -966,7 +968,7 @@ async fn closing_a_busy_caller_wakes_the_unaccepted_write_without_emitting_it() 
 async fn caller_write_publishes_the_framers_emitted_channel_output_once() {
     use busbar_kernel::plane_driver::CallerEnd;
     use busbar_test_kit::root_door_fixtures::datagram_order::Recording;
-    let (door, leg, pairing, mut rx) = leg(8);
+    let (door, leg, pairing, rx) = leg(8);
     let framer = Recording::new();
     join_recording(&door, &leg, &framer);
     framer.echo_emits();
@@ -996,7 +998,7 @@ async fn a_bridged_line_emit_delivers_its_callers_channel_output_once() {
     const CALLER_LINE: u64 = 11;
     const UPSTREAM_LINE: u64 = 21;
 
-    let (door, leg, pairing, mut rx) = leg(8);
+    let (door, leg, pairing, rx) = leg(8);
     let framer = Recording::new();
     join_recording(&door, &leg, &framer);
     framer.echo_emits_on(SESSION_CHANNEL);
@@ -1018,6 +1020,7 @@ async fn a_bridged_line_emit_delivers_its_callers_channel_output_once() {
         vec![got(UPSTREAM_LINE, b"line frame", false)],
         now,
     );
+    assert!(pairing.published().await.failure.is_none());
     let received = rx.try_recv();
     let extra = rx.try_recv();
     pairing.close();
@@ -1045,7 +1048,7 @@ async fn a_line_queued_during_application_emit_delivers_its_own_output_in_order(
     const CALLER_LINE: u64 = 11;
     const UPSTREAM_LINE: u64 = 21;
 
-    let (door, leg, pairing, mut rx) = leg(8);
+    let (door, leg, pairing, rx) = leg(8);
     let framer = Recording::new();
     join_recording(&door, &leg, &framer);
     framer.echo_emits_on(SESSION_CHANNEL);
@@ -1115,4 +1118,97 @@ async fn refusal_of_an_accepted_early_message_closes_before_later_messages_cross
     assert!(closed, "accepted custody failure ends the session");
     assert!(!later);
     assert_eq!(emitted, vec![b"first accepted".to_vec()]);
+}
+
+#[tokio::test]
+async fn an_unknown_caller_crossing_is_cancelled_without_claiming_its_bytes_were_untaken() {
+    use busbar_kernel::plane_driver::CallerEnd;
+    use busbar_test_kit::root_door_fixtures::datagram_order::Recording;
+    let (door, leg, pairing, _rx) = leg(8);
+    let framer = Recording::new();
+    join_recording(&door, &leg, &framer);
+    leg.take(
+        vec![got(SESSION_CHANNEL, b"label: events\r\n", true)],
+        Instant::now(),
+    );
+    framer.observe(Arc::new(|_| {
+        panic!("the fixture unwinds after recording the input")
+    }));
+    let caller = caller_for(leg);
+    let bytes = b"accepted before unwinding";
+    assert!(
+        !tokio::time::timeout(FRAMER_PARK_WAIT, CallerEnd::write(&caller, bytes))
+            .await
+            .unwrap()
+    );
+    let outcome = pairing.published().await;
+    assert!(outcome.failure.is_some());
+    assert_eq!(outcome.original_bytes, bytes.len() as u64);
+    assert_eq!(outcome.original_handed_bytes, 0);
+    assert_eq!(outcome.original_cancelled_bytes, bytes.len() as u64);
+    assert_eq!(outcome.original_uncertain_bytes, bytes.len() as u64);
+    assert_eq!(framer.emitted(), vec![bytes.to_vec()]);
+    assert!(pairing.closed());
+}
+
+#[derive(Clone)]
+struct ExhaustionDiagnostic(Arc<std::sync::atomic::AtomicUsize>);
+
+impl tracing::Subscriber for ExhaustionDiagnostic {
+    fn enabled(&self, _: &tracing::Metadata<'_>) -> bool {
+        true
+    }
+    fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+        tracing::span::Id::from_u64(1)
+    }
+    fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+    fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+    fn enter(&self, _: &tracing::span::Id) {}
+    fn exit(&self, _: &tracing::span::Id) {}
+    fn event(&self, event: &tracing::Event<'_>) {
+        struct Reason<'a>(&'a std::sync::atomic::AtomicUsize);
+        impl tracing::field::Visit for Reason<'_> {
+            fn record_debug(&mut self, _: &tracing::field::Field, _: &dyn std::fmt::Debug) {}
+            fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+                if field.name() == "reason" && value == "resource_exhausted" {
+                    self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                }
+            }
+        }
+        event.record(&mut Reason(&self.0));
+    }
+}
+
+#[tokio::test]
+async fn configured_exhaustion_reports_one_clear_operator_error_and_takes_no_preaccept_bytes() {
+    use busbar_kernel::plane_driver::CallerEnd;
+    use busbar_test_kit::root_door_fixtures::datagram_order::Recording;
+    let diagnostics = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let dispatch = tracing::Dispatch::new(ExhaustionDiagnostic(Arc::clone(&diagnostics)));
+    let _subscriber = tracing::dispatcher::set_default(&dispatch);
+    let door = ClaimDoor::serve(ReadyPort::open(bind("127.0.0.1:0").unwrap()).unwrap());
+    let leg = CallerLeg::new(&door, Messages::new(8));
+    let pairing = Pairing::with_memory_limit(
+        Arc::clone(&leg) as Arc<dyn busbar_core_connector::datagram::LegSink>,
+        door.local(),
+        Some(1),
+    );
+    *lock(&leg.pairing) = Some(Arc::clone(&pairing));
+    let framer = Recording::new();
+    join_recording(&door, &leg, &framer);
+    leg.take(
+        vec![got(SESSION_CHANNEL, b"label: events\r\n", true)],
+        Instant::now(),
+    );
+    let caller = caller_for(leg);
+    assert!(!CallerEnd::write(&caller, b"unaccepted").await);
+    assert!(!CallerEnd::write(&caller, b"also unaccepted").await);
+    assert_eq!(diagnostics.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert_eq!(
+        pairing.publication_outcome().failure.as_deref(),
+        Some(busbar_core_connector::datagram::LINE_MEMORY_EXHAUSTED)
+    );
+    assert_eq!(pairing.publication_outcome().original_bytes, 0);
+    assert!(framer.emitted().is_empty());
+    assert!(pairing.closed());
 }

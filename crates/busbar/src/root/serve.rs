@@ -5453,6 +5453,14 @@ impl<C: SessionCaller> CallerEnd for ClosingCaller<C> {
 }
 
 impl<C: SessionCaller> SessionCaller for ClosingCaller<C> {
+    async fn read_owned(&self) -> Option<busbar_kernel::plane_driver::SessionInput> {
+        tokio::select! {
+            biased;
+            () = busbar_kernel::detached::shutdown_fired(self.shutdown.clone()) => None,
+            piece = self.inner.read_owned() => piece,
+        }
+    }
+
     async fn read(&self) -> Option<Vec<u8>> {
         tokio::select! {
             biased;

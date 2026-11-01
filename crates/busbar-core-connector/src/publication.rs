@@ -16,13 +16,30 @@ pub struct Memory {
     state: Mutex<State>,
     pub(crate) changed: tokio::sync::Notify,
     wake: futures::task::AtomicWaker,
+    observer: Mutex<std::sync::Weak<crate::datagram::Pairing>>,
 }
 
 #[derive(Debug, Default)]
 struct State {
     used: usize,
     readers: usize,
+    readers_by_leg: [usize; 2],
+    transfers: usize,
     closed: bool,
+    producers: usize,
+    generation: u64,
+}
+
+pub(crate) enum ReservationError {
+    Pending,
+    Exhausted,
+    Closed,
+}
+pub(crate) enum Progress {
+    Changed,
+    Pending,
+    Exhausted,
+    Closed,
 }
 
 impl Memory {
@@ -37,6 +54,7 @@ impl Memory {
             state: Mutex::new(State::default()),
             changed: tokio::sync::Notify::new(),
             wake: futures::task::AtomicWaker::new(),
+            observer: Mutex::new(std::sync::Weak::new()),
         })
     }
 
@@ -52,17 +70,91 @@ impl Memory {
         lock(&self.state).used
     }
 
-    pub(crate) fn readers(&self) -> bool {
-        lock(&self.state).readers != 0
+    pub(crate) fn generation(&self) -> u64 {
+        lock(&self.state).generation
+    }
+
+    pub(crate) fn progress(&self, generation: u64, pending: bool) -> Progress {
+        let state = lock(&self.state);
+        if state.closed {
+            Progress::Closed
+        } else if state.generation != generation {
+            Progress::Changed
+        } else if pending || state.transfers != 0 || state.producers != 0 {
+            Progress::Pending
+        } else {
+            Progress::Exhausted
+        }
+    }
+
+    pub(crate) fn input(
+        self: &Arc<Self>,
+        bytes: usize,
+        pending: bool,
+        source_leg: Option<usize>,
+    ) -> Result<Custody, ReservationError> {
+        let bytes = Self::reservation_size(bytes).ok_or(ReservationError::Exhausted)?;
+        {
+            let mut state = lock(&self.state);
+            if state.closed {
+                return Err(ReservationError::Closed);
+            }
+            if self.limit.is_none() {
+                return Ok(Custody::default());
+            }
+            let limit = self.limit.expect("a configured limit");
+            if state
+                .used
+                .checked_add(bytes)
+                .is_none_or(|used| used > limit)
+            {
+                return Err(
+                    if bytes <= limit
+                        && (pending
+                            || state.transfers != 0
+                            || state.producers != 0
+                            || source_leg.is_some_and(|leg| state.readers_by_leg[1 - leg] != 0))
+                    {
+                        ReservationError::Pending
+                    } else {
+                        ReservationError::Exhausted
+                    },
+                );
+            }
+            state.used += bytes;
+        }
+        Ok(Custody(Some(Arc::new(Lease {
+            memory: Arc::clone(self),
+            bytes,
+            previous: Custody::default(),
+        }))))
+    }
+
+    pub(crate) fn observe(&self, pairing: std::sync::Weak<crate::datagram::Pairing>) {
+        *lock(&self.observer) = pairing;
+    }
+
+    pub(crate) fn retired(&self) -> bool {
+        let state = lock(&self.state);
+        state.closed && state.producers == 0
+    }
+
+    pub(crate) fn producer(self: &Arc<Self>) -> Option<ProducerCustody> {
+        {
+            let mut state = lock(&self.state);
+            if state.closed {
+                return None;
+            }
+            state.producers += 1;
+        }
+        Some(ProducerCustody(Some(Arc::new(Producer {
+            memory: Some(Arc::clone(self)),
+            previous: ProducerCustody::default(),
+        }))))
     }
 
     pub(crate) fn register(&self, waker: &std::task::Waker) {
         self.wake.register(waker);
-    }
-
-    pub(crate) fn can_fit(&self, bytes: usize) -> bool {
-        Self::reservation_size(bytes)
-            .is_some_and(|bytes| self.limit.is_none_or(|limit| bytes <= limit))
     }
 
     /// Reserve before allocating or crossing a framer. Failed reservations allocate nothing.
@@ -87,13 +179,19 @@ impl Memory {
     }
 
     /// A reservation failure may wait only while an actual reader owns releasable storage.
-    pub(crate) async fn reader_progress(&self) -> bool {
+    pub(crate) async fn reader_progress(&self, generation: u64) -> bool {
         let changed = self.changed.notified();
         tokio::pin!(changed);
         changed.as_mut().enable();
         {
             let state = lock(&self.state);
-            if state.closed || state.readers == 0 {
+            if state.closed {
+                return false;
+            }
+            if state.generation != generation {
+                return true;
+            }
+            if state.transfers == 0 && state.producers == 0 {
                 return false;
             }
         }
@@ -102,9 +200,80 @@ impl Memory {
     }
 
     pub(crate) fn close(&self) {
-        lock(&self.state).closed = true;
+        {
+            let mut state = lock(&self.state);
+            state.closed = true;
+            state.generation = state.generation.wrapping_add(1);
+        }
         self.changed.notify_waiters();
         self.wake.wake();
+    }
+}
+
+#[derive(Debug)]
+struct Producer {
+    memory: Option<Arc<Memory>>,
+    previous: ProducerCustody,
+}
+
+impl Drop for Producer {
+    fn drop(&mut self) {
+        let Some(memory) = self.memory.take() else {
+            return;
+        };
+        let mut count = 1;
+        let mut previous = std::mem::take(&mut self.previous).0;
+        while let Some(producer) = previous {
+            match Arc::try_unwrap(producer) {
+                Ok(mut producer) => {
+                    previous = std::mem::take(&mut producer.previous).0;
+                    producer.memory = None;
+                    count += 1;
+                }
+                Err(producer) => {
+                    drop(producer);
+                    break;
+                }
+            }
+        }
+        let retired = {
+            let mut state = lock(&memory.state);
+            state.producers -= count;
+            state.generation = state.generation.wrapping_add(1);
+            state.closed && state.producers == 0
+        };
+        memory.changed.notify_waiters();
+        memory.wake.wake();
+        if retired {
+            let pairing = lock(&memory.observer).upgrade();
+            if let Some(pairing) = pairing {
+                pairing.retire_metadata_if_closed();
+            }
+        }
+    }
+}
+
+/// A checked producer still owns either its crossing or output awaiting classification.
+/// This preserves stream identity through a concurrent terminal close without keeping it forever.
+#[derive(Debug, Default, Clone)]
+pub struct ProducerCustody(Option<Arc<Producer>>);
+
+impl PartialEq for ProducerCustody {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+impl Eq for ProducerCustody {}
+
+impl ProducerCustody {
+    pub(crate) fn prepend(&mut self, previous: Self) {
+        if let Some(producer) = &mut self.0 {
+            Arc::get_mut(producer)
+                .expect("a fresh producer is not shared")
+                .previous = previous;
+        } else {
+            *self = previous;
+        }
     }
 }
 
@@ -142,6 +311,7 @@ impl Drop for Lease {
         {
             let mut state = lock(&self.memory.state);
             state.used -= released;
+            state.generation = state.generation.wrapping_add(1);
         }
         self.memory.changed.notify_waiters();
         self.memory.wake.wake();
@@ -162,6 +332,9 @@ impl PartialEq for Custody {
 impl Eq for Custody {}
 
 impl Custody {
+    pub(crate) fn tracked(&self) -> bool {
+        self.0.is_some()
+    }
     /// Split already reserved storage into an independent owner before the parent reservation
     /// is shared. The child allocation and its Arc header are paid from pre-crossing credit.
     pub(crate) fn split(&mut self, bytes: usize) -> Self {
@@ -202,7 +375,13 @@ impl Custody {
         );
         let released = lease.bytes - retained;
         lease.bytes = retained;
-        lock(&lease.memory.state).used -= released;
+        {
+            let mut state = lock(&lease.memory.state);
+            state.used -= released;
+            if released != 0 {
+                state.generation = state.generation.wrapping_add(1);
+            }
+        }
         lease.memory.changed.notify_waiters();
         lease.memory.wake.wake();
     }
@@ -221,13 +400,33 @@ impl Custody {
     /// Transfer to a reader. The guard survives until actual payload consumption or teardown.
     #[must_use]
     pub fn reader(&self) -> ReaderCustody {
+        self.reader_for(None)
+    }
+
+    /// Transfer storage to this leg's reader. Queued bytes on the writer's own leg cannot be
+    /// assumed independently consumable while that writer is blocking its reader task.
+    #[must_use]
+    pub fn reader_on(&self, leg: crate::datagram::Leg) -> ReaderCustody {
+        self.reader_for(Some(match leg {
+            crate::datagram::Leg::Caller => 0,
+            crate::datagram::Leg::Upstream => 1,
+        }))
+    }
+
+    fn reader_for(&self, leg: Option<usize>) -> ReaderCustody {
         let memory = self.0.as_ref().map(|lease| Arc::clone(&lease.memory));
         if let Some(memory) = &memory {
-            lock(&memory.state).readers += 1;
+            let mut state = lock(&memory.state);
+            state.readers += 1;
+            if let Some(leg) = leg {
+                state.readers_by_leg[leg] += 1;
+            }
         }
         ReaderCustody {
             custody: self.clone(),
             memory,
+            transfer: None,
+            leg,
         }
     }
 }
@@ -237,6 +436,53 @@ impl Custody {
 pub struct ReaderCustody {
     custody: Custody,
     memory: Option<Arc<Memory>>,
+    transfer: Option<Transfer>,
+    leg: Option<usize>,
+}
+
+/// An actual read/copy or receiver handoff which can retire charged storage without another
+/// producer crossing. Queued ownership alone is not such a transfer.
+#[derive(Debug, Default)]
+pub struct Transfer(Option<Arc<Memory>>);
+
+impl Transfer {
+    fn new(memory: Option<&Arc<Memory>>) -> Self {
+        if let Some(memory) = memory {
+            lock(&memory.state).transfers += 1;
+        }
+        Self(memory.cloned())
+    }
+}
+
+impl Drop for Transfer {
+    fn drop(&mut self) {
+        if let Some(memory) = &self.0 {
+            {
+                let mut state = lock(&memory.state);
+                state.transfers -= 1;
+                state.generation = state.generation.wrapping_add(1);
+            }
+            memory.changed.notify_waiters();
+            memory.wake.wake();
+        }
+    }
+}
+
+impl ReaderCustody {
+    /// Mark a synchronous copy as in flight. Drop its guard after the queue lock is released.
+    #[must_use]
+    pub fn copying(&self) -> Transfer {
+        Transfer::new(self.memory.as_ref())
+    }
+
+    fn receiving(&mut self, transfer: Option<Transfer>) -> Option<Transfer> {
+        if self.transfer.is_none() {
+            self.transfer = Some(transfer.unwrap_or_else(|| self.copying()));
+            None
+        } else {
+            transfer
+        }
+    }
 }
 
 impl Drop for ReaderCustody {
@@ -244,7 +490,14 @@ impl Drop for ReaderCustody {
         let custody = std::mem::take(&mut self.custody);
         drop(custody);
         if let Some(memory) = &self.memory {
-            lock(&memory.state).readers -= 1;
+            {
+                let mut state = lock(&memory.state);
+                state.readers -= 1;
+                if let Some(leg) = self.leg {
+                    state.readers_by_leg[leg] -= 1;
+                }
+                state.generation = state.generation.wrapping_add(1);
+            }
             memory.changed.notify_waiters();
             memory.wake.wake();
         }
@@ -285,6 +538,25 @@ struct MessagesState {
     head: Option<Box<MessageNode>>,
     len: usize,
     closed: bool,
+    waiters: usize,
+    handoff: Option<Transfer>,
+}
+
+struct Receiving<'a>(&'a Messages);
+
+impl Drop for Receiving<'_> {
+    fn drop(&mut self) {
+        let retired = {
+            let mut state = lock(&self.0.state);
+            state.waiters -= 1;
+            if state.waiters == 0 {
+                state.handoff.take()
+            } else {
+                None
+            }
+        };
+        drop(retired);
+    }
 }
 
 #[derive(Debug)]
@@ -315,6 +587,9 @@ impl Messages {
             if state.closed || state.len == self.capacity {
                 return Err(message);
             }
+            if state.waiters != 0 && state.handoff.is_none() {
+                state.handoff = Some(message.custody.copying());
+            }
             let mut tail = &mut state.head;
             while let Some(node) = tail {
                 tail = &mut node.next;
@@ -332,6 +607,8 @@ impl Messages {
 
     /// Wait for and take one message. Custody moves with it until actual reader retirement.
     pub async fn recv(&self) -> Option<Message> {
+        lock(&self.state).waiters += 1;
+        let _receiving = Receiving(self);
         loop {
             let ready = self.ready.notified();
             tokio::pin!(ready);
@@ -339,9 +616,12 @@ impl Messages {
             {
                 let mut state = lock(&self.state);
                 if let Some(node) = state.head.take() {
-                    let MessageNode { message, next } = *node;
+                    let MessageNode { mut message, next } = *node;
                     state.head = next;
                     state.len -= 1;
+                    let retired = message.custody.receiving(state.handoff.take());
+                    drop(state);
+                    drop(retired);
                     return Some(message);
                 }
                 if state.closed {
@@ -357,9 +637,12 @@ impl Messages {
         self.wake.register(cx.waker());
         let mut state = lock(&self.state);
         if let Some(node) = state.head.take() {
-            let MessageNode { message, next } = *node;
+            let MessageNode { mut message, next } = *node;
             state.head = next;
             state.len -= 1;
+            let retired = message.custody.receiving(state.handoff.take());
+            drop(state);
+            drop(retired);
             return std::task::Poll::Ready(Some(message));
         }
         if state.closed {
@@ -379,9 +662,12 @@ impl Messages {
             .head
             .take()
             .ok_or(std::sync::mpsc::TryRecvError::Empty)?;
-        let MessageNode { message, next } = *node;
+        let MessageNode { mut message, next } = *node;
         state.head = next;
         state.len -= 1;
+        let retired = message.custody.receiving(state.handoff.take());
+        drop(state);
+        drop(retired);
         Ok(message)
     }
 
@@ -403,3 +689,7 @@ impl Drop for Messages {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "tests/publication_tests.rs"]
+mod tests;

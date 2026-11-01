@@ -2065,6 +2065,7 @@ pub fn kernel_sections(
     let limits = json!({
         "default_max_tokens": cfg.limits.default_max_tokens,
         "request_body_max_bytes": cfg.limits.request_body_max_bytes,
+        "datagram_line_memory_bytes": cfg.limits.datagram_line_memory_bytes,
         "reasoning_effort_budgets": {
             "minimal": cfg.limits.reasoning_effort_budgets.minimal,
             "low": cfg.limits.reasoning_effort_budgets.low,

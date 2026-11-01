@@ -292,8 +292,20 @@ impl<'f> DatagramTurn<'f> {
 
     fn cross(&mut self, op: Op<'_>) -> Result<Yielded, Refused> {
         let custody = self.framing.reserve_output()?;
+        let producer = self
+            .framing
+            .memory
+            .as_ref()
+            .map(|memory| {
+                memory
+                    .producer()
+                    .ok_or_else(|| fault("the pairing closed before the producer crossed"))
+            })
+            .transpose()?
+            .unwrap_or_default();
         let answer = self.framing.cross_once(op)?;
         let mut batch = Yielded::default();
+        batch.producer = producer;
         batch.custody = custody;
         let taken = self.framing.take(&answer, &mut batch, self.now);
         // take may copy wire before a later field fails validation. This owner wipes that
@@ -490,6 +502,8 @@ impl Drop for DatagramTurn<'_> {
 }
 
 fn append_batch(into: &mut Yielded, mut batch: Yielded) {
+    batch.producer.prepend(std::mem::take(&mut into.producer));
+    into.producer = batch.producer;
     batch.custody.prepend(std::mem::take(&mut into.custody));
     into.custody = batch.custody;
     into.heads.append(&mut batch.heads);
@@ -584,6 +598,12 @@ impl DatagramFraming {
             }
             Err(_) => false,
         }
+    }
+
+    /// Return an unused pre-read reservation when the port did not relinquish input. Keeping
+    /// idle credit would prevent the other leg from using the pairing's shared account.
+    pub fn release_output_reservation(&mut self) {
+        self.credit = None;
     }
 
     /// One fresh raw datagram, producing at most one checked output batch. Call only when the
@@ -1751,7 +1771,11 @@ pub type Answered = Vec<(u64, Result<Yielded, Refused>)>;
 #[derive(Debug, Default)]
 pub struct PortAssociations {
     assocs: std::sync::Mutex<Associations>,
+    pub(crate) raw_busy_dropped: std::sync::atomic::AtomicU64,
 }
+
+#[derive(Debug)]
+pub(crate) struct BusyIngress;
 
 /// An association out of the map. Only an unwind drops it still holding the framing: the
 /// association is then no longer carried, and its framing finished with no lock held.
@@ -1851,16 +1875,31 @@ impl PortAssociations {
         now: Instant,
         send: &dyn Fn(SocketAddr, &[u8]),
     ) -> Answered {
+        self.incremental_admission(id, op, now, send, false)
+            .expect("trusted queued operations do not use raw readiness refusal")
+    }
+
+    fn incremental_admission(
+        &self,
+        id: u64,
+        op: Owed<'_>,
+        now: Instant,
+        send: &dyn Fn(SocketAddr, &[u8]),
+        drop_busy: bool,
+    ) -> Result<Answered, BusyIngress> {
         let f = {
             let mut assocs = self.lock();
             if let Some(out) = assocs.out.get_mut(&id) {
+                if drop_busy && !out.closing {
+                    return Err(BusyIngress);
+                }
                 if !out.closing {
                     out.owed.push_back(op.owned());
                 }
-                return Vec::new();
+                return Ok(Vec::new());
             }
             let Some(f) = assocs.framings.remove(&id) else {
-                return Vec::new();
+                return Ok(Vec::new());
             };
             assocs.out.insert(
                 id,
@@ -1919,10 +1958,10 @@ impl PortAssociations {
             assocs.forget(id);
             drop(assocs);
             drop(taken.framing.take());
-            return vec![(
+            return Ok(vec![(
                 id,
                 result.and_then(|_| Err(fault("the association closed during its producer"))),
-            )];
+            )]);
         }
         let yielded = match result.expect("the producer result was checked") {
             LineStep::Batch { yielded, .. } => yielded,
@@ -1955,13 +1994,13 @@ impl PortAssociations {
             );
         }
         drop(assocs);
-        vec![(
+        Ok(vec![(
             id,
             Ok(Yielded {
                 continuing: pending,
                 ..yielded
             }),
-        )]
+        )])
     }
 
     /// Drive a single LINE producer batch without retaining exclusive association custody
@@ -2107,49 +2146,6 @@ impl PortAssociations {
         emission.ready.notify_waiters();
         emission.wake.wake();
         std::task::Poll::Ready(result)
-    }
-
-    /// Retire completed incremental custody and run previously queued ordinary operations.
-    /// The raw busy-ingress queue policy is unchanged.
-    pub fn resume_owed(&self, now: Instant, send: &dyn Fn(SocketAddr, &[u8])) -> Answered {
-        let ready: Vec<_> = {
-            let mut assocs = self.lock();
-            let ids: Vec<_> = assocs
-                .out
-                .iter()
-                .filter_map(|(id, out)| {
-                    out.continuing
-                        .as_ref()
-                        .is_some_and(|f| !f.continuing())
-                        .then_some(*id)
-                })
-                .collect();
-            ids.into_iter()
-                .filter_map(|id| {
-                    let mut out = assocs.out.remove(&id)?;
-                    let f = out.continuing.take()?;
-                    if out.closing {
-                        // Finish outside the guard below.
-                        Some((id, Some(f), out.owed, true))
-                    } else {
-                        assocs.framings.insert(id, f);
-                        Some((id, None, out.owed, false))
-                    }
-                })
-                .collect()
-        };
-        let mut answered = Vec::new();
-        for (id, gone, owed, closing) in ready {
-            drop(gone);
-            if closing {
-                self.remove(id);
-                continue;
-            }
-            for op in owed {
-                answered.extend(self.turn(id, op, now, send).1);
-            }
-        }
-        answered
     }
 
     /// An empty port.
@@ -2799,7 +2795,7 @@ impl Pairing {
         local: SocketAddr,
         limit: Option<usize>,
     ) -> Arc<Self> {
-        Arc::new(Pairing {
+        let pair = Arc::new(Pairing {
             state: std::sync::Mutex::new(PairState {
                 bridge: Bridge::new(),
                 caller: Some(caller),
@@ -2810,7 +2806,9 @@ impl Pairing {
             local,
             memory: Memory::new(limit),
             published: tokio::sync::Notify::new(),
-        })
+        });
+        pair.memory.observe(Arc::downgrade(&pair));
+        pair
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, PairState> {
@@ -2888,7 +2886,7 @@ impl Pairing {
     pub fn close(&self) {
         let (legs, abandoned) = {
             let mut st = self.lock();
-            if st.closed {
+            if st.closed && st.caller.is_none() && st.upstream.is_none() {
                 return;
             }
             st.closed = true;
@@ -2898,6 +2896,7 @@ impl Pairing {
         };
         drop(abandoned);
         self.memory.close();
+        self.retire_metadata_if_closed();
         self.published.notify_waiters();
         for leg in legs.into_iter().flatten() {
             leg.close();
