@@ -207,6 +207,7 @@ impl SealedWrite {
         stream: u64,
         piece: &RequestPiece,
     ) -> Answer<usize> {
+        std::task::ready!(self.confirm(c, stream))?;
         c.write_request(stream, piece, &self.buf)
     }
 }
