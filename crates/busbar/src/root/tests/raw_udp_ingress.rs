@@ -355,7 +355,10 @@ async fn closing_a_busy_association_cancels_waiters_and_does_not_reuse_its_old_p
 
     assert!(entered.is_ok() && holder.is_ok() && before.is_pending());
     assert!(late.is_ok() && marker_sent.is_ok() && late_consumed.is_ok() && old_path.is_ok());
-    assert!(!cancelled.unwrap().unwrap());
+    assert!(
+        !cancelled.expect("the closed association's waiter resolved before the timeout"),
+        "a write waiting on a closed association is refused, not accepted"
+    );
     assert_ne!(a.id, replacement.id);
     assert_eq!(a.framer.recording().emitted(), vec![b"occupied".to_vec()]);
     assert_eq!(delivered.unwrap().unwrap().bytes, fresh);

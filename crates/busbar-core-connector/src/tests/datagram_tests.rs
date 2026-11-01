@@ -45,6 +45,9 @@ const FAR_PWD: &str = "far-password-0123456789";
 #[path = "datagram_turn_tests.rs"]
 mod turn_tests;
 
+#[path = "datagram_emission_close_tests.rs"]
+mod emission_close_tests;
+
 fn p(s: &str) -> SocketAddr {
     s.parse().expect("addr")
 }
@@ -116,6 +119,8 @@ struct Knobs {
     /// A dialling framing: it offers at begin, settles terms that initiate and carry the far end's
     /// candidates, and checks every path it is told of, asking to bind the first.
     dial: bool,
+    /// The framer fails (`Outcome::Failed`) the first clear-lane datagram it is handed.
+    fail_clear: bool,
 }
 
 #[derive(Default)]
@@ -375,6 +380,12 @@ impl FramerDoor for Scripted {
             Call::Ingest(i, o) => {
                 let lane = read_lane(&mut st, i.lane).expect("a datagram framer reads its lane");
                 let bytes = raw(i.bytes, i.len).to_vec();
+                if self.knobs.fail_clear && lane.lane == LANE_CLEAR {
+                    return Crossed {
+                        outcome: Outcome::Failed,
+                        error: None,
+                    };
+                }
                 match lane.lane {
                     LANE_RENDEZVOUS => {
                         // "ufrag pwd fingerprint-hex": the far end's terms.

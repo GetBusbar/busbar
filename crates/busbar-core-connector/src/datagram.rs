@@ -1997,9 +1997,17 @@ impl PortAssociations {
             assocs.route(id, from, f);
         }
         if assocs.out.get(&id).is_none_or(|out| out.closing) || result.is_err() {
+            // As `poll_line` and `Taken::drop` do: keep the emission before `forget` drops the
+            // port's handle, so parked `emission_ready`/`poll_line` waiters are closed and woken.
+            let emission = assocs.emissions.get(&id).cloned();
             assocs.forget(id);
             drop(assocs);
             drop(taken.framing.take());
+            if let Some(emission) = emission {
+                emission.order.close();
+                emission.ready.notify_waiters();
+                emission.wake.wake();
+            }
             let answer = match result {
                 Ok(LineStep::Batch { yielded, .. }) => Ok(yielded),
                 Err(error) => Err(error),
