@@ -4,11 +4,13 @@
 //! Store-owned overlay generations. Immutable bounded chunks precede one atomic head CAS.
 //! Unknown outcomes retain the exact candidate and replay identity; no observation substitutes
 //! for its receipt. Store callbacks run without a host mutex guard.
+//! Receipt age uses both local monotonic and wall clocks. StoreCalls exposes no authoritative
+//! remote clock or receipt deadline; independent Store clock discontinuities remain unobservable.
 
 use std::future::Future;
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll, Wake, Waker};
-use std::time::Instant;
+use std::time::{Instant, SystemTime};
 
 use busbar_contract::abi::sdk::store::conditional::{
     Decision, Expected, Mutation, Predicate, Request, VERSION,
@@ -36,6 +38,7 @@ struct Candidate {
     request: Request,
     chunks: Vec<(Vec<u8>, RecordBytes)>,
     first_submit: Option<Instant>,
+    first_submit_wall: Option<SystemTime>,
     conflicted: bool,
 }
 
@@ -273,6 +276,7 @@ impl OverlayStore {
                 request,
                 chunks,
                 first_submit: None,
+                first_submit_wall: None,
                 conflicted: false,
             });
         }
@@ -299,6 +303,10 @@ impl OverlayStore {
         }
         if candidate.first_submit.is_some_and(|first| {
             first.elapsed().as_secs() >= busbar_contract::abi::store::OP_ID_RETENTION_SECS
+        }) || candidate.first_submit_wall.is_some_and(|first| {
+            SystemTime::now()
+                .duration_since(first)
+                .is_ok_and(|age| age.as_secs() >= busbar_contract::abi::store::OP_ID_RETENTION_SECS)
         }) {
             return Err("config overlay receipt retention expired; exact unknown candidate and identity retained; restart and recover the Store head before changing configuration".into());
         }
@@ -309,6 +317,9 @@ impl OverlayStore {
                 wait(self.calls.record_put(SCHEMA, key, value)).map_err(|e| e.to_string())?;
             }
         }
+        candidate
+            .first_submit_wall
+            .get_or_insert_with(SystemTime::now);
         candidate.first_submit.get_or_insert_with(Instant::now);
         let decision =
             wait(self.calls.record_transaction(&candidate.request)).map_err(|e| e.to_string())?;
@@ -469,6 +480,31 @@ mod tests {
             serde_json::to_value(backend.read_required().unwrap().unwrap()).unwrap(),
             serde_json::to_value(doc).unwrap()
         );
+    }
+
+    #[test]
+    fn forward_wall_clock_jump_also_expires_unknown_receipt_without_replay() {
+        let fixture = TestOverlayStore::new();
+        let backend = fixture.backend();
+        fixture.lose_next_commit_reply();
+        assert!(persist_root(Some(&backend), &RootSettings::default()).is_err());
+        {
+            let mut state = backend.state.lock().unwrap();
+            let State::Pending(candidate) = &mut *state else {
+                panic!("candidate custody lost");
+            };
+            candidate.first_submit_wall = Some(
+                SystemTime::now()
+                    - std::time::Duration::from_secs(
+                        busbar_contract::abi::store::OP_ID_RETENTION_SECS,
+                    ),
+            );
+        }
+        let original = fixture.candidates();
+        assert!(persist_root(Some(&backend), &RootSettings::default())
+            .unwrap_err()
+            .contains("retention expired"));
+        assert_eq!(fixture.candidates(), original);
     }
 
     #[test]

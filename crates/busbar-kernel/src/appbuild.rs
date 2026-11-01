@@ -45,9 +45,8 @@ pub const ENV_CONFIG: &str = "BUSBAR_CONFIG";
 /// operator's existing pin keeps working across the upgrade.
 pub const ENV_PROVIDERS: &str = "BUSBAR_PROVIDERS";
 
-/// DEPRECATED (1.5.3) environment variable name for the config-overlay backend path — migrated to
-/// `config.overlay.file` in config.yaml. Still honored, with a deprecation warning, only when
-/// `config.overlay` is unset.
+/// Deprecated legacy overlay selector. Accepted with a warning and never used for filesystem
+/// access; runtime config is always stored in the configured Store.
 pub const ENV_CONFIG_OVERLAY: &str = "BUSBAR_CONFIG_OVERLAY";
 
 /// DEPRECATED (1.5.3) environment variable that forces HTTP/2 prior-knowledge for cleartext
@@ -349,11 +348,8 @@ pub fn load_config_from_disk_judged(
         config::providers::catalog_from_str(&interpolated_providers)
             .map_err(|e| format!("providers.yaml: invalid YAML: {e}"))?;
 
-    // 1.5.3: resolve the config-management posture + overlay backend from the `config:` block, and
-    // ENFORCE the boot invariant (`locked` XOR a writable overlay). The deprecated
-    // `BUSBAR_CONFIG_OVERLAY` env var is honored only when `config.overlay` is unset. The writability
-    // probe runs at boot/reload (Strict) but not under `--validate` (Lenient), which must stay
-    // side-effect-free.
+    // Resolve management policy without opening or probing any storage. Legacy file selector
+    // text is accepted for compatibility; the opened base-config Store is attached at boot.
     let env_overlay = std::env::var(ENV_CONFIG_OVERLAY)
         .ok()
         .filter(|s| !s.is_empty())
