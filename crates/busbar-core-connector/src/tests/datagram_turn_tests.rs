@@ -20,6 +20,8 @@ const CALLER_MESSAGE: &[u8] = b"caller Emit channel";
 enum Origin {
     Caller,
     Upstream,
+    FiniteCaller,
+    FiniteUpstream,
 }
 
 struct CrossedEmit {
@@ -103,24 +105,42 @@ impl FramerDoor for Branching {
                         output.pieces.is_empty(),
                         "fresh input before same-op recall"
                     );
-                    let generated = match self.origin {
-                        Origin::Caller if bytes == START => Some((CALLER_LINE, CALLER_FRAME)),
-                        Origin::Upstream if bytes == CALLER_FRAME && !output.expanded => {
-                            Some((UPSTREAM_LINE, UPSTREAM_FRAME))
+                    if matches!(self.origin, Origin::FiniteCaller | Origin::FiniteUpstream) {
+                        let (depth, path) = bytes.split_first().unwrap();
+                        if *depth == 0 {
+                            output.pieces.push_back((CALLER_CHANNEL, path.to_vec()));
+                        } else {
+                            let stream = match self.origin {
+                                Origin::FiniteCaller => CALLER_LINE,
+                                _ => UPSTREAM_LINE,
+                            };
+                            for bit in [0, 1] {
+                                let mut next = vec![*depth - 1];
+                                next.extend_from_slice(path);
+                                next.push(bit);
+                                output.pieces.push_back((stream, next));
+                            }
                         }
-                        _ => None,
-                    };
-                    if let Some((stream, value)) = generated {
-                        output.expanded = true;
-                        // Exactly one more than this actual host loan can hold. The finite
-                        // fixture needs no invented capacity or endless YIELD_MORE behavior.
-                        for _ in 0..=input.sink.pieces_cap {
-                            output.pieces.push_back((stream, value.to_vec()));
+                    } else {
+                        let generated = match self.origin {
+                            Origin::Caller if bytes == START => Some((CALLER_LINE, CALLER_FRAME)),
+                            Origin::Upstream if bytes == CALLER_FRAME && !output.expanded => {
+                                Some((UPSTREAM_LINE, UPSTREAM_FRAME))
+                            }
+                            _ => None,
+                        };
+                        if let Some((stream, value)) = generated {
+                            output.expanded = true;
+                            // Exactly one more than this actual host loan can hold. The finite
+                            // fixture needs no invented capacity or endless YIELD_MORE behavior.
+                            for _ in 0..=input.sink.pieces_cap {
+                                output.pieces.push_back((stream, value.to_vec()));
+                            }
+                        } else if matches!(self.origin, Origin::Caller) && bytes == UPSTREAM_FRAME {
+                            output
+                                .pieces
+                                .push_back((CALLER_CHANNEL, CALLER_MESSAGE.to_vec()));
                         }
-                    } else if matches!(self.origin, Origin::Caller) && bytes == UPSTREAM_FRAME {
-                        output
-                            .pieces
-                            .push_back((CALLER_CHANNEL, CALLER_MESSAGE.to_vec()));
                     }
                 }
                 let mut used = 0;
@@ -297,6 +317,25 @@ fn a_finite_pair_can_both_owe_same_op_recalls_before_either_host_batch_is_publis
     );
     assert!(caller.output.lock().unwrap().emitted.last().unwrap().more);
     assert!(upstream.output.lock().unwrap().emitted.last().unwrap().more);
+    // An exact finite trace, with capacities taken from the host loans rather than chosen by
+    // the fixture:
+    // 1. A Emit(start) takes the input whole, answers C_A LINEs + MORE and holds one last LINE.
+    // 2. Publishing only A1 starts B Emit(a), which answers C_B LINEs + MORE and holds one last
+    //    LINE. A2..A_C_A still precede any new A output; none of B's output has been delivered.
+    // 3. B1 carries `b`, fresh Emit bytes for A. A still owes its empty-input same-op recall.
+    // 4. Eagerly recall A instead: that final old LINE needs retained publication custody while
+    //    B's whole batch remains. Copying ABI buffers freed the loan, not the publication data.
+    let a_output = caller.output.lock().unwrap();
+    let b_output = upstream.output.lock().unwrap();
+    assert_eq!(a_batch.len(), a_output.emitted[0].capacity - 1);
+    assert_eq!(b_batch.pieces.len(), b_output.emitted[0].capacity);
+    assert_eq!(a_output.pieces.len(), 1);
+    assert_eq!(b_output.pieces.len(), 1);
+    assert!(b_batch
+        .pieces
+        .iter()
+        .all(|g| g.bytes.as_slice() == UPSTREAM_FRAME));
+    drop((a_output, b_output));
     // Both source publication batches remain undelivered. A producer paused at that barrier
     // cannot drain more output without retaining another completed batch; accepting feedback
     // is fresh input while its same-op recall remains owed. The C buffers have been copied,
@@ -305,6 +344,84 @@ fn a_finite_pair_can_both_owe_same_op_recalls_before_either_host_batch_is_publis
     drop((b_batch, a_batch, b_turn, a_turn));
     assert_eq!(caller.finished.load(Ordering::SeqCst), 1);
     assert_eq!(upstream.finished.load(Ordering::SeqCst), 1);
+}
+
+/// Each real framer crossing answers at most two short pieces and completes immediately. The
+/// finite causal chain, rather than any single operation's recalls, grows the FIFO frontier.
+/// Even relaxing FIFO to depth-first traversal retains one sibling per causal level. Before the
+/// first terminal, every completed crossing consumes one frame and answers two: no traversal
+/// reaches depth zero in fewer than `depth + 1` crossings. This uses the eager public API as a
+/// completion control; it supplies no production queue or proposed publication schedule.
+#[test]
+fn distinct_finite_emits_outgrow_two_retained_slots_without_using_the_recall_budget() {
+    for fifo in [true, false] {
+        for depth in [2_u8, 3, 5] {
+            let caller = Branching::new(Origin::FiniteCaller);
+            let upstream = Branching::new(Origin::FiniteUpstream);
+            let mut a = framing(&caller);
+            let mut b = framing(&upstream);
+            let now = Instant::now();
+            let mut awaiting = VecDeque::from([(true, vec![depth])]);
+            let mut high_water = awaiting.len();
+            let mut delivered = Vec::new();
+            loop {
+                let next = if fifo {
+                    awaiting.pop_front()
+                } else {
+                    awaiting.pop_back()
+                };
+                let Some((at_caller, bytes)) = next else {
+                    break;
+                };
+                let (framing, stream, line) = if at_caller {
+                    (&mut a, CALLER_LINE, CALLER_LINE)
+                } else {
+                    (&mut b, UPSTREAM_LINE, UPSTREAM_LINE)
+                };
+                let answer = framing.emit(stream, &bytes, true, false, now).unwrap();
+                for piece in answer.pieces {
+                    if piece.stream == line {
+                        awaiting.push_back((!at_caller, piece.bytes));
+                    } else {
+                        assert_eq!(piece.stream, CALLER_CHANNEL);
+                        delivered.push(piece.bytes);
+                    }
+                }
+                high_water = high_water.max(awaiting.len());
+            }
+            let leaves = 1_usize << depth;
+            assert_eq!(
+                high_water,
+                if fifo { leaves } else { usize::from(depth) + 1 },
+                "depth {depth}, FIFO={fifo}: retained publication frontier"
+            );
+            assert!(high_water > 2);
+            let mut expected: Vec<Vec<u8>> = (0..leaves)
+                .map(|path| {
+                    (0..depth)
+                        .rev()
+                        .map(|bit| ((path >> bit) & 1) as u8)
+                        .collect()
+                })
+                .collect();
+            if !fifo {
+                expected.reverse();
+            }
+            assert_eq!(delivered, expected);
+            let a_output = caller.output.lock().unwrap();
+            let b_output = upstream.output.lock().unwrap();
+            assert_eq!(
+                a_output.emitted.len() + b_output.emitted.len(),
+                2 * leaves - 1
+            );
+            assert!(a_output
+                .emitted
+                .iter()
+                .chain(&b_output.emitted)
+                .all(|call| call.len != 0 && !call.more));
+            assert!(a_output.pieces.is_empty() && b_output.pieces.is_empty());
+        }
+    }
 }
 
 #[test]
