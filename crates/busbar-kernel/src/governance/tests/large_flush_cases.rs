@@ -607,6 +607,96 @@ fn concurrent_flush_driver_cannot_lend_the_same_chunk_twice() {
     assert!(gov.budget_flushes.lock().unwrap().is_empty());
 }
 
+fn final_flush_joins_active_ordinary_runner(reply: Reply) {
+    const EARLY_RETURN_OBSERVATION: std::time::Duration = std::time::Duration::from_secs(1);
+    let (store, gov, key, now) = setup("vk_final_active_ordinary_flush");
+    let gov = Arc::new(gov);
+    accrue_dated(&gov, &key, CONCURRENT_INPUT, now);
+    store.replies.lock().unwrap().push_back(reply);
+    let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
+    *store.before_batch.lock().unwrap() = Some(Box::new(move || {
+        entered_tx.send(()).unwrap();
+        release_rx.recv().unwrap();
+    }));
+    let periodic_gov = gov.clone();
+    let periodic = std::thread::spawn(move || periodic_gov.flush_budgets());
+    entered_rx.recv().unwrap();
+    accrue_dated(&gov, &key, NEXT_INPUT, now);
+    let (started_tx, started_rx) = std::sync::mpsc::channel();
+    let (finished_tx, finished_rx) = std::sync::mpsc::channel();
+    let final_gov = gov.clone();
+    let final_flush = std::thread::spawn(move || {
+        started_tx.send(()).unwrap();
+        let flushed = final_gov.flush_budgets_final();
+        finished_tx.send(flushed).unwrap();
+    });
+    started_rx.recv().unwrap();
+    let early_result = finished_rx.recv_timeout(EARLY_RETURN_OBSERVATION);
+    // Always release and join both threads before assertions, including against the old runner.
+    release_tx.send(()).unwrap();
+    let periodic_result = periodic.join();
+    final_flush.join().unwrap();
+    assert!(
+        matches!(
+            early_result,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+        ),
+        "final flush returned while the periodic store call still owned unsettled debt"
+    );
+    assert_eq!(
+        periodic_result.is_err(),
+        matches!(reply, Reply::CancelAfter)
+    );
+    assert_eq!(
+        input(store.as_ref(), &key.id, 0),
+        CONCURRENT_INPUT + NEXT_INPUT
+    );
+    assert_eq!(
+        dated_input(store.as_ref(), &key.id, 0),
+        CONCURRENT_INPUT + NEXT_INPUT
+    );
+    assert!(gov.budget_flushes.lock().unwrap().is_empty());
+    let batches = store.batches.lock().unwrap();
+    if matches!(reply, Reply::LoseAfter | Reply::CancelAfter) {
+        assert_eq!(
+            batches[0], batches[1],
+            "final owner reconciles the original operation"
+        );
+    }
+}
+
+#[test]
+fn final_budget_flush_waits_for_active_runner_and_persists_later_accrual() {
+    final_flush_joins_active_ordinary_runner(Reply::Confirm);
+}
+
+#[test]
+fn final_budget_flush_reconciles_unknown_active_runner_commit() {
+    final_flush_joins_active_ordinary_runner(Reply::LoseAfter);
+}
+
+#[test]
+fn final_budget_flush_recovers_custody_after_active_runner_unwind() {
+    final_flush_joins_active_ordinary_runner(Reply::CancelAfter);
+}
+
+#[test]
+fn final_budget_flush_same_thread_reentry_returns_without_lending_active_body() {
+    let (store, gov, key, now) = setup("vk_final_reentrant_ordinary_flush");
+    let gov = Arc::new(gov);
+    accrue_dated(&gov, &key, CONCURRENT_INPUT, now);
+    let (reentrant, observed) = (gov.clone(), store.clone());
+    *store.before_batch.lock().unwrap() = Some(Box::new(move || {
+        assert_eq!(reentrant.flush_budgets_final(), 0);
+        assert_eq!(observed.batches.lock().unwrap().len(), 1);
+    }));
+    gov.flush_budgets_final();
+    assert_eq!(input(store.as_ref(), &key.id, 0), CONCURRENT_INPUT);
+    assert_eq!(dated_input(store.as_ref(), &key.id, 0), CONCURRENT_INPUT);
+    assert!(gov.budget_flushes.lock().unwrap().is_empty());
+}
+
 #[test]
 fn deletion_excludes_new_large_flight_capture_until_the_key_purge_finishes() {
     let (store, gov, key, now) = setup("vk_large_delete_capture_race");
