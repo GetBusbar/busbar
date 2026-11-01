@@ -1,0 +1,370 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
+//! Checked-batch continuation and the finite bidirectional publication boundary.
+
+use super::*;
+use busbar_contract::abi::transport::{FramePiece, PIECE_END_OF_FRAME, ROLE_FRAMER, YIELD_MORE};
+use std::collections::VecDeque;
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+const CALLER_LINE: u64 = 11;
+const UPSTREAM_LINE: u64 = 21;
+const CALLER_CHANNEL: u64 = 12;
+const START: &[u8] = b"start";
+const CALLER_FRAME: &[u8] = b"a";
+const UPSTREAM_FRAME: &[u8] = b"b";
+const CALLER_MESSAGE: &[u8] = b"caller Emit channel";
+
+#[derive(Clone, Copy)]
+enum Origin {
+    Caller,
+    Upstream,
+}
+
+struct CrossedEmit {
+    pointer: usize,
+    len: usize,
+    end: bool,
+    text: bool,
+    more: bool,
+    capacity: usize,
+}
+
+#[derive(Default)]
+struct Output {
+    pieces: VecDeque<(u64, Vec<u8>)>,
+    emitted: Vec<CrossedEmit>,
+    expanded: bool,
+    recall_failure: Option<RecallFailure>,
+}
+
+#[derive(Clone, Copy)]
+enum RecallFailure {
+    Failed,
+    Unwind,
+}
+
+struct Branching {
+    facts: DoorFacts,
+    origin: Origin,
+    output: Mutex<Output>,
+    finished: AtomicUsize,
+}
+
+impl Branching {
+    fn new(origin: Origin) -> Arc<Self> {
+        Arc::new(Self {
+            facts: DoorFacts {
+                name: "datagram-turn".into(),
+                claims: vec!["datagram-turn"],
+                role: ROLE_FRAMER,
+                composes_over: Vec::new(),
+                ported: false,
+                status_rows: Vec::new(),
+                duplex: Vec::new(),
+                datagram: true,
+            },
+            origin,
+            output: Mutex::new(Output::default()),
+            finished: AtomicUsize::new(0),
+        })
+    }
+}
+
+impl FramerDoor for Branching {
+    fn facts(&self) -> &DoorFacts {
+        &self.facts
+    }
+
+    fn cross(&self, call: Call<'_>) -> Crossed {
+        match call {
+            Call::Begin(_, out) => out.framing = CALLER_LINE,
+            Call::Emit(input, out) => {
+                let mut output = self.output.lock().unwrap();
+                // SAFETY: this input lends exactly len initialized application bytes.
+                let bytes = unsafe { std::slice::from_raw_parts(input.bytes, input.len) };
+                if bytes.is_empty() {
+                    if let Some(failure) = output.recall_failure.take() {
+                        drop(output);
+                        match failure {
+                            RecallFailure::Failed => {
+                                return Crossed {
+                                    outcome: Outcome::Failed,
+                                    error: None,
+                                }
+                            }
+                            RecallFailure::Unwind => panic!("the recall unwinds"),
+                        }
+                    }
+                }
+                if !bytes.is_empty() {
+                    assert!(
+                        output.pieces.is_empty(),
+                        "fresh input before same-op recall"
+                    );
+                    let generated = match self.origin {
+                        Origin::Caller if bytes == START => Some((CALLER_LINE, CALLER_FRAME)),
+                        Origin::Upstream if bytes == CALLER_FRAME && !output.expanded => {
+                            Some((UPSTREAM_LINE, UPSTREAM_FRAME))
+                        }
+                        _ => None,
+                    };
+                    if let Some((stream, value)) = generated {
+                        output.expanded = true;
+                        // Exactly one more than this actual host loan can hold. The finite
+                        // fixture needs no invented capacity or endless YIELD_MORE behavior.
+                        for _ in 0..=input.sink.pieces_cap {
+                            output.pieces.push_back((stream, value.to_vec()));
+                        }
+                    } else if matches!(self.origin, Origin::Caller) && bytes == UPSTREAM_FRAME {
+                        output
+                            .pieces
+                            .push_back((CALLER_CHANNEL, CALLER_MESSAGE.to_vec()));
+                    }
+                }
+                let mut used = 0;
+                let mut pieces = 0;
+                while pieces < input.sink.pieces_cap {
+                    let Some((stream, bytes)) = output.pieces.front() else {
+                        break;
+                    };
+                    if used + bytes.len() > input.sink.frame_cap {
+                        break;
+                    }
+                    // SAFETY: both loans were capacity-checked; the spans are initialized
+                    // exactly once and copied out by the host before the next crossing.
+                    unsafe {
+                        std::ptr::copy_nonoverlapping(
+                            bytes.as_ptr(),
+                            input.sink.frame.add(used),
+                            bytes.len(),
+                        );
+                        input.sink.pieces.add(pieces).write(FramePiece {
+                            stream: *stream,
+                            offset: used as u64,
+                            len: bytes.len() as u64,
+                            flags: PIECE_END_OF_FRAME,
+                            ..FramePiece::ZERO
+                        });
+                    }
+                    used += bytes.len();
+                    pieces += 1;
+                    output.pieces.pop_front();
+                }
+                let more = !output.pieces.is_empty();
+                out.yielded.frame_len = used as u64;
+                out.yielded.pieces_len = pieces as u32;
+                if more {
+                    out.yielded.flags = YIELD_MORE;
+                }
+                output.emitted.push(CrossedEmit {
+                    pointer: input.bytes as usize,
+                    len: input.len,
+                    end: input.end_of_frame != 0,
+                    text: input.flags & busbar_contract::abi::transport::EMIT_TEXT != 0,
+                    more,
+                    capacity: input.sink.pieces_cap,
+                });
+            }
+            Call::Finish(..) => {
+                self.finished.fetch_add(1, Ordering::SeqCst);
+            }
+            _ => {}
+        }
+        Crossed {
+            outcome: Outcome::Ready,
+            error: None,
+        }
+    }
+}
+
+fn framing(door: &Arc<Branching>) -> DatagramFraming {
+    DatagramFraming::accept_minted(door.clone(), "127.0.0.1:9".parse().unwrap())
+        .unwrap()
+        .0
+}
+
+#[test]
+fn a_checked_batch_pauses_before_a_same_op_empty_input_recall() {
+    let door = Branching::new(Origin::Caller);
+    let mut framing = framing(&door);
+    let mut turn = framing
+        .emit_turn(CALLER_LINE, START, true, true, Instant::now())
+        .unwrap();
+    let first = turn.next_batch().unwrap().unwrap();
+    assert!(!first.pieces.is_empty());
+    {
+        let output = door.output.lock().unwrap();
+        assert_eq!(output.emitted.len(), 1, "publication pause made no recall");
+        assert_eq!(output.emitted[0].pointer, START.as_ptr() as usize);
+        assert_eq!(output.emitted[0].len, START.len());
+        assert!(output.emitted[0].end && output.emitted[0].text && output.emitted[0].more);
+    }
+    let second = turn.next_batch().unwrap().unwrap();
+    assert_eq!(second.pieces.len(), 1);
+    assert!(turn.next_batch().unwrap().is_none());
+    drop(turn);
+    let output = door.output.lock().unwrap();
+    assert_eq!(output.emitted.len(), 2);
+    assert_eq!(output.emitted[1].len, 0);
+    assert!(!output.emitted[1].end && !output.emitted[1].text && !output.emitted[1].more);
+    let expected = output.emitted[0].capacity + 1;
+    let delivered: Vec<_> = first
+        .pieces
+        .into_iter()
+        .chain(second.pieces)
+        .map(|piece| (piece.stream, piece.bytes))
+        .collect();
+    assert_eq!(
+        delivered,
+        vec![(CALLER_LINE, CALLER_FRAME.to_vec()); expected]
+    );
+    drop(output);
+    drop(framing);
+    assert_eq!(door.finished.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn cancelling_a_partly_published_turn_finishes_its_accepted_input_once() {
+    let door = Branching::new(Origin::Caller);
+    let mut framing = framing(&door);
+    {
+        let mut turn = framing
+            .emit_turn(CALLER_LINE, START, true, false, Instant::now())
+            .unwrap();
+        let first = turn.next_batch().unwrap().unwrap();
+        assert!(!first.pieces.is_empty());
+    }
+    assert_eq!(door.finished.load(Ordering::SeqCst), 1);
+    assert!(framing
+        .emit(CALLER_LINE, CALLER_FRAME, true, false, Instant::now())
+        .is_err());
+    drop(framing);
+    assert_eq!(door.finished.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        door.output.lock().unwrap().emitted.len(),
+        1,
+        "no cancelled recall crossed"
+    );
+}
+
+#[test]
+fn a_failed_or_unwinding_recall_finishes_the_accepted_operation_once() {
+    for failure in [RecallFailure::Failed, RecallFailure::Unwind] {
+        let door = Branching::new(Origin::Caller);
+        let mut framing = framing(&door);
+        door.output.lock().unwrap().recall_failure = Some(failure);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let mut turn = framing
+                .emit_turn(CALLER_LINE, START, true, false, Instant::now())
+                .unwrap();
+            assert!(turn.next_batch().unwrap().is_some());
+            let error = turn.next_batch();
+            assert!(error.is_err());
+            assert!(turn.next_batch().unwrap().is_none());
+        }));
+        assert_eq!(result.is_err(), matches!(failure, RecallFailure::Unwind));
+        assert_eq!(door.finished.load(Ordering::SeqCst), 1);
+        drop(framing);
+        assert_eq!(door.finished.load(Ordering::SeqCst), 1);
+    }
+}
+
+#[test]
+fn a_finite_pair_can_both_owe_same_op_recalls_before_either_host_batch_is_published() {
+    let caller = Branching::new(Origin::Caller);
+    let upstream = Branching::new(Origin::Upstream);
+    let mut a = framing(&caller);
+    let mut b = framing(&upstream);
+    let mut a_turn = a
+        .emit_turn(CALLER_LINE, START, true, false, Instant::now())
+        .unwrap();
+    let mut a_batch = a_turn.next_batch().unwrap().unwrap().pieces.into_iter();
+    let first_a = a_batch.next().unwrap();
+    let mut b_turn = b
+        .emit_turn(UPSTREAM_LINE, &first_a.bytes, true, false, Instant::now())
+        .unwrap();
+    let b_batch = b_turn.next_batch().unwrap().unwrap();
+
+    assert!(
+        a_batch.len() > 0,
+        "A still owns output after forwarding just its first frame"
+    );
+    assert!(
+        !b_batch.pieces.is_empty(),
+        "B produced output that needs fresh input at A"
+    );
+    assert!(caller.output.lock().unwrap().emitted.last().unwrap().more);
+    assert!(upstream.output.lock().unwrap().emitted.last().unwrap().more);
+    // Both source publication batches remain undelivered. A producer paused at that barrier
+    // cannot drain more output without retaining another completed batch; accepting feedback
+    // is fresh input while its same-op recall remains owed. The C buffers have been copied,
+    // so45-48 permits an eager recall, but that alone supplies no bounded publication queue.
+    // The script is finite: B branches only once, and its feedback yields only caller CHANNELs.
+    drop((b_batch, a_batch, b_turn, a_turn));
+    assert_eq!(caller.finished.load(Ordering::SeqCst), 1);
+    assert_eq!(upstream.finished.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn the_same_branching_framers_have_finite_feedback_with_the_callers_own_channel_origin() {
+    let caller = Branching::new(Origin::Caller);
+    let upstream = Branching::new(Origin::Upstream);
+    let mut a = framing(&caller);
+    let mut b = framing(&upstream);
+    let now = Instant::now();
+    let a_output = a.emit(CALLER_LINE, START, true, false, now).unwrap();
+    let mut channel = Vec::new();
+    for frame in a_output.pieces {
+        let b_output = b
+            .emit(UPSTREAM_LINE, &frame.bytes, true, false, now)
+            .unwrap();
+        for feedback in b_output.pieces {
+            let originating_at_a = a
+                .emit(CALLER_LINE, &feedback.bytes, true, false, now)
+                .unwrap();
+            channel.extend(originating_at_a.pieces);
+        }
+    }
+    let expected = upstream.output.lock().unwrap().emitted[0].capacity + 1;
+    let delivered: Vec<_> = channel
+        .into_iter()
+        .map(|piece| (piece.stream, piece.bytes))
+        .collect();
+    assert_eq!(
+        delivered,
+        vec![(CALLER_CHANNEL, CALLER_MESSAGE.to_vec()); expected]
+    );
+    assert!(caller.output.lock().unwrap().pieces.is_empty());
+    assert!(upstream.output.lock().unwrap().pieces.is_empty());
+}
+
+#[test]
+fn a_paused_turn_exposes_secure_wire_without_replaying_the_application_bytes() {
+    const MESSAGE: &[u8] = b"streamed secure route";
+    let mut r = rig(Knobs::default());
+    r.first_check();
+    r.pump(200);
+    assert!(r.host.presented());
+    let before = r.door.st.lock().unwrap().emitted.len();
+    let mut turn = r.host.emit_turn(1, MESSAGE, true, false, r.now).unwrap();
+    assert!(turn.next_batch().unwrap().is_some());
+    let mut delivered = Vec::new();
+    while let Some((to, datagram)) = turn.poll_send() {
+        assert_eq!(to, r.far.addr);
+        r.far.a.ingest(r.host_addr, &datagram, r.now);
+    }
+    while let Some(up) = r.far.a.poll_up() {
+        if let Up::Plaintext(bytes) = up {
+            delivered.push(bytes);
+        }
+    }
+    assert_eq!(delivered, vec![MESSAGE.to_vec()]);
+    assert!(turn.next_batch().unwrap().is_none());
+    drop(turn);
+    assert_eq!(
+        &r.door.st.lock().unwrap().emitted[before..],
+        &[MESSAGE.to_vec()]
+    );
+}

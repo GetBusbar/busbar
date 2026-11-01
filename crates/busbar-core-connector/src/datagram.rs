@@ -162,7 +162,7 @@ enum Op<'a> {
 
 impl Op<'_> {
     /// The re-call a `YIELD_MORE` answer asks for: the same op, no new bytes.
-    fn again(self) -> Self {
+    fn recall(self) -> Op<'static> {
         match self {
             Op::Begin(_) | Op::Timer => Op::Timer,
             Op::Ingest { .. } => Op::Ingest {
@@ -178,6 +178,205 @@ impl Op<'_> {
                 text: false,
             },
         }
+    }
+}
+
+/// One datagram operation, paused between checked host-output batches. The input is crossed
+/// once before construction returns; a recall retains only the same op's empty-input form.
+/// No later op may use the association until this turn is drained. Dropping an unfinished turn
+/// finishes the association, so its already accepted bytes cannot be silently abandoned.
+#[must_use = "drain the turn or drop it to finish its accepted operation"]
+pub struct DatagramTurn<'f> {
+    framing: &'f mut DatagramFraming,
+    now: Instant,
+    first: Option<Yielded>,
+    recall: Option<Op<'static>>,
+    recalls: crate::framer::Recalls,
+    opened: VecDeque<Vec<u8>>,
+    closed: bool,
+    complete: bool,
+}
+
+impl<'f> DatagramTurn<'f> {
+    fn settling(framing: &'f mut DatagramFraming, now: Instant) -> Self {
+        Self {
+            framing,
+            now,
+            first: None,
+            recall: None,
+            recalls: crate::framer::Recalls::default(),
+            opened: VecDeque::new(),
+            closed: false,
+            complete: false,
+        }
+    }
+
+    fn start(framing: &'f mut DatagramFraming, op: Op<'_>, now: Instant) -> Result<Self, Refused> {
+        let mut turn = Self::settling(framing, now);
+        match turn.cross(op) {
+            Ok(batch) => turn.first = Some(batch),
+            Err(error) => {
+                // An explicit refusal keeps the existing operation's error contract; callers
+                // decide whether it ends their session. Unwind and cancellation finish it.
+                turn.complete = error.outcome == Outcome::Refused;
+                return Err(error);
+            }
+        }
+        Ok(turn)
+    }
+
+    fn cross(&mut self, op: Op<'_>) -> Result<Yielded, Refused> {
+        let answer = self.framing.cross_once(op)?;
+        let mut batch = Yielded::default();
+        let taken = self.framing.take(&answer, &mut batch, self.now);
+        // take may copy wire before a later field fails validation. This owner wipes that
+        // initialized copy on success and error; routes already leave through poll_send.
+        zeroize::Zeroize::zeroize(&mut batch.wire);
+        let done = taken?;
+        if done {
+            self.recall = None;
+            self.recalls = crate::framer::Recalls::default();
+        } else {
+            self.recalls.owed(&answer)?;
+            self.recall = Some(op.recall());
+        }
+        self.security_valid()?;
+        Ok(batch)
+    }
+
+    fn security_valid(&self) -> Result<(), Refused> {
+        if let Some(failure) = self.framing.secure.as_ref().and_then(Association::failure) {
+            return Err(Refused {
+                outcome: Outcome::Failed,
+                error: format!("the secure layer failed the association: {failure:?}"),
+            });
+        }
+        if self.framing.keying.is_some() && !self.framing.verified() {
+            return Err(fault("keying material with the far end not verified"));
+        }
+        Ok(())
+    }
+
+    /// Take one checked output batch. Re-offer only after publishing the previous batch. `None`
+    /// means the op, every same-op recall, and the secure-layer settle are all complete.
+    ///
+    /// # Errors
+    ///
+    /// The framer refused or produced an invalid answer, or the secure layer failed.
+    pub fn next_batch(&mut self) -> Result<Option<Yielded>, Refused> {
+        match self.advance() {
+            Err(error) => {
+                // A previous READY crossing already took the operation's bytes. A failed
+                // recall/settle cannot leave that accepted operation open for fresh input.
+                self.framing.finish();
+                self.complete = true;
+                Err(error)
+            }
+            result => result,
+        }
+    }
+
+    fn advance(&mut self) -> Result<Option<Yielded>, Refused> {
+        if let Some(first) = self.first.take() {
+            return Ok(Some(first));
+        }
+        if self.complete {
+            return Ok(None);
+        }
+        loop {
+            if let Some(op) = self.recall.take() {
+                return self.cross(op).map(Some);
+            }
+            if let Some(bytes) = self.opened.pop_front() {
+                let from = self.framing.bound();
+                return self
+                    .cross(Op::Ingest {
+                        lane: LANE_SECURED,
+                        from,
+                        bytes: &bytes,
+                        end: false,
+                    })
+                    .map(Some);
+            }
+            if std::mem::take(&mut self.closed) {
+                return self
+                    .cross(Op::Ingest {
+                        lane: 0,
+                        from: None,
+                        bytes: &[],
+                        end: true,
+                    })
+                    .map(Some);
+            }
+            if let Some(secure) = self.framing.secure.as_mut() {
+                while let Some(datagram) = secure.poll_wire() {
+                    self.framing.send.push_back(datagram);
+                }
+                while let Some(up) = secure.poll_up() {
+                    match up {
+                        Up::Connected => {}
+                        Up::Keyed(keying) => {
+                            if self.framing.presented || self.framing.keying.is_some() {
+                                return Err(fault("the secure layer exported keying twice"));
+                            }
+                            self.framing.keying = Some(keying);
+                        }
+                        Up::Plaintext(bytes) => self.opened.push_back(bytes),
+                        Up::Closed => self.closed = true,
+                    }
+                }
+            }
+            self.security_valid()?;
+            if !self.opened.is_empty() || self.closed {
+                continue;
+            }
+            let state = (self.framing.bound_path(), self.framing.verified());
+            if state != self.framing.told
+                || self.framing.keying.is_some()
+                || !self.framing.book.untold.is_empty()
+            {
+                return self
+                    .cross(Op::Ingest {
+                        lane: 0,
+                        from: None,
+                        bytes: &[],
+                        end: false,
+                    })
+                    .map(Some);
+            }
+            self.complete = true;
+            return Ok(None);
+        }
+    }
+
+    /// Datagram output produced so far, available even while publication is paused.
+    pub fn poll_send(&mut self) -> Option<(SocketAddr, Vec<u8>)> {
+        self.framing.poll_send().or_else(|| {
+            self.framing
+                .secure
+                .as_mut()
+                .and_then(Association::poll_wire)
+        })
+    }
+}
+
+impl Drop for DatagramTurn<'_> {
+    fn drop(&mut self) {
+        if !self.complete {
+            self.framing.finish();
+        }
+    }
+}
+
+fn append_batch(into: &mut Yielded, mut batch: Yielded) {
+    into.heads.append(&mut batch.heads);
+    into.pieces.append(&mut batch.pieces);
+    into.flow.append(&mut batch.flow);
+    into.interim.append(&mut batch.interim);
+    into.ended |= batch.ended;
+    into.deadline_ns = batch.deadline_ns;
+    if batch.agreed != 0 {
+        into.agreed = batch.agreed;
     }
 }
 
@@ -421,6 +620,32 @@ impl DatagramFraming {
         )
     }
 
+    /// Begin one emission, yielding its checked output a batch at a time. The caller retains
+    /// publication custody between batches; the next recall carries no new application bytes.
+    ///
+    /// # Errors
+    ///
+    /// The framer refused the emission or answered outside the datagram contract.
+    pub fn emit_turn(
+        &mut self,
+        stream: u64,
+        bytes: &[u8],
+        end_of_frame: bool,
+        text: bool,
+        now: Instant,
+    ) -> Result<DatagramTurn<'_>, Refused> {
+        DatagramTurn::start(
+            self,
+            Op::Emit {
+                stream,
+                bytes,
+                end_of_frame,
+                text,
+            },
+            now,
+        )
+    }
+
     /// The clock: the secure layer's timers, and the framer's deadline when it has passed.
     ///
     /// # Errors
@@ -521,92 +746,23 @@ impl DatagramFraming {
     /// `first`, its `YIELD_MORE` re-calls, then whatever the secure layer owes the framer.
     fn run(&mut self, first: Op<'_>, now: Instant) -> Result<Yielded, Refused> {
         let mut y = Yielded::default();
-        self.cross(first, &mut y, now)?;
-        self.settle(y, now)
+        let mut turn = DatagramTurn::start(self, first, now)?;
+        while let Some(batch) = turn.next_batch()? {
+            append_batch(&mut y, batch);
+        }
+        Ok(y)
     }
 
     /// Drain the secure layer: its datagrams to the port, its plaintext to the framer, and the
     /// host state (bound path, verified bit, the keying-material item) the framer has not been
     /// told.
     fn settle(&mut self, mut y: Yielded, now: Instant) -> Result<Yielded, Refused> {
-        loop {
-            let mut opened = Vec::new();
-            let mut closed = false;
-            if let Some(secure) = self.secure.as_mut() {
-                while let Some(d) = secure.poll_wire() {
-                    self.send.push_back(d);
-                }
-                while let Some(up) = secure.poll_up() {
-                    match up {
-                        Up::Connected => {}
-                        Up::Keyed(k) => {
-                            if self.presented || self.keying.is_some() {
-                                return Err(fault("the secure layer exported keying twice"));
-                            }
-                            self.keying = Some(k);
-                        }
-                        Up::Plaintext(p) => opened.push(p),
-                        Up::Closed => closed = true,
-                    }
-                }
-                if let Some(f) = secure.failure() {
-                    return Err(Refused {
-                        outcome: Outcome::Failed,
-                        error: format!("the secure layer failed the association: {f:?}"),
-                    });
-                }
-            }
-            if self.keying.is_some() && !self.verified() {
-                return Err(fault("keying material with the far end not verified"));
-            }
-            let state = (self.bound_path(), self.verified());
-            let owed = state != self.told || self.keying.is_some() || !self.book.untold.is_empty();
-            if opened.is_empty() && !closed && !owed {
-                y.wire.clear();
-                return Ok(y);
-            }
-            for p in &opened {
-                let from = self.bound();
-                self.cross(
-                    Op::Ingest {
-                        lane: LANE_SECURED,
-                        from,
-                        bytes: p,
-                        end: false,
-                    },
-                    &mut y,
-                    now,
-                )?;
-            }
-            if closed || (opened.is_empty() && owed) {
-                self.cross(
-                    Op::Ingest {
-                        lane: 0,
-                        from: None,
-                        bytes: &[],
-                        end: closed,
-                    },
-                    &mut y,
-                    now,
-                )?;
-            }
+        let mut turn = DatagramTurn::settling(self, now);
+        while let Some(batch) = turn.next_batch()? {
+            append_batch(&mut y, batch);
         }
-    }
-
-    /// One op and its `YIELD_MORE` re-calls, each carrying the lane, each answer judged and
-    /// applied.
-    fn cross(&mut self, first: Op<'_>, y: &mut Yielded, now: Instant) -> Result<(), Refused> {
-        let mut op = first;
-        let mut recalls = crate::framer::Recalls::default();
-        loop {
-            let o = self.cross_once(op)?;
-            let done = self.take(&o, y, now)?;
-            if done {
-                return Ok(());
-            }
-            recalls.owed(&o)?;
-            op = op.again();
-        }
+        y.wire.clear();
+        Ok(y)
     }
 
     fn cross_once(&mut self, op: Op<'_>) -> Result<FramerOut, Refused> {
@@ -1946,18 +2102,24 @@ impl Pairing {
     }
 }
 
-impl Drop for DatagramFraming {
-    fn drop(&mut self) {
-        if self.token == 0 {
+impl DatagramFraming {
+    fn finish(&mut self) {
+        let token = std::mem::take(&mut self.token);
+        if token == 0 {
             return;
         }
         let mut i: FinishIn = blank_in();
-        i.framing = self.token;
+        i.framing = token;
         i.reason = CLOSE_NORMAL;
         i.sink = self.bufs.sink();
         let mut o: FramerOut = blank_out();
         let _ = self.door.cross(Call::Finish(&mut i, &mut o));
-        self.token = 0;
+    }
+}
+
+impl Drop for DatagramFraming {
+    fn drop(&mut self) {
+        self.finish();
     }
 }
 

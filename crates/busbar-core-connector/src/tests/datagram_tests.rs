@@ -42,6 +42,9 @@ const HOST_PWD: &str = "host-password-0123456789";
 const FAR_UFRAG: &str = "farfrag";
 const FAR_PWD: &str = "far-password-0123456789";
 
+#[path = "datagram_turn_tests.rs"]
+mod turn_tests;
+
 fn p(s: &str) -> SocketAddr {
     s.parse().expect("addr")
 }
