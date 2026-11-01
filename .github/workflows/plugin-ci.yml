@@ -285,7 +285,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
         with:
           components: clippy, rustfmt
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           workspaces: ${{ inputs.plugin_lang == 'c' && 'busbar' || fromJSON('"plugin\nbusbar"') }}
           key: busbar-${{ needs.pin.outputs.sha }}
@@ -491,7 +491,7 @@ jobs:
             } >> "$GITHUB_ENV"
           fi
       - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           workspaces: ${{ inputs.plugin_lang == 'c' && 'busbar' || (inputs.busbar_checkout && fromJSON('"plugin\nbusbar"') || 'plugin') }}
           key: busbar-${{ needs.pin.outputs.sha }}
