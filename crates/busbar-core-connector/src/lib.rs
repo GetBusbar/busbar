@@ -77,6 +77,7 @@ pub mod listen;
 pub mod pool;
 pub mod process;
 mod program;
+pub mod publication;
 pub mod proxy;
 pub mod proxy_route;
 pub mod registry;

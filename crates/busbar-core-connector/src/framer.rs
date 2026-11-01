@@ -309,6 +309,8 @@ pub enum StreamFlow {
 /// Everything one op answered, across its `YIELD_MORE` re-calls.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Yielded {
+    /// Host storage custody, retained when output moves to publication or a channel reader.
+    pub custody: crate::publication::Custody,
     /// Head slots, in order.
     pub heads: Vec<Head>,
     /// Bytes owed to the far side, in order.
@@ -492,6 +494,24 @@ const EMPTY_PIECE: FramePiece = FramePiece {
 };
 
 impl Buffers {
+    /// Conservative deep-copy storage for one answer, including independently overlapping
+    /// spans, duplicate reasons, containers and the subsequent publication/reader owners.
+    pub(crate) fn retention_bound(&self) -> Option<usize> {
+        use std::mem::size_of;
+        let pieces = self.pieces.len();
+        let heads = self.heads.len();
+        let payload = pieces.checked_mul(self.frame.len())?
+            .checked_add(heads.checked_mul(5)?.checked_mul(self.frame.len())?)?
+            .checked_add(self.wire.len())?;
+        let metadata = pieces.checked_mul(
+            4 * size_of::<Got>() + 4 * size_of::<StreamFlow>()
+                + 4 * size_of::<crate::publication::Message>()
+                + 16 * size_of::<usize>()
+        )?.checked_add(heads.checked_mul(4 * size_of::<Head>())?)?
+            .checked_add(4 * size_of::<Yielded>() + 32 * size_of::<usize>())?;
+        payload.checked_add(metadata)
+    }
+
     /// Buffers of the given capacities (each at least one).
     #[must_use]
     pub fn new(wire: usize, frame: usize, pieces: usize) -> Self {

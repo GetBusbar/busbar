@@ -63,6 +63,7 @@ use busbar_contract::abi::transport::{
 use crate::dtls::{Association, IceCredentials, Role, SessionCert, SrtpKeying, Up, Verdict};
 use crate::framer::{instant_of, ready, Buffers, Call, Crossed, FramerDoor, Refused, Yielded};
 use crate::DialJudge;
+use crate::publication::{Custody, Memory};
 
 /// The routes one framer answer may write.
 const ROUTES_CAP: usize = 64;
@@ -89,6 +90,28 @@ fn fault(why: impl Into<String>) -> Refused {
         outcome: Outcome::Fault,
         error: why.into(),
     }
+}
+
+/// Explicit terminal reason when a configured pairing cannot retain its next checked batch.
+pub const LINE_MEMORY_EXHAUSTED: &str = "the configured datagram LINE memory limit is exhausted";
+
+fn needs_credit(error: &Refused) -> bool {
+    error.error == LINE_MEMORY_EXHAUSTED
+}
+
+/// One incremental producer result. `Credit` has not crossed or accepted new input.
+pub enum LineStep {
+    /// The next ABI crossing needs storage credit; runnable publication must progress first.
+    Credit,
+    /// One checked batch. Fresh input was accepted only when `accepted` is true.
+    Batch {
+        /// The owned output.
+        yielded: Yielded,
+        /// This step crossed the supplied fresh input.
+        accepted: bool,
+    },
+    /// The previous operation and its secure-layer settle have completed.
+    Complete,
 }
 
 /// The host's numbers for the far-end addresses it has handed up.
@@ -197,7 +220,44 @@ pub struct DatagramTurn<'f> {
     complete: bool,
 }
 
+/// An owned same-op continuation. It holds no ABI loan and cannot accept fresh input.
+struct Continuation {
+    now: Instant,
+    first: Option<Yielded>,
+    recall: Option<Op<'static>>,
+    recalls: crate::framer::Recalls,
+    opened: VecDeque<Vec<u8>>,
+    closed: bool,
+    complete: bool,
+}
+
 impl<'f> DatagramTurn<'f> {
+    fn pause(mut self) -> Continuation {
+        let continuation = Continuation {
+            now: self.now,
+            first: self.first.take(),
+            recall: self.recall.take(),
+            recalls: std::mem::take(&mut self.recalls),
+            opened: std::mem::take(&mut self.opened),
+            closed: self.closed,
+            complete: self.complete,
+        };
+        self.complete = true;
+        continuation
+    }
+
+    fn resume(framing: &'f mut DatagramFraming, continuation: Continuation) -> Self {
+        Self {
+            framing,
+            now: continuation.now,
+            first: continuation.first,
+            recall: continuation.recall,
+            recalls: continuation.recalls,
+            opened: continuation.opened,
+            closed: continuation.closed,
+            complete: continuation.complete,
+        }
+    }
     fn settling(framing: &'f mut DatagramFraming, now: Instant) -> Self {
         Self {
             framing,
@@ -226,8 +286,10 @@ impl<'f> DatagramTurn<'f> {
     }
 
     fn cross(&mut self, op: Op<'_>) -> Result<Yielded, Refused> {
+        let custody = self.framing.reserve_output()?;
         let answer = self.framing.cross_once(op)?;
         let mut batch = Yielded::default();
+        batch.custody = custody;
         let taken = self.framing.take(&answer, &mut batch, self.now);
         // take may copy wire before a later field fails validation. This owner wipes that
         // initialized copy on success and error; routes already leave through poll_send.
@@ -265,6 +327,7 @@ impl<'f> DatagramTurn<'f> {
     /// The framer refused or produced an invalid answer, or the secure layer failed.
     pub fn next_batch(&mut self) -> Result<Option<Yielded>, Refused> {
         match self.advance() {
+            Err(error) if needs_credit(&error) => Err(error),
             Err(error) => {
                 // A previous READY crossing already took the operation's bytes. A failed
                 // recall/settle cannot leave that accepted operation open for fresh input.
@@ -284,29 +347,34 @@ impl<'f> DatagramTurn<'f> {
             return Ok(None);
         }
         loop {
-            if let Some(op) = self.recall.take() {
+            if let Some(op) = self.recall {
                 return self.cross(op).map(Some);
             }
             if let Some(bytes) = self.opened.pop_front() {
                 let from = self.framing.bound();
-                return self
-                    .cross(Op::Ingest {
+                let answer = self.cross(Op::Ingest {
                         lane: LANE_SECURED,
                         from,
                         bytes: &bytes,
                         end: false,
-                    })
-                    .map(Some);
+                    });
+                if answer.as_ref().is_err_and(needs_credit) {
+                    self.opened.push_front(bytes);
+                }
+                return answer.map(Some);
             }
-            if std::mem::take(&mut self.closed) {
-                return self
+            if self.closed {
+                let answer = self
                     .cross(Op::Ingest {
                         lane: 0,
                         from: None,
                         bytes: &[],
                         end: true,
-                    })
-                    .map(Some);
+                    });
+                if answer.is_ok() {
+                    self.closed = false;
+                }
+                return answer.map(Some);
             }
             if let Some(secure) = self.framing.secure.as_mut() {
                 while let Some(datagram) = secure.poll_wire() {
@@ -369,6 +437,8 @@ impl Drop for DatagramTurn<'_> {
 }
 
 fn append_batch(into: &mut Yielded, mut batch: Yielded) {
+    batch.custody.prepend(std::mem::take(&mut into.custody));
+    into.custody = batch.custody;
     into.heads.append(&mut batch.heads);
     into.pieces.append(&mut batch.pieces);
     into.flow.append(&mut batch.flow);
@@ -427,6 +497,9 @@ pub struct DatagramFraming {
     /// The user name the far end's checks carry first, once the terms settled it: the key the
     /// port's demultiplexer finds this association by ([`Associations`]).
     user: Option<String>,
+    memory: Option<Arc<Memory>>,
+    credit: Option<Custody>,
+    continuation: Option<Continuation>,
 }
 
 impl std::fmt::Debug for DatagramFraming {
@@ -441,6 +514,76 @@ impl std::fmt::Debug for DatagramFraming {
 }
 
 impl DatagramFraming {
+    /// Capture this pairing's storage account. Existing framings keep the account thereafter.
+    pub fn memory(&mut self, memory: Arc<Memory>) {
+        self.memory = Some(memory);
+    }
+
+    fn reserve_output(&mut self) -> Result<Custody, Refused> {
+        if let Some(credit) = self.credit.take() {
+            return Ok(credit);
+        }
+        let Some(memory) = &self.memory else {
+            return Ok(Custody::default());
+        };
+        // Routes may independently overlap the entire wire buffer. Their copies coexist with
+        // the checked output, and sealing may briefly retain plaintext and ciphertext together.
+        let bound = self.bufs.retention_bound()
+            .and_then(|n| ROUTES_CAP.checked_mul(crate::framer::WIRE_CAP)
+                .and_then(|routes| routes.checked_mul(3))
+                .and_then(|routes| n.checked_add(routes)))
+            .ok_or_else(|| fault(LINE_MEMORY_EXHAUSTED))?;
+        memory.reserve(bound).ok_or_else(|| fault(LINE_MEMORY_EXHAUSTED))
+    }
+
+    /// Whether a producer still owes a same-operation recall or secure-layer settle.
+    #[must_use]
+    pub fn continuing(&self) -> bool {
+        self.continuation.is_some()
+    }
+
+    /// Cross at most one batch, resuming the old operation before any fresh Emit. A refused
+    /// reservation leaves both the original bytes and continuation untouched.
+    ///
+    /// # Errors
+    /// The framer or secure layer failed. Already accepted bytes must not be retried.
+    pub fn line_step(&mut self, input: Option<&Across>, text: bool, now: Instant) -> Result<LineStep, Refused> {
+        let continuation = self.continuation.take();
+        let accepted = continuation.is_none() && input.is_some();
+        let mut turn = if let Some(continuation) = continuation {
+            DatagramTurn::resume(self, continuation)
+        } else if let Some(input) = input {
+            // Reserve before start, whose first crossing takes all the supplied bytes.
+            match self.reserve_output() {
+                Ok(credit) => self.credit = Some(credit),
+                Err(error) if needs_credit(&error) => return Ok(LineStep::Credit),
+                Err(error) => return Err(error),
+            }
+            DatagramTurn::start(self, Op::Emit {
+                stream: input.stream,
+                bytes: &input.bytes,
+                end_of_frame: input.end_of_frame,
+                text,
+            }, now)?
+        } else {
+            return Ok(LineStep::Complete);
+        };
+        let result = turn.next_batch();
+        let continuation = turn.pause();
+        match result {
+            Ok(Some(yielded)) => {
+                self.continuation = Some(continuation);
+                Ok(LineStep::Batch { yielded, accepted })
+            }
+            Ok(None) => Ok(LineStep::Complete),
+            Err(error) if needs_credit(&error) => {
+                self.continuation = Some(continuation);
+                Ok(LineStep::Credit)
+            }
+            Err(error) => Err(error),
+        }
+    }
+
     /// Begin an ACCEPTING association on `door`: the host's certificate `cert` (the framer gets its
     /// public DER, whose fingerprint its description states) and the host port's address `local`.
     /// The far end's description follows through [`Self::rendezvous`].
@@ -528,6 +671,9 @@ impl DatagramFraming {
             judge,
             refused_candidates: 0,
             user: None,
+            memory: None,
+            credit: None,
+            continuation: None,
         };
         let y = f.run(Op::Begin(opening), Instant::now())?;
         Ok((f, y))
@@ -1144,6 +1290,7 @@ pub struct Associations {
 struct Emission {
     order: tokio::sync::Semaphore,
     ready: tokio::sync::Notify,
+    wake: futures::task::AtomicWaker,
 }
 
 impl Default for Emission {
@@ -1151,6 +1298,7 @@ impl Default for Emission {
         Self {
             order: tokio::sync::Semaphore::new(1),
             ready: tokio::sync::Notify::new(),
+            wake: futures::task::AtomicWaker::new(),
         }
     }
 }
@@ -1198,6 +1346,8 @@ impl Owed<'_> {
 /// An association out on a crossing.
 #[derive(Debug, Default)]
 struct Out {
+    /// An incremental producer between batches. It remains exclusively out until completion.
+    continuing: Option<DatagramFraming>,
     owed: VecDeque<Owed<'static>>,
     /// Removed while out: its holder finishes it as it brings it back.
     closing: bool,
@@ -1432,6 +1582,101 @@ impl Drop for Taken<'_> {
 }
 
 impl PortAssociations {
+    /// Drive a single LINE producer batch without retaining exclusive association custody
+    /// during publication. A busy association registers this scheduler's actual wake.
+    pub fn poll_line(
+        &self,
+        id: u64,
+        cx: &mut std::task::Context<'_>,
+        input: Option<&Across>,
+        text: bool,
+        now: Instant,
+        send: &dyn Fn(SocketAddr, &[u8]),
+    ) -> std::task::Poll<Result<LineStep, Refused>> {
+        let emission = self.lock().emissions.get(&id).cloned();
+        let Some(emission) = emission else {
+            return std::task::Poll::Ready(Err(fault("the association is closed")));
+        };
+        emission.wake.register(cx.waker());
+        let f = {
+            let mut assocs = self.lock();
+            if let Some(out) = assocs.out.get_mut(&id) {
+                if out.closing {
+                    return std::task::Poll::Ready(Err(fault("the association is closing")));
+                }
+                match out.continuing.take() {
+                    Some(f) => f,
+                    None => return std::task::Poll::Pending,
+                }
+            } else {
+                let Some(f) = assocs.framings.remove(&id) else {
+                    return std::task::Poll::Ready(Err(fault("the association is closed")));
+                };
+                assocs.out.insert(id, Out { deadline: f.deadline(), ..Out::default() });
+                f
+            }
+        };
+        let mut taken = Taken { port: self, id, framing: Some(f) };
+        let f = taken.framing.as_mut().expect("the producer owns its framing");
+        let result = f.line_step(input, text, now);
+        while let Some((to, bytes)) = f.poll_send() { send(to, &bytes); }
+        let mut assocs = self.lock();
+        let closing = assocs.out.get(&id).is_none_or(|out| out.closing);
+        if closing || result.is_err() {
+            assocs.forget(id);
+            drop(assocs);
+            drop(taken.framing.take());
+            emission.order.close();
+            emission.ready.notify_waiters();
+            emission.wake.wake();
+            return std::task::Poll::Ready(result.and_then(|_| Err(fault("the association closed during publication"))));
+        }
+        if matches!(result, Ok(LineStep::Complete)) {
+            let out = assocs.out.get_mut(&id).expect("the producer's routing record");
+            if out.owed.is_empty() {
+                assocs.out.remove(&id);
+                assocs.framings.insert(id, taken.framing.take().expect("the producer owns its framing"));
+            } else {
+                out.continuing = taken.framing.take();
+            }
+        } else {
+            assocs.out.get_mut(&id).expect("the producer's routing record").continuing = taken.framing.take();
+        }
+        drop(assocs);
+        emission.ready.notify_waiters();
+        emission.wake.wake();
+        std::task::Poll::Ready(result)
+    }
+
+    /// Retire completed incremental custody and run previously queued ordinary operations.
+    /// The raw busy-ingress queue policy is unchanged.
+    pub fn resume_owed(&self, now: Instant, send: &dyn Fn(SocketAddr, &[u8])) -> Answered {
+        let ready: Vec<_> = {
+            let mut assocs = self.lock();
+            let ids: Vec<_> = assocs.out.iter().filter_map(|(id, out)| {
+                out.continuing.as_ref().is_some_and(|f| !f.continuing()).then_some(*id)
+            }).collect();
+            ids.into_iter().filter_map(|id| {
+                let mut out = assocs.out.remove(&id)?;
+                let f = out.continuing.take()?;
+                if out.closing {
+                    // Finish outside the guard below.
+                    Some((id, Some(f), out.owed, true))
+                } else {
+                    assocs.framings.insert(id, f);
+                    Some((id, None, out.owed, false))
+                }
+            }).collect()
+        };
+        let mut answered = Vec::new();
+        for (id, gone, owed, closing) in ready {
+            drop(gone);
+            if closing { self.remove(id); continue; }
+            for op in owed { answered.extend(self.turn(id, op, now, send).1); }
+        }
+        answered
+    }
+
     /// An empty port.
     #[must_use]
     pub fn new() -> Self {
@@ -1973,6 +2218,34 @@ impl Bridge {
 pub trait LegSink: Send + Sync {
     /// Emit one line frame on this leg now.
     fn line(&self, across: Across, now: Instant);
+    /// One producer batch, with no host lock held across its plugin crossing. `None` resumes
+    /// the same op; a fresh frame waits until that op is complete.
+    fn poll_line(
+        &self,
+        _cx: &mut std::task::Context<'_>,
+        input: Option<&Across>,
+        _text: bool,
+        now: Instant,
+    ) -> std::task::Poll<Result<LineStep, Refused>> {
+        if let Some(input) = input {
+            self.line(input.clone(), now);
+            std::task::Poll::Ready(Ok(LineStep::Batch { yielded: Yielded::default(), accepted: true }))
+        } else {
+            std::task::Poll::Ready(Ok(LineStep::Complete))
+        }
+    }
+    /// The paired connection, without creating a strong ownership cycle.
+    fn pairing(&self) -> Option<Arc<Pairing>> { None }
+    /// Transfer channel storage to its real reader owner, or explicitly fail publication.
+    fn channels(&self, _batch: SessionBatch, _now: Instant) -> Result<(), String> { Ok(()) }
+    /// Schedule on the leg's captured reactor and task tracker. A rejected task is dropped,
+    /// preserving its pre-spawn cancellation guard.
+    fn schedule(&self, task: PublicationTask) -> bool {
+        match tokio::runtime::Handle::try_current() {
+            Ok(runtime) => { runtime.spawn(task); true }
+            Err(_) => false,
+        }
+    }
     /// Close this leg's association. Called once, by the pairing's close.
     fn close(&self);
 }
@@ -1986,6 +2259,8 @@ pub struct Pairing {
     /// The caller leg's port address: the upstream leg binds a port of its own on the same host
     /// address.
     local: SocketAddr,
+    memory: Arc<Memory>,
+    published: tokio::sync::Notify,
 }
 
 struct PairState {
@@ -1993,7 +2268,13 @@ struct PairState {
     caller: Option<Arc<dyn LegSink>>,
     upstream: Option<Arc<dyn LegSink>>,
     closed: bool,
+    publications: PublicationState,
 }
+
+#[path = "line_publication.rs"]
+mod publication_scheduler;
+pub use publication_scheduler::{PublicationOutcome, PublicationTask, SessionBatch, SubmitError};
+use publication_scheduler::PublicationState;
 
 impl std::fmt::Debug for Pairing {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -2008,14 +2289,24 @@ impl Pairing {
     /// A pairing for a session whose caller leg is `caller`, on the port at `local`.
     #[must_use]
     pub fn new(caller: Arc<dyn LegSink>, local: SocketAddr) -> Arc<Self> {
+        Self::with_memory_limit(caller, local, None)
+    }
+
+    /// A pairing with an optional advanced shared live-storage limit. The default is unset;
+    /// a configured limit can explicitly end a finite expanding feedback chain.
+    #[must_use]
+    pub fn with_memory_limit(caller: Arc<dyn LegSink>, local: SocketAddr, limit: Option<usize>) -> Arc<Self> {
         Arc::new(Pairing {
             state: std::sync::Mutex::new(PairState {
                 bridge: Bridge::new(),
                 caller: Some(caller),
                 upstream: None,
                 closed: false,
+                publications: PublicationState::default(),
             }),
             local,
+            memory: Memory::new(limit),
+            published: tokio::sync::Notify::new(),
         })
     }
 
@@ -2096,6 +2387,8 @@ impl Pairing {
             st.bridge.stop();
             [st.caller.take(), st.upstream.take()]
         };
+        self.memory.close();
+        self.published.notify_waiters();
         for leg in legs.into_iter().flatten() {
             leg.close();
         }
