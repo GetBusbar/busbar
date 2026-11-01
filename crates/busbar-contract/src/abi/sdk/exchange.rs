@@ -20,6 +20,9 @@
 //! [`Request`], [`ExchangeResponse`] and [`Ack`] are [`Zeroize`]: a plugin wipes the ones it holds
 //! (`zeroize::Zeroizing::new(reply)`). The bytes on the wire are unchanged.
 
+use std::any::Any;
+use std::cell::RefCell;
+use std::sync::Arc;
 use std::task::Poll;
 
 use zeroize::{Zeroize, Zeroizing};
@@ -850,8 +853,17 @@ pub fn send_and_ack(
     }))
 }
 
+/// A kind's optional typed state, owned by the operation's existing continuation.
+pub(crate) type Context = Arc<dyn Any + Send + Sync>;
+
 /// What an op parks its exchange on: its instance, whatever the instance state's type.
-trait Parks {
+pub(crate) trait Parks {
+    fn context(&self) -> Option<&RefCell<Option<Context>>> {
+        None
+    }
+    fn resuming(&self) -> bool {
+        false
+    }
     fn ticket(&self) -> Ticket;
     fn park(&self, exchange: Exchange);
     fn resume(&self) -> Option<Box<Exchange>>;
@@ -935,6 +947,11 @@ impl<'a> Op<'a> {
         Self { on: instance, host }
     }
 
+    /// A kind SDK's composite continuation, still owned and cleaned up by its safe instance.
+    pub(crate) fn over(on: &'a dyn Parks, host: Option<&'a Host>) -> Self {
+        Self { on, host }
+    }
+
     /// The host tables the op runs over (`None`: the instance was handed none): what an op that
     /// waits on another ticket's work wakes that ticket with ([`Host::wake`]).
     #[must_use]
@@ -946,6 +963,50 @@ impl<'a> Op<'a> {
     #[must_use]
     pub fn ticket(&self) -> Ticket {
         self.on.ticket()
+    }
+
+    /// Whether the kind SDK restored its parked continuation for this entry. This reports actual
+    /// continuation state, rather than trusting a resume flag left on an entry after cancellation.
+    #[must_use]
+    pub fn resuming(&self) -> bool {
+        self.on.resuming()
+    }
+
+    /// Retain this operation's typed state with its continuation. Hook operations support this;
+    /// other kind SDKs may refuse it. The first call initializes the state, and subsequent calls
+    /// and pending re-entries return that same value, even across configuration changes.
+    ///
+    /// The SDK releases its reference on cancellation, replacement, or a terminal answer. A
+    /// caller that clones the returned reference is responsible for its own clones. Use one state
+    /// type per operation; a different type is refused without replacing the original state.
+    ///
+    /// # Errors
+    /// The kind does not support operation context, or this operation already holds another type.
+    pub fn context<T: Send + Sync + 'static>(
+        &self,
+        initialize: impl FnOnce() -> Arc<T>,
+    ) -> Result<Arc<T>, &'static str> {
+        let slot = self
+            .on
+            .context()
+            .ok_or("operation context is unavailable")?;
+        let existing = slot.borrow().as_ref().cloned();
+        let value = if let Some(existing) = existing {
+            existing
+        } else {
+            // Initialize without borrowing the slot, so an initializer may re-enter safely.
+            let created: Context = initialize();
+            let selected = {
+                let mut held = slot.borrow_mut();
+                Arc::clone(held.get_or_insert_with(|| Arc::clone(&created)))
+            };
+            // A nested initializer may have filled the slot. Drop the unused state only after
+            // releasing the borrow, since user state may perform cleanup when it drops.
+            selected
+        };
+        value
+            .downcast::<T>()
+            .map_err(|_| "operation context type changed")
     }
 
     /// Read one negotiated generic host observation. The first supported entry appends a leased

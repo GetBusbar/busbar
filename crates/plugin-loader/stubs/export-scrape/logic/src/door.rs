@@ -90,8 +90,14 @@ const TAIL: Tail = Tail {
     routes_len: ROUTES.len(),
 };
 
+busbar_contract::statement_extensions!(LISTENER_POLICY: [
+    ("listener.public_routes", br#"["/metrics","/metrics/hooks"]"#),
+    ("listener.persistent_routes", br#"["/metrics/hooks"]"#),
+]);
+
 /// This plugin's Statement: its name and version, the `metrics` stream and its two routes.
 pub const STATEMENT: Statement = Statement {
+    extensions: LISTENER_POLICY,
     kind_tail: (&TAIL as *const Tail).cast::<KindTailHead>(),
     // One scrape sink renders the ONE well-known `/metrics`: at most one instance.
     marks: MARK_ONE_INSTANCE,

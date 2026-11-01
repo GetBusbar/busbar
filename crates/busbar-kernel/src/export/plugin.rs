@@ -473,6 +473,10 @@ pub(crate) fn status() {
 /// configuration apply still names that instance (ARCHITECT 2026-10-05, Q-U2-4 follow-up), while
 /// `/metrics` follows the configuration, as 1.5.5's plugin route did (removed: `404`).
 pub(crate) fn route_decls(cfg: &ExportCfg) -> Vec<RouteDecl> {
+    route_decls_from(cfg, SINKS.get().map(Vec::as_slice).unwrap_or_default())
+}
+
+fn route_decls_from(cfg: &ExportCfg, boot_sinks: &[PluginSink]) -> Vec<RouteDecl> {
     let (scrape, rest): (Vec<_>, Vec<_>) = cfg.plugins.iter().partition(|p| p.scrape);
     let mut out = Vec::new();
     for p in scrape.into_iter().chain(rest) {
@@ -485,11 +489,26 @@ pub(crate) fn route_decls(cfg: &ExportCfg) -> Vec<RouteDecl> {
         // renamed or re-added it) is served by the boot's scrape sink of the same module, as
         // 1.5.5's host-held recorder served `/metrics` whatever the instance was called.
         let module = p.def.module.trim();
-        let opened = sinks().find(|s| s.name == p.name).or_else(|| {
-            p.scrape
-                .then(|| sinks().find(|s| s.scrape && s.module == module))
-                .flatten()
-        });
+        // Reusing a display name never transfers the opened module's identity or increases
+        // its grant. A configuration may remove a grant, but only boot can confer one.
+        let opened = boot_sinks
+            .iter()
+            .find(|s| s.name == p.name && s.module == module && (!p.scrape || s.scrape))
+            .or_else(|| {
+                p.scrape
+                    .then(|| boot_sinks.iter().find(|s| s.scrape && s.module == module))
+                    .flatten()
+            });
+        let (public_routes, persistent_routes) = match opened {
+            Some(s) => (
+                s.sink.public_routes().to_vec(),
+                s.sink.persistent_routes().to_vec(),
+            ),
+            None => axis().map_or_else(
+                || (Vec::new(), Vec::new()),
+                |a| (a.public_routes(module), a.persistent_routes(module)),
+            ),
+        };
         let (routes, dispatch): (Vec<Route>, Arc<dyn PluginHttpDispatch>) = match opened {
             Some(s) => {
                 let served: Arc<dyn PluginHttpDispatch> = Arc::new(Served(s.sink.clone()));
@@ -507,11 +526,11 @@ pub(crate) fn route_decls(cfg: &ExportCfg) -> Vec<RouteDecl> {
             None => continue,
         };
         for route in routes {
-            if crate::plugin_routes::scrape_sink_path(&route.path) {
+            if persistent_routes.contains(&route.path) {
                 // The boot's scrape sink's, below.
                 continue;
             }
-            if !p.scrape && crate::plugin_routes::well_known(&route.path) {
+            if !p.scrape && public_routes.contains(&route.path) {
                 tracing::warn!(
                     instance = %p.name,
                     path = %route.path,
@@ -523,25 +542,27 @@ pub(crate) fn route_decls(cfg: &ExportCfg) -> Vec<RouteDecl> {
             out.push(RouteDecl {
                 owner: owner.clone(),
                 kind: RouteKind::Export,
+                scrape: p.scrape && public_routes.contains(&route.path),
                 route,
-                scrape: p.scrape,
+                persistent: false,
                 dispatch: dispatch.clone(),
             });
         }
     }
-    if let Some(s) = sinks().find(|s| s.scrape) {
+    if let Some(s) = boot_sinks.iter().find(|s| s.scrape) {
         let served: Arc<dyn PluginHttpDispatch> = Arc::new(Served(s.sink.clone()));
         let dispatch: Arc<dyn PluginHttpDispatch> = Arc::new(super::scrape::Granted(served));
         out.extend(
             s.sink
                 .routes()
                 .iter()
-                .filter(|r| crate::plugin_routes::scrape_sink_path(&r.path))
+                .filter(|r| s.sink.persistent_routes().contains(&r.path))
                 .map(|route| RouteDecl {
                     owner: s.module.clone(),
                     kind: RouteKind::Export,
                     route: route.clone(),
                     scrape: true,
+                    persistent: true,
                     dispatch: dispatch.clone(),
                 }),
         );

@@ -531,6 +531,14 @@ impl Instance {
     /// I/O handle it still owns ([`IoHost::reap`](busbar_contract::io_host::IoHost::reap)), so a
     /// listener or socket it never closed is closed for it.
     pub(crate) fn let_go_held(&self) {
+        // The route remains usable for teardown after revoke: no plugin wake or crossing.
+        if let Some(route) = self.wake.route.get().and_then(std::sync::Weak::upgrade) {
+            if let Some(served) = route.services() {
+                served
+                    .store
+                    .conditional_teardown(std::ptr::from_ref(self.wake) as usize);
+            }
+        }
         if let Some((id, table)) = self.wake.conn.get() {
             super::conn_services::purge(*id, table);
         }

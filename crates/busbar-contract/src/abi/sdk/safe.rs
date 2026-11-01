@@ -353,13 +353,25 @@ impl Head {
         Some(taken)
     }
 
-    /// Drop what `ticket` parked and free its slot, the allocation kept for the next op parked
-    /// there. Nothing parked on `ticket` takes no lock at all.
+    /// Retire `ticket` before dropping its state outside the slot lock. Return the emptied pooled
+    /// allocation only if nobody has reused the slot meanwhile. A destructor may re-enter the
+    /// instance, including cancelling this ticket or parking a new operation on it.
     fn forget(&self, ticket: Ticket) {
-        if let Some(mut held) = self.find(ticket) {
-            held.free = true;
-            if let Some(c) = held.cell().as_mut() {
-                c.clear();
+        let Some(mut held) = self.find(ticket) else {
+            return;
+        };
+        let slot = held.slot;
+        let mut retired = held.cell().take();
+        held.free = true;
+        drop(held);
+        if let Some(c) = retired.as_mut() {
+            c.clear();
+        }
+        // Cleanup may have re-entered and reused the slot. Never replace that operation's state
+        // or reset its ticket; a busy slot simply keeps its own allocation.
+        if let Some(mut held) = slot.try_hold() {
+            if slot.key.load(Ordering::Acquire) == FREE && held.cell().is_none() {
+                *held.cell() = retired.take();
             }
         }
     }

@@ -339,7 +339,8 @@ pub const RESERVED_HOOK_NAMES: &[&str] = &[
     ON_ERROR_REJECT,
     ON_ERROR_FIRST,
     ON_ERROR_NOTHING,
-    // native ranking strategies (PoolPolicy::native_name)
+    // The historical bare strategy words only. New plugin-declared strategies use the structured
+    // pool form and never reserve an operator's existing hook name.
     STRATEGY_CHEAPEST,
     STRATEGY_FASTEST,
     STRATEGY_LEAST_BUSY,

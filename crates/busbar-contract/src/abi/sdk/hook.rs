@@ -30,6 +30,7 @@
 //! call is Ready or Pending(wake)).
 
 use std::borrow::Cow;
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::marker::PhantomData;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -52,7 +53,7 @@ use crate::abi::hook::{
 use crate::abi::mechanism::call::{AbiStr, InHead, OutHead, Outcome, BLOB_ABSENT, BLOB_JSON};
 use crate::abi::mechanism::door::{KindTailHead, Statement};
 use crate::abi::mechanism::ticket::Ticket;
-use crate::abi::sdk::exchange::Op;
+use crate::abi::sdk::exchange::{Context, Exchange, Op, Parks};
 use crate::abi::sdk::life::{settings_object, Held, Life, Refreshed, Refusal};
 use crate::abi::sdk::{Instance, Lent, LentList, Out, SafeSlot};
 use crate::hook_wire::{HookStageProjection, OP_NOTIFY};
@@ -853,6 +854,68 @@ pub struct HookLife<P> {
     open: PhantomData<fn() -> P>,
 }
 
+/// One operation's hook and exchange travel together. Safe owns this continuation, so cancel,
+/// a fresh entry, a fault and every terminal answer release the original hook along with its IO.
+struct PendingHook {
+    hook: Arc<dyn Hook>,
+    exchange: Option<Exchange>,
+    context: Option<Context>,
+}
+
+/// The running operation's exchange slot. It is local to the crossing; only PendingHook is parked.
+struct HookCall {
+    ticket: Ticket,
+    hook: Arc<dyn Hook>,
+    exchange: RefCell<Option<Exchange>>,
+    context: RefCell<Option<Context>>,
+    resuming: bool,
+}
+
+impl HookCall {
+    fn new<P: HookOpen>(life: &HookLife<P>, i: &Instance<'_, Held<HookLife<P>>>) -> Self {
+        let pending = i.resume_value::<PendingHook>();
+        let resuming = pending.is_some();
+        let pending = pending.unwrap_or_else(|| PendingHook {
+            hook: life.hook(),
+            exchange: None,
+            context: None,
+        });
+        Self {
+            ticket: i.ticket(),
+            hook: pending.hook,
+            exchange: RefCell::new(pending.exchange),
+            context: RefCell::new(pending.context),
+            resuming,
+        }
+    }
+
+    fn park<P: HookOpen>(self, i: &Instance<'_, Held<HookLife<P>>>) {
+        i.park(PendingHook {
+            hook: self.hook,
+            exchange: self.exchange.into_inner(),
+            context: self.context.into_inner(),
+        });
+    }
+}
+
+impl Parks for HookCall {
+    fn context(&self) -> Option<&RefCell<Option<Context>>> {
+        Some(&self.context)
+    }
+    fn resuming(&self) -> bool {
+        self.resuming
+    }
+    fn ticket(&self) -> Ticket {
+        self.ticket
+    }
+    fn park(&self, exchange: Exchange) {
+        self.exchange.replace(Some(exchange));
+    }
+    fn resume(&self) -> Option<Box<Exchange>> {
+        self.exchange.take().map(Box::new)
+    }
+}
+
 /// A verdict a `decide` / `transform` lowered and answered SHORT (its host buffers too small).
 #[derive(Debug)]
 enum Lowered {
@@ -1019,8 +1082,10 @@ hook_op!(
         let v = match life.short.take(i.ticket(), true) {
             Some(Lowered::Decide(v)) => v,
             _ => {
-                let op = Op::new(&i, held.host());
-                let Poll::Ready(v) = life.hook().decide(&Decoded::of(input), &op) else {
+                let call = HookCall::new(life, &i);
+                let op = Op::over(&call, held.host());
+                let Poll::Ready(v) = call.hook.decide(&Decoded::of(input), &op) else {
+                    call.park(&i);
                     return Outcome::Pending;
                 };
                 v
@@ -1048,8 +1113,10 @@ hook_op!(
         let v = match life.short.take(i.ticket(), false) {
             Some(Lowered::Transform(v)) => v,
             _ => {
-                let op = Op::new(&i, held.host());
-                let Poll::Ready(v) = life.hook().transform(&Decoded::of(input), &op) else {
+                let call = HookCall::new(life, &i);
+                let op = Op::over(&call, held.host());
+                let Poll::Ready(v) = call.hook.transform(&Decoded::of(input), &op) else {
+                    call.park(&i);
                     return Outcome::Pending;
                 };
                 v
@@ -1073,10 +1140,14 @@ hook_op!(
         if check_notify_in(&input).is_err() {
             return Outcome::Fault;
         }
-        let op = Op::new(&i, held.host());
-        match held.life().hook().notify(&DecodedTap::of(input), &op) {
+        let call = HookCall::new(held.life(), &i);
+        let op = Op::over(&call, held.host());
+        match call.hook.notify(&DecodedTap::of(input), &op) {
             Poll::Ready(()) => Outcome::Ready,
-            Poll::Pending => Outcome::Pending,
+            Poll::Pending => {
+                call.park(&i);
+                Outcome::Pending
+            }
         }
     }
 );

@@ -1113,7 +1113,7 @@ fn linked_hook_name() -> &'static str {
 fn the_built_in_ranking_strategies_are_hook_words_of_one_linked_door_on_the_hook_axis() {
     for name in crate::config::RESERVED_HOOK_NAMES
         .iter()
-        .filter(|n| crate::config::parse_strategy(n) != crate::config::PoolPolicy::Weighted)
+        .filter(|n| crate::config::is_strategy_name(n) && **n != crate::config::ON_ERROR_WEIGHTED)
     {
         assert!(
             crate::preflight::builtin_ranking_known(name),

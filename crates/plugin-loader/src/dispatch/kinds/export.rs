@@ -26,6 +26,10 @@ pub struct ExportFacts {
     pub streams: Vec<u8>,
     /// The routes, in the route vocabulary every kind declares in.
     pub routes: Vec<Route>,
+    /// Declared routes requesting the first-party public namespace grant.
+    pub public_routes: Vec<String>,
+    /// Public routes retained by the boot instance across configuration removal.
+    pub persistent_routes: Vec<String>,
     /// Each declared metric family: its name, its `FAMILY_*` kind and its label keys.
     pub families: Vec<(String, u8, Vec<String>)>,
     /// The Statement's `one_instance` mark: at most one instance of the plugin may be configured.
@@ -117,8 +121,25 @@ fn facts(st: &Statement) -> Result<ExportFacts, String> {
     // length (a NULL one reads as none).
     let ext = unsafe { crate::dispatch::plugin::blob_bytes(st.extensions) };
     let span_records = busbar_contract::abi::mechanism::extensions::span_records(ext)?;
+    use busbar_contract::abi::mechanism::extensions;
+    let public_routes = extensions::route_paths(ext, extensions::EXT_PUBLIC_ROUTES)?;
+    let persistent_routes = extensions::route_paths(ext, extensions::EXT_PERSISTENT_ROUTES)?;
+    if public_routes
+        .iter()
+        .any(|path| !routes.iter().any(|route| route.path == *path))
+        || persistent_routes
+            .iter()
+            .any(|path| !public_routes.contains(path))
+    {
+        return Err(
+            "listener route policy names an undeclared route or a non-public persistent route"
+                .into(),
+        );
+    }
     Ok(ExportFacts {
         span_records,
+        public_routes,
+        persistent_routes,
         streams: streams.to_vec(),
         routes,
         families,

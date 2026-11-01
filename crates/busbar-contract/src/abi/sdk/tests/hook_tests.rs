@@ -1611,3 +1611,214 @@ fn a_scripted_far_end_drives_a_pending_decide_to_its_answer() {
     assert_eq!(far.held(), 0, "the exchange closed its stream");
     closed::<OpenForward>(p);
 }
+#[test]
+fn operation_context_follows_pending_custody_and_retires_without_slot_reuse() {
+    struct Unsupported;
+    impl Parks for Unsupported {
+        fn ticket(&self) -> Ticket {
+            Ticket::NONE
+        }
+        fn park(&self, _: Exchange) {
+            panic!("no exchange")
+        }
+        fn resume(&self) -> Option<Box<Exchange>> {
+            None
+        }
+    }
+    assert_eq!(
+        Op::over(&Unsupported, None)
+            .context::<u32>(|| panic!("unsupported initializer"))
+            .unwrap_err(),
+        "operation context is unavailable"
+    );
+    struct Contextual(RefCell<Option<Context>>);
+    impl Parks for Contextual {
+        fn context(&self) -> Option<&RefCell<Option<Context>>> {
+            Some(&self.0)
+        }
+        fn ticket(&self) -> Ticket {
+            Ticket::NONE
+        }
+        fn park(&self, _: Exchange) {
+            panic!("no exchange")
+        }
+        fn resume(&self) -> Option<Box<Exchange>> {
+            None
+        }
+    }
+    let local = Contextual(RefCell::new(None));
+    let op = Op::over(&local, None);
+    let outer = Arc::new(7_u32);
+    let unused = Arc::downgrade(&outer);
+    let selected = op
+        .context(|| {
+            assert_eq!(*op.context(|| Arc::new(8_u32)).unwrap(), 8);
+            outer
+        })
+        .unwrap();
+    assert_eq!(*selected, 8, "nested initialization is never overwritten");
+    assert!(unused.upgrade().is_none(), "unused initializer is released");
+    struct State(u32);
+    thread_local! {
+        static CURRENT: std::cell::Cell<u32> = const { std::cell::Cell::new(1) };
+        static READY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+        static CREATED: RefCell<Vec<std::sync::Weak<State>>> = const { RefCell::new(Vec::new()) };
+        static SEEN: RefCell<Vec<u32>> = const { RefCell::new(Vec::new()) };
+    }
+    fn enter(op: &Op<'_>) -> bool {
+        let state = op
+            .context(|| {
+                let state = Arc::new(State(CURRENT.get()));
+                CREATED.with(|created| created.borrow_mut().push(Arc::downgrade(&state)));
+                state
+            })
+            .unwrap();
+        let again = op
+            .context::<State>(|| panic!("context initialized twice"))
+            .unwrap();
+        assert!(Arc::ptr_eq(&state, &again));
+        assert_eq!(
+            op.context::<u32>(|| panic!("wrong type initialized"))
+                .unwrap_err(),
+            "operation context type changed"
+        );
+        SEEN.with(|seen| seen.borrow_mut().push(state.0));
+        READY.get()
+    }
+    struct Waiting;
+    impl Hook for Waiting {
+        fn decide(&self, _: &Decoded<'_>, op: &Op<'_>) -> Poll<Verdict> {
+            if enter(op) {
+                Poll::Ready(Verdict::Abstain)
+            } else {
+                Poll::Pending
+            }
+        }
+        fn transform(&self, _: &Decoded<'_>, op: &Op<'_>) -> Poll<RewriteVerdict> {
+            if enter(op) {
+                Poll::Ready(RewriteVerdict::Abstain)
+            } else {
+                Poll::Pending
+            }
+        }
+        fn notify(&self, _: &DecodedTap<'_>, op: &Op<'_>) -> Poll<()> {
+            if enter(op) {
+                Poll::Ready(())
+            } else {
+                Poll::Pending
+            }
+        }
+    }
+    struct OpenWaiting;
+    impl HookOpen for OpenWaiting {
+        fn open(_: &str) -> Result<Box<dyn Hook>, String> {
+            Ok(Box::new(Waiting))
+        }
+    }
+    for kind in 0..3 {
+        let instance = opened_with::<OpenWaiting>(&zeroed());
+        let decide = frame_with(caps(4, 64));
+        let request = request(false, false);
+        let notify = NotifyFrame::build(&request, None, false);
+        let run = |ticket, flags| {
+            if kind == 2 {
+                let mut input = notify.input();
+                input.head.ticket = ticket;
+                input.head.flags = flags;
+                call::<Notify<OpenWaiting>>(instance, slot::NOTIFY, &input, &mut zeroed())
+            } else {
+                let mut input = decide.input();
+                input.head.ticket = ticket;
+                input.head.flags = flags;
+                if kind == 0 {
+                    call::<Decide<OpenWaiting>>(instance, slot::DECIDE, &input, &mut zeroed())
+                } else {
+                    call::<Transform<OpenWaiting>>(instance, slot::TRANSFORM, &input, &mut zeroed())
+                }
+            }
+        };
+        let cancel = |ticket| {
+            let mut input: CancelIn = zeroed();
+            input.ticket = ticket;
+            let mut out: CancelOut = zeroed();
+            assert_eq!(
+                call::<life::Cancel<HookLife<OpenWaiting>>>(instance, CANCEL, &input, &mut out),
+                Outcome::Ready
+            );
+            assert_eq!(out.disposition, cancel::ABORTED);
+        };
+        let last = || CREATED.with(|created| created.borrow().last().unwrap().clone());
+        // High slots disappear on CANCEL without ever being reused.
+        for slot in 40..64 {
+            let ticket = Ticket {
+                slot,
+                generation: 1,
+            };
+            CURRENT.set(1);
+            READY.set(false);
+            assert_eq!(run(ticket, 0), Outcome::Pending);
+            let first = last();
+            CURRENT.set(2);
+            if slot == 40 {
+                let mut refresh: crate::abi::mechanism::lifecycle::RefreshIn = zeroed();
+                refresh.generation = 2;
+                assert_eq!(
+                    call::<life::Refresh<HookLife<OpenWaiting>>>(
+                        instance,
+                        crate::abi::mechanism::lifecycle::slot::REFRESH,
+                        &refresh,
+                        &mut zeroed()
+                    ),
+                    Outcome::Ready
+                );
+            }
+            assert_eq!(run(ticket, FLAG_RESUME), Outcome::Pending);
+            assert!(first.upgrade().is_some());
+            assert_eq!(SEEN.with(|seen| seen.borrow().last().copied()), Some(1));
+            cancel(ticket);
+            assert!(
+                first.upgrade().is_none(),
+                "cancel retained context on slot {slot}"
+            );
+        }
+        let old = Ticket {
+            slot: 8,
+            generation: 1,
+        };
+        let new = Ticket {
+            slot: 8,
+            generation: 2,
+        };
+        assert_eq!(run(old, 0), Outcome::Pending);
+        let replaced = last();
+        assert_eq!(run(old, 0), Outcome::Pending);
+        assert!(
+            replaced.upgrade().is_none(),
+            "fresh replacement retires the old operation"
+        );
+        cancel(old);
+        assert_eq!(run(new, 0), Outcome::Pending);
+        let current = last();
+        cancel(old);
+        assert!(
+            current.upgrade().is_some(),
+            "stale cancel preserves current generation"
+        );
+        READY.set(true);
+        assert_eq!(run(new, FLAG_RESUME), Outcome::Ready);
+        assert!(
+            current.upgrade().is_none(),
+            "terminal answer retires context"
+        );
+        READY.set(false);
+        assert_eq!(run(new, 0), Outcome::Pending);
+        let closing = last();
+        closed::<OpenWaiting>(instance);
+        assert!(
+            closing.upgrade().is_none(),
+            "instance close retires context"
+        );
+        CREATED.with(|created| created.borrow_mut().clear());
+        SEEN.with(|seen| seen.borrow_mut().clear());
+    }
+}

@@ -1429,13 +1429,15 @@ pub fn build_app_from_config(
     let mut pool_decision_gates = std::collections::HashMap::new();
     let mut pool_rewrite_chains = std::collections::HashMap::new();
     for (pool_name, pool_cfg) in &cfg.pools {
-        if let Some(policy) = hooks::resolve_pool_ordering(
+        if let Some(policy) = hooks::try_resolve_pool_ordering(
             pool_cfg,
             &cfg.hooks,
             &hook_env,
             default_hook.as_deref(),
             app_config_version,
-        ) {
+        )
+        .map_err(|e| format!("pool '{pool_name}': {e}"))?
+        {
             pool_orderings.insert(pool_name.clone(), policy);
         }
         let gates = hooks::resolve_pool_gates(pool_cfg, &cfg.hooks, &hook_env, app_config_version);

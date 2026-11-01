@@ -58,6 +58,7 @@ fn decl(
             auth,
         },
         scrape: false,
+        persistent: false,
         dispatch: Arc::new(FakeDispatch { label }),
     }
 }
@@ -74,7 +75,7 @@ fn decl(
 /// test fails (no `Err`) — proven by removing the collision arm before wiring it.
 #[test]
 fn collision_is_a_loud_failure_naming_the_owner() {
-    let decls = vec![
+    let mut decls = vec![
         decl(
             "prometheus",
             RouteKind::Export,
@@ -92,6 +93,9 @@ fn collision_is_a_loud_failure_naming_the_owner() {
             "dd",
         ),
     ];
+    for route in &mut decls {
+        route.scrape = true;
+    }
     let err = expect_err(build_route_table(decls));
     assert_eq!(
         err,
@@ -100,6 +104,38 @@ fn collision_is_a_loud_failure_naming_the_owner() {
 
     // The boot/`--validate` preflight runs THIS function over the same declaration set
     // (`plugins_preflight`, step 7), so it refuses the same collision in the same words.
+}
+
+#[test]
+fn granted_public_route_is_not_hardcoded_to_an_exporter_path() {
+    let granted = |path| RouteDecl {
+        scrape: true,
+        ..decl(
+            "neutral",
+            RouteKind::Export,
+            path,
+            RouteMethod::Get,
+            RouteAuth::Key,
+            "ok",
+        )
+    };
+    let table = build_route_table(vec![granted("/observations")])
+        .expect("the trusted consumer declares its own public path");
+    assert_eq!(
+        table.declared_auth("/observations", &http::Method::GET),
+        Some(RouteAuth::Key)
+    );
+    assert!(build_route_table(vec![granted("/api/admin")]).is_err());
+    assert!(build_route_table(vec![granted("/healthz")]).is_err());
+    assert!(build_route_table(vec![decl(
+        "neutral",
+        RouteKind::Export,
+        "/observations",
+        RouteMethod::Get,
+        RouteAuth::Key,
+        "refused"
+    )])
+    .is_err());
 }
 
 /// The SAME path with DIFFERENT methods is NOT a collision — the collision key is `{path, method}`.
@@ -183,14 +219,17 @@ fn confinement_rejects_hook_out_of_namespace() {
 #[test]
 fn confinement_export_metrics_exception_and_reserved_routes() {
     // The well-known /metrics: accepted for an export sink.
-    assert!(build_route_table(vec![decl(
-        "prometheus",
-        RouteKind::Export,
-        "/metrics",
-        RouteMethod::Get,
-        RouteAuth::None,
-        "ok",
-    )])
+    assert!(build_route_table(vec![RouteDecl {
+        scrape: true,
+        ..decl(
+            "prometheus",
+            RouteKind::Export,
+            "/metrics",
+            RouteMethod::Get,
+            RouteAuth::None,
+            "ok",
+        )
+    }])
     .is_ok());
 
     // Its own namespace: accepted.
@@ -248,7 +287,7 @@ fn only_the_scrape_sink_claims_metrics_hooks() {
         hooks("datadog", RouteKind::Export, false),
         hooks("sr", RouteKind::Hook, false),
     ] {
-        assert!(expect_err(build_route_table(vec![refused])).contains("reserved core route"));
+        assert!(expect_err(build_route_table(vec![refused])).contains("routes are confined"));
     }
 }
 
@@ -638,8 +677,9 @@ fn paths_awaiting_restart_flags_only_newly_declared_unmounted_paths() {
         build_route_table(
             paths
                 .iter()
-                .map(|p| {
-                    decl(
+                .map(|p| RouteDecl {
+                    scrape: true,
+                    ..decl(
                         "prometheus",
                         RouteKind::Export,
                         p,

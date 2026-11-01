@@ -21,7 +21,7 @@ use busbar_contract::abi::mechanism::rendering;
 use busbar_contract::hook_calls::{Answered, HookAxis, HookFacts};
 use busbar_contract::hooks::{Candidate, RoutingContext, RoutingDecision, RoutingRequest};
 use busbar_kernel::config::{
-    parse_strategy, PoolPolicy, DEFAULT_POLICY_TIMEOUT_MS, ON_ERROR_WEIGHTED, RESERVED_HOOK_NAMES,
+    is_strategy_name, DEFAULT_POLICY_TIMEOUT_MS, ON_ERROR_WEIGHTED, RESERVED_HOOK_NAMES,
 };
 use busbar_kernel::test_support::ranking_double;
 
@@ -258,12 +258,12 @@ async fn decide(
     }
 }
 
-/// The built-in strategy words (every reserved hook name but `weighted`, the inline floor).
+/// The historical bare strategy words, excluding `weighted`, the inline floor.
 fn strategy_words() -> Vec<&'static str> {
     RESERVED_HOOK_NAMES
         .iter()
         .copied()
-        .filter(|n| parse_strategy(n) != PoolPolicy::Weighted)
+        .filter(|n| is_strategy_name(n) && *n != ON_ERROR_WEIGHTED)
         .collect()
 }
 

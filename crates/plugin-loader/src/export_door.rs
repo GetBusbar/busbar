@@ -548,6 +548,14 @@ impl ExportCalls for ExportInstance {
         &self.shared.facts.routes
     }
 
+    fn public_routes(&self) -> &[String] {
+        &self.shared.facts.public_routes
+    }
+
+    fn persistent_routes(&self) -> &[String] {
+        &self.shared.facts.persistent_routes
+    }
+
     fn deliver(&self, stream: u8, line: Vec<u8>, hold: Box<dyn Send>) -> Delivered {
         let sh = &self.shared;
         if sh.plugin.is_faulted() || !sh.plugin.is_open() {

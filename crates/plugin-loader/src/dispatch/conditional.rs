@@ -42,6 +42,7 @@ pub(crate) unsafe fn prepare(
     unit: Option<u64>,
 ) -> Result<Option<Input>, ()> {
     if !enabled
+        || wake.revoked.load(std::sync::atomic::Ordering::Acquire)
         || matches!(
             operation,
             slot::CANCEL | slot::RELEASE | slot::CLOSE | slot::VALIDATE
@@ -60,14 +61,50 @@ pub(crate) unsafe fn prepare(
     let Some(served) = route.services() else {
         return Ok(None);
     };
-    if wake.caller.get().is_none() || !served.provider.supports_record_transactions() {
+    if wake.caller.get().is_none() {
+        return Ok(None);
+    }
+    let driver = matches!(operation, slot::DRIVE | slot::TICK);
+    let settlement = if driver {
+        let mut selected = wake
+            .conditional_driver
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        *selected = Some(head.ticket);
+        served
+            .store
+            .settlement_input(caller(wake))
+            .map(|(request, receipt)| {
+                let result = wire::read_result(&receipt, &request)
+                    .map_err(|_| ())?
+                    .ok_or(())?;
+                wire::encode_settlement(&request, &result).map_err(|_| ())
+            })
+            .transpose()?
+    } else {
+        None
+    };
+    let normal = if served.provider.supports_record_transactions()
+        && !served
+            .store
+            .conditional_current_retired(caller(wake), head.ticket)
+    {
+        Some(
+            served
+                .store
+                .conditional_input(caller(wake), head.ticket, unit)?,
+        )
+    } else {
+        None
+    };
+    if normal.is_none() && settlement.is_none() {
         return Ok(None);
     }
     let original = head.extensions;
     if original.len > busbar_contract::abi::mechanism::check::HARD_MAX_BYTES as usize {
         return Err(());
     }
-    // SAFETY: original input bytes live with the host frame.
+    // SAFETY: original input bytes live with the host frame and were bounded above.
     let prior = unsafe { super::validate::lent(original.ptr, original.len) }.ok_or(())?;
     if (!prior.is_empty() && original.fmt != BLOB_OCTETS)
         || wire::entry(prior, wire::CAPABILITY).is_err()
@@ -78,55 +115,65 @@ pub(crate) unsafe fn prepare(
             Ok(None)
         };
     }
-    let (capability, receipt) = served
-        .store
-        .conditional_input(caller(wake), head.ticket, unit)?;
     if wire::entry(prior, wire::INTENT).map_err(|_| ())?.is_some()
         || wire::entry(prior, wire::OBSERVE).map_err(|_| ())?.is_some()
-        || wire::read_capability(prior)
+        || wire::entry(prior, wire::SETTLEMENT_ACK)
             .map_err(|_| ())?
-            .is_some_and(|c| c != capability)
+            .is_some()
     {
         return Err(());
     }
-    let existing = wire::entry(prior, wire::RESULT).map_err(|_| ())?;
-    let observed = wire::entry(prior, wire::OBSERVED).map_err(|_| ())?;
-    if observed.is_some_and(|value| {
-        receipt
-            .as_ref()
-            .and_then(|r| wire::entry(r, wire::OBSERVED).ok().flatten())
-            != Some(value)
-    }) {
+    let mut added = Vec::new();
+    if let Some((capability, receipt)) = normal {
+        let prior_capability = wire::read_capability(prior).map_err(|_| ())?;
+        if prior_capability.is_some_and(|c| c != capability) {
+            return Err(());
+        }
+        if prior_capability.is_none() {
+            added.extend_from_slice(&wire::encode_capability(capability));
+        }
+        let existing = wire::entry(prior, wire::RESULT).map_err(|_| ())?;
+        let observed = wire::entry(prior, wire::OBSERVED).map_err(|_| ())?;
+        for (key, value) in [(wire::RESULT, existing), (wire::OBSERVED, observed)] {
+            if value.is_some_and(|value| {
+                receipt
+                    .as_ref()
+                    .and_then(|r| wire::entry(r, key).ok().flatten())
+                    != Some(value)
+            }) {
+                return Err(());
+            }
+        }
+        if existing.is_none() && observed.is_none() {
+            added.extend_from_slice(receipt.as_deref().unwrap_or(&[]));
+        }
+    } else if wire::read_capability(prior).map_err(|_| ())?.is_some()
+        || wire::entry(prior, wire::RESULT).map_err(|_| ())?.is_some()
+        || wire::entry(prior, wire::OBSERVED)
+            .map_err(|_| ())?
+            .is_some()
+    {
         return Err(());
     }
-    if existing.is_some_and(|value| {
-        receipt
+    if let Some(existing) = wire::entry(prior, wire::SETTLEMENT).map_err(|_| ())? {
+        if settlement
             .as_ref()
-            .and_then(|r| wire::entry(r, wire::RESULT).ok().flatten())
-            != Some(value)
-    }) {
-        return Err(());
+            .and_then(|r| wire::entry(r, wire::SETTLEMENT).ok().flatten())
+            != Some(existing)
+        {
+            return Err(());
+        }
+    } else if let Some(settlement) = settlement {
+        added.extend_from_slice(&settlement);
     }
-    let added = if wire::read_capability(prior).map_err(|_| ())?.is_none() {
-        wire::encode_capability(capability)
-    } else {
-        Vec::new()
-    };
-    let receipt = if existing.is_none() && observed.is_none() {
-        receipt.as_deref().unwrap_or(&[])
-    } else {
-        &[]
-    };
     let len = prior
         .len()
         .checked_add(added.len())
-        .and_then(|n| n.checked_add(receipt.len()))
         .filter(|&n| n <= busbar_contract::abi::mechanism::check::HARD_MAX_BYTES as usize)
         .ok_or(())?;
     let mut bytes = zeroize::Zeroizing::new(Vec::with_capacity(len));
     bytes.extend_from_slice(prior);
     bytes.extend_from_slice(&added);
-    bytes.extend_from_slice(receipt);
     let bytes = Arc::new(bytes);
     head.extensions = Blob {
         ptr: bytes.as_ptr(),
@@ -139,6 +186,33 @@ pub(crate) unsafe fn prepare(
         original,
         _bytes: bytes,
     }))
+}
+
+pub(super) fn wake_driver(wake: &'static InstanceWake) {
+    if wake.revoked.load(std::sync::atomic::Ordering::Acquire) {
+        return;
+    }
+    let driver = *wake
+        .conditional_driver
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    if let (Some(driver), Some(waking)) = (driver, Waking::of(wake)) {
+        waking.wake(driver);
+    }
+}
+
+fn wake_commit(
+    wake: &'static InstanceWake,
+    store: &super::services::ServiceStore,
+    request: &wire::Request,
+) {
+    if wake.revoked.load(std::sync::atomic::Ordering::Acquire) {
+        store.conditional_teardown(caller(wake));
+    } else if store.conditional_retired(caller(wake), request) {
+        wake_driver(wake);
+    } else if let Some(waking) = Waking::of(wake) {
+        waking.wake(request.capability.ticket);
+    }
 }
 
 /// Pending publication may not also expose ordinary writes, an answer, or a queued session.
@@ -219,6 +293,11 @@ pub(crate) unsafe fn answer(
             served.store.conditional_cancel(caller(wake), ticket);
         }
     }
+    if operation == slot::CLOSE && outcome == Outcome::Ready {
+        if let Some(served) = &served {
+            served.store.conditional_teardown(caller(wake));
+        }
+    }
     // An optional, unnegotiated feature cannot inspect an unreadable legacy blob. An active
     // exchange must fail closed instead; never form a slice larger than the shared ABI bound.
     let bytes = if head.extensions.len
@@ -233,6 +312,54 @@ pub(crate) unsafe fn answer(
         // SAFETY: the raw length was bounded above, and leased bytes remain live here.
         unsafe { super::validate::lent(head.extensions.ptr, head.extensions.len) }.ok_or(())?
     };
+    if wire::present(bytes) {
+        if wire::entry(bytes, wire::SETTLEMENT)
+            .map_err(|_| ())?
+            .is_some()
+        {
+            return Err(());
+        }
+        if let Some(ack) = wire::read_settlement_ack(bytes).map_err(|_| ())? {
+            if !matches!(operation, slot::DRIVE | slot::TICK)
+                || !matches!(outcome, Outcome::Ready | Outcome::Pending | Outcome::Failed)
+                || head.extensions.fmt != BLOB_OCTETS
+                || head.extensions.flags & !busbar_contract::abi::mechanism::call::BLOB_SECRET != 0
+            {
+                return Err(());
+            }
+            isolated(answer)?;
+            for key in [
+                wire::CAPABILITY,
+                wire::INTENT,
+                wire::OBSERVE,
+                wire::RESULT,
+                wire::OBSERVED,
+                busbar_contract::abi::mechanism::inspection::EXT_REQUEST,
+            ] {
+                if wire::entry(bytes, key).map_err(|_| ())?.is_some() {
+                    return Err(());
+                }
+            }
+            let served = served.ok_or(())?;
+            if outcome == Outcome::Ready
+                && !served
+                    .store
+                    .conditional_output_allowed(caller(wake), ticket, unit)
+            {
+                return Err(());
+            }
+            let consumed =
+                served
+                    .store
+                    .settlement_ack(caller(wake), &ack, outcome != Outcome::Failed)?;
+            // A SHORT/failed output never consumes custody. A successful ACK wakes the registered
+            // driver to finish any independent current cycle, without waking the retired origin.
+            if consumed {
+                wake_driver(wake);
+            }
+            return Ok(true);
+        }
+    }
     if !wire::present(bytes) {
         if operation != slot::CANCEL
             && outcome == Outcome::Ready
@@ -243,9 +370,12 @@ pub(crate) unsafe fn answer(
         {
             return Err(());
         }
-        if matches!(outcome, Outcome::Ready | Outcome::Refused) {
-            if let Some(s) = &served {
+        if let Some(s) = &served {
+            if outcome == Outcome::Ready {
                 s.store.conditional_finished(caller(wake), ticket);
+            } else if outcome == Outcome::Refused {
+                // A terminal caller refusal cannot discard a store commit already submitted.
+                s.store.conditional_cancel(caller(wake), ticket);
             }
         }
         return Ok(false);
@@ -257,6 +387,12 @@ pub(crate) unsafe fn answer(
             .is_some()
         || wire::entry(bytes, wire::RESULT).map_err(|_| ())?.is_some()
         || wire::entry(bytes, wire::OBSERVED)
+            .map_err(|_| ())?
+            .is_some()
+        || wire::entry(bytes, wire::SETTLEMENT)
+            .map_err(|_| ())?
+            .is_some()
+        || wire::entry(bytes, wire::SETTLEMENT_ACK)
             .map_err(|_| ())?
             .is_some()
     {
@@ -348,10 +484,7 @@ pub(crate) unsafe fn answer(
     if request.capability.ticket != ticket {
         return Err(());
     }
-    if !served
-        .store
-        .conditional_begin(caller(wake), unit, &request)?
-    {
+    if !served.store.conditional_begin(wake, unit, &request)? {
         return Ok(true);
     }
     let store = Arc::clone(served.store);
@@ -362,7 +495,7 @@ pub(crate) unsafe fn answer(
         };
         let receipt = Arc::from(bytes);
         if store.conditional_complete(caller(wake), unit, &completion, &result, receipt) {
-            waking.wake(ticket);
+            wake_commit(wake, &store, &completion);
         }
     };
     let candidate = request.candidate.clone();
@@ -381,9 +514,7 @@ pub(crate) unsafe fn answer(
             .store
             .conditional_complete(caller(wake), unit, &request, &result, receipt)
         {
-            if let Some(waking) = Waking::of(wake) {
-                waking.wake(ticket);
-            }
+            wake_commit(wake, served.store, &request);
         }
     }
     Ok(true)

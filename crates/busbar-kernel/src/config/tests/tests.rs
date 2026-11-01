@@ -1,5 +1,35 @@
 use super::*;
 
+#[test]
+fn new_pool_strategy_is_structured_and_does_not_rebind_a_bare_hook() {
+    let named: PoolCfg = serde_yaml::from_str("hooks: [operator-order]").unwrap();
+    assert_eq!(named.policy, PoolPolicy::Weighted);
+    assert!(!named.base_named);
+    assert_eq!(named.gates, vec!["operator-order"]);
+
+    let strategy: PoolCfg =
+        serde_yaml::from_str("hooks: [{strategy: operator-order}, compliance]").unwrap();
+    assert_eq!(strategy.policy.native_name(), Some("operator-order"));
+    assert!(strategy.base_named);
+    assert_eq!(strategy.gates, vec!["compliance"]);
+    assert!(!is_reserved_hook_name("operator-order"));
+}
+
+#[test]
+fn structured_pool_strategy_keeps_the_existing_single_base_rule() {
+    for yaml in [
+        "hooks: [{strategy: operator-order}, fastest]",
+        "hooks: [{strategy: operator-order}, {strategy: other-order}]",
+        "hooks: [{strategy: ''}]",
+        "hooks: [{strategy: operator-order, typo: true}]",
+    ] {
+        assert!(serde_yaml::from_str::<PoolCfg>(yaml).is_err(), "{yaml}");
+    }
+    let weighted: PoolCfg = serde_yaml::from_str("hooks: [{strategy: weighted}]").unwrap();
+    assert_eq!(weighted.policy, PoolPolicy::Weighted);
+    assert!(weighted.base_named);
+}
+
 // ── shared test helpers ──────────────────────────────────────────────────────────────────────────
 
 /// The dialect a test catalog entry names. The merge carries a provider's `protocol:` as opaque data

@@ -351,7 +351,11 @@ pub fn resolve_policy(cfg: &crate::config::PoolCfg) -> Option<ResolvedPolicy> {
     // hook axis. Compiled OUT, no door claims them (a config_validate BOOT ERROR, so unreachable in a
     // running server); degrade to None (SWRR) as belt-and-suspenders.
     let (policy, timeout) = crate::preflight::builtin_ranking(name)?;
-    Some(ResolvedPolicy::Policy {
+    Some(ranked_policy(policy, timeout))
+}
+
+fn ranked_policy(policy: Arc<dyn RoutingPolicy>, timeout: std::time::Duration) -> ResolvedPolicy {
+    ResolvedPolicy::Policy {
         policy,
         on_error: crate::config::PolicyOnError::default(),
         on_error_chain: Vec::new(),
@@ -361,7 +365,7 @@ pub fn resolve_policy(cfg: &crate::config::PoolCfg) -> Option<ResolvedPolicy> {
         send_user: false,
         // A native ordering policy never restricts, so on_empty is inert; keep the fail-closed default.
         on_empty: crate::config::PolicyOnError::Reject,
-    })
+    }
 }
 
 /// The name of the registered `default: true` hook, if any — the base ordering that pools which named
@@ -389,6 +393,19 @@ pub fn resolve_pool_ordering(
     default_hook: Option<&str>,
     settings_version: u64,
 ) -> Option<ResolvedPolicy> {
+    try_resolve_pool_ordering(cfg, hooks, env, default_hook, settings_version)
+        .ok()
+        .flatten()
+}
+
+/// Boot/reload must retain an opening failure instead of replacing the selected strategy with SWRR.
+pub fn try_resolve_pool_ordering(
+    cfg: &crate::config::PoolCfg,
+    hooks: &std::collections::HashMap<String, crate::config::HookCfg>,
+    env: &HookEnv,
+    default_hook: Option<&str>,
+    settings_version: u64,
+) -> Result<Option<ResolvedPolicy>, String> {
     if !cfg.base_named {
         if let Some(name) = default_hook {
             if let Some(hook) = hooks.get(name) {
@@ -399,7 +416,13 @@ pub fn resolve_pool_ordering(
                 // (`can_rewrite`), not `admits_rewrite`, to match the siblings exactly.
                 if hook.kind == crate::config::HookKind::Gate && !hook.prompt.can_rewrite() {
                     // The default gate becomes this pool's base ordering.
-                    return resolve_gate_transport(name, hook, hooks, env, settings_version);
+                    return Ok(resolve_gate_transport(
+                        name,
+                        hook,
+                        hooks,
+                        env,
+                        settings_version,
+                    ));
                 }
                 tracing::warn!(
                     hook = %name,
@@ -409,7 +432,15 @@ pub fn resolve_pool_ordering(
             }
         }
     }
-    resolve_policy(cfg)
+    let Some(name) = cfg.policy.native_name() else {
+        return Ok(None);
+    };
+    let axis = env
+        .axis
+        .as_ref()
+        .ok_or_else(|| format!("ranking strategy '{name}' has no hook axis"))?;
+    let (policy, timeout) = crate::preflight::ranking_on_axis(axis.as_ref(), name)?;
+    Ok(Some(ranked_policy(policy, timeout)))
 }
 
 /// Resolve a pool's GATES (`hook:` / the non-strategy names in `hooks: [...]`) into their transports,

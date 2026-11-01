@@ -175,8 +175,17 @@ struct Held {
     entries: HashMap<Issue, (Bound, Entry)>,
     /// Inspection receipts share this epoch, but never a completion-handle namespace.
     inspections: HashMap<usize, inspection_store::Kept>,
-    conditionals: HashMap<usize, conditional_store::Kept>,
+    conditionals: HashMap<(usize, u64), conditional_store::Kept>,
     conditional_units: HashMap<usize, Result<Option<u64>, ()>>,
+}
+
+impl Held {
+    fn empty(&self) -> bool {
+        self.entries.is_empty()
+            && self.inspections.is_empty()
+            && self.conditionals.is_empty()
+            && self.conditional_units.is_empty()
+    }
 }
 
 /// What one result is kept under on its ticket: the CALLER whose context issued the handle (THE
@@ -252,25 +261,52 @@ impl ServiceStore {
     /// Forget every result under `ticket` (it was recycled, a driver ticket's tick started, or a
     /// new op started on it), ending its epoch; how many there were.
     pub(crate) fn forget(&self, ticket: Ticket) -> usize {
-        let held = { self.lock(ticket).remove(&ticket) };
-        held.map_or(0, |held| held.entries.len())
+        let retired = {
+            let mut map = self.lock(ticket);
+            let Some(h) = map.get_mut(&ticket) else {
+                return 0;
+            };
+            let entries = std::mem::take(&mut h.entries);
+            let inspections = std::mem::take(&mut h.inspections);
+            h.conditional_units.clear();
+            let mut removed = Vec::new();
+            let mut wakes = Vec::new();
+            for (key, mut kept) in std::mem::take(&mut h.conditionals) {
+                if kept.retire() {
+                    if let Some(owner) = kept.completed_owner() {
+                        wakes.push(owner);
+                    }
+                    h.conditionals.insert(key, kept);
+                } else {
+                    removed.push(kept);
+                }
+            }
+            // The old immutable commits retain their own original epoch in their map key.
+            // A new ordinary operation can never regain that old capability.
+            h.epoch = self.epochs.fetch_add(1, Ordering::Relaxed) + 1;
+            let empty_owner = if h.empty() { map.remove(&ticket) } else { None };
+            (entries, inspections, removed, wakes, empty_owner)
+        };
+        let count = retired.0.len();
+        let (entries, inspections, removed, wakes, empty_owner) = retired;
+        drop((entries, inspections, removed, empty_owner));
+        for owner in wakes {
+            super::conditional::wake_driver(owner);
+        }
+        count
     }
 
     /// Forget every result of worker `worker` (it was replaced).
     pub(crate) fn forget_worker(&self, worker: u32) {
-        let removed = {
-            let mut shard = self.shard(worker);
-            let tickets: Vec<_> = shard
-                .keys()
-                .filter(|t| decode(t.slot).0 == worker)
-                .copied()
-                .collect();
-            tickets
-                .into_iter()
-                .filter_map(|ticket| shard.remove(&ticket))
-                .collect::<Vec<_>>()
-        };
-        drop(removed);
+        let tickets: Vec<_> = self
+            .shard(worker)
+            .keys()
+            .filter(|t| decode(t.slot).0 == worker)
+            .copied()
+            .collect();
+        for ticket in tickets {
+            self.forget(ticket);
+        }
     }
 
     /// TEST ONLY: a READY result kept under `ticket`'s handle `seq`, as a service an op on the

@@ -17,6 +17,230 @@ fn def(module: &str) -> ExportDefCfg {
     serde_json::from_value(serde_json::json!({ "module": module })).expect("a minimal definition")
 }
 
+struct ListenerPolicySink {
+    routes: Vec<Route>,
+    public: Vec<String>,
+    persistent: Vec<String>,
+}
+
+struct ListenerSentinel {
+    policy: ListenerPolicySink,
+    label: &'static str,
+    called: Arc<std::sync::Mutex<Vec<(&'static str, bool)>>>,
+}
+
+impl ExportCalls for ListenerSentinel {
+    fn streams(&self) -> &[u8] {
+        &[]
+    }
+    fn routes(&self) -> &[Route] {
+        self.policy.routes()
+    }
+    fn public_routes(&self) -> &[String] {
+        self.policy.public_routes()
+    }
+    fn persistent_routes(&self) -> &[String] {
+        self.policy.persistent_routes()
+    }
+    fn deliver(&self, _: u8, _: Vec<u8>, _: Box<dyn Send>) -> Delivered {
+        Delivered::Shed
+    }
+    fn scrape(&self, _: &[busbar_contract::export_calls::Family]) -> Result<Vec<u8>, String> {
+        Err("unused".into())
+    }
+    fn status(&self) -> Option<Vec<u8>> {
+        None
+    }
+    fn serve(&self, _: &ServeRequest<'_>) -> Result<busbar_contract::export_calls::Served, String> {
+        let granted = !matches!(
+            crate::export::scrape::read(busbar_contract::abi::host::service::SNAPSHOT_SCOPE_HOOKS),
+            busbar_contract::services::Snapshot::Refused(_)
+        );
+        self.called.lock().unwrap().push((self.label, granted));
+        Ok(busbar_contract::export_calls::Served {
+            status: 200,
+            headers: Vec::new(),
+            body: self.label.as_bytes().to_vec(),
+        })
+    }
+}
+
+#[test]
+fn replacement_export_cannot_lend_its_grant_to_the_old_named_instance() {
+    use busbar_contract::abi::mechanism::route::{RouteAuth, RouteMethod};
+    for old_module in ["third-party", "trusted-observer"] {
+        let called = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = |name: &str, module: &str, scrape, label| PluginSink {
+            name: name.into(),
+            module: module.into(),
+            sink: Arc::new(ListenerSentinel {
+                policy: ListenerPolicySink {
+                    routes: vec![Route {
+                        path: "/observations".into(),
+                        method: RouteMethod::Get,
+                        auth: RouteAuth::Key,
+                    }],
+                    public: vec!["/observations".into()],
+                    persistent: Vec::new(),
+                },
+                label,
+                called: Arc::clone(&called),
+            }),
+            scrape,
+            projection: Projection::for_test(&[ExportStream::Metrics], &[]),
+            span_record: false,
+            admission: OnceLock::new(),
+            reads: OnceLock::new(),
+        };
+        let cfg = ExportCfg {
+            plugins: vec![crate::config::PluginExportSettings {
+                name: "reused-name".into(),
+                def: def("trusted-observer"),
+                projection: Projection::for_test(&[ExportStream::Metrics], &[]),
+                scrape: true,
+            }],
+            ..ExportCfg::default()
+        };
+        let boot = [
+            sink("reused-name", old_module, false, "old"),
+            sink("other-name", "trusted-observer", true, "trusted"),
+        ];
+        let routes = route_decls_from(&cfg, &boot);
+        let route = routes
+            .iter()
+            .find(|r| r.route.path == "/observations")
+            .unwrap();
+        let reply = route.dispatch.handle_http(&EndpointRequest {
+            method: "GET".into(),
+            path: "/observations".into(),
+            query: String::new(),
+            headers: Vec::new(),
+            body: Vec::new(),
+        });
+        assert_eq!(reply.status, 200);
+        assert_eq!(reply.body, b"trusted");
+        assert_eq!(
+            *called.lock().unwrap(),
+            [("trusted", true)],
+            "the old display name never confers the new module's grant"
+        );
+
+        called.lock().unwrap().clear();
+        let routes = route_decls_from(&cfg, &boot[..1]);
+        for route in routes {
+            let _ = route.dispatch.handle_http(&EndpointRequest {
+                method: "GET".into(),
+                path: route.route.path.clone(),
+                query: String::new(),
+                headers: Vec::new(),
+                body: Vec::new(),
+            });
+        }
+        assert!(
+            called.lock().unwrap().is_empty(),
+            "an unopened replacement never falls back to the old module"
+        );
+    }
+}
+
+impl ExportCalls for ListenerPolicySink {
+    fn streams(&self) -> &[u8] {
+        &[]
+    }
+    fn routes(&self) -> &[Route] {
+        &self.routes
+    }
+    fn public_routes(&self) -> &[String] {
+        &self.public
+    }
+    fn persistent_routes(&self) -> &[String] {
+        &self.persistent
+    }
+    fn deliver(&self, _: u8, _: Vec<u8>, _: Box<dyn Send>) -> Delivered {
+        Delivered::Shed
+    }
+    fn scrape(&self, _: &[busbar_contract::export_calls::Family]) -> Result<Vec<u8>, String> {
+        Err("unused".into())
+    }
+    fn status(&self) -> Option<Vec<u8>> {
+        None
+    }
+    fn serve(&self, _: &ServeRequest<'_>) -> Result<busbar_contract::export_calls::Served, String> {
+        Err("unused".into())
+    }
+}
+
+#[test]
+fn declared_listener_policy_preserves_boot_routes_but_removes_config_routes() {
+    use busbar_contract::abi::mechanism::route::{RouteAuth, RouteMethod};
+    for paths in [
+        ["/metrics", "/metrics/hooks"],
+        ["/observations", "/observations/process"],
+    ] {
+        let sink = PluginSink {
+            name: "observer".into(),
+            module: "neutral-observer".into(),
+            sink: Arc::new(ListenerPolicySink {
+                routes: paths
+                    .iter()
+                    .map(|path| Route {
+                        path: (*path).into(),
+                        method: RouteMethod::Get,
+                        auth: RouteAuth::Key,
+                    })
+                    .collect(),
+                public: paths.iter().map(|path| (*path).into()).collect(),
+                persistent: vec![paths[1].into()],
+            }),
+            scrape: true,
+            projection: Projection::for_test(&[ExportStream::Metrics], &[]),
+            span_record: false,
+            admission: OnceLock::new(),
+            reads: OnceLock::new(),
+        };
+        let mut cfg = ExportCfg {
+            plugins: vec![crate::config::PluginExportSettings {
+                name: "observer".into(),
+                def: def("neutral-observer"),
+                projection: Projection::for_test(&[ExportStream::Metrics], &[]),
+                scrape: true,
+            }],
+            ..ExportCfg::default()
+        };
+        let boot = [sink];
+        let table = crate::plugin_routes::build_route_table(route_decls_from(&cfg, &boot)).unwrap();
+        for path in paths {
+            assert_eq!(
+                table.declared_auth(path, &http::Method::GET),
+                Some(RouteAuth::Key)
+            );
+        }
+        let removed =
+            crate::plugin_routes::build_route_table(route_decls_from(&ExportCfg::default(), &boot))
+                .unwrap();
+        assert_eq!(removed.declared_auth(paths[0], &http::Method::GET), None);
+        assert_eq!(
+            removed.declared_auth(paths[1], &http::Method::GET),
+            Some(RouteAuth::Key)
+        );
+        cfg.plugins[0].scrape = false;
+        let ungranted =
+            crate::plugin_routes::build_route_table(route_decls_from(&cfg, &[])).unwrap();
+        assert!(ungranted.paths().is_empty());
+        let ungranted_boot = [PluginSink {
+            scrape: false,
+            ..boot.into_iter().next().unwrap()
+        }];
+        let ungranted =
+            crate::plugin_routes::build_route_table(route_decls_from(&cfg, &ungranted_boot))
+                .unwrap();
+        assert!(
+            ungranted.paths().is_empty(),
+            "metadata cannot grant a snapshot consumer's privileges"
+        );
+    }
+}
+
 /// THE CONTROL OF ITEM 141 at the config layer: a `module:` naming a `kind: export` row on the axis
 /// — by its name or its alias — RESOLVES to an instance the boot will open, and one naming nothing
 /// on the axis is refused in exactly 1.5.5's words, so a config without plugins reads as it always did.

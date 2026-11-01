@@ -16,10 +16,8 @@
 //!
 //! - A `hook` plugin's routes are confined under `/hooks/<name>/*` (`<name>` = its config name), so two
 //!   hook instances can never collide and a hook can never shadow a core route.
-//! - An `export` plugin may claim the well-known `/metrics` (a Prometheus/OpenMetrics convention),
-//!   and the SCRAPE SINK alone ([`RouteDecl::scrape`]) the well-known `/metrics/hooks` too (owner
-//!   law 2026-09-27: both are the scrape sink's listener needs, not core routes); otherwise its
-//!   routes are confined under `/exports/<name>/*`.
+//! - Export routes are confined under `/exports/<name>/*`. The first-party snapshot consumer
+//!   may declare public paths through its Statement metadata ([`RouteDecl::scrape`]).
 //! - No plugin route may collide with `/api/v1/admin/*`, `/healthz`, `/stats`, `/v1/models`,
 //!   `/v1beta/models`, or the auth-exchange path — and all plugin routes are reserved
 //!   BEFORE the data-plane catch-all fallback (mounted in [`crate::base_data_router`]).
@@ -117,9 +115,10 @@ pub struct RouteDecl {
     pub kind: RouteKind,
     /// The declared route.
     pub route: Route,
-    /// Whether the declaring instance is the SCRAPE SINK (the first-party export instance subscribed
-    /// to `metrics`, #65): the one that may claim the well-known `/metrics/hooks`.
+    /// Whether this route has the first-party snapshot consumer's public namespace grant.
     pub scrape: bool,
+    /// The boot instance retains this route after configuration removal.
+    pub persistent: bool,
     /// The live dispatcher for the owning plugin (resolved per request from the App snapshot).
     pub dispatch: Arc<dyn PluginHttpDispatch>,
 }
@@ -144,6 +143,7 @@ pub struct PluginRouteTable {
     /// `Borrow`, so the hot-path lookups allocate nothing; the method walk inside one path's entry
     /// is over however many methods THAT path declared, which is one or two.
     by_path: HashMap<String, Vec<(RouteMethod, Registered)>>,
+    persistent: std::collections::HashSet<String>,
 }
 
 impl PluginRouteTable {
@@ -221,25 +221,6 @@ impl PluginRouteTable {
     }
 }
 
-/// The well-known exposition path (a Prometheus/OpenMetrics convention): the one export route
-/// outside `/exports/<name>/*`.
-const METRICS_PATH: &str = "/metrics";
-
-/// The well-known path only the scrape sink may claim ([`RouteDecl::scrape`]).
-const SCRAPE_SINK_PATH: &str = "/metrics/hooks";
-
-/// Whether `path` is the well-known hook exposition path, which stays mounted for the process's
-/// life once the boot's scrape sink serves it (1.5.5's core route did).
-pub(crate) fn scrape_sink_path(path: &str) -> bool {
-    path == SCRAPE_SINK_PATH
-}
-
-/// Whether `path` is one of the scrape sink's well-known exposition paths — `/metrics` or
-/// `/metrics/hooks` — which only the scrape sink (first-party, #65) is granted.
-pub(crate) fn well_known(path: &str) -> bool {
-    path == METRICS_PATH || path == SCRAPE_SINK_PATH
-}
-
 /// Namespace-confine one declared `path` for a plugin of `kind` named `owner` (`scrape`: it is the
 /// scrape sink). `Ok(())` iff the path is inside the plugin's allowed namespace and collides with no
 /// reserved core route.
@@ -251,26 +232,24 @@ fn confine(kind: RouteKind, owner: &str, path: &str, scrape: bool) -> Result<(),
             "plugin {owner:?} cannot register {path} — the /api/* admin surface is reserved"
         ));
     }
-    // Never a reserved core exposition/discovery/auth route, nor the scrape sink's well-known path
-    // for any plugin but the scrape sink.
-    if reserved_exact_paths().contains(&path) || (path == SCRAPE_SINK_PATH && !scrape) {
+    // Public namespace grants never include the host's reserved routes.
+    if reserved_exact_paths().contains(&path) {
         return Err(format!(
             "plugin {owner:?} cannot register {path} — it is a reserved core route"
         ));
     }
-    // A hook is confined to its own namespace; an export sink to its own, or the well-known
-    // `/metrics` (the one exception, for a metrics-stream sink).
-    let (noun, root, or_metrics) = match kind {
-        RouteKind::Hook => ("hook", format!("/hooks/{owner}"), ""),
-        RouteKind::Export if well_known(path) => return Ok(()),
-        RouteKind::Export => ("export", format!("/exports/{owner}"), "/metrics or "),
+    // A public namespace grant applies only to the declaring snapshot consumer's route.
+    let (noun, root) = match kind {
+        RouteKind::Hook => ("hook", format!("/hooks/{owner}")),
+        RouteKind::Export if scrape => return Ok(()),
+        RouteKind::Export => ("export", format!("/exports/{owner}")),
     };
     if path == root || path.starts_with(&format!("{root}/")) {
         return Ok(());
     }
     Err(format!(
         "{noun} plugin {owner:?} cannot register {path} — {noun} routes are confined to \
-         {or_metrics}{root}/*"
+         {root}/*"
     ))
 }
 
@@ -280,8 +259,18 @@ fn confine(kind: RouteKind, owner: &str, path: &str, scrape: bool) -> Result<(),
 /// the same declaration set (`crate::preflight::plugins_preflight`), so the two can never diverge.
 pub fn build_route_table(decls: Vec<RouteDecl>) -> Result<PluginRouteTable, String> {
     let mut by_path: HashMap<String, Vec<(RouteMethod, Registered)>> = HashMap::new();
+    let mut persistent = std::collections::HashSet::new();
     for decl in decls {
         confine(decl.kind, &decl.owner, &decl.route.path, decl.scrape)?;
+        if decl.persistent {
+            if !decl.scrape || decl.kind != RouteKind::Export {
+                return Err(format!(
+                    "plugin {:?} cannot retain an ungranted route",
+                    decl.owner
+                ));
+            }
+            persistent.insert(decl.route.path.clone());
+        }
         let entries = by_path.entry(decl.route.path.clone()).or_default();
         if let Some((_, existing)) = entries.iter().find(|(m, _)| *m == decl.route.method) {
             return Err(format!(
@@ -301,7 +290,10 @@ pub fn build_route_table(decls: Vec<RouteDecl>) -> Result<PluginRouteTable, Stri
             },
         ));
     }
-    Ok(PluginRouteTable { by_path })
+    Ok(PluginRouteTable {
+        by_path,
+        persistent,
+    })
 }
 
 /// THE RESTART-TO-APPLY SIGNAL for plugin routes: the paths a just-applied config
@@ -324,12 +316,13 @@ pub fn paths_awaiting_restart(
     boot_mounted: &std::collections::HashSet<String>,
 ) -> Vec<String> {
     let previous = previous.paths();
-    // `/metrics/hooks` is reported as 1.5.5 reported it: never (it was a core route then, mounted
-    // with the recorder at boot, outside the plugin route table this signal reads).
+    // Boot-lifetime routes already belong to the process's original instance.
     let mut out: Vec<String> = installed
         .paths()
         .into_iter()
-        .filter(|p| !boot_mounted.contains(p) && !previous.contains(p) && p != SCRAPE_SINK_PATH)
+        .filter(|p| {
+            !boot_mounted.contains(p) && !previous.contains(p) && !installed.persistent.contains(p)
+        })
         .collect();
     out.sort();
     out

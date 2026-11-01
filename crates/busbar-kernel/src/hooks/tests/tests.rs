@@ -10,7 +10,130 @@ fn from_ranked_drops_unknown_and_dedups() {
 }
 
 use crate::config::{HookCfg, HookKind, PolicyOnError, PoolPolicy, PromptAccess, UserAccess};
+use busbar_contract::hook_calls::HookAxis as _;
 use std::collections::HashMap;
+
+const EXTRA_STRATEGY: &str = "operator-order";
+
+struct StrategyAxis {
+    facts: busbar_contract::hook_calls::HookFacts,
+    fail_open: bool,
+}
+
+impl busbar_contract::hook_calls::HookAxis for StrategyAxis {
+    fn probe(
+        &self,
+        module: &str,
+        _: &str,
+        settings: &serde_json::Value,
+    ) -> Option<busbar_contract::hook_calls::Probed> {
+        assert_eq!(module, EXTRA_STRATEGY);
+        assert_eq!(settings, &serde_json::json!({"policy": EXTRA_STRATEGY}));
+        Some((Some(self.facts.clone()), Vec::new()))
+    }
+
+    fn open(
+        &self,
+        module: &str,
+        label: &str,
+        settings: &serde_json::Value,
+        budget: std::time::Duration,
+    ) -> Result<Arc<dyn busbar_contract::hook_calls::HookCalls>, String> {
+        assert_eq!(module, EXTRA_STRATEGY);
+        assert_eq!(label, EXTRA_STRATEGY);
+        assert_eq!(settings, &serde_json::json!({"policy": EXTRA_STRATEGY}));
+        if self.fail_open {
+            return Err("strategy constructor refused".into());
+        }
+        // Reuse the kernel's hook-call double; no plugin implementation enters this test.
+        crate::test_support::hook_double::HookAxisDouble::new(&["strategy-double"]).open(
+            "strategy-double",
+            label,
+            &serde_json::json!({"order": [1, 0]}),
+            budget,
+        )
+    }
+
+    fn linked(&self, _: &str) -> bool {
+        false
+    }
+    fn call_budget(&self) -> std::time::Duration {
+        std::time::Duration::from_secs(1)
+    }
+    fn first_party(&self, _: &str) -> bool {
+        false
+    }
+}
+
+fn strategy_env(infallible: bool, words: Vec<String>, fail_open: bool) -> HookEnv {
+    HookEnv::with_axis(
+        crate::test_support::rows::empty(),
+        Arc::new(StrategyAxis {
+            facts: busbar_contract::hook_calls::HookFacts {
+                name: "strategy-double".into(),
+                class: busbar_contract::abi::hook::CLASS_GATE,
+                infallible,
+                words,
+                ..Default::default()
+            },
+            fail_open,
+        }),
+        Arc::new(crate::config::secret::SecretResolver::builtins_only()),
+    )
+}
+
+#[tokio::test]
+async fn plugin_strategy_word_survives_parse_and_uses_the_admitted_axis() {
+    let pool = pool_policy(crate::config::parse_strategy(EXTRA_STRATEGY));
+    assert_eq!(pool.policy.native_name(), Some(EXTRA_STRATEGY));
+    let env = strategy_env(false, vec![EXTRA_STRATEGY.into()], false);
+    let resolved = resolve_pool_ordering(&pool, &HashMap::new(), &env, None, 0);
+    let Some(ResolvedPolicy::Policy { policy, .. }) = resolved else {
+        panic!("the admitted plugin strategy must not become weighted");
+    };
+    assert_eq!(policy.name(), EXTRA_STRATEGY);
+    let order = policy
+        .decide(
+            &dreq("hi"),
+            &[dcand(0), dcand(1)],
+            &dctx(),
+            std::time::Duration::from_secs(1),
+        )
+        .await
+        .expect("strategy decision");
+    assert_eq!(order, RoutingDecision::Prefer(vec![1, 0]));
+}
+
+#[test]
+fn plugin_strategy_requires_a_declared_word() {
+    let pool = pool_policy(crate::config::parse_strategy(EXTRA_STRATEGY));
+    for env in [
+        strategy_env(false, vec!["different-word".into()], false),
+        strategy_env(true, Vec::new(), false),
+    ] {
+        assert!(resolve_pool_ordering(&pool, &HashMap::new(), &env, None, 0).is_none());
+    }
+    let mut tap = strategy_env(true, vec![EXTRA_STRATEGY.into()], false);
+    tap.axis = Some(Arc::new(StrategyAxis {
+        facts: busbar_contract::hook_calls::HookFacts {
+            class: busbar_contract::abi::hook::CLASS_TAP,
+            words: vec![EXTRA_STRATEGY.into()],
+            ..Default::default()
+        },
+        fail_open: false,
+    }));
+    assert!(resolve_pool_ordering(&pool, &HashMap::new(), &tap, None, 0).is_none());
+}
+
+#[test]
+fn plugin_strategy_open_failure_refuses_pool_construction() {
+    let pool = pool_policy(crate::config::parse_strategy(EXTRA_STRATEGY));
+    let env = strategy_env(true, vec![EXTRA_STRATEGY.into()], true);
+    let error = try_resolve_pool_ordering(&pool, &HashMap::new(), &env, None, 0)
+        .err()
+        .expect("a constructor failure must refuse boot/reload");
+    assert!(error.contains("strategy constructor refused"));
+}
 
 // ── Hook test env ─────────────────────────────────────────────────────────────────────────────────
 // A hook resolves its `plugin:` ref against the registry's `kind: hook` rows and opens through the

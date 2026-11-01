@@ -448,7 +448,80 @@ fn linked_hook_axis() -> Option<std::sync::Arc<dyn busbar_contract::hook_calls::
 /// Whether this build links a ranking hook that claims the strategy word `name` (a hook word mark
 /// of a linked `kind: hook` row).
 pub(crate) fn builtin_ranking_known(name: &str) -> bool {
-    linked_hook_answers(name)
+    linked_hook_axis().is_some_and(|axis| ranking_settings(axis.as_ref(), name).is_ok())
+}
+
+/// Resolve a strategy through the hook's declared word marks and kind metadata. A module alias
+/// alone is not a strategy claim. The historical ranking door does not declare `infallible`;
+/// its failure still converges with the existing weighted terminal.
+fn ranking_settings(
+    axis: &dyn busbar_contract::hook_calls::HookAxis,
+    name: &str,
+) -> Result<serde_json::Value, String> {
+    let settings = serde_json::json!({ "policy": name });
+    let (facts, problems) = axis
+        .probe(name, name, &settings)
+        .ok_or_else(|| format!("ranking strategy '{name}' has no admitted hook plugin"))?;
+    let facts = facts.ok_or_else(|| format!("ranking strategy '{name}' has no hook metadata"))?;
+    if facts.class != busbar_contract::abi::hook::CLASS_GATE
+        || !facts.words.iter().any(|word| word == name)
+    {
+        return Err(format!(
+            "ranking strategy '{name}' must be a declared word of a gate hook"
+        ));
+    }
+    if !problems.is_empty() {
+        return Err(format!(
+            "ranking strategy '{name}': {}",
+            problems.join("; ")
+        ));
+    }
+    Ok(settings)
+}
+
+pub(crate) fn ranking_on_axis(
+    axis: &dyn busbar_contract::hook_calls::HookAxis,
+    name: &str,
+) -> Result<
+    (
+        std::sync::Arc<dyn crate::hooks::RoutingPolicy>,
+        std::time::Duration,
+    ),
+    String,
+> {
+    let settings = ranking_settings(axis, name)?;
+    let budget = axis.call_budget();
+    let calls = axis.open(name, name, &settings, budget)?;
+    Ok((
+        crate::plane_driver::hooks::policy::HookPolicy::policy(calls, name),
+        budget,
+    ))
+}
+
+/// The plugin-aware validation pass uses the same admitted axis as runtime resolution, including
+/// dropped-in rows. No strategy may silently disappear into the inline weighted floor.
+pub(crate) fn validate_pool_strategies(
+    cfg: &config::RootCfg,
+    registry: &Arc<dyn PluginRows>,
+) -> Result<(), String> {
+    if !cfg
+        .pools
+        .values()
+        .any(|pool| pool.policy.native_name().is_some())
+    {
+        return Ok(());
+    }
+    let build = root_rows()
+        .hook_axis
+        .ok_or("no hook axis is installed for pool strategies")?;
+    let axis = build(registry)?;
+    for (pool_name, pool) in &cfg.pools {
+        if let Some(name) = pool.policy.native_name() {
+            ranking_settings(axis.as_ref(), name)
+                .map_err(|e| format!("pool '{pool_name}': {e}"))?;
+        }
+    }
+    Ok(())
 }
 
 /// Whether a `kind: hook` row this build LINKS answers `module` on the hook axis (its Statement
@@ -470,17 +543,7 @@ pub(crate) fn builtin_ranking(
     std::time::Duration,
 )> {
     let axis = linked_hook_axis()?;
-    if !axis.linked(name) {
-        return None;
-    }
-    let budget = axis.call_budget();
-    let calls = axis
-        .open(name, name, &serde_json::json!({ "policy": name }), budget)
-        .ok()?;
-    Some((
-        crate::plane_driver::hooks::policy::HookPolicy::policy(calls, name),
-        budget,
-    ))
+    ranking_on_axis(axis.as_ref(), name).ok()
 }
 
 /// A configured reference to a `kind` plugin, in the words its refusals use: how it `names` the

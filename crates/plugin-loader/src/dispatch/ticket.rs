@@ -124,6 +124,8 @@ pub(crate) struct InstanceWake {
     /// The instance's handle names nothing any more (#74): set when it is quarantined, faulted by
     /// the watchdog, closed or dropped. Checked by `handle::resolve` after the tag verifies.
     pub(crate) revoked: std::sync::atomic::AtomicBool,
+    /// Last actual driver crossing of this instance, for outcome-only commit settlement wakes.
+    pub(crate) conditional_driver: std::sync::Mutex<Option<Ticket>>,
     /// The instance this entry is the handle of, set once it exists: what a forgery found AFTER the
     /// call that supplied it (a forged ticket generation, judged on the worker against the supplier
     /// its wake carried) quarantines.

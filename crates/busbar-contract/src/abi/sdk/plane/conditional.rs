@@ -17,6 +17,10 @@ pub const REQUIRED_KINDS: &str = "busbar.plane.record-transaction.required-kinds
 pub const INTENT: &str = "busbar.plane.record-transaction";
 /// Definitive result of the exact pending intent.
 pub const RESULT: &str = "busbar.plane.record-transaction.result";
+/// Outcome-only receipt for an original submitted commit whose normal operation ended.
+pub const SETTLEMENT: &str = "busbar.plane.record-transaction.settlement";
+/// Acknowledgement that the exact original receipt's local obligations were consumed.
+pub const SETTLEMENT_ACK: &str = "busbar.plane.record-transaction.settlement-ack";
 /// Read-only chain incarnation observation, issued before planning reads.
 pub const OBSERVE: &str = "busbar.plane.record-transaction.observe";
 /// The immutable original chain incarnation.
@@ -295,6 +299,8 @@ pub fn present(mut bytes: &[u8]) -> bool {
             REQUIRED_KINDS,
             INTENT,
             RESULT,
+            SETTLEMENT,
+            SETTLEMENT_ACK,
             OBSERVE,
             OBSERVED,
         ]
@@ -557,6 +563,120 @@ pub fn read_result(
     }))
 }
 
+/// A receipt delivered only to settle an original canceled commit. It grants no authority.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Settlement {
+    /// The original operation's ticket and epoch, never the delivery driver's authority.
+    pub capability: Capability,
+    /// The immutable original commit result.
+    pub result: ConditionalResult,
+    /// Digest of the exact original request, as in ordinary result receipts.
+    pub request_digest: [u8; 32],
+}
+
+impl Settlement {
+    /// Match an existing retained request without reconstructing or resubmitting a candidate.
+    pub fn matches(&self, request: &Request) -> Result<bool, &'static str> {
+        Ok(self.capability == request.capability
+            && self.result.correlation == request.candidate.correlation
+            && self.request_digest == crate::abi::sdk::digest::sha256(&encode_request(request)?))
+    }
+}
+
+/// The exact original identity acknowledged after outcome-only local settlement.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SettlementAck {
+    /// Original operation identity, not the delivery driver.
+    pub capability: Capability,
+    /// Original commit correlation.
+    pub correlation: u64,
+    /// Digest of the exact original request.
+    pub request_digest: [u8; 32],
+}
+impl SettlementAck {
+    /// Validate this acknowledgement against the original retained commit.
+    pub fn matches(&self, request: &Request) -> Result<bool, &'static str> {
+        Ok(self.capability == request.capability
+            && self.correlation == request.candidate.correlation
+            && self.request_digest == crate::abi::sdk::digest::sha256(&encode_request(request)?))
+    }
+}
+
+/// Encode a host-only settlement receipt using the existing immutable result body.
+pub fn encode_settlement(
+    request: &Request,
+    result: &ConditionalResult,
+) -> Result<Vec<u8>, &'static str> {
+    let encoded = encode_result(request, result)?;
+    let body = entry(&encoded, RESULT)?.ok_or(INVALID)?;
+    Ok(extensions::encode(&[(SETTLEMENT, body)]))
+}
+
+/// Decode an outcome-only receipt; match it to retained Request custody before local effects.
+pub fn read_settlement(bytes: &[u8]) -> Result<Option<Settlement>, &'static str> {
+    let Some(body) = entry(bytes, SETTLEMENT)? else {
+        return Ok(None);
+    };
+    let mut reader = Read(body);
+    let capability = reader.capability()?;
+    let correlation = reader.u64()?;
+    if correlation == 0 {
+        return Err(INVALID);
+    }
+    let request_digest = reader.take(32)?.try_into().map_err(|_| INVALID)?;
+    let decision = match reader.take(1)?[0] {
+        0 => Ok(Decision::Applied),
+        1 => Ok(Decision::ConditionConflict),
+        2 => Err(ConditionalFailure::Refused(
+            "conditional record transaction refused",
+        )),
+        3 => Err(ConditionalFailure::OpIdConflict),
+        4 => Err(ConditionalFailure::Indeterminate),
+        _ => return Err(INVALID),
+    };
+    reader.end()?;
+    Ok(Some(Settlement {
+        capability,
+        result: ConditionalResult {
+            correlation,
+            decision,
+        },
+        request_digest,
+    }))
+}
+
+/// Acknowledge only an exact receipt consumed by outcome-only settlement. This is not a request.
+/// Emit this alone on a pending DRIVE/TICK. Keep the matched request and ACK marker until a
+/// subsequent valid same-instance driver input has no matching settlement. The host lends one
+/// sticky receipt until successful ACK consumption; failed/SHORT answers do not consume it.
+pub fn encode_settlement_ack(settlement: &Settlement) -> Vec<u8> {
+    let mut body = Vec::new();
+    authority(&mut body, settlement.capability);
+    body.extend_from_slice(&settlement.result.correlation.to_le_bytes());
+    body.extend_from_slice(&settlement.request_digest);
+    extensions::encode(&[(SETTLEMENT_ACK, &body)])
+}
+
+/// Decode an outcome-only acknowledgement for the host's retained original request.
+pub fn read_settlement_ack(bytes: &[u8]) -> Result<Option<SettlementAck>, &'static str> {
+    let Some(body) = entry(bytes, SETTLEMENT_ACK)? else {
+        return Ok(None);
+    };
+    let mut reader = Read(body);
+    let capability = reader.capability()?;
+    let correlation = reader.u64()?;
+    if correlation == 0 {
+        return Err(INVALID);
+    }
+    let request_digest = reader.take(32)?.try_into().map_err(|_| INVALID)?;
+    reader.end()?;
+    Ok(Some(SettlementAck {
+        capability,
+        correlation,
+        request_digest,
+    }))
+}
+
 /// Encode an observation. Pend before any planning read; retain the result unchanged.
 pub fn encode_observation(request: &Observation) -> Result<Vec<u8>, &'static str> {
     if request.correlation == 0 {
@@ -697,6 +817,67 @@ mod tests {
         changed.capability.epoch += 1;
         assert!(read_result(&bytes, &changed).is_err());
     }
+    #[test]
+    fn settlement_and_ack_bind_the_original_request_without_submission_authority() {
+        let request = Request {
+            capability: cap(),
+            candidate: ConditionalCandidate {
+                correlation: 17,
+                predicates: vec![RecordPredicate {
+                    kind: 1,
+                    key: b"original".to_vec(),
+                    expected: Expected::Absent,
+                }],
+                mutations: vec![RecordMutation::Delete {
+                    kind: 1,
+                    key: b"original".to_vec(),
+                }],
+                chains: Vec::new(),
+            },
+        };
+        for decision in [
+            Ok(Decision::Applied),
+            Ok(Decision::ConditionConflict),
+            Err(ConditionalFailure::Indeterminate),
+        ] {
+            let result = ConditionalResult {
+                correlation: 17,
+                decision,
+            };
+            let bytes = encode_settlement(&request, &result).unwrap();
+            let receipt = read_settlement(&bytes).unwrap().unwrap();
+            assert_eq!(receipt.result, result);
+            assert!(receipt.matches(&request).unwrap());
+            assert!(read_request(&bytes).unwrap().is_none());
+            assert!(read_capability(&bytes).unwrap().is_none());
+            assert!(read_result(&bytes, &request).unwrap().is_none());
+            let ack_bytes = encode_settlement_ack(&receipt);
+            let ack = read_settlement_ack(&ack_bytes).unwrap().unwrap();
+            assert!(ack.matches(&request).unwrap());
+            assert!(read_request(&ack_bytes).unwrap().is_none());
+            assert!(read_settlement(&ack_bytes).unwrap().is_none());
+            let mut changed = request.clone();
+            changed.candidate.mutations.push(RecordMutation::Delete {
+                kind: 1,
+                key: b"another".to_vec(),
+            });
+            assert!(!receipt.matches(&changed).unwrap());
+            assert!(!ack.matches(&changed).unwrap());
+            for n in 1..bytes.len() {
+                assert!(read_settlement(&bytes[..n]).is_err());
+            }
+            for n in 1..ack_bytes.len() {
+                assert!(read_settlement_ack(&ack_bytes[..n]).is_err());
+            }
+            let mut duplicate = bytes.clone();
+            duplicate.extend_from_slice(&bytes);
+            assert!(read_settlement(&duplicate).is_err());
+            let mut duplicate = ack_bytes.clone();
+            duplicate.extend_from_slice(&ack_bytes);
+            assert!(read_settlement_ack(&duplicate).is_err());
+        }
+    }
+
     #[test]
     fn observations_preserve_scope_and_life_and_are_distinct_from_commit_receipts() {
         let request = Observation {

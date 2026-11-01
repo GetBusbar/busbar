@@ -231,6 +231,33 @@ impl<'r> ExportRows<'r> {
             .unwrap_or_default()
     }
 
+    /// Public route paths declared by the row, without opening an instance.
+    #[must_use]
+    pub fn public_routes(&self, module: &str) -> Vec<String> {
+        let Some(row) = self.row(module) else {
+            return Vec::new();
+        };
+        self.load(row, &label(module), None)
+            .ok()
+            .and_then(|p| p.context::<ExportFacts>().map(|f| f.public_routes.clone()))
+            .unwrap_or_default()
+    }
+
+    /// Boot-lifetime route paths declared by the row, without opening an instance.
+    #[must_use]
+    pub fn persistent_routes(&self, module: &str) -> Vec<String> {
+        let Some(row) = self.row(module) else {
+            return Vec::new();
+        };
+        self.load(row, &label(module), None)
+            .ok()
+            .and_then(|p| {
+                p.context::<ExportFacts>()
+                    .map(|f| f.persistent_routes.clone())
+            })
+            .unwrap_or_default()
+    }
+
     /// The sink's own checks across `instances` of `module` at `phase`; `None` when `module` is
     /// not an export row.
     ///

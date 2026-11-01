@@ -125,6 +125,17 @@ impl busbar_contract::export_calls::ExportAxis for StandIn {
             .map(|_| lines_routes().to_vec())
             .unwrap_or_default()
     }
+
+    fn public_routes(&self, module: &str) -> Vec<String> {
+        self.routes(module).into_iter().map(|r| r.path).collect()
+    }
+
+    fn persistent_routes(&self, module: &str) -> Vec<String> {
+        self.public_routes(module)
+            .into_iter()
+            .filter(|p| p == "/metrics/hooks")
+            .collect()
+    }
 }
 
 /// THE FROZEN SCRAPE MODULE WORD: the `module:` backing the 1.5.x type key whose default instance is
@@ -200,6 +211,12 @@ impl busbar_contract::export_calls::ExportCalls for ScrapeDouble {
     }
     fn routes(&self) -> &[busbar_contract::abi::mechanism::route::Route] {
         lines_routes()
+    }
+    fn public_routes(&self) -> &[String] {
+        public_paths()
+    }
+    fn persistent_routes(&self) -> &[String] {
+        persistent_paths()
     }
     fn deliver(
         &self,
@@ -309,12 +326,28 @@ fn lines_routes() -> &'static [busbar_contract::abi::mechanism::route::Route] {
     })
 }
 
+fn public_paths() -> &'static [String] {
+    static PATHS: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+    PATHS.get_or_init(|| lines_routes().iter().map(|r| r.path.clone()).collect())
+}
+
+fn persistent_paths() -> &'static [String] {
+    static PATHS: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+    PATHS.get_or_init(|| vec!["/metrics/hooks".into()])
+}
+
 impl busbar_contract::export_calls::ExportCalls for LinesSink {
     fn streams(&self) -> &[u8] {
         &[]
     }
     fn routes(&self) -> &[busbar_contract::abi::mechanism::route::Route] {
         lines_routes()
+    }
+    fn public_routes(&self) -> &[String] {
+        public_paths()
+    }
+    fn persistent_routes(&self) -> &[String] {
+        persistent_paths()
     }
     fn deliver(
         &self,
@@ -392,6 +425,7 @@ pub(crate) fn lines_scrape_routes() -> Vec<crate::plugin_routes::RouteDecl> {
             kind: crate::plugin_routes::RouteKind::Export,
             route: route.clone(),
             scrape: true,
+            persistent: route.path == "/metrics/hooks",
             dispatch: dispatch.clone(),
         })
         .collect()
