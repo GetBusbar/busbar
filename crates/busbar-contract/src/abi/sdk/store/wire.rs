@@ -33,6 +33,8 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 use std::task::{Context, Poll, Waker};
 
+use zeroize::{Zeroize, Zeroizing};
+
 use super::op::{Checkout, Op, Step};
 use crate::abi::mechanism::ticket::Ticket;
 use crate::abi::sdk::conn::{ConnFailure, Host, ProcessId};
@@ -71,6 +73,51 @@ enum Ask {
     },
 }
 
+/// Owned output never leaves a wiping owner, including while crossing into the host. Consumed
+/// bytes stay initialized and are wiped in place: draining would leave a duplicate in the tail.
+#[derive(Default)]
+struct Output {
+    bytes: Zeroizing<Vec<u8>>,
+    done: usize,
+}
+
+impl Output {
+    fn append(&mut self, bytes: &[u8]) {
+        let len = self
+            .bytes
+            .len()
+            .checked_add(bytes.len())
+            .expect("wire output length");
+        if len > self.bytes.capacity() {
+            // Vec's ordinary growth can free its previous allocation without wiping it.
+            let mut next = Zeroizing::new(Vec::with_capacity(len));
+            next.extend_from_slice(&self.bytes);
+            self.bytes = next;
+        }
+        self.bytes.extend_from_slice(bytes);
+        #[cfg(test)]
+        sealed_tests::watch(&self.bytes);
+    }
+
+    fn remaining(&self) -> &[u8] {
+        &self.bytes[self.done..]
+    }
+
+    fn consume(&mut self, n: usize) {
+        let end = self.done + n.min(self.bytes.len() - self.done);
+        self.bytes[self.done..end].zeroize();
+        self.done = end;
+        if self.done == self.bytes.len() {
+            self.clear();
+        }
+    }
+
+    fn clear(&mut self) {
+        self.bytes.zeroize();
+        self.done = 0;
+    }
+}
+
 #[derive(Default)]
 struct State {
     ask: Option<Ask>,
@@ -89,7 +136,7 @@ struct State {
     bound_ms: u32,
     bound_at: Option<u64>,
     /// Bytes the body wrote that the connector has not taken yet.
-    out: Vec<u8>,
+    out: Output,
     /// Bytes read that the body has not consumed yet.
     input: Vec<u8>,
     /// What [`Wire::os_user`] read off the host.
@@ -121,6 +168,8 @@ impl Wire {
     fn ask(&self, ask: Ask) -> Asked<'_> {
         Asked {
             wire: self,
+            writing: matches!(ask, Ask::Write),
+            pending: false,
             ask: Some(ask),
         }
     }
@@ -236,7 +285,24 @@ impl Wire {
         if bytes.is_empty() {
             return Ok(());
         }
-        self.state().out.extend_from_slice(bytes);
+        self.state().out.append(bytes);
+        self.ask(Ask::Write).await.map(|_| ())
+    }
+
+    /// Write a whole credential message without exposing its bytes to the plugin. The host's
+    /// facts must confirm a secured stream before any byte of a seal requiring security leaves.
+    /// A refused stream stays refused until it is closed or replaced, and is never kept.
+    ///
+    /// # Errors
+    /// The connector's failure, or [`crate::abi::sdk::cred::NOT_SECURE`] when security cannot be
+    /// confirmed. Cancellation or failure wipes unsent bytes; it cannot undo bytes already sent.
+    pub async fn write_sealed(&self, seal: crate::abi::sdk::cred::Seal) -> Result<(), ConnFailure> {
+        {
+            let mut st = self.state();
+            st.confirm_secure |= seal.secure_required();
+            st.out.append(seal.wire());
+        }
+        drop(seal);
         self.ask(Ask::Write).await.map(|_| ())
     }
 
@@ -301,6 +367,8 @@ impl Wire {
 struct Asked<'w> {
     wire: &'w Wire,
     ask: Option<Ask>,
+    writing: bool,
+    pending: bool,
 }
 
 impl Future for Asked<'_> {
@@ -308,13 +376,30 @@ impl Future for Asked<'_> {
     fn poll(mut self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Self::Output> {
         let mut st = self.wire.state();
         if let Some(ask) = self.ask.take() {
+            self.pending = true;
             st.ask = Some(ask);
             st.answer = None;
             return Poll::Pending;
         }
         match st.answer.take() {
-            Some(a) => Poll::Ready(a),
+            Some(a) => {
+                self.pending = false;
+                Poll::Ready(a)
+            }
             None => Poll::Pending,
+        }
+    }
+}
+
+impl Drop for Asked<'_> {
+    fn drop(&mut self) {
+        if self.writing && self.pending {
+            let mut st = self.wire.state();
+            st.out.clear();
+            st.confirm_secure = false;
+            st.unfit = true;
+            st.ask = None;
+            st.answer = None;
         }
     }
 }
@@ -548,6 +633,8 @@ impl<T> Running<T> {
 
 impl<T> Drop for Running<T> {
     fn drop(&mut self) {
+        // A retained Wire clone must not retain a cancelled or unwound op's output.
+        self.wire.state().out.clear();
         self.unwait();
     }
 }
@@ -710,6 +797,10 @@ fn run<T: 'static>(
                 if a.is_err() || matches!((&ask, &a), (Ask::Read, Ok(0))) {
                     st.unfit = true;
                 }
+                if a.is_err() {
+                    st.out.clear();
+                    st.confirm_secure = false;
+                }
                 st.ask = None;
                 st.answer = Some(a);
             }
@@ -821,6 +912,7 @@ fn connect<T>(
             w.conn = Some(idle.conn);
             w.reused = true;
             w.unfit = false;
+            w.insecure = false;
             w.session = idle.session;
             return Served::Answer(Ok(0));
         }
@@ -869,6 +961,7 @@ fn connect<T>(
             });
             w.reused = false;
             w.unfit = false;
+            w.insecure = false;
             w.session = None;
             Served::Answer(Ok(0))
         }
@@ -920,6 +1013,7 @@ fn serve<T>(cx: &mut Op<'_>, running: &Running<T>, ask: &Ask, buf: &mut [u8]) ->
                 let mut w = wire.state();
                 w.input.clear();
                 w.out.clear();
+                w.confirm_secure = false;
                 w.session = None;
                 w.reused = false;
             }
@@ -940,6 +1034,7 @@ fn serve<T>(cx: &mut Op<'_>, running: &Running<T>, ask: &Ask, buf: &mut [u8]) ->
                         stream,
                     });
                     w.unfit = false;
+                    w.insecure = false;
                     Served::Answer(Ok(0))
                 }
                 Poll::Ready(Err(e)) => {
@@ -964,6 +1059,8 @@ fn serve<T>(cx: &mut Op<'_>, running: &Running<T>, ask: &Ask, buf: &mut [u8]) ->
             w.session = None;
             w.reused = false;
             w.unfit = false;
+            w.insecure = false;
+            w.confirm_secure = false;
             w.last = None;
             return Served::Answer(Ok(0));
         }
@@ -997,15 +1094,22 @@ fn serve<T>(cx: &mut Op<'_>, running: &Running<T>, ask: &Ask, buf: &mut [u8]) ->
             unreachable!("answered above")
         }
         Ask::Write => loop {
+            if wire.state().insecure {
+                return Served::Answer(Err(ConnFailure::Refused(
+                    crate::abi::sdk::cred::NOT_SECURE.into(),
+                )));
+            }
             if wire.state().confirm_secure {
-                let confirmed = crate::abi::sdk::cred::confirm_secure(&mut services, stream);
-                let insecure = wire.state().insecure;
-                match confirmed {
-                    Poll::Ready(Ok(())) if !insecure => wire.state().confirm_secure = false,
-                    Poll::Pending if !insecure => return Served::Pending { wake_at_ns: 0 },
+                // This driver remembers completed facts across entries, so a replay that supplies
+                // no facts cannot establish security. No write precedes a real secure observation.
+                match crate::abi::sdk::cred::confirm_secure(&mut services, stream, false) {
+                    Poll::Ready(Ok(())) => {
+                        wire.state().confirm_secure = false;
+                    }
+                    Poll::Pending => return Served::Pending { wake_at_ns: 0 },
                     _ => {
                         let mut st = wire.state();
-                        zeroize::Zeroize::zeroize(&mut st.out);
+                        st.out.clear();
                         st.unfit = true;
                         st.insecure = true;
                         return Served::Answer(Err(ConnFailure::Refused(
@@ -1014,19 +1118,22 @@ fn serve<T>(cx: &mut Op<'_>, running: &Running<T>, ask: &Ask, buf: &mut [u8]) ->
                     }
                 }
             }
-            let out = std::mem::take(&mut wire.state().out);
-            let answer = services.write(stream, &out);
-            let mut st = wire.state();
+            // Output's Zeroizing owner also covers a panic crossing into the host; no plain Vec
+            // escapes the state, and bytes are lent only for this synchronous service call.
+            let mut out = std::mem::take(&mut wire.state().out);
+            if out.remaining().is_empty() {
+                return Served::Answer(Ok(0));
+            }
+            let answer = services.write(stream, out.remaining());
             match answer {
                 Poll::Ready(Ok(n)) => {
-                    let mut out = out;
-                    out.drain(..n.min(out.len()));
-                    st.out = out;
-                    if st.out.is_empty() {
+                    out.consume(n);
+                    let finished = out.remaining().is_empty();
+                    wire.state().out = out;
+                    if finished {
                         return Served::Answer(Ok(0));
                     }
                     if n == 0 {
-                        drop(st);
                         drop(services);
                         // No room: offer the rest again shortly (a pending write wakes nothing).
                         return Served::Pending {
@@ -1034,13 +1141,9 @@ fn serve<T>(cx: &mut Op<'_>, running: &Running<T>, ask: &Ask, buf: &mut [u8]) ->
                         };
                     }
                 }
-                Poll::Ready(Err(e)) => {
-                    st.out = out;
-                    return Served::Answer(Err(e));
-                }
+                Poll::Ready(Err(e)) => return Served::Answer(Err(e)),
                 Poll::Pending => {
-                    st.out = out;
-                    drop(st);
+                    wire.state().out = out;
                     drop(services);
                     return Served::Pending {
                         wake_at_ns: later(cx, RETRY_NS / 5),
@@ -1075,3 +1178,7 @@ fn serve<T>(cx: &mut Op<'_>, running: &Running<T>, ask: &Ask, buf: &mut [u8]) ->
 #[cfg(test)]
 #[path = "../tests/store_wire_kept_tests.rs"]
 mod kept_tests;
+
+#[cfg(test)]
+#[path = "../tests/store_wire_sealed_tests.rs"]
+mod sealed_tests;

@@ -83,13 +83,14 @@ pub struct SealedWrite {
 /// Before a credential that must go out secured is written on `stream`: whether the host connector
 /// reports it secured ([`Connector::facts`]). A host that offers no facts, or a stream it reports
 /// in the clear, refuses ([`super::NOT_SECURE`]). `None` facts are a replayed call's: the entry
-/// that first made it decided.
-pub(crate) fn confirm_secure(c: &mut Connector<'_>, stream: u64) -> Answer<()> {
+/// that first made it decided. `allow_replay` is false for a driver that preserves its completed
+/// security check across entries and therefore needs a real observation for this call.
+pub(crate) fn confirm_secure(c: &mut Connector<'_>, stream: u64, allow_replay: bool) -> Answer<()> {
     match c.facts(stream) {
         Poll::Pending => Poll::Pending,
         Poll::Ready(Ok(Some(o))) if o.secure => Poll::Ready(Ok(())),
-        Poll::Ready(Ok(None)) => Poll::Ready(Ok(())),
-        Poll::Ready(Ok(Some(_)) | Err(_)) => Poll::Ready(Err(
+        Poll::Ready(Ok(None)) if allow_replay => Poll::Ready(Ok(())),
+        Poll::Ready(Ok(_) | Err(_)) => Poll::Ready(Err(
             crate::abi::sdk::conn::ConnFailure::Refused(super::NOT_SECURE.into()),
         )),
     }
@@ -131,7 +132,7 @@ impl SealedWrite {
 
     fn confirm(&mut self, c: &mut Connector<'_>, stream: u64) -> Answer<()> {
         if self.secure && !self.confirmed {
-            match confirm_secure(c, stream) {
+            match confirm_secure(c, stream, true) {
                 Poll::Ready(Ok(())) if !self.refused => self.confirmed = true,
                 Poll::Pending if !self.refused => return Poll::Pending,
                 _ => {
