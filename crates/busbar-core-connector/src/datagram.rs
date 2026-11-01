@@ -981,6 +981,28 @@ pub struct Associations {
     /// The associations a [`PortAssociations`] caller has out on a crossing: still carried (their
     /// user name and paths still find them), their framing with the caller.
     out: HashMap<u64, Out>,
+    emissions: HashMap<u64, Arc<Emission>>,
+}
+
+#[derive(Debug)]
+struct Emission {
+    order: tokio::sync::Semaphore,
+    ready: tokio::sync::Notify,
+}
+
+impl Default for Emission {
+    fn default() -> Self {
+        Self {
+            order: tokio::sync::Semaphore::new(1),
+            ready: tokio::sync::Notify::new(),
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum WhileBusy {
+    Queue,
+    Wait,
 }
 
 /// What a caller owes an association that is out on another caller's crossing: run, in order, by
@@ -1074,6 +1096,7 @@ impl Associations {
             self.by_path.entry(addr).or_insert(id);
         }
         self.framings.insert(id, framing);
+        self.emissions.insert(id, Arc::default());
         id
     }
 
@@ -1089,6 +1112,7 @@ impl Associations {
         self.by_user.retain(|_, v| *v != id);
         self.by_path.retain(|_, v| *v != id);
         self.out.remove(&id);
+        self.emissions.remove(&id);
     }
 
     /// The association `id`.
@@ -1236,7 +1260,16 @@ struct Taken<'p> {
 impl Drop for Taken<'_> {
     fn drop(&mut self) {
         if let Some(f) = self.framing.take() {
-            self.port.lock().forget(self.id);
+            let emission = {
+                let mut assocs = self.port.lock();
+                let emission = assocs.emissions.get(&self.id).cloned();
+                assocs.forget(self.id);
+                emission
+            };
+            if let Some(emission) = emission {
+                emission.order.close();
+                emission.ready.notify_waiters();
+            }
             drop(f);
         }
     }
@@ -1262,10 +1295,29 @@ impl PortAssociations {
     /// [`NotAdded`]: no terms yet, or its user name is another association's. The refused
     /// framing finishes after the port's lock is let go.
     pub fn add(&self, framing: DatagramFraming) -> Result<u64, NotAdded> {
+        self.add_with(framing, |_| {})
+    }
+
+    /// Carry `framing`, publishing its host routing record before any port crossing can see it.
+    /// `publish` only records host state: it must not call the port, a plugin, or a user callback.
+    /// The framing stays outside the map until publication returns, so refusal and publication
+    /// unwind both finish it after the port guard is gone.
+    ///
+    /// # Errors
+    ///
+    /// [`NotAdded`]: as [`Self::add`]. A refused framing never calls `publish`.
+    pub fn add_with(
+        &self,
+        framing: DatagramFraming,
+        publish: impl FnOnce(u64),
+    ) -> Result<u64, NotAdded> {
         let why = {
             let mut assocs = self.lock();
             match assocs.admits(&framing) {
-                Ok(user) => return Ok(assocs.carry(user, framing)),
+                Ok(user) => {
+                    publish(assocs.last + 1);
+                    return Ok(assocs.carry(user, framing));
+                }
                 Err(why) => why,
             }
         };
@@ -1276,16 +1328,22 @@ impl PortAssociations {
     /// Stop carrying association `id`: its framing finishes, here with no lock held, or by its
     /// holder when it is out.
     pub fn remove(&self, id: u64) {
-        let gone = {
+        let (gone, emission) = {
             let mut assocs = self.lock();
-            match assocs.out.get_mut(&id) {
+            let emission = assocs.emissions.get(&id).cloned();
+            let gone = match assocs.out.get_mut(&id) {
                 Some(out) => {
                     out.closing = true;
                     None
                 }
                 None => assocs.remove(id),
-            }
+            };
+            (gone, emission)
         };
+        if let Some(emission) = emission {
+            emission.order.close();
+            emission.ready.notify_waiters();
+        }
         drop(gone);
     }
 
@@ -1370,6 +1428,51 @@ impl PortAssociations {
         (ok.unwrap_or(false), answered)
     }
 
+    /// Wait for this association's emission turn without accepting or copying a busy write.
+    /// The caller retains `bytes` until the turn completes; cancellation before that turn
+    /// removes its place in the writer order. `false` means absent, closing, or refused.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn emit_ready(
+        &self,
+        id: u64,
+        stream: u64,
+        bytes: &[u8],
+        end_of_frame: bool,
+        text: bool,
+        send: &(dyn Fn(SocketAddr, &[u8]) + Sync),
+        answer: &(dyn Fn(Answered) + Sync),
+    ) -> bool {
+        let emission = self.lock().emissions.get(&id).cloned();
+        let Some(emission) = emission else {
+            return false;
+        };
+        let Ok(_order) = emission.order.acquire().await else {
+            return false;
+        };
+        loop {
+            let ready = emission.ready.notified();
+            tokio::pin!(ready);
+            ready.as_mut().enable();
+            let result = self.try_turn(
+                id,
+                Owed::Emit {
+                    stream,
+                    bytes: bytes.into(),
+                    end_of_frame,
+                    text,
+                },
+                Instant::now(),
+                send,
+                WhileBusy::Wait,
+            );
+            if let std::task::Poll::Ready((ok, answered)) = result {
+                answer(answered);
+                return ok.unwrap_or(false);
+            }
+            ready.await;
+        }
+    }
+
     /// THE HAND-OFF: take association `id` out, run `first` on it and then what was owed it
     /// meanwhile, each crossing with no lock held, and put it back (or, failed or removed, finish
     /// it with no lock held). Found out, `first` is queued for its holder. The first op's emit
@@ -1381,17 +1484,34 @@ impl PortAssociations {
         now: Instant,
         send: &dyn Fn(SocketAddr, &[u8]),
     ) -> (Option<bool>, Answered) {
-        let f = {
+        match self.try_turn(id, first, now, send, WhileBusy::Queue) {
+            std::task::Poll::Ready(answer) => answer,
+            std::task::Poll::Pending => unreachable!("queued turns never wait"),
+        }
+    }
+
+    fn try_turn(
+        &self,
+        id: u64,
+        first: Owed<'_>,
+        now: Instant,
+        send: &dyn Fn(SocketAddr, &[u8]),
+        busy: WhileBusy,
+    ) -> std::task::Poll<(Option<bool>, Answered)> {
+        let (f, emission) = {
             let mut assocs = self.lock();
             if let Some(out) = assocs.out.get_mut(&id) {
                 if out.closing {
-                    return (None, Vec::new());
+                    return std::task::Poll::Ready((None, Vec::new()));
+                }
+                if matches!(busy, WhileBusy::Wait) {
+                    return std::task::Poll::Pending;
                 }
                 out.owed.push_back(first.owned());
-                return (Some(true), Vec::new());
+                return std::task::Poll::Ready((Some(true), Vec::new()));
             }
             let Some(f) = assocs.framings.remove(&id) else {
-                return (None, Vec::new());
+                return std::task::Poll::Ready((None, Vec::new()));
             };
             let deadline = f.deadline();
             assocs.out.insert(
@@ -1401,7 +1521,7 @@ impl PortAssociations {
                     ..Out::default()
                 },
             );
-            f
+            (f, assocs.emissions.get(&id).cloned())
         };
         let mut taken = Taken {
             port: self,
@@ -1432,7 +1552,13 @@ impl PortAssociations {
                     end_of_frame,
                     text,
                 } => {
-                    let ok = f.emit(stream, &bytes, end_of_frame, text, now).is_ok();
+                    let answer = f.emit(stream, &bytes, end_of_frame, text, now);
+                    let ok = answer.is_ok();
+                    if matches!(busy, WhileBusy::Wait) && emitted.is_none() {
+                        if let Ok(yielded) = answer {
+                            answered.push((id, Ok(yielded)));
+                        }
+                    }
                     emitted.get_or_insert(ok);
                     (false, None)
                 }
@@ -1447,6 +1573,10 @@ impl PortAssociations {
             if failed || assocs.out.get(&id).is_none_or(|o| o.closing) {
                 assocs.forget(id);
                 drop(assocs);
+                if let Some(emission) = &emission {
+                    emission.order.close();
+                    emission.ready.notify_waiters();
+                }
                 drop(taken.framing.take());
                 break;
             }
@@ -1462,7 +1592,10 @@ impl PortAssociations {
             }
             break;
         }
-        (emitted.or(Some(true)), answered)
+        if let Some(emission) = emission {
+            emission.ready.notify_waiters();
+        }
+        std::task::Poll::Ready((emitted.or(Some(true)), answered))
     }
 }
 
