@@ -3,7 +3,7 @@ use busbar_contract::codec::{
     CodecError, EgressCtx, IngressReject, OperationHandler, RequestHandler,
 };
 
-// A trivial OperationHandler + RequestHandler prove the trait objects are object-safe and the no-OperationHandler lookup works.
+// A minimal implementation exercises the public traits through trait objects.
 struct NoopModeration;
 impl OperationHandler for NoopModeration {
     fn read_request(
@@ -28,7 +28,7 @@ impl RequestHandler for WidgetLike {
         "widget"
     }
     fn operation_handler(&self, op: OpVerb) -> Option<&dyn OperationHandler> {
-        // widget serves moderation; not, say, chat-on-a-moderation-only stub → None = no-handler 404.
+        // This fixture serves moderation only.
         match op {
             OpVerb::MODERATION => Some(&NoopModeration),
             _ => None,
@@ -47,27 +47,15 @@ impl RequestHandler for WidgetLike {
 }
 
 #[test]
-fn no_handler_lookup_returns_none_for_unsupported_op() {
-    let h = WidgetLike;
-    assert!(h.operation_handler(OpVerb::MODERATION).is_some());
-    assert!(
-        h.operation_handler(OpVerb::CHAT).is_none(),
-        "an absent OperationHandler IS the no-handler 404"
-    );
-    assert_eq!(h.protocol_name(), "widget");
-}
-
-#[test]
-fn sub_op_reject_carries_op_and_model() {
-    let r = IngressReject::UnsupportedSubOp {
-        op: OpVerb::IMAGE,
-        model: "gpt-image-1".into(),
-    };
+fn request_and_operation_handlers_are_callable_through_trait_objects() {
+    let h: &dyn RequestHandler = &WidgetLike;
+    let operation: &dyn OperationHandler = h
+        .operation_handler(OpVerb::MODERATION)
+        .expect("the fixture serves moderation");
     assert!(matches!(
-        r,
-        IngressReject::UnsupportedSubOp {
-            op: OpVerb::IMAGE,
-            ..
-        }
+        operation.read_request(b"{}", "application/json"),
+        Err(IngressReject::BadRequest(message)) if message == "noop"
     ));
+    assert!(h.operation_handler(OpVerb::CHAT).is_none());
+    assert_eq!(h.protocol_name(), "widget");
 }

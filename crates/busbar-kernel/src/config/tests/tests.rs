@@ -228,15 +228,6 @@ fn hook_cfg_round_trips_for_overlay_persistence() {
     assert_eq!(once["on_error"], "reject");
 }
 
-/// Serializes tests that touch SHARED env vars referenced by the shipped `config.yaml`. Env vars
-/// are process-global, and `cargo test` runs tests in parallel by default, so two tests that
-/// `set_var`/`remove_var` the same name race: one can wipe the value mid-flight of the other,
-/// causing a spurious "unset variable" interpolation failure. Every test that drives a shipped
-/// `${...}` var must hold this lock for the whole set/interpolate/remove sequence.
-///
-/// Per-test vars use unique `BUSBAR_T_*` names and so do not need this guard.
-static CLIENT_TOKEN_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
 /// 1.5.0 MIGRATION (fail-closed): the removed `auth:` keys are REJECTED AT PARSE by
 /// `deny_unknown_fields`, never silently dropped. Covers `mode:` (1.3.0), the single-token
 /// `token:` (1.0.0), and the 1.5.0 removals `client_tokens:` and `modules:` (the allowlist and
@@ -655,43 +646,30 @@ fn a_config_naming_a_plane_owned_section_refuses_cleanly_with_no_plane_registere
 // credential by the root migration table's word, which the kernel does not spell (ARCHITECT
 // 2026-09-30, KERNEL-AUTH-ZERO Q2).
 
-/// Tests sharing a process-global env var use a set -> interpolate -> remove
-/// sequence. Under the default parallel test runner, an unguarded sibling could `remove_var`
-/// between this test's `set_var` and `interpolate_env`, making interpolation fail with an "unset
-/// variable" error. This test reproduces that race deterministically by hammering the exact
-/// sequence from many threads, and asserts that holding `CLIENT_TOKEN_ENV_LOCK` across the whole
-/// sequence keeps every interpolation succeeding.
+/// Each interpolation reads the current environment, including replacement and removal. This
+/// fixture owns a unique variable and restores its original value even if an assertion fails.
 #[test]
-fn test_client_token_env_lock_serializes_set_interpolate_remove() {
-    const THREADS: usize = 8;
-    const ITERS: usize = 200;
-    let failures = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let mut handles = Vec::with_capacity(THREADS);
-    for _ in 0..THREADS {
-        let failures = std::sync::Arc::clone(&failures);
-        handles.push(std::thread::spawn(move || {
-            for _ in 0..ITERS {
-                // The guard makes set/interpolate/remove atomic w.r.t. other lock holders.
-                let _g = CLIENT_TOKEN_ENV_LOCK
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner());
-                std::env::set_var("BUSBAR_CLIENT_TOKEN", "race-token");
-                let r = interpolate_env("tok: \"${BUSBAR_CLIENT_TOKEN}\"");
-                if r.as_deref() != Ok("tok: \"race-token\"") {
-                    failures.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                }
-                std::env::remove_var("BUSBAR_CLIENT_TOKEN");
+fn test_interpolation_reads_replaced_and_removed_values() {
+    const NAME: &str = "BUSBAR_T_INTERPOLATE_REPLACEMENT";
+    struct Restore(Option<std::ffi::OsString>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            if let Some(value) = &self.0 {
+                std::env::set_var(NAME, value);
+            } else {
+                std::env::remove_var(NAME);
             }
-        }));
+        }
     }
-    for h in handles {
-        h.join().expect("interpolation thread must not panic");
-    }
-    assert_eq!(
-        failures.load(std::sync::atomic::Ordering::Relaxed),
-        0,
-        "guarded set/interpolate/remove of BUSBAR_CLIENT_TOKEN must never observe an unset var"
-    );
+    let _restore = Restore(std::env::var_os(NAME));
+    let input = format!("tok: \"${{{NAME}}}\"");
+    std::env::set_var(NAME, "first-value");
+    assert_eq!(interpolate_env(&input).unwrap(), "tok: \"first-value\"");
+    std::env::set_var(NAME, "second-value");
+    assert_eq!(interpolate_env(&input).unwrap(), "tok: \"second-value\"");
+    std::env::remove_var(NAME);
+    let error = interpolate_env(&input).expect_err("a removed variable cannot reuse its old value");
+    assert!(error.to_string().contains(NAME), "{error}");
 }
 
 // ── pool `hooks:` list ───────────────────────────────────────────────────────────────────────────

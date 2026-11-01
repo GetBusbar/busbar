@@ -162,8 +162,9 @@ mod plugin {
 }
 
 fn the_door() -> &'static Door {
-    // The macro's door is a `'static` const.
-    plugin::door()
+    // Exercise the macro through the public function-pointer type throughout the lifecycle tests.
+    let door: DoorFn = plugin::door;
+    door()
 }
 
 fn table() -> &'static LifecycleOnly {
@@ -283,25 +284,6 @@ fn the_door_states_magic_versions_kind_statement_and_table() {
             "lifecycle slot {i} is NULL (a NULL slot refuses the load)"
         );
     }
-}
-
-#[test]
-fn a_compiled_in_row_holds_the_same_door_fn_and_reaches_the_same_static_door() {
-    // Rust promises no single address per `const`, so the row's door is compared by contents.
-    let row: DoorFn = plugin::door;
-    // Both are the macro's `'static` door.
-    let (a, b) = (row(), plugin::door());
-    assert_eq!(
-        (a.magic, a.mechanism_version, a.size, a.kind, a.kind_abi),
-        (b.magic, b.mechanism_version, b.size, b.kind, b.kind_abi)
-    );
-    // SAFETY: as above; the tables are the macro's `'static` const.
-    let (ta, tb) = unsafe { (&*a.ops, &*b.ops) };
-    assert_eq!((ta.size, ta.slots), (tb.size, tb.slots));
-    assert_eq!(
-        ta.validate.map(|f| f as usize),
-        tb.validate.map(|f| f as usize)
-    );
 }
 
 #[test]
