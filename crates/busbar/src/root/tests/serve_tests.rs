@@ -5538,22 +5538,44 @@ async fn a_failover_lane_presents_its_own_credential_never_the_primarys() {
 async fn the_pools_doors_traffic_appears_on_the_metrics_scrape() {
     let _one = ONE_PUBLISHER.lock().await;
     let instance = "serve-door-metrics";
+    let pool = "t065-attempt-pool";
     let far = seat_far_end(200, SERVED_BY_TWIN).await;
     let rig = rig(
         instance,
         RigOpts {
             members: &[(far.port, 1)],
+            more_pools: &[(pool, &[(0, 1)])],
             ..RigOpts::default()
         },
     )
     .await;
-    assert_eq!(rig.chat().await.0, 200);
+    let attempts = || {
+        busbar_kernel::test_support::metric_sum(
+            busbar_kernel::telemetry::UPSTREAM_ATTEMPTS_TOTAL,
+            &[("pool", pool), ("lane", "m0")],
+        )
+    };
+    let before = attempts();
+    let (status, _, _) = rig
+        .send(
+            "POST",
+            "/v1/chat/completions",
+            Some(serde_json::json!({"model": pool,
+                "messages": [{"role": "user", "content": "hi"}]})),
+        )
+        .await;
+    assert_eq!(status, 200);
+    let after = attempts();
+    assert!(
+        after > before,
+        "this pool's attempt was counted: {before} -> {after}"
+    );
     let scrape = busbar_kernel::snapshot::render();
     assert!(
         scrape
             .lines()
             .any(|l| l.starts_with("busbar_upstream_attempts_total{")
-                && l.contains("pool=\"p\"")
+                && l.contains("pool=\"t065-attempt-pool\"")
                 && l.contains("lane=\"m0\"")),
         "the attempt is on the scrape under its pool and lane:\n{scrape}"
     );
@@ -9912,10 +9934,57 @@ mod pools_door_counts_and_routes {
     /// string on the scrape.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_pools_door_counts_an_unknown_model_under_the_bounded_label() {
+        // The bounded sentinel is deliberately shared by all unknown models. Run this exact
+        // request in a fresh process so another request cannot supply its counter increase.
+        const CHILD: &str = "BUSBAR_T065_UNKNOWN_MODEL_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            struct Child(std::process::Child);
+            impl Drop for Child {
+                fn drop(&mut self) {
+                    let _ = self.0.kill();
+                    let _ = self.0.wait();
+                }
+            }
+            let module = module_path!().split_once("::").expect("crate and module").1;
+            let test =
+                format!("{module}::the_pools_door_counts_an_unknown_model_under_the_bounded_label");
+            let mut child = Child(
+                std::process::Command::new(std::env::current_exe().expect("the test binary"))
+                    .args(["--exact", &test, "--test-threads", "1"])
+                    .env(CHILD, "1")
+                    .stdout(std::process::Stdio::piped())
+                    .spawn()
+                    .expect("the isolated test starts"),
+            );
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+            let status = loop {
+                if let Some(status) = child.0.try_wait().expect("read child status") {
+                    break status;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "isolated metric test timed out"
+                );
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            };
+            let mut output = String::new();
+            std::io::Read::read_to_string(
+                &mut child.0.stdout.take().expect("child output"),
+                &mut output,
+            )
+            .expect("read child output");
+            assert!(status.success(), "isolated metric test failed: {output}");
+            assert!(
+                output.contains("1 passed"),
+                "exact child ran no test: {output}"
+            );
+            return;
+        }
         let _one = ONE_PUBLISHER.lock().await;
         let instance = "rehome-count-unknown-model";
         let (rig, _far) = serving(instance).await;
         let probe = "zzz-unbounded-cardinality-probe-9f3a";
+        let before = unresolved_client_errors();
         let (status, _, _) = rig
             .send(
                 "POST",
@@ -9925,6 +9994,8 @@ mod pools_door_counts_and_routes {
             )
             .await;
         assert_eq!(status, 404, "an unknown model is a 404");
+        let after = unresolved_client_errors();
+        assert_eq!(after - before, 1.0, "this unknown request was counted once");
         let scrape = busbar_kernel::snapshot::render();
         assert!(
             !scrape.contains(probe),
@@ -11807,37 +11878,65 @@ async fn a_model_plane_request_is_counted_exactly_once() {
 /// THE MODEL PLANE STAYS v1.5.4-IDENTICAL on a scrape: after model traffic, `busbar_requests_total`
 /// carries a series with exactly the 1.5.4 label set {ingress_protocol, pool, outcome} and NO `plane`
 /// label, `busbar_request_duration_seconds` carries a series, and neither family carries a `plane`
-/// label anywhere in the exposition. An unroutable model is deliberate: the request finishes
-/// without an upstream, which is all the series shape needs.
+/// label anywhere in the exposition. A unique configured pool names this request's series;
+/// positive counter and histogram-count deltas tie the shape to the served request.
 /// RED: a `plane` label on either model family (the BI-2 regression), or no model series at all.
 #[cfg(linked_driver_proofs)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_model_plane_families_stay_v1_5_4_shaped_on_a_real_scrape() {
     let _one = ONE_PUBLISHER.lock().await;
     let instance = "serve-door-model-families";
+    let pool = "t065-model-family-pool";
+    let far = seat_far_end(200, SERVED_BY_TWIN).await;
     busbar_kernel::snapshot::init();
     let rig = rig(
         instance,
         RigOpts {
-            members: &[(1, 1)],
+            members: &[(far.port, 1)],
+            more_pools: &[(pool, &[(0, 1)])],
             ..RigOpts::default()
         },
     )
     .await;
+    let labels = [("pool", pool)];
+    let duration_count = format!(
+        "{}_count",
+        busbar_kernel::snapshot::REQUEST_DURATION_SECONDS
+    );
+    let counts = || {
+        (
+            busbar_kernel::test_support::metric_sum(
+                busbar_kernel::snapshot::REQUESTS_TOTAL,
+                &labels,
+            ),
+            busbar_kernel::test_support::metric_sum(&duration_count, &labels),
+        )
+    };
+    let before = counts();
     let (model_status, _, _) = rig
         .send(
             "POST",
             "/v1/chat/completions",
             Some(serde_json::json!({
-                "model": "no-such-model",
+                "model": pool,
                 "messages": [{ "role": "user", "content": "hi" }],
             })),
         )
         .await;
+    assert_eq!(model_status, 200);
+    let after = counts();
+    assert!(
+        after.0 > before.0,
+        "this pool's request counted: {before:?} -> {after:?}"
+    );
+    assert!(
+        after.1 > before.1,
+        "this pool's duration observed: {before:?} -> {after:?}"
+    );
     let exposition = busbar_kernel::snapshot::render();
     let model_counters = exposition_family(&exposition, busbar_kernel::snapshot::REQUESTS_TOTAL);
     assert!(
-        model_counters.iter().any(|line| exposition_label_keys(line)
+        model_counters.iter().any(|line| line.contains("pool=\"t065-model-family-pool\"") && exposition_label_keys(line)
             == vec![
                 "ingress_protocol".to_string(),
                 "outcome".to_string(),
@@ -11848,11 +11947,12 @@ async fn the_model_plane_families_stay_v1_5_4_shaped_on_a_real_scrape() {
         busbar_kernel::snapshot::REQUESTS_TOTAL,
     );
     assert!(
-        !exposition_family(
+        exposition_family(
             &exposition,
             busbar_kernel::snapshot::REQUEST_DURATION_SECONDS
         )
-        .is_empty(),
+        .iter()
+        .any(|line| line.contains("pool=\"t065-model-family-pool\"")),
         "no `{}` series after driving model traffic. Exposition:\n{exposition}",
         busbar_kernel::snapshot::REQUEST_DURATION_SECONDS,
     );
