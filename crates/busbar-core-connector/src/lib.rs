@@ -104,7 +104,7 @@ use std::time::Duration;
 use busbar_contract::abi::host::conn::connector::{
     DIRECTION_OUTBOUND, EGRESS_LOOPBACK_ALLOWED, EGRESS_OPEN_WEB, EGRESS_OPERATOR_INFRASTRUCTURE,
 };
-use busbar_contract::abi::host::service::{DEST_NO_ADDRESSES, DEST_PLAINTEXT, DEST_UNRESOLVABLE};
+use busbar_contract::abi::host::service::{DEST_NO_ADDRESSES, DEST_UNRESOLVABLE};
 use busbar_contract::abi::mechanism::rendering::ReadNeed;
 use busbar_contract::abi::transport::{ROLE_CARRIER, ROLE_FRAMER};
 use busbar_contract::conn::{
@@ -485,6 +485,8 @@ impl Drop for AcceptingOut<'_> {
 /// is spent once the dial starts; its remaining writes then keep their original order and flags.
 struct Judging {
     planned: Option<Planned>,
+    /// A spent dial or replay's terminal error, retained for every poll until close.
+    failed: Option<ConnError>,
     /// The need's egress class, whose scheme rule the pinned address is held to.
     egress_class: u32,
     /// The address set the pinned address must be in (`OpenDesc::within`); empty = any.
@@ -544,6 +546,18 @@ impl<'h> Crossing<'h> {
         *held.crossing.lock().expect("crossing") = Some(Vec::new());
         drop(judging);
         Self { held }
+    }
+
+    /// Keep the crossing's failure before releasing its callers to read it. A consumed plan
+    /// cannot be retried, and accepted writes must never be replayed after a terminal failure.
+    fn finish(self, result: Result<bool, ConnError>) -> Result<bool, ConnError> {
+        if let Err(error) = result {
+            if error != ConnError::Pending {
+                self.held
+                    .fail(self.held.judging.lock().expect("judging"), error);
+            }
+        }
+        result
     }
 }
 
@@ -766,7 +780,23 @@ impl Held {
 
     /// The answer began: the bound is spent.
     fn answered(&self) {
-        *self.due.lock().expect("due") = None;
+        let due = self.due.lock().expect("due").take();
+        drop(due);
+    }
+
+    /// A terminal judgement, dial or replay spends the bound too: a later deadline cannot
+    /// replace its answer. Release the judgement before retiring a timer or waking any caller.
+    fn fail(
+        &self,
+        mut judging: std::sync::MutexGuard<'_, Option<Judging>>,
+        error: ConnError,
+    ) -> ConnError {
+        if let Some(j) = judging.as_mut() {
+            j.failed = Some(error);
+        }
+        drop(judging);
+        self.answered();
+        error
     }
 }
 
@@ -1615,9 +1645,12 @@ impl Connector {
         let Some(j) = judging.as_mut() else {
             return Ok(true);
         };
+        if let Some(error) = j.failed {
+            return Err(error);
+        }
         if j.planned.is_none() {
-            let _crossing = Crossing::begin(held, judging);
-            return self.replay_early(held, waker);
+            let crossing = Crossing::begin(held, judging);
+            return crossing.finish(self.replay_early(held, waker));
         }
         let (got, also) = {
             let mut a = j.answer.lock().expect("judgement");
@@ -1644,10 +1677,11 @@ impl Connector {
         if let Some(p) = j.proxied.as_mut() {
             if !p.target_judged {
                 match got {
-                    Err(v) if !unresolved_here(v) => return Err(pended_verdict(v)),
+                    Err(v) if !unresolved_here(v) => {
+                        return Err(held.fail(judging, pended_verdict(v)))
+                    }
                     Ok(at) if !class_admits(j.egress_class, secure, &[], &target, at) => {
-                        j.answer.lock().expect("judgement").0 = Some(Err(DEST_PLAINTEXT));
-                        return Err(ConnError::Refused);
+                        return Err(held.fail(judging, ConnError::Refused));
                     }
                     _ => {}
                 }
@@ -1664,46 +1698,49 @@ impl Connector {
                         None
                     }
                 };
-                let _crossing = Crossing::begin(held, judging);
-                drop(previous);
-                if held.retired.load(Ordering::Acquire) {
-                    return Err(ConnError::Closed);
-                }
-                let proxy_judged = self.judge_into(&spec.endpoint(), class, true, &answer);
-                if held.retired.load(Ordering::Acquire) {
-                    return Err(ConnError::Closed);
-                }
-                let proxy_addr = match proxy_judged {
-                    None => return Ok(false),
-                    Some(Err(v)) => {
-                        answer.lock().expect("judgement").0 = Some(Err(v));
-                        return Err(pended_verdict(v));
-                    }
-                    Some(Ok(at)) => at,
-                };
-                let planned = {
-                    let mut judging = held.judging.lock().expect("judging");
+                let crossing = Crossing::begin(held, judging);
+                return crossing.finish((|| {
+                    drop(previous);
                     if held.retired.load(Ordering::Acquire) {
                         return Err(ConnError::Closed);
                     }
-                    judging
-                        .as_mut()
-                        .and_then(|j| j.planned.take())
-                        .ok_or(ConnError::Closed)?
-                };
-                return self.settle_proxy(held, planned, &spec, proxy_addr, waker);
+                    let proxy_judged = self.judge_into(&spec.endpoint(), class, true, &answer);
+                    if held.retired.load(Ordering::Acquire) {
+                        return Err(ConnError::Closed);
+                    }
+                    let proxy_addr = match proxy_judged {
+                        None => return Ok(false),
+                        Some(Err(v)) => return Err(pended_verdict(v)),
+                        Some(Ok(at)) => at,
+                    };
+                    let planned = {
+                        let mut judging = held.judging.lock().expect("judging");
+                        if held.retired.load(Ordering::Acquire) {
+                            return Err(ConnError::Closed);
+                        }
+                        judging
+                            .as_mut()
+                            .and_then(|j| j.planned.take())
+                            .ok_or(ConnError::Closed)?
+                    };
+                    self.settle_proxy(held, planned, &spec, proxy_addr, waker)
+                })());
             }
-            let proxy_addr = got.map_err(pended_verdict)?;
+            let proxy_addr = match got {
+                Ok(at) => at,
+                Err(v) => return Err(held.fail(judging, pended_verdict(v))),
+            };
             let spec = Arc::clone(&p.spec);
             let planned = j.planned.take().ok_or(ConnError::Refused)?;
-            let _crossing = Crossing::begin(held, judging);
-            return self.settle_proxy(held, planned, &spec, proxy_addr, waker);
+            let crossing = Crossing::begin(held, judging);
+            return crossing.finish(self.settle_proxy(held, planned, &spec, proxy_addr, waker));
         }
-        let addr = got.map_err(pended_verdict)?;
+        let addr = match got {
+            Ok(at) => at,
+            Err(v) => return Err(held.fail(judging, pended_verdict(v))),
+        };
         if !class_admits(j.egress_class, secure, &j.within, &target, addr) {
-            // The refusal stays the connection's answer.
-            j.answer.lock().expect("judgement").0 = Some(Err(DEST_PLAINTEXT));
-            return Err(ConnError::Refused);
+            return Err(held.fail(judging, ConnError::Refused));
         }
         // The name's other admitted addresses a refused connect falls back to, each held to the
         // need's class and `within` as the pinned one is.
@@ -1712,10 +1749,12 @@ impl Connector {
             .filter(|&at| class_admits(j.egress_class, secure, &j.within, &target, at))
             .collect();
         let planned = j.planned.take().ok_or(ConnError::Refused)?;
-        let _crossing = Crossing::begin(held, judging);
-        let conn = planned.dial_at_any(addr, also).map_err(|f| map(&f))?;
-        self.ride(held, conn)?;
-        self.replay_early(held, waker)
+        let crossing = Crossing::begin(held, judging);
+        crossing.finish((|| {
+            let conn = planned.dial_at_any(addr, also).map_err(|f| map(&f))?;
+            self.ride(held, conn)?;
+            self.replay_early(held, waker)
+        })())
     }
 
     /// Complete a proxy dial while the crossing owns its plan and no judgement guard is held.
@@ -1851,6 +1890,7 @@ impl Connector {
                         None,
                         Some(Judging {
                             planned: Some(planned),
+                            failed: None,
                             egress_class,
                             within: Vec::new(),
                             early: VecDeque::new(),
@@ -1881,6 +1921,7 @@ impl Connector {
                     None,
                     Some(Judging {
                         planned: Some(planned),
+                        failed: None,
                         egress_class,
                         within: Vec::new(),
                         early: VecDeque::new(),
@@ -1915,6 +1956,7 @@ impl Connector {
                 None,
                 Some(Judging {
                     planned: Some(planned),
+                    failed: None,
                     egress_class,
                     within: within.to_vec(),
                     early: VecDeque::new(),
@@ -3082,6 +3124,9 @@ impl Conns for Connector {
         }
         if !self.settle(&held, None)? {
             if let Some(j) = held.judging.lock().expect("judging").as_mut() {
+                if let Some(error) = j.failed {
+                    return Err(error);
+                }
                 // Held until the line accepts them, under the same cap a connection's buffer has.
                 // An empty frame still carries end/text, but spends no payload room. Hold it
                 // once, then backpressure until judgement wakes the caller to drain and retry.
@@ -3349,6 +3394,10 @@ impl PollConns for Connector {
 #[cfg(test)]
 #[path = "tests/connector_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "tests/settled_dial_error_tests.rs"]
+mod settled_dial_error_tests;
 
 /// TEST ONLY: busbar-test-kit's log double, mounted into this crate's test build.
 #[cfg(test)]
