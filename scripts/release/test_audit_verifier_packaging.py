@@ -73,6 +73,7 @@ output.chmod(0o755)
 with open('cargo-calls.jsonl','a') as f: f.write(json.dumps({'args':args,'flags':os.environ.get('CARGO_ENCODED_RUSTFLAGS',os.environ.get('RUSTFLAGS',''))})+'\\n')
 ''')
                 cargo.chmod(0o755)
+                cargo_source = cargo.read_text()
                 command = ["bash", str(root / "scripts/release-build.sh"), triple, "--out-dir", str(root / "out")]
                 env = {**os.environ, "PATH": str(doubles) + os.pathsep + os.environ["PATH"],
                        "BUSBAR_RELEASE_PUBKEY": "fixture", "SOURCE_DATE_EPOCH": str(SOURCE_EPOCH),
@@ -109,14 +110,24 @@ with open('cargo-calls.jsonl','a') as f: f.write(json.dumps({'args':args,'flags'
                 self.assertEqual(archive.read_bytes(), original, "source timestamps cannot change a release archive")
                 # A failed or interrupted retry must remove the preceding attempt's archives
                 # and success marker, rather than leave a stale downloadable verifier.
-                for failure in (f"exit {FAILED_BUILD_EXIT}", 'kill -TERM "$PPID"; exit 143'):
-                    cargo.write_text("#!/bin/sh\n" + failure + "\n")
+                for failure in (f"sys.exit({FAILED_BUILD_EXIT})",
+                                f"os.kill(os.getppid(), signal.SIGTERM); sys.exit({FAILED_BUILD_EXIT})"):
+                    cargo.write_text(cargo_source.replace(
+                        "args=sys.argv[1:]", "import signal\nargs=sys.argv[1:]\n"
+                        + "if 'busbar-audit-verify' in args:\n    " + failure))
                     archive.write_bytes(original)
                     failed = subprocess.run(command, env=env, capture_output=True)
                     self.assertNotEqual(failed.returncode, 0)
                     self.assertFalse(archive.exists())
                     self.assertFalse((root / "out" / f"busbar-{triple}.{ext}").exists())
                     self.assertFalse((root / "build-evidence/artifact.sha256").exists())
+                cargo.write_text(cargo_source)
+                (root / "docs/audit-verify.md").unlink()
+                failed_package = subprocess.run(command, env=env, capture_output=True)
+                self.assertNotEqual(failed_package.returncode, 0)
+                self.assertFalse(archive.exists())
+                self.assertFalse((root / "out" / f"busbar-{triple}.{ext}").exists())
+                self.assertFalse((root / "build-evidence/artifact.sha256").exists())
 
 
 if __name__ == "__main__":
