@@ -26,7 +26,10 @@
 //!   `key_group_at_use`, `pricing_version`, `priced_from_ms`, `usage_units`;
 //! * a plane record: `kind`, `id`, `parent`, `seq`, `ts`, `disposition`, `body`.
 //!
-//! So the body costs one pass over the values and no allocation, and what a store keeps per op
+//! Legacy bodies cost one pass over the values and no allocation. The negotiated usage-correction
+//! body instead hashes its intent key and complete canonical request fingerprint after the tag,
+//! including the operation identity; computing that fingerprint encodes the immutable request.
+//! What a store keeps per op
 //! does not grow with what the op wrote. A store records the 32 bytes, or, in a text column, their
 //! 64 lower-case hex digits ([`Dedupe::body_hex`]); [`Dedupe::seen`] reads either.
 //!
@@ -60,6 +63,7 @@ enum Values<'a> {
     Metering(&'a [MeteringDelta]),
     Append(PlaneRecordRef<'a>),
     RecordTransaction(&'a super::conditional::Request),
+    UsageCorrection(&'a super::correction::Request),
 }
 
 /// Whether an `op_id` is new, a replay of the op that recorded it, or a conflict with it.
@@ -106,10 +110,20 @@ impl<'a> Dedupe<'a> {
         Self::of(Values::RecordTransaction(request))
     }
 
+    /// Complete raw-usage correction, including every precondition and replacement.
+    #[must_use]
+    pub fn usage_correction(request: &'a super::correction::Request) -> Self {
+        Self::of(Values::UsageCorrection(request))
+    }
+
     fn of(values: Values<'a>) -> Self {
         let mut f = Feed(Sha256::new());
         f.text(TAG);
         match values {
+            Values::UsageCorrection(request) => {
+                f.text(super::correction::INTENT);
+                f.bytes(&request.fingerprint());
+            }
             Values::Usage(cells) => {
                 f.text("add_usage_batch");
                 f.count(cells.len());
@@ -254,7 +268,7 @@ impl<'a> Dedupe<'a> {
     fn older_form_is(&self, recorded: &[u8]) -> bool {
         let mut older = String::new();
         match self.values {
-            Values::RecordTransaction(_) => return false,
+            Values::RecordTransaction(_) | Values::UsageCorrection(_) => return false,
             Values::Usage(cells) => {
                 let _ = write!(older, "add_usage_batch:{cells:?}");
             }

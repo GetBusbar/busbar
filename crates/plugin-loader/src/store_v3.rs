@@ -42,7 +42,7 @@ use busbar_contract::abi::mechanism::call::{
 };
 use busbar_contract::abi::mechanism::extensions;
 use busbar_contract::abi::mechanism::lifecycle::{slot as life, OpenIn, OpenOut, LIFECYCLE_SLOTS};
-use busbar_contract::abi::sdk::store::conditional;
+use busbar_contract::abi::sdk::store::{conditional, correction};
 use busbar_contract::abi::store::{
     self as st, slot, AddUsageBatchIn, AppendPlaneRecordIn, BlobIn, CountOut, GetPlaneRecordIn,
     HostBlobs, HostBuf, HostBytesOut, HostListOut, HostRecords, IdIn, IdReasonIn,
@@ -129,15 +129,20 @@ impl LoadedStore {
         if c.outcome != Outcome::Ready {
             return Err(c.open_failure(plugin.name()));
         }
-        // DISCOVERY AT BOOT: a store door that states `ready` is awaited before it is served.
-        plugin.ready(&dispatcher, crate::dispatch::ready::READY_DEADLINE)?;
-        Ok(Self {
+        // Own the successful OPEN before readiness can fail, so every subsequent error uses
+        // the same CLOSE path as a normally served store.
+        let store = Self {
             plugin,
             dispatcher,
             facts,
             next_worker: AtomicU32::new(0),
             mint,
-        })
+        };
+        // DISCOVERY AT BOOT: a store door that states `ready` is awaited before it is served.
+        store
+            .plugin
+            .ready(&store.dispatcher, crate::dispatch::ready::READY_DEADLINE)?;
+        Ok(store)
     }
 
     /// `open` ON A TICKET (ARCHITECT ruling 2026-10-03 on Q-L16-2; the mechanism: `open` "may
@@ -794,6 +799,51 @@ struct ConditionalReq {
     candidate: conditional::Request,
 }
 
+/// Empty legacy batch plus an owned, immutable correction intent. Pending/resumed crossings
+/// borrow this same frame; cancellation never turns it into an ordinary additive batch.
+struct CorrectionReq {
+    write: Fixed<AddUsageBatchIn, OutHead>,
+    candidate: correction::Request,
+}
+
+impl CorrectionReq {
+    fn new(candidate: &correction::Request) -> Result<Self, StoreFailure> {
+        let encoded = candidate
+            .encode()
+            .map_err(|s| StoreFailure::Refused(s.into()))?;
+        let write = fixed(
+            slot::ADD_USAGE_BATCH,
+            owned_in(|o, mut head| {
+                head.extensions = o.octets(&extensions::encode(&[(correction::INTENT, &encoded)]));
+                AddUsageBatchIn {
+                    head,
+                    op_id: candidate.op_id,
+                    cells: std::ptr::null(),
+                    cells_len: 0,
+                }
+            }),
+        );
+        Ok(Self {
+            write,
+            candidate: candidate.clone(),
+        })
+    }
+}
+
+impl Req for CorrectionReq {
+    type I = AddUsageBatchIn;
+    type O = OutHead;
+    fn slot(&self) -> u32 {
+        self.write.slot()
+    }
+    fn input(&mut self) -> Self::I {
+        self.write.input()
+    }
+    fn out(&self) -> Self::O {
+        self.write.out()
+    }
+}
+
 impl ConditionalReq {
     fn new(candidate: &conditional::Request) -> Result<Self, StoreFailure> {
         let encoded = candidate
@@ -843,6 +893,33 @@ impl Drop for AnswerLease<'_> {
 }
 
 impl LoadedStore {
+    fn correction_result(
+        &self,
+        ran: Ran<OutHead>,
+        candidate: &correction::Request,
+    ) -> Result<correction::Decision, StoreFailure> {
+        let _lease = AnswerLease(self, ran.lease);
+        ran.ok()?;
+        let extension = ran.out.extensions;
+        if ran.lease == 0 || extension.fmt != BLOB_OCTETS || extension.flags != 0 {
+            return Err(StoreFailure::Fault(
+                "usage correction outcome unknown: missing leased result".into(),
+            ));
+        }
+        if extension.len as u64 > busbar_contract::abi::mechanism::check::HARD_MAX_BYTES {
+            return Err(StoreFailure::Fault(
+                "usage correction outcome unknown: oversized result bytes".into(),
+            ));
+        }
+        // SAFETY: bounded bytes remain live under `_lease`; `lent` checks the pointer.
+        let bytes = unsafe { crate::dispatch::validate::lent(extension.ptr, extension.len) }
+            .ok_or_else(|| {
+                StoreFailure::Fault("usage correction outcome unknown: invalid result bytes".into())
+            })?;
+        correction::read_result(ran.outcome, true, bytes, candidate)
+            .map_err(|s| StoreFailure::Fault(format!("usage correction outcome unknown: {s}")))
+    }
+
     fn transaction_result(
         &self,
         ran: Ran<HostBytesOut>,
@@ -1114,6 +1191,25 @@ fn boxed<'a, T>(f: impl Future<Output = Result<T, StoreFailure>> + Send + 'a) ->
 }
 
 impl StoreCalls for LoadedStore {
+    fn supports_usage_correction(&self) -> bool {
+        self.facts.usage_correction
+    }
+
+    fn apply_usage_correction<'a>(
+        &'a self,
+        candidate: &'a correction::Request,
+    ) -> StoreCall<'a, correction::Decision> {
+        boxed(async move {
+            if !self.facts.usage_correction {
+                return Err(StoreFailure::Refused(
+                    "store does not support usage corrections".into(),
+                ));
+            }
+            let request = CorrectionReq::new(candidate)?;
+            let (ran, request) = self.submit(request).await;
+            self.correction_result(ran, &request.get().candidate)
+        })
+    }
     fn supports_record_transaction(&self) -> bool {
         self.facts.record_transaction
     }
@@ -1605,6 +1701,24 @@ impl LoadedStore {
 }
 
 impl RecordStore for LoadedStore {
+    fn supports_usage_correction(&self) -> bool {
+        self.facts.usage_correction
+    }
+
+    fn apply_usage_correction(
+        &self,
+        candidate: &correction::Request,
+    ) -> RecordStoreResult<correction::Decision> {
+        if !self.facts.usage_correction {
+            return bridge(Err(StoreFailure::Refused(
+                "store does not support usage corrections".into(),
+            )));
+        }
+        let request = CorrectionReq::new(candidate).map_err(|e| RecordStoreError(e.to_string()))?;
+        let (ran, request) = self.now(request);
+        bridge(self.correction_result(ran, &request.get().candidate))
+    }
+
     fn put_key(&self, key: &VirtualKey) -> RecordStoreResult<()> {
         self.plain(
             slot::PUT_KEY,

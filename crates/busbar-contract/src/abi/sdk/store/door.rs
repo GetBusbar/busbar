@@ -357,6 +357,10 @@ impl<'a, B: StoreSlots> Door<'a, B> {
         B::RECORD_TRANSACTION
     }
 
+    fn usage_correction_supported(&self) -> bool {
+        B::USAGE_CORRECTION
+    }
+
     /// Hold an off-path answer under a new lease of the instance's one lease table; its number.
     fn lease(&self, held: Leased) -> u64 {
         self.held.leases().keep_new(held)
@@ -1094,6 +1098,28 @@ slot!(
 slot!(
     /// `add_usage_batch` (slot 29): one `op_id`, the cells in order, atomically.
     AddUsageBatch(AddUsageBatchIn, OutHead) |s, i, o, cx| {
+        let request = match super::correction::intent(i.field(|i| &i.head.extensions).bytes()) {
+            Ok(request) => request,
+            Err(error) => return refused(s, o, Text::render(format_args!("{error}"))),
+        };
+        if let Some(request) = request {
+            if !s.usage_correction_supported() {
+                return refused(s, o, Text::render(format_args!("usage corrections unsupported")));
+            }
+            if request.op_id != i.op_id || i.cells_len != 0 {
+                return refused(s, o, Text::render(format_args!("usage correction carrier mismatch")));
+            }
+            return match step!(o, s.store.apply_usage_correction(cx, &request)) {
+                Ok(decision) => {
+                    let result = super::correction::encode_result(&request, decision);
+                    let bytes = crate::abi::mechanism::extensions::encode(&[(super::correction::RESULT, &result)]).into_boxed_slice();
+                    o.extensions = blob_over(&bytes, BLOB_OCTETS, false);
+                    o.lease = s.lease(Leased { bytes: vec![bytes], _blobs: Box::new([]), _strs: Box::new([]), secret: false });
+                    Outcome::Ready
+                }
+                Err(error) => op_answer(s, o, Err(error)),
+            };
+        }
         let mut cells = Vec::with_capacity(i.cells().len());
         for c in i.cells().iter() {
             let bucket = match text_of(c.field(|c| &c.bucket)) { Ok(t) => t, Err(e) => return refused(s, o, e) };

@@ -89,6 +89,8 @@ pub struct StoreFacts {
     pub fork_refusal: bool,
     /// Negotiated version-one conditional record transaction support.
     pub record_transaction: bool,
+    /// Negotiated version-one atomic raw-usage correction support.
+    pub usage_correction: bool,
     /// The settings paths the Statement declares secret (`secret_refs`): taken out of the settings
     /// and lent to `open` as `OpenIn.secrets`, as every other kind's are.
     pub secret_refs: Vec<String>,
@@ -132,6 +134,12 @@ fn store_facts(st: &Statement) -> Result<StoreFacts, String> {
             // Statement extensions are static plugin memory; `lent` also checks the pointer.
             && unsafe { crate::dispatch::validate::lent(st.extensions.ptr, st.extensions.len) }
                 .is_some_and(busbar_contract::abi::sdk::store::conditional::supported),
+        usage_correction: st.extensions.fmt == busbar_contract::abi::mechanism::call::BLOB_OCTETS
+            && st.extensions.flags == 0
+            && st.extensions.len as u64 <= busbar_contract::abi::mechanism::check::HARD_MAX_BYTES
+            // SAFETY: bounded static Statement bytes; `lent` also checks the pointer.
+            && unsafe { crate::dispatch::validate::lent(st.extensions.ptr, st.extensions.len) }
+                .is_some_and(busbar_contract::abi::sdk::store::correction::supported),
         secret_refs,
         credential_rewrap: {
             // SAFETY: the checked Statement owns its static extension bytes.

@@ -322,3 +322,174 @@ fn operation_id_conflict_remains_distinct_from_condition_conflict_both_ways() {
         });
     }
 }
+
+fn correction_request() -> busbar_contract::records::correction::Request {
+    use busbar_contract::records::correction::{Request, UsageAddress, UsageChange, VERSION};
+    use busbar_contract::records::UsageLedger;
+    Request {
+        version: VERSION,
+        op_id: OpId::from_parts(0xc0de, 3),
+        key_id: "historical-key".into(),
+        day_start: 0,
+        metering: vec![],
+        usage: vec![UsageChange {
+            address: UsageAddress {
+                bucket_id: "historical-key".into(),
+                window_start: 0,
+            },
+            expected: UsageLedger {
+                requests: 100,
+                billable_requests: 100,
+                models: vec![],
+            },
+            replacement: UsageLedger {
+                requests: 100,
+                billable_requests: 40,
+                models: vec![],
+            },
+        }],
+    }
+}
+
+#[test]
+fn correction_requires_negotiation_and_correlated_leased_decision_both_ways() {
+    use busbar_contract::records::correction::Decision;
+    for dropped in [false, true] {
+        let (store, _) = open(dropped, true, "applied");
+        runtime().block_on(async {
+            assert!(!store.supports_usage_correction());
+            assert!(matches!(
+                StoreCalls::apply_usage_correction(&*store, &correction_request()).await,
+                Err(StoreFailure::Refused(_))
+            ));
+            assert_eq!(stats(&store).await["tx_calls"], 0);
+        });
+        for mode in [
+            "missing",
+            "unleased",
+            "malformed",
+            "wrong-id",
+            "wrong-digest",
+            "duplicate-result",
+            "trailing-result",
+            "wrong-format",
+            "wrong-flags",
+        ] {
+            let (store, _) = open(dropped, false, mode);
+            runtime().block_on(async {
+                assert!(store.supports_usage_correction());
+                assert!(
+                    matches!(
+                        StoreCalls::apply_usage_correction(&*store, &correction_request()).await,
+                        Err(StoreFailure::Fault(_))
+                    ),
+                    "{mode}"
+                );
+                assert_eq!(stats(&store).await["held"], 0, "{mode}");
+            });
+        }
+        for (mode, expected) in [
+            ("applied", Decision::Applied),
+            ("pending", Decision::Applied),
+            ("conflict", Decision::ConditionConflict),
+        ] {
+            let (store, _) = open(dropped, false, mode);
+            runtime().block_on(async {
+                assert_eq!(
+                    StoreCalls::apply_usage_correction(&*store, &correction_request())
+                        .await
+                        .unwrap(),
+                    expected
+                );
+                let state = stats(&store).await;
+                assert_eq!(state["held"], 0);
+                assert_eq!(state["same"], true);
+                assert_eq!(state["released"], 1);
+                assert_eq!(state["class"], DeadlineClass::WriteBehind as u8);
+                assert_eq!(state["deadline"], 0);
+                assert_eq!(state["writes"], u64::from(expected == Decision::Applied));
+            });
+        }
+    }
+}
+
+#[test]
+fn correction_replay_and_dropped_caller_keep_exact_candidate_both_ways() {
+    use busbar_contract::records::correction::Decision;
+    for dropped in [false, true] {
+        let (store, _) = open(dropped, false, "failed-once");
+        runtime().block_on(async {
+            let request = correction_request();
+            assert!(matches!(
+                StoreCalls::apply_usage_correction(&*store, &request).await,
+                Err(StoreFailure::Failed(_))
+            ));
+            assert_eq!(
+                StoreCalls::apply_usage_correction(&*store, &request)
+                    .await
+                    .unwrap(),
+                Decision::Applied
+            );
+            let state = stats(&store).await;
+            assert_eq!(state["same"], true);
+            assert_eq!(state["writes"], 1);
+            assert_eq!(state["receipts"], 1);
+        });
+        let (store, dispatcher) = open(dropped, false, "hold");
+        runtime().block_on(async {
+            let background = store.clone();
+            let task = tokio::spawn(async move {
+                StoreCalls::apply_usage_correction(&*background, &correction_request()).await
+            });
+            wait_stats(&store, |v| v["tx_calls"] == 1).await;
+            assert!(dispatcher.drain(store.plugin(), Duration::from_millis(100)));
+            task.abort();
+            assert!(task.await.unwrap_err().is_cancelled());
+            StoreCalls::record_get(&*store, "observer", b"finish")
+                .await
+                .unwrap();
+            let state = wait_stats(&store, |v| v["tx_calls"] == 2 && v["held"] == 0).await;
+            assert_eq!(state["same"], true);
+            assert_eq!(state["released"], 1);
+            assert_eq!(state["cancelled"], 0);
+        });
+    }
+}
+
+#[test]
+fn correction_validation_op_id_conflict_and_synchronous_bridge_both_ways() {
+    use busbar_contract::records::{correction::Decision, RecordStore};
+    for dropped in [false, true] {
+        let (store, _) = open(dropped, false, "applied");
+        runtime().block_on(async {
+            let mut invalid = correction_request();
+            invalid.version += 1;
+            assert!(matches!(
+                StoreCalls::apply_usage_correction(&*store, &invalid).await,
+                Err(StoreFailure::Refused(_))
+            ));
+            assert_eq!(stats(&store).await["tx_calls"], 0);
+        });
+        let (store, _) = open(dropped, false, "op-id-conflict");
+        runtime().block_on(async {
+            assert!(matches!(
+                StoreCalls::apply_usage_correction(&*store, &correction_request()).await,
+                Err(StoreFailure::Conflict)
+            ));
+            let state = stats(&store).await;
+            assert_eq!(state["writes"], 0);
+            assert_eq!(state["receipts"], 0);
+        });
+        let (store, _) = open(dropped, false, "pending");
+        assert_eq!(
+            RecordStore::apply_usage_correction(&*store, &correction_request()).unwrap(),
+            Decision::Applied
+        );
+        runtime().block_on(async {
+            let state = stats(&store).await;
+            assert_eq!(state["same"], true);
+            assert_eq!(state["released"], 1);
+            assert_eq!(state["held"], 0);
+        });
+    }
+}

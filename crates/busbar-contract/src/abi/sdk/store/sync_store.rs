@@ -27,6 +27,23 @@ pub trait SyncStore: RecordStore + Sized + Send + Sync + 'static {
     /// Explicit opt-in to the atomic conditional-record protocol.
     const RECORD_TRANSACTION: bool = false;
 
+    /// Explicit opt-in to atomic raw-usage corrections.
+    const USAGE_CORRECTION: bool = false;
+
+    /// [`StoreSlots::apply_usage_correction`], answered synchronously.
+    ///
+    /// # Errors
+    /// Unsupported by default; implementations commit replacements and receipt atomically.
+    fn apply_usage_correction(
+        &self,
+        request: &super::correction::Request,
+    ) -> OpResult<super::correction::Decision> {
+        let _ = request;
+        Err(super::OpRefused::Refused(
+            "usage corrections unsupported".into(),
+        ))
+    }
+
     /// [`StoreSlots::record_transaction`], answered synchronously.
     ///
     /// # Errors
@@ -135,6 +152,15 @@ macro_rules! extra {
 impl<T: SyncStore> StoreSlots for T {
     const TAIL: Tail = <T as SyncStore>::TAIL;
     const RECORD_TRANSACTION: bool = <T as SyncStore>::RECORD_TRANSACTION;
+    const USAGE_CORRECTION: bool = <T as SyncStore>::USAGE_CORRECTION;
+
+    fn apply_usage_correction(
+        &self,
+        _: &mut Op<'_>,
+        request: &super::correction::Request,
+    ) -> Step<OpResult<super::correction::Decision>> {
+        Step::Ready(<T as SyncStore>::apply_usage_correction(self, request))
+    }
 
     fn record_transaction(
         &self,

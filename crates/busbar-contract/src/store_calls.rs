@@ -65,6 +65,23 @@ impl std::error::Error for StoreFailure {}
 
 /// ONE STORE INSTANCE'S CALLS, as the kernel makes them: the store v3 slots, typed.
 pub trait StoreCalls: Send + Sync {
+    /// Whether this instance negotiated atomic raw-usage correction support.
+    fn supports_usage_correction(&self) -> bool {
+        false
+    }
+
+    /// Submit one immutable correction. Retain this exact id and body after an unknown outcome;
+    /// only a definitive condition conflict permits replanning. Never emulate with additive writes.
+    fn apply_usage_correction<'a>(
+        &'a self,
+        request: &'a crate::records::correction::Request,
+    ) -> StoreCall<'a, crate::records::correction::Decision> {
+        let _ = request;
+        Box::pin(std::future::ready(Err(StoreFailure::Refused(
+            "usage corrections unsupported".into(),
+        ))))
+    }
+
     /// Whether this opened implementation negotiated the versioned conditional-record capability.
     fn supports_record_transaction(&self) -> bool {
         false
