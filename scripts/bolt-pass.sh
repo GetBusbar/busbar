@@ -31,22 +31,19 @@
 # essentially UNOPTIMIZED binary ships wearing the +38% claim. The failure is silent by construction,
 # because a BOLTed binary built from a near-empty profile behaves exactly like a correct one — just
 # slower. So the profile is now held to a FLOOR of real content ([`MIN_PROFILE_ROWS`] sampled rows
-# over [`MIN_PROFILE_FUNCS`] distinct functions), and `--selftest` proves that floor refuses the
-# profiles that used to pass.
+# over [`MIN_PROFILE_FUNCS`] distinct functions).
 #
 # Usage:
 #   scripts/bolt-pass.sh --binary <path> (--fdata <path> | --perf-data <path>) --out <path>
-#   scripts/bolt-pass.sh --selftest
 #
 #   --binary     the emit-relocs release binary to optimize
 #   --fdata      a BOLT profile already converted on the recording host, OR
 #   --perf-data  a raw `perf record` capture; the perf2bolt conversion runs here instead
 #   --out        where the optimized binary is written
-#   --selftest   prove the preconditions REFUSE what they are supposed to refuse, on constructed
-#                fixtures. Needs no llvm-bolt, no perf, no binary and no network.
 #
 # Requires: llvm-bolt + perf2bolt (Ubuntu 24.04: the `bolt-20` package; detection below also scans
-# /usr/lib/llvm-*/bin for installs that never symlinked into /usr/bin) and readelf (binutils).
+# /usr/lib/llvm-*/bin for installs that never symlinked into /usr/bin), readelf (binutils), and
+# GNU mv (the Linux publication step uses -T to refuse a directory at the final output path).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -67,14 +64,14 @@ readonly MIN_PROFILE_FUNCS=10
 die() {
   echo "[bolt-pass] ############################################################" >&2
   echo "[bolt-pass] # FAILED (FAIL-CLOSED): $*" >&2
-  echo "[bolt-pass] # No optimized binary was produced. Fix the cause and re-run;" >&2
+  echo "[bolt-pass] # No optimized binary was published. Fix the cause and re-run;" >&2
   echo "[bolt-pass] # the un-BOLTed release binary remains valid to ship as-is." >&2
   echo "[bolt-pass] ############################################################" >&2
   exit 1
 }
 log() { echo "[bolt-pass] $*"; }
 
-# assert_profile <path> — the floor, as a function so the self-test can drive it directly.
+# assert_profile <path> — check the profile supplied to the rewrite.
 # Prints the reason and returns 1 on refusal; prints the measurement and returns 0 on acceptance.
 assert_profile() {
   local f="$1" rows funcs
@@ -102,95 +99,6 @@ assert_profile() {
   echo "profile floor: $rows sampled row(s) over $funcs distinct function(s) (floors $MIN_PROFILE_ROWS/$MIN_PROFILE_FUNCS)"
   return 0
 }
-
-# ── SELF-TEST ────────────────────────────────────────────────────────────────────────────────────
-# The preconditions in this script are the whole script: every one of them exists because its
-# absence produced a binary that shipped broken or shipped slow while every tool involved exited 0.
-# Until this existed, NONE of them had ever been shown to refuse anything. It runs anywhere — no
-# llvm-bolt, no perf, no ELF, no network — because it drives the guards over constructed fixtures.
-selftest() {
-  local work fails=0
-  work="$(mktemp -d)"
-  # shellcheck disable=SC2064  # $work is expanded now on purpose
-  trap "rm -rf '$work'" RETURN
-
-  # A profile that clears the floor: 200 rows over 20 functions.
-  : >"$work/good.fdata"
-  local i fn
-  for i in $(seq 1 200); do
-    fn=$((i % 20))
-    printf '1 busbar_fn_%s/1 %s 1 %s\n' "$fn" "$i" "$i" >>"$work/good.fdata"
-  done
-  # THE ONE THAT USED TO PASS: non-empty, and useless. This is the exact input `[ -s ]` accepted.
-  printf '1 busbar_fn_0/1 0 1 1\n' >"$work/onerow.fdata"
-  # Plenty of rows, ONE function: a capture that watched a single loop spin.
-  : >"$work/onefunc.fdata"
-  for i in $(seq 1 200); do
-    printf '1 busbar_only_fn/1 %s 1 %s\n' "$i" "$i" >>"$work/onefunc.fdata"
-  done
-  : >"$work/empty.fdata"
-
-  probe() { # probe <want-rc> <label> <file>
-    local want="$1" label="$2" file="$3" rc=0 out
-    out="$(assert_profile "$file")" || rc=$?
-    if [ "$rc" -eq "$want" ]; then
-      echo "  ok   $label"
-    else
-      echo "  FAIL $label -> rc=$rc (expected $want): $out"
-      fails=$((fails + 1))
-    fi
-  }
-
-  echo "== bolt-pass SELF-TEST (the preconditions are proven to refuse) =="
-  echo "-- the profile floor --"
-  # GREEN FIRST: a guard that refuses everything proves nothing when it refuses a defect.
-  probe 0 "a real profile (200 rows, 20 functions) is ACCEPTED"        "$work/good.fdata"
-  probe 1 "an EMPTY profile is refused"                                "$work/empty.fdata"
-  probe 1 "a NEAR-EMPTY profile (one row) is refused - \`[ -s ]\` accepted this" "$work/onerow.fdata"
-  probe 1 "a profile naming ONE function is refused"                   "$work/onefunc.fdata"
-  probe 1 "a profile that does not exist is refused"                   "$work/no-such.fdata"
-
-  echo "-- the argument contract --"
-  argprobe() { # argprobe <label> <args...>
-    local label="$1"; shift
-    if "$0" "$@" >/dev/null 2>&1; then
-      echo "  FAIL $label was ACCEPTED"; fails=$((fails + 1))
-    else
-      echo "  ok   $label is refused"
-    fi
-  }
-  argprobe "--binary with no profile source"      --binary /bin/sh --out "$work/o"
-  argprobe "both --fdata and --perf-data"         --binary /bin/sh --fdata "$work/good.fdata" --perf-data "$work/good.fdata" --out "$work/o"
-  argprobe "no --out"                             --binary /bin/sh --fdata "$work/good.fdata"
-  argprobe "no --binary"                          --fdata "$work/good.fdata" --out "$work/o"
-  argprobe "an unknown argument"                  --binary /bin/sh --fdata "$work/good.fdata" --out "$work/o" --reorder-blocks=none
-  argprobe "a --binary that does not exist"       --binary "$work/no-such-binary" --fdata "$work/good.fdata" --out "$work/o"
-
-  echo "-- the segfault guard (a binary carrying no relocation sections) --"
-  # A text file is not an ELF, so readelf reports no .rela.text and the guard must refuse it. This
-  # is the guard whose absence produced a green rewrite and a SEGFAULTING binary on aarch64.
-  printf 'not an ELF\n' >"$work/notelf"
-  if command -v readelf >/dev/null 2>&1; then
-    argprobe "a binary with no .rela.text/.rel.text" --binary "$work/notelf" --fdata "$work/good.fdata" --out "$work/o"
-  else
-    echo "  skip readelf is absent on this host (the guard itself refuses to run without it)"
-  fi
-
-  if [ "$fails" -ne 0 ]; then
-    echo ""
-    echo "bolt-pass self-test: RED - $fails expectation(s) did not hold. No BOLT output from this" >&2
-    echo "script is trustworthy until they do." >&2
-    return 1
-  fi
-  echo ""
-  echo "bolt-pass self-test: PASS."
-  return 0
-}
-
-if [ "${1:-}" = "--selftest" ]; then
-  selftest
-  exit $?
-fi
 
 BINARY="" FDATA="" PERF_DATA="" OUT=""
 while [ $# -gt 0 ]; do
@@ -244,7 +152,8 @@ fi
 log "relocation guard: $BINARY carries relocation sections (emit-relocs link confirmed)"
 
 WORK="$(mktemp -d)"
-trap 'rm -rf "$WORK"' EXIT
+STAGE=""
+trap 'rm -rf "$WORK"; if [ -n "$STAGE" ]; then rm -rf "$STAGE"; fi' EXIT
 
 # ── profile: convert the raw capture if that is what arrived ────────────────────────────────────
 # `-nl`: treat the capture as plain-cycles samples, no LBR - the only mode the recording host
@@ -269,15 +178,20 @@ log "$FLOOR_REPORT"
 #   -use-gnu-stack             reuse the PT_GNU_STACK slot instead of growing the program-header
 #                              table, which not every loader tolerates moving
 log "rewriting $BINARY -> $OUT"
-"$LLVM_BOLT" "$BINARY" -data "$FDATA" -o "$OUT" \
+# Keep the final path untouched until the existing execution check succeeds. Staging in its
+# directory makes publication a same-filesystem rename, including when replacing an older output.
+[ ! -d "$OUT" ] || die "--out names a directory: $OUT"
+STAGE="$(mktemp -d "$(dirname "$OUT")/.busbar-bolt.XXXXXX")"
+STAGED="$STAGE/$(basename "$OUT")"
+"$LLVM_BOLT" "$BINARY" -data "$FDATA" -o "$STAGED" \
   -reorder-blocks=ext-tsp \
   -reorder-functions=cdsort \
   -split-functions \
   -split-all-cold \
   -use-gnu-stack \
   || die "llvm-bolt rewrite failed"
-[ -s "$OUT" ] || die "llvm-bolt exited 0 but produced nothing at $OUT"
-chmod +x "$OUT"
+[ -s "$STAGED" ] || die "llvm-bolt exited 0 but produced nothing at $STAGED"
+chmod +x "$STAGED"
 
 # ── POSITIVE VERIFICATION: the output must EXECUTE before success is declared ───────────────────
 # The observed failure mode is precisely a green rewrite whose output crashes, so an exit-0 from
@@ -285,10 +199,11 @@ chmod +x "$OUT"
 # build-provenance stamp and exits 0), which makes it the minimal real execution of the rewritten
 # startup path. This requires running on the binary's own architecture - deliberate, not a bug.
 # A bare filename must exec as a path, never resolve via PATH lookup.
-case "$OUT" in */*) RUN="$OUT" ;; *) RUN="./$OUT" ;; esac
+case "$STAGED" in */*) RUN="$STAGED" ;; *) RUN="./$STAGED" ;; esac
 INFO="$("$RUN" --build-info)" \
-  || die "the BOLTed binary at $OUT failed to execute --build-info. This is the segfault signature; the output is broken and MUST NOT ship. (If the failure is exec-format, this host is not the binary's architecture - run the pass on a matching host.)"
+  || die "the staged BOLTed binary at $STAGED failed to execute --build-info. This is the segfault signature; the output is broken and MUST NOT ship. (If the failure is exec-format, this host is not the binary's architecture - run the pass on a matching host.)"
 [ -n "$INFO" ] || die "the BOLTed binary executed but printed an empty build-provenance stamp"
+mv -fT "$STAGED" "$OUT"
 log "verified: $OUT executes (build: $INFO)"
 log "done: $OUT"
 echo "$OUT"

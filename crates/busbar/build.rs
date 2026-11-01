@@ -6,9 +6,7 @@
 // built. It exists because of a real incident: a ~20% throughput gap between two releases was
 // eventually traced mostly to a BUILD-CONFIG mismatch — a binary built WITHOUT PGO (or without the
 // release profile) masquerading as a code regression. A binary that says `pgo=false` / `profile=debug`
-// out loud makes that class of mistake impossible to misdiagnose, and a CI assertion over these
-// values (see scripts/profile-lock.sh + the build-provenance gate in the removed ci.yml) makes it impossible to
-// SHIP a mis-built binary green.
+// out loud makes the build configuration visible when diagnosing a regression.
 //
 // WHAT CARGO ACTUALLY EXPOSES to a build script (the honest surface):
 //   * PROFILE                 -> "release" | "debug"          (the profile in force)
@@ -20,8 +18,7 @@
 // `lto` and the profile-table `debug-assertions` are NOT exposed to build scripts by cargo. So:
 //   * debug-assertions is reported by main.rs at runtime via `cfg!(debug_assertions)` (compiled with
 //     the binary's own profile — the reliable source), and
-//   * `lto = "fat"` on [profile.release] is enforced by scripts/profile-lock.sh (a source-level check
-//     over the workspace Cargo.toml), since no build-time API reveals it.
+//   * profile-table `lto` is reported as unknown here, since no build-time API reveals it.
 // PGO IS DETECTED ONE WAY, AND ONLY ONE: the `-Cprofile-use` flag appearing in
 // CARGO_ENCODED_RUSTFLAGS — the flags cargo ACTUALLY applied. It used to be an OR with an explicit
 // `BUSBAR_PGO=1` env var, described here as "belt and suspenders"; that description went stale.
@@ -89,8 +86,8 @@ fn main() {
     // space-separated stamp line); rustc feature lists are comma-separated, so they never do.
     let target_features = flag_value(&flags, "target-feature").unwrap_or_else(|| "default".into());
 
-    // lto is not exposed to build scripts; surface what CAN be seen (a -Clto flag if any) and defer
-    // the profile-table `lto = "fat"` guarantee to scripts/profile-lock.sh. Reported honestly as
+    // lto is not exposed to build scripts; surface what CAN be seen (a -Clto flag if any).
+    // Profile-table settings are reported honestly as
     // "(profile-table; see Cargo.toml)" when governed by the profile rather than a flag.
     let lto = flag_value(&flags, "lto").unwrap_or_else(|| "(profile-table)".into());
 
