@@ -1583,19 +1583,10 @@ impl MeterCounts {
     }
 }
 
-/// The upsert key every metering cell is aggregated under:
-/// `(key_id, bucket, model, provider, priced_from_ms)`, the store's own metering key. Named so the
-/// accumulator and its flush read as one type, not a raw tuple repeated at every call site.
-///
-/// THE FIFTH MEMBER IS WHAT SPLITS A DAY. A bucket is a UTC day, so before it the read had no
-/// instant between midnight and midnight to resolve the dated rate-card history at, and a card
-/// published at noon either repriced the whole day or none of it (DECISION #79). The
-/// `effective_from` of the entry in force AT ACCRUAL joins the key, so a card edit opens a second
-/// cell and each half of the day prices against the card it was actually earned under. It is a
-/// timestamp and not a version precisely so a back-dated correction can still reach it. Cardinality
-/// grows by the number of card edits in a day and by nothing else — a deployment that never edits a
-/// price has one value here forever and the key is arithmetically the previous release's.
-pub type MeterKey = (String, u64, String, String, u64);
+/// The pending cell identity: key, day bucket, serving model/provider, price instant,
+/// historical group and named pricing version. Empty metadata remains unknown or ungrouped.
+/// The price instant permits later back-dated corrections; it is never a pricing-version name.
+pub type MeterKey = (String, u64, String, String, u64, String, String);
 
 /// The cap on how many distinct [`MeterKey`] cells may sit unflushed in `pending_metering` at once.
 ///
@@ -1630,7 +1621,7 @@ pub const METERING_OVERFLOW_LABEL: &str = "__aggregated__";
 /// The exactly-once contract: an EXISTING cell (including the overflow sentinel) always accumulates,
 /// so retries and re-arriving keys never grow the map; a NEW cell is inserted only while there is
 /// room. When the map is full a new cell's counts are COALESCED into a per-bucket overflow sentinel —
-/// billable token/request totals are preserved (nothing is dropped), only per-key/model/provider
+/// billable token/request totals are preserved (nothing is dropped), only per-key/model/provider/group/version
 /// attribution collapses — and every coalesce is COUNTED (metric + throttled diagnostic) so the
 /// degradation is never silent. This is the single accrual primitive both `record_metering` (the hot
 /// path) and `flush_metering`'s failure re-queue call, so both bound the map identically. `cap` is
@@ -1665,6 +1656,8 @@ pub fn accrue_pending(
         METERING_OVERFLOW_LABEL.to_string(),
         METERING_OVERFLOW_LABEL.to_string(),
         key.4,
+        String::new(),
+        String::new(),
     );
     pending.entry(sentinel).or_default().merge(add);
     metrics::counter!(crate::snapshot::METERING_PENDING_COALESCED_TOTAL).increment(1);

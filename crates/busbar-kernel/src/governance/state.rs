@@ -621,7 +621,7 @@ impl GovState {
         // THE METERING SERIES CARRIES WHAT THIS BOOK HOLDS: the same counts, keyed by the same era,
         // mirrored onto the key's metering row by THIS accrual — the one place every ledgered class
         // lands — so the admin usage read prices exactly the counts this book prices.
-        self.meter_classes(&key.id, model, provider, units, era, now);
+        self.meter_classes(key, model, provider, units, era, now);
         // A missing group cannot block ACCRUAL (the request was already admitted/served);
         // degrade to the key-only bucket so the tokens are never lost.
         let chain = match cost.chain_for(key) {
@@ -658,7 +658,7 @@ impl GovState {
     /// carried here and nowhere else. Write-behind, like `record_metering`.
     fn meter_classes(
         &self,
-        key_id: &str,
+        key: &VirtualKey,
         lane: &str,
         provider: Option<&str>,
         units: &std::collections::BTreeMap<String, u64>,
@@ -684,11 +684,13 @@ impl GovState {
             (subject, plane)
         };
         let key: MeterKey = (
-            key_id.to_string(),
+            key.id.clone(),
             metering_bucket(now),
             model.to_string(),
             provider.to_string(),
             priced_from_ms,
+            key.group.clone().unwrap_or_default(),
+            String::new(),
         );
         self.pending_metering.accrue(
             key,
@@ -715,16 +717,47 @@ impl GovState {
         units: &std::collections::BTreeMap<String, u64>,
         now: u64,
     ) {
+        self.record_lane_metering_attributed(key_id, "", lane, provider, units, now);
+    }
+
+    /// Meter with the key snapshot admitted for this unit, including its historical group.
+    pub fn record_lane_metering_for_key(
+        &self,
+        key: &VirtualKey,
+        lane: &str,
+        provider: Option<&str>,
+        units: &std::collections::BTreeMap<String, u64>,
+        now: u64,
+    ) {
+        self.record_lane_metering_attributed(
+            &key.id,
+            key.group.as_deref().unwrap_or(""),
+            lane,
+            provider,
+            units,
+            now,
+        );
+    }
+
+    fn record_lane_metering_attributed(
+        &self,
+        key_id: &str,
+        key_group_at_use: &str,
+        lane: &str,
+        provider: Option<&str>,
+        units: &std::collections::BTreeMap<String, u64>,
+        now: u64,
+    ) {
         match split_plane_lane(lane) {
             ("", _) => {
                 if let Some(provider) = provider {
                     let add = MeterCounts::request(units);
-                    self.record_metered_request(key_id, lane, provider, add, now);
+                    self.record_metered_request(key_id, key_group_at_use, lane, provider, add, now);
                 }
             }
             (plane, subject) => {
                 let add = MeterCounts::request(&std::collections::BTreeMap::new());
-                self.record_metered_request(key_id, subject, plane, add, now);
+                self.record_metered_request(key_id, key_group_at_use, subject, plane, add, now);
             }
         }
     }
@@ -783,7 +816,7 @@ impl GovState {
             tokens_cache_write: usage.and_then(|u| u.cache_creation).unwrap_or(0),
             usage_units: std::collections::BTreeMap::new(),
         };
-        self.record_metered_request(key_id, model, provider, add, now);
+        self.record_metered_request(key_id, "", model, provider, add, now);
     }
 
     /// Accrue `add` (one request's counts) onto the `(key, day bucket, model, provider, card
@@ -792,6 +825,7 @@ impl GovState {
     fn record_metered_request(
         &self,
         key_id: &str,
+        key_group_at_use: &str,
         model: &str,
         provider: &str,
         add: MeterCounts,
@@ -799,6 +833,7 @@ impl GovState {
     ) {
         self.record_metered_request_dated(
             key_id,
+            key_group_at_use,
             model,
             provider,
             add,
@@ -816,6 +851,7 @@ impl GovState {
     pub(crate) fn record_metered_request_dated(
         &self,
         key_id: &str,
+        key_group_at_use: &str,
         model: &str,
         provider: &str,
         add: MeterCounts,
@@ -844,6 +880,8 @@ impl GovState {
             model.to_string(),
             provider.to_string(),
             priced_from_ms,
+            key_group_at_use.to_owned(),
+            String::new(),
         );
         // Accrue through the sharded accumulator: this locks ONLY the shard owning `key_id`, so
         // concurrent completions for different keys no longer serialize on one process-wide mutex.
@@ -894,7 +932,11 @@ impl GovState {
         let mut failed = 0usize;
         let mut unrecorded: Vec<String> = Vec::new();
         let mut last_error: Option<String> = None;
-        for ((key_id, bucket, model, provider, priced_from_ms), counts) in taken {
+        for (
+            (key_id, bucket, model, provider, priced_from_ms, key_group_at_use, pricing_version),
+            counts,
+        ) in taken
+        {
             if counts.is_zero() {
                 continue;
             }
@@ -909,8 +951,8 @@ impl GovState {
                 tokens_cache_write: counts.tokens_cache_write,
                 requests: counts.requests,
                 billable_requests: counts.requests,
-                key_group_at_use: String::new(),
-                pricing_version: String::new(),
+                key_group_at_use: key_group_at_use.clone(),
+                pricing_version: pricing_version.clone(),
                 // The instant the cell's card started, carried verbatim from the accrual key so the
                 // durable row can be resolved against the dated history exactly as the cell was.
                 priced_from_ms,
@@ -932,8 +974,18 @@ impl GovState {
                     // now caps each shard (coalescing past the cap into the per-bucket overflow
                     // sentinel), so no billable usage is dropped and retry is preserved — a re-queued
                     // cell that still exists next tick simply accumulates.
-                    self.pending_metering
-                        .accrue((key_id, bucket, model, provider, priced_from_ms), counts);
+                    self.pending_metering.accrue(
+                        (
+                            key_id,
+                            bucket,
+                            model,
+                            provider,
+                            priced_from_ms,
+                            key_group_at_use,
+                            pricing_version,
+                        ),
+                        counts,
+                    );
                 }
             }
         }

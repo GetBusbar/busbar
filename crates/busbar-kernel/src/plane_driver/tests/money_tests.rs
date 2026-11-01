@@ -1426,3 +1426,35 @@ fn units_over_every_shard_are_counted_and_closed() {
     }
     assert_eq!(money.open_units(), 0, "every end closes its unit");
 }
+
+#[test]
+fn served_requests_keep_each_units_pinned_group_until_settlement() {
+    let r = rig(None, 0, ExhaustionMode::FinishUnit);
+    let mut later_key = (*r.key).clone();
+    later_key.group = Some("later".into());
+    r.money.open(
+        UnitKey::new(2),
+        UnitMoney {
+            key: Arc::new(later_key),
+            ..r.unit.clone()
+        },
+    );
+    r.money.served(&ctx(1), "m", "acme");
+    r.money.served(&ctx(2), "m", "acme");
+    r.money.settle_end(UnitKey::new(2), 200);
+    r.money.settle_end(UnitKey::new(1), 200);
+    let rows = metering_rows(&r);
+    assert_eq!(
+        rows.len(),
+        2,
+        "same key and serving lane retain both historical groups"
+    );
+    let counts: BTreeMap<_, _> = rows
+        .into_iter()
+        .map(|row| {
+            assert!(row.pricing_version.is_empty());
+            (row.key_group_at_use, row.requests)
+        })
+        .collect();
+    assert_eq!(counts, [("g".into(), 1), ("later".into(), 1)].into());
+}

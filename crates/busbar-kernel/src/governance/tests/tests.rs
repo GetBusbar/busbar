@@ -3988,6 +3988,8 @@ mod metering_fanout {
             "m".to_string(),
             "p".to_string(),
             0u64,
+            String::new(),
+            String::new(),
         );
         // `accrue` with an all-zero delta inserts a genuinely all-zero cell (key absent, under cap).
         gov.pending_metering.accrue(key, MeterCounts::default());
@@ -3999,6 +4001,33 @@ mod metering_fanout {
             rows.is_empty(),
             "an all-zero entry must never become a store row"
         );
+    }
+
+    #[test]
+    fn a_failed_flush_keeps_each_pinned_groups_units_through_retry() {
+        let store = Arc::new(CountingStore::new(1));
+        let gov = GovState::new(store, None).unwrap();
+        let cost = plane_fee_cost(1_000);
+        let mut key = sample_key("same-key", "h");
+        let units = [("search_units".to_owned(), 3)].into();
+        key.group = Some("first".into());
+        gov.record_usage_served(&cost, &key, "", "m", Some("p"), &units, AT);
+        assert_eq!(
+            gov.flush_metering(),
+            0,
+            "first write fails without committing"
+        );
+        key.group = Some("second".into());
+        gov.record_usage_served(&cost, &key, "", "m", Some("p"), &units, AT);
+        assert_eq!(gov.flush_metering(), 2);
+        let counts: std::collections::BTreeMap<_, _> = gov
+            .metering_for(metering_bucket(AT))
+            .unwrap()
+            .into_iter()
+            .map(|row| (row.key_group_at_use, row.usage_units["search_units"]))
+            .collect();
+        assert_eq!(counts, [("first".into(), 3), ("second".into(), 3)].into());
+        assert_eq!(gov.flush_metering(), 0, "retry commits each count once");
     }
 }
 
@@ -5830,7 +5859,7 @@ fn the_metering_accrual_reads_the_millisecond_clock_not_the_lifted_second() {
         requests: 1,
         ..MeterCounts::default()
     };
-    gov.record_metered_request_dated("vk_dated", "m", "p", add, T0 / 1_000, &clock, &dater);
+    gov.record_metered_request_dated("vk_dated", "", "m", "p", add, T0 / 1_000, &clock, &dater);
 
     let drained = gov.pending_metering.drain();
     assert_eq!(drained.len(), 1, "one response, one cell");
@@ -6090,7 +6119,7 @@ fn a_served_units_open_class_lands_on_its_providers_row() {
     .into_iter()
     .collect();
     gov.record_usage_served(&cost, &k, "", "m", Some("p"), &units, AT);
-    gov.record_lane_metering(&k.id, "m", Some("p"), &units, AT);
+    gov.record_lane_metering_for_key(&k, "m", Some("p"), &units, AT);
     gov.flush_metering();
     let rows = store.list_metering(metering_bucket(AT)).unwrap();
     let mine: Vec<_> = rows.iter().filter(|r| r.key_id == k.id).collect();
@@ -6483,4 +6512,40 @@ async fn a_usage_window_past_the_horizon_is_purged_from_the_durable_store() {
     );
     assert_eq!(requests(0), 1, "the all-time window is never purged");
     assert_eq!(requests(live), 1, "the live window is kept");
+}
+
+#[test]
+fn metering_open_units_keep_the_pinned_keys_historical_group() {
+    let (store, gov, mut key) = team_gov();
+    let cost = plane_fee_cost(1_000);
+    let units = [("search_units".to_owned(), 3)].into();
+    for group in [Some("team"), Some("later"), None, Some("team")] {
+        key.group = group.map(str::to_owned);
+        gov.record_usage_served(&cost, &key, "", "m", Some("p"), &units, AT);
+    }
+    gov.flush_metering();
+    let counts: std::collections::BTreeMap<_, _> = store
+        .list_metering(metering_bucket(AT))
+        .unwrap()
+        .into_iter()
+        .map(|row| {
+            assert_eq!(
+                (
+                    row.key_id.as_str(),
+                    row.model.as_str(),
+                    row.provider.as_str()
+                ),
+                (key.id.as_str(), "m", "p")
+            );
+            assert!(
+                row.pricing_version.is_empty(),
+                "no named price version was supplied"
+            );
+            (row.key_group_at_use, row.usage_units["search_units"])
+        })
+        .collect();
+    assert_eq!(
+        counts,
+        [("team".into(), 6), ("later".into(), 3), (String::new(), 3)].into()
+    );
 }

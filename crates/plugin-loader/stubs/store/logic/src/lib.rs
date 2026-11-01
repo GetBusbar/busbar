@@ -55,9 +55,9 @@ fn now() -> u64 {
 /// the per-key listing/cascade are SCANS over that one map, not secondary indexes — the RAM backend
 /// holds a fixture-sized table and a second map to keep in step with every sweep, tombstone cascade
 /// and rotation is more failure surface than the scan costs), token ledgers keyed by (bucket_id,
-/// window_start), metering rows keyed by (key_id, bucket, model, provider, priced_from_ms).
-/// A metering row's key: (key_id, bucket, model, provider, priced_from_ms).
-type MeteringKey = (String, u64, String, String, u64);
+/// window_start), metering rows keyed by (key_id, bucket, model, provider, priced_from_ms, group, version).
+/// A metering row's key: (key_id, bucket, model, provider, priced_from_ms, group, version).
+type MeteringKey = (String, u64, String, String, u64, String, String);
 
 #[derive(Default)]
 pub struct MemoryStore {
@@ -505,6 +505,8 @@ impl Store for MemoryStore {
                 d.model.clone(),
                 d.provider.clone(),
                 d.priced_from_ms,
+                d.key_group_at_use.clone(),
+                d.pricing_version.clone(),
             ))
             .or_insert_with(|| MeteringRow {
                 key_id: d.key_id.clone(),
@@ -541,7 +543,7 @@ impl Store for MemoryStore {
             .is_multiple_of(SWEEP_INTERVAL);
         if sweep_needed {
             let n = self.now();
-            m.retain(|(_, bucket, _, _, _), _| bucket.saturating_add(MAX_RETENTION_SECS) > n);
+            m.retain(|(_, bucket, ..), _| bucket.saturating_add(MAX_RETENTION_SECS) > n);
         }
         Ok(())
     }
@@ -550,7 +552,7 @@ impl Store for MemoryStore {
         Ok(self
             .metering_read()
             .iter()
-            .filter(|((_, b, _, _, _), _)| *b == bucket)
+            .filter(|((_, b, ..), _)| *b == bucket)
             .map(|(_, row)| row.clone())
             .collect())
     }

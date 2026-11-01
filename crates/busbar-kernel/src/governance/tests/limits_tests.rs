@@ -2114,7 +2114,15 @@ fn metering_overflow_coalescing_warns_once_per_window_naming_the_count() {
     let ((), lines) = captured(|| {
         // One key id lands in one shard; fill it, then push three more distinct cells past the cap.
         for i in 0..(MAX_PENDING_METERING_PER_SHARD + 3) {
-            let key: MeterKey = ("vk_over".into(), 1, format!("m{i}"), "p".into(), 0);
+            let key: MeterKey = (
+                "vk_over".into(),
+                1,
+                format!("m{i}"),
+                "p".into(),
+                0,
+                String::new(),
+                String::new(),
+            );
             pending.accrue(key, MeterCounts::default());
         }
     });
