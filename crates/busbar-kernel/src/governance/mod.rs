@@ -2000,6 +2000,10 @@ pub async fn purge_usage_windows(gov: &GovState) {
 mod tests;
 
 #[cfg(test)]
+#[path = "tests/metering_flush_custody.rs"]
+mod metering_flush_custody_tests;
+
+#[cfg(test)]
 #[path = "tests/limits_tests.rs"]
 mod limits_tests;
 
