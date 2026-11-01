@@ -30,7 +30,7 @@ use busbar_contract::abi::mechanism::door::{
     Door, MetricFamily, Statement, FAMILY_COUNTER, FAMILY_GAUGE,
 };
 use busbar_contract::abi::mechanism::lifecycle::{
-    CancelIn, CancelOut, OpenIn, OpenOut, OpsHead, TickIn, TickOut, LIFECYCLE_SLOTS,
+    CancelIn, CancelOut, OpenIn, OpenOut, OpsHead, TickIn, TickOut, ValidateIn, LIFECYCLE_SLOTS,
 };
 use busbar_contract::abi::mechanism::ticket::{HostCtx, Ticket, WakeFn};
 use busbar_contract::abi::mechanism::{KindCode, DOOR_MAGIC, MECHANISM_VERSION};
@@ -426,6 +426,14 @@ unsafe fn gauges(me: &Inst, t: Ticket, out: *mut c_void, values: &[(u32, u32)]) 
 
 extern "C" fn validate(_: *mut c_void, input: *const c_void, out: *mut c_void) -> RawOutcome {
     unsafe {
+        let settings = (*input.cast::<ValidateIn>()).settings;
+        if !settings.ptr.is_null() {
+            if let Some(key) =
+                std::slice::from_raw_parts(settings.ptr, settings.len).strip_prefix(HANG)
+            {
+                hang_until(key);
+            }
+        }
         let head = &*input.cast::<InHead>();
         let ok = head.ticket.is_none();
         say(out, if ok { Outcome::Ready } else { Outcome::Refused })

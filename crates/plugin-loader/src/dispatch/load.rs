@@ -312,7 +312,7 @@ pub fn rendering_of_macro(
 ///
 /// The refusal the door or its Statement earns.
 pub(crate) fn statement_of(door_fn: RawDoorFn) -> Result<Statement, LoadError> {
-    let (door, _) = read_door(door_fn(), None)?;
+    let (door, _) = read_door(enter_door(door_fn), None)?;
     statement(&door)
 }
 

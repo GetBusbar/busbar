@@ -200,6 +200,23 @@ fn raw_door_rendering_refuses_null_optional_blob_payloads() {
     }
 }
 
+#[test]
+fn statement_reading_calls_the_door_on_a_permanent_worker() {
+    extern "C" fn worker_only_door() -> *const Door {
+        if crate::ffi_thread::on_permanent_worker() {
+            plug::busbar_plugin_door()
+        } else {
+            std::ptr::null()
+        }
+    }
+    assert!(!crate::ffi_thread::on_permanent_worker());
+    assert!(crate::dispatch::load::statement_of(worker_only_door).is_ok());
+    crate::ffi_thread::on_plugin_thread(|| {
+        assert!(crate::dispatch::load::statement_of(worker_only_door).is_ok());
+    })
+    .unwrap();
+}
+
 /// [`stated`] with its head facts replaced by `f`.
 fn stated_with(f: ManifestFacts) -> Vec<u8> {
     let mut b = stated();
@@ -1999,6 +2016,76 @@ fn red_a_hung_ticketless_call_faults_its_instance() {
         Outcome::Ready
     );
     caller.join().unwrap();
+}
+
+#[test]
+fn an_older_ticketless_call_is_counted_when_its_longer_budget_expires() {
+    let d = Dispatcher::new(DispatchConfig {
+        quarantine_after: 2,
+        ..config()
+    });
+    let (p, _) = opened(&d);
+    let (release, _) = opened(&d);
+    let p = Arc::new(p);
+    let long = Arc::clone(&p);
+    let first = std::thread::spawn(move || {
+        let settings = b"hang:older-watch-budget";
+        let mut f = Frame::new(
+            ValidateIn {
+                head: in_head(),
+                settings: Blob {
+                    ptr: settings.as_ptr(),
+                    len: settings.len(),
+                    fmt: BLOB_OCTETS,
+                    flags: 0,
+                },
+                err_buf: std::ptr::null_mut(),
+                err_cap: 0,
+            },
+            out_head(),
+        );
+        long.call(slot::VALIDATE, &mut f).outcome
+    });
+    until("the earlier validation crossing", || {
+        p.inner.lock_calls().len() == 1
+    });
+    let older = *p.inner.lock_calls().keys().next().unwrap();
+    let short = Arc::clone(&p);
+    let second = std::thread::spawn(move || {
+        short
+            .call(TICK, &mut frame(b"hang:newer-watch-budget"))
+            .outcome
+    });
+    until("both ticketless crossings", || {
+        p.inner.lock_calls().len() == 2
+    });
+    {
+        let mut calls = p.inner.lock_calls();
+        let newer = *calls.keys().find(|&&id| id != older).unwrap();
+        calls.get_mut(&newer).unwrap().0 = Instant::now() - Duration::from_secs(1);
+    }
+    let deadline = Instant::now() + WAIT;
+    while p.inner.breaches.load(std::sync::atomic::Ordering::Acquire) == 0
+        && Instant::now() < deadline
+    {
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    let first_count = p.inner.breaches.load(std::sync::atomic::Ordering::Acquire);
+    p.inner.lock_calls().get_mut(&older).unwrap().0 = Instant::now() - Duration::from_secs(60);
+    let deadline = Instant::now() + WAIT;
+    while !p.is_faulted() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    let counted = p.inner.breaches.load(std::sync::atomic::Ordering::Acquire);
+    let faulted = p.is_faulted();
+    // Release both real crossings before any outcome assertion can fail.
+    release.call(TICK, &mut frame(b"unhang:older-watch-budget"));
+    release.call(TICK, &mut frame(b"unhang:newer-watch-budget"));
+    first.join().unwrap();
+    second.join().unwrap();
+    assert_eq!(first_count, 1, "the later short-budget call breaches first");
+    assert_eq!(counted, 2, "the earlier call still owns its later breach");
+    assert!(faulted, "the two distinct breaches quarantine the instance");
 }
 
 /// THE DESIGN A.8: "on a breach of the threshold, N times, the instance is quarantined". With
