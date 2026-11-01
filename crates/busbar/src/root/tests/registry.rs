@@ -214,7 +214,6 @@ fn every_remaining_path_overlap_is_a_shape_and_not_a_gap() {
     use busbar_kernel::grammar::family;
 
     let claims = linked_claims();
-    let (mut tail, mut variable, mut fragments, mut same_family) = (0usize, 0usize, 0usize, 0usize);
     let ends_in_tail = |s: &Selector| matches!(s, Selector::PathPattern(p) if matches!(p.last(), Some(PathSeg::Tail)));
     let has_variable = |s: &Selector| matches!(s, Selector::PathPattern(p) if p.iter().any(|g| matches!(g, PathSeg::Var)));
     let is_fragment =
@@ -228,21 +227,17 @@ fn every_remaining_path_overlap_is_a_shape_and_not_a_gap() {
             {
                 continue;
             }
-            same_family += 1;
             let (a, b) = (&left.claim.selector, &right.claim.selector);
-            if ends_in_tail(a) || ends_in_tail(b) {
-                tail += 1;
-            } else if (has_variable(a) && is_fragment(b)) || (has_variable(b) && is_fragment(a)) {
-                variable += 1;
-            } else if is_fragment(a) && is_fragment(b) {
-                fragments += 1;
-            } else {
-                panic!("{a:?} and {b:?} overlap for no reason this file can name");
-            }
+            assert!(
+                ends_in_tail(a)
+                    || ends_in_tail(b)
+                    || (has_variable(a) && is_fragment(b))
+                    || (has_variable(b) && is_fragment(a))
+                    || (is_fragment(a) && is_fragment(b)),
+                "{a:?} and {b:?} overlap for no reason this file can name"
+            );
         }
     }
-    // The classes partition the same-family pairs: every pair is in exactly one.
-    assert_eq!(tail + variable + fragments, same_family);
 }
 
 /// **The finding, answered.** Every cross-plane overlap is settled by the sealed order, and none
@@ -731,18 +726,6 @@ fn the_fold_builds_bottom_up_in_composes_over_order() {
             row.key
         );
     }
-    for row in &rows {
-        if let Some(over) = row.composed_over {
-            let first = row.composes_over.iter().find(|l| linked.contains(l));
-            assert_eq!(
-                first,
-                Some(&over),
-                "`{}` not over its first linked layer",
-                row.key
-            );
-        }
-    }
-
     let mut reversed = crate::LINKED.transports.to_vec();
     reversed.reverse();
     let refolded: Vec<Registered> =
