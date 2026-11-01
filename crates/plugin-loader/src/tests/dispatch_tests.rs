@@ -38,6 +38,229 @@ use crate::dispatch::{
     ManifestFacts, Metric, Plugin, NO_BLOB,
 };
 
+/// Native finalizer observations shared with the direct dlclose regression.
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+mod unload_witness {
+    use std::mem::ManuallyDrop;
+    use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::mpsc::{self, Receiver, Sender};
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use libloading::Library;
+
+    const REENTRANT_CHILD: &str = "BUSBAR_UNLOAD_REENTRANT_CHILD";
+
+    pub(crate) struct Unloaded {
+        pub(crate) thread: std::thread::ThreadId,
+        pub(crate) permanent: bool,
+        pub(crate) reentered: bool,
+        // Only the test caller releases this owner. A queued payload discarded on either side
+        // of a disconnected channel must never drop the last dispatcher under dlclose.
+        dispatcher: Option<ManuallyDrop<Arc<super::Dispatcher>>>,
+    }
+
+    impl Unloaded {
+        pub(super) fn release_dispatcher_on_caller(self) {
+            if let Some(dispatcher) = self.dispatcher {
+                drop(ManuallyDrop::into_inner(dispatcher));
+            }
+        }
+    }
+
+    struct Context {
+        sender: Sender<Unloaded>,
+        dispatcher: Option<Arc<super::Dispatcher>>,
+    }
+
+    /// The callback is host code and owns its sender independently of the test stack. If an unload is
+    /// leaked or delayed past a failed assertion, the finalizer cannot dereference a dead stack frame.
+    extern "C" fn witnessed_unload(context: usize) {
+        // SAFETY: `UnloadWitness::new` transfers exactly this Box to the fixture, whose finalizer
+        // takes its callback once. No other code consumes the pointer after successful registration.
+        let Context { sender, dispatcher } = *unsafe { Box::from_raw(context as *mut Context) };
+        // This is the SAME worker whose recycle drops the driver's last instance reference.
+        // mint synchronously locks WorkerState. A dlclose waited under that lock cannot finish
+        // this real reentrant call; the isolated parent kills and reaps that failed child.
+        let reentered = dispatcher.as_ref().is_some_and(|d| {
+            if let Some(ticket) = d.mint(0) {
+                d.recycle(ticket);
+                true
+            } else {
+                false
+            }
+        });
+        let observed = Unloaded {
+            thread: std::thread::current().id(),
+            permanent: crate::ffi_thread::on_permanent_worker(),
+            reentered,
+            dispatcher: dispatcher.map(ManuallyDrop::new),
+        };
+        if let Err(undelivered) = sender.send(observed) {
+            // A failed child may have already dropped its receiver. Keep its dispatcher alive
+            // until process teardown instead of invoking Dispatcher::drop inside the finalizer.
+            std::mem::forget(undelivered.0);
+        }
+    }
+
+    /// Each test owns a separate image, so another test's dlopen reference or unload cannot satisfy
+    /// this receiver. Only the finalizer in this copied image receives its sender.
+    pub(crate) struct UnloadWitness {
+        dir: PathBuf,
+        path: PathBuf,
+        unloaded: Receiver<Unloaded>,
+    }
+
+    impl UnloadWitness {
+        pub(crate) fn new() -> (Self, Library) {
+            Self::with_dispatcher(None)
+        }
+
+        pub(super) fn reentrant(dispatcher: Arc<super::Dispatcher>) -> (Self, Library) {
+            Self::with_dispatcher(Some(dispatcher))
+        }
+
+        fn with_dispatcher(dispatcher: Option<Arc<super::Dispatcher>>) -> (Self, Library) {
+            let dir = unique_dir();
+            let (sender, unloaded) = mpsc::channel();
+            let path = dir.join(crate::plugin_library_filename("dispatch_test_plugin"));
+            let witness = Self {
+                dir,
+                path,
+                unloaded,
+            };
+            std::fs::copy(
+                crate::dispatch_tests::example_cdylib("dispatch_test_plugin"),
+                &witness.path,
+            )
+            .expect("copy this test's existing dropped fixture");
+            let lib =
+                crate::dlopen_on_worker(witness.path.as_os_str()).expect("load the copied image");
+            type Arm = extern "C" fn(extern "C" fn(usize), usize) -> bool;
+            // SAFETY: the existing fixture exports exactly this registration function. `lib` remains
+            // live through the call; neither the Symbol nor a plugin function pointer escapes it.
+            let arm = unsafe { lib.get::<Arm>(b"busbar_test_arm_unload\0") }
+                .expect("the dropped fixture exports its finalizer witness");
+            let context = Box::into_raw(Box::new(Context { sender, dispatcher })) as usize;
+            let armed = crate::ffi_thread::on_plugin_thread(|| arm(witnessed_unload, context))
+                .expect("fixture registration does not panic");
+            if !armed {
+                // SAFETY: a refused registration retains no pointer; this caller still owns the Box.
+                drop(unsafe { Box::from_raw(context as *mut Context) });
+            }
+            assert!(armed, "a new copied image has no previous witness");
+            (witness, lib)
+        }
+
+        pub(crate) fn path(&self) -> &Path {
+            &self.path
+        }
+
+        pub(crate) fn finished(&self) -> Unloaded {
+            self.unloaded
+                .recv_timeout(Duration::from_secs(5))
+                .expect("this image's actual finalizer must report its unload")
+        }
+
+        pub(crate) fn is_pending(&self) -> bool {
+            matches!(self.unloaded.try_recv(), Err(mpsc::TryRecvError::Empty))
+        }
+    }
+
+    impl Drop for UnloadWitness {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+
+    fn unique_dir() -> PathBuf {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        // The isolated child runs inside its parent's capture directory. Keep its image there too,
+        // so the parent removes it after kill/reap even when no child destructor can run.
+        let parent = if std::env::var_os(REENTRANT_CHILD).is_some() {
+            std::env::current_dir().expect("the isolated child's parent-owned directory")
+        } else {
+            std::env::temp_dir()
+        };
+        loop {
+            let dir = parent.join(format!(
+                "busbar-unload-witness-{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, Ordering::Relaxed)
+            ));
+            match std::fs::create_dir(&dir) {
+                Ok(()) => return dir,
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(e) => panic!("create unique fixture directory: {e}"),
+            }
+        }
+    }
+
+    /// The approved highwater test's bounded child pattern: regular capture files, and kill/reap
+    /// before directory cleanup on every failure. It bounds an intentional deadlock mutation.
+    struct ChildCase {
+        child: Option<std::process::Child>,
+        dir: PathBuf,
+    }
+
+    impl Drop for ChildCase {
+        fn drop(&mut self) {
+            if let Some(mut child) = self.child.take() {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+
+    pub(super) fn assert_reentrant_child(test: &str, child_body: fn()) {
+        const FINISHED: &str = "unload-reentrant-progress-finished";
+        if std::env::var_os(REENTRANT_CHILD).is_some() {
+            child_body();
+            println!("{FINISHED}");
+            return;
+        }
+        let mut case = ChildCase {
+            child: None,
+            dir: unique_dir(),
+        };
+        let stdout = case.dir.join("stdout");
+        let stderr = case.dir.join("stderr");
+        case.child = Some(
+            std::process::Command::new(std::env::current_exe().expect("test binary"))
+                .args(["--exact", test, "--test-threads=1", "--nocapture"])
+                .env(REENTRANT_CHILD, "1")
+                .current_dir(&case.dir)
+                .stdout(std::fs::File::create(&stdout).expect("capture stdout"))
+                .stderr(std::fs::File::create(&stderr).expect("capture stderr"))
+                .spawn()
+                .expect("run isolated finalizer reentrancy case"),
+        );
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        let status = loop {
+            if let Some(status) = case.child.as_mut().unwrap().try_wait().expect("poll child") {
+                case.child.take().unwrap().wait().expect("reap child");
+                break status;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "finalizer reentrancy child did not finish"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        let stdout = std::fs::read_to_string(stdout).expect("read stdout");
+        let stderr = std::fs::read_to_string(stderr).expect("read stderr");
+        assert!(
+            status.success() && stdout.contains(FINISHED),
+            "finalizer reentrancy child status {status}; stdout: {stdout}; stderr: {stderr}"
+        );
+    }
+}
+
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+pub(crate) use unload_witness::UnloadWitness;
+
 /// The test kind's context: the Statement's `max_inflight`, as bound.
 #[derive(Debug, PartialEq, Eq)]
 struct TestContext(u32);
@@ -2180,24 +2403,71 @@ fn red_the_host_zeroes_the_whole_out_before_a_crossing() {
     assert_eq!(f.out.next_tick_ns, 0, "the tail was zeroed too");
 }
 
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
 #[test]
-fn an_unload_runs_on_the_reaper_never_under_a_worker_lock() {
-    use crate::dispatch::load::UNLOADS;
-    use std::sync::atomic::Ordering::SeqCst;
+fn recycling_the_last_driver_releases_its_own_image_on_a_permanent_worker() {
+    let caller = std::thread::current().id();
+    let (witness, registration) = UnloadWitness::new();
     let d = Dispatcher::new(config());
-    let p = dropped(quiet());
+    let p = load_dropped::<TestKind>(witness.path(), &stated(), bind(quiet()))
+        .expect("this test's independently owned image loads");
+    crate::dlclose_on_worker(registration);
     assert_eq!(open(&d, &p, 0), Outcome::Ready);
     let drv = d.driver(&p, 0).unwrap();
     let gone = std::sync::Arc::downgrade(&p.inner);
-    let unloads0 = UNLOADS.load(SeqCst);
-    // The driver holds the last reference; a recycle drops it on the worker, under its lock. The
-    // unload is handed to the reaper, which runs it after (and apart from) the worker.
+    let mut close: Frame<busbar_contract::abi::mechanism::call::InHead, OutHead> =
+        Frame::new(in_head(), out_head());
+    assert_eq!(p.call(slot::CLOSE, &mut close).outcome, Outcome::Ready);
+    // The driver holds the last instance reference. Its recycling must release this exact image;
+    // an unrelated test's unload cannot send on this receiver.
     drop(p);
+    assert!(
+        witness.is_pending(),
+        "the driver's reference retains its image"
+    );
     d.recycle(drv);
-    until("the instance is gone", || gone.strong_count() == 0);
-    until("the reaper unloaded the library", || {
-        UNLOADS.load(SeqCst) > unloads0
-    });
+    let unloaded = witness.finished();
+    assert_eq!(gone.strong_count(), 0, "the driver's instance was released");
+    assert_ne!(unloaded.thread, caller);
+    assert!(unloaded.permanent);
+}
+
+/// This tests progress through the same worker's existing mint API during this image's finalizer;
+/// it does not claim to inspect every worker lock. A synchronous-under-lock regression deadlocks
+/// only the exact-test child, which its bounded parent kills and reaps.
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+#[test]
+fn recycling_a_driver_allows_its_finalizer_to_mint_on_the_same_worker() {
+    unload_witness::assert_reentrant_child(
+        "dispatch_tests::recycling_a_driver_allows_its_finalizer_to_mint_on_the_same_worker",
+        || {
+            let d = Arc::new(Dispatcher::new(config()));
+            let (witness, registration) = UnloadWitness::reentrant(Arc::clone(&d));
+            let p = load_dropped::<TestKind>(witness.path(), &stated(), bind(quiet()))
+                .expect("this child's owned image loads");
+            crate::dlclose_on_worker(registration);
+            assert_eq!(open(&d, &p, 0), Outcome::Ready);
+            let driver = d.driver(&p, 0).expect("a driver on worker zero");
+            let gone = Arc::downgrade(&p.inner);
+            let mut close: Frame<busbar_contract::abi::mechanism::call::InHead, OutHead> =
+                Frame::new(in_head(), out_head());
+            assert_eq!(p.call(slot::CLOSE, &mut close).outcome, Outcome::Ready);
+            drop(p);
+            assert!(witness.is_pending(), "driver still retains this image");
+            d.recycle(driver);
+            let unloaded = witness.finished();
+            assert_eq!(gone.strong_count(), 0);
+            assert!(unloaded.permanent);
+            assert!(
+                unloaded.reentered,
+                "actual finalizer minted and recycled a ticket on worker zero"
+            );
+            // The finalizer transferred its dispatcher owner here. Drop it on the test caller,
+            // while this caller's original Arc is still live, then release that original owner.
+            unloaded.release_dispatcher_on_caller();
+            drop(d);
+        },
+    );
 }
 
 #[test]

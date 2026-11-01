@@ -100,6 +100,93 @@ fn pair(tamper_server_view_of_client: bool) -> Pair {
     }
 }
 
+#[test]
+fn ownership_probes_use_peer_reflexive_priority_and_keep_their_authentication() {
+    for dialling in [false, true] {
+        let mut t = pair(false);
+        let now = t.now;
+        let (association, path, local, remote) = if dialling {
+            (
+                &mut t.c,
+                t.s_path,
+                creds(C_ICE.0, C_ICE.1),
+                creds(S_ICE.0, S_ICE.1),
+            )
+        } else {
+            (
+                &mut t.s,
+                t.c_path,
+                creds(S_ICE.0, S_ICE.1),
+                creds(C_ICE.0, C_ICE.1),
+            )
+        };
+        if dialling {
+            association.set_dialling();
+            assert!(association.admit_candidate(path, now));
+        } else {
+            let inbound = check(&local, &remote.ufrag, &local.pwd);
+            assert_eq!(association.ingest(path, &inbound, now), Verdict::Raw);
+        }
+        assert_eq!(association.bind_path(path, now), Ok(Bind::WhenProven));
+        let (destination, wire) = association.poll_wire().expect("initial ownership probe");
+        assert_eq!(destination, path);
+        assert!(is_probe(&wire));
+        assert_eq!(
+            usize::from(u16::from_be_bytes([wire[2], wire[3]])),
+            wire.len() - 20
+        );
+
+        // Read the emitted packet independently of the STUN encoder and its private constants.
+        let mut attributes = Vec::new();
+        let mut at = 20;
+        while at < wire.len() {
+            let head = &wire[at..at + 4];
+            let kind = u16::from_be_bytes([head[0], head[1]]);
+            let len = usize::from(u16::from_be_bytes([head[2], head[3]]));
+            attributes.push((kind, at, &wire[at + 4..at + 4 + len]));
+            at += 4 + len.div_ceil(4) * 4;
+        }
+        assert_eq!(at, wire.len());
+        let attribute = |kind| {
+            let found: Vec<_> = attributes.iter().filter(|a| a.0 == kind).copied().collect();
+            assert_eq!(found.len(), 1, "one attribute {kind:#06x}");
+            found[0]
+        };
+        let priority = u32::from_be_bytes(attribute(0x0024).2.try_into().unwrap());
+        // The existing WebRTC ICE engine uses UDP host126/prflx110. A request advertises the
+        // peer-reflexive type, retaining this core's local preference and component bits.
+        assert_eq!(priority >> 24, 110);
+        assert_eq!(priority & 0x00ff_ffff, 0x00ff_ffff);
+        assert_eq!(
+            attribute(0x0006).2,
+            format!("{}:{}", remote.ufrag, local.ufrag).as_bytes()
+        );
+        assert_eq!(attribute(if dialling { 0x802a } else { 0x8029 }).2.len(), 8);
+        assert!(!attributes
+            .iter()
+            .any(|a| a.0 == if dialling { 0x8029 } else { 0x802a }));
+
+        let (_, integrity_at, mac) = attribute(0x0008);
+        let mut covered = wire[..integrity_at].to_vec();
+        let covered_len = u16::try_from(integrity_at + 24 - 20).unwrap();
+        covered[2..4].copy_from_slice(&covered_len.to_be_bytes());
+        let key = ::ring::hmac::Key::new(
+            ::ring::hmac::HMAC_SHA1_FOR_LEGACY_USE_ONLY,
+            remote.pwd.as_bytes(),
+        );
+        ::ring::hmac::verify(&key, &covered, mac).expect("priority is authenticated");
+        let (_, fingerprint_at, fingerprint) = attribute(0x8028);
+        assert_eq!(
+            u32::from_be_bytes(fingerprint.try_into().unwrap()),
+            crc32fast::hash(&wire[..fingerprint_at]) ^ 0x5354_554e
+        );
+
+        assert_eq!(association.bound_path(), None);
+        association.ingest(path, &answer(&wire, &remote.pwd), now);
+        assert_eq!(association.bound_path(), Some(path));
+    }
+}
+
 impl Pair {
     /// Each side hears an honest check from the other and binds; the probes are answered by pump.
     fn checked_and_bound(&mut self) {

@@ -103,12 +103,45 @@ fn an_auth_field_never_prints_its_value_marked_or_not() {
             name: b"authorization".to_vec(),
             value: Secret::new(b"Bearer the-token".to_vec()),
             sensitive,
+            query: false,
             require_secure: false,
         };
         let shown = format!("{field:?}");
         assert!(!shown.contains("the-token"), "printed: {shown}");
         assert!(shown.contains("authorization"), "{shown}");
     }
+}
+
+#[test]
+fn a_query_pair_percent_encodes_bytes_without_form_encoding_or_printing_the_value() {
+    let field = crate::auth_calls::AuthField {
+        name: b"key+name".to_vec(),
+        value: Secret::new(b"AZaz09-._~ /+&=%\0\xff".to_vec()),
+        sensitive: false,
+        query: true,
+        require_secure: true,
+    };
+    let seal = crate::plugin::TestKernelSeal;
+    let pair = field.query_pair(&seal);
+    assert_eq!(
+        pair.expose(&seal),
+        b"key%2Bname=AZaz09-._~%20%2F%2B%26%3D%25%00%FF"
+    );
+    assert!(!format!("{pair:?}").contains("AZaz"));
+}
+
+#[test]
+fn a_connector_open_never_debug_prints_the_query_handoff_or_target() {
+    let desc = crate::conn::OpenDesc {
+        target: "https://upstream.example",
+        fields: &[("busbar-sealed-query", b"key=query-secret")],
+        head_target: b"/path?token=target-secret",
+        ..Default::default()
+    };
+    let shown = format!("{desc:?}");
+    assert!(!shown.contains("query-secret"));
+    assert!(!shown.contains("target-secret"));
+    assert!(shown.contains("https://upstream.example"));
 }
 
 /// RED (open160 A2): a login hop's form and header values (a bearer token, a client credential)

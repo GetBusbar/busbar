@@ -476,10 +476,13 @@ fn door_cells_source(manifest: &str, enabled: &dyn Fn(&str) -> bool) -> (String,
             door_cells_links(&krate).to_uppercase().replace('-', "_")
         );
         println!("cargo:rerun-if-env-changed={box_var}");
-        if let Ok(dir) = env::var(&box_var) {
+        // Keep the enabled door visible to its behavioral runner even when its crate supplies
+        // no case directory. The empty value is diagnosed there; omitting the row hides the door.
+        let dir = env::var(&box_var).unwrap_or_default();
+        if !dir.is_empty() {
             println!("cargo:rerun-if-changed={dir}");
-            blackbox.push(format!("    ({krate:?}, {dir:?}),\n"));
         }
+        blackbox.push(format!("    ({krate:?}, {dir:?}),\n"));
         let var = format!(
             "DEP_{}_CELLS",
             door_cells_links(&krate).to_uppercase().replace('-', "_")

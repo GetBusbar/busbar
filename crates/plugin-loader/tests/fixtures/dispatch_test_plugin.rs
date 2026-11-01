@@ -4,8 +4,8 @@
 //! THE DISPATCHER'S TEST PLUGIN — one source, compiled into the test build (the LINKED door) and
 //! built as the `dispatch_test_plugin` example `cdylib` (the DROPPED door).
 //!
-//! It exports the one door ([`busbar_plugin_door`]) over the lifecycle table only, and defines NO
-//! ABI shape of its own: the door, the Statement, the table and every `in`/`out` are
+//! Its plugin interface is the one door ([`busbar_plugin_door`]) over the lifecycle table only:
+//! the door, the Statement, the table and every `in`/`out` are
 //! `busbar_contract::abi`'s. Its `tick` is the test's side door: the `in`'s extensions blob names
 //! what to do ([`answer`], [`PEND_AFTER`] …), so one slot answers every outcome, pends and wakes in
 //! every way the mechanism names (after PENDING, before it, spuriously, for stale generations, by
@@ -14,6 +14,8 @@
 //! guard, so that panic escapes `extern "C"` and aborts the process.
 //!
 //! Numbers go back the way a plugin reports anything: as #85 envelope gauges (families 2..=5).
+//! A separate fixture-only native-finalizer observer export lets unload tests identify this
+//! image's actual finalizer thread; it adds nothing to the plugin interface or its ABI tables.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -34,6 +36,43 @@ use busbar_contract::abi::mechanism::lifecycle::{
 };
 use busbar_contract::abi::mechanism::ticket::{HostCtx, Ticket, WakeFn};
 use busbar_contract::abi::mechanism::{KindCode, DOOR_MAGIC, MECHANISM_VERSION};
+
+/// A fixture-only observer of the image's native finalizer, independent of any instance's CLOSE.
+/// A copied image has its own registration; no process-global unload counter is involved.
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+mod unload_witness {
+    use std::sync::Mutex;
+
+    static OBSERVER: Mutex<Option<(extern "C" fn(usize), usize)>> = Mutex::new(None);
+
+    /// Transfer one host-owned context to this image's finalizer. The host callback remains live
+    /// until process exit, and its context must remain valid even if this image stays resident.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn busbar_test_arm_unload(
+        callback: extern "C" fn(usize),
+        context: usize,
+    ) -> bool {
+        let mut observer = OBSERVER.lock().unwrap_or_else(|e| e.into_inner());
+        if observer.is_some() {
+            return false;
+        }
+        *observer = Some((callback, context));
+        true
+    }
+
+    extern "C" fn finalized() {
+        let observer = OBSERVER.lock().unwrap_or_else(|e| e.into_inner()).take();
+        if let Some((callback, context)) = observer {
+            callback(context);
+        }
+    }
+
+    // SAFETY: this ELF termination section contains C function pointers, not function bodies.
+    // The observer is optional, so the linked fixture's process-exit finalizer does nothing.
+    #[used]
+    #[unsafe(link_section = ".fini_array")]
+    static FINALIZER: extern "C" fn() = finalized;
+}
 
 /// The kind this test plugin states; its table is that kind's lifecycle skeleton.
 pub const KIND: KindCode = KindCode::Export;

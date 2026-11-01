@@ -33,11 +33,12 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
+use zeroize::{Zeroize as _, Zeroizing};
 
 use busbar_contract::abi::host::conn::connector::{
     CAUSE_CONNECT, CAUSE_DEADLINE, CAUSE_EXCHANGE, CAUSE_FRAMER, CAUSE_SECURITY,
 };
-use busbar_contract::abi::transport::sensitive_fields::SensitiveFields;
+use busbar_contract::abi::transport::sensitive_fields::{SensitiveFields, REQUEST_TARGET_FIELD};
 use busbar_contract::abi::transport::{CLOSE_NORMAL, FAULT_NONE, SIDE_ACCEPT, SIDE_DIAL};
 use busbar_contract::conn::{Bytes, ConnCause};
 
@@ -77,6 +78,8 @@ pub const RECEIVE_BUFFER_BYTES: usize = 1024 * 1024;
 /// Why a connection did not answer.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Failure {
+    /// The write took nothing; retry after the connection's next readiness wake.
+    Pending,
     /// The target was refused before any dial (a cloud metadata host, a name the connector does
     /// not resolve, a target the entry does not locate) or the far end said no.
     Refused(String),
@@ -91,6 +94,7 @@ pub enum Failure {
 impl std::fmt::Display for Failure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::Pending => f.write_str("the connection's write is pending"),
             Self::Refused(why) => write!(f, "refused: {why}"),
             Self::Timeout => f.write_str("the connection's deadline passed"),
             Self::Closed => f.write_str("the connection is closed"),
@@ -128,6 +132,19 @@ pub struct Dial {
 
 /// A message's head words, method and target; empty = none.
 pub type HeadWords = (Vec<u8>, Vec<u8>);
+
+fn wipe_opening(opening: &mut Option<Opening>, words: &mut HeadWords) {
+    if let Some((fields, _)) = opening.as_mut() {
+        fields.zeroize();
+    }
+    words.1.zeroize();
+}
+
+impl Drop for Dial {
+    fn drop(&mut self) {
+        wipe_opening(&mut self.opening, &mut self.head_words);
+    }
+}
 
 impl std::fmt::Debug for Dial {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -193,8 +210,8 @@ pub struct Connection {
     /// Bytes for the carrier (ciphertext under TLS).
     out: VecDeque<u8>,
     /// Where a frame of the carrier's own wire ends in what was queued for it, as counts of every
-    /// byte ever queued (a connection with no framer above its carrier).
-    ends: VecDeque<u64>,
+    /// byte ever queued, and whether that write was empty (no framer above its carrier).
+    ends: VecDeque<(u64, bool)>,
     /// Every byte ever queued for the carrier.
     queued: u64,
     /// Bytes the carrier took since its last `flush` answered READY.
@@ -271,7 +288,7 @@ pub struct Connection {
 /// of the body it opens with where it is known.
 struct Early {
     stream: u64,
-    bytes: Vec<u8>,
+    bytes: Zeroizing<Vec<u8>>,
     end: bool,
     text: bool,
     body_len: Option<u64>,
@@ -282,7 +299,7 @@ impl Early {
     fn of(stream: u64, bytes: &[u8], end: bool, text: bool) -> Self {
         Self {
             stream,
-            bytes: bytes.to_vec(),
+            bytes: Zeroizing::new(bytes.to_vec()),
             end,
             text,
             body_len: None,
@@ -372,6 +389,12 @@ impl std::fmt::Debug for Connection {
             )
             .field("target", &self.target)
             .finish_non_exhaustive()
+    }
+}
+
+impl Drop for Connection {
+    fn drop(&mut self) {
+        wipe_opening(&mut self.opening, &mut self.head_words);
     }
 }
 
@@ -605,8 +628,11 @@ impl Planned {
     /// This dial's first message and its head words, taken out (a reuse sends them on a pooled
     /// connection instead of dialling).
     #[must_use]
-    pub fn into_opening(self) -> (Option<Opening>, HeadWords) {
-        (self.dial.opening, self.dial.head_words)
+    pub fn into_opening(mut self) -> (Option<Opening>, HeadWords) {
+        (
+            self.dial.opening.take(),
+            std::mem::take(&mut self.dial.head_words),
+        )
     }
 
     /// The same dial held to the destination's sealed trust anchors (`None` = none sealed).
@@ -800,7 +826,7 @@ impl Connection {
     fn open_dialled(
         door: Option<Arc<dyn FramerDoor>>,
         carried: Carried,
-        dial: Dial,
+        mut dial: Dial,
         (tls, presented): (
             Option<rustls::Connection>,
             Arc<std::sync::atomic::AtomicBool>,
@@ -832,7 +858,7 @@ impl Connection {
         Ok(Self {
             door,
             carried,
-            target: dial.target,
+            target: std::mem::take(&mut dial.target),
             side: SIDE_DIAL,
             tls,
             framing: None,
@@ -844,8 +870,8 @@ impl Connection {
             unflushed: false,
             inbox: VecDeque::new(),
             receive_held: 0,
-            opening: dial.opening,
-            head_words: dial.head_words,
+            opening: dial.opening.take(),
+            head_words: std::mem::take(&mut dial.head_words),
             early: Vec::new(),
             flushed: 0,
             read_end: false,
@@ -895,7 +921,7 @@ impl Connection {
         via: &Via,
         program: &busbar_contract::conn::Program,
         env: &crate::spawn_env::HeldEnv,
-        dial: Dial,
+        mut dial: Dial,
         supervision_key: u64,
     ) -> Result<Self, Failure> {
         if !program.command.starts_with('/') {
@@ -940,7 +966,7 @@ impl Connection {
             presented: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             door: None,
             carried,
-            target: dial.target,
+            target: std::mem::take(&mut dial.target),
             side: SIDE_DIAL,
             tls: None,
             upgraded: false,
@@ -953,8 +979,8 @@ impl Connection {
             unflushed: false,
             inbox: VecDeque::new(),
             receive_held: 0,
-            opening: dial.opening,
-            head_words: dial.head_words,
+            opening: dial.opening.take(),
+            head_words: std::mem::take(&mut dial.head_words),
             early: Vec::new(),
             flushed: 0,
             read_end: false,
@@ -1199,21 +1225,33 @@ impl Connection {
     pub fn open_exchange(
         &mut self,
         stream: u64,
-        opening: Option<Opening>,
-        head_words: HeadWords,
+        mut opening: Option<Opening>,
+        mut head_words: HeadWords,
         cx: &mut Context<'_>,
     ) -> Result<(), Failure> {
         match &self.phase {
-            Phase::Failed(f) => return Err(f.clone()),
-            Phase::Ended => return Err(Failure::Closed),
+            Phase::Failed(f) => {
+                wipe_opening(&mut opening, &mut head_words);
+                return Err(f.clone());
+            }
+            Phase::Ended => {
+                wipe_opening(&mut opening, &mut head_words);
+                return Err(Failure::Closed);
+            }
             _ => {}
         }
-        let mut opening = opening;
-        let sensitive = self.seal(&mut opening)?;
+        let sensitive = match self.seal(stream, &mut opening, &mut head_words) {
+            Ok(sensitive) => sensitive,
+            Err(error) => {
+                wipe_opening(&mut opening, &mut head_words);
+                return Err(error);
+            }
+        };
         let body_len = self.opening_body_len(opening.as_ref());
         let Some(message) = self.encode_opening(opening, head_words)? else {
             return Ok(());
         };
+        let message = Zeroizing::new(message);
         match self.phase {
             Phase::Open => {
                 self.put_opening_marked(stream, &message, true, false, body_len, sensitive)?;
@@ -1238,9 +1276,11 @@ impl Connection {
         opening: Option<Opening>,
         (method, target): HeadWords,
     ) -> Result<Option<Vec<u8>>, Failure> {
+        let target = Zeroizing::new(target);
         let Some((fields, body)) = opening else {
             return Ok(None);
         };
+        let fields = Zeroizing::new(fields);
         if fields.is_empty() && body.is_empty() && method.is_empty() && target.is_empty() {
             return Ok(None);
         }
@@ -1343,7 +1383,7 @@ impl Connection {
         self.out.extend(bytes);
         self.queued += bytes.len() as u64;
         if end {
-            self.ends.push_back(self.queued);
+            self.ends.push_back((self.queued, bytes.is_empty()));
         }
     }
 }
@@ -1514,7 +1554,7 @@ impl Connection {
             Failure::Refused(t) | Failure::Failed(t) => framer
                 .or_else(|| self.security_error.take())
                 .unwrap_or_else(|| t.clone()),
-            Failure::Timeout | Failure::Closed => String::new(),
+            Failure::Pending | Failure::Timeout | Failure::Closed => String::new(),
         };
         if !matches!(self.phase, Phase::Failed(_)) {
             self.cause = Some(ConnCause { stage, text });
@@ -1600,6 +1640,7 @@ impl Connection {
     /// socket takes them as its readiness allows, driven by `cx`. At most the room left under
     /// [`WRITE_BUFFER_BYTES`] is taken (`end` holds only when all of `bytes` was), so `Ok(0)` for a
     /// non-empty `bytes` means the buffer is full until the socket drains it.
+    /// [`Failure::Pending`] also takes nothing, including an empty frame: retry after readiness.
     ///
     /// # Errors
     ///
@@ -1618,6 +1659,7 @@ impl Connection {
     /// message): the framer's `emit`
     /// on that stream, now if the framing has begun, else once it does. An accepted connection
     /// answers each piece on the stream the piece came on.
+    /// [`Failure::Pending`] takes nothing, including an empty frame: retry after readiness.
     ///
     /// # Errors
     ///
@@ -1644,6 +1686,21 @@ impl Connection {
         if let Err(f) = self.drive(cx) {
             self.fail(f.clone());
             return Err(f);
+        }
+        // Empty early frames spend no byte allowance. Keep one until it drains, preserving
+        // end/text. Once open, a parked stream still leaves other streams free to write.
+        let tail = if matches!(self.phase, Phase::Connecting | Phase::Handshaking) {
+            self.early.last()
+        } else {
+            self.early.iter().rev().find(|e| e.stream == stream)
+        };
+        if tail.is_some_and(|e| e.bytes.is_empty()) {
+            return Err(Failure::Pending);
+        }
+        // A raw carrier's empty frame must cross even without payload bytes. While it is
+        // pending, preserve it and re-offer later writes after the carrier wakes us.
+        if self.door.is_none() && self.ends.back().is_some_and(|(_, empty)| *empty) {
+            return Err(Failure::Pending);
         }
         // A FULL STREAM takes nothing (not-ready: the drive above parked `cx` on the socket, whose
         // bytes bring the framer's writable piece). An empty write adds nothing to the stream's
@@ -1816,13 +1873,13 @@ impl Connection {
                     Poll::Ready(Err(e)) => return Err(failed(e)),
                 }
             }
-            if self.out.is_empty() {
+            if self.out.is_empty() && self.ends.is_empty() {
                 return Ok(moved);
             }
             let (a, _) = self.out.as_slices();
             // Up to the next frame's end, and that end marked when the offer reaches it.
             let (a, end) = match self.ends.front() {
-                Some(&at) => {
+                Some(&(at, _)) => {
                     let left =
                         usize::try_from(at.saturating_sub(self.flushed)).unwrap_or(usize::MAX);
                     if left <= a.len() {
@@ -1973,6 +2030,9 @@ impl Connection {
             self.send_opening()?;
         }
         self.put_early()?;
+        for stream in self.seals.streams() {
+            self.sealed_sent(stream)?;
+        }
         while !self.begin_parked() {
             let Some((bytes, end, end_of_frame)) = self.unfed.pop_front() else {
                 break;
@@ -1987,6 +2047,7 @@ impl Connection {
     fn put_early(&mut self) -> Result<(), Failure> {
         for e in std::mem::take(&mut self.early) {
             self.put_opening_marked(e.stream, &e.bytes, e.end, e.text, e.body_len, e.sensitive)?;
+            self.sealed_sent(e.stream)?;
         }
         Ok(())
     }
@@ -2002,7 +2063,9 @@ impl Connection {
         // THE OPENING IS SEALED FIRST (TSEAL): neither the begin nor the encode below is handed a
         // credential value a sealing framer renders as filler.
         let mut opening = self.opening.take();
-        let sealed = self.seal(&mut opening);
+        let mut words = std::mem::take(&mut self.head_words);
+        let sealed = self.seal(EXCHANGE_STREAM, &mut opening, &mut words);
+        self.head_words = words;
         self.opening = opening;
         self.opening_sensitive = sealed?;
         // A dial hands its opening head fields to the framing's begin too, for a wire that carries
@@ -2050,6 +2113,7 @@ impl Connection {
             .encode_opening(opening, words)?
             .filter(|m| !m.is_empty())
         {
+            let message = Zeroizing::new(message);
             // THE OPENING GOES FIRST: the writes held back for the framing's begin wait behind it.
             // Held where they are, a write on the exchange stream would queue the opening after
             // itself (a stream with writes waiting takes every later write behind them).
@@ -2074,16 +2138,33 @@ impl Connection {
 
     /// SEAL `opening` (TSEAL, [`crate::seal`]): its sealed-fields field taken out; over a framer
     /// that renders sealed values, each sealed value swapped for filler, held here to splice.
-    fn seal(&mut self, opening: &mut Option<Opening>) -> Result<SensitiveFields, Failure> {
+    fn seal(
+        &mut self,
+        stream: u64,
+        opening: &mut Option<Opening>,
+        words: &mut HeadWords,
+    ) -> Result<SensitiveFields, Failure> {
         let sealing = self.door.as_ref().is_some_and(|d| d.seals_values());
         let secured = self.tls.is_some();
-        let names = opening.as_mut().map_or_else(Vec::new, |(fields, _)| {
+        let mut names = opening.as_mut().map_or_else(Vec::new, |(fields, _)| {
             crate::seal::take_sealed_names(fields)
         });
+        let query = self
+            .seals
+            .seal_queries(stream, opening, &mut words.1, sealing, secured)
+            .map_err(|e| Failure::Refused(e.to_owned()))?;
+        if query {
+            if self.door.is_none() {
+                return Err(Failure::Refused(
+                    "a carrier carried as itself carries no query target".into(),
+                ));
+            }
+            names.push(REQUEST_TARGET_FIELD.to_owned());
+        }
         let sensitive =
             SensitiveFields::new(names.clone()).map_err(|error| Failure::Refused(error.into()))?;
         self.seals
-            .seal_names(opening, &names, sealing, secured)
+            .seal_names(stream, opening, &names, sealing, secured)
             .map_err(|e| Failure::Refused(e.to_owned()))?;
         Ok(sensitive)
     }
@@ -2092,10 +2173,16 @@ impl Connection {
     /// framer did not render verbatim fails the connection, its real bytes wiped. An opening still
     /// held back (its stream parked) is judged when it goes.
     fn sealed_sent(&mut self, stream: u64) -> Result<(), Failure> {
-        if !self.seals.pending() || self.early.iter().any(|e| e.stream == stream) {
+        if !self.seals.pending_on(stream)
+            || self.early.iter().any(|e| e.stream == stream)
+            || self
+                .framing
+                .as_ref()
+                .is_some_and(|framing| framing.holds(stream))
+        {
             return Ok(());
         }
-        self.seals.clear();
+        self.seals.clear_on(stream);
         let f = Failure::Refused(crate::seal::SEAL_BROKEN.to_owned());
         self.fail(f.clone());
         Err(f)
@@ -2243,26 +2330,26 @@ impl Connection {
     /// Take what the framer answered: its wire bytes to the socket (through TLS), its pieces to
     /// the inbox, its deadline to the timer, its end to the connection.
     fn absorb(&mut self, mut y: Yielded) -> Result<(), Failure> {
-        if !y.wire.is_empty() {
+        let mut wire = Zeroizing::new(std::mem::take(&mut y.wire));
+        if !wire.is_empty() {
             // THE SPLICE (TSEAL): the real bytes over the framer's filler, only at the write into
             // connection security; the output is wiped once written.
             let spliced = self.tls.is_some() && self.seals.pending();
             if spliced {
                 self.seals
-                    .splice(&mut y.wire)
+                    .splice(&mut wire)
                     .map_err(|e| Failure::Refused(e.to_owned()))?;
             }
             match self.tls.as_mut() {
                 Some(tls) => {
-                    let written = tls.writer().write_all(&y.wire).map_err(failed);
-                    if spliced {
-                        crate::seal::wipe(&mut y.wire);
-                    }
+                    let written = tls.writer().write_all(&wire).map_err(failed);
+                    wire.zeroize();
                     written?;
                     self.tls_out()?;
                 }
-                None => self.queue(&y.wire, false),
+                None => self.queue(&wire, false),
             }
+            wire.zeroize();
         }
         if y.agreed != 0 {
             // A position past the listener's offer (or any on a dial) is the framer's fault.
@@ -2292,6 +2379,10 @@ impl Connection {
         }
         for g in y.pieces.iter().filter(|g| g.ends_stream() || g.failed) {
             self.full.remove(&g.stream);
+            if g.failed {
+                self.seals.clear_on(g.stream);
+                self.early.retain(|early| early.stream != g.stream);
+            }
         }
         self.inbox.extend(y.pieces);
         self.framer_deadline = y.deadline_ns.map(framer::instant_of);

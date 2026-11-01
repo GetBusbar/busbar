@@ -475,6 +475,7 @@ async fn the_pools_door_prices_a_reranks_search_units() {
         .await;
         let body: serde_json::Value =
             serde_json::from_str(word("rerank_body")).expect("the rerank body is JSON");
+        let before = busbar_kernel::governance::metering_bucket(now());
         let (status, _, answered) = rig.send("POST", word("rerank_path"), Some(body)).await;
         assert_eq!(
             status,
@@ -484,14 +485,31 @@ async fn the_pools_door_prices_a_reranks_search_units() {
         );
         assert_eq!(far.served(), 1, "{units:?} units: dialled once");
 
-        // THE GOVERNANCE BOOK: the key's derived spend, once the unit's money settled.
-        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
-        let mut spend = key_spend(&rig);
-        while spend != Ok(cents) && tokio::time::Instant::now() < deadline {
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-            spend = key_spend(&rig);
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        // Admission's billable count precedes settlement. The metered request does not:
+        // PlaneMoney::bill records usage before record_lane_metering adds this request, even
+        // when the delivered answer reports no units. Observe that positive witness first.
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                rig.gov.flush_metering();
+                let after = busbar_kernel::governance::metering_bucket(now());
+                let mut rows = rig.gov.metering_for(before).expect("metering reads");
+                if after != before {
+                    rows.extend(rig.gov.metering_for(after).expect("metering reads"));
+                }
+                let requests: u64 = rows
+                    .iter()
+                    .filter(|row| row.key_id == rig.key_id && row.model == "m0")
+                    .map(|row| row.requests)
+                    .sum();
+                if requests != 0 {
+                    assert_eq!(requests, 1, "{units:?} units: one settled request");
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the delivered rerank records its metered request after its usage");
         assert_eq!(
             key_spend(&rig),
             Ok(cents),

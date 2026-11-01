@@ -46,7 +46,7 @@ MODE="${1:-}"
 # truncated or whitespace-padded value would embed and then fail every verification at runtime,
 # which is the same user-visible outcome as embedding nothing.
 key_is_valid() {
-  printf '%s' "${BUSBAR_RELEASE_PUBKEY:-}" | grep -Eq '^[0-9a-fA-F]{64}$'
+  [[ "${BUSBAR_RELEASE_PUBKEY:-}" =~ ^[0-9a-fA-F]{64}$ ]]
 }
 
 # ── --selftest ──────────────────────────────────────────────────────────────────────────────────

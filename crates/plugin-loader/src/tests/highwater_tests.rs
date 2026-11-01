@@ -22,28 +22,95 @@ fn tmpdir() -> PathBuf {
     p
 }
 
-/// PB-13: WITHOUT a data dir the store probes nothing and writes NOTHING. The marks still floor this
-/// process — a mid-process swap is the window an attacker with directory write access operates in —
-/// but no data-dir file is created, because a deployment with no `data_dir` has no data dir to
-/// create one in.
+/// The child and its capture files are scoped to this case, including refusal and panic paths.
+struct Directory(PathBuf);
+
+impl Drop for Directory {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+struct ChildGuard(Option<std::process::Child>);
+
+impl Drop for ChildGuard {
+    fn drop(&mut self) {
+        if let Some(mut child) = self.0.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+}
+
+impl ChildGuard {
+    fn finish(&mut self) -> std::process::ExitStatus {
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        loop {
+            if let Some(status) = self.0.as_mut().unwrap().try_wait().expect("poll child") {
+                self.0.take().unwrap().wait().expect("reap child");
+                return status;
+            }
+            assert!(
+                std::time::Instant::now() < until,
+                "memory-only marks child did not finish"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+}
+
+/// PB-13: without a data dir the marks stay live in memory. Run in a private working directory to
+/// detect an accidental relative-path file, rather than inspecting an unused temporary directory.
+/// The post-exit check observes residual files, not transient creation/deletion or writes elsewhere.
 #[test]
 fn without_a_data_dir_the_store_creates_no_file() {
-    let dir = tmpdir();
+    const CHILD: &str = "BUSBAR_HIGHWATER_NO_DIRECTORY_CHILD";
+    const FINISHED: &str = "highwater-memory-directory-case-finished";
+    if std::env::var_os(CHILD).is_none() {
+        let dir = Directory(tmpdir());
+        let capture = Directory(tmpdir());
+        let stdout_path = capture.0.join("stdout");
+        let stderr_path = capture.0.join("stderr");
+        let mut child = ChildGuard(Some(
+            std::process::Command::new(std::env::current_exe().expect("test executable"))
+                .args([
+                    "--exact",
+                    "highwater::tests::without_a_data_dir_the_store_creates_no_file",
+                    "--test-threads=1",
+                    "--nocapture",
+                ])
+                .env(CHILD, "1")
+                .current_dir(&dir.0)
+                .stdout(std::fs::File::create(&stdout_path).expect("capture stdout"))
+                .stderr(std::fs::File::create(&stderr_path).expect("capture stderr"))
+                .spawn()
+                .expect("run the memory-only marks case"),
+        ));
+        let status = child.finish();
+        let stdout = std::fs::read_to_string(stdout_path).expect("read stdout");
+        let stderr = std::fs::read_to_string(stderr_path).expect("read stderr");
+        assert!(
+            status.success() && stdout.contains(FINISHED),
+            "child status {}; stdout: {stdout}; stderr: {stderr}",
+            status
+        );
+        assert!(
+            std::fs::read_dir(&dir.0).unwrap().next().is_none(),
+            "memory-only marks created a working-directory file"
+        );
+        return;
+    }
     let (mut marks, note) = HighWaterMarks::load(None);
     assert!(note.is_none());
     assert!(!is_persistent(&marks));
     assert!(marks.raise("busbar-store-gamma-plugin", "1.2.0"));
     marks.persist().expect("a memory-only persist is a no-op");
-    assert_eq!(
-        std::fs::read_dir(&dir).unwrap().count(),
-        0,
-        "no data dir ⇒ no files"
-    );
     // The floor is live in memory regardless.
     assert_eq!(
         marks.marks().get("busbar-store-gamma-plugin").unwrap(),
         "1.2.0"
     );
+    println!("{FINISHED}");
 }
 
 /// WITH a data dir the floor survives a restart — which is what makes it an anti-replay control

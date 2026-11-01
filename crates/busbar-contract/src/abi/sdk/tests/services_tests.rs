@@ -1645,8 +1645,10 @@ crate::own_seal!(Own);
 use crate::abi::auth::{FIELD_QUERY, FIELD_SENSITIVE, POINT_HEAD};
 use crate::abi::host::service::{FLOW_CONTINUE, FLOW_STOP, LINE_NONE, REFUSE_NO_ROUTE};
 
-/// How many `auth.call`s the scripted hosts answered.
-static AUTH_CALLS: AtomicU8 = AtomicU8::new(0);
+thread_local! {
+    /// Calls on this test thread: the service wrapper invokes the host synchronously.
+    static AUTH_CALLS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
 
 const MINTED: UnitRef = UnitRef { id: 5, mac: 6 };
 const LINE_REF: AuthRef = AuthRef { id: 2, mac: 3 };
@@ -1665,7 +1667,7 @@ unsafe fn answer_auth(
     flow: u32,
     spans: &[AnsweredName<'_>],
 ) -> RawOutcome {
-    AUTH_CALLS.fetch_add(1, Ordering::SeqCst);
+    AUTH_CALLS.with(|calls| calls.set(calls.get() + 1));
     // SAFETY: the caller's contract.
     unsafe {
         let i = input.cast::<AuthCallIn>().read_unaligned();
@@ -1747,7 +1749,7 @@ extern "C" fn always_short(
     _input: *const c_void,
     out: *mut ServiceOut,
 ) -> RawOutcome {
-    AUTH_CALLS.fetch_add(1, Ordering::SeqCst);
+    AUTH_CALLS.with(|calls| calls.set(calls.get() + 1));
     // SAFETY: a live `out`.
     unsafe {
         (*out).needed_bytes = 4096;
@@ -1867,7 +1869,7 @@ fn auth_call_answers_the_names_to_strip_for_an_inbound_line() {
 #[test]
 fn auth_call_owns_the_one_short_recall_and_holds_outbound_values_as_the_callers_secret() {
     let t = auth_table(Some(signs_long));
-    let before = AUTH_CALLS.load(Ordering::SeqCst);
+    AUTH_CALLS.set(0);
     let Poll::Ready(Ok(called)) = services(&t).auth_call::<Own>(
         ticketed(0),
         LINE_REF,
@@ -1880,10 +1882,7 @@ fn auth_call_owns_the_one_short_recall_and_holds_outbound_values_as_the_callers_
     ) else {
         panic!("answered on the re-call");
     };
-    assert!(
-        AUTH_CALLS.load(Ordering::SeqCst) >= before + 2,
-        "short, then re-called"
-    );
+    assert_eq!(AUTH_CALLS.get(), 2, "short, then re-called");
     assert!(called.names.is_empty());
     assert_eq!(called.fields.len(), 1);
     assert_eq!(called.fields[0].name, "x-sig");
@@ -1891,6 +1890,7 @@ fn auth_call_owns_the_one_short_recall_and_holds_outbound_values_as_the_callers_
     assert_eq!(format!("{:?}", called.fields[0].value), "[REDACTED]");
 
     let t = auth_table(Some(always_short));
+    AUTH_CALLS.set(0);
     assert!(matches!(
         services(&t).auth_call::<Own>(
             ticketed(0),
@@ -1904,6 +1904,7 @@ fn auth_call_owns_the_one_short_recall_and_holds_outbound_values_as_the_callers_
         ),
         Poll::Ready(Err(ServiceError::Broken))
     ));
+    assert_eq!(AUTH_CALLS.get(), 2, "a second short answer ends the recall");
 }
 
 #[test]

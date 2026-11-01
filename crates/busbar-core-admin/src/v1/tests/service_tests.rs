@@ -6,6 +6,9 @@
 use super::*;
 use busbar_kernel::config::{migrated_store_module, HookCfg, HookKind, PromptAccess, UserAccess};
 
+#[path = "usage_adjustment_range.rs"]
+mod usage_adjustment_range;
+
 pub(crate) fn hook(kind: HookKind, global: bool) -> HookCfg {
     HookCfg {
         kind,

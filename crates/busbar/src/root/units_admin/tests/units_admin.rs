@@ -1035,33 +1035,19 @@ fn a_bound_unit(request: AdminRequest) -> AdminWalk {
     walk
 }
 
-/// The administrative listener answers on a table with no room in it at all, and the data
-/// listener does not.
-///
-/// THE arrival STEP, over the loop. This plane's Arrival has one decision of its own and this
-/// is it: units on the administrative listener are EXEMPT from `in_flight_cap`, for the
-/// reason the exemption exists — the surface an operator reaches to find out why the node is
-/// shedding has to answer while it is shedding. This node's table makes that the only thing
-/// keeping it alive: its cap is ZERO, so every unit under the cap is refused and every unit that
-/// answers did so because the exemption carried it.
-///
-/// Two answers, at one moment:
-///
-/// - a unit that did NOT arrive on the administrative listener is refused by a table with no room,
-///   `InFlightCap`, stamped at `Arrival` because the origin is a client, with its arrival hold
-///   handed back reserving nothing — the shedding the operator came to ask about;
-/// - a real admin request comes back with the operation's own 200 rather than the node's
-///   `unavailable`: an admin unit takes no slot in any in-flight table, so no cap can shed it. (It
-///   is not asserted that the full table stayed empty: the node never touches that table, so the
-///   assertion could not fail; the 200 is what says the cap did not shed it.)
+/// The same zero-cap admission table refuses a data unit and admits an administrative unit.
+/// That admitted request then reaches the real admin router through the node's steps. AdminNode
+/// itself owns no InFlight table; this fixture composes the two existing APIs explicitly.
 #[cfg(feature = "root-admin")]
-#[test]
-fn the_admin_listener_is_exempt_from_the_cap_the_data_listener_is_refused_at() {
+#[tokio::test]
+async fn the_admin_listener_is_exempt_from_the_cap_the_data_listener_is_refused_at() {
     use busbar_contract::caps::{OriginKind, StepName};
     use busbar_kernel::inflight::{arrival_hold, cap_refusal_step, Enter, InFlight};
 
-    let units =
-        crate::root::kernel::ProductionUnits::admin_only(Arc::new(AnsweringDispatch), open_door());
+    let units = crate::root::kernel::ProductionUnits::admin_only(
+        Arc::new(real_admin_dispatch()),
+        open_door(),
+    );
     let node = AdminNode::new(crate::root::kernel::new_kernel(), units);
     let full = InFlight::new(0);
     assert_eq!(full.cap(), 0, "a table with no room");
@@ -1094,8 +1080,29 @@ fn the_admin_listener_is_exempt_from_the_cap_the_data_listener_is_refused_at() {
         "the refused unit's hold comes back to its caller, untouched"
     );
 
-    // ANSWERED: an ordinary administrative request, at the same moment.
-    let answer = node.answer(a_request());
+    let request = authenticated_admin_request();
+    let key = UnitKey::new(request.unit);
+    let admitted = full
+        .insert(Enter {
+            key,
+            origin: OriginKind::Client,
+            session: None,
+            admin_listener: true,
+            zero_hold_tick: false,
+            now: 0,
+            arrival: arrival_hold(
+                &node.kernel,
+                &node.units.arrival_door,
+                PrincipalId::new("admin"),
+                node.kernel.next_call(),
+            ),
+        })
+        .expect("the administrative request is exempt on the same zero-cap table");
+    assert_eq!(admitted.key(), key);
+    assert_eq!(full.len(), 1, "the admitted unit is actually retained");
+    let answer = tokio::task::spawn_blocking(move || node.answer(request))
+        .await
+        .expect("the administrative operation completes");
     assert_eq!(
         answer.status, 200,
         "the admin listener answers while shedding"
@@ -1106,6 +1113,17 @@ fn the_admin_listener_is_exempt_from_the_cap_the_data_listener_is_refused_at() {
         answer_for(Outcome::Refused(StepName::Arrival, ReasonCode::InFlightCap)),
         "the answer is the request's own, not the gate's refusal"
     );
+    let document: serde_json::Value = serde_json::from_slice(&answer.body).expect("audit JSON");
+    assert!(
+        document["items"].is_array(),
+        "the real audit handler answered"
+    );
+    drop(
+        full.remove(key)
+            .expect("release the admitted administrative unit"),
+    );
+    drop(admitted);
+    assert!(full.is_empty());
 }
 
 /// Where an admin unit may go, and what that costs it.
@@ -1919,43 +1937,82 @@ fn each_view_serves_the_figures_the_ledger_holds() {
     assert_eq!(document["info"]["version"], "1.6.0");
 }
 
-/// A dispatch that panics where an operation's body would run.
+/// The actual admin router, driven on the current runtime through the production dispatch seam.
 #[cfg(feature = "root-admin")]
-struct PanickingDispatch;
+fn real_admin_dispatch() -> RouterDispatch {
+    busbar_core_admin::install();
+    let gov = Arc::new(
+        busbar_kernel::governance::GovState::new(
+            Arc::new(busbar_kernel::governance::MemoryStore::new()),
+            Some("admin-token".into()),
+        )
+        .expect("governance"),
+    );
+    let app = busbar_kernel::test_support::TestApp::new()
+        .governance(gov)
+        .build();
+    RouterDispatch::new(
+        busbar_kernel::build_router(app),
+        &tokio::runtime::Handle::current(),
+        Arc::new(busbar_core_admin::keys::KeyReplayCache::new()),
+    )
+}
+
+#[cfg(feature = "root-admin")]
+fn authenticated_admin_request() -> AdminRequest {
+    let mut request = a_request();
+    request
+        .headers
+        .push(("x-admin-token".into(), "admin-token".into()));
+    request
+}
+
+/// Panic on the first dispatch, then let the same node reach the real operation on its next walk.
+#[cfg(feature = "root-admin")]
+struct PanickingDispatch {
+    calls: std::sync::atomic::AtomicUsize,
+    next: RouterDispatch,
+}
 
 #[cfg(feature = "root-admin")]
 impl AdminDispatch for PanickingDispatch {
-    fn execute(&self, _verb: KernelVerb, _request: &AdminRequest) -> AdminAnswer {
-        panic!("the operation's body panicked");
+    fn execute(&self, verb: KernelVerb, request: &AdminRequest) -> AdminAnswer {
+        if self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+            panic!("the operation's body panicked");
+        }
+        self.next.execute(verb, request)
     }
 }
 
 /// A STEP THAT PANICS LEAVES THE NODE ANSWERING.
 ///
-/// A unit's state lives in its own walk and nowhere node-wide, so a panic in one operation's body
-/// takes that walk with it and leaves nothing resident: the node answers the next request exactly
-/// as if the panicking one had never arrived — no slot held, no request body kept, no lock poisoned.
+/// The next known operation traverses the same node and dispatch and gets the real audit response.
+/// No process-global panic hook is replaced, so this witness cannot change another test's hook.
 #[cfg(feature = "root-admin")]
-#[test]
-fn a_panicking_step_leaves_both_tables_empty() {
-    let units =
-        crate::root::kernel::ProductionUnits::admin_only(Arc::new(PanickingDispatch), open_door());
+#[tokio::test]
+async fn a_panicking_step_leaves_the_node_serving_valid_operations() {
+    let dispatch = Arc::new(PanickingDispatch {
+        calls: std::sync::atomic::AtomicUsize::new(0),
+        next: real_admin_dispatch(),
+    });
+    let units = crate::root::kernel::ProductionUnits::admin_only(dispatch.clone(), open_door());
     let node = AdminNode::new(crate::root::kernel::new_kernel(), units);
-
-    let previous = std::panic::take_hook();
-    std::panic::set_hook(Box::new(|_| {}));
-    let ended = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| node.answer(a_request())));
-    std::panic::set_hook(previous);
-    assert!(ended.is_err(), "the fixture's dispatch panics");
-
-    // The same node, asked a question no dispatch is reached for, still answers it.
-    let mut unknown = a_request();
-    unknown.path = "/api/v1/admin/not-a-real-operation".to_string();
-    assert_eq!(
-        node.answer(unknown).status,
-        400,
-        "the node answers after a panicking unit"
+    let answer = tokio::task::spawn_blocking(move || {
+        let ended = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            node.answer(authenticated_admin_request())
+        }));
+        assert!(ended.is_err(), "the fixture's first dispatch panics");
+        node.answer(authenticated_admin_request())
+    })
+    .await
+    .expect("the second administrative walk completes");
+    assert_eq!(answer.status, 200);
+    let document: serde_json::Value = serde_json::from_slice(&answer.body).expect("audit JSON");
+    assert!(
+        document["items"].is_array(),
+        "a real valid operation answered after the panic"
     );
+    assert_eq!(dispatch.calls.load(std::sync::atomic::Ordering::SeqCst), 2);
 }
 
 /// A node whose ledger has nothing in it says so, rather than reporting a balance it never read.

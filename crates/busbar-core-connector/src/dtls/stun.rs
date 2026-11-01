@@ -39,8 +39,9 @@ const FINGERPRINT_XOR: u32 = 0x5354_554e;
 const HEADER: usize = 20;
 /// MESSAGE-INTEGRITY's value length.
 const MI_LEN: usize = 20;
-/// A host candidate's priority for the probe's PRIORITY (RFC 8445 §5.1.2.1, type preference 126).
-const PROBE_PRIORITY: u32 = 0x7eff_ffff;
+/// A probe states peer-reflexive priority (RFC 8445 §7.1.1), using the same UDP type preference
+/// 110 as the WebRTC ICE framer. The existing local preference and component remain 65535 and 1.
+const PROBE_PRIORITY: u32 = 0x6eff_ffff;
 
 /// One side's ICE credentials.
 #[derive(Clone)]

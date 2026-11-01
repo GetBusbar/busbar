@@ -105,7 +105,7 @@ impl UserinfoBasic {
             Fields::Ready(mut fields)
                 if !fields
                     .iter()
-                    .any(|f| f.name.eq_ignore_ascii_case(AUTHORIZATION.as_bytes())) =>
+                    .any(|f| !f.query && f.name.eq_ignore_ascii_case(AUTHORIZATION.as_bytes())) =>
             {
                 fields.insert(
                     0,
@@ -113,6 +113,7 @@ impl UserinfoBasic {
                         name: AUTHORIZATION.as_bytes().to_vec(),
                         value: Secret::new(self.bytes().to_vec()),
                         sensitive: true,
+                        query: false,
                         require_secure: false,
                     },
                 );

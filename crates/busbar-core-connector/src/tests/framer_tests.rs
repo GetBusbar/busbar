@@ -11,6 +11,80 @@ use busbar_contract::abi::transport::{SIDE_ACCEPT, SIDE_DIAL};
 use super::*;
 use crate::support::{Knobs, TestDoor};
 
+struct FailedQueryEncode {
+    inner: TestDoor,
+    mode: EncodeRefusal,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum EncodeRefusal {
+    InvalidSpan,
+    More,
+    Failed,
+}
+
+#[allow(unsafe_code)]
+impl FramerDoor for FailedQueryEncode {
+    fn facts(&self) -> &DoorFacts {
+        self.inner.facts()
+    }
+    fn cross(&self, call: Call<'_>) -> Crossed {
+        match call {
+            Call::Encode(input, output) => {
+                let target = input.target;
+                assert!(target.len <= input.sink.wire_cap);
+                // SAFETY: encode's target and output sink are host loans valid for this call;
+                // the checked capacity contains every initialized target byte.
+                unsafe {
+                    std::ptr::copy_nonoverlapping(target.ptr, input.sink.wire, target.len);
+                }
+                crate::support::watch_scratch(input.sink.wire, target.len);
+                output.yielded.wire_len = target.len as u64;
+                if matches!(self.mode, EncodeRefusal::InvalidSpan) {
+                    output.yielded.frame_len = u64::MAX;
+                }
+                if matches!(self.mode, EncodeRefusal::More) {
+                    output.yielded.flags = busbar_contract::abi::transport::YIELD_MORE;
+                }
+                Crossed {
+                    outcome: if matches!(self.mode, EncodeRefusal::Failed) {
+                        Outcome::Failed
+                    } else {
+                        Outcome::Ready
+                    },
+                    error: None,
+                }
+            }
+            other => self.inner.cross(other),
+        }
+    }
+}
+
+#[test]
+fn refused_query_encodes_wipe_scratch_and_any_partial_copied_output() {
+    const TARGET: &[u8] = b"/path?credential=unique-private-value";
+    for mode in [
+        EncodeRefusal::InvalidSpan,
+        EncodeRefusal::More,
+        EncodeRefusal::Failed,
+    ] {
+        let door = FailedQueryEncode {
+            inner: TestDoor::identity("bytes"),
+            mode,
+        };
+        let (answer, scratch, partial) = crate::support::observe_wipe(std::ptr::null(), 0, || {
+            encode_head(&door, b"GET", TARGET, &[], &[])
+        });
+        assert!(answer.is_err());
+        assert_eq!(scratch, Some(true), "scratch mode={mode:?}");
+        assert_eq!(
+            partial,
+            (!matches!(mode, EncodeRefusal::Failed)).then_some(true),
+            "partial mode={mode:?}"
+        );
+    }
+}
+
 #[path = "framer_loan_tests.rs"]
 mod loan_tests;
 

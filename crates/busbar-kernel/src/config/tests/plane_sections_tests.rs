@@ -29,7 +29,10 @@ fn the_section_list_is_derived_from_the_config_grammar_rather_than_written() {
     // is self-consistent regardless of WHICH plane (both sides derive from the same registry read),
     // but the floor assertion needs `pools` (and the fixed `NAMED_MAP_SECTIONS` literal's
     // `tools`/`agents`/`export`/`identity-providers`) actually present.
-    crate::test_support::register_neutral_test_plane();
+    // Hold the registry through every read, so a sibling's isolated set cannot replace this one.
+    let _isolation = crate::test_support::planes::TestRegistryIsolation::seeded(&[
+        crate::test_support::neutral_fallback_plane(),
+    ]);
     let mut expected: Vec<&'static str> = Vec::new();
     for s in crate::plane_driver::dispatch::plane_keys()
         .map(|k| crate::plane_driver::dispatch::plane_decl(k).config_section)

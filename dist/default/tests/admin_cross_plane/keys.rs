@@ -557,32 +557,39 @@ async fn drive_key_cap_and_delegation_errors() {
     // ── THE AUDIT CONSEQUENCE ─────────────────────────────────────────────────────────────────
     // Every refusal above wrote a `rejected` row: a refused mint is a stopped attempt to issue a
     // credential, and must leave a trace. The rows are asserted through
-    // the live `GET /audit` surface, and only for EXISTENCE (the log is a process-global other
-    // tests append to, so "at least one" is the only stable predicate).
-    let audit_rows = |action: &'static str| {
+    // the live `GET /audit` surface, bound to each key this test minted. Unrelated rejected
+    // patches in the process-wide ring cannot stand in for either refusal.
+    let audit_rows = |resource: String| {
         let (c, a) = (client.clone(), addr);
         async move {
             let r = c
-                .get(format!("http://{a}/api/v1/admin/audit?action={action}"))
+                .get(format!("http://{a}/api/v1/admin/audit"))
+                .query(&[("action", "key.patch"), ("resource", resource.as_str())])
                 .header("x-admin-token", "admintok")
                 .send()
                 .await
                 .unwrap();
+            assert_eq!(
+                r.status().as_u16(),
+                200,
+                "the key's audit rows are readable"
+            );
             let b: serde_json::Value = r.json().await.unwrap();
-            b["items"].as_array().cloned().unwrap_or_default()
+            b["items"]
+                .as_array()
+                .expect("the audit response has items")
+                .clone()
         }
     };
     // The cap refusals above are `key.patch` (rebind + re-enable); each must leave a `rejected` row.
-    for action in ["key.patch"] {
-        let rejected = audit_rows(action)
-            .await
-            .iter()
-            .filter(|e| e["outcome"] == "rejected")
-            .count();
+    for id in [&roamer, &cap_a] {
+        let resource = format!("key:{id}");
+        let rows = audit_rows(resource.clone()).await;
         assert!(
-            rejected > 0,
-            "no `{action}` audit row with outcome=rejected — a refusal that leaves no trail is \
-             the gap `KeyAudit` exists to make unrepresentable"
+            rows.iter().any(|e| e["outcome"] == "rejected"
+                && e["action"] == "key.patch"
+                && e["resource"] == resource),
+            "the refused patch of {resource} left no rejected audit row: {rows:?}"
         );
     }
 
@@ -3011,10 +3018,12 @@ async fn test_admin_v1_identity_provider_refuses_raising_max_admin_scope() {
         r.header("x-admin-token", "admintok")
             .header("content-type", "application/json")
     };
+    // This fixture's provider is not used by sibling named-map tests sharing the audit ring.
+    let provider = "ceiling-audit-witness";
 
     // (a) A NEW provider asking for `full` is a RAISE over the default baseline — refused.
     let r = admin(client.put(format!(
-        "http://{addr}/api/v1/admin/identity-providers/corp-ad"
+        "http://{addr}/api/v1/admin/identity-providers/{provider}"
     )))
     .body(r#"{"module":"keys","max_admin_scope":"full"}"#)
     .send()
@@ -3032,7 +3041,7 @@ async fn test_admin_v1_identity_provider_refuses_raising_max_admin_scope() {
     );
     // Nothing was stored.
     let after = admin(client.get(format!(
-        "http://{addr}/api/v1/admin/identity-providers/corp-ad"
+        "http://{addr}/api/v1/admin/identity-providers/{provider}"
     )))
     .send()
     .await
@@ -3052,7 +3061,7 @@ async fn test_admin_v1_identity_provider_refuses_raising_max_admin_scope() {
     // that provider's `role_bindings:`. Accepting `none` here reported success on a write that left
     // the deployment unbootable at the next restart.
     let r = admin(client.put(format!(
-        "http://{addr}/api/v1/admin/identity-providers/corp-ad"
+        "http://{addr}/api/v1/admin/identity-providers/{provider}"
     )))
     .body(r#"{"module":"keys","max_admin_scope":"none"}"#)
     .send()
@@ -3073,7 +3082,7 @@ async fn test_admin_v1_identity_provider_refuses_raising_max_admin_scope() {
         "the refusal names the accepted values: {body}"
     );
     let after = admin(client.get(format!(
-        "http://{addr}/api/v1/admin/identity-providers/corp-ad"
+        "http://{addr}/api/v1/admin/identity-providers/{provider}"
     )))
     .send()
     .await
@@ -3086,7 +3095,7 @@ async fn test_admin_v1_identity_provider_refuses_raising_max_admin_scope() {
 
     // (b2) The most restrictive ceiling the engine DOES accept is `read-only` — applied.
     let r = admin(client.put(format!(
-        "http://{addr}/api/v1/admin/identity-providers/corp-ad"
+        "http://{addr}/api/v1/admin/identity-providers/{provider}"
     )))
     .body(r#"{"module":"keys","max_admin_scope":"read-only"}"#)
     .send()
@@ -3101,7 +3110,7 @@ async fn test_admin_v1_identity_provider_refuses_raising_max_admin_scope() {
 
     // (c) …and a subsequent RAISE on the now-existing provider is still refused.
     let r = admin(client.put(format!(
-        "http://{addr}/api/v1/admin/identity-providers/corp-ad"
+        "http://{addr}/api/v1/admin/identity-providers/{provider}"
     )))
     .body(r#"{"module":"keys","max_admin_scope":"full"}"#)
     .send()
@@ -3109,7 +3118,7 @@ async fn test_admin_v1_identity_provider_refuses_raising_max_admin_scope() {
     .unwrap();
     assert_eq!(r.status().as_u16(), 409, "a raise in place is refused too");
     let still: serde_json::Value = admin(client.get(format!(
-        "http://{addr}/api/v1/admin/identity-providers/corp-ad"
+        "http://{addr}/api/v1/admin/identity-providers/{provider}"
     )))
     .send()
     .await
@@ -3124,7 +3133,7 @@ async fn test_admin_v1_identity_provider_refuses_raising_max_admin_scope() {
 
     // AUDITED — both the applied change and the refusals.
     let audit: serde_json::Value = admin(client.get(format!(
-        "http://{addr}/api/v1/admin/audit?resource=identity-provider:corp-ad"
+        "http://{addr}/api/v1/admin/audit?resource=identity-provider:{provider}"
     )))
     .send()
     .await
@@ -3134,15 +3143,15 @@ async fn test_admin_v1_identity_provider_refuses_raising_max_admin_scope() {
     .unwrap();
     let items = audit["items"].as_array().unwrap();
     assert!(
-        items
-            .iter()
-            .any(|i| i["outcome"] == "rejected" && i["action"] == "identity-provider.replace"),
+        items.iter().any(|i| i["outcome"] == "rejected"
+            && i["action"] == "identity-provider.replace"
+            && i["resource"] == format!("identity-provider:{provider}")),
         "a refused ceiling raise is audited: {audit}"
     );
     assert!(
-        items
-            .iter()
-            .any(|i| i["outcome"] == "applied" && i["action"] == "identity-provider.replace"),
+        items.iter().any(|i| i["outcome"] == "applied"
+            && i["action"] == "identity-provider.replace"
+            && i["resource"] == format!("identity-provider:{provider}")),
         "the accepted change is audited: {audit}"
     );
     handle.abort();
@@ -3187,6 +3196,11 @@ async fn test_admin_v1_export_put_that_adds_a_route_reports_restart_required() {
         .await
         .unwrap();
     assert_eq!(r.status().as_u16(), 200, "{:?}", r.text().await);
+    let put_body: serde_json::Value = r.json().await.unwrap();
+    assert!(
+        put_body.get("reload_to_apply").is_none(),
+        "the route-free sink's PUT itself reports no restart requirement: {put_body}"
+    );
     let body: serde_json::Value =
         admin(client.get(format!("http://{addr}/api/v1/admin/export/reqlog")))
             .send()

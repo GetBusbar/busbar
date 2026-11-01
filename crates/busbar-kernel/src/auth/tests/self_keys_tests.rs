@@ -1197,47 +1197,54 @@ async fn issued_key_debug_never_leaks_the_live_token() {
 /// the policy switch closing the path — not a pre-existing rejection of this identity.
 #[tokio::test]
 async fn proof_self_mint_disabled_refuses_self_serve() {
-    let rb = bindings("test-idp-double", "eng", Some("team"));
-    let v = identified("test-idp-double", principal("sam", &["eng"]));
-
-    // PRECONDITION: with the knob explicitly OPEN (`Some(true)`), this identity resolves and mints
-    // exactly one self-serve key — so the ONLY thing that changes below is the policy switch.
-    let gov_open = gov();
-    let (p, team, pools) =
-        resolve_exchange(&v, &rb, Some(true)).expect("self_mint=true admits the eligible identity");
-    let keys = DeterministicEd25519Keys::new(
-        gov_open.clone(),
-        "corp".into(),
-        team,
-        pools,
-        Arc::new(NoopProvisioner),
-    );
-    issue_key(&keys, p, Duration::from_secs(3600), false)
-        .await
-        .expect("self_mint=true mints a key");
-    assert_eq!(
-        self_rows(&gov_open, "sam").len(),
-        1,
-        "self_mint=true minted exactly one self-serve key for the eligible identity"
-    );
-
-    // DISABLED: `self_mint: false` refuses the SAME verdict at resolve — before any mint runs. The
-    // refusal short-circuits the exchange, so on a fresh store NO VirtualKey row is ever written.
-    let gov_disabled = gov();
-    assert_eq!(
-        resolve_exchange(&v, &rb, Some(false)).unwrap_err(),
-        ExchangeError::SelfMintDisabled,
-        "self_mint=false MUST refuse the self-serve mint path"
-    );
-    assert!(
-        self_rows(&gov_disabled, "sam").is_empty(),
-        "a refused self-mint writes NO VirtualKey row"
-    );
-
-    // DEFAULT (`None`): unchanged — the self-serve path stays open (self-mint available whenever an
-    // IdP is configured), so an omitted `auth.policy.self_mint` is byte-identical pre-1.6.0 behavior.
-    assert!(
-        resolve_exchange(&v, &rb, None).is_ok(),
-        "None ⇒ self-mint available (the documented default)"
-    );
+    crate::snapshot::init();
+    for self_mint in [Some(true), Some(false), None] {
+        let gov = gov();
+        let app = crate::test_support::TestApp::new()
+            .idp_chain()
+            .governance(gov.clone())
+            .group("team", GroupCfg::default())
+            .role_bindings(bindings("test-idp-module", "idp-user", Some("team")))
+            .mint_policy(crate::governance::mint_policy::MintPolicy {
+                self_mint,
+                ..Default::default()
+            })
+            .build();
+        let handle = Arc::new(crate::state::AppHandle::new(app));
+        // Invoke the actual exchange with this store attached. The same verified identity is
+        // eligible in both positive controls, including the documented omitted-policy default.
+        let response = crate::auth::exchange::exchange(
+            axum::extract::State(handle),
+            axum::http::Request::builder()
+                .method("POST")
+                .uri("/auth/token")
+                .header("authorization", "Bearer eligible-idp-credential")
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await;
+        let status = response.status();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        if self_mint == Some(false) {
+            assert_eq!(status, axum::http::StatusCode::FORBIDDEN, "{body}");
+            assert!(body.get("api_key").is_none(), "no credential is issued");
+            assert!(
+                gov.all_keys().unwrap().is_empty(),
+                "the refused exchange must not write any key to its attached store"
+            );
+        } else {
+            assert_eq!(status, axum::http::StatusCode::OK, "{body}");
+            let token = body["api_key"].as_str().expect("issued token");
+            let key = gov
+                .verify_token(token, crate::store::now(), None)
+                .expect("the exchange returns a usable signed key");
+            assert_eq!(body["key_id"].as_str(), Some(key.id.as_str()));
+            assert_eq!(key.group.as_deref(), Some("user:idp:subject"));
+            assert_eq!(self_rows(&gov, "idp:subject").len(), 1);
+            assert_eq!(gov.all_keys().unwrap().len(), 1);
+        }
+    }
 }

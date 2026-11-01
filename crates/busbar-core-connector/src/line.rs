@@ -48,28 +48,32 @@ pub(crate) const EVERY: u64 = u64::MAX;
 /// The holders still waiting on a line, woken together.
 #[derive(Default)]
 struct FanOut {
-    waiting: Mutex<HashMap<u64, Waker>>,
+    waiting: Mutex<HashMap<u64, Arc<Waker>>>,
 }
 
 impl FanOut {
     fn wait(&self, stream: u64, waker: &Waker) {
-        let mut w = self.waiting.lock().expect("waiters");
-        match w.get_mut(&stream) {
-            Some(held) if held.will_wake(waker) => {}
-            _ => {
-                w.insert(stream, waker.clone());
+        // Waker cloning and destruction can run caller code. The map only owns the handoff.
+        let incoming = Arc::new(waker.clone());
+        let displaced = {
+            let mut w = self.waiting.lock().expect("waiters");
+            match w.get(&stream) {
+                Some(held) if held.will_wake(waker) => None,
+                _ => w.insert(stream, incoming),
             }
-        }
+        };
+        drop(displaced);
     }
 
     fn forget(&self, stream: u64) {
-        self.waiting.lock().expect("waiters").remove(&stream);
+        let removed = self.waiting.lock().expect("waiters").remove(&stream);
+        drop(removed);
     }
 
     fn wake_one(&self, stream: u64) {
         let w = self.waiting.lock().expect("waiters").get(&stream).cloned();
         if let Some(w) = w {
-            w.wake();
+            w.wake_by_ref();
         }
     }
 }
@@ -80,7 +84,7 @@ impl Wake for FanOut {
     }
 
     fn wake_by_ref(self: &Arc<Self>) {
-        let all: Vec<Waker> = self
+        let all: Vec<Arc<Waker>> = self
             .waiting
             .lock()
             .expect("waiters")
@@ -88,7 +92,7 @@ impl Wake for FanOut {
             .cloned()
             .collect();
         for w in all {
-            w.wake();
+            w.wake_by_ref();
         }
     }
 }
@@ -144,7 +148,7 @@ struct State {
     seen: Seen,
     /// Exchanges opened while the connection was out, in order: its owner opens them on the way
     /// back, before anyone else can take it.
-    opening: Vec<(u64, Option<Opening>, HeadWords)>,
+    opening: Vec<(u64, HeldOpening)>,
     /// An exchange whose open was handed to the owner and failed: its holder's next read answers
     /// why.
     refused: HashMap<u64, Failure>,
@@ -156,6 +160,26 @@ struct State {
     held: HashSet<u64>,
     /// The next stream an exchange opened on this line rides.
     next: u64,
+}
+
+struct HeldOpening {
+    opening: Option<Opening>,
+    words: HeadWords,
+}
+
+impl HeldOpening {
+    fn take(mut self) -> (Option<Opening>, HeadWords) {
+        (self.opening.take(), std::mem::take(&mut self.words))
+    }
+}
+
+impl Drop for HeldOpening {
+    fn drop(&mut self) {
+        if let Some((fields, _)) = self.opening.as_mut() {
+            zeroize::Zeroize::zeroize(fields);
+        }
+        zeroize::Zeroize::zeroize(&mut self.words.1);
+    }
 }
 
 impl State {
@@ -303,7 +327,9 @@ impl Line {
         loop {
             if s.closing {
                 let missed = std::mem::take(&mut s.missed);
+                let abandoned = std::mem::take(&mut s.opening);
                 drop(s);
+                drop(abandoned);
                 if let Some(conn) = taken.conn.take() {
                     conn.close();
                 }
@@ -327,7 +353,8 @@ impl Line {
             let mut cx = Context::from_waker(&waker);
             let mut refused = Vec::new();
             if let Some(conn) = taken.conn.as_mut() {
-                for (stream, opening, head_words) in opening {
+                for (stream, held) in opening {
+                    let (opening, head_words) = held.take();
                     if let Err(f) = conn.open_exchange(stream, opening, head_words, &mut cx) {
                         refused.push((stream, f));
                     }
@@ -425,6 +452,10 @@ impl Line {
         opening: Option<Opening>,
         head_words: HeadWords,
     ) -> Result<u64, (u64, Failure)> {
+        let held = HeldOpening {
+            opening,
+            words: head_words,
+        };
         let waker = self.fan_waker();
         let mut s = self.state();
         let stream = s.next;
@@ -434,13 +465,14 @@ impl Line {
             return Err((stream, Failure::Closed));
         }
         if s.conn.is_none() {
-            s.opening.push((stream, opening, head_words));
+            s.opening.push((stream, held));
             return Ok(stream);
         }
         match self.turn(
             s,
             None,
             |conn| {
+                let (opening, head_words) = held.take();
                 conn.open_exchange(
                     stream,
                     opening,
@@ -483,6 +515,8 @@ impl Line {
         };
         let parked = s.parked_bytes();
         let waker = self.fan_waker();
+        let mut waiting = Vec::new();
+        let mut dropped = false;
         let turn = self.turn(
             s,
             Some(missed),
@@ -514,21 +548,25 @@ impl Line {
             // drive can read a later piece first. A piece for a stream its holder left meanwhile
             // is dropped, and the others woken, as what a leaving holder left parked is.
             |s, (_, read)| {
-                let mut dropped = false;
                 for got in read.drain(..) {
                     let key = key(&got);
                     if s.held.contains(&key) {
                         s.parked.entry(key).or_default().push_back(got);
-                        self.fan.wake_one(key);
+                        waiting.push(key);
                     } else {
                         dropped = true;
                     }
                 }
-                if dropped {
-                    self.fan.wake_by_ref();
-                }
             },
         );
+        // Publication stays ordered under State; caller code runs after the holder put the
+        // connection back and released that guard, including arbitrary Waker callbacks.
+        for key in waiting {
+            self.fan.wake_one(key);
+        }
+        if dropped {
+            self.fan.wake_by_ref();
+        }
         match turn {
             Turn::Ran((end, _)) => Turn::Ran(end),
             Turn::Out => Turn::Out,
@@ -551,6 +589,7 @@ impl Line {
         let full = s.conn.is_none()
             || s.parked_bytes().saturating_add(s.seen.buffered_input) >= RECEIVE_BUFFER_BYTES;
         if let Some(got) = s.parked.get_mut(&stream).and_then(VecDeque::pop_front) {
+            drop(s);
             if full && !got.bytes.is_empty() {
                 // Under the cap again: the connection is read again, for whoever waits on it.
                 self.fan.wake_by_ref();
@@ -562,6 +601,7 @@ impl Line {
         let full = s.conn.is_none()
             || s.parked_bytes().saturating_add(s.seen.buffered_input) >= RECEIVE_BUFFER_BYTES;
         if let Some(got) = s.parked.get_mut(&stream).and_then(VecDeque::pop_front) {
+            drop(s);
             if full && !got.bytes.is_empty() {
                 self.fan.wake_by_ref();
             }
@@ -614,7 +654,7 @@ impl Line {
     }
 
     /// Offer `bytes` on `stream` (`end` = its message is complete); answers how many were taken:
-    /// none while another holder has the connection out (the caller re-offers them after its next
+    /// Pending while another holder has the connection out (the caller re-offers them after its next
     /// read or wait, as it does a full buffer).
     ///
     /// # Errors
@@ -627,16 +667,31 @@ impl Line {
         end: bool,
         text: bool,
     ) -> Result<usize, Failure> {
+        self.emit_waking(stream, bytes, end, text, None)
+    }
+
+    /// A retained write also waits for the line/socket that can make room for its next retry.
+    pub(crate) fn emit_waking(
+        &self,
+        stream: u64,
+        bytes: &[u8],
+        end: bool,
+        text: bool,
+        missed: Option<&Waker>,
+    ) -> Result<usize, Failure> {
+        if let Some(waker) = missed {
+            self.fan.wait(stream, waker);
+        }
         let waker = self.fan_waker();
         let s = self.state();
         match self.turn(
             s,
-            None,
+            missed,
             |conn| conn.emit(stream, bytes, end, text, &mut Context::from_waker(&waker)),
             |_, _| {},
         ) {
             Turn::Ran(took) => took,
-            Turn::Out => Ok(0),
+            Turn::Out => Err(Failure::Pending),
             Turn::Closed => Err(Failure::Closed),
         }
     }
@@ -727,11 +782,12 @@ impl Line {
     /// connection at home is taken and closed here with no lock held; one a holder has out is
     /// closed by that holder as it brings it back.
     pub(crate) fn close(&self) {
-        let conn = {
+        let (conn, abandoned) = {
             let mut s = self.state();
             s.closing = true;
-            s.conn.take()
+            (s.conn.take(), std::mem::take(&mut s.opening))
         };
+        drop(abandoned);
         if let Some(c) = conn {
             c.close();
         }

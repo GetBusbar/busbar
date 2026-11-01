@@ -506,7 +506,7 @@ fn kept(s: AbiStr) -> &'static str {
         over_cap();
         return "";
     };
-    String::from_utf8_lossy(bytes).into_owned().leak()
+    crate::intern_name(&String::from_utf8_lossy(bytes))
 }
 
 /// A tail blob's bytes, kept for the process (empty when absent).
@@ -527,7 +527,41 @@ fn kept_blob(b: Blob) -> &'static [u8] {
         over_cap();
         return &[];
     };
-    bytes.to_vec().leak()
+    // These public facts outlive the image. Keep one HOST-owned copy per distinct declaration,
+    // not a fresh permanent allocation every time that image is bound or its facts are read.
+    static BLOBS: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<&'static [u8]>>> =
+        std::sync::OnceLock::new();
+    let mut blobs = BLOBS
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(kept) = blobs.get(bytes) {
+        return kept;
+    }
+    let kept: &'static [u8] = bytes.to_vec().leak();
+    blobs.insert(kept);
+    kept
+}
+
+/// A process-lifetime mechanism declaration, shared by repeated reads of the same tail. Tokens
+/// have already been copied and interned; the comparison includes flags and order. The public
+/// contract lends these slices forever, so distinct declarations remain retained forever too.
+fn kept_mechanisms(mechanisms: Vec<PinMechanismDecl>) -> &'static [PinMechanismDecl] {
+    if mechanisms.is_empty() {
+        return &[];
+    }
+    static MECHANISMS: std::sync::OnceLock<std::sync::Mutex<Vec<&'static [PinMechanismDecl]>>> =
+        std::sync::OnceLock::new();
+    let mut kept = MECHANISMS
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(existing) = kept.iter().find(|m| **m == mechanisms.as_slice()) {
+        return existing;
+    }
+    let mechanisms: &'static [PinMechanismDecl] = mechanisms.leak();
+    kept.push(mechanisms);
+    mechanisms
 }
 
 /// A tail list of `n` `T`s at `p`, copied.
@@ -587,15 +621,16 @@ fn declared(t: &PlaneTail) -> InstanceDecl {
             },
             fingerprint: k.flags & plane::PIN_FINGERPRINT != 0,
             default: Some(kept(k.default)).filter(|d| !d.is_empty()),
-            mechanisms: listed(k.mechanisms, k.mechanisms_len)
-                .into_iter()
-                .map(|m| PinMechanismDecl {
-                    token: kept(m.token),
-                    root: m.flags & plane::MECHANISM_ROOT != 0,
-                    peer_key: m.flags & plane::MECHANISM_PEER_KEY != 0,
-                })
-                .collect::<Vec<_>>()
-                .leak(),
+            mechanisms: kept_mechanisms(
+                listed(k.mechanisms, k.mechanisms_len)
+                    .into_iter()
+                    .map(|m| PinMechanismDecl {
+                        token: kept(m.token),
+                        root: m.flags & plane::MECHANISM_ROOT != 0,
+                        peer_key: m.flags & plane::MECHANISM_PEER_KEY != 0,
+                    })
+                    .collect::<Vec<_>>(),
+            ),
         })
         .collect();
     InstanceDecl {
@@ -849,7 +884,7 @@ fn registered(
     bind: ProbeBind,
 ) -> busbar_contract::plane_calls::PlaneRegistration {
     let (label, subject_noun, admin_noun) = served.nouns;
-    let key: &'static str = name.to_string().leak();
+    let key = crate::intern_name(name);
     let refusal = served.caller_credential_refusal;
     let judge: Judge = std::sync::OnceLock::new();
     if let Some(plugin) = bound {

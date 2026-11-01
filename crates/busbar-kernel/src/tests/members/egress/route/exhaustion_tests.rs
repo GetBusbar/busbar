@@ -418,19 +418,27 @@ fn the_last_resort_never_reaches_a_blocklisted_member() {
 #[test]
 fn the_last_resort_owns_no_probe() {
     let node = least_bad_node();
-    // Every member's cell offers a probe. The last resort bypasses the breaker entirely, so it
-    // must neither win nor release one — releasing a probe a peer won would revert the peer's.
+    // A peer already owns every member's probe, so ordinary admission refuses every member.
+    // The last resort bypasses the breaker and must neither win nor release a peer's probe.
     for d in 0..3 {
         node.breaker.set(
             DestinationId::new(d as u64),
             Health {
                 cooldown: 10,
                 offers_probe: Some(7),
+                probe_in_flight: true,
                 ..Health::default()
             },
         );
     }
-    let _ = node.route("primary");
+    let taken = node.walker("primary").take();
+    assert!(taken.degraded, "the fixture must reach the last resort");
+    assert_eq!(taken.probe, None, "the bypass owns no probe");
+    drop(taken);
+    let Routed::Delivered(served) = node.route("primary") else {
+        panic!("the last resort must dispatch despite the peer's probe");
+    };
+    assert_eq!(served.status, ok_200());
     assert!(
         node.breaker.probe_releases().is_empty(),
         "the one documented breaker bypass owns no probe and so can never release one"

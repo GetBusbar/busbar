@@ -3,9 +3,8 @@
 //!
 //! `protocol.rs` is the vocabulary a dialect implements and the kernel reads back. A head crosses it
 //! as [`HeadFields`](busbar_contract::protocol::HeadFields) pairs and a status as a `u16`; the
-//! kernel converts to and from its transport's header and status types at its own edges. The check
-//! is a source scan rather than a type assertion, because the property is "this path appears
-//! nowhere", which no type can state about itself.
+//! kernel converts to and from its transport's header and status types at its own edges. These
+//! tests exercise field lookup on that neutral representation.
 
 /// A claims predicate reads a head field by name in any case, and the first field whose value is
 /// a legal header value is the one it reads: an earlier field carrying a control byte is passed

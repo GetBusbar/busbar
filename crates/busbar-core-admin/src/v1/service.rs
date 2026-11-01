@@ -245,14 +245,18 @@ pub fn fold_adjustments(
             ));
         };
         for (class, d) in &adj.delta {
+            // The view keeps the exact difference of two u64 rows. Refuse an invalid wider
+            // magnitude before touching a count; narrowing must never truncate or saturate it.
+            let magnitude = u64::try_from(d.unsigned_abs())
+                .map_err(|_| format!("an adjustment of {class} leaves the range"))?;
             if *d >= 0 {
                 let c = column(&mut rows[first], class);
                 *c = c
-                    .checked_add(d.unsigned_abs())
+                    .checked_add(magnitude)
                     .ok_or_else(|| format!("an adjustment of {class} leaves the range"))?;
                 continue;
             }
-            let mut owed = d.unsigned_abs();
+            let mut owed = magnitude;
             for &i in &slot {
                 let c = column(&mut rows[i], class);
                 let take = owed.min(*c);

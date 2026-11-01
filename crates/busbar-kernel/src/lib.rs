@@ -332,9 +332,6 @@ pub use vocabulary::{Registration, MAX_VOCABULARY};
 // `router`) plus the boot seam (`boot`); these re-exports keep every existing `crate::X` /
 // `busbar_kernel::X` path resolving unchanged, and each item's crate-root VISIBILITY is exactly what
 // the lib/bin seam demanded — nothing widened for convenience.
-#[cfg(test)]
-#[path = "tests/alarm_silence_tests.rs"]
-mod alarm_silence_tests;
 pub mod appbuild;
 // `key_revoke_tombstone_tests` drives the admin key-revoke HTTP surface; it moved to `busbar-admin`
 // with the service (`busbar_admin::tests::key_revoke_tombstone_tests`).

@@ -94,6 +94,73 @@ fn dial(target: &str) -> Dial {
     }
 }
 
+fn line_with_connection_held_out(closing: bool) -> Line {
+    Line {
+        state: Mutex::new(super::State {
+            conn: None,
+            closing,
+            seen: super::Seen::default(),
+            opening: Vec::new(),
+            refused: Default::default(),
+            missed: Vec::new(),
+            parked: Default::default(),
+            held: Default::default(),
+            next: 3,
+        }),
+        fan: Arc::default(),
+        dialled: true,
+        users: std::sync::atomic::AtomicUsize::new(1),
+        tainted: std::sync::atomic::AtomicBool::new(false),
+    }
+}
+
+#[test]
+fn abandoned_pooled_openings_wipe_query_storage_on_rejection_close_and_return() {
+    #[derive(Debug, Clone, Copy)]
+    enum Abandonment {
+        Rejected,
+        Closed,
+        Returned,
+    }
+    for mode in [
+        Abandonment::Rejected,
+        Abandonment::Closed,
+        Abandonment::Returned,
+    ] {
+        for watch_target in [false, true] {
+            let line = line_with_connection_held_out(matches!(mode, Abandonment::Rejected));
+            let value = b"key=pooled-secret".to_vec();
+            let target = b"/path?caller=target-secret".to_vec();
+            let watched = if watch_target { &target } else { &value };
+            let pointer = watched.as_ptr();
+            let len = watched.len();
+            let (_, wiped, _) = crate::support::observe_wipe(pointer, len, || {
+                let answer = line.attach(
+                    Some((
+                        vec![("busbar-sealed-query".into(), value)],
+                        Vec::new().into(),
+                    )),
+                    (b"POST".to_vec(), target),
+                );
+                assert_eq!(answer.is_err(), matches!(mode, Abandonment::Rejected));
+                if matches!(mode, Abandonment::Closed) {
+                    line.close();
+                }
+                if matches!(mode, Abandonment::Returned) {
+                    line.state().closing = true;
+                    let mut taken = super::Taken {
+                        line: &line,
+                        conn: None,
+                    };
+                    line.bring_back(&mut taken, |_| {});
+                }
+                drop(line);
+            });
+            assert_eq!(wiped, Some(true), "mode={mode:?}, target={watch_target}");
+        }
+    }
+}
+
 /// RED before the connection had one owner: the line's lock was held across every crossing of a
 /// drive, so a close beside a hung carrier read (a reactor worker dropping the connection) waited
 /// on the plugin for as long as it hung. Now the hung read holds no lock; another holder's poll
@@ -151,11 +218,12 @@ fn a_hung_carrier_crossing_holds_no_lock_and_a_close_beside_it_never_waits() {
         let closer = thread::spawn(move || {
             let mut cx = Context::from_waker(Waker::noop());
             let before = closing.poll_ready(EXCHANGE_STREAM, &mut cx);
+            let empty_write = closing.emit(EXCHANGE_STREAM, b"", true, true);
             closing.close();
             let after = closing.poll_ready(EXCHANGE_STREAM, &mut cx);
-            done_tx.send((before, after)).unwrap();
+            done_tx.send((before, after, empty_write)).unwrap();
         });
-        let (before, after) = done.recv_timeout(Duration::from_secs(5)).expect(
+        let (before, after, empty_write) = done.recv_timeout(Duration::from_secs(5)).expect(
             "a poll and a close beside a hung carrier crossing returned while it still hangs",
         );
         assert!(
@@ -177,6 +245,11 @@ fn a_hung_carrier_crossing_holds_no_lock_and_a_close_beside_it_never_waits() {
         release.send(()).unwrap();
         holder.join().unwrap();
         closer.join().unwrap();
+        assert_eq!(
+            empty_write.map_err(|f| crate::map(&f)),
+            Err(busbar_contract::conn::ConnError::Pending),
+            "an empty frame is not accepted while the connection is out"
+        );
         let crossings = door.crossings.lock().unwrap().clone();
         assert!(
             crossings.iter().all(|(.., locked)| !locked),

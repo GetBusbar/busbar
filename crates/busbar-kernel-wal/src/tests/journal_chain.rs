@@ -157,10 +157,10 @@ fn a_resumed_memory_journal_reads_back_and_continues_the_stored_chain() {
     assert_eq!(journal.mode(), crate::Mode::MemoryBuffered);
 }
 
-/// A journal that KEEPS records at its bound reports the bound and never seals a break: the caller
-/// that asked for it refuses new work instead.
+/// An empty retaining journal starts below its bound. Append-past-bound and replay witnesses live
+/// in busbar-kernel's `tests/members/wal/poison_tests.rs`, where the host lends the durability grant.
 #[test]
-fn a_retaining_journal_reports_its_bound_and_drops_nothing() {
+fn an_empty_retaining_journal_starts_below_its_bound() {
     let journal = Journal::memory_buffered_to(
         1,
         Box::new(crate::ship::NullShipper::new()),

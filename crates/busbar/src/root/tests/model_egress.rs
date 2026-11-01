@@ -338,10 +338,11 @@ fn a_direct_routes_fault_is_recorded_on_the_lanes_default_cell() {
 
 /// A WALK THAT SPANS A CONFIG APPLY RECORDS INTO THE NEW STORE: the walk's breaker resolves the live
 /// App once at its start, and a swap mid-walk moves its next record onto the App the live
-/// configuration answers then, as a breaker that read the live App on every call did. One transient
-/// lands on the first App's lane store; after the swap, the next lands on the second App's, and
-/// the first's window holds no more than its one.
-/// RED: a walk pinned to the App it started on records the second fault into the retired store.
+/// configuration answers then, as a breaker that read the live App on every call did. A success
+/// lands on the first App's lane store; after the swap, a fault lands on the second App's, and
+/// the first's window stays free of faults. Recording the fault on both stores changes the
+/// retired store's error rate too, so the assertion distinguishes a duplicate from no write.
+/// RED: a walk pinned to the App it started on records the fault into the retired store.
 #[test]
 fn a_walk_spanning_a_config_apply_records_into_the_new_store() {
     let generation = || {
@@ -360,8 +361,8 @@ fn a_walk_spanning_a_config_apply_records_into_the_new_store() {
     let now = wall_secs();
     let fault = Outcome::Transient { retry_after: None };
 
-    cells.observe("p", dest, fault, now, &token);
-    assert_eq!(first.store.error_rate_in("p", 0, now), Some(1.0));
+    cells.observe("p", dest, Outcome::Success, now, &token);
+    assert_eq!(first.store.error_rate_in("p", 0, now), Some(0.0));
 
     handle.swap(Arc::clone(&second));
     cells.observe("p", dest, fault, now, &token);
@@ -372,7 +373,7 @@ fn a_walk_spanning_a_config_apply_records_into_the_new_store() {
     );
     assert_eq!(
         first.store.error_rate_in("p", 0, now),
-        Some(1.0),
+        Some(0.0),
         "the retired store took nothing after the apply"
     );
 }

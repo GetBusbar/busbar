@@ -16,7 +16,7 @@
 //! ([`SEAL_BROKEN`]).
 
 use ring::rand::{SecureRandom as _, SystemRandom};
-use zeroize::{Zeroize as _, Zeroizing};
+use zeroize::Zeroizing;
 
 use crate::compose::Opening;
 
@@ -34,6 +34,7 @@ const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz01
 
 /// One sealed value: the filler the framer was handed and the real bytes it stands for.
 struct Seal {
+    stream: u64,
     filler: Vec<u8>,
     value: Zeroizing<Vec<u8>>,
 }
@@ -78,6 +79,91 @@ fn filler(len: usize) -> Option<Vec<u8>> {
 }
 
 impl Seals {
+    /// Remove the host's query metadata before framing and append it only to the wire target.
+    pub(crate) fn seal_queries(
+        &mut self,
+        stream: u64,
+        opening: &mut Option<Opening>,
+        target: &mut Vec<u8>,
+        sealing: bool,
+        secured: bool,
+    ) -> Result<bool, &'static str> {
+        let Some((fields, _)) = opening.as_mut() else {
+            return Ok(false);
+        };
+        let mut pairs = Vec::new();
+        fields.retain_mut(|(name, value)| {
+            if busbar_contract::conn::is_sealed_query_field(name.as_bytes()) {
+                pairs.push(Zeroizing::new(std::mem::take(value)));
+                false
+            } else {
+                true
+            }
+        });
+        if pairs.is_empty() {
+            return Ok(false);
+        }
+        // Validate before changing the target. Only the host's RFC3986 pair encoding is accepted.
+        for pair in &pairs {
+            let Some(at) = pair.iter().position(|b| *b == b'=') else {
+                return Err(SEAL_BROKEN);
+            };
+            let encoded = |bytes: &[u8]| {
+                let mut rest = bytes;
+                while let Some((&b, tail)) = rest.split_first() {
+                    if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~') {
+                        rest = tail;
+                    } else if b == b'%'
+                        && tail.len() >= 2
+                        && tail[..2].iter().all(u8::is_ascii_hexdigit)
+                    {
+                        rest = &tail[2..];
+                    } else {
+                        return false;
+                    }
+                }
+                true
+            };
+            if !encoded(&pair[..at]) || !encoded(&pair[at + 1..]) {
+                return Err(SEAL_BROKEN);
+            }
+            if sealing && !secured && at + 1 < pair.len() {
+                return Err(SEALED_IN_CLEAR);
+            }
+        }
+        // Reserve before any credential is appended, so growth cannot free a prior secret copy.
+        target.reserve(pairs.iter().map(|pair| pair.len().saturating_add(1)).sum());
+        let fragment = target
+            .iter()
+            .position(|b| *b == b'#')
+            .map(|at| target.split_off(at));
+        for pair in &pairs {
+            let at = pair.iter().position(|b| *b == b'=').ok_or(SEAL_BROKEN)?;
+            if !target.contains(&b'?') {
+                target.push(b'?');
+            } else if !matches!(target.last(), Some(b'?' | b'&')) {
+                target.push(b'&');
+            }
+            target.extend_from_slice(&pair[..=at]);
+            let value = &pair[at + 1..];
+            if sealing && !value.is_empty() {
+                let fill = filler(value.len()).ok_or("the host's random source failed")?;
+                target.extend_from_slice(&fill);
+                self.0.push(Seal {
+                    stream,
+                    filler: fill,
+                    value: Zeroizing::new(value.to_vec()),
+                });
+            } else {
+                target.extend_from_slice(value);
+            }
+        }
+        if let Some(fragment) = fragment {
+            target.extend_from_slice(&fragment);
+        }
+        Ok(true)
+    }
+
     /// SEAL `opening`: the sealed-fields field is taken out; when `sealing` (the framer renders
     /// sealed values), each named field's value becomes filler and its real bytes are held here.
     /// `secured` = the host secures the connection the opening rides.
@@ -97,12 +183,13 @@ impl Seals {
             return Ok(());
         };
         let names = take_sealed_names(fields);
-        self.seal_names(opening, &names, sealing, secured)
+        self.seal_names(0, opening, &names, sealing, secured)
     }
 
     /// Seal the named fields after the connector retained their header classification.
     pub(crate) fn seal_names(
         &mut self,
+        stream: u64,
         opening: &mut Option<Opening>,
         names: &[String],
         sealing: bool,
@@ -125,6 +212,7 @@ impl Seals {
             let fill = filler(v.len()).ok_or("the host's random source failed")?;
             let value = Zeroizing::new(std::mem::replace(v, fill.clone()));
             self.0.push(Seal {
+                stream,
                 filler: fill,
                 value,
             });
@@ -137,6 +225,24 @@ impl Seals {
         !self.0.is_empty()
     }
 
+    pub(crate) fn pending_on(&self, stream: u64) -> bool {
+        self.0.iter().any(|seal| seal.stream == stream)
+    }
+
+    pub(crate) fn streams(&self) -> Vec<u64> {
+        let mut streams = Vec::new();
+        for seal in &self.0 {
+            if !streams.contains(&seal.stream) {
+                streams.push(seal.stream);
+            }
+        }
+        streams
+    }
+
+    pub(crate) fn clear_on(&mut self, stream: u64) {
+        self.0.retain(|seal| seal.stream != stream);
+    }
+
     /// SPLICE every pending seal whose filler `wire` holds: the real bytes over the filler, in
     /// place. A seal found is done.
     ///
@@ -144,37 +250,26 @@ impl Seals {
     ///
     /// [`SEAL_BROKEN`] when a filler appears more than once.
     pub(crate) fn splice(&mut self, wire: &mut [u8]) -> Result<(), &'static str> {
-        let mut broken = false;
-        self.0.retain(|s| {
+        let mut positions = Vec::with_capacity(self.0.len());
+        for s in &self.0 {
             let n = s.filler.len();
             let mut at = wire.windows(n).enumerate().filter(|(_, w)| *w == s.filler);
             match (at.next().map(|(i, _)| i), at.next()) {
-                (Some(i), None) => {
-                    wire[i..i + n].copy_from_slice(&s.value);
-                    false
-                }
-                (Some(_), Some(_)) => {
-                    broken = true;
-                    true
-                }
-                (None, _) => true,
+                (Some(i), None) => positions.push(Some(i)),
+                (Some(_), Some(_)) => return Err(SEAL_BROKEN),
+                (None, _) => positions.push(None),
             }
-        });
-        if broken {
-            return Err(SEAL_BROKEN);
         }
+        let mut positions = positions.into_iter();
+        self.0.retain(|s| match positions.next().flatten() {
+            Some(i) => {
+                wire[i..i + s.filler.len()].copy_from_slice(&s.value);
+                false
+            }
+            None => true,
+        });
         Ok(())
     }
-
-    /// Forget every pending seal (the connection failed): their real bytes are wiped.
-    pub(crate) fn clear(&mut self) {
-        self.0.clear();
-    }
-}
-
-/// Wipe `wire` once it was written: it may hold spliced credential bytes.
-pub(crate) fn wipe(wire: &mut Vec<u8>) {
-    wire.zeroize();
 }
 
 #[cfg(test)]

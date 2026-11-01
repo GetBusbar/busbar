@@ -3676,10 +3676,48 @@ async fn test_1_5_2_open_chain_inserts_default_govctx_no_500() {
 /// gate resolves no key (so nothing downstream can meter one) and the key's ledger records no spend.
 #[tokio::test]
 async fn test_1_5_2_open_chain_valid_vkey_ignored_not_metered() {
+    async fn metering_door_serve(
+        app: std::sync::Arc<crate::state::App>,
+        gov: std::sync::Arc<crate::governance::GovState>,
+    ) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
+        crate::snapshot::init();
+        let mut door = admitting_door("/pa/v1/messages");
+        let echo = door.handler.clone();
+        door.handler = std::sync::Arc::new(move |ctx| {
+            let gov = gov.clone();
+            let echo = echo.clone();
+            Box::pin(async move {
+                // Charge the real request fee against exactly the key the middleware attached.
+                // An accidental key attachment in the open arm now changes the ledger too.
+                if let Some(key) = ctx.gov.as_ref().and_then(|g| g.key()) {
+                    gov.try_admit(
+                        &crate::cost::CostModel::flat(1),
+                        key,
+                        "pa",
+                        crate::store::now(),
+                    )
+                    .expect("the fixture key has no budget ceiling");
+                }
+                echo(ctx).await
+            })
+        });
+        let (router, _admin, _handle) = crate::build_split_routers_serving(
+            app,
+            vec![door],
+            busbar_kernel_egress::upstream::max_translate_body_bytes(),
+            crate::config::DEFAULT_MAX_INBOUND_CONCURRENT,
+            crate::config::DEFAULT_RESPONSE_HEADERS_SERVER_TIMING,
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+        (addr, handle)
+    }
+
     let gov = door_gov(Some("admintok"));
     let (key_id, secret) = door_mint(&gov, "vk", &["pa"]);
     let app = door_app().governance(gov.clone()).build();
-    let (addr, handle) = door_serve(app, &["/pa/v1/messages"]).await;
+    let (addr, handle) = metering_door_serve(app, gov.clone()).await;
 
     let (status, _, body) = door_bearer(addr, "/pa/v1/messages", &secret).await;
     assert_eq!(
@@ -3706,6 +3744,27 @@ async fn test_1_5_2_open_chain_valid_vkey_ignored_not_metered() {
     );
 
     handle.abort();
+
+    // The same credential and charging handler, with only the chain changed, must meter the key.
+    // This control prevents an inert handler or an ineffective ledger read from proving zero spend.
+    let app = door_app().keys_chain().governance(gov.clone()).build();
+    let (addr, handle) = metering_door_serve(app, gov.clone()).await;
+    let (status, _, body) = door_bearer(addr, "/pa/v1/messages", &secret).await;
+    handle.abort();
+    assert_eq!(status, 200, "{body}");
+    assert!(body.contains(&format!("key={key_id} ")), "{body}");
+    let usage = gov
+        .usage_for(
+            &crate::cost::CostModel::flat(1),
+            &key_id,
+            crate::store::now(),
+        )
+        .unwrap()
+        .expect("the keys-chain request has a usage row");
+    assert_eq!(
+        usage.spend_cents, 1,
+        "the handler charges one real request fee"
+    );
 }
 
 /// F25 row 61: rehomed from the retired engine crate's src/engine/tests/auth_dispatch_tests.rs::test_1_5_2_keys_chain_valid_vkey_admits.

@@ -624,7 +624,89 @@ async fn closed_by(exit: Exit) -> u32 {
                 cases::arrival(target, b"x"),
                 deadline,
             );
-            let _outcome = drive_as(&units, KEY).await;
+            let outcome = drive_as(&units, KEY).await;
+            let reached = match exit {
+                Exit::Completed | Exit::AnsweredLocally | Exit::SessionEnded => {
+                    outcome == UnitOutcome::Completed
+                }
+                Exit::RefusedAtArrive => {
+                    outcome == UnitOutcome::Refused(StepName::Decode, ReasonCode::DecodeFailed)
+                }
+                Exit::RefusedAtAuthenticate => {
+                    outcome
+                        == UnitOutcome::Refused(StepName::Authenticate, ReasonCode::Unauthenticated)
+                }
+                Exit::RefusedAtTheDoor => {
+                    outcome == UnitOutcome::Refused(StepName::Admit, ReasonCode::OverBudget)
+                }
+                Exit::FailedBeforeTheAnswer => {
+                    outcome == UnitOutcome::Failed(StepName::Route, ReasonCode::PlanePanic)
+                }
+                Exit::FailedAfterTheAnswerBegan | Exit::FailedOverThenFailedAfterTheAnswerBegan => {
+                    outcome
+                        == UnitOutcome::Failed(StepName::Route, ReasonCode::DurabilityUnavailable)
+                }
+                Exit::PastTheDeadline => {
+                    outcome == UnitOutcome::Failed(StepName::Route, ReasonCode::DeadlineExceeded)
+                }
+                Exit::NoMemberLeft | Exit::UpstreamFailedOver => matches!(
+                    outcome,
+                    UnitOutcome::Refused(StepName::Route, ReasonCode::BreakerOpen)
+                        | UnitOutcome::Failed(StepName::Route, ReasonCode::BreakerOpen)
+                ),
+                _ => unreachable!("{exit:?} has its own arm"),
+            };
+            assert!(reached, "{exit:?} reached a different exit: {outcome:?}");
+            match exit {
+                Exit::FailedOverThenFailedAfterTheAnswerBegan => {
+                    let sent = far.sent();
+                    let members: Vec<_> =
+                        sent.iter().map(|request| request.member.as_str()).collect();
+                    assert_eq!(
+                        members,
+                        ["done-retry", "row-late"],
+                        "{exit:?}: both attempts ran"
+                    );
+                }
+                Exit::UpstreamFailedOver => {
+                    let sent = far.sent();
+                    let members: Vec<_> =
+                        sent.iter().map(|request| request.member.as_str()).collect();
+                    assert_eq!(
+                        members,
+                        ["overloaded"],
+                        "{exit:?}: the failed member was tried"
+                    );
+                    assert_eq!(far.picks(), 2, "{exit:?}: the retry exhausted the walk");
+                }
+                Exit::NoMemberLeft => {
+                    assert!(far.sent().is_empty(), "{exit:?}: no attempt was available");
+                    assert_eq!(far.picks(), 1, "{exit:?}: exhausted on the first pick");
+                }
+                Exit::SessionEnded => {
+                    assert!(far.sent().is_empty(), "{exit:?}: the session is local");
+                    assert_eq!(
+                        caller.text(),
+                        "",
+                        "{exit:?}: the caller supplied no session piece"
+                    );
+                    assert!(
+                        r.plane.sessions.open.lock().unwrap().is_empty(),
+                        "{exit:?}: no session remains open"
+                    );
+                }
+                _ => {}
+            }
+            match exit {
+                Exit::Completed => assert_eq!(caller.text(), "hello far end"),
+                Exit::AnsweredLocally => assert_eq!(caller.text(), "x"),
+                Exit::FailedBeforeTheAnswer => assert_eq!(caller.text(), ""),
+                Exit::FailedAfterTheAnswerBegan | Exit::FailedOverThenFailedAfterTheAnswerBegan => {
+                    assert_eq!(caller.status(), Some(200), "{exit:?}");
+                    assert_eq!(caller.text(), "hello ", "{exit:?}: the answer began");
+                }
+                _ => {}
+            }
             drop(units);
             r.driver.sweep();
             closes(&r.plane, KEY)

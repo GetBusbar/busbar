@@ -529,7 +529,7 @@ fn red_3g_deals_each_seat_its_section_and_positions_a_refusal() {
 #[test]
 fn an_applied_plugins_logs_level_reaches_a_live_sink() {
     use crate::root::loader::dispatch::{Diagnostic, EnvelopeSink, NoSink, PluginLogConfig};
-    use busbar_contract::abi::mechanism::call::{DIAG_LOG, SEVERITY_INFO};
+    use busbar_contract::abi::mechanism::call::{DIAG_LOG, SEVERITY_INFO, SEVERITY_WARN};
     let dir = scratch("logs-apply");
     let words = |level: &str| {
         let mut cfg = busbar_kernel::config::PluginsCfg::default();
@@ -568,17 +568,29 @@ fn an_applied_plugins_logs_level_reaches_a_live_sink() {
     info("under info");
     follow_plugin_logs(&logs, &words("warn"));
     info("under warn again");
+    // The writer must pass the last filtered line before its absence is meaningful. This WARN
+    // shares the sink's ordered queue and is admitted under the final configuration.
+    sink.diag(Diagnostic {
+        id: DIAG_LOG,
+        name: &[],
+        severity: SEVERITY_WARN,
+        text: b"after the final level change",
+    });
     let path = logs.path_for("applied", busbar_contract::abi::mechanism::KindCode::Hook);
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     let text = loop {
         let text = std::fs::read_to_string(&path).unwrap_or_default();
-        if text.contains("under info") || std::time::Instant::now() > deadline {
+        if text.contains("after the final level change") || std::time::Instant::now() > deadline {
             break text;
         }
         std::thread::sleep(std::time::Duration::from_millis(20));
     };
     drop(sink);
     let _ = std::fs::remove_dir_all(&dir);
+    assert!(
+        text.contains(" WARN  applied hook after the final level change"),
+        "the writer reached the final level change:\n{text}"
+    );
     assert!(
         text.contains(" INFO  applied hook under info"),
         "the applied level reached the live sink:\n{text}"

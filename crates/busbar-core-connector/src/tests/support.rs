@@ -8,6 +8,115 @@
 //! `io.*`); a record of every crossing and the thread it ran on. The one place in this crate that
 //! writes a host sink through its raw pointers, as a plugin does.
 
+#[derive(Clone, Copy, Default)]
+struct WipeWatch {
+    pointer: usize,
+    len: usize,
+    second: usize,
+    second_len: usize,
+    first_result: Option<bool>,
+    second_result: Option<bool>,
+}
+
+thread_local! {
+    static WIPE_WATCH: std::cell::Cell<WipeWatch> = const { std::cell::Cell::new(WipeWatch {
+        pointer: 0, len: 0, second: 0, second_len: 0, first_result: None, second_result: None,
+    }) };
+}
+
+struct ObservingAllocator;
+
+#[global_allocator]
+static OBSERVING_ALLOCATOR: ObservingAllocator = ObservingAllocator;
+
+// SAFETY: every allocation is delegated unchanged to System. The observer reads live allocated
+// bytes immediately before the matching System deallocation, on the observing test's thread.
+unsafe impl std::alloc::GlobalAlloc for ObservingAllocator {
+    unsafe fn alloc(&self, layout: std::alloc::Layout) -> *mut u8 {
+        // SAFETY: the caller supplied GlobalAlloc's layout.
+        unsafe { std::alloc::GlobalAlloc::alloc(&std::alloc::System, layout) }
+    }
+
+    unsafe fn dealloc(&self, pointer: *mut u8, layout: std::alloc::Layout) {
+        let _ = WIPE_WATCH.try_with(|watch| {
+            let mut state = watch.get();
+            if state.pointer == pointer as usize || state.second == pointer as usize {
+                let len = if state.pointer == pointer as usize {
+                    state.len
+                } else {
+                    state.second_len
+                };
+                // SAFETY: the owner supplied this allocation's initialized prefix, and this
+                // deallocation pointer still owns the live allocation until System receives it.
+                let wiped = len <= layout.size()
+                    && unsafe { std::slice::from_raw_parts(pointer, len) }
+                        .iter()
+                        .all(|byte| *byte == 0);
+                if state.pointer == pointer as usize {
+                    state.first_result = Some(wiped);
+                    state.pointer = 0;
+                }
+                if state.second == pointer as usize {
+                    state.second_result = Some(wiped);
+                    state.second = 0;
+                    state.second_len = 0;
+                }
+                watch.set(state);
+            }
+        });
+        // SAFETY: the caller returned the allocation and original layout to its allocator.
+        unsafe { std::alloc::GlobalAlloc::dealloc(&std::alloc::System, pointer, layout) };
+    }
+}
+
+/// Observe real destruction of an owner's initialized buffer and any explicitly lent encode copy.
+pub fn observe_wipe<T>(
+    pointer: *const u8,
+    len: usize,
+    run: impl FnOnce() -> T,
+) -> (T, Option<bool>, Option<bool>) {
+    struct Reset;
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            WIPE_WATCH.with(|watch| watch.set(WipeWatch::default()));
+        }
+    }
+    WIPE_WATCH.with(|watch| {
+        watch.set(WipeWatch {
+            pointer: pointer as usize,
+            len,
+            ..WipeWatch::default()
+        })
+    });
+    let _reset = Reset;
+    let result = run();
+    let state = WIPE_WATCH.with(std::cell::Cell::get);
+    (result, state.first_result, state.second_result)
+}
+
+/// Arm an existing observation after the fixture initializes the framer's wire scratch.
+pub fn watch_scratch(pointer: *const u8, len: usize) {
+    WIPE_WATCH.with(|watch| {
+        watch.set(WipeWatch {
+            pointer: pointer as usize,
+            len,
+            ..WipeWatch::default()
+        })
+    });
+}
+
+/// The encode owner lends only its initialized output, without inferring ownership from capacity.
+pub fn watch_encoded_wire(wire: &[u8]) {
+    WIPE_WATCH.with(|watch| {
+        let mut state = watch.get();
+        if state.pointer != 0 && !wire.is_empty() {
+            state.second = wire.as_ptr() as usize;
+            state.second_len = wire.len();
+            watch.set(state);
+        }
+    });
+}
+
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -83,6 +192,8 @@ pub struct Knobs {
     pub seals: bool,
     /// `encode` renders its fields (`name: value` CRLF each, then CRLF) before the body.
     pub render_fields: bool,
+    /// Render the request target verbatim before fields, for query-custody tests.
+    pub render_target: bool,
     /// An accepting `begin` states this agreed protocol (`FramerYield::agreed`, a 1-based position
     /// in the accepting offer).
     pub agreed: Option<u32>,
@@ -618,6 +729,12 @@ impl FramerDoor for TestDoor {
             },
             Call::Encode(i, o) => {
                 let mut message = Vec::new();
+                if self.knobs.render_target {
+                    let target = raw(i.target.ptr, i.target.len);
+                    self.handed.lock().unwrap().extend_from_slice(target);
+                    message.extend_from_slice(target);
+                    message.extend_from_slice(b"\r\n");
+                }
                 if self.knobs.render_fields && !i.fields.is_null() {
                     // SAFETY: host-borrowed fields, `fields_len` of them, valid for the call.
                     for f in unsafe { std::slice::from_raw_parts(i.fields, i.fields_len) } {
@@ -1012,6 +1129,10 @@ impl PendingDoor {
 impl FramerDoor for PendingDoor {
     fn facts(&self) -> &DoorFacts {
         self.inner.facts()
+    }
+
+    fn seals_values(&self) -> bool {
+        self.inner.seals_values()
     }
 
     fn cross(&self, call: Call<'_>) -> Crossed {

@@ -887,7 +887,8 @@ fn test_validate_rejects_non_https_base_url() {
         let errs = validate(&cfg)
             .unwrap_err_or_default(format!("non-https base_url '{bad}' must fail validation"));
         assert!(
-            errs.iter().any(|e| e.contains(fragment) && e.contains('p')),
+            errs.iter()
+                .any(|e| e.contains(fragment) && e.contains("provider 'p' base_url")),
             "expected a scheme error ('{fragment}') for '{bad}'; got: {errs:?}"
         );
     }
@@ -6186,8 +6187,10 @@ fn test_role_binding_under_browser_method_active() {
     // A role_binding under a module that appears ONLY in `auth.methods` (not `chain`) is NOT dead
     // config: the method resolves an identity, then its role_bindings apply.
     let auth = parse_auth(
-        "methods:\n  oidc:\n    browser_login:\n      client_secret: { env: X }\nrole_bindings:\n  oidc:\n    member: {}\n",
+        "identity-providers:\n  oidc:\n    module: oidc-plugin\n    browser_login:\n      client_secret: { env: X }\nauth:\n  role_bindings:\n    oidc:\n      member: {}\n",
     );
+    assert!(auth.methods["oidc"].browser_login.is_some());
+    assert!(auth.role_bindings["oidc"].contains_key("member"));
     let mut cfg = make_root_cfg(HashMap::new(), HashMap::new(), HashMap::new());
     cfg.auth = Some(auth);
     cfg.public_url = Some("https://busbar.example".to_string());
@@ -6199,6 +6202,14 @@ fn test_role_binding_under_browser_method_active() {
             .flatten()
             .all(|e| !e.contains("inactive module") && !e.contains("grants nothing")),
         "methods-only module must not be flagged inactive: {res:?}"
+    );
+    cfg.auth.as_mut().unwrap().methods.remove("oidc");
+    let errs = validate(&cfg).expect_err("without the browser method the binding is inactive");
+    assert!(
+        errs.iter()
+            .any(|e| e.contains("role_bindings names module 'oidc'")
+                && e.contains("inactive module")),
+        "removing the only active method must be diagnosed: {errs:?}"
     );
 }
 

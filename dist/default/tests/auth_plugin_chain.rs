@@ -403,52 +403,85 @@ fn auth_plugin_loads_and_identifies_through_middleware() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// 1.5.2 admin-plane OIDC: `AdminAuthChain::build` — the function `build_app_from_config` invokes on
-/// BOTH boot and reload — resolves every NON-BUILTIN `admin_auth:` entry into a loaded `kind: auth`
-/// plugin, keyed by config name; the operator credential is NOT in the map (it
-/// is held apart, `AdminAuthChain::operator`). Building it TWICE against the same registry (boot, then the reload rebuild) both populate:
-/// the reload path can never leave `admin_modules` stale/empty.
+/// Boot and reload use the real application builder over the signed auth plugin. Renaming the
+/// configured provider in the next generation must replace the admin chain while the old App
+/// retains its own modules; a second local AdminAuthChain::build would not witness this boundary.
 #[test]
 fn admin_modules_rebuilt_on_reload() {
     common::root_install::install();
-    use busbar_kernel::auth::AdminAuthChain;
     let dir = tmp_plugin_dir("admin-modules-reload");
     write_auth_plugin(&dir, "idp.tar.gz", "acme-idp", "admin-oidc");
-    let plugins = plugins_cfg_allow_unsigned(&dir);
-    let registry = busbar_plugin_loader::scan_and_validate(
-        Path::new(&plugins.dir),
-        &common::root_install::trust_policy(&plugins).unwrap(),
-    )
-    .expect("scan succeeds");
-    let registry: std::sync::Arc<dyn busbar_contract::plugin_rows::PluginRows> =
-        std::sync::Arc::new(registry);
-    let mut cfg = AuthCfg::default_none();
-    let mut entry = AuthChainEntry::bare("admin-oidc");
-    entry.settings = settings();
-    cfg.admin_auth = vec![
-        AuthChainEntry::bare(busbar_kernel::config::operator_provider()),
-        entry,
-    ];
-    let resolver = busbar_kernel::config::secret::SecretResolver::builtins_only();
-
-    // BOOT build.
-    let boot = AdminAuthChain::build(&cfg, &registry, &resolver).expect("boot builds admin chain");
+    busbar_kernel::test_support::register_neutral_test_plane();
+    let config = dir.join("config.yaml");
+    let providers = dir.join("providers.yaml");
+    std::fs::write(&providers, "{}\n").unwrap();
+    let settings = serde_json::Value::Object(settings()).to_string();
+    let rules = std::sync::Arc::new(busbar_kernel::appbuild::AcceptAll)
+        as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
+    let build = |provider: &str, prior: Option<&busbar_kernel::state::App>| {
+        std::fs::write(
+            &config,
+            format!(
+            "listen: \"127.0.0.1:0\"\nstore: {{ module: memory }}\nproviders: {{}}\nmodels: {{}}\n\
+             plugins: {{ enabled: true, dir: {dir:?}, trust: {{ allow_unsigned: true }} }}\n\
+             auth:\n  chain: []\n  admin_auth: [{operator:?}, {provider:?}]\n\
+             identity-providers:\n  {provider}:\n    module: acme-idp\n    settings: {settings}\n",
+            dir = dir.display().to_string(), operator = busbar_kernel::config::operator_provider(),
+        ),
+        )
+        .unwrap();
+        let loaded = busbar_kernel::load_config_from_disk(
+            &config,
+            Some(&providers),
+            false,
+            busbar_kernel::config::EnvSubst::Strict,
+        )
+        .expect("the configuration reads");
+        let cfg = busbar_kernel::config::resolve(&loaded.deploy, &loaded.defs)
+            .expect("the configuration resolves");
+        let (app, _rotation, _limits) = busbar_kernel::build_app_from_config(
+            cfg,
+            loaded.deploy.plugins.clone(),
+            None,
+            std::collections::HashSet::new(),
+            std::collections::HashSet::new(),
+            (Some(config.clone()), Some(providers.clone())),
+            prior,
+            &rules,
+        )
+        .expect("the real application builds its admin chain");
+        app
+    };
+    let boot = build("admin-oidc", None);
     assert!(
-        boot.modules.contains_key("admin-oidc"),
+        boot.admin_modules.modules.contains_key("admin-oidc"),
         "keyed by the config module name"
     );
     assert_eq!(
-        boot.modules.len(),
+        boot.admin_modules.modules.len(),
         1,
         "the operator credential is held apart, never inserted into admin_modules"
     );
 
-    // RELOAD build (the SAME code path `build_app_from_config` re-runs with `prior = Some`).
-    let reload =
-        AdminAuthChain::build(&cfg, &registry, &resolver).expect("reload rebuilds admin chain");
+    let reload = build("reloaded-admin", Some(&boot));
     assert!(
-        reload.modules.contains_key("admin-oidc"),
-        "reload repopulates admin_modules — never stale/empty"
+        reload.admin_modules.modules.contains_key("reloaded-admin"),
+        "the reload installs its newly configured provider"
+    );
+    assert!(!reload.admin_modules.modules.contains_key("admin-oidc"));
+    assert_eq!(reload.admin_modules.modules.len(), 1);
+    assert_eq!(
+        reload.admin_chain.last().map(String::as_str),
+        Some("reloaded-admin")
+    );
+    assert!(boot.admin_modules.modules.contains_key("admin-oidc"));
+    assert!(!boot.admin_modules.modules.contains_key("reloaded-admin"));
+    assert!(
+        std::sync::Arc::ptr_eq(
+            boot.governance.as_ref().expect("boot store"),
+            reload.governance.as_ref().expect("reload store"),
+        ),
+        "the reload actually uses its prior generation's store"
     );
 
     let _ = std::fs::remove_dir_all(&dir);

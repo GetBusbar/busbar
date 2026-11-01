@@ -18,14 +18,9 @@
 //! quotes. It frames them itself, hashes them itself, and compares against the digest the document
 //! and the build each claim.
 //!
-//! ## The constraint is enforced, not promised
-//!
-//! Nothing in this file may reach the three functions that ARE the implementation of the recipe.
-//! A check that called them would go green on a build whose order had drifted, because it would be
-//! asking the drifted code what the answer is — which is precisely the bug. That constraint is not
-//! honour-system and not a comment somebody can quietly stop honouring:
-//! [`the_check_never_reaches_the_code_it_is_checking`] reads this file's own source and fails if
-//! any of the three names appears in it outside a comment.
+//! The reconstruction below must stay independent of the implementation's recipe helpers: calling
+//! them would ask the same code for both the actual and expected order. The tests read the published
+//! fields and examples and compare the resulting bytes and digests.
 //!
 //! ## What is fair to use
 //!

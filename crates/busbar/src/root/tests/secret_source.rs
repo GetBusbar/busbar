@@ -270,6 +270,21 @@ async fn tool_door_a_program_members_unresolved_env_reaches_the_caller_without_i
             panic!("{instance}: a member's env that did not resolve refuses its spawns, never the compose: {e}")
         });
         let (status, headers, body) = call(&rig).await;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "the tool returns its failure result"
+        );
+        let answer: serde_json::Value = serde_json::from_slice(&body).expect("a JSON-RPC answer");
+        assert_eq!(answer["id"], 30);
+        assert_eq!(answer["result"]["isError"], true);
+        assert!(
+            answer["result"]["content"][0]["text"]
+                .as_str()
+                .expect("the tool failure text")
+                .contains(busbar_contract::conn::ConnError::Refused.text()),
+            "{instance}: the failed spawn reaches the caller as the connector's refusal"
+        );
         assert_clean(instance, status, &headers, &body, &secret);
         assert!(
             !String::from_utf8_lossy(&body).contains("from the server"),
@@ -358,6 +373,14 @@ async fn tool_door_a_subject_token_gone_by_an_apply_reaches_the_caller_without_i
         "the door keeps the generation it serves"
     );
     let (status, headers, body) = call(&rig).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "the retained generation still serves"
+    );
+    let answer: serde_json::Value = serde_json::from_slice(&body).expect("a JSON-RPC answer");
+    assert_eq!(answer["id"], 30);
+    assert_eq!(answer["result"]["content"][0]["text"], "from the server");
     assert_clean(instance, status, &headers, &body, &secret);
 }
 

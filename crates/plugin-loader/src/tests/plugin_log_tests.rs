@@ -855,6 +855,9 @@ fn a_dropped_in_plugins_warning_is_also_a_line_of_busbars_own_log() {
     const MIRRORED: &str = "mirror-witness";
     let host = HostLog::installed();
     let dir = scratch("mirror");
+    let label = dir.file_name().unwrap().to_string_lossy().into_owned();
+    let command = format!("log:{label}");
+    let expected_message = format!("log from the plugin, {label}");
     let s = Arc::new(
         config(&dir, LogLevel::Trace)
             .sink(MIRRORED, witness::KIND, Arc::new(NoSink))
@@ -864,7 +867,7 @@ fn a_dropped_in_plugins_warning_is_also_a_line_of_busbars_own_log() {
     let p = dropped(s.clone());
     std::thread::spawn(move || {
         open(&p);
-        tick(&p, witness::LOG);
+        tick(&p, command.as_bytes());
     })
     .join()
     .expect("the script runs");
@@ -874,7 +877,9 @@ fn a_dropped_in_plugins_warning_is_also_a_line_of_busbars_own_log() {
             .unwrap_or_default();
     let _ = std::fs::remove_dir_all(&dir);
     assert!(
-        file.contains(" WARN  mirror-witness export log_witness: log from the plugin, a"),
+        file.contains(&format!(
+            " WARN  mirror-witness export log_witness: {expected_message}"
+        )),
         "the plugin's own file keeps the line:\n{file}"
     );
     let ours: Vec<HostLine> = host
@@ -885,7 +890,7 @@ fn a_dropped_in_plugins_warning_is_also_a_line_of_busbars_own_log() {
     assert!(
         ours.iter()
             .any(|(_, level, plugin, message)| *level == tracing::Level::WARN
-                && message == "log from the plugin, a"
+                && message == &expected_message
                 && plugin.is_empty()),
         "busbar's own log carries the plugin's WARN line as 1.5.5 wrote it: {ours:?}"
     );

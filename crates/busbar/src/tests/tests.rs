@@ -928,21 +928,31 @@ fn one_seal_after_two_reloads() {
          the boot opened"
     );
 
-    // (b) ONE SEAL.
-    let openings = book
+    // (b) ONE BOOTSTRAP SEAL, naming the key the boot bound.
+    let durability = book
         .durability
         .lock()
-        .expect("the book's lock is unpoisoned")
+        .expect("the book's lock is unpoisoned");
+    let keyset = root::durability::keyset_of(&durability.record);
+    let key_id = durability.record.signing_key_id().expect("the book signs");
+    let signing_key = keyset
+        .get(key_id)
+        .expect("the keyset holds the signing key");
+    let records = durability
         .journal
         .replay()
         .expect("the journal reads back")
-        .expect("and verifies")
-        .iter()
-        .filter(|r| r.class == RecordClass::Migration)
-        .count();
-    assert_eq!(
-        openings, 1,
+        .expect("and verifies");
+    let mut openings = records.iter().filter(|r| r.class == RecordClass::Bootstrap);
+    let opening = openings.next().expect("the boot sealed its keyset");
+    assert!(
+        openings.next().is_none(),
         "two reloads must leave exactly the boot's one sealed opening on the book's chain"
+    );
+    assert_eq!(
+        root::keyset::bootstrap_fingerprint(&opening.body),
+        Some(root::keyset::fingerprint_of(signing_key)),
+        "the surviving Bootstrap seals the bound signing key"
     );
 }
 

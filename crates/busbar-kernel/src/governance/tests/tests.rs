@@ -1710,6 +1710,8 @@ fn test_budget_sweep_is_window_agnostic_across_cotenants() {
 
     // A seeded ledger cell with `requests` accrued (spend derives from requests x fee).
     let seeded = |window_start: u64, requests: u64, dirty: bool| BudgetCell {
+        flushing_windows: Default::default(),
+        correction: None,
         group_owners: Default::default(),
         flushing: 0,
         window_start,
@@ -1792,6 +1794,8 @@ fn test_budget_sweep_staleness_boundary_is_exact() {
     let survivor = sample_key("survivor2", "hs2");
 
     let seeded = |window_start: u64, last_touch: u64| BudgetCell {
+        flushing_windows: Default::default(),
+        correction: None,
         group_owners: Default::default(),
         flushing: 0,
         window_start,
@@ -1875,6 +1879,8 @@ fn test_budget_sweep_cadence_post_increment_no_off_by_one() {
     let k = sample_key("k1", "h1");
     let now = 1_700_000_040u64;
     let stale = || BudgetCell {
+        flushing_windows: Default::default(),
+        correction: None,
         group_owners: Default::default(),
         flushing: 0,
         window_start: now - 40 * SECS_PER_DAY, // genuinely stale (>31 d)
@@ -3677,6 +3683,8 @@ fn test_budget_sweep_evicts_idle_attribution_cells_but_never_group_caps() {
     let survivor = sample_key("survivor", "hs");
 
     let all_time = |requests: u64, dirty: bool, last_touch: u64| BudgetCell {
+        flushing_windows: Default::default(),
+        correction: None,
         group_owners: Default::default(),
         flushing: 0,
         window_start: 0,
@@ -4660,6 +4668,8 @@ fn test_budget_sweep_only_exempts_group_cells_that_still_enforce_a_cap() {
     // Every seeded cell is an all-time (`window_start == 0`) cell, long idle and CLEAN — so the only
     // thing that can keep it alive is the `group:` exemption.
     let idle = || BudgetCell {
+        flushing_windows: Default::default(),
+        correction: None,
         group_owners: Default::default(),
         flushing: 0,
         window_start: 0,
@@ -4728,6 +4738,8 @@ fn test_reclaim_group_cells_drops_every_window_and_scope_of_that_group() {
     let gov = GovState::new(store, None).unwrap();
     let now = 1_700_000_040u64;
     let cell = BudgetCell {
+        flushing_windows: Default::default(),
+        correction: None,
         group_owners: Default::default(),
         flushing: 0,
         window_start: 0,
@@ -4905,6 +4917,8 @@ fn test_sweep_exemption_survives_a_group_name_containing_the_id_delimiters() {
     let cost = crate::cost::CostModel::resolve_parts(None, 1, &groups);
 
     let idle = || BudgetCell {
+        flushing_windows: Default::default(),
+        correction: None,
         group_owners: Default::default(),
         flushing: 0,
         window_start: 0,
@@ -4958,6 +4972,8 @@ fn test_reclaim_group_cells_never_takes_a_longer_name_that_shares_the_at_prefix(
     let gov = GovState::new(store, None).unwrap();
     let now = 1_700_000_040u64;
     let cell = BudgetCell {
+        flushing_windows: Default::default(),
+        correction: None,
         group_owners: Default::default(),
         flushing: 0,
         window_start: 0,

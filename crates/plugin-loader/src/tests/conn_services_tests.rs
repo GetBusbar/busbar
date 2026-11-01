@@ -2103,6 +2103,7 @@ fn bearer() -> Fields {
         name: b"authorization".to_vec(),
         value: Secret::new(b"Bearer member".to_vec()),
         sensitive: true,
+        query: false,
         require_secure: false,
     }])
 }
@@ -2199,6 +2200,58 @@ fn a_members_auth_call_and_its_open_run_outside_the_connectors_lock() {
     assert_eq!(
         opened[0].4[0].0, "authorization",
         "the member's field leads"
+    );
+}
+
+/// The public ABI query flag survives the real auth door and the connector service boundary.
+#[test]
+fn an_auth_door_query_field_is_never_opened_as_a_header() {
+    let auth = Arc::new(crate::dispatch::auth_outbound::tests::opened());
+    let handle = auth
+        .open_outbound("query", b"key", &serde_json::json!({}))
+        .unwrap();
+    let table = Arc::new(Scripted {
+        framed: true,
+        member_auth: Some(ConnAuth {
+            auth,
+            handle,
+            style_flags: 0,
+            points: AuthPoints::EMPTY,
+            passthrough: false,
+            lender: None,
+            per_request: None,
+        }),
+        ..Scripted::default()
+    });
+    let dispatcher = crate::dispatch::Dispatcher::new(crate::dispatch::DispatchConfig::default());
+    let p = bound_over_by(&table, dispatcher.adopter());
+    whole_request(&p, 0);
+    let opened = table.opened.lock().unwrap();
+    assert_eq!(opened.len(), 1);
+    let fields = &opened[0].4;
+    assert!(!fields.iter().any(|(n, _)| n == "authorization"));
+    assert_eq!(
+        fields
+            .iter()
+            .filter(|(n, _)| n == "busbar-sealed-query")
+            .map(|(_, v)| v.as_slice())
+            .collect::<Vec<_>>(),
+        [
+            b"authorization=query%20%2F%2B%26%25".as_slice(),
+            b"authorization=second"
+        ],
+        "query order, duplicate names and percent encoding survive the host-only handoff"
+    );
+    assert!(fields
+        .iter()
+        .any(|(n, v)| n == "x-signature" && v == b"signed"));
+    assert!(
+        !opened[0].1.contains("query"),
+        "credentials never enter the dial target"
+    );
+    assert!(
+        !opened[0].3.windows(5).any(|w| w == b"query"),
+        "the connector alone appends the credential"
     );
 }
 
@@ -2721,6 +2774,7 @@ impl busbar_contract::auth_calls::OutboundAuth for ByHandle {
                 name: b"authorization".to_vec(),
                 value: format!("Bearer h{handle}").into_bytes().into(),
                 sensitive: true,
+                query: false,
                 require_secure: false,
             },
         ]))
@@ -3234,7 +3288,10 @@ fn the_auth_request_signs_the_lines_the_open_completes_the_head_with() {
     let head = super::Head {
         method: b"POST".to_vec(),
         target: b"/x".to_vec(),
-        fields: vec![("content-type".to_owned(), b"application/json".to_vec())],
+        fields: vec![
+            ("content-type".to_owned(), b"application/json".to_vec()),
+            ("busbar-sealed-query".to_owned(), b"forged=value".to_vec()),
+        ],
         timeout_ms: 0,
     };
     let located = busbar_contract::conn::HeadDefaults {

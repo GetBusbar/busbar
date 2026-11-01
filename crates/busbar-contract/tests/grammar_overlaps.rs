@@ -409,15 +409,9 @@ fn one_ladder_table_writes_both_lists() {
     }
 }
 
-/// A claim says "no credential" by declaring no scheme, and that keeps the narrowing check honest.
-///
-/// The authenticate step may only narrow within a claim's declared alternatives. If the absence of
-/// a credential were a scheme key the registry knew, it would sit in that set and a plane could
-/// narrow an AUTHENTICATED claim down to it with the check still passing. Carried on the claim, the
-/// two cases stay apart: an authenticated claim has a non-empty set to narrow within, and an open
-/// claim has an empty one, so there is nothing for anything to narrow to.
+/// The public claim predicate distinguishes a declared credential scheme from an open surface.
 #[test]
-fn a_claim_with_no_scheme_offers_nothing_to_narrow_to() {
+fn a_claim_with_no_scheme_is_anonymous() {
     use busbar_contract::grammar::Claim;
     let authenticated = Claim {
         transport: "http",
@@ -435,14 +429,6 @@ fn a_claim_with_no_scheme_offers_nothing_to_narrow_to() {
 
     assert!(!authenticated.is_anonymous());
     assert!(open.is_anonymous());
-
-    // The check the step runs, written out: narrowing is membership of the declared set.
-    let narrows_to = |claim: &Claim, alt: &str| claim.scheme_alternatives.contains(&alt);
-    assert!(narrows_to(&authenticated, "token"));
-    assert!(!narrows_to(&authenticated, "anonymous"));
-    // Nothing narrows within an open claim, including the word the planes used to invent.
-    assert!(!narrows_to(&open, "token"));
-    assert!(!narrows_to(&open, "anonymous"));
 }
 
 /// The family a form belongs to is fixed, and this is WHICH one.

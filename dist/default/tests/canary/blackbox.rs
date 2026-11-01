@@ -154,7 +154,7 @@ pub fn basic_form(pass: &str) -> String {
     base64::engine::general_purpose::STANDARD.encode(format!("{USERINFO_USER}:{pass}"))
 }
 
-/// The admin views the sweep reads (GET, with the admin token).
+/// Mounted authenticated JSON views of this scenario (GET, with the admin token).
 const ADMIN_VIEWS: &[&str] = &[
     "/api/v1/admin/config",
     "/api/v1/admin/config/settings",
@@ -164,11 +164,9 @@ const ADMIN_VIEWS: &[&str] = &[
     "/api/v1/admin/pools",
     "/api/v1/admin/export",
     "/api/v1/admin/export/hook",
-    "/api/v1/admin/export/hook/settings",
     "/api/v1/admin/export/reqlog",
     "/api/v1/admin/identity-providers",
     "/api/v1/admin/identity-providers/admin-tokens",
-    "/api/v1/admin/identity-providers/admin-tokens/settings",
     "/api/v1/admin/auth",
     "/api/v1/admin/admin-auth",
     "/api/v1/admin/plugins?type=auth",
@@ -179,8 +177,16 @@ const ADMIN_VIEWS: &[&str] = &[
     "/api/v1/admin/keys",
     "/api/v1/admin/usage",
     "/api/v1/admin/audit",
-    "/api/v1/admin/trust",
     "/api/v1/admin/hooks",
+];
+
+// Keep these responses as sinks too, without claiming they exercised an authenticated view:
+// named-definition settings are PATCH-only; trust is not a core GET route; this config has no
+// prometheus export; healthz is deliberately unauthenticated.
+const OTHER_RESPONSES: &[&str] = &[
+    "/api/v1/admin/export/hook/settings",
+    "/api/v1/admin/identity-providers/admin-tokens/settings",
+    "/api/v1/admin/trust",
     "/metrics",
     "/healthz",
 ];
@@ -363,10 +369,11 @@ pub fn node(c: &NodeCanaries) -> (Vec<Sink>, Vec<String>) {
         .nth(1)
         .and_then(|r| r.split('"').next())
         .map(str::to_string);
-    if token.is_none() {
-        notes.push("no key minted: the data-plane requests ran unauthenticated".into());
-    }
-    let key = format!("Bearer {}", token.unwrap_or_default());
+    let Some(token) = token.filter(|token| !token.is_empty()) else {
+        stop(&mut child);
+        panic!("the canary admin key was not minted; no authenticated data-plane witness ran");
+    };
+    let key = format!("Bearer {token}");
     let cookie = format!("sid={}", c.caller_cookie.value);
     for model in ["m-env", "m-file", "m-user", "m-dead"] {
         let path = format!("/{model}/v1/messages");
@@ -386,8 +393,22 @@ pub fn node(c: &NodeCanaries) -> (Vec<Sink>, Vec<String>) {
         );
         sinks.push(Sink::text(format!("data:POST {path}"), model, answer));
     }
-    for view in ADMIN_VIEWS {
+    let mut missing_views = Vec::new();
+    for view in ADMIN_VIEWS.iter().chain(OTHER_RESPONSES) {
         let answer = http(admin, "GET", view, &[("authorization", &bearer)], "");
+        if ADMIN_VIEWS.contains(view) {
+            let served = answer.split_once("\r\n\r\n").is_some_and(|(head, body)| {
+                head.lines()
+                    .next()
+                    .and_then(|line| line.split_whitespace().nth(1))
+                    == Some("200")
+                    && serde_json::from_str::<serde_json::Value>(body)
+                        .is_ok_and(|value| value.is_object() || value.is_array())
+            });
+            if !served {
+                missing_views.push(*view);
+            }
+        }
         sinks.push(Sink::text(format!("admin:GET {view}"), *view, answer));
     }
     // The request log is written behind the response: wait for it, bounded.
@@ -401,15 +422,25 @@ pub fn node(c: &NodeCanaries) -> (Vec<Sink>, Vec<String>) {
     // Give a failing webhook delivery its moment to log.
     std::thread::sleep(Duration::from_millis(500));
     stop(&mut child);
+    assert!(
+        missing_views.is_empty(),
+        "authenticated admin views did not serve their JSON bodies: {missing_views:?}; their redaction was not exercised"
+    );
     sinks.push(Sink::text("log:node", "stdout+stderr", read_log()));
     for (name, end) in &ends {
-        for (k, req) in end
-            .seen
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .iter()
-            .enumerate()
-        {
+        let seen = end.seen.lock().unwrap_or_else(|p| p.into_inner());
+        let credential = match *name {
+            "mock" => &c.env_ref,
+            "mockfile" => &c.file_ref,
+            "mockuser" => &c.userinfo,
+            _ => unreachable!("the scenario's three far ends"),
+        };
+        assert!(
+            seen.iter()
+                .any(|request| credential.forms.iter().any(|form| request.contains(form))),
+            "far-end:{name} did not receive its planted credential; its delivery was not exercised"
+        );
+        for (k, req) in seen.iter().enumerate() {
             sinks.push(Sink::text(
                 format!("far-end:{name}"),
                 format!("request {k}"),

@@ -106,17 +106,48 @@ fn script_inputs() -> serde_json::Value {
     serde_json::from_str(&text).unwrap_or_else(|e| panic!("{}: not JSON: {e}", p.display()))
 }
 
+/// The rebuilt image and its directory, kept until the caller finishes loading it.
+struct Rebuilt {
+    path: PathBuf,
+    dir: PathBuf,
+}
+
+impl std::ops::Deref for Rebuilt {
+    type Target = Path;
+
+    fn deref(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for Rebuilt {
+    fn drop(&mut self) {
+        if let Err(error) = std::fs::remove_dir_all(&self.dir) {
+            eprintln!("remove rebuild directory {}: {error}", self.dir.display());
+        }
+    }
+}
+
 /// The sources again, into a library with `defines` (`-D`). The system C compiler is REQUIRED.
-fn rebuild(name: &str, defines: &[String]) -> PathBuf {
-    let dir = std::env::temp_dir()
-        .join("dropped-conformance")
-        .join(format!("{name}-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).expect("the build dir");
+fn rebuild(name: &str, defines: &[String]) -> Rebuilt {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let parent = std::env::temp_dir().join("dropped-conformance");
+    std::fs::create_dir_all(&parent).expect("the rebuild parent dir");
+    let dir = loop {
+        let serial = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = parent.join(format!("{name}-{}-{serial}", std::process::id()));
+        match std::fs::create_dir(&dir) {
+            Ok(()) => break dir,
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => panic!("create rebuild directory {}: {error}", dir.display()),
+        }
+    };
     let out = dir.join(format!(
         "{}{name}{}",
         std::env::consts::DLL_PREFIX,
         std::env::consts::DLL_SUFFIX
     ));
+    let built = Rebuilt { path: out, dir };
     let cc = std::env::var_os("CC").unwrap_or_else(|| "cc".into());
     let run = Command::new(&cc)
         .args([
@@ -132,7 +163,7 @@ fn rebuild(name: &str, defines: &[String]) -> PathBuf {
         .arg(INCLUDE)
         .args(defines.iter().map(|d| format!("-D{d}")))
         .arg("-o")
-        .arg(&out)
+        .arg(&built.path)
         .args(sources())
         .output()
         .unwrap_or_else(|e| panic!("the system C compiler {cc:?} did not run: {e}"));
@@ -141,7 +172,7 @@ fn rebuild(name: &str, defines: &[String]) -> PathBuf {
         "{cc:?} refused the plugin's sources:\n{}",
         String::from_utf8_lossy(&run.stderr)
     );
-    out
+    built
 }
 
 fn bind() -> (Bind, Arc<Dispatcher>) {

@@ -148,6 +148,7 @@ jobs:
     timeout-minutes: 25
     outputs:
       version: ${{ steps.check.outputs.version }}
+      findings: ${{ steps.diagnostics.outputs.findings }}
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       REPO: ${{ github.repository }}
@@ -177,7 +178,8 @@ jobs:
           set +e
           set -uo pipefail
           fail=0
-          : > /tmp/findings.md
+          findings_file="$(mktemp "${RUNNER_TEMP}/consumer-findings.XXXXXX")" || exit 1
+          printf 'findings_path=%s\n' "$findings_file" >> "$GITHUB_OUTPUT"
 
           record() {  # record <what> <expected> <observed> <hint>
             echo "FAIL: $1 | expected: $2 | observed: $3"
@@ -186,7 +188,7 @@ jobs:
               echo "  - expected: \`$2\`"
               echo "  - observed: \`$3\`"
               echo "  - $4"
-            } >> /tmp/findings.md
+            } >> "$findings_file"
             echo "::error::CONSUMER CHECK FAILED: $1 - expected '$2', observed '$3'. $4"
             fail=1
           }
@@ -203,7 +205,8 @@ jobs:
                 | sed 's/^v//' | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1)"
           fi
           if [ -z "${V:-}" ]; then
-            echo "::error::${REPO} has no published, non-draft release to verify. Either nothing has shipped yet, or - the failure this exists to catch - the release was created as a DRAFT and never promoted, which means it is invisible to every user while looking perfectly fine on the Actions tab."
+            record "Published version" "a visible published, non-draft release" "<none retrieved>" \
+              "No published release could be retrieved. It may be absent, still a draft, inaccessible to this token, or the API request may have failed. Check the release and API access before diagnosing promotion."
             exit 1
           fi
           TAG="v$V"
@@ -218,18 +221,13 @@ jobs:
           # busbar's own verify-assets got skipped precisely when the release was broken), the tag
           # exists, the run may even be green, and users see nothing at all.
           meta="$(gh api "repos/${REPO}/releases/tags/${TAG}" 2>/dev/null || true)"
+          # This endpoint returns a PUBLISHED release; it cannot distinguish an absent release
+          # from an unpublished draft or an access/request failure. Do not infer a draft flag.
           if [ -z "$meta" ]; then
-            record "GitHub Release ${TAG}" "a published Release" "<does not exist>" \
-              "The tag was pushed but no Release object is visible. Fix: check the release workflow's create-release job."
-            echo "$fail" >/dev/null
+            record "GitHub Release ${TAG}" "a visible published Release" "<none retrieved>" \
+              "No published Release was retrieved for this tag. The release may be absent, unpublished (including a draft), or not visible to this token; the API request may also have failed. Check creation, promotion and API access."
           else
-            is_draft="$(printf '%s' "$meta" | jq -r '.draft')"
-            if [ "$is_draft" = "true" ]; then
-              record "GitHub Release ${TAG} draft flag" "false (published)" "true (still a DRAFT)" \
-                "A draft Release is INVISIBLE to users: nothing downloads, and \`gh release download\` fails. The release workflow creates it with --draft and promotes it in verify-assets, so verify-assets was skipped or failed. Fix: \`gh release edit ${TAG} --repo ${REPO} --draft=false --latest\`, then fix the promote step."
-            else
-              echo "PASS: Release ${TAG} exists and is published (not a draft)"
-            fi
+            echo "PASS: Release ${TAG} is visible through the published-release endpoint"
           fi
 
           # -- C2: the moving `latest` pointer resolves to it -----------------------------------
@@ -258,7 +256,10 @@ jobs:
           # is still not a usable artifact: GitHub creates the row when the upload STARTS, so a
           # truncated upload lists identically to a good one. Assert name, size and real bytes.
           listed="$(printf '%s' "$meta" | jq -r '.assets[]? | "\(.name)\t\(.size)"' 2>/dev/null || true)"
-          if [ -z "$listed" ]; then
+          if [ -z "$meta" ]; then
+            record "Release ${TAG} asset list" "published release metadata" "<unavailable>" \
+              "Archive presence and size cannot be established without the release metadata. Resolve the release lookup finding above; no asset absence or download status is inferred here."
+          elif [ -z "$listed" ]; then
             record "Release ${TAG} assets" "one archive per platform in: ${TARGETS}" "ZERO assets" \
               "PHANTOM RELEASE: the tag and the Release object exist and there is nothing in them to download. This is webrequest-hook v1.0.4 verbatim. Fix: every leg of the release build matrix failed to upload - check the cdylib build and the sibling busbar checkout pin in .busbar-ref."
           fi
@@ -280,6 +281,8 @@ jobs:
           done
           first_archive=""
           for t in "${target_arr[@]}"; do
+            # Input validation above remains independent; archive claims need retrieved metadata.
+            [ -n "$meta" ] || continue
             a="${ASSET_PREFIX}-${V}-${t}.tar.gz"
             sz="$(printf '%s\n' "$listed" | awk -F'\t' -v n="$a" '$1==n{print $2; exit}')"
             if [ -z "${sz:-}" ]; then
@@ -452,13 +455,25 @@ jobs:
             if [ "$fail" = 0 ]; then
               echo "What ${REPO} published as \`${TAG}\` downloads, unpacks into a plugin busbar accepts, and (where a bundle is published) boots and serves."
             else
-              echo "**What ${REPO} published as \`${TAG}\` does NOT work for a user:**"
+              echo "**Consumer readiness for ${REPO} \`${TAG}\` could not be established:**"
               echo
-              cat /tmp/findings.md
+              cat "$findings_file"
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
           [ "$fail" = 0 ]
+
+      - name: Preserve this consumer invocation's diagnostics
+        id: diagnostics
+        if: ${{ always() }}
+        env:
+          FINDINGS_PATH: ${{ steps.check.outputs.findings_path }}
+        run: |
+          # A job output binds the findings to this needs.consumer, including reusable calls.
+          # JSON keeps arbitrary Markdown/newlines out of the output command's line syntax.
+          if [ -n "$FINDINGS_PATH" ] && [ -f "$FINDINGS_PATH" ]; then
+            printf 'findings=%s\n' "$(jq -Rs . "$FINDINGS_PATH")" >> "$GITHUB_OUTPUT"
+          fi
 
   # Same alert shape as core's verify-deploy.yml, and changed for the same reason: this no longer
   # FILES an issue, it FAILS the run. A repository must not open issues against itself — a self-filed
@@ -485,6 +500,7 @@ jobs:
       REPO: ${{ github.repository }}
       RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
       VERSION: ${{ needs.consumer.outputs.version }}
+      FINDINGS_JSON: ${{ needs.consumer.outputs.findings }}
     steps:
       - name: Report the breakage on the run itself, and FAIL
         run: |
@@ -492,45 +508,39 @@ jobs:
           # green run. This one ends on an explicit `exit 1`.
           set -uo pipefail
           V="${VERSION:-unknown}"
+          findings_file="$(mktemp "${RUNNER_TEMP}/consumer-alert.XXXXXX")"
 
-          # Read the findings out of the FAILED JOB'S OWN LOG rather than restating them. The job
-          # already printed `FAIL: <what> | expected: <x> | observed: <y>` and an `::error::` line
-          # naming the fix; re-deriving that here would be a second statement of the same fact, free
-          # to drift from the first, which is the exact defect shape this whole workflow exists to
-          # catch. Job logs are available over the API as soon as the JOB finishes, which it has.
-          : > /tmp/findings.md
-          jid="$(gh api "repos/${REPO}/actions/runs/${GITHUB_RUN_ID}/attempts/${GITHUB_RUN_ATTEMPT}/jobs" \
-                  --jq '[.jobs[]? | select(.conclusion=="failure")][0].id' 2>/dev/null || true)"
-          if [ -n "${jid:-}" ] && gh api "repos/${REPO}/actions/jobs/${jid}/logs" > /tmp/job.log 2>/dev/null; then
-            sed -E 's/^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+Z //' /tmp/job.log \
-              | grep -E '^(FAIL:|::error::)' | sed -E 's/^::error::/DIAGNOSIS: /' \
-              | head -40 | sed 's/^/    /' >> /tmp/findings.md
+          # Use this invocation's consumer output, never the first failed job in the caller's
+          # run (which may belong to an unrelated reusable workflow or matrix invocation).
+          # Outputs may be unavailable if the runner died or GitHub withheld a secret-like value.
+          if ! printf '%s' "$FINDINGS_JSON" \
+              | jq -er 'select(type == "string" and length > 0)' > "$findings_file"; then
+            echo "    (this consumer invocation's diagnostics were unavailable; open its consumer check in the run)" > "$findings_file"
           fi
-          [ -s /tmp/findings.md ] || echo "    (the failed job's log was not retrievable over the API; open the run and read it there)" >> /tmp/findings.md
 
           {
-            echo "# :rotating_light: Published v${V} does not work for a consumer"
+            echo "# :rotating_light: Consumer verification failed (version ${V})"
             echo
-            echo "**What this repo published does not work when a user gets it.** Checked by"
+            echo "**Consumer readiness could not be established.** Checked by"
             echo "\`GetBusbar/busbar/.github/workflows/plugin-consumer-verify.yml\`, which downloads the"
             echo "published artifact from the Release and uses it - it does not read this repository,"
             echo "so a fix that is committed but not published still fails here."
             echo
-            echo "This is **not a flaky test**. Every check reads what is published."
+            echo "The detailed findings distinguish observed failures from missing or unavailable evidence."
             echo
             echo "| | |"
             echo "| --- | --- |"
-            echo "| version under test | \`v${V}\` |"
+            echo "| requested or discovered version | \`${V}\` |"
             echo "| failing run | ${RUN_URL} |"
             echo "| checked at | $(date -u '+%Y-%m-%d %H:%M UTC') |"
             echo
             echo "## What failed"
             echo
-            cat /tmp/findings.md
+            cat "$findings_file"
             echo
             echo "## What to do"
             echo
-            echo "Read the \`DIAGNOSIS:\` lines - each names the user-visible symptom and the fix."
+            echo "Read the consumer findings above; each records the expected and observed behavior and a diagnostic hint."
             echo "Fix it at the source (the release workflow, the bundle's shipped config), then"
             echo "re-run the check."
             echo
@@ -539,13 +549,9 @@ jobs:
             echo "run passes._"
           } >> "${GITHUB_STEP_SUMMARY:-/dev/stdout}"
 
-          echo "::error title=Release broken for consumers::Published v${V} does not work for a consumer. See the run summary: ${RUN_URL}"
-          sed -E 's/^[[:space:]]+//' /tmp/findings.md \
-            | grep -E '^DIAGNOSIS: ' \
-            | head -20 \
-            | while IFS= read -r line; do echo "::error::${line}"; done
+          echo "::error title=Consumer verification failed::Consumer readiness could not be established for version ${V}. See the run summary: ${RUN_URL}"
 
-          echo "Consumer verification FAILED for v${V}: failing this run instead of filing an issue."
+          echo "Consumer verification FAILED for version ${V}: failing this run instead of filing an issue."
           exit 1
 
   # THE `resolved` JOB IS GONE, and its absence is the point. It existed only to close the issue the

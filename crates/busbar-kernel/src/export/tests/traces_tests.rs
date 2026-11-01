@@ -241,7 +241,9 @@ fn a_span_record_carries_what_the_previous_exporter_sent() {
     assert!(value(attributes, "code.line.number").is_i64());
     assert!(value(attributes, "busy_ns").is_i64());
     assert!(value(attributes, "idle_ns").is_i64());
-    assert!(forward["end_ns"].as_u64() >= forward["start_ns"].as_u64());
+    let start = forward["start_ns"].as_u64().expect("numeric start_ns");
+    let end = forward["end_ns"].as_u64().expect("numeric end_ns");
+    assert!(end >= start);
     assert_eq!(forward["status"]["code"], "unset");
     let event = &forward["events"][0];
     assert_eq!(event["name"], "slow");

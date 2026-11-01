@@ -1483,16 +1483,30 @@ fn open_with(
     let mut fields: Vec<(&str, &[u8])> = Vec::with_capacity(auth.len() + h.fields.len());
     let names: Vec<String> = auth
         .iter()
+        .filter(|f| !f.query)
         .map(|f| String::from_utf8_lossy(&f.name).into_owned())
         .collect();
+    let queries: Vec<_> = seal.map_or_else(Vec::new, |seal| {
+        auth.iter()
+            .filter(|f| f.query)
+            .map(|f| f.query_pair(seal))
+            .collect()
+    });
     if let Some(seal) = seal {
-        for (name, f) in names.iter().zip(auth) {
+        for (name, f) in names.iter().zip(auth.iter().filter(|f| !f.query)) {
             fields.push((name.as_str(), f.value.expose(seal).as_slice()));
         }
+        fields.extend(queries.iter().map(|pair| {
+            (
+                busbar_contract::conn::SEALED_QUERY_FIELD,
+                pair.expose(seal).as_slice(),
+            )
+        }));
     }
     fields.extend(
         h.fields
             .iter()
+            .filter(|(n, _)| !busbar_contract::conn::is_sealed_query_field(n.as_bytes()))
             .filter(|(n, _)| !names.iter().any(|a| a.eq_ignore_ascii_case(n)))
             .map(|(n, v)| (n.as_str(), v.as_slice())),
     );
@@ -1525,14 +1539,19 @@ fn completing(
     h: &Head,
     body: &[u8],
 ) -> Vec<(Vec<u8>, Vec<u8>)> {
-    table.request_head(id, need, target).completing(
-        |name| {
-            h.fields
-                .iter()
-                .any(|(n, _)| n.as_bytes().eq_ignore_ascii_case(name))
-        },
-        body.len(),
-    )
+    table
+        .request_head(id, need, target)
+        .completing(
+            |name| {
+                h.fields
+                    .iter()
+                    .any(|(n, _)| n.as_bytes().eq_ignore_ascii_case(name))
+            },
+            body.len(),
+        )
+        .into_iter()
+        .filter(|(name, _)| !busbar_contract::conn::is_sealed_query_field(name))
+        .collect()
 }
 
 /// The member binding's ONE auth call for a whole request to `target` (THE DESIGN, outbound auth: the facts at
@@ -1598,8 +1617,14 @@ fn auth_request(
         headers: if binding.style_flags & STYLE_NEEDS_HEADERS != 0 {
             h.fields
                 .iter()
+                .filter(|(name, _)| !busbar_contract::conn::is_sealed_query_field(name.as_bytes()))
                 .map(|(n, v)| (n.as_bytes().to_vec(), v.clone()))
-                .chain(added.iter().cloned())
+                .chain(
+                    added
+                        .iter()
+                        .filter(|(name, _)| !busbar_contract::conn::is_sealed_query_field(name))
+                        .cloned(),
+                )
                 .collect()
         } else {
             Vec::new()

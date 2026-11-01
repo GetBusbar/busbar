@@ -85,6 +85,7 @@ mod plugin {
                 b"wide" => 2,
                 b"signed" => 3,
                 b"scoped" => 4,
+                b"query" => 12,
                 _ => return Outcome::Failed,
             };
             out.set(|o| &o.handle, handle);
@@ -117,6 +118,19 @@ mod plugin {
                     v.extend_from_slice(input.field(|i| &i.request.canonical_path).bytes());
                     vec![(b"authorization".to_vec(), v, FIELD_SENSITIVE)]
                 }
+                (12, _) => vec![
+                    (
+                        b"authorization".to_vec(),
+                        b"query /+&%".to_vec(),
+                        busbar_contract::abi::auth::FIELD_QUERY | FIELD_SENSITIVE,
+                    ),
+                    (
+                        b"authorization".to_vec(),
+                        b"second".to_vec(),
+                        busbar_contract::abi::auth::FIELD_QUERY,
+                    ),
+                    (b"x-signature".to_vec(), b"signed".to_vec(), FIELD_SENSITIVE),
+                ],
                 (2 | 8, _) => (0..17)
                     .map(|k| (format!("x-f{k:02}").into_bytes(), b"v".to_vec(), 0))
                     .collect(),
@@ -261,6 +275,11 @@ mod plugin {
             flags: 0,
             points: POINT_HEAD,
         },
+        StyleDecl {
+            name: abi_str("query"),
+            flags: 0,
+            points: POINT_HEAD,
+        },
     ];
     const TAIL: &AuthTail = &AuthTail {
         head: KindTailHead {
@@ -308,7 +327,7 @@ impl EnvelopeSink for Quiet {
 }
 
 /// The test door, linked, adopted by a fresh dispatcher and opened: the instance under test.
-fn opened() -> OutboundInstance {
+pub(crate) fn opened() -> OutboundInstance {
     let d = Arc::new(Dispatcher::new(DispatchConfig {
         workers: 1,
         budgets: Budgets {
@@ -378,6 +397,7 @@ fn bearer() -> Fields {
         name: b"authorization".to_vec(),
         value: b"Bearer POST far.example:443/v1/call".to_vec().into(),
         sensitive: true,
+        query: false,
         require_secure: false,
     }])
 }
@@ -401,6 +421,28 @@ fn fields_answers_alike_on_the_spot_and_on_a_ticket() {
     assert_eq!(a.fields_now(1, &request()), Some(bearer()));
     let submitted = futures_lite_block_on(a.fields(1, request(), 0));
     assert_eq!(submitted, bearer());
+}
+
+#[test]
+fn query_placement_survives_direct_and_submitted_auth_answers() {
+    let a = opened();
+    for answer in [
+        a.fields_now(12, &request()).unwrap(),
+        futures_lite_block_on(a.fields(12, request(), 0)),
+    ] {
+        let Fields::Ready(fields) = answer else {
+            panic!("query fixture answers");
+        };
+        assert_eq!(
+            fields.iter().map(|f| f.query).collect::<Vec<_>>(),
+            [true, true, false]
+        );
+        assert_eq!(
+            fields.iter().map(|f| f.sensitive).collect::<Vec<_>>(),
+            [true, false, true]
+        );
+        assert!(!format!("{fields:?}").contains("query /+&%"));
+    }
 }
 
 /// A short answer is re-called once with the buffers it named, both ways.

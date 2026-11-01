@@ -38,7 +38,7 @@ pub struct Canary {
     /// truncated at its head is still found), plus any derived encodings ([`Canary::also`]).
     pub forms: Vec<String>,
     /// Sinks that are this credential's DESIGNED destination, not a leak (a provider key at its
-    /// own provider's far end). Matched as a prefix of the sink's name.
+    /// own provider's far end). Matched against the sink's complete name.
     pub delivered_to: Vec<&'static str>,
     pub expect: Expect,
 }
@@ -68,7 +68,7 @@ impl Canary {
         self
     }
 
-    /// `sink` (a sink-name prefix) is where this credential is MEANT to go.
+    /// `sink` (an exact sink name) is where this credential is MEANT to go.
     pub fn delivered_to(mut self, sink: &'static str) -> Self {
         self.delivered_to.push(sink);
         self
@@ -116,7 +116,7 @@ pub struct Hit {
 pub fn search(canary: &Canary, sinks: &[Sink]) -> Vec<Hit> {
     let mut hits = Vec::new();
     for sink in sinks {
-        if canary.delivered_to.iter().any(|d| sink.name.starts_with(d)) {
+        if canary.delivered_to.iter().any(|d| sink.name == *d) {
             continue;
         }
         let text = String::from_utf8_lossy(&sink.bytes);

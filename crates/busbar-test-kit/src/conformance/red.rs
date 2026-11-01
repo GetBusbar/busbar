@@ -64,15 +64,7 @@ const LAID_DOOR: RawDoorFn = restated_door::<4>;
 const FINGERPRINTED_DOOR: RawDoorFn = restated_door::<5>;
 
 /// Every kind the host has.
-const KINDS: [KindCode; 7] = [
-    KindCode::Store,
-    KindCode::Secret,
-    KindCode::Auth,
-    KindCode::Hook,
-    KindCode::Export,
-    KindCode::Plane,
-    KindCode::Transport,
-];
+const KINDS: [KindCode; 7] = KindCode::ALL;
 
 /// The version the restated door states instead of its own.
 const OTHER_VERSION: &str = "0.0.0-conformance-restated";

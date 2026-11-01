@@ -895,6 +895,33 @@ mod door {
         t
     }
 
+    #[test]
+    fn repeated_plane_loads_reuse_owned_static_words_after_the_image_is_released() {
+        for make in [linked as fn() -> Plugin<Plane>, dropped] {
+            let first = make();
+            let a = first.served();
+            let declared = first.declared();
+            drop(first);
+            let second = make();
+            let b = second.served();
+            assert_eq!(a.section, b.section);
+            assert_eq!(a.op_classes, b.op_classes);
+            assert!(
+                std::ptr::eq(a.section, b.section),
+                "same declaration has one permanent word copy"
+            );
+            assert!(std::ptr::eq(a.op_classes[0], b.op_classes[0]));
+            assert!(std::ptr::eq(
+                declared.record_kinds[0],
+                second.declared().record_kinds[0]
+            ));
+            drop(second);
+            assert_eq!(a.section, "door");
+            assert_eq!(a.op_classes, vec!["echo"]);
+            assert_eq!(declared.record_kinds, vec!["last"]);
+        }
+    }
+
     /// The transcript every rule requires, linked or dropped.
     const EXPECTED: &[&str] = &[
         "validate bad Refused",

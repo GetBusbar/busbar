@@ -1,61 +1,133 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! No data directory means no file, anywhere.
+//! A memory-buffered log keeps its records without leaving working-directory files.
 //!
-//! The claim is not "the log avoids writing files in this mode" — it is that a memory-buffered log
-//! holds nothing that knows how to open one. The battery makes that observable: a temp directory is
-//! created, a whole append-recover-restart cycle runs beside it, and the directory is asserted still
-//! empty. The current directory is checked too, because a path bug usually lands there rather than
-//! somewhere plausible — but as a set of names matching the log's own `<index>.wal` segments, not
-//! as a count: the cwd is shared with every other test in the binary, so a count moves for reasons
-//! that are nothing to do with the log, and a count that happens to hold still also hides one file
-//! replacing another. The temp-directory walk is the primary evidence; the cwd set is the check
-//! that the write did not simply land somewhere else.
+//! Each no-directory case runs in a child whose working directory is a private empty directory.
+//! Checking that actual destination catches an accidental relative-path write; an unrelated temp
+//! directory would not. The mode, append, readback and shipping checks exercise the memory path.
+//! The post-exit checks observe residual files, not transient creation/deletion or writes to
+//! arbitrary absolute paths elsewhere.
 
 use busbar_kernel_wal::wal::{Mode, Wal};
 
-use super::fixtures::{cwd_segment_names, durability_token, records, TempDir};
+use super::fixtures::{durability_token, records, TempDir};
+
+/// A failed assertion, wait error or timeout still stops and reaps the child before its directories
+/// are removed. Output goes to files outside the observed directory, so no pipe can block exit.
+struct ChildGuard(Option<std::process::Child>);
+
+impl Drop for ChildGuard {
+    fn drop(&mut self) {
+        if let Some(mut child) = self.0.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+}
+
+impl ChildGuard {
+    fn finish(&mut self) -> std::process::ExitStatus {
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        loop {
+            if let Some(status) = self.0.as_mut().unwrap().try_wait().expect("poll child") {
+                self.0.take().unwrap().wait().expect("reap child");
+                return status;
+            }
+            assert!(
+                std::time::Instant::now() < until,
+                "memory-directory child did not finish"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+}
+
+/// Run this existing test alone with an empty working directory; inspect it after the child drops
+/// its log. The completion marker proves the exact test ran rather than an empty test selection.
+pub(super) fn in_empty_working_directory(test: &str, body: impl FnOnce()) {
+    const CHILD: &str = "BUSBAR_WAL_NO_DIRECTORY_CHILD";
+    const FINISHED: &str = "memory-directory-case-finished";
+    if std::env::var(CHILD).as_deref() == Ok(test) {
+        let before = super::fixtures::cwd_segment_names();
+        body();
+        assert_eq!(
+            before,
+            super::fixtures::cwd_segment_names(),
+            "a log segment appeared in the child's working directory"
+        );
+        println!("{FINISHED}:{test}");
+        return;
+    }
+    let dir = TempDir::new("no-disk-child");
+    assert!(
+        std::fs::read_dir(dir.path())
+            .expect("read child directory")
+            .next()
+            .is_none(),
+        "the working directory starts empty"
+    );
+    let capture = TempDir::new("no-disk-output");
+    let stdout_path = capture.path().join("stdout");
+    let stderr_path = capture.path().join("stderr");
+    let test_name = test.split_once("::").expect("crate-qualified test name").1;
+    let mut child = ChildGuard(Some(
+        std::process::Command::new(std::env::current_exe().expect("test executable"))
+            .args(["--exact", test_name, "--test-threads=1", "--nocapture"])
+            .env(CHILD, test)
+            .current_dir(dir.path())
+            .stdout(std::fs::File::create(&stdout_path).expect("capture stdout"))
+            .stderr(std::fs::File::create(&stderr_path).expect("capture stderr"))
+            .spawn()
+            .expect("run the memory-directory case"),
+    ));
+    let status = child.finish();
+    let stdout = std::fs::read_to_string(stdout_path).expect("read stdout");
+    let stderr = std::fs::read_to_string(stderr_path).expect("read stderr");
+    assert!(
+        status.success() && stdout.contains(&format!("{FINISHED}:{test}")),
+        "{test}: child status {}; stdout: {stdout}; stderr: {stderr}",
+        status
+    );
+    assert!(
+        std::fs::read_dir(dir.path())
+            .expect("read child directory after exit")
+            .next()
+            .is_none(),
+        "{test}: files appeared in its working directory"
+    );
+}
 
 #[test]
-fn a_memory_buffered_log_creates_no_file_anywhere() {
-    let dir = TempDir::new("no-disk");
-    let before = dir.walk();
-    assert!(
-        before.is_empty(),
-        "the fixture directory did not start empty"
-    );
-    let cwd_before = cwd_segment_names();
-
-    let mut wal = Wal::memory_buffered_to(
-        Box::new(busbar_kernel_wal::ship::NullShipper::new()),
-        super::fixtures::wall_ms,
-    );
-    assert_eq!(wal.mode(), Mode::MemoryBuffered);
-    let token = durability_token();
-    // Enough records, and enough of them large enough to continue across frames, that any
-    // preallocation or segment roll would have to have happened by now.
-    for batch in 0..8u64 {
-        let batch_records = records(1, batch * 4 + 1, 4, 900);
-        wal.append_batch(
-            &token,
-            busbar_contract::caps::StepName::Meter,
-            &batch_records,
-        )
-        .unwrap();
-    }
-    let back = wal.read_back().unwrap();
-    assert_eq!(back.records.len(), 32);
-
-    assert!(
-        dir.walk().is_empty(),
-        "a memory-buffered log put something on a disk: {:?}",
-        dir.walk()
-    );
-    assert_eq!(
-        cwd_before,
-        cwd_segment_names(),
-        "a log segment appeared in the working directory"
+fn a_memory_buffered_log_creates_no_working_directory_file() {
+    in_empty_working_directory(
+        concat!(
+            module_path!(),
+            "::a_memory_buffered_log_creates_no_working_directory_file"
+        ),
+        || {
+            let mut wal = Wal::memory_buffered_to(
+                Box::new(busbar_kernel_wal::ship::NullShipper::new()),
+                super::fixtures::wall_ms,
+            );
+            assert_eq!(wal.mode(), Mode::MemoryBuffered);
+            let token = durability_token();
+            // Enough records, and enough of them large enough to continue across frames, that any
+            // preallocation or segment roll would have to have happened by now.
+            let mut expected = Vec::new();
+            for batch in 0..8u64 {
+                let batch_records = records(1, batch * 4 + 1, 4, 900);
+                wal.append_batch(
+                    &token,
+                    busbar_contract::caps::StepName::Meter,
+                    &batch_records,
+                )
+                .unwrap();
+                expected.extend(batch_records);
+            }
+            let back = wal.read_back().unwrap();
+            assert_eq!(back.records, expected);
+        },
     );
 }
 

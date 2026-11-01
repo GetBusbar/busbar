@@ -1558,7 +1558,15 @@ fn run_dir(krate: &str, dir: &Path) -> Vec<String> {
 fn every_linked_doors_black_box_cases_run_against_the_real_binary() {
     let failures: Vec<String> = DOOR_BLACKBOX
         .iter()
-        .flat_map(|(krate, dir)| run_dir(krate, Path::new(dir)))
+        .flat_map(|(krate, dir)| {
+            if dir.is_empty() {
+                vec![format!(
+                    "`{krate}`: enabled plane door supplied no black-box case directory metadata"
+                )]
+            } else {
+                run_dir(krate, Path::new(dir))
+            }
+        })
         .collect();
     assert!(failures.is_empty(), "{}", failures.join("\n\n"));
 }

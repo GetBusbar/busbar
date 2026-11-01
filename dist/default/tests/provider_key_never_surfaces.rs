@@ -3,7 +3,7 @@
 
 //! SECRETS NEVER LOGGED, END TO END (website: "secrets never logged"; plugins page: secret-free
 //! logs). The real binary boots with one provider credential spread over three providers: one far
-//! end that serves, one that answers 401, one that refuses the connection. A keyed caller asks each
+//! end that serves, one that answers 401, one that closes without replying after reading the key. A keyed caller asks each
 //! of them, a caller with a wrong token is refused, and then every read surface an operator has is
 //! collected: the node's whole log at `debug`, every error body the callers got, the `/metrics`
 //! scrape and the admin API's read endpoints. The credential's value is in none of them.
@@ -15,12 +15,14 @@ mod common;
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::mpsc::{self, Receiver};
 use std::time::{Duration, Instant};
 
 const ADMIN_TOKEN: &str = "provider-key-never-surfaces-admin";
 
 /// The provider credential the test watches for: distinctive, so a hit is never a coincidence.
 const PROVIDER_KEY: &str = "sk-leakcheck-7f3a9c41d2e8b605";
+const CALL_TEXT: &str = "provider-key-witness-7f3a9c41";
 
 /// A whole message in the provider's dialect.
 fn served_answer() -> serde_json::Value {
@@ -36,30 +38,36 @@ fn served_answer() -> serde_json::Value {
     })
 }
 
-/// A loopback far end answering every request with `status` and `body`, for the test's life.
-fn far_end(status: u16, body: serde_json::Value) -> u16 {
+/// Read the credential on every request, then answer or close without a response.
+fn far_end(answer: Option<(u16, serde_json::Value)>) -> (u16, Receiver<bool>) {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind the far end");
     let port = listener.local_addr().unwrap().port();
+    let (sent, received) = mpsc::channel();
     std::thread::spawn(move || {
         for conn in listener.incoming() {
             let Ok(mut conn) = conn else { continue };
-            let body = body.clone();
+            let answer = answer.clone();
+            let sent = sent.clone();
             std::thread::spawn(move || {
-                if common::upstream::read_request(&mut conn).is_some() {
-                    common::upstream::respond(&mut conn, status, &body);
+                if let Some((head, body)) = common::upstream::read_request(&mut conn) {
+                    let keyed = head.lines().any(|line| {
+                        line.split_once(':').is_some_and(|(name, value)| {
+                            name.eq_ignore_ascii_case("x-api-key") && value.trim() == PROVIDER_KEY
+                        })
+                    });
+                    let requested = serde_json::from_slice::<serde_json::Value>(&body)
+                        .is_ok_and(|request| request["messages"][0]["content"] == CALL_TEXT);
+                    if requested {
+                        let _ = sent.send(keyed);
+                    }
+                    if let Some((status, body)) = answer {
+                        common::upstream::respond(&mut conn, status, &body);
+                    }
                 }
             });
         }
     });
-    port
-}
-
-/// A loopback port nothing listens on: a dial to it is refused.
-fn closed_port() -> u16 {
-    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
-    let port = listener.local_addr().unwrap().port();
-    drop(listener);
-    port
+    (port, received)
 }
 
 fn fixture_dir() -> PathBuf {
@@ -144,7 +152,7 @@ fn http_request(
     path: &str,
     body: Option<&str>,
     token: Option<&str>,
-) -> (u16, String) {
+) -> (u16, String, String) {
     let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
     rt.block_on(async {
         let client = reqwest::Client::builder()
@@ -166,10 +174,7 @@ fn http_request(
         let resp = req.send().await.expect("request");
         let status = resp.status().as_u16();
         let head = format!("{:?}", resp.headers());
-        (
-            status,
-            format!("{head}\n{}", resp.text().await.unwrap_or_default()),
-        )
+        (status, head, resp.text().await.expect("the response body"))
     })
 }
 
@@ -186,13 +191,13 @@ fn wait_for(budget: Duration, mut cond: impl FnMut() -> bool) -> bool {
 
 #[test]
 fn a_provider_key_never_appears_in_logs_errors_or_stats() {
-    let ok = far_end(200, served_answer());
-    let refusing = far_end(
+    let (ok, ok_received) = far_end(Some((200, served_answer())));
+    let (refusing, refused_received) = far_end(Some((
         401,
         serde_json::json!({"type": "error", "error": {"type": "authentication_error",
             "message": "invalid x-api-key"}}),
-    );
-    let dead = closed_port();
+    )));
+    let (dead, dead_received) = far_end(None);
     let dir = fixture_dir();
     let (data, admin) = (common::boot::free_port(), common::boot::free_port());
     write_configs(&dir, ok, refusing, dead, data, admin);
@@ -209,10 +214,18 @@ fn a_provider_key_never_appears_in_logs_errors_or_stats() {
         .stderr(log_err)
         .spawn()
         .expect("spawn busbar");
+    struct StopChild<'a>(&'a mut std::process::Child);
+    impl Drop for StopChild<'_> {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+    let child = StopChild(&mut child);
     let _dump = common::boot::DumpOnPanic(&log_path);
     let read = || std::fs::read_to_string(&log_path).unwrap_or_default();
     let booted = wait_for(Duration::from_secs(30), || {
-        if let Some(status) = child.try_wait().expect("try_wait") {
+        if let Some(status) = child.0.try_wait().expect("try_wait") {
             panic!(
                 "busbar exited before listening ({status:?}); log:\n{}",
                 read()
@@ -223,61 +236,101 @@ fn a_provider_key_never_appears_in_logs_errors_or_stats() {
     assert!(booted, "busbar did not reach 'listening' in 30s");
 
     let (data, admin) = (format!("127.0.0.1:{data}"), format!("127.0.0.1:{admin}"));
-    let (_, minted) = http_request(
+    let (mint_status, _, minted) = http_request(
         &admin,
         "POST",
         "/api/v1/admin/keys",
         Some(r#"{"name":"leakcheck"}"#),
         Some(ADMIN_TOKEN),
     );
-    let token = minted
-        .split("\"token\":\"")
-        .nth(1)
-        .and_then(|rest| rest.split('"').next())
+    assert_eq!(mint_status, 201, "the admin API created the caller's key");
+    let minted: serde_json::Value = serde_json::from_str(&minted).expect("the minted key response");
+    let token = minted["token"]
+        .as_str()
         .unwrap_or_else(|| panic!("the admin API must mint a key: {minted}"))
         .to_string();
 
     // Every answer a caller or an operator can read, labelled.
-    let mut surfaces: Vec<(String, u16, String)> = Vec::new();
+    let mut surfaces: Vec<(String, u16, String, String)> = Vec::new();
     for model in ["ok-model", "refused-model", "dead-model"] {
         let body = format!(
-            r#"{{"model":"{model}","max_tokens":8,"messages":[{{"role":"user","content":"hi"}}]}}"#
+            r#"{{"model":"{model}","max_tokens":8,"messages":[{{"role":"user","content":"{CALL_TEXT}"}}]}}"#
         );
         let path = format!("/{model}/v1/messages");
-        let (status, text) = http_request(&data, "POST", &path, Some(&body), Some(&token));
-        surfaces.push((format!("POST {path}"), status, text));
+        let (status, headers, text) = http_request(&data, "POST", &path, Some(&body), Some(&token));
+        match model {
+            "ok-model" => {
+                assert_eq!(status, 200);
+                assert_eq!(
+                    ok_received.try_recv(),
+                    Ok(true),
+                    "the serving upstream received the key"
+                );
+                let answer: serde_json::Value =
+                    serde_json::from_str(&text).expect("the served answer");
+                assert_eq!(answer["content"][0]["text"], "served");
+            }
+            "refused-model" => {
+                assert_eq!(status, 401);
+                assert_eq!(
+                    refused_received.try_recv(),
+                    Ok(true),
+                    "the 401 upstream received the key"
+                );
+            }
+            "dead-model" => {
+                assert!(
+                    (500..600).contains(&status),
+                    "the closed upstream failed the call: {status}"
+                );
+                assert_eq!(
+                    dead_received.try_recv(),
+                    Ok(true),
+                    "the upstream read the key before closing without a reply"
+                );
+            }
+            _ => unreachable!(),
+        }
+        assert!(!text.trim().is_empty(), "{model} returned a body to scan");
+        surfaces.push((format!("POST {path}"), status, headers, text));
     }
     let pooled =
         r#"{"model":"everyone","max_tokens":8,"messages":[{"role":"user","content":"hi"}]}"#;
-    let (status, text) = http_request(&data, "POST", "/v1/messages", Some(pooled), Some(&token));
-    surfaces.push(("POST /v1/messages (pool)".into(), status, text));
-    let (status, text) = http_request(
+    let (status, headers, text) =
+        http_request(&data, "POST", "/v1/messages", Some(pooled), Some(&token));
+    assert_eq!(status, 200, "the pool retains its serving member");
+    surfaces.push(("POST /v1/messages (pool)".into(), status, headers, text));
+    let (status, headers, text) = http_request(
         &data,
         "POST",
         "/ok-model/v1/messages",
         Some(pooled),
         Some("bbk_not_a_real_token"),
     );
-    surfaces.push(("POST with a wrong token".into(), status, text));
-    assert!(
-        surfaces.iter().any(|(_, status, _)| *status == 200),
-        "the serving far end was reached: {surfaces:#?}"
+    assert_eq!(
+        status, 401,
+        "the caller's invalid key is refused separately"
     );
-    assert!(
-        surfaces.iter().any(|(_, status, _)| *status >= 400),
-        "the failing far ends produced errors: {surfaces:#?}"
-    );
+    surfaces.push(("POST with a wrong token".into(), status, headers, text));
 
     let mut attempt = 0;
     let scrape = loop {
-        let (status, text) = http_request(&data, "GET", "/metrics", None, Some(&token));
+        let (status, headers, text) = http_request(&data, "GET", "/metrics", None, Some(&token));
         if status != 503 || attempt >= 200 {
-            break (status, text);
+            break (status, headers, text);
         }
         attempt += 1;
         std::thread::sleep(Duration::from_millis(25));
     };
-    surfaces.push(("GET /metrics".into(), scrape.0, scrape.1));
+    assert_eq!(scrape.0, 200, "the metrics surface was served");
+    assert!(
+        scrape
+            .2
+            .lines()
+            .any(|line| !line.trim().is_empty() && !line.starts_with('#')),
+        "the scrape contains metric samples"
+    );
+    surfaces.push(("GET /metrics".into(), scrape.0, scrape.1, scrape.2));
     for path in [
         "/api/v1/admin/info",
         "/api/v1/admin/pools?detail=true",
@@ -291,19 +344,26 @@ fn a_provider_key_never_appears_in_logs_errors_or_stats() {
         "/api/v1/admin/usage",
         "/api/v1/admin/audit",
     ] {
-        let (status, text) = http_request(&admin, "GET", path, None, Some(ADMIN_TOKEN));
-        surfaces.push((format!("GET {path}"), status, text));
+        let (status, headers, text) = http_request(&admin, "GET", path, None, Some(ADMIN_TOKEN));
+        assert_eq!(status, 200, "the admin surface {path} was served");
+        assert!(
+            !text.trim().is_empty(),
+            "the admin surface {path} has a body to scan"
+        );
+        let _: serde_json::Value = serde_json::from_str(&text).expect("an admin JSON response");
+        surfaces.push((format!("GET {path}"), status, headers, text));
     }
 
     let _ = Command::new("kill")
         .arg("-TERM")
-        .arg(child.id().to_string())
+        .arg(child.0.id().to_string())
         .status();
     if !wait_for(Duration::from_secs(30), || {
-        child.try_wait().expect("try_wait").is_some()
+        child.0.try_wait().expect("try_wait").is_some()
     }) {
-        let _ = child.kill();
+        let _ = child.0.kill();
     }
+    let _ = child.0.wait();
     let log_text = read();
     assert!(
         log_text.contains("DEBUG"),
@@ -314,9 +374,9 @@ fn a_provider_key_never_appears_in_logs_errors_or_stats() {
         !log_text.contains(PROVIDER_KEY),
         "the provider credential appears in the node's log"
     );
-    for (surface, status, text) in &surfaces {
+    for (surface, status, headers, text) in &surfaces {
         assert!(
-            !text.contains(PROVIDER_KEY),
+            !headers.contains(PROVIDER_KEY) && !text.contains(PROVIDER_KEY),
             "the provider credential appears in {surface} ({status}):\n{text}"
         );
     }

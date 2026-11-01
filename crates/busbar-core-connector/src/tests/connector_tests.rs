@@ -3,11 +3,20 @@
 
 use super::*;
 
+#[path = "fanout_waker_tests.rs"]
+mod fanout_waker_tests;
+
 #[path = "pool_retirement_tests.rs"]
 mod pool_retirement_tests;
 
 const OWNER: InstanceId = InstanceId(1);
 const OTHER: InstanceId = InstanceId(2);
+
+#[path = "judgement_callback_tests.rs"]
+mod judgement_callback_tests;
+
+#[path = "pending_write_tests.rs"]
+mod pending_write;
 
 #[path = "final_insert_retirement_tests.rs"]
 mod final_insert_retirement_tests;
@@ -588,6 +597,7 @@ fn a_pending_empty_write_backpressures_until_judgement_and_preserves_frames() {
     worker().block_on(async {
         for (end, text) in [(false, false), (false, true), (true, false), (true, true)] {
             let (listener, far) = far_end().await;
+            let (finish, finished) = tokio::sync::oneshot::channel();
             let peer = tokio::spawn(async move {
                 use tokio::io::{AsyncReadExt, AsyncWriteExt};
                 let (mut socket, _) = listener.accept().await.unwrap();
@@ -595,6 +605,7 @@ fn a_pending_empty_write_backpressures_until_judgement_and_preserves_frames() {
                 socket.read_exact(&mut bytes).await.unwrap();
                 assert_eq!(&bytes, b"head");
                 socket.write_all(b"ok").await.unwrap();
+                finished.await.unwrap();
             });
             let door = Arc::new(RecordingDoor {
                 door: TestDoor::new("frames", &["frames"], &["bytes"], Default::default()),
@@ -652,7 +663,6 @@ fn a_pending_empty_write_backpressures_until_judgement_and_preserves_frames() {
             assert!(wakes.lock().unwrap().is_empty());
             answer.lock().unwrap().take().unwrap()(Ok(far.parse().unwrap()));
             assert_eq!(*wakes.lock().unwrap(), vec![(OWNER, 41)]);
-            assert_eq!(c.write(OWNER, id, b"", !end, !text), Ok(0));
             let reply = tokio::time::timeout(Duration::from_secs(5), async {
                 let mut reply = Vec::new();
                 while reply.len() < 2 {
@@ -668,12 +678,14 @@ fn a_pending_empty_write_backpressures_until_judgement_and_preserves_frames() {
             .await
             .unwrap();
             assert_eq!(reply, b"ok");
+            assert_eq!(c.write(OWNER, id, b"", !end, !text), Ok(0));
             assert_eq!(
                 *door.emits.lock().unwrap(),
                 vec![(4, false, false), (0, end, text), (0, !end, !text)]
             );
             assert_eq!(*door.door.handed.lock().unwrap(), b"head");
             c.close(OWNER, id).unwrap();
+            finish.send(()).unwrap();
             peer.await.unwrap();
         }
     });

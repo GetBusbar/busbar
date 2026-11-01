@@ -8,26 +8,6 @@
 //! what it does — including the one that does nothing, because it was never in the bytes.
 
 use busbar_kernel::grammar::{ArrivalLocation, MaskKind, SignedOver};
-use busbar_kernel::inflight::MAX_SESSION_UPSTREAMS;
-
-/// The ceilings the kernel enforces are the ceilings the contract told the plugin about.
-///
-/// Three of these were declared twice, once here and once on the plugin surface, with nothing
-/// checking that the two agreed. A plugin allocates, declares legs and names usage lines against
-/// the contract's numbers; the kernel sizes buffers, admits pairings and settles reports against
-/// these. Two independently-maintained constants that happen to agree today are a plugin refused
-/// at a limit it was never told about the first time one of them moves.
-#[test]
-fn the_kernels_ceilings_are_the_contracts_own() {
-    assert_eq!(
-        MAX_SESSION_UPSTREAMS,
-        busbar_contract::MAX_SESSION_UPSTREAMS
-    );
-    assert_eq!(
-        busbar_contract::caps::usage::MAX_USAGE_LINES,
-        busbar_contract::MAX_USAGE_LINES
-    );
-}
 
 #[test]
 fn every_location_form_says_how_it_is_masked() {

@@ -171,8 +171,8 @@ fn tkey() -> TicketKey {
     ticket_key().expect("the OS random source answers")
 }
 
-/// UNPREDICTABLE: consecutive mints of one slot do not show their counter (no run of +1 steps, no
-/// constant stride), while the inverse names each count exactly.
+/// Consecutive mints of one slot have varied strides, while the inverse names each count exactly.
+/// This finite sample is a regression witness for exposing the counter, not a proof of unpredictability.
 #[test]
 fn consecutive_ticket_generations_hide_their_counter() {
     let k = tkey();
@@ -189,7 +189,6 @@ fn consecutive_ticket_generations_hide_their_counter() {
         steps.len() > 32,
         "the generations step by a few strides: {steps:?}"
     );
-    assert!(!steps.contains(&1) || steps.len() > 1);
     assert_ne!(
         ticket_generation(k, 0, 0, 1),
         ticket_generation(k, 0, 1, 1),

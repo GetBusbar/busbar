@@ -8,8 +8,8 @@
 //!
 //! An `auth.chain` module that no installed or linked plugin answers is refused with "no plugin
 //! matching" / "was not loaded" (`cli_validate`'s `validate_fails_on_unresolvable_auth_chain_plugin`).
-//! With the row linked, the same chain naming the webhook-signature module resolves to the linked
-//! door, so that refusal is gone. RED without the link: the refusal is exactly what prints. The case
+//! With the row linked, a valid chain naming the webhook-signature module and a resolvable signing
+//! secret must validate successfully. RED without the link: the refusal is exactly what prints. The case
 //! rides every linked auth row (`linked_every_auth`, build.rs) rather than spelling one row's feature.
 #![cfg(linked_every_auth)]
 
@@ -30,6 +30,7 @@ fn fixture_dir() -> PathBuf {
 
 #[test]
 fn a_chain_naming_the_webhook_signature_plugin_resolves_to_the_linked_row() {
+    const SECRET_ENV: &str = "BUSBAR_TEST_WEBHOOK_SIGNING_SECRET";
     let dir = fixture_dir();
     std::fs::write(dir.join("providers.yaml"), "").unwrap();
     std::fs::write(
@@ -37,7 +38,7 @@ fn a_chain_naming_the_webhook_signature_plugin_resolves_to_the_linked_row() {
         format!(
             "listen: \"127.0.0.1:0\"\nproviders: {{}}\nmodels: {{}}\nstore: {{module: memory}}\n\
              identity-providers:\n  twilio:\n    module: busbar-auth-webhook-signature\n    \
-             settings: {{ variant: twilio, origin: \"wss://edge.example.com\" }}\n\
+             settings: {{ variant: twilio, origin: \"wss://edge.example.com\", signing_secret: {{ env: {SECRET_ENV} }} }}\n\
              auth:\n  chain: [twilio]\n\
              plugins:\n  enabled: true\n  dir: '{}'\n  trust:\n    allow_unsigned: true\n",
             dir.join("plugins").display()
@@ -52,12 +53,18 @@ fn a_chain_naming_the_webhook_signature_plugin_resolves_to_the_linked_row() {
         )
         .env("BUSBAR_CONFIG", dir.join("config.yaml"))
         .env("BUSBAR_PROVIDERS", dir.join("providers.yaml"))
+        .env(SECRET_ENV, "test-webhook-linked-signing-secret")
         .output()
         .expect("run busbar");
     let text = format!(
         "{}{}",
         String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        out.status.success() && text.contains("ok: config valid"),
+        "the linked webhook-signature row must validate this configured chain ({:?}): {text}",
+        out.status
     );
     assert!(
         !text.contains("no plugin matching") && !text.contains("was not loaded"),

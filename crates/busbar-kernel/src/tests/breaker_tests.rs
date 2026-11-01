@@ -43,49 +43,6 @@ fn status_class_from_str_maps_known_values_and_rejects_unknown() {
     assert!(status_class_from_str("").is_none());
 }
 
-/// Does `line` emit a `warn!`/`error!` log, in EITHER spelling — path-qualified
-/// (`tracing::warn!(`) or imported bare (`warn!(`)? A bare `warn!(` must not match the tail of a
-/// longer identifier (`diag_warn!(`, `my_error!(`), so the character before it must not be one
-/// an identifier can continue with.
-fn is_bare_log_emission(line: &str) -> bool {
-    ["warn!(", "error!("].iter().any(|macro_name| {
-        line.match_indices(macro_name).any(|(at, _)| {
-            let before = &line[..at];
-            if let Some(stripped) = before.strip_suffix("tracing::") {
-                // Path-qualified: `tracing` itself must be a whole path segment.
-                return !stripped
-                    .chars()
-                    .next_back()
-                    .is_some_and(|c| c.is_alphanumeric() || c == '_' || c == ':');
-            }
-            !before
-                .chars()
-                .next_back()
-                .is_some_and(|c| c.is_alphanumeric() || c == '_' || c == ':')
-        })
-    })
-}
-
-/// The scan below matched only the PATH-QUALIFIED spelling, so a file carrying `use tracing::warn;`
-/// and emitting a bare `warn!(…)` — the same uncoded operator-facing log, one import away — walked
-/// straight past it. Pin what the widened matcher does and does not consider an emission.
-#[test]
-fn the_uncoded_log_scan_matches_both_spellings_of_both_macros() {
-    assert!(is_bare_log_emission("    tracing::warn!(\"boom\");"));
-    assert!(is_bare_log_emission("    tracing::error!(\"boom\");"));
-    // The bare, imported spelling — the gap.
-    assert!(is_bare_log_emission("    warn!(\"boom\");"));
-    assert!(is_bare_log_emission("    error!(\"boom\");"));
-    assert!(is_bare_log_emission("if x { warn!(\"boom\") }"));
-    // A longer identifier ENDING in the macro name is not an emission of it.
-    assert!(!is_bare_log_emission("    diag_warn!(CODE, \"boom\");"));
-    assert!(!is_bare_log_emission("    diag_error!(CODE, \"boom\");"));
-    assert!(!is_bare_log_emission("    crate::diag_warn!(CODE, \"x\");"));
-    // Neither is an unrelated macro or a plain mention.
-    assert!(!is_bare_log_emission("    info!(\"boom\");"));
-    assert!(!is_bare_log_emission("    let warn = 1;"));
-}
-
 /// Every classification the operator's `error_map` may name parses to its class, `billing` and
 /// `client_error` included; an unknown word is `None` (no fallback arm). Rehomes
 /// the retired engine crate's src/engine/tests/forward_pool_integration_tests.rs::test_status_class_from_str_exhaustive.

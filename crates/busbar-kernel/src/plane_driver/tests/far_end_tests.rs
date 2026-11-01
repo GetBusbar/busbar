@@ -460,6 +460,7 @@ struct Bearer {
     /// Never answers on the spot, and its submitted call never answers at all.
     stall: std::sync::atomic::AtomicBool,
     require_secure: std::sync::atomic::AtomicBool,
+    query: std::sync::atomic::AtomicBool,
     /// Refuses to field the attempt.
     refuse: std::sync::atomic::AtomicBool,
     facts: Mutex<Vec<Facts>>,
@@ -523,6 +524,7 @@ impl OutboundAuth for Bearer {
             name: b"authorization".to_vec(),
             value: b"Bearer sk-test".to_vec().into(),
             sensitive: true,
+            query: self.query.load(Ordering::SeqCst),
             require_secure: self.require_secure.load(Ordering::SeqCst),
         }]))
     }
@@ -1101,18 +1103,28 @@ async fn the_attempt_cap_and_a_refused_dial_fail_over() {
     );
     let t = token();
     let far = r.egress.unit(route());
-    let mut failed = 0;
+    let mut members = Vec::new();
     for n in 1..=2 {
-        let Pick::Member { .. } = far.member(&t, n).await else {
+        let Pick::Member { name, .. } = far.member(&t, n).await else {
             panic!("a member")
         };
-        if far.send(&t, request()).await {
-            let p = far.next(&t).await.expect("a piece");
-            assert!(p.fail_over, "{p:?}");
+        let sent = far.send(&t, request()).await;
+        match name.as_str() {
+            "m0" => {
+                assert!(
+                    sent,
+                    "the silent connection opens before its answer times out"
+                );
+                let p = far.next(&t).await.expect("the attempt-cap refusal");
+                assert!(p.fail_over, "{p:?}");
+            }
+            "m1" => assert!(!sent, "the refused dial sends nothing"),
+            _ => panic!("unexpected member {name}"),
         }
-        failed += 1;
+        members.push(name);
     }
-    assert_eq!(failed, 2);
+    members.sort();
+    assert_eq!(members, ["m0", "m1"]);
     let observed = r.book.observed.lock().unwrap().clone();
     assert_eq!(observed.len(), 2, "{observed:?}");
     assert!(observed
@@ -1656,6 +1668,7 @@ fn auth_material_never_prints() {
         name: b"authorization".to_vec(),
         value: b"Bearer sk-test".to_vec().into(),
         sensitive: true,
+        query: false,
         require_secure: false,
     };
     let request = FieldsRequest {
@@ -2717,6 +2730,7 @@ impl OutboundAuth for ByHandle {
             name: b"authorization".to_vec(),
             value: format!("Bearer h{handle}").into_bytes().into(),
             sensitive: true,
+            query: false,
             require_secure: false,
         }]))
     }
@@ -3415,6 +3429,61 @@ async fn a_far_request_names_its_auth_fields_sealed_to_the_connector() {
     );
 }
 
+#[tokio::test]
+async fn a_far_query_credential_preserves_the_signed_target_and_same_named_plane_header() {
+    let r = rig(
+        &[("a.test", Script::Answer(200, None, vec![b"ok"]))],
+        OnExhausted::Status503,
+        None,
+    );
+    r.auth.query.store(true, Ordering::SeqCst);
+    let t = token();
+    let far = r.egress.unit(route());
+    let _ = far.member(&t, 1).await;
+    let mut req = request();
+    req.target = b"/call?existing=1".to_vec();
+    req.fields
+        .push((b"authorization".to_vec(), b"plane-header".to_vec()));
+    req.fields
+        .push((b"busbar-sealed-query".to_vec(), b"forged=value".to_vec()));
+    assert!(far.send(&t, req).await);
+    let _ = drain(&far, &t).await;
+    let opened = r.table.opened.lock().unwrap();
+    assert_eq!(opened.len(), 1);
+    let (target, fields, _, _) = &opened[0];
+    assert!(!target.contains("sk-test"));
+    assert!(fields
+        .iter()
+        .any(|(n, v)| n == "authorization" && v == b"plane-header"));
+    assert_eq!(
+        fields
+            .iter()
+            .filter(|(n, _)| n == "busbar-sealed-query")
+            .map(|(_, v)| v.as_slice())
+            .collect::<Vec<_>>(),
+        [b"authorization=Bearer%20sk-test".as_slice()]
+    );
+    assert_eq!(*r.table.sealed.lock().unwrap(), [None]);
+    assert!(!r.table.words.lock().unwrap()[0]
+        .1
+        .windows(7)
+        .any(|w| w == b"sk-test"));
+    let signed = r.auth.facts.lock().unwrap();
+    assert_eq!(
+        signed.len(),
+        1,
+        "auth signs exactly once, before query injection"
+    );
+    assert!(!signed[0].2.windows(7).any(|w| w == b"sk-test"));
+    let signed_heads = r.auth.heads.lock().unwrap();
+    assert!(!signed_heads[0]
+        .iter()
+        .any(|(name, _)| name.eq_ignore_ascii_case(b"busbar-sealed-query")));
+    assert!(signed_heads[0]
+        .iter()
+        .any(|(name, value)| name == b"authorization" && value == b"plane-header"));
+}
+
 /// RED (SEC-8F1): THE PLANE'S PIN RIDES ITS REQUEST (`abi::host::conn::connector::WITHIN_REQUEST_FIELD`).
 /// A far request carrying the address set its plane's `dest.judge` admitted is dialled pinned to
 /// exactly it, and the field is the host's: it never reaches the wire. One whose set names an entry
@@ -3473,9 +3542,12 @@ async fn protected_auth_never_uses_a_raw_connector_and_does_not_blame_the_destin
     );
     r.auth.require_secure.store(true, Ordering::SeqCst);
     let t = token();
-    let far = r.egress.unit(route());
-    let _ = far.member(&t, 1).await;
-    assert!(!far.send(&t, request()).await);
+    for query in [false, true] {
+        r.auth.query.store(query, Ordering::SeqCst);
+        let far = r.egress.unit(route());
+        let _ = far.member(&t, 1).await;
+        assert!(!far.send(&t, request()).await);
+    }
     assert!(r.table.opened.lock().unwrap().is_empty());
     assert!(r.book.observed.lock().unwrap().is_empty());
 }

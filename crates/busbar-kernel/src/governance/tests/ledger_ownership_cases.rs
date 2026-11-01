@@ -2,6 +2,104 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use super::*;
+#[test]
+fn two_nodes_cannot_both_accept_corrections_beyond_the_shared_count() {
+    const INITIAL_INPUT_UNITS: u64 = 100;
+    const CORRECTION_INPUT_UNITS: i64 = -60;
+    const ACCEPTED_INPUT_UNITS: i64 = 40;
+    const MODEL: &str = "m";
+    const COORDINATION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+    let store = Arc::new(FlakyStore::new());
+    let key = key("vk_shared_correction_floor", None);
+    store.put_key(&key).unwrap();
+    let first_node = Arc::new(GovState::new(store.clone(), None).unwrap());
+    let cm = model(&[]);
+    let now = crate::store::now();
+    first_node.record_usage(&cm, &key, "", MODEL, &toks(INITIAL_INPUT_UNITS, 0), now);
+    first_node.flush_budgets();
+    metered(&first_node, &key.id, MODEL, INITIAL_INPUT_UNITS, now);
+    let second_node = GovState::new(store.clone(), None).unwrap();
+    second_node.hydrate_budgets(&cm, now).unwrap();
+
+    let (entered, observed) = std::sync::mpsc::channel();
+    let (release, resume) = std::sync::mpsc::channel();
+    *store.before_add.lock().unwrap() = Some(Box::new(move || {
+        entered.send(()).unwrap();
+        resume.recv_timeout(COORDINATION_TIMEOUT).unwrap();
+    }));
+    let first_key = key.clone();
+    let correction_node = first_node.clone();
+    let first = std::thread::spawn(move || {
+        let delta = BTreeMap::from([(
+            busbar_contract::records::UNIT_INPUT.to_string(),
+            CORRECTION_INPUT_UNITS,
+        )]);
+        correction_node.adjust_usage(
+            &model(&[]),
+            &super::super::Adjustment {
+                key_id: &first_key.id,
+                pool: "",
+                model: MODEL,
+                entry_era: era_now(),
+                card_epoch_ms: card_epoch_millis(now),
+                delta: &delta,
+                now,
+            },
+        )
+    });
+
+    let paused = observed.recv_timeout(COORDINATION_TIMEOUT);
+    let delta = BTreeMap::from([(
+        busbar_contract::records::UNIT_INPUT.to_string(),
+        CORRECTION_INPUT_UNITS,
+    )]);
+    let second = paused.as_ref().ok().map(|()| {
+        second_node.adjust_usage(
+            &cm,
+            &super::super::Adjustment {
+                key_id: &key.id,
+                pool: "",
+                model: MODEL,
+                entry_era: era_now(),
+                card_epoch_ms: card_epoch_millis(now),
+                delta: &delta,
+                now,
+            },
+        )
+    });
+    let _ = release.send(());
+    let first = first.join().unwrap();
+    paused.expect("the first correction reaches the store after its validation reads");
+    let first = first.unwrap();
+    let second = second.unwrap().unwrap();
+
+    assert!(
+        matches!(
+            (&first, &second),
+            (Ok(()), Err(super::super::AdjustRefused::Exceeds { .. }))
+                | (Err(super::super::AdjustRefused::Exceeds { .. }), Ok(()))
+        ),
+        "exactly one correction may consume the shared count: {first:?}, {second:?}"
+    );
+    let accepted = first_node
+        .usage_adjustments(crate::governance::metering_bucket(now))
+        .unwrap();
+    assert_eq!(accepted.len(), 1);
+    assert_eq!(
+        accepted[0].delta.get(busbar_contract::records::UNIT_INPUT),
+        Some(&CORRECTION_INPUT_UNITS)
+    );
+    first_node.flush_budgets();
+    second_node.flush_budgets();
+    assert_eq!(
+        store.get_usage(&key.id, 0).unwrap().models[0]
+            .usage_units
+            .get(busbar_contract::records::UNIT_INPUT)
+            .copied(),
+        Some(u64::try_from(ACCEPTED_INPUT_UNITS).unwrap())
+    );
+}
 
 #[test]
 fn correction_only_hydration_registers_its_group_for_reclamation() {
@@ -230,6 +328,29 @@ fn correction_hydration_preserves_an_older_inflight_eras_retry_and_group_owner()
         cell.fee_eras.charge(42);
     }
     metered(&gov, &key.id, "m", 1, next);
+    // Isolate the older group-window flush. The key's all-time row is a different target
+    // whose own outstanding snapshot must independently exclude a correction.
+    let key_snapshot = gov.budget.read(&key.id).get(&key.id).unwrap().clone();
+    store
+        .add_usage(&key.id, 0, &key_snapshot.unflushed())
+        .unwrap();
+    store
+        .add_usage(
+            &super::super::era_bucket(&key.id),
+            0,
+            &key_snapshot.unflushed_eras(),
+        )
+        .unwrap();
+    {
+        let mut cells = gov.budget.write(&key.id);
+        let cell = cells.get_mut(&key.id).unwrap();
+        cell.flushed_requests = key_snapshot.requests;
+        cell.flushed_billable_requests = key_snapshot.billable_requests;
+        cell.flushed_fee_eras = key_snapshot.fee_eras.clone();
+        cell.advance_model_baselines(&key_snapshot.models, false);
+        cell.advance_model_baselines(&key_snapshot.models, true);
+        cell.dirty = false;
+    }
     store
         .era_down
         .store(true, std::sync::atomic::Ordering::SeqCst);
