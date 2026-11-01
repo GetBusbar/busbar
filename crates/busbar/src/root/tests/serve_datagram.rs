@@ -15,7 +15,7 @@ use busbar_core_connector::udp::{bind, ReadyPort};
 
 use super::{lock, CallerLeg, ClaimDoor, ClaimDoors, CALLER_QUEUE};
 
-fn got(stream: u64, bytes: &[u8], fields: bool) -> Got {
+pub(super) fn got(stream: u64, bytes: &[u8], fields: bool) -> Got {
     Got {
         stream,
         bytes: bytes.to_vec(),

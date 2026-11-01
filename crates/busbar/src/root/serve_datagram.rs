@@ -962,12 +962,28 @@ impl Description {
 
 /// AN ASSOCIATION NOT YET ON ITS DOOR: it joins only once its unit is admitted (an association
 /// exists only for a unit admitted at the description's accept). Dropped unjoined, its framing
-/// finishes and nothing was ever registered.
+/// finishes and its pairing closes, releasing the caller cycle and its opening custody.
 pub(super) struct Joining {
     door: Arc<ClaimDoor>,
     framing: DatagramFraming,
     leg: Arc<CallerLeg>,
+    pairing: OpeningPairing,
+}
+
+/// Own the close obligation from before the caller cycle exists until the session book accepts
+/// it. Kept separate from `Joining` so admission can move the framing onto the door while this
+/// guard still covers a refused book handoff or unwinding. No host mutex is held by this owner.
+struct OpeningPairing {
     pairing: Arc<Pairing>,
+    admitted: bool,
+}
+
+impl Drop for OpeningPairing {
+    fn drop(&mut self) {
+        if !self.admitted {
+            self.pairing.close();
+        }
+    }
 }
 
 impl Opened {
@@ -991,53 +1007,51 @@ impl Opened {
             .and_then(|limits| limits.datagram_line_memory_bytes);
         let pairing =
             Pairing::with_memory_limit(Arc::clone(&leg) as Arc<dyn LegSink>, door.local(), limit);
-        *lock(&leg.pairing) = Some(Arc::clone(&pairing));
-        let prepared = (|| {
-            framing.memory(pairing.memory_account());
-            let now = Instant::now();
-            let yielded = framing.rendezvous(description, now).map_err(|r| r.error)?;
-            let mut session = pairing.publish(Leg::Caller, yielded, now);
-            let index = session
-                .pieces
-                .iter()
-                .position(|piece| piece.stream == 0 && !piece.fields)
-                .ok_or("the framer answered no description of its own")?;
-            let answer = session.pieces.remove(index).bytes;
-            let custody = if index < session.owners.len() {
-                session.owners.remove(index)
-            } else {
-                session.custody.clone()
-            };
-            // Bytes owns the original allocation and reservation through actual HTTP-body
-            // consumption; no uncharged clone of the opening description is made.
-            let answer = Description {
-                bytes: answer,
-                _custody: custody,
-            };
-            leg.take_batch(session, now)?;
-            let (head_tx, head) = oneshot::channel();
-            Ok(Opened {
-                description: answer,
-                caller: DatagramCaller {
-                    leg: Arc::clone(&leg),
-                    from,
-                    head: Mutex::new(Some(head_tx)),
-                    stated: std::sync::atomic::AtomicU32::new(0),
-                    opened: std::sync::atomic::AtomicBool::new(false),
-                },
-                head,
-                joining: Joining {
-                    door: Arc::clone(door),
-                    framing,
-                    leg,
-                    pairing: Arc::clone(&pairing),
-                },
-            })
-        })();
-        if prepared.is_err() {
-            pairing.close();
-        }
-        prepared
+        let pairing = OpeningPairing {
+            pairing,
+            admitted: false,
+        };
+        *lock(&leg.pairing) = Some(Arc::clone(&pairing.pairing));
+        framing.memory(pairing.pairing.memory_account());
+        let now = Instant::now();
+        let yielded = framing.rendezvous(description, now).map_err(|r| r.error)?;
+        let mut session = pairing.pairing.publish(Leg::Caller, yielded, now);
+        let index = session
+            .pieces
+            .iter()
+            .position(|piece| piece.stream == 0 && !piece.fields)
+            .ok_or("the framer answered no description of its own")?;
+        let answer = session.pieces.remove(index).bytes;
+        let custody = if index < session.owners.len() {
+            session.owners.remove(index)
+        } else {
+            session.custody.clone()
+        };
+        // Bytes owns the original allocation and reservation through actual HTTP-body
+        // consumption; no uncharged clone of the opening description is made.
+        let answer = Description {
+            bytes: answer,
+            _custody: custody,
+        };
+        leg.take_batch(session, now)?;
+        let (head_tx, head) = oneshot::channel();
+        Ok(Opened {
+            description: answer,
+            caller: DatagramCaller {
+                leg: Arc::clone(&leg),
+                from,
+                head: Mutex::new(Some(head_tx)),
+                stated: std::sync::atomic::AtomicU32::new(0),
+                opened: std::sync::atomic::AtomicBool::new(false),
+            },
+            head,
+            joining: Joining {
+                door: Arc::clone(door),
+                framing,
+                leg,
+                pairing,
+            },
+        })
     }
 }
 
@@ -1050,28 +1064,38 @@ impl Joining {
     /// The door refused the association (its user name is another's), or the book the unit; the
     /// pairing is closed either way.
     pub(super) fn admit(self, unit: u64) -> Result<(), String> {
+        self.admit_into(unit, crate::root::connector::the())
+    }
+
+    fn admit_into(
+        self,
+        unit: u64,
+        connector: &busbar_core_connector::Connector,
+    ) -> Result<(), String> {
         let Joining {
             door,
             framing,
             leg,
-            pairing,
+            mut pairing,
         } = self;
         if let Err(e) = door.join(framing, &leg) {
-            pairing.close();
             return Err(format!("the claim door refused the association: {e:?}"));
         }
-        crate::root::connector::the()
-            .pair(unit, Arc::clone(&pairing))
-            .map_err(|e| {
-                pairing.close();
-                format!("the session book refused the unit: {e:?}")
-            })
+        connector
+            .pair(unit, Arc::clone(&pairing.pairing))
+            .map_err(|e| format!("the session book refused the unit: {e:?}"))?;
+        pairing.admitted = true;
+        Ok(())
     }
 }
 
 #[cfg(test)]
 #[path = "tests/serve_datagram.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "tests/datagram_opening_retirement.rs"]
+mod opening_retirement_tests;
 
 #[cfg(test)]
 #[path = "tests/datagram_line_budget.rs"]
