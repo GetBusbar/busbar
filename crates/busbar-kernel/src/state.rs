@@ -373,12 +373,9 @@ pub struct App {
     pub config_path: Option<std::path::PathBuf>,
     /// The providers.yaml path (same role as `config_path`).
     pub providers_path: Option<std::path::PathBuf>,
-    /// The config-overlay backend path, resolved from the `config.overlay` block (1.5.3). `Some` = a
-    /// MUTABLE config: an API-applied change is written here so it survives a restart (re-merged onto
-    /// base config at boot). `None` = a LOCKED config (`config.locked: true`): admin-API config
-    /// mutations are refused (a persist against `None` errors — see `overlay::NO_WRITABLE_OVERLAY_MSG`).
-    /// The boot invariant guarantees a mutable config always has a writable backend here. Carried on
-    /// `App` (not a global) so it is testable + survives config swaps (`App::clone` copies it).
+    /// The typed Store-backed runtime config anchor. The historical field name is retained for
+    /// callers; it never contains a path. `None` is locked management. The base-config Store
+    /// remains the anchor across applies, including changes to the effective governance Store.
     pub overlay_path: Option<Arc<crate::config::overlay::OverlayStore>>,
     /// Monotonic config version — `0` at boot, incremented by each API config apply (the swap builds
     /// the next snapshot with `config_version + 1`). Exposed on `GET /api/v1/admin/info` so drift-detection

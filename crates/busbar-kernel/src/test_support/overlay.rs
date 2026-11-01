@@ -20,6 +20,10 @@ struct Rows {
     lose_reply: bool,
     block_read: Option<Arc<Barrier>>,
     candidates: Vec<Request>,
+    write_allowance: Option<usize>,
+    after_transaction: Option<Box<dyn FnOnce() + Send>>,
+    before_transaction: Option<Box<dyn FnOnce() + Send>>,
+    after_read: Option<Box<dyn FnOnce() + Send>>,
 }
 
 #[derive(Default)]
@@ -63,6 +67,27 @@ impl TestOverlayStore {
     pub fn candidates(&self) -> Vec<Request> {
         self.calls.0.lock().unwrap().candidates.clone()
     }
+    pub fn fail_after_chunk_writes(&self, count: usize) {
+        self.calls.0.lock().unwrap().write_allowance = Some(count);
+    }
+    pub fn allow_chunk_writes(&self) {
+        self.calls.0.lock().unwrap().write_allowance = None;
+    }
+    pub fn on_next_transaction_reply(&self, callback: impl FnOnce() + Send + 'static) {
+        self.calls.0.lock().unwrap().after_transaction = Some(Box::new(callback));
+    }
+    pub fn stored_record_count(&self) -> usize {
+        self.calls.0.lock().unwrap().records.len()
+    }
+    pub fn fork_backend(&self) -> Arc<OverlayStore> {
+        OverlayStore::new(self.calls.clone()).unwrap()
+    }
+    pub fn before_next_transaction(&self, callback: impl FnOnce() + Send + 'static) {
+        self.calls.0.lock().unwrap().before_transaction = Some(Box::new(callback));
+    }
+    pub fn on_next_read_reply(&self, callback: impl FnOnce() + Send + 'static) {
+        self.calls.0.lock().unwrap().after_read = Some(Box::new(callback));
+    }
     /// Seed even corrupt/newer JSON as a complete immutable Store generation.
     pub fn seed_bytes(&self, bytes: &[u8]) {
         let generation = crate::door::op_id().0;
@@ -100,6 +125,10 @@ impl StoreCalls for Calls {
         true
     }
     fn record_transaction<'a>(&'a self, request: &'a Request) -> StoreCall<'a, Decision> {
+        let before = { self.0.lock().unwrap().before_transaction.take() };
+        if let Some(before) = before {
+            before();
+        }
         let result = (|| {
             request
                 .validate()
@@ -160,6 +189,10 @@ impl StoreCalls for Calls {
                 Ok(Decision::Applied)
             }
         })();
+        let callback = { self.0.lock().unwrap().after_transaction.take() };
+        if let Some(callback) = callback {
+            callback();
+        }
         ready(result)
     }
     fn record_put<'a>(
@@ -172,8 +205,20 @@ impl StoreCalls for Calls {
         if rows.fail_writes {
             return ready(Err(StoreFailure::Refused("planted write refusal".into())));
         }
-        rows.records
-            .insert((schema.into(), key.into()), value.clone());
+        if let Some(remaining) = &mut rows.write_allowance {
+            if *remaining == 0 {
+                return ready(Err(StoreFailure::Failed(
+                    "planted partial staging failure".into(),
+                )));
+            }
+            *remaining -= 1;
+        }
+        if value.as_slice().is_empty() {
+            rows.records.remove(&(schema.into(), key.into()));
+        } else {
+            rows.records
+                .insert((schema.into(), key.into()), value.clone());
+        }
         ready(Ok(()))
     }
     fn record_get<'a>(
@@ -185,11 +230,19 @@ impl StoreCalls for Calls {
         if let Some(barrier) = barrier {
             barrier.wait();
         }
-        let rows = self.0.lock().unwrap();
-        if rows.fail_reads {
-            return ready(Err(StoreFailure::Failed("planted read failure".into())));
+        let (result, callback) = {
+            let mut rows = self.0.lock().unwrap();
+            let result = if rows.fail_reads {
+                Err(StoreFailure::Failed("planted read failure".into()))
+            } else {
+                Ok(rows.records.get(&(schema.into(), key.into())).cloned())
+            };
+            (result, rows.after_read.take())
+        };
+        if let Some(callback) = callback {
+            callback();
         }
-        ready(Ok(rows.records.get(&(schema.into(), key.into())).cloned()))
+        ready(result)
     }
     fn record_scan<'a>(
         &'a self,

@@ -354,11 +354,8 @@ pub fn default_response_headers_route_policy() -> bool {
     DEFAULT_RESPONSE_HEADERS_ROUTE_POLICY
 }
 
-/// The top-level `config:` block — config-MANAGEMENT policy (1.5.3). This is DISTINCT from the
-/// data-plane `store:` section (where request/usage data lives): `config:` governs whether the admin
-/// API may mutate config and WHERE those mutations persist. Absent ⇒ durable-by-default: `locked:
-/// false` and an overlay file `busbar-overlay.json` next to the resolved config.yaml, so out of the
-/// box admin mutations survive a restart (the 1.5.3 fix for silent RAM-only mutation).
+/// Runtime config-management policy. Mutations persist exclusively through the base-config
+/// `store:` instance; the Store's own durability determines whether they survive restart.
 #[derive(Debug, Deserialize, Serialize, Clone, Default)]
 #[serde(deny_unknown_fields)]
 pub struct ConfigMgmtCfg {
@@ -368,36 +365,29 @@ pub struct ConfigMgmtCfg {
     /// change a locked deployment.
     #[serde(default)]
     pub locked: bool,
-    /// WHERE a mutable config's changes persist — a PLUGGABLE backend. Absent ⇒ the default file
-    /// backend (`busbar-overlay.json` next to the resolved config.yaml). `overlay: false` disables it
-    /// explicitly (only valid together with `locked: true`, else boot refuses — see the boot
-    /// invariant). `overlay: { file: <path> }` selects the file backend at a chosen path.
+    /// Absent selects the configured Store. `false` requires locked management. Legacy
+    /// `{ file: <path> }` remains accepted as a deprecated compatibility selector only; Busbar
+    /// never reads, probes, creates, writes or removes that file and still uses the Store.
     #[serde(default)]
     pub overlay: Option<OverlayCfg>,
 }
 
-/// The `config.overlay` value — either an explicit DISABLE (`overlay: false`) or a named BACKEND
-/// (`overlay: { file: <path> }`). Untagged so both YAML forms parse. The map form names the backend
-/// by KEY (`file:` today), mirroring the top-level `store: { module, settings }` shape so a second
-/// backend (e.g. `db:`) is ADDITIVE, not a breaking reshape.
+/// Management disable or a legacy compatibility selector. Runtime state is always Store-owned.
 #[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(untagged)]
 pub enum OverlayCfg {
     /// `overlay: false` ⇒ no writable overlay backend. Only `false` is meaningful; `true` is rejected
     /// at boot (it names no backend). Reachable-to-boot only with `locked: true`.
     Disabled(bool),
-    /// `overlay: { file: <path> }` ⇒ the builtin file backend.
+    /// Deprecated file selector; the selected state remains in the configured Store.
     Backend(OverlayBackend),
 }
 
-/// A named overlay backend. Exactly one backend key may be set. Today only `file:` exists; a future
-/// durable-store backend slots in as an additive sibling field (`db:`), validated at boot to be
-/// mutually exclusive with `file:`.
+/// Legacy selector shape, retained without filesystem access.
 #[derive(Debug, Deserialize, Serialize, Clone, Default)]
 #[serde(deny_unknown_fields)]
 pub struct OverlayBackend {
-    /// File-backend path. Relative paths resolve against the config.yaml directory. Absent ⇒ treated
-    /// as "no backend named" (equivalent to disabled).
+    /// Legacy path text. Never used as a storage address or opened by overlay management.
     #[serde(default)]
     pub file: Option<String>,
 }

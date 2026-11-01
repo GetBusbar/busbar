@@ -143,11 +143,10 @@ fn provisioned_self_app(gov: Arc<GovState>) -> crate::test_support::TestApp {
 async fn existing_self_leaf_refuses_a_changed_team_before_issue_or_refresh() {
     for refresh in [false, true] {
         let gov = gov();
-        let dir = tempfile::tempdir().expect("writable overlay directory");
-        let overlay = dir.path().join("overlay.json");
+        let overlay = crate::test_support::TestOverlayStore::new();
         let handle = Arc::new(crate::state::AppHandle::new(
             provisioned_self_app(gov.clone())
-                .overlay_path(overlay.clone())
+                .overlay_backend(overlay.backend())
                 .build(),
         ));
         let before = handle.load();
@@ -192,7 +191,7 @@ async fn existing_self_leaf_refuses_a_changed_team_before_issue_or_refresh() {
             "refusal must not swap the group tree"
         );
         assert!(
-            !overlay.exists(),
+            overlay.read_bytes().is_none(),
             "refusal must not persist a changed group"
         );
         if let Some(old) = old {

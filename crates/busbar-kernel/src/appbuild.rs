@@ -215,19 +215,13 @@ pub struct LoadedConfig {
     /// the config dir, the `--providers` flag override, or `providers.yaml` next to the
     /// config. Carried so callers display / re-use the same file across a reload.
     pub providers_path: std::path::PathBuf,
-    /// The resolved config-overlay backend path (1.5.3): `Some` = a writable file backend (mutable
-    /// config); `None` = either the config is LOCKED (`config.locked: true`) or its backend is not
-    /// writable (a read-only config mount — busbar boots and serves, but refuses config mutations).
-    /// The boot invariant guarantees `overlay_path.is_none()` whenever busbar cannot durably persist,
-    /// so a `Some` path is always one that was probed writable.
+    /// The opened Store overlay anchor. Plain disk loading returns no backend; boot attaches
+    /// the base-config Store and live reload carries that same anchor. No path identifies it.
     pub overlay_path: Option<Arc<config::overlay::OverlayStore>>,
     /// `config.locked` (1.5.3): `true` ⇒ admin-API config mutations are refused at runtime.
     pub config_locked: bool,
-    /// `true` ⇒ the config did NOT declare `config.locked: true`, but its overlay backend is not
-    /// writable (the read-only config mount the documented Docker quickstart creates). Busbar boots
-    /// and serves; admin-API config mutations are refused because they could not be persisted.
-    /// Distinguished from `config_locked` so the boot log can tell the operator which of the two
-    /// postures they are in — one they chose, one the filesystem chose for them.
+    /// Compatibility posture field. Always false: input-file permissions do not select Store
+    /// writability, and an unavailable Store refuses recovery instead of dropping security state.
     pub config_read_only: bool,
     /// The persisted overlay document (API-registered hooks), applied onto the RESOLVED config
     /// (`overlay::merge_into(&mut RootCfg, …)`) after `config::resolve` - the runtime registry is
@@ -382,7 +376,7 @@ pub fn load_config_from_disk_judged(
         diag_warn!(
             SAFE_MODE_OVERLAY_QUARANTINED,
             "SAFE MODE: config overlay NOT merged — running on base config.yaml alone (the \
-             overlay file is untouched; boot without --safe-mode to re-apply it)"
+             Store overlay is untouched; boot without --safe-mode to re-apply it)"
         );
         return Ok(LoadedConfig {
             deploy,
@@ -426,12 +420,17 @@ pub fn load_config_from_disk_with_store(
 ) -> Result<LoadedConfig, String> {
     let mut loaded =
         load_config_from_disk_judged(config_path, providers_override, safe_mode, env_mode, rules)?;
-    if !loaded.config_locked && !safe_mode {
+    if !loaded.config_locked {
         let store = overlay.ok_or_else(|| {
             "running config has no Store overlay anchor; restart to bootstrap it".to_string()
         })?;
-        loaded.overlay_doc = store.read_required()?;
-        loaded.overlay_path = Some(store);
+        if safe_mode {
+            loaded.overlay_path = Some(store);
+        } else {
+            let (reopened, doc) = store.reopen_for_reload()?;
+            loaded.overlay_path = Some(reopened);
+            loaded.overlay_doc = doc;
+        }
     }
     Ok(loaded)
 }
@@ -2084,3 +2083,7 @@ pub fn build_app_from_config_with_store(
 #[cfg(test)]
 #[path = "tests/root_rules_hearing_tests.rs"]
 mod root_rules_hearing_tests;
+
+#[cfg(test)]
+#[path = "tests/config_store_recovery_tests.rs"]
+mod config_store_recovery_tests;
