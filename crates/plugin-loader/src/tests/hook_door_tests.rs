@@ -36,6 +36,281 @@ use hook_door_plugin::{
     BROKEN_NAME, MAX_INFLIGHT, NAME, PANICKING_NAME, REJECT_STATUS, UNTAILED_NAME,
 };
 
+#[path = "../../tests/fixtures/hook_checkpoint_plugin.rs"]
+mod checkpoint_plugin;
+
+#[path = "hook_checkpoint_cancellation_tests.rs"]
+mod checkpoint_cancellation;
+
+fn checkpoint_instance(
+    way: Way,
+    mode: &str,
+) -> (super::HookInstance, Arc<std::sync::atomic::AtomicUsize>) {
+    use crate::dispatch::{ConnTable, NoSink};
+    let axis = rows(checkpoint_plugin::door, "hook_checkpoint_door", way);
+    let candidate = axis.find(checkpoint_plugin::NAME).unwrap().clone();
+    let dispatcher = Arc::clone(&axis.dispatcher);
+    let binds = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let bind = {
+        let dispatcher = Arc::clone(&dispatcher);
+        let binds = Arc::clone(&binds);
+        move || {
+            binds.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            HookRows::bind(
+                &candidate,
+                &dispatcher,
+                "hooks.checkpoint",
+                Arc::new(NoSink),
+                ConnTable::NoNeeds,
+            )
+        }
+    };
+    let settings = json!({"reject_over_messages": 3, "checkpoint_mode": mode}).to_string();
+    (
+        super::HookInstance::open(bind().unwrap(), dispatcher, settings.as_bytes(), bind).unwrap(),
+        binds,
+    )
+}
+
+fn regenerate(instance: &super::HookInstance) {
+    let retired = {
+        let mut state = instance.inner.lock();
+        std::mem::replace(
+            &mut *state,
+            super::State::Quarantined {
+                trial_at: std::time::Instant::now(),
+                window: super::QUARANTINE_FIRST,
+            },
+        )
+    };
+    if let super::State::Live(plugin) = retired {
+        super::close(&plugin);
+    }
+}
+
+/// Existing ABI only: a plugin supplies its complete state as opaque extension bytes. The last
+/// pushed object is intentionally empty/null/stale, so replaying that object loses the live state.
+#[tokio::test]
+async fn complete_configure_checkpoints_survive_partial_pushes_through_both_doors() {
+    use busbar_contract::hook_calls::HookCalls;
+    for way in [Way::Linked, Way::Dropped] {
+        let (instance, binds) = checkpoint_instance(way, "valid");
+        regenerate(&instance);
+        let initial = instance.decide(frame(2), BUDGET).await;
+        assert!(matches!(initial, Answered::Answer { out, .. } if out.reject_status == 0));
+        instance
+            .configure("checkpoint", r#"{"reject_over_messages":1}"#, 2, BUDGET)
+            .await
+            .unwrap();
+        for (settings, version) in [
+            ("{}", 3),
+            (r#"{"reject_over_messages":null}"#, 3),
+            (r#"{"reject_over_messages":8}"#, 1),
+        ] {
+            instance
+                .configure("checkpoint", settings, version, BUDGET)
+                .await
+                .unwrap();
+            let live = instance.decide(frame(2), BUDGET).await;
+            assert!(
+                matches!(live, Answered::Answer { out, .. } if out.reject_status == REJECT_STATUS),
+                "{way:?}: live partial push changed effective state"
+            );
+        }
+        assert!(instance
+            .configure(
+                "checkpoint",
+                r#"{"reject_over_messages":"invalid"}"#,
+                4,
+                BUDGET
+            )
+            .await
+            .is_err());
+        for _ in 0..3 {
+            regenerate(&instance);
+            let reopened = instance.decide(frame(2), BUDGET).await;
+            assert!(
+                matches!(reopened, Answered::Answer { out, .. } if out.reject_status == REJECT_STATUS),
+                "{way:?}: regenerated instance lost acknowledged state: {}",
+                decided(2, &reopened)
+            );
+        }
+        assert_eq!(binds.load(std::sync::atomic::Ordering::SeqCst), 5);
+    }
+}
+
+/// An older plugin may ACK opaque partial updates without supplying a checkpoint. It keeps its
+/// live behavior, but the host must not invent recoverable state when that instance is lost.
+#[tokio::test]
+async fn missing_or_malformed_checkpoints_never_reopen_silently_stale_through_both_doors() {
+    use busbar_contract::hook_calls::HookCalls;
+    for way in [Way::Linked, Way::Dropped] {
+        for mode in ["none", "malformed"] {
+            let (instance, _) = checkpoint_instance(way, mode);
+            let ack = instance
+                .configure("checkpoint", r#"{"reject_over_messages":1}"#, 2, BUDGET)
+                .await;
+            assert_eq!(ack.is_ok(), mode == "none");
+            let live = instance.decide(frame(2), BUDGET).await;
+            assert!(
+                matches!(live, Answered::Answer { out, .. } if out.reject_status == REJECT_STATUS)
+            );
+            regenerate(&instance);
+            let reopened = instance.decide(frame(2), BUDGET).await;
+            assert!(
+                matches!(reopened, Answered::Broken(_)),
+                "{way:?}/{mode}: recovery guessed opaque settings"
+            );
+            assert!(instance.quarantined());
+        }
+    }
+}
+
+#[tokio::test]
+async fn notified_hook_replies_release_their_leases_through_both_doors() {
+    use busbar_contract::hook_calls::HookCalls;
+    for way in [Way::Linked, Way::Dropped] {
+        let (instance, _) = checkpoint_instance(way, "valid");
+        for _ in 0..3 {
+            instance
+                .notify(
+                    busbar_contract::abi::host::hook::NotifyFrame::build(&request(1), None, false),
+                    BUDGET,
+                )
+                .await;
+            let status = instance.status(BUDGET).await.unwrap();
+            assert_eq!(
+                serde_json::from_slice::<serde_json::Value>(&status).unwrap()["held"],
+                0,
+                "{way:?}: notify retained its reply lease"
+            );
+        }
+    }
+}
+
+fn complete_checkpoint(
+    revision: u64,
+    version: u64,
+    limit: u64,
+) -> busbar_contract::abi::sdk::hook::ConfigureCheckpoint {
+    busbar_contract::abi::sdk::hook::ConfigureCheckpoint::new(
+        revision,
+        version,
+        json!({"reject_over_messages":limit})
+            .to_string()
+            .into_bytes(),
+    )
+    .unwrap()
+}
+
+#[tokio::test]
+async fn delayed_equal_version_and_retired_instance_acks_cannot_roll_back_recovery() {
+    use busbar_contract::hook_calls::HookCalls;
+    let (instance, _) = checkpoint_instance(Way::Linked, "valid");
+    let original = match &*instance.inner.lock() {
+        super::State::Live(p) => Arc::clone(p),
+        _ => panic!("opened"),
+    };
+    instance
+        .inner
+        .acknowledged(
+            &original,
+            "checkpoint",
+            3,
+            Ok(Some(complete_checkpoint(2, 3, 1))),
+        )
+        .unwrap();
+    instance
+        .inner
+        .acknowledged(
+            &original,
+            "checkpoint",
+            3,
+            Ok(Some(complete_checkpoint(1, 3, 8))),
+        )
+        .unwrap();
+    regenerate(&instance);
+    let answer = instance.decide(frame(2), BUDGET).await;
+    assert!(matches!(answer, Answered::Answer {out, ..} if out.reject_status == REJECT_STATUS));
+    assert!(instance
+        .inner
+        .acknowledged(
+            &original,
+            "checkpoint",
+            99,
+            Ok(Some(complete_checkpoint(99, 99, 8)))
+        )
+        .is_err());
+    regenerate(&instance);
+    let answer = instance.decide(frame(2), BUDGET).await;
+    assert!(matches!(answer, Answered::Answer {out, ..} if out.reject_status == REJECT_STATUS));
+}
+
+#[tokio::test]
+async fn an_ack_racing_the_replay_is_restored_before_the_trial_is_published() {
+    use busbar_contract::hook_calls::HookCalls;
+    let (instance, _) = checkpoint_instance(Way::Linked, "block_replay");
+    instance
+        .configure("checkpoint", r#"{"reject_over_messages":2}"#, 2, BUDGET)
+        .await
+        .unwrap();
+    let original = match &*instance.inner.lock() {
+        super::State::Live(p) => Arc::clone(p),
+        _ => panic!("opened"),
+    };
+    let (entered, entered_rx) = std::sync::mpsc::channel();
+    let (release, released) = std::sync::mpsc::channel();
+    *checkpoint_plugin::BLOCK_CONFIGURE.lock().unwrap() = Some((entered, released));
+    regenerate(&instance);
+    let trial = tokio::spawn(instance.decide(frame(2), BUDGET));
+    tokio::task::spawn_blocking(move || entered_rx.recv_timeout(BUDGET).unwrap())
+        .await
+        .unwrap();
+    // The fresh plugin is blocked inside configure. This old reply can still acquire the host's
+    // custody lock, and changes the saved checkpoint after the trial already copied its predecessor.
+    instance
+        .inner
+        .acknowledged(
+            &original,
+            "checkpoint",
+            3,
+            Ok(Some(complete_checkpoint(2, 3, 1))),
+        )
+        .unwrap();
+    release.send(()).unwrap();
+    let answer = trial.await.unwrap();
+    assert!(matches!(answer, Answered::Answer {out, ..} if out.reject_status == REJECT_STATUS));
+    assert!(!instance.quarantined());
+}
+
+#[tokio::test]
+async fn a_missing_checkpoint_cannot_be_repaired_by_an_older_delayed_reply() {
+    use busbar_contract::hook_calls::HookCalls;
+    let (instance, _) = checkpoint_instance(Way::Linked, "valid");
+    let original = match &*instance.inner.lock() {
+        super::State::Live(p) => Arc::clone(p),
+        _ => panic!("opened"),
+    };
+    instance
+        .inner
+        .acknowledged(&original, "checkpoint", 3, Ok(None))
+        .unwrap();
+    instance
+        .inner
+        .acknowledged(
+            &original,
+            "checkpoint",
+            2,
+            Ok(Some(complete_checkpoint(1, 2, 1))),
+        )
+        .unwrap();
+    regenerate(&instance);
+    assert!(matches!(
+        instance.decide(frame(2), BUDGET).await,
+        Answered::Broken(_)
+    ));
+}
+
 /// The SDK's refresh boundary, through a loaded door and real connector services. No worker or
 /// timing race is needed: an inline ticket explicitly resumes the exchange parked by its first call.
 mod sdk_refresh {
@@ -955,47 +1230,64 @@ async fn a_slow_hook_is_cut_off_at_its_budget_through_the_axis() {
 /// every time.
 #[tokio::test]
 async fn a_call_refused_at_the_cap_as_the_watchdog_faults_the_instance_waits_for_its_trial() {
-    let axis = rows(hook_door_plugin::conforming::door, "hook_door", Way::Linked);
-    // `sleep_ms` past the Call class budget: the watchdog faults the wedged crossings; the odd
-    // figure marks this instance's settings for the hold.
-    let wedged: Arc<dyn busbar_contract::hook_calls::HookCalls> = axis
-        .open(
-            NAME,
-            "hooks.wedged-race",
-            &json!({"reject_over_messages": 3, "sleep_ms": 1_501}),
-            BUDGET,
-        )
-        .expect("the wedged gate opens");
-    *crate::hook_door::HOLD_REFUSED_UNTIL_FAULTED_FOR_TESTS
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(b"\"sleep_ms\":1501".to_vec());
-    let mut inflight = Vec::with_capacity(MAX_INFLIGHT as usize);
-    for _ in 0..MAX_INFLIGHT {
-        let wedged = Arc::clone(&wedged);
-        inflight.push(tokio::spawn(async move {
-            let _ = wedged.decide(frame(2), Duration::from_millis(50)).await;
-        }));
+    for configuring in [false, true] {
+        let axis = rows(
+            hook_door_plugin::configurable::door,
+            "hook_door",
+            Way::Linked,
+        );
+        // `sleep_ms` past the Call class budget: the watchdog faults the wedged crossings; the odd
+        // figure marks this instance's settings for the hold.
+        let wedged: Arc<dyn busbar_contract::hook_calls::HookCalls> = axis
+            .open(
+                hook_door_plugin::CONFIGURABLE_NAME,
+                "hooks.wedged-race",
+                &json!({"reject_over_messages": 3, "sleep_ms": 1_501}),
+                BUDGET,
+            )
+            .expect("the wedged gate opens");
+        *crate::hook_door::HOLD_REFUSED_UNTIL_FAULTED_FOR_TESTS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+            Some(b"\"sleep_ms\":1501".to_vec());
+        let mut inflight = Vec::with_capacity(MAX_INFLIGHT as usize);
+        for _ in 0..MAX_INFLIGHT {
+            let wedged = Arc::clone(&wedged);
+            inflight.push(tokio::spawn(async move {
+                let _ = wedged.decide(frame(2), Duration::from_millis(50)).await;
+            }));
+        }
+        for h in inflight {
+            let _ = h.await;
+        }
+        // Every unit is held by a wedged crossing (the callers gave up; the crossings run on), so this
+        // call is refused at the cap, held until the watchdog faults the instance, then judged.
+        let (ready, detail) = if configuring {
+            let answer = wedged
+                .configure("wedged-race", r#"{"reject_over_messages":1}"#, 2, BUDGET)
+                .await;
+            (answer.is_ok(), format!("{answer:?}"))
+        } else {
+            let answer = wedged.decide(frame(2), BUDGET).await;
+            (
+                matches!(
+                    answer,
+                    Answered::Answer {
+                        outcome: busbar_contract::abi::mechanism::call::Outcome::Ready,
+                        ..
+                    }
+                ),
+                decided(2, &answer),
+            )
+        };
+        *crate::hook_door::HOLD_REFUSED_UNTIL_FAULTED_FOR_TESTS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+        assert!(
+            ready,
+            "a cap-refused call waits for its fresh trial (configure={configuring}): {detail}"
+        );
     }
-    for h in inflight {
-        let _ = h.await;
-    }
-    // Every unit is held by a wedged crossing (the callers gave up; the crossings run on), so this
-    // call is refused at the cap, held until the watchdog faults the instance, then judged.
-    let answered = wedged.decide(frame(2), BUDGET).await;
-    *crate::hook_door::HOLD_REFUSED_UNTIL_FAULTED_FOR_TESTS
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
-    assert!(
-        matches!(
-            answered,
-            Answered::Answer {
-                outcome: busbar_contract::abi::mechanism::call::Outcome::Ready,
-                ..
-            }
-        ),
-        "a call the cap refused as the instance was quarantined waits for its trial: {}",
-        decided(2, &answered)
-    );
 }
 
 /// PB-81 (`max_inflight` per loaded hook; 1.5.5 pinned `MAX_INFLIGHT_HOOK_CALLS = 64`, a 1.6.0 hook
@@ -1290,13 +1582,9 @@ async fn a_trial_keeps_the_settings_the_hook_acknowledged() {
     use super::{HookInstance, State};
     use crate::dispatch::{ConnTable, NoSink};
     use busbar_contract::hook_calls::HookCalls;
-    let axis = rows(
-        hook_door_plugin::configurable::door,
-        "hook_door",
-        Way::Linked,
-    );
+    let axis = rows(checkpoint_plugin::door, "hook_checkpoint_door", Way::Linked);
     let c = axis
-        .find(hook_door_plugin::CONFIGURABLE_NAME)
+        .find(checkpoint_plugin::NAME)
         .expect("the linked row")
         .clone();
     let dispatcher = Arc::clone(&axis.dispatcher);
