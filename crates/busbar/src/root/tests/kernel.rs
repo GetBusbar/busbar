@@ -634,6 +634,13 @@ fn plane_fees() -> busbar_kernel::config::PlaneFeesMap {
 /// took the card is read off the history (`holder.len()`), never off the answer.
 fn apply_at(holder: &RootHistory, price: f64, at: u64) {
     let _ = try_apply_at(holder, price, at);
+    let book = match &*holder.journal.lock().unwrap() {
+        CardJournal::Bound { book, .. } => Some(book.clone()),
+        _ => None,
+    };
+    if let Some(book) = book {
+        drain_book(&book);
+    }
 }
 
 /// [`apply_at`], answering the holder's verdict.
@@ -682,45 +689,43 @@ fn process_holder() -> &'static RootHistory {
     holder
 }
 
-/// A directory of the test's own for a node's journal.
-fn journal_dir(tag: &str) -> std::path::PathBuf {
-    let path = std::env::temp_dir().join(format!(
-        "busbar-root-card-history-{tag}-{}-{:?}",
-        std::process::id(),
-        std::thread::current().id()
-    ));
-    let _ = std::fs::remove_dir_all(&path);
-    std::fs::create_dir_all(&path).expect("scratch directory");
-    path
-}
-
-/// The boot's book over `dir`, rebuilding `holder`'s dated history from its chain and pricing the
-/// replay through it — `build_for_node` with the holder named.
+/// A book over one configured Store; fresh holders over this same fixture are restarts.
 fn boot_book(
     holder: &'static RootHistory,
-    dir: &std::path::Path,
+    store: &crate::root::store_double::RecordSlots,
 ) -> Arc<Mutex<crate::root::durability::Durability>> {
-    let book = open_book(holder, dir);
+    let book = open_book(holder, store);
     holder.bind_journal(&book);
     book
 }
 
-/// [`boot_book`] before its handle is bound: the history is rebuilt and every apply after it is
-/// HELD off the chain until [`RootHistory::bind_journal`].
+/// Rebuild before binding, to exercise the explicit unbound apply boundary.
 fn open_book(
     holder: &'static RootHistory,
-    dir: &std::path::Path,
+    store: &crate::root::store_double::RecordSlots,
 ) -> Arc<Mutex<crate::root::durability::Durability>> {
-    let book = crate::root::durability::build_with_cards(
-        &crate::root::durability::DurabilityConfig {
-            data_dir: Some(dir.to_path_buf()),
-        },
+    let lane = crate::root::durability::JournalLane::start(store.calls(), "card-history-test")
+        .expect("the Store lane starts");
+    let book = crate::root::durability::build_on_store(
+        &crate::root::durability::DurabilityConfig { data_dir: None },
         7,
-        Box::new(busbar_kernel_wal::NullShipper::new()),
+        lane,
         Some(holder),
     )
-    .expect("the journal opens");
-    Arc::new(Mutex::new(book))
+    .expect("the journal opens over the Store");
+    let book = Arc::new(Mutex::new(book));
+    drain_book(&book);
+    book
+}
+
+fn drain_book(book: &Arc<Mutex<crate::root::durability::Durability>>) {
+    let lane = book.lock().unwrap().lane().cloned();
+    if let Some(lane) = lane {
+        assert!(
+            lane.drain(std::time::Duration::from_secs(10)),
+            "Store acknowledges the chain"
+        );
+    }
 }
 
 /// What a million `input` tokens earned on `lane` at `at` cost, in nano-units: the counts priced by
@@ -746,6 +751,7 @@ fn figures(holder: &RootHistory) -> (u64, u64) {
 
 /// How many applied cards the chain holds.
 fn cards_on_chain(book: &Arc<Mutex<crate::root::durability::Durability>>) -> usize {
+    drain_book(book);
     book.lock()
         .expect("the book")
         .journal
@@ -817,13 +823,13 @@ fn usage_row_micros(holder: &RootHistory, priced_from_ms: u64, input: u64) -> i6
 /// the price to C prices from its boot forward and leaves every earlier figure where it was.
 #[test]
 fn a_restart_prices_every_posting_at_the_card_in_force_when_it_arrived() {
-    let dir = journal_dir("restart");
+    let store = crate::root::store_double::RecordSlots::new();
 
     // THE FIRST PROCESS: boots at A, earns, applies B live, earns again.
     let figures_before = {
         let holder = process_holder();
         apply_at(holder, 3.0, BOOT_A);
-        let book = boot_book(holder, &dir);
+        let book = boot_book(holder, &store);
         apply_at(holder, 5.0, APPLIED_B);
         assert_eq!(cards_on_chain(&book), 2, "the boot card and the live apply");
         figures(holder)
@@ -833,7 +839,7 @@ fn a_restart_prices_every_posting_at_the_card_in_force_when_it_arrived() {
     // THE RESTART, at the price B already set.
     let holder = process_holder();
     apply_at(holder, 5.0, REBOOT);
-    let book = boot_book(holder, &dir);
+    let book = boot_book(holder, &store);
     assert_eq!(
         figures(holder),
         figures_before,
@@ -859,7 +865,7 @@ fn a_restart_prices_every_posting_at_the_card_in_force_when_it_arrived() {
     // A RESTART THAT CHANGES THE PRICE prices from its boot forward, and nothing before it.
     let holder = process_holder();
     apply_at(holder, 7.0, REBOOT_CHANGED);
-    let book = boot_book(holder, &dir);
+    let book = boot_book(holder, &store);
     assert_eq!(figures(holder), figures_before);
     assert_eq!(holder.len(), 3);
     assert_eq!(cards_on_chain(&book), 3);
@@ -880,74 +886,42 @@ fn a_restart_prices_every_posting_at_the_card_in_force_when_it_arrived() {
         "the plane's own card is dated with the rest"
     );
     drop(book);
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// Where the writes in segment `index` under `dir` end: the last frame holding a non-zero byte.
-fn written_end(dir: &std::path::Path, index: u64) -> usize {
-    let factory = busbar_kernel_wal::DirectoryFactory::new(dir).expect("the journal directory");
-    let bytes = std::fs::read(factory.segment_path(index)).expect("the segment reads");
-    let last = bytes.iter().rposition(|&b| b != 0).map_or(0, |i| i + 1);
-    last.div_ceil(busbar_kernel_wal::FRAME_BYTES) * busbar_kernel_wal::FRAME_BYTES
-}
-
-/// Lay the log under `dir` out as a roll at byte `at` of segment zero would have: everything from
-/// `at` on moves, frame for frame, to the start of segment one. Exactly the bytes a log at a
-/// ceiling of `at` writes — the next batch that does not fit goes to the next segment's offset zero.
-fn roll_at(dir: &std::path::Path, at: usize) {
-    let factory = busbar_kernel_wal::DirectoryFactory::new(dir).expect("the journal directory");
-    let end = written_end(dir, 0);
-    let first = factory.segment_path(0);
-    let bytes = std::fs::read(&first).expect("the segment reads");
-    assert!(end > at, "the second process wrote past the roll point");
-    std::fs::write(factory.segment_path(1), &bytes[at..end]).expect("segment one");
-    std::fs::write(&first, &bytes[..at]).expect("segment zero, cut at the roll");
-}
-
-/// **A RESTART AFTER A SEGMENT ROLL PRICES AT THE CARD IN FORCE, NOT THE NEWEST SEGMENT'S** (#79,
-/// MONEY-AUDIT E1).
-///
-/// Card A is journalled at the first boot, in segment zero. The log rolls; a million tokens are
-/// earned at A, card B (5) is applied and a million more are earned. The restart has to read the
-/// chain from segment zero: a replay of the newest segment alone finds card B as the opening entry
-/// and reprices the A-era posting at 5 — 10,000,000,000 where 8,000,000,000 was served.
+/// The Store's chunked chain must restore the whole history, including cards preceding a
+/// multi-record payload. This replaces the host directory-segment fixture: physical segment
+/// management now belongs to the configured Store.
 #[test]
-fn a_restart_after_a_roll_prices_every_posting_at_the_card_in_force_when_it_arrived() {
-    let dir = journal_dir("restart-after-a-roll");
-
-    // THE FIRST PROCESS: boots at A and journals it.
-    {
-        let holder = process_holder();
-        apply_at(holder, 3.0, BOOT_A);
-        drop(boot_book(holder, &dir));
-    }
-    let roll = written_end(&dir, 0);
-
-    // THE SECOND: boots at the same price, earns at A, applies B, earns at B.
-    let figures_before = {
-        let holder = process_holder();
-        apply_at(holder, 3.0, BOOT_A + 1);
-        let book = boot_book(holder, &dir);
-        apply_at(holder, 5.0, APPLIED_B);
-        drop(book);
-        figures(holder).0
-    };
-    assert_eq!(figures_before, 8_000_000_000);
-    roll_at(&dir, roll);
-
-    // THE RESTART reads both segments.
+fn a_restart_after_store_chunks_prices_every_posting_at_the_card_in_force_when_it_arrived() {
+    let store = crate::root::store_double::RecordSlots::new();
     let holder = process_holder();
-    apply_at(holder, 5.0, REBOOT);
-    let book = boot_book(holder, &dir);
+    apply_at(holder, 3.0, BOOT_A);
+    let book = boot_book(holder, &store);
+    book.lock()
+        .unwrap()
+        .journal
+        .append(
+            &busbar_kernel::test_support::tokens::grant::<busbar_contract::caps::DurableWrite>(),
+            busbar_contract::caps::StepName::Meter,
+            &[busbar_kernel_wal::Entry::new(
+                busbar_kernel_wal::RecordClass::Load,
+                vec![7; 4096],
+            )],
+        )
+        .expect("a payload crosses multiple Store records");
+    apply_at(holder, 5.0, APPLIED_B);
+    drain_book(&book);
+    let figures_before = figures(holder);
+    let restarted = process_holder();
+    apply_at(restarted, 5.0, REBOOT);
+    let restarted_book = boot_book(restarted, &store);
+    assert_eq!(figures(restarted), figures_before);
     assert_eq!(
-        figures(holder).0,
-        figures_before,
-        "a restart after a roll repriced counts at a card that was not in force when they arrived"
+        cards_on_chain(&restarted_book),
+        2,
+        "both eras survive Store chunking"
     );
-    assert_eq!(cards_on_chain(&book), 2, "card A from segment zero, card B");
-    assert!(book.lock().expect("the book").restart_findings.is_empty());
-    drop(book);
-    let _ = std::fs::remove_dir_all(&dir);
+    assert!(restarted_book.lock().unwrap().restart_findings.is_empty());
 }
 
 /// A store that takes nothing: a memory-buffered journal over it refuses every append.
@@ -983,10 +957,10 @@ fn flat_price_at(holder: &RootHistory, at: u64) -> Option<u64> {
 /// every row earned under it repriced at the card before.
 #[test]
 fn a_rate_apply_the_journal_refuses_leaves_the_card_in_force_unchanged() {
-    let dir = journal_dir("refused-apply");
+    let store = crate::root::store_double::RecordSlots::new();
     let holder = process_holder();
     apply_at(holder, 3.0, BOOT_A);
-    let book = boot_book(holder, &dir);
+    let book = boot_book(holder, &store);
     assert_eq!(cards_on_chain(&book), 1, "the boot card is journalled");
     book.lock().expect("the book").journal = busbar_kernel_wal::Journal::memory_buffered_to(
         7,
@@ -1005,7 +979,6 @@ fn a_rate_apply_the_journal_refuses_leaves_the_card_in_force_unchanged() {
         "the card in force is the one the journal holds"
     );
     drop(book);
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// A store whose answer the test flips: refusing, a memory-buffered journal over it retains every
@@ -1030,6 +1003,7 @@ impl busbar_kernel_wal::Shipper<busbar_kernel_wal::Record> for SwitchShipper {
 fn chain_records(
     book: &Arc<Mutex<crate::root::durability::Durability>>,
 ) -> Vec<busbar_kernel_wal::JournalRecord> {
+    drain_book(book);
     book.lock()
         .expect("the book")
         .journal
@@ -1156,10 +1130,10 @@ impl busbar_kernel_wal::SegmentFactory for BreakableDisk {
 #[test]
 fn a_rate_card_the_log_owes_after_a_failed_roll_is_not_published_while_unconfirmed() {
     use busbar_contract::caps::DurableWrite;
-    let dir = journal_dir("dropped-apply");
+    let store = crate::root::store_double::RecordSlots::new();
     let holder = process_holder();
     apply_at(holder, 3.0, BOOT_A);
-    let book = boot_book(holder, &dir);
+    let book = boot_book(holder, &store);
     let failing = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let log = busbar_kernel_wal::Wal::with_parts(
         Box::new(BreakableDisk {
@@ -1223,29 +1197,19 @@ fn a_rate_card_the_log_owes_after_a_failed_roll_is_not_published_while_unconfirm
          section 3a)"
     );
     drop(book);
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// An apply between the boot's rebuild and the book's bind has no journal to go on: it is refused,
 /// and the first apply after the bind is journalled and published.
 #[test]
 fn a_rate_apply_before_the_book_is_bound_is_refused() {
-    let dir = journal_dir("unbound-apply");
+    let store = crate::root::store_double::RecordSlots::new();
     let holder = process_holder();
     apply_at(holder, 3.0, BOOT_A);
-    let book = crate::root::durability::build_with_cards(
-        &crate::root::durability::DurabilityConfig {
-            data_dir: Some(dir.clone()),
-        },
-        7,
-        Box::new(busbar_kernel_wal::NullShipper::new()),
-        Some(holder),
-    )
-    .expect("the journal opens");
+    let book = open_book(holder, &store);
     apply_at(holder, 5.0, APPLIED_B);
     assert_eq!(holder.len(), 1, "no journal bound, no card published");
     assert_eq!(flat_price_at(holder, EARNED_B), Some(3_000));
-    let book = Arc::new(Mutex::new(book));
     holder.bind_journal(&book);
     apply_at(holder, 5.0, EARNED_B);
     assert_eq!(holder.len(), 2);
@@ -1256,7 +1220,6 @@ fn a_rate_apply_before_the_book_is_bound_is_refused() {
     );
     assert_eq!(flat_price_at(holder, REBOOT), Some(5_000));
     drop(book);
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// The book's chain swapped for a memory-buffered one over a store the test flips (refusing at
@@ -1310,17 +1273,8 @@ fn no_data_dir_or_no_arming_keeps_the_boot_card_and_journals_nothing() {
 
     let unarmed: &'static RootHistory = Box::leak(Box::default());
     apply_at(unarmed, 3.0, BOOT_A);
-    let dir = journal_dir("unarmed");
-    let book = crate::root::durability::build_with_cards(
-        &crate::root::durability::DurabilityConfig {
-            data_dir: Some(dir.clone()),
-        },
-        7,
-        Box::new(busbar_kernel_wal::NullShipper::new()),
-        Some(unarmed),
-    )
-    .expect("the journal opens");
-    let book = Arc::new(Mutex::new(book));
+    let store = crate::root::store_double::RecordSlots::new();
+    let book = open_book(unarmed, &store);
     unarmed.bind_journal(&book);
     apply_at(unarmed, 5.0, APPLIED_B);
     assert_eq!(
@@ -1329,7 +1283,6 @@ fn no_data_dir_or_no_arming_keeps_the_boot_card_and_journals_nothing() {
         "an unarmed holder journals nothing"
     );
     drop(book);
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// **AN APPLIED CARD ROUND-TRIPS THE JOURNAL AS THE SAME CARD, EVERY PLANE INCLUDED** (#47): the
@@ -1432,11 +1385,11 @@ fn a_back_dated_correction_survives_a_restart() {
     /// A unit the day after the corrected window.
     const OUTSIDE: u64 = 86_400_000 + EARNED_B;
     const SIGNED_AT: u64 = 20_000;
-    let dir = journal_dir("amended");
+    let store = crate::root::store_double::RecordSlots::new();
     {
         let holder = process_holder();
         apply_at(holder, 3.0, BOOT_A);
-        let book = boot_book(holder, &dir);
+        let book = boot_book(holder, &store);
         // The effect half of the verb, as `amend_rate_history_effect` runs it: the record first
         // (sealing the corrected card), then the append.
         let journal = crate::root::units_admin::AmendmentJournal::new(
@@ -1479,11 +1432,12 @@ fn a_back_dated_correction_survives_a_restart() {
                 },
             )
             .expect("a resolved history takes a correction");
+        drain_book(&book);
     }
 
     let holder = process_holder();
     apply_at(holder, 3.0, REBOOT);
-    let book = boot_book(holder, &dir);
+    let book = boot_book(holder, &store);
     assert_eq!(
         (
             earned(holder, FLAT_LANE, EARNED_A),
@@ -1507,7 +1461,6 @@ fn a_back_dated_correction_survives_a_restart() {
         busbar_kernel_ledger::cost::Author::Amend { .. }
     ));
     drop(book);
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// The effect half of `amend_rate_history`, as `amend_rate_history_effect` runs it: [`FLAT_LANE`]
@@ -1528,7 +1481,7 @@ fn seal_correction(
         Arc::clone(book),
         busbar_kernel::test_support::tokens::grant::<DurableWrite>(),
     );
-    holder
+    let seq = holder
         .amend(
             &super::Correction {
                 effective_from: window.0,
@@ -1563,7 +1516,9 @@ fn seal_correction(
                 )
             },
         )
-        .expect("a resolved history takes a correction")
+        .expect("a resolved history takes a correction");
+    drain_book(book);
+    seq
 }
 
 /// Every journalled correction `book`'s restart refused, as its restart findings name them.
@@ -1602,11 +1557,11 @@ fn holds_a_correction(holder: &RootHistory) -> bool {
 fn a_restore_whose_prefix_lacks_the_corrections_base_refuses_it() {
     const CORRECTED: (u64, u64) = (APPLIED_B, 86_400_000);
     const SIGNED_AT: u64 = 36_000;
-    let dir = journal_dir("missing-base");
+    let store = crate::root::store_double::RecordSlots::new();
     {
         let holder = process_holder();
         apply_at(holder, 3.0, BOOT_A);
-        let book = boot_book(holder, &dir);
+        let book = boot_book(holder, &store);
         publish_unjournalled_at(holder, 5.0, APPLIED_B);
         assert_eq!(holder.len(), 2, "card B is entry 1 on the live history");
         let seq = seal_correction(holder, &book, CORRECTED, SIGNED_AT, 4_000, |base| base);
@@ -1615,7 +1570,7 @@ fn a_restore_whose_prefix_lacks_the_corrections_base_refuses_it() {
 
     let holder = process_holder();
     apply_at(holder, 5.0, REBOOT);
-    let book = boot_book(holder, &dir);
+    let book = boot_book(holder, &store);
     assert_eq!(
         refused_corrections(&book),
         vec![super::CorrectionRefused {
@@ -1643,7 +1598,6 @@ fn a_restore_whose_prefix_lacks_the_corrections_base_refuses_it() {
         "a refused correction is not rebuilt over another card"
     );
     drop(book);
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// **A RESTORE WHOSE BASE CARD DIFFERS REFUSES THE CORRECTION** (#79). The record names entry 0, the
@@ -1655,11 +1609,11 @@ fn a_restore_whose_prefix_lacks_the_corrections_base_refuses_it() {
 fn a_restore_whose_base_digest_differs_refuses_the_correction() {
     const CORRECTED: (u64, u64) = (0, 86_400_000);
     const SIGNED_AT: u64 = 20_000;
-    let dir = journal_dir("base-digest");
+    let store = crate::root::store_double::RecordSlots::new();
     let sealed_over = {
         let holder = process_holder();
         apply_at(holder, 3.0, BOOT_A);
-        let book = boot_book(holder, &dir);
+        let book = boot_book(holder, &store);
         let mut sealed_over = None;
         seal_correction(holder, &book, CORRECTED, SIGNED_AT, 4_000, |mut base| {
             base.card_digest[0] ^= 0xff;
@@ -1672,7 +1626,7 @@ fn a_restore_whose_base_digest_differs_refuses_the_correction() {
 
     let holder = process_holder();
     apply_at(holder, 3.0, REBOOT);
-    let book = boot_book(holder, &dir);
+    let book = boot_book(holder, &store);
     assert_eq!(
         refused_corrections(&book),
         vec![super::CorrectionRefused {
@@ -1687,7 +1641,6 @@ fn a_restore_whose_base_digest_differs_refuses_the_correction() {
     assert!(!holds_a_correction(holder));
     assert_eq!(holder.len(), 1, "the opening card alone");
     drop(book);
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// **A RESTORE OVER THE SEALED BASE REBUILDS THE IDENTICAL CARD** (#79, #42, #44). The correction is
@@ -1699,11 +1652,11 @@ fn a_restore_whose_base_digest_differs_refuses_the_correction() {
 fn a_restore_over_the_sealed_base_rebuilds_the_identical_card() {
     const CORRECTED: (u64, u64) = (0, 86_400_000);
     const SIGNED_AT: u64 = 20_000;
-    let dir = journal_dir("sealed-base");
+    let store = crate::root::store_double::RecordSlots::new();
     let (live_seq, live_card) = {
         let holder = process_holder();
         apply_at(holder, 3.0, BOOT_A);
-        let book = boot_book(holder, &dir);
+        let book = boot_book(holder, &store);
         let seq = seal_correction(holder, &book, CORRECTED, SIGNED_AT, 4_000, |base| base);
         let history = holder.history().expect("a history");
         let card = history
@@ -1717,7 +1670,7 @@ fn a_restore_over_the_sealed_base_rebuilds_the_identical_card() {
 
     let holder = process_holder();
     apply_at(holder, 3.0, REBOOT);
-    let book = boot_book(holder, &dir);
+    let book = boot_book(holder, &store);
     assert!(
         book.lock().expect("the book").restart_findings.is_empty(),
         "{:?}",
@@ -1746,7 +1699,6 @@ fn a_restore_over_the_sealed_base_rebuilds_the_identical_card() {
         Some(4_000)
     );
     drop(book);
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// APPLYING A CONFIGURATION REGISTERS EVERY CLASS A UNIT MAY REPORT: the reserved four and each
@@ -1938,5 +1890,124 @@ fn a_stored_chain_that_does_not_verify_never_disarms_the_card_journal() {
             CardJournal::Armed(_)
         ),
         "the card journal is left armed, never disarmed by a chain the boot could not verify"
+    );
+}
+
+#[test]
+fn store_card_history_ignores_absent_and_unusable_data_directories_without_writing_files() {
+    let scratch = std::env::temp_dir().join(format!(
+        "busbar-store-card-config-{}-{}",
+        std::process::id(),
+        hex::encode(crate::root::card_store::boot_rand())
+    ));
+    std::fs::create_dir(&scratch).unwrap();
+    let blocked = scratch.join("a-file-not-a-directory");
+    std::fs::write(&blocked, b"unchanged fixture").unwrap();
+    let slots = crate::root::store_double::RecordSlots::new();
+    let boot = busbar_kernel::config::card::CardFields {
+        per_request_fee: 3,
+        ..Default::default()
+    };
+    let mut edited = boot.clone();
+    edited.per_request_fee = 7;
+    let mut changed_key = None;
+    for data_dir in [None, Some(blocked.join("cannot-open"))] {
+        let holder: &'static RootHistory = Box::leak(Box::default());
+        holder.keep_in_store(slots.calls(), 7);
+        holder.card_applied(&boot, "boot fixture");
+        let lane = crate::root::durability::JournalLane::start(slots.calls(), "test-store")
+            .expect("Store lane");
+        let book = crate::root::durability::build_on_store(
+            &crate::root::durability::DurabilityConfig { data_dir },
+            7,
+            lane,
+            Some(holder),
+        )
+        .expect("Store owns persistence independently of dataDir");
+        holder.card_applied(&edited, "config/apply by admin");
+        let own = holder.card_store().unwrap().own().unwrap();
+        assert_eq!(own.1, edited);
+        if let Some(key) = changed_key {
+            assert!(holder
+                .card_store()
+                .unwrap()
+                .entries()
+                .iter()
+                .any(|entry| entry.key == key));
+        }
+        changed_key = Some(own.0);
+        assert!(holder.pending_refusal().is_none());
+        drop(book);
+        assert_eq!(std::fs::read(&blocked).unwrap(), b"unchanged fixture");
+        assert_eq!(
+            std::fs::read_dir(&scratch).unwrap().count(),
+            1,
+            "the host wrote no card files, journals or sidecars"
+        );
+    }
+    std::fs::remove_dir_all(scratch).unwrap();
+}
+
+#[test]
+fn a_store_amendment_keeps_its_pinned_base_and_calls_the_store_outside_the_global_money_lock() {
+    let slots = crate::root::store_double::RecordSlots::new();
+    let holder: &'static RootHistory = Box::leak(Box::default());
+    let boot = busbar_kernel::config::card::CardFields {
+        per_request_fee: 3,
+        ..Default::default()
+    };
+    holder.keep_in_store(slots.calls(), 7);
+    holder.card_applied(&boot, "boot");
+    holder.boot_in_store(None).unwrap();
+    let store = holder.card_store().unwrap();
+    let base = store.own().unwrap().0;
+    slots.on_put(move || {
+        assert!(
+            holder.applying.try_lock().is_ok(),
+            "no global money lock crosses StoreCalls"
+        );
+        None
+    });
+    let mut changed = boot.clone();
+    changed.per_request_fee = 5;
+    holder
+        .amend_by(
+            &Correction {
+                effective_from: 0,
+                effective_until: Some(86_400_000),
+                appended_at: 20_000,
+                author: busbar_kernel_ledger::cost::Author::Amend {
+                    reason_hash: [9; 32],
+                },
+                cells: Vec::new(),
+                fee: Some(7),
+            },
+            "admin correcting pinned opening",
+            |_, _| {
+                assert!(
+                    holder.applying.try_lock().is_ok(),
+                    "seal callback is outside the global lock"
+                );
+                holder.card_applied(&changed, "config changed during seal");
+                Ok::<(), ()>(())
+            },
+        )
+        .expect("the immutable correction can be sealed over its original base");
+    let amendment = store
+        .entries()
+        .into_iter()
+        .find(|entry| {
+            matches!(
+                entry.author,
+                crate::root::card_store::EntryAuthor::Amend { .. }
+            )
+        })
+        .unwrap();
+    assert_eq!(amendment.base, Some(base));
+    assert_eq!(amendment.card.per_request_fee, 7);
+    assert_eq!(
+        store.own().unwrap().1,
+        changed,
+        "amend never replaces config own-selection"
     );
 }

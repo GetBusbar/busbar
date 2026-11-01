@@ -1,32 +1,15 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE RATE-CARD HISTORY IN THE STORE: the fleet-shared record schema `busbar.card.v1`
-//! (MONEY-DESIGN section 3a).
-//!
-//! ## Records
-//!
-//! - An ENTRY is keyed `t_ms (u64 BE) ++ node_rand (8 bytes, per boot) ++ counter (u32 BE)`
-//!   ([`EntryKey`]). Its value is split into PARTS under `key ++ part (u16 BE)`, each at most
-//!   [`busbar_contract::MAX_RECORD_BYTES`], and a COMMIT part under `key ++ COMMIT_PART` is written
-//!   LAST: it carries the part count and the digest of the whole value. A reader ignores an entry
-//!   whose commit part is missing or does not match its parts.
-//! - Every entry carries a WHOLE card ([`CardFields`]), its `effective_from`/`effective_until`, when
-//!   it was appended, its author, the key of the head it extended (its BASE), the writer's durable
-//!   node id, the fields a PUT set, and an optional signed-correction envelope. It is immutable.
-//! - A VOID is its own record under `voided_key ++ 0xFF ++ voider node (u64 BE)`. The tag byte
-//!   `0xFF` is never a part number's first byte (parts stop below `COMMIT_PART`).
-//!
-//! ## Writes
-//!
-//! Every part and the commit are put and each ack awaited ([`put_all`]). A put is an upsert of the
-//! same bytes, so a doubtful write is re-put with the same bytes until READY. A first-attempt
-//! REFUSED is the store saying no before anything landed; anything else after the first attempt is
-//! doubtful.
+//! Store-owned rate-card history. Legacy `busbar.card.v1` entries remain readable;
+//! new entries use `busbar.card.v2`: original EntryKey, tagged u64 data indices,
+//! then an INTENT and canonical COMMIT with identical version/ownership/count/length/digest
+//! metadata. Only a complete canonical commit confirms a fleet entry. A complete intent
+//! preserves the exact original and own-selection for restart retry, without a host file.
+//! Physical durability is the configured Store's responsibility (memory Store is ephemeral).
 
 use std::collections::BTreeMap;
 use std::future::Future;
-use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::task::{Context, Poll, Wake, Waker};
 use std::time::{Duration, Instant};
@@ -38,9 +21,17 @@ use busbar_kernel_ledger::cost::{EntryKey, ENTRY_KEY_LEN};
 use serde::{Deserialize, Serialize};
 
 /// The record schema the history is kept under.
-pub const CARD_SCHEMA: &str = "busbar.card.v1";
+pub const CARD_SCHEMA: &str = "busbar.card.v2";
+/// The legacy Store schema, read but never newly written.
+pub const LEGACY_CARD_SCHEMA: &str = "busbar.card.v1";
 
-/// The part number of an entry's commit part. Data parts are numbered below it.
+const DATA_TAG: u8 = 0;
+const INTENT_TAG: u8 = 1;
+const COMMIT_TAG: u8 = 2;
+const RECORD_VERSION: u8 = 2;
+const META_BYTES: usize = 50;
+
+/// The legacy part number of an entry's commit part. New entries use u64 indices.
 pub const COMMIT_PART: u16 = 0xFE00;
 
 /// The tag byte that follows a voided key in a VOID record's key.
@@ -49,14 +40,11 @@ pub const VOID_TAG: u8 = 0xFF;
 /// The clock skew a writer tolerates in the history's head (MONEY-DESIGN section 3a).
 pub const SKEW_MS: u64 = 5 * 60 * 1000;
 
-/// How long a card write waits for READY inside the config lock before it goes pending.
+/// How long a card write waits for READY before it goes pending; no host lock is held.
 pub const IN_LOCK_BOUND: Duration = Duration::from_secs(2);
 
 /// The bytes one data part carries.
 const PART_BYTES: usize = busbar_contract::MAX_RECORD_BYTES;
-
-/// The local file a node keeps its pending and abandoned entries in, under its data directory.
-pub const PENDING_FILE: &str = "card-pending.json";
 
 /// Why an entry exists.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -201,38 +189,18 @@ impl StoredEntry {
         })
     }
 
-    /// The records this entry is written as: its data parts in order, then its commit part.
+    /// Data chunks, the immutable intent, then the canonical commit, in put order.
     ///
     /// # Errors
     ///
-    /// The entry is too large to number its parts below [`COMMIT_PART`].
-    pub fn records(&self) -> Result<Vec<(Vec<u8>, RecordBytes)>, String> {
-        let value = self.value();
-        let chunks: Vec<&[u8]> = if value.is_empty() {
-            vec![&[][..]]
-        } else {
-            value.chunks(PART_BYTES).collect()
-        };
-        let count = u16::try_from(chunks.len())
-            .ok()
-            .filter(|n| *n < COMMIT_PART)
-            .ok_or_else(|| format!("card entry {} is too large to write", self.key))?;
-        let mut out = Vec::with_capacity(chunks.len() + 1);
-        for (part, chunk) in chunks.into_iter().enumerate() {
-            let part = u16::try_from(part).unwrap_or(u16::MAX);
-            out.push((
-                part_key(&self.key, part),
-                RecordBytes::new(chunk.to_vec()).map_err(|n| format!("a {n}-byte part"))?,
-            ));
-        }
-        let mut commit = Vec::with_capacity(34);
-        commit.extend_from_slice(&count.to_be_bytes());
-        commit.extend_from_slice(&sha256(&value));
-        out.push((
-            part_key(&self.key, COMMIT_PART),
-            RecordBytes::new(commit).map_err(|n| format!("a {n}-byte commit"))?,
-        ));
-        Ok(out)
+    /// A size cannot be represented on this platform. There is no card admission-size cap.
+    pub fn records(&self) -> Result<Records, String> {
+        self.records_for(false)
+    }
+
+    /// Encode this exact original and whether it selects its writer's own card.
+    pub(crate) fn records_for(&self, own: bool) -> Result<Records, String> {
+        value_records(self.key, &self.value(), own)
     }
 }
 
@@ -289,80 +257,292 @@ pub fn part_key(key: &EntryKey, part: u16) -> Vec<u8> {
 
 use busbar_kernel::config::card::sha256;
 
-/// One entry's data parts by number, and its commit part, as a scan found them.
-type Parts = (BTreeMap<u16, Vec<u8>>, Option<Vec<u8>>);
-
 /// The records one write puts, in order: `(store key, value)`.
 pub type Records = Vec<(Vec<u8>, RecordBytes)>;
 
-/// What a full scan of the schema read.
+/// A complete Store intent. Its bytes and identity remain immutable across retries.
+#[derive(Debug, Clone)]
+pub struct StoredIntent {
+    /// The original, including all provenance and correction fields.
+    pub entry: StoredEntry,
+    /// Whether this entry selects its writer's own card; amendments do not.
+    pub own: bool,
+    /// Exact data and metadata, including the canonical commit still owed, in put order.
+    pub records: Arc<Records>,
+    /// Whether the canonical commit is complete and valid as well.
+    pub committed: bool,
+}
+
+#[derive(Default)]
+struct Parts {
+    legacy: BTreeMap<u16, Vec<u8>>,
+    legacy_commit: Option<Vec<u8>>,
+    data: BTreeMap<u64, Vec<u8>>,
+    intent: Option<Vec<u8>>,
+    commit: Option<Vec<u8>>,
+    invalid: bool,
+}
+
+/// What a full scan read. Validation finishes before any caller publishes or replays it.
 #[derive(Debug, Default, Clone)]
 pub struct Scanned {
     /// Every committed entry, in key order.
     pub entries: Vec<StoredEntry>,
-    /// Every VOID.
+    /// Every validated intent, including already committed ones.
+    pub intents: Vec<StoredIntent>,
+    /// Every valid VOID.
     pub voids: Vec<VoidRecord>,
-    /// Keys with parts and no matching commit: never READY, ignored.
+    /// Incomplete entries: never confirmation.
     pub uncommitted: Vec<EntryKey>,
-    /// Committed entries or VOID records whose value does not read, by key and reason.
+    /// Corrupt or unsupported entries/VOID records, by immutable identity and structural reason.
     pub unreadable: Vec<(EntryKey, String)>,
 }
 
+fn tagged_key(key: EntryKey, tag: u8) -> Vec<u8> {
+    let mut out = key.as_bytes().to_vec();
+    out.push(tag);
+    out
+}
+
+fn data_key(key: EntryKey, part: u64) -> Vec<u8> {
+    let mut out = tagged_key(key, DATA_TAG);
+    out.extend_from_slice(&part.to_be_bytes());
+    out
+}
+
+fn value_records(key: EntryKey, value: &[u8], own: bool) -> Result<Records, String> {
+    let length = u64::try_from(value.len()).map_err(|_| "card value length overflow")?;
+    let count = length.div_ceil(PART_BYTES as u64);
+    let mut records = Vec::new();
+    for (index, part) in value.chunks(PART_BYTES).enumerate() {
+        let index = u64::try_from(index).map_err(|_| "card chunk index overflow")?;
+        records.push((
+            data_key(key, index),
+            RecordBytes::new(part.to_vec()).map_err(|_| "card chunk length overflow")?,
+        ));
+    }
+    let mut meta = vec![RECORD_VERSION, u8::from(own)];
+    meta.extend_from_slice(&count.to_be_bytes());
+    meta.extend_from_slice(&length.to_be_bytes());
+    meta.extend_from_slice(&sha256(value));
+    let meta = RecordBytes::new(meta).map_err(|_| "card metadata length overflow")?;
+    records.push((tagged_key(key, INTENT_TAG), meta.clone()));
+    records.push((tagged_key(key, COMMIT_TAG), meta));
+    Ok(records)
+}
+
+/// Validate all metadata and every chunk, including extra and empty chunks, before decoding.
+fn assemble(parts: &BTreeMap<u64, Vec<u8>>, meta: &[u8]) -> Result<(Vec<u8>, bool), &'static str> {
+    if meta.len() != META_BYTES || meta[0] != RECORD_VERSION || meta[1] > 1 {
+        return Err("unsupported or malformed card metadata");
+    }
+    let count = u64::from_be_bytes(meta[2..10].try_into().map_err(|_| "invalid chunk count")?);
+    let length = u64::from_be_bytes(
+        meta[10..18]
+            .try_into()
+            .map_err(|_| "invalid value length")?,
+    );
+    if count != length.div_ceil(PART_BYTES as u64) || u64::try_from(parts.len()).ok() != Some(count)
+    {
+        return Err("card chunk count does not match its value length");
+    }
+    let mut value = Vec::new();
+    for (expected, (&index, chunk)) in (0..count).zip(parts.iter()) {
+        if index != expected {
+            return Err("missing or out-of-order card chunk");
+        }
+        let expected_len = if expected + 1 == count {
+            ((length - 1) % PART_BYTES as u64 + 1) as usize
+        } else {
+            PART_BYTES
+        };
+        if chunk.len() != expected_len {
+            return Err("missing, extra, empty or mis-sized card chunk");
+        }
+        value.extend_from_slice(chunk);
+    }
+    if sha256(&value)[..] != meta[18..] {
+        return Err("card value digest does not match");
+    }
+    Ok((value, meta[1] == 1))
+}
+
 impl Scanned {
-    /// Read the scan's records.
+    /// Decode either record protocol. Conflicting duplicate keys invalidate their owner,
+    /// independent of row order; identical duplicates are harmless.
     #[must_use]
-    pub fn of(records: Vec<(Vec<u8>, RecordBytes)>) -> Self {
+    pub fn of(records: Records) -> Self {
         let mut grouped: BTreeMap<EntryKey, Parts> = BTreeMap::new();
-        let mut scanned = Scanned::default();
+        let mut unique: BTreeMap<Vec<u8>, Vec<u8>> = BTreeMap::new();
+        let mut scanned = Self::default();
+        let mut voids = Vec::new();
         for (key, value) in records {
             let Some(entry_key) = key.get(..ENTRY_KEY_LEN).and_then(EntryKey::from_slice) else {
                 continue;
             };
-            let rest = &key[ENTRY_KEY_LEN..];
-            if rest.len() == 9 && rest[0] == VOID_TAG {
-                match serde_json::from_slice::<VoidRecord>(value.as_slice()) {
-                    Ok(void) if void.voided == entry_key.hex() => scanned.voids.push(void),
-                    Ok(_) => scanned.unreadable.push((
-                        entry_key,
-                        "a VOID record names a different entry than its store key".to_string(),
-                    )),
-                    Err(_) => scanned
-                        .unreadable
-                        .push((entry_key, "a VOID record does not decode".to_string())),
+            let slot = grouped.entry(entry_key).or_default();
+            let value = value.as_slice().to_vec();
+            if let Some(previous) = unique.get(&key) {
+                if *previous != value {
+                    slot.invalid = true;
                 }
                 continue;
             }
-            let Some(part) = <[u8; 2]>::try_from(rest).ok().map(u16::from_be_bytes) else {
-                continue;
-            };
-            let slot = grouped.entry(entry_key).or_default();
-            if part == COMMIT_PART {
-                slot.1 = Some(value.as_slice().to_vec());
-            } else if part < COMMIT_PART {
-                slot.0.insert(part, value.as_slice().to_vec());
+            unique.insert(key.clone(), value.clone());
+            let rest = &key[ENTRY_KEY_LEN..];
+            match rest {
+                [VOID_TAG, voider @ ..] if voider.len() == 8 => {
+                    match serde_json::from_slice::<VoidRecord>(&value) {
+                        Ok(void)
+                            if void.voided == entry_key.hex()
+                                && void.voider.to_be_bytes().as_slice() == voider =>
+                        {
+                            voids.push((entry_key, void));
+                        }
+                        _ => scanned
+                            .unreadable
+                            .push((entry_key, "invalid VOID record".into())),
+                    }
+                }
+                [DATA_TAG, index @ ..] if index.len() == 8 => {
+                    let index = u64::from_be_bytes(index.try_into().expect("eight-byte index"));
+                    slot.data.insert(index, value);
+                }
+                [INTENT_TAG] => slot.intent = Some(value),
+                [COMMIT_TAG] => slot.commit = Some(value),
+                [hi, lo] => {
+                    let part = u16::from_be_bytes([*hi, *lo]);
+                    if part == COMMIT_PART {
+                        slot.legacy_commit = Some(value);
+                    } else if part < COMMIT_PART {
+                        slot.legacy.insert(part, value);
+                    } else {
+                        slot.invalid = true;
+                    }
+                }
+                _ => slot.invalid = true,
             }
         }
-        for (key, (parts, commit)) in grouped {
-            let Some(commit) = commit.filter(|c| c.len() == 34) else {
-                scanned.uncommitted.push(key);
-                continue;
-            };
-            let count = u16::from_be_bytes([commit[0], commit[1]]);
-            let mut value = Vec::new();
-            let whole = (0..count).all(|p| match parts.get(&p) {
-                Some(chunk) => {
-                    value.extend_from_slice(chunk);
-                    true
-                }
-                None => false,
-            });
-            if !whole || sha256(&value)[..] != commit[2..] {
-                scanned.uncommitted.push(key);
+        for (key, parts) in grouped {
+            if parts.invalid {
+                scanned
+                    .unreadable
+                    .push((key, "conflicting duplicate or unknown card record".into()));
                 continue;
             }
-            match StoredEntry::from_value(key, &value) {
-                Ok(entry) => scanned.entries.push(entry),
-                Err(why) => scanned.unreadable.push((key, why)),
+            scanned.voids.extend(
+                voids
+                    .iter()
+                    .filter(|(owner, _)| *owner == key)
+                    .map(|(_, v)| v.clone()),
+            );
+            let legacy = !parts.legacy.is_empty() || parts.legacy_commit.is_some();
+            let modern = !parts.data.is_empty() || parts.intent.is_some() || parts.commit.is_some();
+            if legacy && modern {
+                scanned
+                    .unreadable
+                    .push((key, "overlapping card record protocols".into()));
+                continue;
+            }
+            if legacy {
+                let Some(commit) = parts.legacy_commit else {
+                    scanned.uncommitted.push(key);
+                    continue;
+                };
+                if commit.len() != 34 {
+                    scanned
+                        .unreadable
+                        .push((key, "invalid legacy card commit".into()));
+                    continue;
+                }
+                let count = u16::from_be_bytes([commit[0], commit[1]]);
+                let complete = count > 0
+                    && count < COMMIT_PART
+                    && parts.legacy.len() == usize::from(count)
+                    && (0..count).all(|index| {
+                        parts.legacy.get(&index).is_some_and(|chunk| {
+                            !chunk.is_empty() && (index + 1 == count || chunk.len() == PART_BYTES)
+                        })
+                    });
+                let value: Vec<u8> = parts.legacy.values().flatten().copied().collect();
+                if !complete || sha256(&value)[..] != commit[2..] {
+                    scanned
+                        .unreadable
+                        .push((key, "legacy card commit does not match its chunks".into()));
+                    continue;
+                }
+                match StoredEntry::from_value(key, &value) {
+                    Ok(entry) => scanned.entries.push(entry),
+                    Err(_) => scanned
+                        .unreadable
+                        .push((key, "invalid legacy card entry".into())),
+                }
+            } else if modern {
+                let Some(intent) = parts.intent else {
+                    if parts.commit.is_some() {
+                        scanned
+                            .unreadable
+                            .push((key, "card commit has no intent".into()));
+                    } else {
+                        scanned.uncommitted.push(key);
+                    }
+                    continue;
+                };
+                if parts
+                    .commit
+                    .as_ref()
+                    .is_some_and(|commit| *commit != intent)
+                {
+                    scanned
+                        .unreadable
+                        .push((key, "card intent and commit disagree".into()));
+                    continue;
+                }
+                let (value, own) = match assemble(&parts.data, &intent) {
+                    Ok(value) => value,
+                    Err(why) => {
+                        scanned.unreadable.push((key, why.into()));
+                        continue;
+                    }
+                };
+                let entry = match StoredEntry::from_value(key, &value) {
+                    Ok(entry) => entry,
+                    Err(_) => {
+                        scanned.unreadable.push((key, "invalid card entry".into()));
+                        continue;
+                    }
+                };
+                if own && matches!(entry.author, EntryAuthor::Amend { .. }) {
+                    scanned
+                        .unreadable
+                        .push((key, "amendment cannot select the node card".into()));
+                    continue;
+                }
+                let committed = parts.commit.is_some();
+                let mut records: Records = parts
+                    .data
+                    .into_iter()
+                    .map(|(index, value)| {
+                        (
+                            data_key(key, index),
+                            RecordBytes::new(value).expect("scanned RecordBytes"),
+                        )
+                    })
+                    .collect();
+                let meta = RecordBytes::new(intent).expect("validated metadata");
+                records.push((tagged_key(key, INTENT_TAG), meta.clone()));
+                records.push((tagged_key(key, COMMIT_TAG), meta));
+                if committed {
+                    scanned.entries.push(entry.clone());
+                } else {
+                    scanned.uncommitted.push(key);
+                }
+                scanned.intents.push(StoredIntent {
+                    entry,
+                    own,
+                    records: Arc::new(records),
+                    committed,
+                });
             }
         }
         scanned
@@ -406,13 +586,47 @@ pub fn wait_until<F: Future>(fut: F, deadline: Option<Instant>) -> Option<F::Out
 ///
 /// The store failed or refused the scan, or did not answer by `deadline`.
 pub fn scan(calls: &dyn StoreCalls, deadline: Option<Instant>) -> Result<Scanned, String> {
-    match wait_until(calls.record_scan(CARD_SCHEMA, b"", u32::MAX), deadline) {
-        Some(Ok(records)) => Ok(Scanned::of(records)),
-        Some(Err(failure)) => Err(format!(
-            "the store would not read the rate-card history: {failure}"
-        )),
-        None => Err("the store did not read the rate-card history back in time".to_string()),
+    let mut records = scan_records(calls, LEGACY_CARD_SCHEMA, deadline)?;
+    records.extend(scan_records(calls, CARD_SCHEMA, deadline)?);
+    if records.iter().any(|(key, _)| {
+        key.get(..ENTRY_KEY_LEN)
+            .and_then(EntryKey::from_slice)
+            .is_none()
+    }) {
+        return Err("rate-card Store contains a malformed record key".into());
     }
+    Ok(Scanned::of(records))
+}
+
+fn scan_records(
+    calls: &dyn StoreCalls,
+    schema: &str,
+    deadline: Option<Instant>,
+) -> Result<Records, String> {
+    let mut prefixes = vec![Vec::new()];
+    let mut records = Vec::new();
+    while let Some(prefix) = prefixes.pop() {
+        let rows = match wait_until(calls.record_scan(schema, &prefix, u32::MAX), deadline) {
+            Some(Ok(rows)) => rows,
+            Some(Err(_)) => return Err("the store would not read the rate-card history".into()),
+            None => return Err("the store did not read the rate-card history back in time".into()),
+        };
+        if rows.iter().any(|(key, _)| !key.starts_with(&prefix)) {
+            return Err("rate-card scan returned a key outside its prefix".into());
+        }
+        if u32::try_from(rows.len()).ok() == Some(u32::MAX) {
+            // Keep a possible row exactly at this prefix, then partition every longer key.
+            records.extend(rows.into_iter().filter(|(key, _)| *key == prefix));
+            for byte in (0..=u8::MAX).rev() {
+                let mut next = prefix.clone();
+                next.push(byte);
+                prefixes.push(next);
+            }
+        } else {
+            records.extend(rows);
+        }
+    }
+    Ok(records)
 }
 
 /// How a write ended.
@@ -435,13 +649,53 @@ pub fn put_all(
     deadline: Option<Instant>,
     first: bool,
 ) -> PutOutcome {
-    for (i, (key, value)) in records.iter().enumerate() {
-        match wait_until(calls.record_put(CARD_SCHEMA, key, value), deadline) {
-            Some(Ok(())) => {}
-            Some(Err(StoreFailure::Refused(why))) if first && i == 0 => {
-                return PutOutcome::Refused(why)
+    let progress = std::sync::atomic::AtomicUsize::new(0);
+    put_from(calls, records, &progress, deadline, first)
+}
+
+/// Resume a candidate at its first unacknowledged record. A timeout or unknown outcome leaves
+/// that exact record owed. Progress is per immutable owner, never a new key or an entry-size cap.
+pub(crate) fn put_from(
+    calls: &dyn StoreCalls,
+    records: &[(Vec<u8>, RecordBytes)],
+    progress: &std::sync::atomic::AtomicUsize,
+    deadline: Option<Instant>,
+    first: bool,
+) -> PutOutcome {
+    use std::sync::atomic::Ordering;
+    let start = progress.load(Ordering::Acquire);
+    for (i, (key, value)) in records.iter().enumerate().skip(start) {
+        if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+            return PutOutcome::Doubtful("rate-card write deadline elapsed".into());
+        }
+        // Generic record_put is an upsert. Never overwrite a different immutable original,
+        // including during retry after an unknown outcome. Callbacks run without host locks.
+        match wait_until(calls.record_get(CARD_SCHEMA, key), deadline) {
+            Some(Ok(Some(held))) if held != *value => {
+                return PutOutcome::Doubtful("conflicting immutable rate-card Store record".into());
             }
-            Some(Err(failure)) => return PutOutcome::Doubtful(failure.to_string()),
+            Some(Ok(_)) => {}
+            Some(Err(_)) => {
+                return PutOutcome::Doubtful("the Store would not check a rate-card record".into())
+            }
+            None => {
+                return PutOutcome::Doubtful(
+                    "the Store did not check a rate-card record in time".into(),
+                )
+            }
+        }
+        match wait_until(calls.record_put(CARD_SCHEMA, key, value), deadline) {
+            Some(Ok(())) => {
+                progress.store(i + 1, Ordering::Release);
+            }
+            Some(Err(StoreFailure::Refused(_))) if first && i == 0 => {
+                return PutOutcome::Refused("the Store refused the first rate-card record".into())
+            }
+            Some(Err(_)) => {
+                return PutOutcome::Doubtful(
+                    "the Store did not acknowledge a rate-card record".into(),
+                )
+            }
             None => {
                 return PutOutcome::Doubtful(
                     "the store did not acknowledge the write in time".to_string(),
@@ -450,239 +704,6 @@ pub fn put_all(
         }
     }
     PutOutcome::Ready
-}
-
-/// THE LOCAL SPOOL OF CARD WRITES the store has not confirmed: each entry's bytes, written BEFORE
-/// its first put, so a restart re-puts them.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Spool {
-    /// Entries not yet confirmed, oldest first: each key and every record, hex.
-    #[serde(default)]
-    pub pending: Vec<SpooledWrite>,
-}
-
-/// One spooled write: the entry's key and the records to put, hex.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct SpooledWrite {
-    /// The entry's key, hex.
-    pub key: String,
-    /// `(record key, value)`, hex, in put order.
-    pub records: Vec<(String, String)>,
-}
-
-impl SpooledWrite {
-    /// The spooled form of `records` for entry `key`.
-    #[must_use]
-    pub fn of(key: &EntryKey, records: &[(Vec<u8>, RecordBytes)]) -> Self {
-        SpooledWrite {
-            key: key.hex(),
-            records: records
-                .iter()
-                .map(|(k, v)| (hex::encode(k), hex::encode(v.as_slice())))
-                .collect(),
-        }
-    }
-
-    /// The records to put.
-    ///
-    /// # Errors
-    ///
-    /// The spool's bytes do not read.
-    pub fn records(&self) -> Result<Vec<(Vec<u8>, RecordBytes)>, String> {
-        self.records
-            .iter()
-            .map(|(k, v)| {
-                let k = hex::decode(k).map_err(|e| e.to_string())?;
-                let v = hex::decode(v).map_err(|e| e.to_string())?;
-                Ok((
-                    k,
-                    RecordBytes::new(v).map_err(|n| format!("a {n}-byte record"))?,
-                ))
-            })
-            .collect()
-    }
-}
-
-impl Spool {
-    /// Change the latest spool as one local filesystem operation. Store callbacks run outside
-    /// this operation. The shared lock also covers overlapping books for one data directory.
-    pub(crate) fn update(dir: &Path, edit: impl FnOnce(&mut Self)) -> Result<(), String> {
-        static UPDATING: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        let _updating = UPDATING.lock().unwrap_or_else(|p| p.into_inner());
-        let mut spool = Self::load(dir)?;
-        edit(&mut spool);
-        spool.save(dir)
-    }
-
-    /// The spool's file under `dir`.
-    #[must_use]
-    pub fn path(dir: &Path) -> PathBuf {
-        dir.join(PENDING_FILE)
-    }
-
-    /// Read the spool under `dir`; an absent file is an empty spool.
-    ///
-    /// # Errors
-    ///
-    /// The file exists and does not read.
-    pub fn load(dir: &Path) -> Result<Spool, String> {
-        let path = Self::path(dir);
-        match std::fs::read(&path) {
-            Ok(bytes) => serde_json::from_slice(&bytes)
-                .map_err(|e| format!("{}: not a card spool: {e}", path.display())),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Spool::default()),
-            Err(e) => Err(format!("{}: {e}", path.display())),
-        }
-    }
-
-    /// Write the spool under `dir`: sync a temporary file and rename it over the old one.
-    /// On Unix, also sync the directory and report any failure of that durability barrier.
-    /// Other platforms retain the existing file-sync/rename behavior; directory-entry durability
-    /// is not established there.
-    ///
-    /// # Errors
-    ///
-    /// The disk refused a required step. An error after rename leaves the new bytes in place:
-    /// durability is uncertain, so retain the exact pending owner and retry rather than roll back.
-    pub fn save(&self, dir: &Path) -> Result<(), String> {
-        use std::io::Write as _;
-        use std::sync::atomic::{AtomicU64, Ordering};
-        static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
-        let path = Self::path(dir);
-        let bytes = serde_json::to_vec(self)
-            .map_err(|_| format!("{}: card spool encoding failed", path.display()))?;
-        // An I/O error may carry arbitrary content. Report only the operation and error kind.
-        let step = |operation: &str, e: std::io::Error| {
-            format!(
-                "{}: card spool {operation} failed ({:?})",
-                path.display(),
-                e.kind()
-            )
-        };
-        let (tmp, mut file) = loop {
-            let tmp = dir.join(format!(
-                "{PENDING_FILE}.{}.{}.tmp",
-                std::process::id(),
-                NEXT_TEMP.fetch_add(1, Ordering::Relaxed)
-            ));
-            match std::fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&tmp)
-            {
-                Ok(file) => break (tmp, file),
-                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
-                Err(e) => return Err(step("temporary file creation", e)),
-            }
-        };
-        let mut renamed = false;
-        let result = (|| {
-            file.write_all(&bytes).map_err(|e| step("file write", e))?;
-            #[cfg(all(test, unix))]
-            save_test::before(dir, save_test::Step::SyncFile).map_err(|e| step("file sync", e))?;
-            file.sync_all().map_err(|e| step("file sync", e))?;
-            drop(file);
-            #[cfg(all(test, unix))]
-            save_test::before(dir, save_test::Step::Rename).map_err(|e| step("rename", e))?;
-            std::fs::rename(&tmp, &path).map_err(|e| step("rename", e))?;
-            renamed = true;
-            #[cfg(unix)]
-            {
-                let d = open_spool_directory(dir)
-                    .map_err(|e| step("directory open after rename; durability uncertain", e))?;
-                sync_spool_directory(&d, dir)
-                    .map_err(|e| step("directory sync after rename; durability uncertain", e))?;
-            }
-            Ok(())
-        })();
-        if result.is_err() && !renamed {
-            let _ = std::fs::remove_file(tmp);
-        }
-        result
-    }
-
-    /// Whether nothing is spooled.
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.pending.is_empty()
-    }
-}
-
-#[cfg(unix)]
-fn open_spool_directory(dir: &Path) -> std::io::Result<std::fs::File> {
-    #[cfg(test)]
-    save_test::before(dir, save_test::Step::OpenDirectory)?;
-    std::fs::File::open(dir)
-}
-
-#[cfg(unix)]
-fn sync_spool_directory(file: &std::fs::File, _dir: &Path) -> std::io::Result<()> {
-    #[cfg(test)]
-    save_test::before(_dir, save_test::Step::SyncDirectory)?;
-    file.sync_all()
-}
-
-/// Private, per-directory fault injection; unrelated tests never share a fault or schedule.
-#[cfg(all(test, unix))]
-pub(super) mod save_test {
-    use super::*;
-    use std::sync::Mutex;
-
-    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-    pub(crate) enum Step {
-        SyncFile,
-        Rename,
-        OpenDirectory,
-        SyncDirectory,
-    }
-
-    type Hook = Arc<dyn Fn(Step) -> std::io::Result<()> + Send + Sync>;
-    type ReputHook = Arc<dyn Fn() + Send + Sync>;
-    static HOOKS: Mutex<BTreeMap<PathBuf, Hook>> = Mutex::new(BTreeMap::new());
-    static REPUT_HOOKS: Mutex<BTreeMap<PathBuf, ReputHook>> = Mutex::new(BTreeMap::new());
-
-    pub(crate) struct Guard(PathBuf);
-
-    impl Drop for Guard {
-        fn drop(&mut self) {
-            HOOKS.lock().unwrap().remove(&self.0);
-            REPUT_HOOKS.lock().unwrap().remove(&self.0);
-        }
-    }
-
-    pub(crate) fn install(
-        dir: &Path,
-        hook: impl Fn(Step) -> std::io::Result<()> + Send + Sync + 'static,
-    ) -> Guard {
-        assert!(HOOKS
-            .lock()
-            .unwrap()
-            .insert(dir.to_path_buf(), Arc::new(hook))
-            .is_none());
-        Guard(dir.to_path_buf())
-    }
-
-    pub(crate) fn on_reput(dir: &Path, hook: impl Fn() + Send + Sync + 'static) {
-        assert!(REPUT_HOOKS
-            .lock()
-            .unwrap()
-            .insert(dir.to_path_buf(), Arc::new(hook))
-            .is_none());
-    }
-
-    pub(crate) fn before_reput(dir: Option<&Path>) {
-        let hook = dir.and_then(|dir| REPUT_HOOKS.lock().unwrap().get(dir).cloned());
-        if let Some(hook) = hook {
-            hook();
-        }
-    }
-
-    pub(super) fn before(dir: &Path, step: Step) -> std::io::Result<()> {
-        let hook = HOOKS.lock().unwrap().get(dir).cloned();
-        hook.map_or(Ok(()), |hook| hook(step))
-    }
 }
 
 /// This boot's random key half: fresh entropy every boot, so keys never collide across nodes or

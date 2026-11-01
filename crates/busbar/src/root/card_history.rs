@@ -6,7 +6,7 @@
 //! counts and the card with its history, and the configuration is the source of the card, as in
 //! 1.5.5).
 //!
-//! [`CardStore`] reads the history from the store (`busbar.card.v1`, [`super::card_store`]) and
+//! [`CardStore`] reads the history from the store (`busbar.card.v2`, [`super::card_store`]) and
 //! resolves it: the highest-keyed LIVE entry covering an instant prices it.
 //!
 //! - **The opening entry** is written at boot only when the history is empty: the node's card from
@@ -19,13 +19,11 @@
 //!   A rescan records other nodes' entries and never moves it, so two nodes running different
 //!   cards each price their own counts with their own card; a time-based read takes the later
 //!   change on any node.
-//! - **Write-before-apply on the config plane:** the entry's bytes go to the local spool first
-//!   (with a data directory), then every part and the commit are put and acked within
-//!   [`super::card_store::IN_LOCK_BOUND`]. Anything else is PENDING: the node prices with the
-//!   pending entry's locally computed id and re-puts the same bytes until READY (strict mode, PR-B2,
-//!   refuses admissions meanwhile: [`CardStore::pending_refusal`]). An entry the existing record
-//!   format cannot encode stays pending with its original contents in memory and raises an alarm;
-//!   it cannot be spooled and does not survive restart.
+//! - **Store-owned custody:** chunks and a validated immutable intent precede the canonical
+//!   commit. Only the canonical commit confirms a fleet entry. Pending writes retain the exact
+//!   original, identity and per-record progress; a complete Store intent survives host restart.
+//!   No host file or data-directory setting participates. A Store outage before intent completion
+//!   leaves RAM-only pending ownership, and memory Store is explicitly ephemeral.
 //! - **There is no WITHDRAW.** An entry that landed stays. [`CardStore::void`] keeps an entry
 //!   known but out of force; no operator verb reaches it, because a later change already keys
 //!   above a far-future entry and prices from its own start.
@@ -33,8 +31,7 @@
 //!   its key; a head more than [`super::card_store::SKEW_MS`] ahead alarms.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant};
 
@@ -43,7 +40,7 @@ use busbar_kernel::config::card::CardFields;
 use busbar_kernel_ledger::cost::{Author, CardEntryDraft, EntryKey, History};
 
 use super::card_store::{
-    put_all, scan, EntryAuthor, PutOutcome, Scanned, Spool, SpooledWrite, StoredEntry, VoidRecord,
+    put_all, put_from, scan, EntryAuthor, PutOutcome, Scanned, StoredEntry, VoidRecord,
     IN_LOCK_BOUND, SKEW_MS,
 };
 
@@ -80,7 +77,6 @@ pub struct CardStore {
     node: u64,
     rand: [u8; 8],
     counter: AtomicU32,
-    data_dir: Option<PathBuf>,
     state: Mutex<State>,
     published: arc_swap::ArcSwapOption<History>,
     /// The history as THIS NODE prices with it: the fleet history, with every other node's
@@ -104,9 +100,25 @@ struct State {
 }
 
 #[derive(Clone)]
-enum PendingWrite {
-    Encoded(super::card_store::Records),
-    Unencoded(Arc<StoredEntry>),
+struct PendingWrite {
+    /// Always retain the original, even if encoding failed before any Store call.
+    entry: Arc<StoredEntry>,
+    own: bool,
+    records: Option<Arc<super::card_store::Records>>,
+    progress: Arc<AtomicUsize>,
+}
+
+impl PendingWrite {
+    /// Serialize one immutable candidate outside every history lock.
+    fn prepare(entry: StoredEntry, own: bool) -> Self {
+        let records = entry.records_for(own).ok().map(Arc::new);
+        Self {
+            entry: Arc::new(entry),
+            own,
+            records,
+            progress: Arc::new(AtomicUsize::new(0)),
+        }
+    }
 }
 
 struct Reputting {
@@ -149,15 +161,14 @@ fn is_opening(entry: &StoredEntry) -> bool {
 }
 
 impl CardStore {
-    /// A history kept in `calls`' store by node `node`, with its spool under `data_dir`.
+    /// A history kept entirely in `calls`' Store by node `node`.
     #[must_use]
-    pub fn new(calls: Arc<dyn StoreCalls>, node: u64, data_dir: Option<PathBuf>) -> Arc<Self> {
+    pub fn new(calls: Arc<dyn StoreCalls>, node: u64) -> Arc<Self> {
         Arc::new(CardStore {
             calls,
             node,
             rand: super::card_store::boot_rand(),
             counter: AtomicU32::new(0),
-            data_dir,
             state: Mutex::new(State::default()),
             published: arc_swap::ArcSwapOption::empty(),
             node_published: arc_swap::ArcSwapOption::empty(),
@@ -210,6 +221,11 @@ impl CardStore {
         self.lock().entries.values().cloned().collect()
     }
 
+    /// One immutable original by key, for a caller preparing a correction over a pinned snapshot.
+    pub(crate) fn entry(&self, key: &EntryKey) -> Option<StoredEntry> {
+        self.lock().entries.get(key).cloned()
+    }
+
     /// Every alarm this node has raised over the history, in the order raised (each once).
     #[must_use]
     pub fn alarms(&self) -> Vec<String> {
@@ -219,7 +235,11 @@ impl CardStore {
     /// The key of the oldest entry pending confirmation on this node, if any.
     #[must_use]
     pub fn pending(&self) -> Option<EntryKey> {
-        self.lock().pending.first().map(|(k, _)| *k)
+        self.lock()
+            .pending
+            .iter()
+            .find(|(_, pending)| pending.entry.writer == self.node)
+            .map(|(key, _)| *key)
     }
 
     /// **THE ENTRY THIS NODE PRICES WITH**: its key (whose id a count carries) and its card. Set by
@@ -425,8 +445,44 @@ impl CardStore {
     }
 
     /// Merge a scan into what this node holds, and publish. Answers whether anything changed.
-    fn merge(&self, scanned: Scanned) -> bool {
+    fn merge(&self, scanned: Scanned) -> Result<bool, String> {
         let mut state = self.lock();
+        // Check the entire immutable union before installing any part of this snapshot.
+        for entry in scanned
+            .entries
+            .iter()
+            .chain(scanned.intents.iter().map(|i| &i.entry))
+        {
+            if state
+                .entries
+                .get(&entry.key)
+                .is_some_and(|held| held != entry)
+                || state
+                    .pending
+                    .iter()
+                    .any(|(key, held)| *key == entry.key && held.entry.as_ref() != entry)
+            {
+                return Err(format!(
+                    "conflicting immutable rate-card entry {}",
+                    entry.key
+                ));
+            }
+        }
+        for intent in &scanned.intents {
+            if state.pending.iter().any(|(key, held)| {
+                *key == intent.entry.key
+                    && (held.own != intent.own
+                        || held
+                            .records
+                            .as_ref()
+                            .is_some_and(|r| **r != *intent.records))
+            }) {
+                return Err(format!(
+                    "conflicting immutable rate-card intent {}",
+                    intent.entry.key
+                ));
+            }
+        }
         let mut changed = false;
         for entry in scanned.entries {
             if let std::collections::btree_map::Entry::Vacant(slot) = state.entries.entry(entry.key)
@@ -449,7 +505,14 @@ impl CardStore {
             self.publish(&state);
         }
         self.check_alarms(&mut state);
-        changed
+        Ok(changed)
+    }
+
+    fn validate_scan(scanned: &Scanned) -> Result<(), String> {
+        if let Some((key, _)) = scanned.unreadable.first() {
+            return Err(format!("rate-card Store records for {key} are corrupt or unsupported; no history was published"));
+        }
+        Ok(())
     }
 
     /// Rescan the store, and publish what is new.
@@ -459,43 +522,8 @@ impl CardStore {
     /// The store failed or refused the scan.
     pub fn rescan(&self, deadline: Option<Instant>) -> Result<bool, String> {
         let scanned = scan(self.calls.as_ref(), deadline)?;
-        Ok(self.merge(scanned))
-    }
-
-    fn spool_dir(&self) -> Option<&std::path::Path> {
-        self.data_dir.as_deref()
-    }
-
-    fn load_spool(&self) -> Result<Spool, String> {
-        match self.spool_dir().map(Spool::load) {
-            Some(result) => result,
-            None => Ok(Spool::default()),
-        }
-    }
-
-    fn update_spool(&self, edit: impl FnOnce(&mut Spool)) -> Result<(), String> {
-        match self.spool_dir() {
-            Some(dir) => Spool::update(dir, edit),
-            None => Ok(()),
-        }
-    }
-
-    /// Retry the same owner's immutable records against the latest spool, preserving its order
-    /// and every other owner. A prior rename may have published this owner without a durable
-    /// directory entry; its presence alone is not a successful persistence barrier.
-    fn spool_records(
-        &self,
-        key: &EntryKey,
-        records: &super::card_store::Records,
-    ) -> Result<(), String> {
-        let write = SpooledWrite::of(key, records);
-        self.update_spool(|spool| {
-            if let Some(held) = spool.pending.iter_mut().find(|w| w.key == write.key) {
-                *held = write;
-            } else {
-                spool.pending.push(write);
-            }
-        })
+        Self::validate_scan(&scanned)?;
+        self.merge(scanned)
     }
 
     /// The next key this node writes: `t_ms = max(now, head + 1)`.
@@ -505,7 +533,7 @@ impl CardStore {
         EntryKey::new(t, self.rand, self.counter.fetch_add(1, Ordering::Relaxed))
     }
 
-    /// **THE BOOT.** Re-put the entries the spool holds, read the history, copy the journal's
+    /// **THE BOOT.** Validate and recover Store intents, read the history, copy the journal's
     /// card records into it (`migrated`, every chain's), open it with this node's card when it is
     /// still empty, and otherwise apply this node's card ([`Self::apply`]): unchanged, it adopts
     /// the entry in force; changed, it appends one, effective now.
@@ -521,55 +549,43 @@ impl CardStore {
         migrated: Vec<StoredEntry>,
     ) -> Result<(), String> {
         let deadline = || Some(Instant::now() + BOOT_DEADLINE);
-        // THE SPOOL FIRST: an entry written and not confirmed before the restart is re-put.
-        let spool = self.load_spool()?;
-        let mut unconfirmed = Vec::new();
-        for write in &spool.pending {
-            let records = write.records()?;
-            let key = EntryKey::parse_hex(&write.key)
-                .ok_or_else(|| format!("the rate card spool names `{}`", write.key))?;
-            // The spooled entry is this node's own: held, and (a change) the entry it prices with,
-            // so the boot below adopts it rather than writing it again.
-            for entry in Scanned::of(records.clone()).entries {
-                let mut state = self.lock();
-                if matches!(entry.author, EntryAuthor::Change) {
-                    state.own = Some(entry.key);
+        // Validate the entire Store snapshot before any recovery put or publication. Intent
+        // metadata never implies canonical confirmation, even when the intent's own ack was lost.
+        let scanned = scan(self.calls.as_ref(), deadline())?;
+        Self::validate_scan(&scanned)?;
+        let intents = scanned.intents.clone();
+        self.merge(scanned)?;
+        for intent in intents {
+            let key = intent.entry.key;
+            let pending = PendingWrite {
+                entry: Arc::new(intent.entry.clone()),
+                own: intent.own,
+                records: Some(intent.records.clone()),
+                progress: Arc::new(AtomicUsize::new(intent.records.len() - 1)),
+            };
+            if !intent.committed {
+                self.lock().pending.push((key, pending.clone()));
+                let confirmed = put_from(
+                    self.calls.as_ref(),
+                    &intent.records,
+                    &pending.progress,
+                    deadline(),
+                    false,
+                ) == PutOutcome::Ready;
+                if confirmed {
+                    self.lock().pending.retain(|(held, _)| *held != key);
                 }
-                state.entries.insert(entry.key, entry);
+                // The shared Store also contains peer intents. An unconfirmed peer operation
+                // cannot select this node's prices or make its admissions pending.
+                if confirmed || intent.entry.writer == self.node {
+                    self.lock().entries.insert(key, intent.entry.clone());
+                }
             }
-            if put_all(self.calls.as_ref(), &records, deadline(), false) != PutOutcome::Ready {
-                tracing::error!(
-                    "the rate card entry {key} is not confirmed by the store yet; it is re-put in \
-                     the background"
-                );
-                unconfirmed.push((key, PendingWrite::Encoded(records)));
+            // Another node's intent is safe to retry but cannot select this node's own card.
+            // An amendment's explicit own=false survives restart even if its card equals config.
+            if intent.own && intent.entry.writer == self.node {
+                self.lock().own = Some(key);
             }
-        }
-        if unconfirmed.len() != spool.pending.len() {
-            let keep: BTreeSet<String> = unconfirmed.iter().map(|(k, _)| k.hex()).collect();
-            let confirmed: BTreeSet<&str> = spool
-                .pending
-                .iter()
-                .filter(|w| !keep.contains(&w.key))
-                .map(|w| w.key.as_str())
-                .collect();
-            self.update_spool(|latest| {
-                latest
-                    .pending
-                    .retain(|w| !confirmed.contains(w.key.as_str()));
-            })?;
-        }
-        let reput = !unconfirmed.is_empty();
-        self.lock().pending = unconfirmed;
-        if reput {
-            self.spawn_reput();
-        }
-        // THE READ: the whole schema. A store error fails the boot, unless the node is only
-        // re-putting an entry, which it does in the background.
-        match self.rescan(deadline()) {
-            Ok(_) => {}
-            Err(why) if reput => tracing::error!("{why}; the boot continues and keeps re-putting"),
-            Err(why) => return Err(why),
         }
         // THE MIGRATION, before the opening rule: every chain's card records, under time keys, an
         // idempotent union (a key the store holds is not written again).
@@ -605,16 +621,35 @@ impl CardStore {
                     correction: None,
                 }
             };
-            match put_all(self.calls.as_ref(), &entry.records()?, deadline(), true) {
-                PutOutcome::Ready => {}
-                PutOutcome::Refused(why) | PutOutcome::Doubtful(why) => {
+            let pending = PendingWrite::prepare(entry, true);
+            let key = pending.entry.key;
+            self.lock().pending.push((key, pending.clone()));
+            let records = pending
+                .records
+                .as_ref()
+                .ok_or("opening card encoding failed; original held in RAM")?;
+            match put_from(
+                self.calls.as_ref(),
+                records,
+                &pending.progress,
+                deadline(),
+                true,
+            ) {
+                PutOutcome::Ready => {
+                    let mut state = self.lock();
+                    state.pending.retain(|(held, _)| *held != key);
+                    state.entries.insert(key, (*pending.entry).clone());
+                    state.own = Some(key);
+                }
+                PutOutcome::Refused(_) | PutOutcome::Doubtful(_) => {
+                    // A boot failure has not activated prices. Retain the original owner, rather
+                    // than replacing an uncertain opening with a fresh identity.
+                    self.spawn_reput();
                     return Err(format!(
-                        "the rate-card history is empty and the store would not take its opening \
-                         entry: {why}"
-                    ))
+                        "the Store has not confirmed opening rate-card entry {key}"
+                    ));
                 }
             }
-            self.lock().entries.insert(entry.key, entry);
             // Another node may have opened it at the same time: the lowest key wins.
             let _ = self.rescan(deadline());
         }
@@ -625,6 +660,7 @@ impl CardStore {
         }
         self.loaded.store(true, Ordering::Release);
         self.apply(card, origin);
+        self.spawn_reput();
         self.spawn_rescan();
         Ok(())
     }
@@ -648,6 +684,7 @@ impl CardStore {
             }
             if let Some(in_force) = Self::in_force_at(&state, now).filter(|e| e.card == *card) {
                 state.own = Some(in_force.key);
+                self.publish(&state);
                 return Some(in_force.key);
             }
             self.skew_alarm(&mut state, now);
@@ -689,79 +726,49 @@ impl CardStore {
         self.check_alarms(state);
     }
 
-    /// Write `entry` write-before-apply: spooled first, put with the in-lock bound. READY, it is
-    /// confirmed; anything else leaves it PENDING, in force on this node and re-put in the
-    /// background until READY. An encoding failure retains the original entry in memory pending
-    /// successful encoding and confirmation, with an alarm that it cannot survive restart.
-    /// Never refused.
+    /// Prepare one immutable owner before its first put. The Store writes the complete intent
+    /// before the canonical commit; only all canonical acknowledgments discharge pending state.
+    /// Encoding failure preserves the original in RAM and never claims restart durability.
     fn write(self: &Arc<Self>, entry: StoredEntry, own: bool) {
         let key = entry.key;
-        let records = entry.records();
-        if let Ok(records) = &records {
-            if let Err(why) = self.spool_records(&key, records) {
-                tracing::error!(
-                    "rate card entry {key} could not be spooled before it was written: {why}; it is \
-                     held in memory and re-put until the store confirms it"
-                );
-            }
-        }
-        // The generation that resolved this entry is already live. Even an unencodable entry
-        // must retain its identity and original card until real records can be confirmed.
+        let pending = PendingWrite::prepare(entry, own);
         {
             let mut state = self.lock();
-            if let Err(why) = &records {
-                state
-                    .pending
-                    .push((key, PendingWrite::Unencoded(Arc::new(entry.clone()))));
-                self.alarm(
-                    &mut state,
-                    format!(
-                        "rate card entry {key} cannot be encoded for the store: {why}; it remains \
-                         pending in memory with its original card and is retried, but cannot be \
-                         spooled in the current format and will be lost on restart"
-                    ),
-                );
-            }
-            state.entries.insert(key, entry);
+            state.pending.push((key, pending.clone()));
+            state.entries.insert(key, (*pending.entry).clone());
             if own {
                 state.own = Some(key);
             }
-            self.publish(&state);
-        }
-        let Ok(records) = records else {
-            self.spawn_reput();
-            return;
-        };
-        let outcome = put_all(
-            self.calls.as_ref(),
-            &records,
-            Some(Instant::now() + IN_LOCK_BOUND),
-            true,
-        );
-        if outcome == PutOutcome::Ready {
-            if let Err(why) = self.update_spool(|spool| {
-                spool.pending.retain(|w| w.key != key.hex());
-            }) {
-                tracing::error!(
-                    "rate card entry {key} IS in force fleet-wide, and the local spool could not \
-                     be cleared: {why}"
+            if pending.records.is_none() {
+                self.alarm(
+                    &mut state,
+                    format!(
+                    "rate card entry {key} cannot be encoded; its original remains pending in RAM; \
+                     restart recovery is unavailable until the Store accepts its complete intent"
+                ),
                 );
             }
+            self.publish(&state);
+        }
+        let outcome = pending.records.as_ref().map(|records| {
+            put_from(
+                self.calls.as_ref(),
+                records,
+                &pending.progress,
+                Some(Instant::now() + IN_LOCK_BOUND),
+                true,
+            )
+        });
+        if outcome == Some(PutOutcome::Ready) {
             let mut state = self.lock();
+            state.pending.retain(|(held, _)| *held != key);
             self.check_alarms(&mut state);
             return;
         }
-        let why = match &outcome {
-            PutOutcome::Refused(why) | PutOutcome::Doubtful(why) => why.clone(),
-            PutOutcome::Ready => String::new(),
-        };
         tracing::error!(
-            "rate card entry {key} is in force on this node and pending confirmation from the \
-             store ({why}); it is re-put until the store confirms it"
+            "rate card entry {key} is pending canonical Store confirmation; incomplete Store \
+             intent or an unavailable/ephemeral Store does not establish restart durability"
         );
-        self.lock()
-            .pending
-            .push((key, PendingWrite::Encoded(records)));
         self.spawn_reput();
     }
 
@@ -778,13 +785,26 @@ impl CardStore {
         reason_hash: [u8; 32],
         actor: &str,
     ) -> Result<EntryKey, String> {
+        let base = self.card_at(from).map(|(key, _)| key);
+        self.amend_from((from, until), base, card, reason_hash, actor)
+    }
+
+    /// Prepare over the exact base a caller pinned before its seal, without a global money lock.
+    pub(crate) fn amend_from(
+        self: &Arc<Self>,
+        window: (u64, u64),
+        base: Option<EntryKey>,
+        card: CardFields,
+        reason_hash: [u8; 32],
+        actor: &str,
+    ) -> Result<EntryKey, String> {
         if !self.is_loaded() {
             return Err("the rate-card history is not loaded".to_string());
         }
+        let (from, until) = window;
         let entry = {
             let mut state = self.lock();
             self.skew_alarm(&mut state, now_ms());
-            let base = Self::in_force_at(&state, from).map(|e| e.key);
             StoredEntry {
                 key: self.next_key(&state),
                 effective_from: from,
@@ -890,47 +910,36 @@ impl CardStore {
                         state.pending.clone()
                     };
                     for (key, pending) in pending {
-                        let records = match pending {
-                            PendingWrite::Encoded(records) => records,
-                            PendingWrite::Unencoded(entry) => {
-                                let Ok(records) = entry.records() else {
+                        let records = match pending.records {
+                            Some(records) => records,
+                            None => {
+                                let Ok(records) = pending.entry.records_for(pending.own) else {
                                     continue;
                                 };
+                                let records = Arc::new(records);
                                 let mut state = this.lock();
-                                if let Some((_, pending)) =
-                                    state.pending.iter_mut().find(|(k, _)| *k == key)
+                                if let Some((_, held)) =
+                                    state.pending.iter_mut().find(|(held, _)| *held == key)
                                 {
-                                    *pending = PendingWrite::Encoded(records.clone());
+                                    held.records = Some(records.clone());
                                 }
                                 records
                             }
                         };
-                        // Persistence can have failed before or after rename on any previous
-                        // attempt. Retry it even for already encoded owners, before their puts.
-                        // Only the real store acknowledgments below can discharge this owner.
-                        if let Err(why) = this.spool_records(&key, &records) {
-                            tracing::error!(
-                                "rate card entry {key} could not be spooled: {why}; it \
-                                 remains held in memory until the store confirms it"
-                            );
-                        }
-                        #[cfg(all(test, unix))]
-                        super::card_store::save_test::before_reput(this.spool_dir());
-                        match put_all(
+                        match put_from(
                             this.calls.as_ref(),
                             &records,
+                            &pending.progress,
                             Some(Instant::now() + Duration::from_secs(10)),
-                            true,
+                            false,
                         ) {
                             PutOutcome::Ready => {
-                                if let Err(why) = this.update_spool(|spool| {
-                                    spool.pending.retain(|w| w.key != key.hex());
-                                }) {
-                                    tracing::error!(
-                                        "rate card entry {key} is confirmed; the spool: {why}"
-                                    );
+                                {
+                                    let mut state = this.lock();
+                                    state.entries.insert(key, (*pending.entry).clone());
+                                    state.pending.retain(|(held, _)| *held != key);
+                                    this.publish(&state);
                                 }
-                                this.lock().pending.retain(|(k, _)| *k != key);
                                 refusals.remove(&key);
                                 tracing::warn!("rate card entry {key} is confirmed by the store");
                             }

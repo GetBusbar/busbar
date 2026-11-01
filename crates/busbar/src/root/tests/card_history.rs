@@ -42,7 +42,7 @@ fn now_ms() -> u64 {
 }
 
 fn booted(store: &RecordSlots, node: u64, card: &CardFields) -> Arc<CardStore> {
-    let cs = CardStore::new(store.calls(), node, None);
+    let cs = CardStore::new(store.calls(), node);
     cs.boot(card, &format!("boot of node {node}"), Vec::new())
         .expect("the history boots");
     cs
@@ -81,206 +81,201 @@ fn changes(cs: &CardStore) -> Vec<StoredEntry> {
         .collect()
 }
 
-fn spool_dir(label: &str) -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!(
-        "card-spool-{label}-{}-{}",
-        std::process::id(),
-        hex::encode(crate::root::card_store::boot_rand())
-    ));
-    std::fs::create_dir(&dir).unwrap();
-    dir
+fn original(cs: &CardStore, fee: i64, actor: &str) -> StoredEntry {
+    let mut entry = cs.entries()[0].clone();
+    entry.key = EntryKey::new(now_ms() + 1, [8; 8], fee as u32);
+    entry.author = EntryAuthor::Change;
+    entry.actor = actor.into();
+    entry.base = cs.own().map(|(key, _)| key);
+    entry.writer = cs.node();
+    entry.set_fields = vec!["per_request_fee".into()];
+    entry.correction = Some(b"original-correction-envelope".to_vec());
+    entry.effective_from = now_ms();
+    entry.appended_at = now_ms();
+    entry.card = card(1.0, fee);
+    entry
 }
 
-#[cfg(unix)]
 #[test]
-fn a_failed_spool_barrier_retries_the_exact_owner_until_real_store_confirmation() {
-    use crate::root::card_store::{save_test, Spool, SpooledWrite};
-    use save_test::Step;
-    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-    use std::sync::{mpsc, Mutex};
-
-    for fault in [
-        Step::SyncFile,
-        Step::Rename,
-        Step::OpenDirectory,
-        Step::SyncDirectory,
-    ] {
+fn a_partial_store_write_retries_the_exact_owner_at_every_record_boundary() {
+    let template_store = RecordSlots::new();
+    let template = booted(&template_store, 1, &card(1.0, 0));
+    let count = original(&template, 7, "private-original-actor")
+        .records_for(true)
+        .unwrap()
+        .len();
+    for cut in 0..count {
         let store = RecordSlots::new();
-        let dir = spool_dir("barrier-retry");
-        let cs = CardStore::new(store.calls(), 1, Some(dir.clone()));
-        cs.boot(&card(1.0, 0), "boot", Vec::new()).unwrap();
-        let mut unrelated = cs.entries()[0].clone();
-        unrelated.key = EntryKey::new(1, [9; 8], 7);
-        let unrelated_write = SpooledWrite::of(&unrelated.key, &unrelated.records().unwrap());
-        Spool {
-            pending: vec![unrelated_write.clone()],
-        }
-        .save(&dir)
-        .unwrap();
-
-        let mut original = unrelated.clone();
-        original.key = EntryKey::new(now_ms() + 1, [8; 8], 3);
-        original.author = EntryAuthor::Change;
-        original.actor = "private-original-actor".into();
-        original.correction = Some(b"private-original-correction".to_vec());
-        original.card = card(1.0, 7);
-        let key = original.key;
-        let original_write = SpooledWrite::of(&key, &original.records().unwrap());
-        let attempts = Arc::new(AtomicUsize::new(0));
-        let failed = AtomicBool::new(false);
-        let guard = save_test::install(&dir, {
-            let attempts = attempts.clone();
-            move |step| {
-                if step == Step::SyncFile {
-                    attempts.fetch_add(1, Ordering::AcqRel);
-                }
-                if step == fault && !failed.swap(true, Ordering::AcqRel) {
-                    Err(std::io::Error::other("private-disk-refusal"))
-                } else {
-                    Ok(())
-                }
-            }
-        });
-        let (observed_tx, observed_rx) = mpsc::channel();
-        let (allow_tx, allow_rx) = mpsc::channel();
-        let allow_rx = Mutex::new(allow_rx);
-        store.refuse(true);
-        save_test::on_reput(&dir, {
-            let dir = dir.clone();
-            let attempts = attempts.clone();
-            let store = store.clone();
-            move || {
-                observed_tx
-                    .send((attempts.load(Ordering::Acquire), Spool::load(&dir).unwrap()))
-                    .unwrap();
-                let allow = allow_rx
-                    .lock()
-                    .unwrap()
-                    .recv_timeout(Duration::from_secs(10))
-                    .unwrap();
-                store.refuse(!allow);
-            }
-        });
-
-        cs.write(original.clone(), true);
+        let cs = booted(&store, 1, &card(1.0, 0));
+        let entry = original(&cs, 7, "private-original-actor");
+        let key = entry.key;
+        let puts = store.puts();
+        store.take_then_refuse(cut);
+        cs.write(entry.clone(), true);
         assert_eq!(cs.pending(), Some(key));
-        assert_eq!(cs.own(), Some((key, original.card.clone())));
-        for round in 0..2 {
-            let (attempts, spool) = observed_rx.recv_timeout(Duration::from_secs(10)).unwrap();
-            assert!(
-                attempts >= 2,
-                "an encoded pending owner must retry local persistence"
-            );
-            assert_eq!(
-                spool.pending,
-                vec![unrelated_write.clone(), original_write.clone()]
-            );
-            assert_eq!(
-                cs.pending(),
-                Some(key),
-                "local durability is not a store acknowledgment"
-            );
-            assert!(cs.pending_refusal().is_some());
-            assert_eq!(
-                cs.entries().into_iter().find(|e| e.key == key),
-                Some(original.clone())
-            );
-            // First re-put remains unconfirmed even though local persistence succeeded.
-            // The next re-put receives the actual record acknowledgments.
-            allow_tx.send(round == 1).unwrap();
-        }
-        wait_until(
-            "the exact owner to receive every record acknowledgment",
-            || cs.pending().is_none(),
+        assert_eq!(*cs.lock().pending[0].1.entry, entry);
+        assert_eq!(
+            cs.lock().pending[0]
+                .1
+                .progress
+                .load(std::sync::atomic::Ordering::Acquire),
+            cut
         );
-        assert_eq!(Spool::load(&dir).unwrap().pending, vec![unrelated_write]);
-        let scanned = crate::root::card_store::scan(store.calls().as_ref(), None).unwrap();
-        assert!(scanned.entries.contains(&original));
-        drop(cs);
-        drop(guard);
-        std::fs::remove_dir_all(dir).unwrap();
+        let scan = crate::root::card_store::scan(store.calls().as_ref(), None).unwrap();
+        assert!(
+            !scan.entries.contains(&entry),
+            "no canonical commit acknowledged"
+        );
+        if cut + 1 == count {
+            let intent = scan
+                .intents
+                .iter()
+                .find(|intent| intent.entry.key == key)
+                .unwrap();
+            assert_eq!(intent.entry, entry);
+            assert!(intent.own && !intent.committed);
+        }
+        store.refuse(false);
+        wait_until("the exact original's canonical acknowledgment", || {
+            cs.pending().is_none()
+        });
+        let scan = crate::root::card_store::scan(store.calls().as_ref(), None).unwrap();
+        assert!(scan.entries.contains(&entry));
+        assert_eq!(cs.own(), Some((key, entry.card)));
+        assert_eq!(
+            store.puts(),
+            puts + count,
+            "acknowledged chunks are not restarted from zero"
+        );
     }
 }
 
 #[test]
-fn a_ready_write_does_not_erase_another_pending_write_from_the_spool() {
-    use std::sync::atomic::{AtomicBool, Ordering};
-
+fn an_unknown_commit_outcome_keeps_the_same_owner_until_exact_retry_acknowledgments() {
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     let store = RecordSlots::new();
-    let dir = spool_dir("concurrent");
-    let cs = CardStore::new(store.calls(), 1, Some(dir.clone()));
-    cs.boot(&card(1.0, 0), "boot", Vec::new()).unwrap();
-    let entered = Arc::new(Barrier::new(2));
-    let release = Arc::new(Barrier::new(2));
-    let once = AtomicBool::new(false);
+    let cs = booted(&store, 1, &card(1.0, 0));
+    let entry = original(&cs, 7, "unknown commit original");
+    let count = entry.records_for(true).unwrap().len();
+    let calls = AtomicUsize::new(0);
+    let released = Arc::new(AtomicBool::new(false));
     store.on_put({
-        let entered = entered.clone();
-        let release = release.clone();
+        let store = store.clone();
+        let released = released.clone();
         move || {
-            if std::thread::current().name() == Some("card-spool-ready") {
-                if !once.swap(true, Ordering::AcqRel) {
-                    entered.wait();
-                    release.wait();
+            if std::thread::current().name() == Some("card-reput") {
+                if !released.load(Ordering::Acquire) {
+                    return Some(busbar_contract::store_calls::StoreFailure::Refused(
+                        "hold retry".into(),
+                    ));
                 }
-                None
+                store.lose_acks(false);
             } else {
-                Some(busbar_contract::store_calls::StoreFailure::Refused(
-                    "hold the other entry pending".into(),
-                ))
+                store.lose_acks(calls.fetch_add(1, Ordering::AcqRel) + 1 == count);
             }
+            None
         }
     });
-    let first = {
-        let cs = cs.clone();
-        std::thread::Builder::new()
-            .name("card-spool-ready".into())
-            .spawn(move || cs.apply(&card(1.0, 1), "first").unwrap())
-            .unwrap()
-    };
-    entered.wait();
-    let second = cs.apply(&card(1.0, 2), "second").unwrap();
-    release.wait();
-    let first = first.join().unwrap();
-    let pending = crate::root::card_store::Spool::load(&dir).unwrap();
-    assert_eq!(cs.pending(), Some(second));
-    assert!(pending.pending.iter().any(|w| w.key == second.hex()));
-    assert!(!pending.pending.iter().any(|w| w.key == first.hex()));
-    drop(cs);
-    std::fs::remove_dir_all(dir).unwrap();
+    cs.write(entry.clone(), true);
+    assert_eq!(cs.pending(), Some(entry.key));
+    let scan = crate::root::card_store::scan(store.calls().as_ref(), None).unwrap();
+    assert!(
+        scan.entries.contains(&entry),
+        "commit landed but its ack was lost"
+    );
+    assert_eq!(*cs.lock().pending[0].1.entry, entry);
+    released.store(true, Ordering::Release);
+    wait_until("the same commit to be acknowledged on retry", || {
+        cs.pending().is_none()
+    });
+    assert_eq!(changes(&cs), vec![entry]);
 }
 
 #[test]
-fn a_corrupt_spool_is_preserved_and_refuses_boot_without_publishing_a_card() {
+fn a_ready_write_preserves_every_other_store_intent() {
     let store = RecordSlots::new();
-    let dir = spool_dir("corrupt-boot");
-    let path = crate::root::card_store::Spool::path(&dir);
-    let bytes = b"{\"pending\":[unreadable but not disposable";
-    std::fs::write(&path, bytes).unwrap();
-    let cs = CardStore::new(store.calls(), 1, Some(dir.clone()));
-    let result = cs.boot(&card(1.0, 0), "boot", Vec::new());
-    assert!(result.is_err());
-    assert_eq!(std::fs::read(path).unwrap(), bytes);
-    assert!(!cs.is_loaded());
-    assert_eq!(store.puts(), 0);
-    drop(cs);
-    std::fs::remove_dir_all(dir).unwrap();
+    let cs = booted(&store, 1, &card(1.0, 0));
+    let mut unrelated = original(&cs, 4, "another node's original");
+    unrelated.writer = 99;
+    let mut records = unrelated.records_for(true).unwrap();
+    records.pop();
+    for (key, value) in &records {
+        store.put_row(CARD_SCHEMA, key, value.as_slice());
+    }
+    let key = cs.apply(&card(1.0, 8), "ready successor").unwrap();
+    assert!(cs.pending().is_none());
+    let scan = crate::root::card_store::scan(store.calls().as_ref(), None).unwrap();
+    assert!(scan.entries.iter().any(|entry| entry.key == key));
+    assert!(scan
+        .intents
+        .iter()
+        .any(|intent| intent.entry == unrelated && !intent.committed));
+    let restarted = booted(&store, 1, &card(1.0, 8));
+    assert!(restarted.entries().contains(&unrelated));
+    assert_ne!(restarted.own().map(|(key, _)| key), Some(unrelated.key));
 }
 
 #[test]
-fn an_apply_does_not_overwrite_a_spool_that_became_unreadable() {
+fn corrupt_or_unknown_store_intents_refuse_boot_before_any_put_or_publication() {
+    for corruption in [0, 1, 2] {
+        let store = RecordSlots::new();
+        let first = booted(&store, 1, &card(1.0, 0));
+        let entry = original(&first, 7, "private-original-actor");
+        let mut records = entry.records_for(true).unwrap();
+        records.pop();
+        match corruption {
+            0 => {
+                records.remove(0);
+            }
+            1 => {
+                let last = records.last_mut().unwrap();
+                let mut meta = last.1.as_slice().to_vec();
+                meta[0] = 99;
+                last.1 = busbar_contract::kinds::RecordBytes::new(meta).unwrap();
+            }
+            _ => {
+                let last = records.last_mut().unwrap();
+                last.1 = busbar_contract::kinds::RecordBytes::new(vec![2]).unwrap();
+            }
+        }
+        for (key, value) in &records {
+            store.put_row(CARD_SCHEMA, key, value.as_slice());
+        }
+        let puts = store.puts();
+        let cs = CardStore::new(store.calls(), 1);
+        let error = cs.boot(&card(1.0, 7), "boot", Vec::new()).unwrap_err();
+        assert!(!error.contains("private-original-actor"));
+        assert!(!cs.is_loaded());
+        assert!(cs.history().is_none());
+        assert!(cs.entries().is_empty());
+        assert_eq!(
+            store.puts(),
+            puts,
+            "validate the whole snapshot before replay"
+        );
+    }
+}
+
+#[test]
+fn a_rescan_never_overwrites_corrupt_store_records_or_publishes_a_partial_snapshot() {
     let store = RecordSlots::new();
-    let dir = spool_dir("corrupt-apply");
-    let cs = CardStore::new(store.calls(), 1, Some(dir.clone()));
-    cs.boot(&card(1.0, 0), "boot", Vec::new()).unwrap();
-    let path = crate::root::card_store::Spool::path(&dir);
-    let bytes = b"retained unreadable spool";
-    std::fs::write(&path, bytes).unwrap();
-    let key = cs.apply(&card(1.0, 3), "apply").unwrap();
-    assert_eq!(cs.own().map(|(key, _)| key), Some(key));
-    assert!(cs.pending().is_none(), "the store accepted this new card");
-    assert_eq!(std::fs::read(path).unwrap(), bytes);
-    drop(cs);
-    std::fs::remove_dir_all(dir).unwrap();
+    let cs = booted(&store, 1, &card(1.0, 0));
+    let before = cs.entries();
+    let entry = original(&cs, 7, "private-actor");
+    let records = entry.records_for(true).unwrap();
+    for (key, value) in &records {
+        store.put_row(CARD_SCHEMA, key, value.as_slice());
+    }
+    let corrupt = records.last().unwrap().0.clone();
+    store.corrupt(CARD_SCHEMA, &corrupt);
+    let puts = store.puts();
+    assert!(cs.rescan(None).is_err());
+    assert_eq!(cs.entries(), before);
+    assert_eq!(store.puts(), puts);
+    assert!(!crate::root::card_store::scan(store.calls().as_ref(), None)
+        .unwrap()
+        .unreadable
+        .is_empty());
 }
 
 #[test]
@@ -382,60 +377,28 @@ fn t1_card_the_card_in_force_and_every_instants_card_survive_a_restart_and_a_new
 
 /// **T8.** A doubtful put (the store kept it and lost the ack) is PENDING: the node prices with the
 /// pending entry's id at once and is NOT refused by default (the latency ruling; strict mode reads
-/// `pending_refusal`), re-puts the same bytes until READY, and a restart re-puts a spooled one.
+/// `pending_refusal`), re-puts the same bytes until READY, and a restart re-puts a complete Store intent.
 #[test]
-fn t8_a_doubtful_put_is_pending_served_through_and_reput_to_ready() {
+fn t8_a_doubtful_put_is_pending_and_reput_to_ready_without_a_directory() {
     let store = RecordSlots::new();
-    let dir = std::env::temp_dir().join(format!("card-t8-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    let cs = CardStore::new(store.calls(), 1, Some(dir.clone()));
-    cs.boot(&card(1.0, 0), "boot", Vec::new()).unwrap();
-    assert!(cs.pending_refusal().is_none());
-
+    let cs = booted(&store, 1, &card(1.0, 0));
     store.lose_acks(true);
-    let key = cs
-        .apply(&card(1.0, 9), "config/apply by admin")
-        .expect("applied");
-    assert_eq!(
-        cs.pending(),
-        Some(key),
-        "a doubtful write is pending, never refused"
-    );
-    assert_eq!(
-        cs.own().map(|(k, c)| (k, c.per_request_fee)),
-        Some((key, 9))
-    );
+    let key = cs.apply(&card(1.0, 9), "config/apply by admin").unwrap();
+    assert_eq!(cs.pending(), Some(key));
     assert!(cs
         .pending_refusal()
         .is_some_and(|why| why.contains(&key.hex())));
-    let spooled = crate::root::card_store::Spool::load(&dir).unwrap();
-    assert_eq!(spooled.pending.len(), 1, "spooled before its first put");
-    // A further change while one is pending is taken, and queued behind it.
     let next = cs.apply(&card(1.0, 10), "config/apply by admin").unwrap();
-    assert_eq!(cs.own().map(|(k, _)| k), Some(next));
-
+    assert_ne!(next, key);
     store.lose_acks(false);
-    wait_until("the re-put to land", || cs.pending().is_none());
-    assert!(crate::root::card_store::Spool::load(&dir)
-        .unwrap()
-        .pending
-        .is_empty());
-    let read = crate::root::card_store::scan(store.calls().as_ref(), None).unwrap();
-    assert!(
-        read.entries.iter().any(|e| e.key == key) && read.entries.iter().any(|e| e.key == next)
-    );
-
-    // A spooled entry a restart finds is re-put before the history is read.
-    store.lose_acks(true);
-    let last = cs.apply(&card(1.0, 11), "config/apply by admin").unwrap();
-    store.lose_acks(false);
-    drop(cs);
-    let restarted = CardStore::new(store.calls(), 1, Some(dir.clone()));
-    restarted.boot(&card(1.0, 11), "boot", Vec::new()).unwrap();
-    assert!(restarted.pending().is_none());
-    assert_eq!(restarted.own().map(|(k, _)| k), Some(last));
-    let _ = std::fs::remove_dir_all(&dir);
+    wait_until("the exact writes to be confirmed", || {
+        cs.pending().is_none()
+    });
+    let scan = crate::root::card_store::scan(store.calls().as_ref(), None).unwrap();
+    assert!(scan.entries.iter().any(|entry| entry.key == key));
+    assert!(scan.entries.iter().any(|entry| entry.key == next));
+    let restarted = booted(&store, 1, &card(1.0, 10));
+    assert_eq!(restarted.own().map(|(key, _)| key), Some(next));
 }
 
 /// **T13.** Two nodes load DIFFERENT cards at once, extending the same head: nothing is refused,
@@ -583,8 +546,8 @@ fn t22_a_far_future_head_never_delays_a_change_and_card_void_clears_it() {
 #[test]
 fn racing_openings_resolve_to_the_lowest_key() {
     let store = RecordSlots::new();
-    let a = CardStore::new(store.calls(), 1, None);
-    let b = CardStore::new(store.calls(), 2, None);
+    let a = CardStore::new(store.calls(), 1);
+    let b = CardStore::new(store.calls(), 2);
     let gate = Arc::new(Barrier::new(2));
     let seen = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     {
@@ -678,7 +641,7 @@ fn the_journals_cards_migrate_under_time_keys_and_collapse_duplicates() {
     assert_eq!(migrated[1].key, EntryKey::new(5_000, 1u64.to_be_bytes(), 2));
 
     let store = RecordSlots::new();
-    let cs = CardStore::new(store.calls(), 9, None);
+    let cs = CardStore::new(store.calls(), 9);
     cs.boot(&edit, "boot", migrated.clone()).unwrap();
     assert_eq!(
         cs.entries().len(),
@@ -689,7 +652,7 @@ fn the_journals_cards_migrate_under_time_keys_and_collapse_duplicates() {
     assert_eq!(resolved(&cs, &[5_000])[0].1.as_ref(), Some(&edit));
     // Idempotent: a second boot copies nothing again.
     let puts = store.puts();
-    let again = CardStore::new(store.calls(), 9, None);
+    let again = CardStore::new(store.calls(), 9);
     again.boot(&edit, "boot", migrated).unwrap();
     assert_eq!(store.puts(), puts);
 }
@@ -705,7 +668,7 @@ fn t13_each_nodes_pin_prices_with_its_own_card_after_the_other_changes() {
     let boot = card(1.0, 0);
     let holder = |node: u64| {
         let h = RootHistory::default();
-        h.keep_in_store(store.calls(), node, None);
+        h.keep_in_store(store.calls(), node);
         h.card_applied(&boot, "boot");
         h.boot_in_store(None).expect("the store boot");
         h
@@ -837,7 +800,7 @@ fn the_migration_prices_every_instant_as_devs_rebuild_did_with_a_refused_correct
         "and so does the migration: {migrated:#?}"
     );
     let store = RecordSlots::new();
-    let cs = CardStore::new(store.calls(), 9, None);
+    let cs = CardStore::new(store.calls(), 9);
     cs.boot(&edit, "boot", migrated).unwrap();
     let ours = cs.history().unwrap();
     for t in [0, 4_999, 5_000, 5_500, 5_999, 6_000, 9_999] {
@@ -850,99 +813,193 @@ fn the_migration_prices_every_instant_as_devs_rebuild_did_with_a_refused_correct
 }
 
 #[test]
-fn an_unencodable_live_card_keeps_custody_through_later_writes_and_retries() {
-    use crate::root::card_store::{Spool, COMMIT_PART};
-
-    let store = RecordSlots::new();
-    let dir = std::env::temp_dir().join(format!(
-        "card-unencodable-{}-{}",
-        std::process::id(),
-        hex::encode(crate::root::card_store::boot_rand())
-    ));
-    std::fs::create_dir(&dir).unwrap();
-    let cs = CardStore::new(store.calls(), 1, Some(dir.clone()));
-    cs.boot(&card(1.0, 0), "boot", Vec::new()).unwrap();
-    let before = Spool::load(&dir).unwrap();
-    let puts = store.puts();
-    let origin = "x".repeat(usize::from(COMMIT_PART) * busbar_contract::MAX_RECORD_BYTES);
-    let original_card = card(1.0, 8);
-    let key = cs
-        .apply(&original_card, &origin)
-        .expect("the live card is retained");
-    let original = cs.entries().into_iter().find(|e| e.key == key).unwrap();
-    assert!(
-        original.records().is_err(),
-        "the existing format cannot encode this entry"
-    );
-    assert_eq!(original.actor, origin);
-    assert_eq!(original.card, original_card);
-    assert_eq!(cs.own(), Some((key, original_card.clone())));
-    assert_eq!(
-        store.puts(),
-        puts,
-        "absent records must never reach the store"
-    );
-    assert_eq!(Spool::load(&dir).unwrap(), before);
-    assert_eq!(cs.pending(), Some(key));
-    assert!(cs
-        .pending_refusal()
-        .is_some_and(|why| why.contains(&key.hex())));
-    assert!(cs.alarms().iter().any(|why| {
-        why.contains(&key.hex()) && why.contains("cannot be encoded") && why.contains("restart")
-    }));
-
-    let ready = cs.apply(&card(1.0, 9), "ordinary ready write").unwrap();
-    assert_eq!(cs.own().map(|(key, _)| key), Some(ready));
-    assert_eq!(cs.pending(), Some(key));
-    store.lose_acks(true);
-    let retry = cs.apply(&card(1.0, 10), "ordinary doubtful write").unwrap();
-    assert!(Spool::load(&dir)
-        .unwrap()
-        .pending
-        .iter()
-        .any(|w| w.key == retry.hex()));
-    store.lose_acks(false);
-    wait_until("the later entry to be confirmed by re-put", || {
-        !Spool::load(&dir)
-            .unwrap()
-            .pending
+fn oversized_original_changes_and_amendments_recover_exactly_over_the_same_store() {
+    use crate::root::card_store::{put_all, PutOutcome, COMMIT_PART};
+    for own in [true, false] {
+        let store = RecordSlots::new();
+        let first = booted(&store, 1, &card(1.0, 0));
+        let old_own = first.own();
+        let mut entry = original(&first, 8, "oversized");
+        entry.actor = "x".repeat(usize::from(COMMIT_PART) * busbar_contract::MAX_RECORD_BYTES + 1);
+        if !own {
+            entry.author = EntryAuthor::Amend {
+                reason: hex::encode([3; 32]),
+            };
+            entry.effective_from = 0;
+            entry.effective_until = Some(1);
+        }
+        let records = entry
+            .records_for(own)
+            .expect("u64 chunk indices accept the original");
+        assert!(entry.value().len() > usize::from(COMMIT_PART) * busbar_contract::MAX_RECORD_BYTES);
+        // Simulate destruction after the Store accepted the complete intent, before the canonical
+        // commit. All writes cross the actual StoreCalls API; no local spool participates.
+        assert_eq!(
+            put_all(
+                store.calls().as_ref(),
+                &records[..records.len() - 1],
+                None,
+                true
+            ),
+            PutOutcome::Ready
+        );
+        let scan = crate::root::card_store::scan(store.calls().as_ref(), None).unwrap();
+        assert!(!scan.entries.contains(&entry));
+        let intent = scan
+            .intents
             .iter()
-            .any(|w| w.key == retry.hex())
-    });
-    assert_eq!(
-        cs.pending(),
-        Some(key),
-        "another READY cannot discharge this entry"
-    );
-    assert!(cs.pending_refusal().is_some());
-    assert_eq!(
-        cs.entries().into_iter().find(|e| e.key == key),
-        Some(original)
-    );
-    let stored = crate::root::card_store::scan(store.calls().as_ref(), None).unwrap();
-    assert!(stored.entries.iter().any(|e| e.key == ready));
-    assert!(stored.entries.iter().any(|e| e.key == retry));
-    assert!(!stored.entries.iter().any(|e| e.key == key));
-    drop(cs);
-    std::fs::remove_dir_all(dir).unwrap();
+            .find(|intent| intent.entry.key == entry.key)
+            .unwrap();
+        assert_eq!(intent.entry, entry);
+        assert_eq!(intent.own, own);
+        assert!(!intent.committed);
+        drop(first);
+        let boot_card = if own {
+            entry.card.clone()
+        } else {
+            old_own.as_ref().unwrap().1.clone()
+        };
+        let restarted = booted(&store, 1, &boot_card);
+        assert!(
+            restarted.entries().contains(&entry),
+            "all original fields survive restart"
+        );
+        assert_eq!(
+            restarted.own().map(|(key, _)| key),
+            if own {
+                Some(entry.key)
+            } else {
+                old_own.map(|(key, _)| key)
+            }
+        );
+        assert!(restarted.pending().is_none());
+        let confirmed = crate::root::card_store::scan(store.calls().as_ref(), None).unwrap();
+        assert!(confirmed.entries.contains(&entry));
+        assert_eq!(
+            confirmed
+                .intents
+                .iter()
+                .find(|intent| intent.entry.key == entry.key)
+                .unwrap()
+                .records
+                .as_ref(),
+            &records
+        );
+    }
 }
 
 #[test]
-fn an_unencodable_amend_stays_pending_without_replacing_the_nodes_own_card() {
+fn unavailable_store_retains_ram_ownership_without_claiming_restart_durability() {
     let store = RecordSlots::new();
     let cs = booted(&store, 1, &card(1.0, 0));
-    let own = cs.own();
-    let puts = store.puts();
-    let actor = "x".repeat(
-        usize::from(crate::root::card_store::COMMIT_PART) * busbar_contract::MAX_RECORD_BYTES,
+    store.refuse(true);
+    let entry = original(&cs, 8, "unrecorded original");
+    cs.write(entry.clone(), true);
+    assert_eq!(cs.pending(), Some(entry.key));
+    assert_eq!(*cs.lock().pending[0].1.entry, entry);
+    let scan = crate::root::card_store::scan(store.calls().as_ref(), None).unwrap();
+    assert!(!scan.entries.contains(&entry));
+    assert!(!scan
+        .intents
+        .iter()
+        .any(|intent| intent.entry.key == entry.key));
+    drop(cs);
+    store.refuse(false);
+    let restarted = booted(&store, 1, &card(1.0, 0));
+    assert!(
+        !restarted.entries().contains(&entry),
+        "no Store custody was claimed for the RAM-only original"
     );
-    let key = cs.amend(0, 1, card(1.0, 7), [1; 32], &actor).unwrap();
-    let entry = cs.entries().into_iter().find(|e| e.key == key).unwrap();
-    assert!(entry.records().is_err());
-    assert_eq!(entry.actor, actor);
-    assert_eq!(entry.card, card(1.0, 7));
-    assert_eq!(cs.own(), own);
-    assert_eq!(store.puts(), puts);
-    assert_eq!(cs.pending(), Some(key));
-    assert!(cs.pending_refusal().is_some());
+}
+
+#[test]
+fn an_ephemeral_store_fixture_does_not_persist_after_instance_destruction() {
+    let first_store = RecordSlots::new();
+    let first = booted(&first_store, 1, &card(1.0, 0));
+    let key = first.apply(&card(1.0, 8), "same Store instance").unwrap();
+    let again = booted(&first_store, 1, &card(1.0, 8));
+    assert!(again.entries().iter().any(|entry| entry.key == key));
+    drop(first);
+    drop(again);
+    drop(first_store);
+    let new_instance = RecordSlots::new();
+    let fresh = booted(&new_instance, 1, &card(1.0, 8));
+    assert!(
+        !fresh.entries().iter().any(|entry| entry.key == key),
+        "new memory instance has no old records"
+    );
+}
+
+#[test]
+fn shared_store_peer_intents_do_not_steal_own_selection_or_refuse_unrelated_admissions() {
+    let store = RecordSlots::new();
+    let a = booted(&store, 1, &card(1.0, 1));
+    let b = booted(&store, 2, &card(1.0, 2));
+    let b_own = b.own();
+    let mut pending_a = original(&a, 3, "node one pending original");
+    pending_a.base = a.own().map(|(key, _)| key);
+    let mut records = pending_a.records_for(true).unwrap();
+    records.pop();
+    for (key, value) in records {
+        store.put_row(CARD_SCHEMA, &key, value.as_slice());
+    }
+    drop(a);
+    drop(b);
+    store.refuse(true);
+    let restarted_b = booted(&store, 2, &card(1.0, 2));
+    assert_eq!(restarted_b.own(), b_own);
+    assert!(restarted_b.pending().is_none());
+    assert!(
+        restarted_b.pending_refusal().is_none(),
+        "peer custody does not gate this node"
+    );
+    assert!(
+        !restarted_b.entries().contains(&pending_a),
+        "intent alone is no confirmed fleet change"
+    );
+    let restarted_a = booted(&store, 1, &card(1.0, 3));
+    assert_eq!(
+        restarted_a.own(),
+        Some((pending_a.key, pending_a.card.clone()))
+    );
+    assert_eq!(restarted_a.pending(), Some(pending_a.key));
+    assert!(restarted_a.pending_refusal().is_some());
+    store.refuse(false);
+    wait_until("the original writer's confirmation", || {
+        restarted_a.pending().is_none()
+    });
+    assert_eq!(
+        restarted_b.own(),
+        b_own,
+        "peer confirmation never moves this node's card"
+    );
+    assert!(crate::root::card_store::scan(store.calls().as_ref(), None)
+        .unwrap()
+        .entries
+        .contains(&pending_a));
+}
+
+#[test]
+fn an_uncertain_opening_commit_recovers_the_same_original_in_a_fresh_host() {
+    let store = RecordSlots::new();
+    let first = CardStore::new(store.calls(), 1);
+    let boot = CardFields {
+        per_request_fee: 3,
+        ..Default::default()
+    };
+    // An absent card's opening JSON occupies one data chunk, then intent and commit.
+    store.take_then_refuse(2);
+    assert!(first.boot(&boot, "first opening", Vec::new()).is_err());
+    assert!(!first.is_loaded());
+    let scan = crate::root::card_store::scan(store.calls().as_ref(), None).unwrap();
+    assert!(scan.entries.is_empty());
+    assert_eq!(scan.intents.len(), 1);
+    let original = scan.intents[0].entry.clone();
+    assert!(scan.intents[0].own && !scan.intents[0].committed);
+    assert_eq!(first.pending(), Some(original.key));
+    drop(first);
+    store.refuse(false);
+    let restarted = booted(&store, 1, &boot);
+    assert_eq!(restarted.entries(), vec![original.clone()]);
+    assert_eq!(restarted.own(), Some((original.key, boot)));
 }

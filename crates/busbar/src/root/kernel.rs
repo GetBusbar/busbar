@@ -286,17 +286,16 @@ impl RootHistory {
     }
 
     /// **KEEP THE HISTORY IN THE STORE** (MONEY-DESIGN section 3a): the production boot names the store,
-    /// its durable node id and its data directory before its book opens; the book's rebuild then
+    /// and its durable node id before its book opens; the book's rebuild then
     /// loads the fleet-shared history ([`Self::rebuild_from_chain`]) instead of journalling cards.
     pub fn keep_in_store(
         &self,
         calls: Arc<dyn busbar_contract::store_calls::StoreCalls>,
         node: u64,
-        data_dir: Option<std::path::PathBuf>,
     ) {
-        let _ = self.store.set(crate::root::card_history::CardStore::new(
-            calls, node, data_dir,
-        ));
+        let _ = self
+            .store
+            .set(crate::root::card_history::CardStore::new(calls, node));
     }
 
     /// The store-kept history, once it is loaded.
@@ -805,7 +804,12 @@ impl RootHistory {
         actor: &str,
         seal: impl FnOnce(&busbar_kernel_ledger::cost::RateCard, CorrectionBase) -> Result<(), E>,
     ) -> Result<busbar_kernel_ledger::cost::HistorySeq, AmendRefused<E>> {
-        let _one_at_a_time = self.applying.lock().unwrap_or_else(|p| p.into_inner());
+        let store = self.card_store();
+        // Store candidates retain an immutable base and do not call a Store under the global
+        // history lock. The legacy journal path still serializes its sequence assignment.
+        let _one_at_a_time = store
+            .is_none()
+            .then(|| self.applying.lock().unwrap_or_else(|p| p.into_inner()));
         let current = self.history().ok_or(AmendRefused::NoHistory)?;
         // OWNER ruling #32 (2026-09-29): A CORRECTION THAT WOULD CUT INSIDE A STORED ROW IS
         // REFUSED. `appended_at` is the first instant of the second the correction arrived in, so a
@@ -821,16 +825,25 @@ impl RootHistory {
         let (base, draft) = correction
             .draft_over(current.current())
             .ok_or(AmendRefused::NoSoleCard)?;
+        let store_base = if let Some(store) = store {
+            let key = current
+                .current()
+                .entry_at(correction.effective_from)
+                .ok_or(AmendRefused::NoSoleCard)?
+                .key();
+            Some(store.entry(&key).ok_or(AmendRefused::NoSoleCard)?)
+        } else {
+            None
+        };
         seal(&draft.card, base).map_err(AmendRefused::Seal)?;
         // KEPT IN THE STORE: the amend is an entry like a PUT's, written write-before-apply, its card
         // the card covering its start with the named cells set (MONEY-DESIGN section 3a "Amends").
-        if let Some(store) = self.card_store() {
+        if let Some(store) = store {
             let until = correction
                 .effective_until
                 .ok_or_else(|| AmendRefused::Store("an amend must name its end".to_string()))?;
-            let (_, base_card) = store
-                .card_at(correction.effective_from)
-                .ok_or(AmendRefused::NoSoleCard)?;
+            let original = store_base.ok_or(AmendRefused::NoSoleCard)?;
+            let base_card = original.card;
             let cells: Vec<(String, String, u64)> = correction
                 .cells
                 .iter()
@@ -842,7 +855,13 @@ impl RootHistory {
                 _ => [0; 32],
             };
             let key = store
-                .amend(correction.effective_from, until, card, reason_hash, actor)
+                .amend_from(
+                    (correction.effective_from, until),
+                    Some(original.key),
+                    card,
+                    reason_hash,
+                    actor,
+                )
                 .map_err(AmendRefused::Store)?;
             let history = store.history().ok_or(AmendRefused::NoHistory)?;
             return history
