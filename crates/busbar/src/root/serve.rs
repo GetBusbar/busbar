@@ -4334,8 +4334,13 @@ impl DataRoutes {
         let node = self.post.node();
         let unit = node.mint();
         let arrived = node.arrived();
+        self.frames_lock().insert(unit.get(), Arc::clone(&door.app));
+        let _frame = UnitFrame {
+            routes: &self,
+            unit: unit.get(),
+        };
         let steps = DoorSteps::new(
-            &served.facts,
+            &live.facts,
             &live.pools,
             node.resolver(),
             door.app,
@@ -4368,7 +4373,7 @@ impl DataRoutes {
                 &self.post,
                 &units,
                 (self.pin)(),
-                served.facts.audit_kind,
+                live.facts.audit_kind,
             )
             .await
         else {
@@ -4740,11 +4745,14 @@ impl DataRoutes {
             Some(key) => PrincipalId::new(key.id.as_str()),
             None => PrincipalId::new(AuthPrincipal(None).actor_id()),
         };
-        let open = self.served.planes[plane]
-            .snapshot
-            .claims
-            .get(claim as usize)
-            .is_some_and(|c| c.flags & CLAIM_OPEN != 0);
+        let pools_plane = self.served.planes[plane].live.served_facts.section
+            == busbar_contract::section::RESERVED_POOLS_KEY;
+        let open = (pools_plane && app.auth.is_open())
+            || self.served.planes[plane]
+                .snapshot
+                .claims
+                .get(claim as usize)
+                .is_some_and(|c| c.flags & CLAIM_OPEN != 0);
         let arrival = Arrival {
             claim,
             method: nest.ask.verb.into_bytes(),

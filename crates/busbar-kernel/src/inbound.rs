@@ -538,6 +538,12 @@ struct ReplayAdmission {
 }
 
 impl RequestAdmission {
+    /// The request-body ceiling from the listener generation that admitted this request.
+    #[must_use]
+    pub fn body_limit(&self) -> u64 {
+        self.inner.table.listener.body_limit
+    }
+
     pub(crate) fn plane_admission(&self) -> Option<crate::plane_driver::dispatch::PlaneAdmission> {
         self.inner.table.listener.admission(&self.inner.original)
     }

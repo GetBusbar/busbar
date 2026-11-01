@@ -27,6 +27,7 @@ use crate::root::plane_node::{Node, NodeEndPost};
 /// section one entry `m`, its data routes on a data router built with them, over a node of its own.
 pub(super) struct Governed {
     pub(super) router: axum::Router,
+    served: super::Served,
     /// The test plane's driver, for a test that reloads its generation while a unit is in flight.
     pub(super) driver: Arc<busbar_kernel::plane_driver::PlaneDriver>,
     post: Arc<NodeEndPost>,
@@ -291,12 +292,14 @@ fn governed_full(
     // The framer of the test plane's framed claim: the neutral frame door, dropped in (ARCHITECT
     // 4l); no other claim of the test plane is one a framer answers.
     served.framers = Some(neutral_framers());
+    let retained = served.clone();
     let routes = door_routes(served, || crate::root::kernel::ROOT_CARD.pin(), &[], &[])
         .expect("its claims mount");
     let (router, _admin, _handle) =
         busbar_kernel::build_split_routers_serving(Arc::clone(&app), routes, 1 << 20, 0, false);
     Governed {
         router,
+        served: retained,
         driver,
         post,
         money,
@@ -1083,4 +1086,237 @@ async fn an_arrival_opens_its_claims_span_with_the_units_forward_span_beneath_it
         .find(|s| s.0 == "forward")
         .unwrap_or_else(|| panic!("the unit's request span: {opened:?}"));
     assert_ne!(forward.1, Some("test_arrival"), "{opened:?}");
+}
+
+/// Reuse the composed dropped plane, its node and its money. Releasing the router
+/// leaves this rig as the sole owner of the generation before the test changes it.
+fn session_custody_routes(g: &mut Governed, pools_plane: bool) -> Arc<super::DataRoutes> {
+    g.router = axum::Router::new();
+    let mut served = std::mem::take(&mut g.served);
+    if pools_plane {
+        Arc::get_mut(&mut served.planes[0].live)
+            .expect("the original router was released")
+            .served_facts
+            .section = busbar_contract::section::RESERVED_POOLS_KEY;
+    }
+    let mut lines = Vec::new();
+    let mut of_line = std::collections::HashMap::new();
+    for (plane, served) in served.planes.iter().enumerate() {
+        for (claim, snapshot) in served.snapshot.claims.iter().enumerate() {
+            let claim = u32::try_from(claim).expect("fixture claim");
+            let (line, _) = super::claim_line(&served.instance, claim, snapshot, &[], &[], &[])
+                .expect("the existing fixture claim mounts");
+            of_line.insert((served.instance.clone(), claim), (plane, claim));
+            lines.push(line);
+        }
+    }
+    Arc::new(super::DataRoutes {
+        served,
+        post: Arc::clone(&g.post),
+        pin: || crate::root::kernel::ROOT_CARD.pin(),
+        guests: busbar_kernel::guest::GuestList::seal(lines).expect("fixture guest list"),
+        of_line,
+        frames: Default::default(),
+    })
+}
+
+fn session_custody_request(g: &Governed, target: &str) -> super::DoorRequest {
+    super::DoorRequest {
+        method: axum::http::Method::POST,
+        uri: target.parse().expect("fixture target"),
+        headers: Default::default(),
+        body: bytes::Bytes::from_static(b"ping"),
+        gov: Default::default(),
+        credential: None,
+        ticket: None,
+        app: Arc::clone(&g.app),
+        scheme: 0,
+        consumed_fields: Vec::new(),
+    }
+}
+
+fn session_custody_caller() -> super::PipeCaller {
+    let (_, from) = tokio::sync::mpsc::channel(1);
+    let (to, _) = tokio::sync::mpsc::channel(1);
+    super::PipeCaller {
+        from: tokio::sync::Mutex::new(from),
+        to,
+    }
+}
+
+fn session_custody_nest(parent: u64, target: &str) -> busbar_kernel::host_services::Nest {
+    busbar_kernel::host_services::Nest {
+        parent,
+        depth: 1,
+        principal: None,
+        ask: busbar_contract::services::NestAsk {
+            verb: "POST".to_string(),
+            target: target.to_string(),
+            body: b"ping".to_vec(),
+        },
+    }
+}
+
+#[tokio::test]
+async fn a_session_decode_refusal_uses_the_bound_live_facts() {
+    let _one = PUBLISHING.lock().await;
+    let mut g = governed("session-live-facts", false);
+    let routes = session_custody_routes(&mut g, false);
+    let live_kind = busbar_contract::OpClassId::new("session_live_generation");
+    {
+        let mut current = routes.served.planes[0]
+            .live
+            .live
+            .write()
+            .expect("unpoisoned");
+        Arc::get_mut(&mut current)
+            .expect("no unit has borrowed the generation")
+            .facts
+            .audit_kind = live_kind;
+    }
+    assert_ne!(routes.served.planes[0].facts.audit_kind, live_kind);
+    let (door, arrival, _) = routes.arrived(0, 2, session_custody_request(&g, "/framed/refuse"));
+    let (verdict, said) = tokio::sync::oneshot::channel();
+    Arc::clone(&routes)
+        .session(
+            door,
+            session_custody_caller(),
+            arrival,
+            verdict,
+            super::Attach::switched(),
+        )
+        .await;
+    let Err(Some(refused)) = said.await.expect("session verdict") else {
+        panic!("decode refused")
+    };
+    assert_eq!(refused.status, 404);
+    let book = g.book.lock().expect("unpoisoned");
+    assert_eq!(
+        book.audit_records
+            .last()
+            .expect("session audit")
+            .what
+            .op_class,
+        live_kind
+    );
+    assert_eq!(g.post.open_units(), 0);
+    assert_eq!(g.money.open_units(), 0);
+    assert!(routes.frames_lock().is_empty());
+}
+
+#[tokio::test]
+async fn an_admitted_session_exposes_its_parent_frame_until_cleanup() {
+    let _one = PUBLISHING.lock().await;
+    let mut g = governed("session-parent-frame", false);
+    let routes = session_custody_routes(&mut g, false);
+    let observed = Arc::new(std::sync::Mutex::new(None));
+    let capture = Arc::clone(&observed);
+    let reads = Arc::clone(&routes);
+    let expected_app = Arc::clone(&g.app);
+    let attach = super::Attach {
+        answered: 101,
+        admitted: Some(Box::new(move |unit| {
+            let nest = session_custody_nest(unit, "/call/local");
+            let node_live = reads
+                .post
+                .node()
+                .parent(busbar_contract::UnitKey::new(unit))
+                .is_some();
+            let same_app = reads.parent_of(&nest).is_some_and(|(app, parent)| {
+                parent.key().get() == unit && Arc::ptr_eq(&app, &expected_app)
+            });
+            *capture.lock().expect("unpoisoned") = Some((unit, node_live, same_app));
+            Err("finish after inspecting the admitted session".to_string())
+        })),
+        ended: None,
+    };
+    let (door, arrival, _) = routes.arrived(0, 1, session_custody_request(&g, "/open"));
+    let (verdict, _said) = tokio::sync::oneshot::channel();
+    Arc::clone(&routes)
+        .session(door, session_custody_caller(), arrival, verdict, attach)
+        .await;
+    let (unit, node_live, same_app) = observed
+        .lock()
+        .expect("unpoisoned")
+        .take()
+        .expect("admitted callback");
+    assert!(
+        routes.frames_lock().is_empty(),
+        "the frame ended with the session"
+    );
+    assert!(routes
+        .post
+        .node()
+        .parent(busbar_contract::UnitKey::new(unit))
+        .is_none());
+    assert_eq!(g.post.open_units(), 0);
+    assert_eq!(g.money.open_units(), 0);
+    assert!(node_live, "the node slot was live at admission");
+    assert!(
+        same_app,
+        "parent_of must return that live session's exact App and slot"
+    );
+}
+
+#[tokio::test]
+async fn nested_anonymous_admission_matches_the_arrival_rule() {
+    let _one = PUBLISHING.lock().await;
+    for (instance, pools, keys, target, expected) in [
+        ("nested-open-pools", true, false, "/call/local", 200),
+        ("nested-closed-pools", true, true, "/call/local", 401),
+        ("nested-other-plane", false, false, "/call/local", 401),
+        ("nested-explicit-open", false, true, "/open", 503),
+    ] {
+        let mut g = governed(instance, keys);
+        let routes = session_custody_routes(&mut g, pools);
+        let bound = Arc::new(std::sync::Mutex::new(None));
+        let capture = Arc::clone(&bound);
+        let node = Arc::clone(g.post.node());
+        let app = Arc::clone(&g.app);
+        let attach = super::Attach {
+            answered: 101,
+            admitted: Some(Box::new(move |unit| {
+                // Capture the same live node slot as DoorNests does. Deliberately
+                // independent of frames, so this regression isolates the open rule.
+                let parent = node
+                    .parent(busbar_contract::UnitKey::new(unit))
+                    .expect("live parent");
+                *capture.lock().expect("unpoisoned") = Some((app, parent));
+                Err("finish the parent after binding its continuation".to_string())
+            })),
+            ended: None,
+        };
+        let (door, arrival, _) = routes.arrived(0, 1, session_custody_request(&g, "/open"));
+        let (verdict, _said) = tokio::sync::oneshot::channel();
+        Arc::clone(&routes)
+            .session(door, session_custody_caller(), arrival, verdict, attach)
+            .await;
+        let bound = bound
+            .lock()
+            .expect("unpoisoned")
+            .take()
+            .expect("parent bound while live");
+        let nest = session_custody_nest(bound.1.key().get(), target);
+        let reply = Arc::clone(&routes).nested(nest, bound).await;
+        let busbar_kernel::host_services::NestReply::Answered { status, body, .. } = reply else {
+            panic!("fixture claim is served");
+        };
+        assert_eq!(
+            status,
+            expected,
+            "{instance}: {}",
+            String::from_utf8_lossy(&body)
+        );
+        if expected == 200 {
+            assert_eq!(body, b"ping");
+        }
+        assert_eq!(
+            g.requests(),
+            0,
+            "no anonymous unit charges the governance book"
+        );
+        assert_eq!(g.post.open_units(), 0);
+        assert_eq!(g.money.open_units(), 0);
+        assert!(routes.frames_lock().is_empty());
+    }
 }
