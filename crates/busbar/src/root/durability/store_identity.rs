@@ -728,21 +728,36 @@ fn write_atomically(
     crate::root::loader::durable::write(path, bytes)
 }
 
-/// Every node the registry names: `(host, node id)`, in key order.
+/// Every readable node the registry names: `(host, node id)`, in key order. The verification and
+/// migration readers also report unreadable rows through their existing diagnostic channels.
 ///
 /// # Errors
 ///
 /// The store refused or failed the scan.
 pub(super) fn registered(calls: &dyn StoreCalls) -> Result<Vec<(String, u64)>, String> {
+    scan_registry(calls).map(|scan| scan.nodes)
+}
+
+struct RegistryScan {
+    nodes: Vec<(String, u64)>,
+    unreadable: usize,
+}
+
+fn scan_registry(calls: &dyn StoreCalls) -> Result<RegistryScan, String> {
     let rows = wait_for(calls.record_scan(NODE_SCHEMA, b"host:", REGISTRY_LIMIT))
         .map_err(|f| format!("the store would not list the node registry: {f}"))?;
-    Ok(rows
-        .into_iter()
-        .filter_map(|(key, value)| {
-            let host = String::from_utf8(key.get(5..)?.to_vec()).ok()?;
-            Some((host, id_of(&value)?))
-        })
-        .collect())
+    let mut scan = RegistryScan {
+        nodes: Vec::new(),
+        unreadable: 0,
+    };
+    for (key, value) in rows {
+        let host = key.get(5..).and_then(|host| std::str::from_utf8(host).ok());
+        match (host, id_of(&value)) {
+            (Some(host), Some(id)) => scan.nodes.push((host.to_string(), id)),
+            _ => scan.unreadable += 1,
+        }
+    }
+    Ok(scan)
 }
 
 /// The deployment keyset's seed as the store keeps it (64 hex characters), or `None`.
@@ -812,8 +827,16 @@ pub fn walk_stored_chains(lane: &JournalLane, own: u64, keys: &AuditKeySet) -> S
     let calls = calls.as_ref();
     off_runtime(|| {
         let mut walk = StoredWalk::default();
-        let mut nodes = match registered(calls) {
-            Ok(nodes) => nodes.into_iter().map(|(_, id)| id).collect::<Vec<_>>(),
+        let mut nodes = match scan_registry(calls) {
+            Ok(scan) => {
+                if scan.unreadable > 0 {
+                    walk.findings.push(format!(
+                        "the node registry contains {} unreadable row(s); their chains were not verified",
+                        scan.unreadable
+                    ));
+                }
+                scan.nodes.into_iter().map(|(_, id)| id).collect::<Vec<_>>()
+            }
             Err(why) => {
                 walk.findings.push(why);
                 Vec::new()
@@ -913,7 +936,14 @@ pub fn stored_chains(
     calls: &dyn StoreCalls,
     own: u64,
 ) -> Result<Vec<(u64, Vec<busbar_kernel_wal::JournalRecord>)>, String> {
-    let mut nodes: Vec<u64> = registered(calls)?.into_iter().map(|(_, id)| id).collect();
+    let registry = scan_registry(calls)?;
+    if registry.unreadable > 0 {
+        tracing::warn!(
+            unreadable = registry.unreadable,
+            "unreadable node registry rows were left out of the rate-card migration"
+        );
+    }
+    let mut nodes: Vec<u64> = registry.nodes.into_iter().map(|(_, id)| id).collect();
     nodes.sort_unstable();
     nodes.dedup();
     let mut out = Vec::new();

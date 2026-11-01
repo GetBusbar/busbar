@@ -81,6 +81,139 @@ fn changes(cs: &CardStore) -> Vec<StoredEntry> {
         .collect()
 }
 
+fn spool_dir(label: &str) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!(
+        "card-spool-{label}-{}-{}",
+        std::process::id(),
+        hex::encode(crate::root::card_store::boot_rand())
+    ));
+    std::fs::create_dir(&dir).unwrap();
+    dir
+}
+
+#[test]
+fn a_ready_write_does_not_erase_another_pending_write_from_the_spool() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    let store = RecordSlots::new();
+    let dir = spool_dir("concurrent");
+    let cs = CardStore::new(store.calls(), 1, Some(dir.clone()));
+    cs.boot(&card(1.0, 0), "boot", Vec::new()).unwrap();
+    let entered = Arc::new(Barrier::new(2));
+    let release = Arc::new(Barrier::new(2));
+    let once = AtomicBool::new(false);
+    store.on_put({
+        let entered = entered.clone();
+        let release = release.clone();
+        move || {
+            if std::thread::current().name() == Some("card-spool-ready") {
+                if !once.swap(true, Ordering::AcqRel) {
+                    entered.wait();
+                    release.wait();
+                }
+                None
+            } else {
+                Some(busbar_contract::store_calls::StoreFailure::Refused(
+                    "hold the other entry pending".into(),
+                ))
+            }
+        }
+    });
+    let first = {
+        let cs = cs.clone();
+        std::thread::Builder::new()
+            .name("card-spool-ready".into())
+            .spawn(move || cs.apply(&card(1.0, 1), "first").unwrap())
+            .unwrap()
+    };
+    entered.wait();
+    let second = cs.apply(&card(1.0, 2), "second").unwrap();
+    release.wait();
+    let first = first.join().unwrap();
+    let pending = crate::root::card_store::Spool::load(&dir).unwrap();
+    assert_eq!(cs.pending(), Some(second));
+    assert!(pending.pending.iter().any(|w| w.key == second.hex()));
+    assert!(!pending.pending.iter().any(|w| w.key == first.hex()));
+    drop(cs);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn a_corrupt_spool_is_preserved_and_refuses_boot_without_publishing_a_card() {
+    let store = RecordSlots::new();
+    let dir = spool_dir("corrupt-boot");
+    let path = crate::root::card_store::Spool::path(&dir);
+    let bytes = b"{\"pending\":[unreadable but not disposable";
+    std::fs::write(&path, bytes).unwrap();
+    let cs = CardStore::new(store.calls(), 1, Some(dir.clone()));
+    let result = cs.boot(&card(1.0, 0), "boot", Vec::new());
+    assert!(result.is_err());
+    assert_eq!(std::fs::read(path).unwrap(), bytes);
+    assert!(!cs.is_loaded());
+    assert_eq!(store.puts(), 0);
+    drop(cs);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn an_apply_does_not_overwrite_a_spool_that_became_unreadable() {
+    let store = RecordSlots::new();
+    let dir = spool_dir("corrupt-apply");
+    let cs = CardStore::new(store.calls(), 1, Some(dir.clone()));
+    cs.boot(&card(1.0, 0), "boot", Vec::new()).unwrap();
+    let path = crate::root::card_store::Spool::path(&dir);
+    let bytes = b"retained unreadable spool";
+    std::fs::write(&path, bytes).unwrap();
+    let key = cs.apply(&card(1.0, 3), "apply").unwrap();
+    assert_eq!(cs.own().map(|(key, _)| key), Some(key));
+    assert!(cs.pending().is_none(), "the store accepted this new card");
+    assert_eq!(std::fs::read(path).unwrap(), bytes);
+    drop(cs);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn a_panicking_reput_releases_ownership_for_the_next_pending_write() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    let store = RecordSlots::new();
+    let cs = booted(&store, 1, &card(1.0, 0));
+    let panicked = Arc::new(AtomicBool::new(false));
+    store.on_put({
+        let panicked = panicked.clone();
+        move || {
+            if std::thread::current().name() == Some("card-reput")
+                && !panicked.swap(true, Ordering::AcqRel)
+            {
+                panic!("the store callback unwound");
+            }
+            Some(busbar_contract::store_calls::StoreFailure::Refused(
+                "pending".into(),
+            ))
+        }
+    });
+    let first = cs.apply(&card(1.0, 1), "first").unwrap();
+    wait_until(
+        "the callback to unwind and release re-put ownership",
+        || panicked.load(Ordering::Acquire) && !cs.lock().reputting,
+    );
+    store.on_put(|| {
+        if std::thread::current().name() == Some("card-reput") {
+            None
+        } else {
+            Some(busbar_contract::store_calls::StoreFailure::Refused(
+                "the first attempt is pending".into(),
+            ))
+        }
+    });
+    cs.apply(&card(1.0, 2), "second").unwrap();
+    wait_until("the first pending entry to be retried", || {
+        cs.pending().is_none()
+    });
+    let entries = crate::root::card_store::scan(store.calls().as_ref(), None).unwrap();
+    assert!(entries.entries.iter().any(|entry| entry.key == first));
+}
+
 /// **T1-card.** Spend, a mid-window card change (a reload), spend, restart — and restart under a
 /// NEW node id. The card in force and the card of every priced instant are identical; a restart on
 /// the same configuration appends nothing.
@@ -603,4 +736,102 @@ fn the_migration_prices_every_instant_as_devs_rebuild_did_with_a_refused_correct
         let our_card = our_view.card_at(t).map(|(_, c)| c.clone());
         assert_eq!(our_card, dev_card, "the card at {t} is dev's");
     }
+}
+
+#[test]
+fn an_unencodable_live_card_keeps_custody_through_later_writes_and_retries() {
+    use crate::root::card_store::{Spool, COMMIT_PART};
+
+    let store = RecordSlots::new();
+    let dir = std::env::temp_dir().join(format!(
+        "card-unencodable-{}-{}",
+        std::process::id(),
+        hex::encode(crate::root::card_store::boot_rand())
+    ));
+    std::fs::create_dir(&dir).unwrap();
+    let cs = CardStore::new(store.calls(), 1, Some(dir.clone()));
+    cs.boot(&card(1.0, 0), "boot", Vec::new()).unwrap();
+    let before = Spool::load(&dir).unwrap();
+    let puts = store.puts();
+    let origin = "x".repeat(usize::from(COMMIT_PART) * busbar_contract::MAX_RECORD_BYTES);
+    let original_card = card(1.0, 8);
+    let key = cs
+        .apply(&original_card, &origin)
+        .expect("the live card is retained");
+    let original = cs.entries().into_iter().find(|e| e.key == key).unwrap();
+    assert!(
+        original.records().is_err(),
+        "the existing format cannot encode this entry"
+    );
+    assert_eq!(original.actor, origin);
+    assert_eq!(original.card, original_card);
+    assert_eq!(cs.own(), Some((key, original_card.clone())));
+    assert_eq!(
+        store.puts(),
+        puts,
+        "absent records must never reach the store"
+    );
+    assert_eq!(Spool::load(&dir).unwrap(), before);
+    assert_eq!(cs.pending(), Some(key));
+    assert!(cs
+        .pending_refusal()
+        .is_some_and(|why| why.contains(&key.hex())));
+    assert!(cs.alarms().iter().any(|why| {
+        why.contains(&key.hex()) && why.contains("cannot be encoded") && why.contains("restart")
+    }));
+
+    let ready = cs.apply(&card(1.0, 9), "ordinary ready write").unwrap();
+    assert_eq!(cs.own().map(|(key, _)| key), Some(ready));
+    assert_eq!(cs.pending(), Some(key));
+    store.lose_acks(true);
+    let retry = cs.apply(&card(1.0, 10), "ordinary doubtful write").unwrap();
+    assert!(Spool::load(&dir)
+        .unwrap()
+        .pending
+        .iter()
+        .any(|w| w.key == retry.hex()));
+    store.lose_acks(false);
+    wait_until("the later entry to be confirmed by re-put", || {
+        !Spool::load(&dir)
+            .unwrap()
+            .pending
+            .iter()
+            .any(|w| w.key == retry.hex())
+    });
+    assert_eq!(
+        cs.pending(),
+        Some(key),
+        "another READY cannot discharge this entry"
+    );
+    assert!(cs.pending_refusal().is_some());
+    assert_eq!(
+        cs.entries().into_iter().find(|e| e.key == key),
+        Some(original)
+    );
+    let stored = crate::root::card_store::scan(store.calls().as_ref(), None).unwrap();
+    assert!(stored.entries.iter().any(|e| e.key == ready));
+    assert!(stored.entries.iter().any(|e| e.key == retry));
+    assert!(!stored.entries.iter().any(|e| e.key == key));
+    drop(cs);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn an_unencodable_amend_stays_pending_without_replacing_the_nodes_own_card() {
+    let store = RecordSlots::new();
+    let cs = booted(&store, 1, &card(1.0, 0));
+    let own = cs.own();
+    let puts = store.puts();
+    let actor = "x".repeat(
+        usize::from(crate::root::card_store::COMMIT_PART) * busbar_contract::MAX_RECORD_BYTES,
+    );
+    let key = cs.amend(0, 1, card(1.0, 7), [1; 32], &actor).unwrap();
+    let entry = cs.entries().into_iter().find(|e| e.key == key).unwrap();
+    assert!(entry.records().is_err());
+    assert_eq!(entry.actor, actor);
+    assert_eq!(entry.card, card(1.0, 7));
+    assert_eq!(cs.own(), own);
+    assert_eq!(store.puts(), puts);
+    assert_eq!(cs.pending(), Some(key));
+    assert!(cs.pending_refusal().is_some());
 }

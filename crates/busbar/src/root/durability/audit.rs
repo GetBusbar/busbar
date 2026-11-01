@@ -209,7 +209,8 @@ pub enum AuditWindowAt {
 impl ChainAt {
     /// The sealed audit records at positions `from` through `to` on the chain as of the hold,
     /// oldest first, at most [`AUDIT_RING`] of them. `None` when the chain could not be read back,
-    /// or does not verify, as [`Durability::audit_window`].
+    /// does not verify, or contains an audit record that does not decode, as
+    /// [`Durability::audit_window`].
     #[must_use]
     pub fn audit_window(self, from: u64, to: u64) -> Option<Vec<AuditRecord>> {
         let store = self.store().map(str::to_string);
@@ -225,12 +226,24 @@ impl ChainAt {
                 return None;
             }
         };
-        let window: Vec<AuditRecord> = records
-            .iter()
-            .filter_map(|r| decode_audit(r).ok().flatten())
-            .filter(|r| r.seq >= from && r.seq <= to)
-            .take(AUDIT_RING)
-            .collect();
+        let mut window = Vec::new();
+        for record in &records {
+            match decode_audit(record) {
+                Ok(Some(audit)) if audit.seq >= from && audit.seq <= to => window.push(audit),
+                Ok(_) => {}
+                Err(_) => {
+                    tracing::error!(
+                        node = record.node,
+                        record = record.node_seq,
+                        "an audit window contains an audit record that does not decode"
+                    );
+                    return None;
+                }
+            }
+            if window.len() == AUDIT_RING {
+                break;
+            }
+        }
         Some(window)
     }
 }

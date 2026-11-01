@@ -20,6 +20,51 @@ const DIR: &str = "BUSBAR_TEST_AMEND_RESTART_DIR";
 const HOOK: &str = "compressor";
 const LATE_HOOK: &str = "summarizer";
 
+#[test]
+fn malformed_amendments_are_counted_without_changing_the_accepted_run() {
+    let scratch = crate::root::durability::audit::tests::Scratch::new("amend-decode");
+    let mut book = build_for_node(
+        &DurabilityConfig {
+            data_dir: Some(scratch.0.clone()),
+        },
+        7,
+        Box::new(busbar_kernel_wal::NullShipper::new()),
+    )
+    .unwrap();
+    let token = busbar_kernel::test_support::tokens::grant::<DurableWrite>();
+    let mut chain = amend::AmendChain::default();
+    let valid = chain.append(
+        amend::content_access(
+            Reader::Hook,
+            "kept",
+            busbar_kernel_audit::Subject::PrincipalId("principal".to_string()),
+            OpClassId::new("chat"),
+            Vec::new(),
+            1,
+        ),
+        &busbar_kernel::test_support::tokens::pass(),
+    );
+    let mut truncated = BodyWriter::new();
+    truncated.text(AMENDMENT);
+    let unrelated = Entry::new(RecordClass::Load, Vec::new());
+    let malformed = Entry::new(RecordClass::Access, truncated.finish());
+    let wrong_class = Entry::new(RecordClass::Load, body(&valid));
+    book.journal
+        .append(
+            &token,
+            StepName::Audit,
+            &[unrelated, entry(&valid), malformed, wrong_class],
+        )
+        .expect("records journalled");
+    let records = book.chain().expect("read chain").expect("verified journal");
+    let (run, set_aside) = linked_run(&records);
+    assert_eq!(run, vec![valid]);
+    assert_eq!(
+        set_aside, 2,
+        "both recognized malformed amendment records are reported"
+    );
+}
+
 /// A hook named `hook` was handed one unit's content: one access on the journal `app` carries,
 /// recorded by the node's host as a served unit's is.
 fn access(app: &Arc<busbar_kernel::state::App>, hook: &str) {
