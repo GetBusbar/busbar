@@ -19,7 +19,13 @@
 //! every absolute URL the server hands back (the consent redirect, the metadata document) points
 //! at the socket under test and can be followed literally rather than rewritten by the test.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+
+use busbar_contract::abi::store::OpId;
+use busbar_contract::kinds::RecordBytes;
+use busbar_contract::records::{MeteringDelta, PlaneRecordRef, PlaneSelector, UsageDelta};
+use busbar_contract::store_calls::{StoreCall, StoreCalls, StoreDoor, StoreFailure};
 
 use oauth_as::client::{Client, ClientAuth, ClientId};
 use oauth_as::grant::GrantType;
@@ -247,6 +253,13 @@ async fn serve() -> (String, Arc<busbar_kernel::state::App>) {
 async fn serve_with_admin_chain(
     admin_chain: Vec<String>,
 ) -> (String, Arc<busbar_kernel::state::App>) {
+    serve_with_store(admin_chain, None).await
+}
+
+async fn serve_with_store(
+    admin_chain: Vec<String>,
+    store: Option<Arc<dyn StoreCalls>>,
+) -> (String, Arc<busbar_kernel::state::App>) {
     busbar_kernel::snapshot::init();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
@@ -264,10 +277,23 @@ async fn serve_with_admin_chain(
         fapi2: false,
         clients: Vec::new(),
     };
-    let app = TestApp::new()
-        .admin_chain(admin_chain)
-        .oauth_as(&cfg)
-        .build();
+    let builder = TestApp::new().admin_chain(admin_chain);
+    let app = match store {
+        None => builder.oauth_as(&cfg).build(),
+        Some(store) => {
+            crate::testkit::install_test_seam();
+            let identity = crate::config::AsIdentity::from_cfg(&cfg).expect("valid config");
+            let plane = crate::plane::AsPlane::build_carrying(
+                identity,
+                None,
+                Vec::new(),
+                crate::cimd::unconnected(),
+                Arc::new(crate::plane::Carried::over(Some(store))),
+            )
+            .expect("shared-store plane");
+            builder.oauth_as_plane(Arc::new(plane)).build()
+        }
+    };
 
     let scopes = ScopeSet::from_tokens([SCOPE]).expect("scope");
     oauth_as_plane(&app)
@@ -698,6 +724,16 @@ async fn shown_and_granted(
     client_id: &str,
     scope_param: &str,
 ) -> (String, String) {
+    shown_and_granted_after_lookup_failure(origin, app, client_id, scope_param, None).await
+}
+
+async fn shown_and_granted_after_lookup_failure(
+    origin: &str,
+    app: &busbar_kernel::state::App,
+    client_id: &str,
+    scope_param: &str,
+    fault: Option<&FailClientRead>,
+) -> (String, String) {
     let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .build()
@@ -713,6 +749,20 @@ async fn shown_and_granted(
         send(&client, &mut jar, reqwest::Method::GET, &authorize, None).await;
     assert_eq!(status, 302, "authorize must redirect to consent: {body}");
     let consent = location(&headers, origin);
+    if let Some(fault) = fault {
+        fault.fail_next.store(true, Ordering::SeqCst);
+        let (status, headers, page) =
+            send(&client, &mut jar, reqwest::Method::GET, &consent, None).await;
+        assert_eq!(
+            status, 503,
+            "an unresolved grant cannot be approved: {page}"
+        );
+        assert!(
+            !page.contains("<form"),
+            "no approval form on lookup failure: {page}"
+        );
+        assert_eq!(headers[reqwest::header::CACHE_CONTROL], "no-store");
+    }
     let (status, _headers, page) =
         send(&client, &mut jar, reqwest::Method::GET, &consent, None).await;
     assert_eq!(status, 200, "the consent screen must render: {page}");
@@ -841,6 +891,153 @@ async fn the_consent_screen_names_a_requested_scope_and_an_empty_grant() {
     let (shown, granted) = shown_and_granted(&origin, &app, EMPTY, "").await;
     assert_eq!(granted, "", "an empty default grants nothing");
     assert_eq!(shown, "no scopes", "and the screen says so");
+}
+
+/// A failed client lookup cannot turn a nonempty default grant into a consent for "no scopes".
+/// Retry the same screen after the store recovers, then approve and inspect the actual token.
+#[tokio::test]
+async fn a_failed_default_scope_lookup_refuses_consent_and_recovers() {
+    let calls = busbar_kernel::test_support::store_axis_stand_in()
+        .open(
+            StoreDoor::Linked(busbar_kernel::test_support::store_double::door),
+            "consent-lookup",
+            b"{}",
+        )
+        .expect("open store")
+        .calls
+        .expect("typed store calls");
+    let fault = Arc::new(FailClientRead {
+        inner: calls,
+        fail_next: AtomicBool::new(false),
+    });
+    let (origin, app) = serve_with_store(Vec::new(), Some(fault.clone())).await;
+    let (shown, granted) =
+        shown_and_granted_after_lookup_failure(&origin, &app, CLIENT_ID, "", Some(&fault)).await;
+    assert_eq!(
+        granted, SCOPE,
+        "the recovered request grants its registered default"
+    );
+    assert_eq!(shown, granted, "the recovered screen names the grant");
+
+    const EMPTY: &str = "flow-test-shared-empty-default";
+    register_defaulting_to(&app, EMPTY, &[]).await;
+    let (shown, granted) = shown_and_granted(&origin, &app, EMPTY, "").await;
+    assert_eq!(
+        granted, "",
+        "a successfully resolved empty default remains valid"
+    );
+    assert_eq!(shown, "no scopes");
+}
+
+/// Keep normal store behavior except for one client-record read selected by the browser flow.
+struct FailClientRead {
+    inner: Arc<dyn StoreCalls>,
+    fail_next: AtomicBool,
+}
+
+impl StoreCalls for FailClientRead {
+    fn add_usage_batch<'a>(
+        &'a self,
+        op: OpId,
+        cells: &'a [(&'a str, u64, UsageDelta)],
+    ) -> StoreCall<'a, ()> {
+        self.inner.add_usage_batch(op, cells)
+    }
+
+    fn add_metering_batch<'a>(
+        &'a self,
+        op: OpId,
+        deltas: &'a [MeteringDelta],
+    ) -> StoreCall<'a, ()> {
+        self.inner.add_metering_batch(op, deltas)
+    }
+
+    fn record_put<'a>(
+        &'a self,
+        schema: &'a str,
+        key: &'a [u8],
+        value: &'a RecordBytes,
+    ) -> StoreCall<'a, ()> {
+        self.inner.record_put(schema, key, value)
+    }
+
+    fn record_get<'a>(
+        &'a self,
+        schema: &'a str,
+        key: &'a [u8],
+    ) -> StoreCall<'a, Option<RecordBytes>> {
+        self.inner.record_get(schema, key)
+    }
+
+    fn record_scan<'a>(
+        &'a self,
+        schema: &'a str,
+        prefix: &'a [u8],
+        limit: u32,
+    ) -> StoreCall<'a, Vec<(Vec<u8>, RecordBytes)>> {
+        self.inner.record_scan(schema, prefix, limit)
+    }
+
+    fn upsert_plane_record<'a>(&'a self, record: PlaneRecordRef<'a>) -> StoreCall<'a, ()> {
+        self.inner.upsert_plane_record(record)
+    }
+
+    fn get_plane_record<'a>(
+        &'a self,
+        kind: &'a str,
+        id: &'a str,
+    ) -> StoreCall<'a, Option<Vec<u8>>> {
+        if kind == format!("{}bucket", crate::shared::LABEL)
+            && self.fail_next.swap(false, Ordering::SeqCst)
+        {
+            return Box::pin(async {
+                Err(StoreFailure::Failed(
+                    "client lookup unavailable".to_string(),
+                ))
+            });
+        }
+        self.inner.get_plane_record(kind, id)
+    }
+
+    fn append_plane_record<'a>(
+        &'a self,
+        op: OpId,
+        record: PlaneRecordRef<'a>,
+    ) -> StoreCall<'a, ()> {
+        self.inner.append_plane_record(op, record)
+    }
+
+    fn list_plane_records<'a>(
+        &'a self,
+        kind: &'a str,
+        selector: &'a PlaneSelector<'a>,
+    ) -> StoreCall<'a, Vec<Vec<u8>>> {
+        self.inner.list_plane_records(kind, selector)
+    }
+
+    fn delete_plane_record<'a>(&'a self, kind: &'a str, id: &'a str) -> StoreCall<'a, ()> {
+        self.inner.delete_plane_record(kind, id)
+    }
+
+    fn redeem_plane_token<'a>(
+        &'a self,
+        kind: &'a str,
+        token: &'a str,
+        expires_at: u64,
+        now: u64,
+    ) -> StoreCall<'a, bool> {
+        self.inner.redeem_plane_token(kind, token, expires_at, now)
+    }
+
+    fn plane_token_live<'a>(
+        &'a self,
+        kind: &'a str,
+        token: &'a str,
+        expires_at: u64,
+        now: u64,
+    ) -> StoreCall<'a, bool> {
+        self.inner.plane_token_live(kind, token, expires_at, now)
+    }
 }
 
 // This plane ships with ALL THREE ON, NO TOGGLES, and a mounted endpoint is not an
