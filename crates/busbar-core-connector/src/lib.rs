@@ -152,6 +152,10 @@ pub const DEFAULT_CLASS: u32 = 0;
 /// literal) answers at once, `Some`, before any resolution; a name that must resolve answers `None`
 /// and `done` gets the pin or the refusal later, from any thread.
 pub trait DialJudge: Send + Sync {
+    /// Replace the bootstrap listener-port metadata before the effective plugins open.
+    /// A judge that keeps no such metadata ignores the publication.
+    fn own_ports_applied(&self, _ports: &[u16]) {}
+
     /// Judge `dest` (`host:port`) under egress class `class`.
     fn judge_dial(
         &self,
@@ -1034,6 +1038,23 @@ impl Connector {
     pub fn proxying(mut self, config: Option<Arc<proxy::ProxyChoice>>) -> Self {
         self.proxy = config;
         self
+    }
+
+    /// Publish the effective boot's validated transport view, listener ports and pool posture
+    /// before its plugins open. Existing needs and active lines retain their captured doors.
+    pub fn finalize_boot_metadata(
+        &self,
+        transports: Transports,
+        own_ports: &[u16],
+        posture: PoolPosture,
+    ) {
+        self.judge.own_ports_applied(own_ports);
+        self.pools.reconfigure(posture);
+        let previous = std::mem::replace(
+            &mut *self.transports.write().expect("transports"),
+            transports,
+        );
+        drop(previous);
     }
 
     /// The proxy a dial of `planned` goes through: a framed dial (never a carrier carried as
