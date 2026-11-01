@@ -877,13 +877,14 @@ impl FileSlot {
         if let Some(limit) = rotate.filter(|&limit| held >= limit && held >= st.retry_at) {
             st.file = None;
             let (renamed, failed) = crate::host::rotate(&self.path, keep);
+            st.retry_at = if renamed {
+                0
+            } else {
+                held.saturating_add(limit)
+            };
             if renamed && failed.is_empty() {
-                st.retry_at = 0;
                 st.failing = false;
             } else {
-                if !renamed {
-                    st.retry_at = held.saturating_add(limit);
-                }
                 if !st.failing {
                     report = Some(RotationReport { failed });
                 }
