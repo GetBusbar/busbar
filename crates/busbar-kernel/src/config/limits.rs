@@ -3,8 +3,8 @@
 
 //! The operational-limit config SHAPES ("NEVER CODED CAPS"): the historical default constants,
 //! the `limits:` / `health:` / `routing:` blocks and the flat resolved `LimitsResolved` every
-//! startup wire reads. Every field defaults — via a `default = "fn"` whose body is the historical
-//! hardcoded const — to today's behavior, so an absent key (the common case) is byte-for-byte
+//! startup wire reads. Fields default to the historical behavior; optional opt-in caps stay unset.
+//! An absent key (the common case) is byte-for-byte
 //! unchanged. busbar-core re-exports every item here at its historical `config::` path.
 //!
 //! The process-wide INSTALL of the resolved values lives at the bottom of this page too — the slot,
@@ -192,8 +192,8 @@ pub fn default_probe_timeout_secs() -> u64 {
     DEFAULT_PROBE_TIMEOUT_SECS
 }
 
-/// The `limits:` block — global operational caps. Each field defaults to its historical hardcoded
-/// value, so an absent field (or an absent block) is today's behavior.
+/// The `limits:` block — global operational caps. Each field defaults to its historical behavior,
+/// so an absent field (or an absent block) changes nothing. Optional opt-in caps default to unset.
 #[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(deny_unknown_fields)] // a typo'd limits key must fail boot, not be silently ignored.
 pub struct LimitsCfg {
@@ -204,6 +204,12 @@ pub struct LimitsCfg {
     /// always buffer-translatable on egress.
     #[serde(default = "default_request_body_max_bytes")]
     pub request_body_max_bytes: usize,
+    /// Advanced opt-in byte limit per datagram LINE pairing. Counts combined retained requested
+    /// capacity across both directions, including queued output ownership and metadata. Omitted
+    /// or null = unlimited by this mechanism; a configured value must be positive. Exhaustion
+    /// closes only the affected connection. This is not a process RSS limit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub datagram_line_memory_bytes: Option<usize>,
     #[serde(default = "default_pool_max_idle_per_host")]
     pub pool_max_idle_per_host: usize,
     /// Idle keep-alive lifetime (seconds) for pooled upstream connections — see
@@ -309,6 +315,7 @@ impl Default for LimitsCfg {
         Self {
             upstream_request_timeout_secs: default_upstream_request_timeout_secs(),
             request_body_max_bytes: default_request_body_max_bytes(),
+            datagram_line_memory_bytes: None,
             pool_max_idle_per_host: default_pool_max_idle_per_host(),
             pool_idle_timeout_secs: default_pool_idle_timeout_secs(),
             max_inbound_concurrent: default_max_inbound_concurrent(),
@@ -391,6 +398,9 @@ impl Default for ExportLimits {
 pub struct LimitsResolved {
     pub upstream_request_timeout_secs: u64,
     pub request_body_max_bytes: usize,
+    /// Per-pairing datagram LINE retained-capacity limit. None leaves the mechanism disabled;
+    /// new pairings capture the resolved setting and keep it for their lifetime.
+    pub datagram_line_memory_bytes: Option<usize>,
     pub pool_max_idle_per_host: usize,
     pub pool_idle_timeout_secs: u64,
     pub max_inbound_concurrent: usize,
@@ -457,6 +467,7 @@ impl LimitsResolved {
         Self {
             upstream_request_timeout_secs: limits.upstream_request_timeout_secs,
             request_body_max_bytes: limits.request_body_max_bytes,
+            datagram_line_memory_bytes: limits.datagram_line_memory_bytes,
             pool_max_idle_per_host: limits.pool_max_idle_per_host,
             pool_idle_timeout_secs: limits.pool_idle_timeout_secs,
             max_inbound_concurrent: limits.max_inbound_concurrent,

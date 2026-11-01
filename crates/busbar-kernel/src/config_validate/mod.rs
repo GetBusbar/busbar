@@ -1426,6 +1426,12 @@ fn validate_limits_with(
             limits.request_body_max_bytes
         ));
     }
+    if limits.datagram_line_memory_bytes == Some(0) {
+        errors.push(
+            "limits.datagram_line_memory_bytes must be >= 1 when set (omit it or use null to disable the limit)"
+                .to_string(),
+        );
+    }
     // The error-body buffer cap must be >= 1 byte (0 would buffer nothing, losing every upstream
     // error body). The pool-idle, gauge-limit, and probe defaults are all safe at any value (0
     // pool-idle = no keep-alive; 0 gauge limit = emit none). `advanced.rate_sweep_interval == 0` is
@@ -1512,6 +1518,9 @@ fn validate_limit_ceilings(limits: &crate::config::LimitsResolved, errors: &mut 
         // ceiling.
         request_body_max_bytes: _,
         max_inbound_concurrent: _,
+        // Optional positive threshold, checked above. Retained-capacity accounting uses checked
+        // arithmetic and compares to the threshold; this setting is never a preallocation size.
+        datagram_line_memory_bytes: _,
         // SAFE AT ANY VALUE — compared against a count/length only, never added to, allocated
         // from, or slept on (0 = unlimited where documented).
         pool_max_idle_per_host: _,

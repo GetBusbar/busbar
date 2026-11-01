@@ -7,6 +7,25 @@ use super::merge_group_patch;
 use busbar_kernel::config::groups::{ChildDefault, LimitMetric, LimitWindow};
 use busbar_kernel::config::{GroupCfg, LimitCfg};
 
+#[test]
+fn datagram_line_memory_limit_applies_to_new_connections_without_restart() {
+    for value in [serde_json::json!(12345), serde_json::Value::Null] {
+        let settings: busbar_kernel::config::overlay::RootSettings =
+            serde_json::from_value(serde_json::json!({
+                "limits": {
+                    "datagram_line_memory_bytes": value,
+                    "pool_idle_timeout_secs": 17
+                }
+            }))
+            .expect("settings accept setting or disabling the optional limit");
+        assert_eq!(
+            super::reload_to_apply_fields(&settings),
+            ["limits.pool_idle_timeout_secs"],
+            "the new-pairing limit must not be classified as requiring a restart"
+        );
+    }
+}
+
 fn budget(cents: u64) -> LimitCfg {
     LimitCfg {
         metric: LimitMetric::Budget,

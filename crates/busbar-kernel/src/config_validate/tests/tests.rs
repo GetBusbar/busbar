@@ -5991,6 +5991,35 @@ fn test_validate_limits_request_body_max_bytes_floor_and_ceiling_are_exact() {
     );
 }
 
+#[test]
+fn datagram_line_memory_limit_accepts_unset_or_any_positive_usize() {
+    for value in [None, Some(1), Some(usize::MAX)] {
+        let limits = config::LimitsResolved {
+            datagram_line_memory_bytes: value,
+            ..config::LimitsResolved::default()
+        };
+        let mut errors = Vec::new();
+        validate_limits(&limits, &mut errors);
+        assert!(errors.is_empty(), "{value:?}: {errors:?}");
+    }
+}
+
+#[test]
+fn datagram_line_memory_limit_zero_is_a_config_validation_error() {
+    let deploy = crate::config::deploy_from_yaml_str(
+        "providers: {}\nmodels: {}\nlimits:\n  datagram_line_memory_bytes: 0\n",
+    )
+    .expect("zero has the right type; validation must reject it");
+    let cfg = crate::config::resolve(&deploy, &HashMap::new()).expect("resolve the config");
+    assert_eq!(cfg.limits.datagram_line_memory_bytes, Some(0));
+    let mut errors = Vec::new();
+    validate_limits(&cfg.limits, &mut errors);
+    assert_eq!(
+        errors,
+        ["limits.datagram_line_memory_bytes must be >= 1 when set (omit it or use null to disable the limit)"],
+    );
+}
+
 /// `max_inbound_concurrent`'s ceiling is `MAX_SEMAPHORE_PERMITS` itself (the value that panics is
 /// `MAX_SEMAPHORE_PERMITS + 1`, not the ceiling itself) — a mutated `>` -> `>=` would reject the
 /// ceiling value too.
