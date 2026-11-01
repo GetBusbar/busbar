@@ -108,6 +108,7 @@ fn locked_reload_never_reads_the_overlay_even_when_its_store_is_unreadable() {
 
 #[test]
 fn base_store_bootstrap_and_effective_build_share_the_same_opened_store() {
+    let _limits_lock = crate::config::limits::LIMITS_TEST_LOCK.blocking_lock();
     crate::test_support::register_neutral_test_plane();
     crate::snapshot::init();
     let _fixture = crate::test_support::TestApp::new();
@@ -142,4 +143,51 @@ fn base_store_bootstrap_and_effective_build_share_the_same_opened_store() {
         &app.governance.unwrap().store_calls().unwrap(),
         &calls
     ));
+}
+
+#[test]
+fn a_cross_node_sibling_update_and_intervening_get_cannot_authorize_a_stale_app_commit() {
+    let fixture = TestOverlayStore::new();
+    let backend = fixture.backend();
+    persist_root(Some(&backend), &RootSettings::default()).unwrap();
+    let app = crate::test_support::TestApp::new()
+        .overlay_backend(backend.clone())
+        .build();
+    let handle = crate::state::AppHandle::new(app);
+    let before = handle.load();
+    let other = fixture.fork_backend();
+    crate::config::overlay::persist_groups(
+        Some(&other),
+        &std::collections::BTreeMap::from([("remote_security_team".into(), Default::default())]),
+        None,
+        None,
+        &Default::default(),
+    )
+    .unwrap();
+    // These are the ordinary diagnostic read paths. Neither may advance the old App's baseline.
+    assert!(backend
+        .read_required()
+        .unwrap()
+        .unwrap()
+        .groups
+        .contains_key("remote_security_team"));
+    assert!(backend.read_bytes().unwrap().is_some());
+    let next = std::sync::Arc::new(
+        crate::governance::group_provision::build_with_group(
+            &before,
+            "local_candidate",
+            Default::default(),
+        )
+        .unwrap(),
+    );
+    let persist = crate::governance::group_provision::persist_provisioned_group(
+        next.clone(),
+        "local_candidate".into(),
+        "test".into(),
+    );
+    assert!(handle.commit_and_swap(next, persist).is_err());
+    assert!(std::sync::Arc::ptr_eq(&handle.load(), &before));
+    let stored = backend.read_required().unwrap().unwrap();
+    assert!(stored.groups.contains_key("remote_security_team"));
+    assert!(!stored.groups.contains_key("local_candidate"));
 }

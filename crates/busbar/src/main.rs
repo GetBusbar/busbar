@@ -549,6 +549,97 @@ impl ControlWork {
     }
 }
 
+/// One destination seam throughout bootstrap: base policy opens the anchor, then the complete
+/// recovered boot policy replaces it before effective plugins open. Runtime commits retain the
+/// guard's established metadata-only update semantics.
+struct BootstrapDestJudge(std::sync::RwLock<Arc<dyn busbar_kernel::host_services::DestJudge>>);
+
+impl BootstrapDestJudge {
+    fn new(judge: Arc<dyn busbar_kernel::host_services::DestJudge>) -> Arc<Self> {
+        Arc::new(Self(std::sync::RwLock::new(judge)))
+    }
+    fn snapshot(&self) -> Arc<dyn busbar_kernel::host_services::DestJudge> {
+        self.0.read().unwrap_or_else(|p| p.into_inner()).clone()
+    }
+    fn replace(&self, judge: Arc<dyn busbar_kernel::host_services::DestJudge>) {
+        let old = {
+            let mut held = self.0.write().unwrap_or_else(|p| p.into_inner());
+            std::mem::replace(&mut *held, judge)
+        };
+        drop(old);
+    }
+}
+
+impl busbar_kernel::host_services::DestJudge for BootstrapDestJudge {
+    fn judge_name(&self, dest: &str, class: u32, refuse_private: bool) -> Result<(), u64> {
+        self.snapshot().judge_name(dest, class, refuse_private)
+    }
+    fn judge(
+        &self,
+        dest: &str,
+        class: u32,
+        refuse_private: bool,
+        done: Box<dyn FnOnce(busbar_kernel::host_services::Admitted) + Send>,
+    ) -> Option<busbar_kernel::host_services::Admitted> {
+        self.snapshot().judge(dest, class, refuse_private, done)
+    }
+    fn judge_reaching(
+        &self,
+        dest: &str,
+        class: u32,
+        done: Box<dyn FnOnce(busbar_kernel::host_services::Admitted) + Send>,
+    ) -> Option<busbar_kernel::host_services::Admitted> {
+        self.snapshot().judge_reaching(dest, class, done)
+    }
+    fn judge_answer(
+        &self,
+        host: &str,
+        addrs: &[std::net::IpAddr],
+        class: u32,
+    ) -> Result<(), busbar_kernel::host_services::DestRefusal> {
+        self.snapshot().judge_answer(host, addrs, class)
+    }
+    fn judge_host(
+        &self,
+        host: &str,
+        class: u32,
+    ) -> Result<(), busbar_kernel::host_services::DestRefusal> {
+        self.snapshot().judge_host(host, class)
+    }
+    fn destinations_applied(&self, destinations: &config::Destinations) {
+        self.snapshot().destinations_applied(destinations);
+    }
+}
+
+#[cfg(test)]
+mod bootstrap_destination_tests {
+    use super::*;
+    use busbar_kernel::host_services::DestJudge as _;
+
+    #[test]
+    fn the_installed_bootstrap_seam_receives_the_complete_recovered_security_policy() {
+        let policy = |block_private_addresses| config::Destinations {
+            block_private_addresses,
+            allow: Vec::new(),
+            legacy_allow: Vec::new(),
+            url_allow: Vec::new(),
+            blocked: Vec::new(),
+            allow_all_metadata: false,
+        };
+        let holder = BootstrapDestJudge::new(root::connector::guard_for(&policy(false)).unwrap());
+        let installed: Arc<dyn busbar_kernel::host_services::DestJudge> = holder.clone();
+        let class = busbar_contract::abi::host::conn::connector::EGRESS_PROVIDER;
+        assert!(installed
+            .judge_name("https://10.2.3.4", class, false)
+            .is_ok());
+        holder.replace(root::connector::guard_for(&policy(true)).unwrap());
+        assert!(installed
+            .judge_name("https://10.2.3.4", class, false)
+            .is_err());
+        assert!(holder.judge_name("https://10.2.3.4", class, false).is_err());
+    }
+}
+
 async fn run(
     data_workers: usize,
     late_services: std::sync::Arc<root::serve::LateServices>,
@@ -606,7 +697,7 @@ async fn run(
         .unwrap_or_else(|errors| die(format!("base config errors: {}", errors.join("; "))));
     let base_store_settings = serde_json::to_value(&base_cfg.store)
         .unwrap_or_else(|error| die(format!("base Store settings: {error}")));
-    let dest = root::connector::dest_judge(&base_cfg);
+    let dest = BootstrapDestJudge::new(root::connector::dest_judge(&base_cfg));
     let commit_guard: Arc<dyn busbar_kernel::host_services::DestJudge> = dest.clone();
     let (credentials, credential_handle) = root::credentials::AppCredentials::late();
     root::serve::compose(dest.clone(), &late_services, credentials);
@@ -739,7 +830,7 @@ async fn run(
     // connection, built once here, before anything dials: the kernel's `dest.judge` asks it
     // (composed below), and the connector dials by it. Its metadata lists are re-published at
     // every config commit, this boot's own build included, through the root's rules that hold it.
-    commit_guard.destinations_applied(&cfg.destinations());
+    dest.replace(root::connector::dest_judge(&cfg));
     // THE SERVE PATH'S ONE COMPOSITION: the kernel's host services go into the dispatcher built at
     // boot, before any plugin is bound (`root::serve`).
     // `records.secret` reads the App's governance through its swap handle, which exists once the App
@@ -879,6 +970,14 @@ async fn run(
         .store
         .as_ref()
         .map_or_else(String::new, |store| store.module.clone());
+    let boot_store = if serde_json::to_value(&cfg.store)
+        .unwrap_or_else(|error| die(format!("effective Store settings: {error}")))
+        == base_store_settings
+    {
+        Some(anchor_store)
+    } else {
+        None
+    };
     // The secret resolver the listeners resolve TLS cert/key/CA references through - the SAME seam
     // (built-in env/file + kind:secret plugins) that resolved provider keys at build time.
     // Boot has no `prior` App, so `build_app_from_config` never resolves a credential rotation here
@@ -892,14 +991,6 @@ async fn run(
     // The marker sits DIRECTLY above the call it exempts, and must: the lint carries an allow across
     // the comment block that starts it and no further, so the session-credential capture that used to
     // stand between the two silently ate this exemption and left the build itself flagged.
-    let boot_store = if serde_json::to_value(&cfg.store)
-        .unwrap_or_else(|error| die(format!("effective Store settings: {error}")))
-        == base_store_settings
-    {
-        Some(anchor_store)
-    } else {
-        None
-    };
     let (boot_app, _boot_gov_rotate, boot_limits) =
         busbar_kernel::appbuild::build_app_from_config_with_store(
             cfg,

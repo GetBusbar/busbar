@@ -36,7 +36,7 @@ that replaces it. Move each at your convenience; none has a removal date yet.
 
 | Deprecated env var (since 1.5.3, still honoured) | config.yaml key |
 |---|---|
-| `BUSBAR_CONFIG_OVERLAY` | `config.overlay.file` (see [config mutability](#config-mutability-locked--overlay)) |
+| `BUSBAR_CONFIG_OVERLAY` | Deprecated compatibility selector; runtime state uses the configured Store (see [config mutability](#config-mutability-locked--overlay)) |
 | `BUSBAR_WORKER_THREADS` | `advanced.worker_threads` |
 | `BUSBAR_UPSTREAM_HTTP1_ONLY` | `advanced.upstream_http1_only` |
 | `BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE` | `advanced.upstream_h2_prior_knowledge` |
@@ -81,6 +81,10 @@ config:
   further mutation refuses until restart recovers the authoritative Store head. Crash-abandoned,
   never-published staging records are retained because their ownership cannot be inferred from an
   unreferenced key while another node may still be publishing it.
+- A running generation pins the overlay head it recovered. Another node's update requires an
+  explicit successful reload before this process can mutate config again; ordinary diagnostic reads
+  cannot refresh that authority. A failed rebuild leaves the old generation serving and quarantined
+  from further mutations when its Store head has changed.
 
 **Worker threads and scaling.** Busbar's request path is CPU-bound (parse, translate, serialize), so
 throughput scales with data-plane workers. Since 1.6.0, `advanced.worker_threads` is the **data-plane

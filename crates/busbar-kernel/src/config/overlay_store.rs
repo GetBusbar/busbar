@@ -79,6 +79,7 @@ impl Drop for Operation<'_> {
 pub struct OverlayStore {
     calls: Arc<dyn StoreCalls>,
     state: Mutex<State>,
+    observed: Arc<Mutex<Option<Option<Vec<u8>>>>>,
 }
 
 impl std::fmt::Debug for OverlayStore {
@@ -95,6 +96,7 @@ impl OverlayStore {
         Ok(Arc::new(Self {
             calls,
             state: Mutex::new(State::Idle),
+            observed: Arc::new(Mutex::new(None)),
         }))
     }
 
@@ -160,7 +162,19 @@ impl OverlayStore {
 
     /// Fail closed on unreadable data. Boot/reload callers must propagate this result.
     pub fn read_required(&self) -> Result<Option<OverlayDoc>, String> {
-        match super::overlay::classify_bytes(self.read_bytes()?) {
+        let (head, bytes) = self.snapshot()?;
+        let doc = Self::decode(bytes)?;
+        // Diagnostics may initialize a fresh carrier, but never advance an already-pinned App.
+        let mut observed = self.observed.lock().unwrap_or_else(|p| p.into_inner());
+        if observed.is_none() {
+            *observed = Some(head);
+        }
+        drop(observed);
+        Ok(doc)
+    }
+
+    fn decode(bytes: Option<Vec<u8>>) -> Result<Option<OverlayDoc>, String> {
+        match super::overlay::classify_bytes(bytes) {
             super::overlay::OverlayReadState::Absent => Ok(None),
             super::overlay::OverlayReadState::Loaded(doc) => Ok(Some(*doc)),
             super::overlay::OverlayReadState::Unreadable => Err("config overlay in Store is unreadable; use --safe-mode to quarantine it".into()),
@@ -192,8 +206,31 @@ impl OverlayStore {
             let _decision = self.submit(candidate)?;
             drop(operation.candidate.take());
         }
-        let doc = self.read_required()?;
-        Ok((Self::new(self.calls.clone())?, doc))
+        let (head, bytes) = self.snapshot()?;
+        let doc = Self::decode(bytes)?;
+        let baseline = {
+            let mut observed = self.observed.lock().unwrap_or_else(|p| p.into_inner());
+            match observed.as_ref() {
+                None => {
+                    *observed = Some(head.clone());
+                    self.observed.clone()
+                }
+                Some(current) if current == &head => self.observed.clone(),
+                Some(_) => {
+                    operation.needs_reload = true;
+                    // A failed rebuild must leave the old carrier pinned and quarantined.
+                    Arc::new(Mutex::new(Some(head)))
+                }
+            }
+        };
+        Ok((
+            Arc::new(Self {
+                calls: self.calls.clone(),
+                state: Mutex::new(State::Idle),
+                observed: baseline,
+            }),
+            doc,
+        ))
     }
 
     pub(super) fn update(&self, edit: impl FnOnce(&mut OverlayDoc)) -> Result<(), String> {
@@ -220,6 +257,20 @@ impl OverlayStore {
         };
         if operation.candidate.is_none() {
             let (expected, bytes) = self.snapshot()?;
+            let changed = {
+                let mut observed = self.observed.lock().unwrap_or_else(|p| p.into_inner());
+                match observed.as_ref() {
+                    None => {
+                        *observed = Some(expected.clone());
+                        false
+                    }
+                    Some(head) => head != &expected,
+                }
+            };
+            if changed {
+                operation.needs_reload = true;
+                return Err("config overlay changed since this App generation was recovered; reload before mutation".into());
+            }
             let mut doc = match super::overlay::classify_bytes(bytes) {
                 super::overlay::OverlayReadState::Absent => OverlayDoc::default(),
                 super::overlay::OverlayReadState::Loaded(doc) => *doc,
@@ -287,6 +338,20 @@ impl OverlayStore {
                 .expect("candidate custody installed"),
         )?;
         operation.needs_reload |= decision == Decision::ConditionConflict;
+        if decision == Decision::Applied && !recovering {
+            let candidate = operation
+                .candidate
+                .as_ref()
+                .expect("confirmed candidate custody");
+            let Mutation::Put { value, .. } = &candidate.request.mutations[0] else {
+                unreachable!("head mutation is first");
+            };
+            let old = {
+                let mut observed = self.observed.lock().unwrap_or_else(|p| p.into_inner());
+                std::mem::replace(&mut *observed, Some(Some(value.clone())))
+            };
+            drop(old);
+        }
         // Only definitive decisions relinquish custody, and destructors run without a mutex.
         drop(operation.candidate.take());
         match decision {
@@ -628,5 +693,65 @@ mod tests {
         let (reopened, _) = backend.reopen_for_reload().unwrap();
         assert!(persist_root(Some(&backend), &RootSettings::default()).is_err());
         persist_root(Some(&reopened), &RootSettings::default()).unwrap();
+    }
+
+    #[test]
+    fn diagnostics_and_failed_rebuild_never_advance_the_old_app_baseline() {
+        let fixture = TestOverlayStore::new();
+        let backend = fixture.backend();
+        persist_root(Some(&backend), &RootSettings::default()).unwrap();
+        let before = backend.observed.lock().unwrap().clone();
+        let other = fixture.fork_backend();
+        persist_root(
+            Some(&other),
+            &RootSettings {
+                per_request_fee: Some(9),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let _ = backend.read_bytes().unwrap();
+        let _ = backend.read_required().unwrap();
+        assert_eq!(*backend.observed.lock().unwrap(), before);
+        let (candidate, doc) = backend.reopen_for_reload().unwrap();
+        assert_eq!(doc.unwrap().root.unwrap().per_request_fee, Some(9));
+        assert_eq!(*backend.observed.lock().unwrap(), before);
+        drop(candidate); // a semantic rebuild refused before publication
+        assert!(persist_root(Some(&backend), &RootSettings::default()).is_err());
+        assert_eq!(*backend.observed.lock().unwrap(), before);
+    }
+
+    #[test]
+    fn a_normal_confirmed_commit_advances_its_reopened_candidate_carrier() {
+        let fixture = TestOverlayStore::new();
+        let backend = fixture.backend();
+        persist_root(Some(&backend), &RootSettings::default()).unwrap();
+        let (candidate, _) = backend.reopen_for_reload().unwrap();
+        persist_root(
+            Some(&backend),
+            &RootSettings {
+                per_request_fee: Some(1),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        persist_root(
+            Some(&candidate),
+            &RootSettings {
+                per_request_fee: Some(2),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            candidate
+                .read_required()
+                .unwrap()
+                .unwrap()
+                .root
+                .unwrap()
+                .per_request_fee,
+            Some(2)
+        );
     }
 }
