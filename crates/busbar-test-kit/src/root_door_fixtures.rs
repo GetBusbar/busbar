@@ -14,6 +14,9 @@ pub mod scoped_mux;
 #[path = "root_door_fixtures/datagram_order.rs"]
 pub mod datagram_order;
 
+#[path = "root_door_fixtures/datagram_feedback.rs"]
+pub mod datagram_feedback;
+
 /// The carrier under test: a member's program it holds down once it ended, until its `refresh`.
 pub mod held_down {
     use std::marker::PhantomData;
