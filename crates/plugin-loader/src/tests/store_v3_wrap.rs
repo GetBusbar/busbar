@@ -160,6 +160,15 @@ pub(crate) trait Hooks: Send + Sync + 'static {
         <MemoryStore as StoreSlots>::put_credential(inner, cx, secret)
     }
 
+    fn rewrap_credential(
+        inner: &MemoryStore,
+        cx: &mut Op<'_>,
+        expected: &CredentialSecret,
+        replacement: &str,
+    ) -> Step<RecordStoreResult<bool>> {
+        <MemoryStore as StoreSlots>::rewrap_credential(inner, cx, expected, replacement)
+    }
+
     fn put_key_with_credential(
         inner: &MemoryStore,
         cx: &mut Op<'_>,
@@ -439,6 +448,15 @@ impl<H: Hooks> StoreSlots for Wrapped<H> {
         secret: &CredentialSecret,
     ) -> Step<RecordStoreResult<()>> {
         H::put_credential(&self.0, cx, secret)
+    }
+
+    fn rewrap_credential(
+        &self,
+        cx: &mut Op<'_>,
+        expected: &CredentialSecret,
+        replacement: &str,
+    ) -> Step<RecordStoreResult<bool>> {
+        H::rewrap_credential(&self.0, cx, expected, replacement)
     }
 
     fn put_key_with_credential(

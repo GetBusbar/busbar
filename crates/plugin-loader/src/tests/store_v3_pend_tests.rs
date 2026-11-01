@@ -201,7 +201,7 @@ pub(super) fn mint() -> OpId {
     )
 }
 
-fn open(door: busbar_contract::abi::mechanism::door::DoorFn) -> LoadedStore {
+pub(super) fn open(door: busbar_contract::abi::mechanism::door::DoorFn) -> LoadedStore {
     let d = Arc::new(Dispatcher::new(DispatchConfig::default()));
     let p = load_linked::<Store>(
         &LinkedRow::of(door).expect("the store states its Statement"),

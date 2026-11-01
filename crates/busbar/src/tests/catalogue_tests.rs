@@ -140,7 +140,7 @@ fn declared_codes_do_not_collide_with_the_registry() {
 // row, `--no-default-features`) installs fewer catalogues, so its render is a DIFFERENT page, not a
 // stale one; the pair below is compiled only where every plane and the export axis are linked. The
 // uniqueness checks above run in every build.
-#[cfg(all(linked_every_plane, linked_axis_export_doors))]
+#[cfg(all(linked_every_plane_door, linked_axis_export_doors))]
 mod page {
     use super::*;
     use busbar_kernel::diagnostics::{render_json_for, render_markdown_for, REGISTRY};

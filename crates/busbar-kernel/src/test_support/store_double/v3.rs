@@ -29,11 +29,16 @@ const SECRET_REFS: &[busbar_contract::abi::mechanism::call::AbiStr] =
         super::SECRET_REF_PATHS[0],
     )];
 
+busbar_contract::statement_extensions!(REWRAP_EXTENSIONS: [
+    (busbar_contract::abi::sdk::store::rewrap::INTENT, b"1")
+]);
+
 busbar_contract::store_door!(
     MemoryStore,
     NAME,
     env!("CARGO_PKG_VERSION"),
     1024,
+    extensions: REWRAP_EXTENSIONS,
     secret_refs: SECRET_REFS
 );
 

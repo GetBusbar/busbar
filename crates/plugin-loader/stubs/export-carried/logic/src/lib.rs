@@ -44,6 +44,7 @@ use busbar_contract::abi::export::{
 use busbar_contract::abi::host::conn::connector::{Need, DIRECTION_OUTBOUND, EGRESS_OPEN_WEB};
 use busbar_contract::abi::mechanism::call::{AbiStr, Blob, InHead, OutHead, Outcome, BLOB_JSON};
 use busbar_contract::abi::mechanism::door::{KindTailHead, Rewrite, Statement, REWRITE_ALIAS};
+use busbar_contract::abi::mechanism::lifecycle::RefreshIn;
 use busbar_contract::abi::sdk::conn::{ConnFailure, Host};
 use busbar_contract::abi::sdk::door::{abi_str, statement};
 use busbar_contract::abi::sdk::exchange::{exchange, Exchange, ExchangeResponse, Request};
@@ -200,10 +201,11 @@ impl Life for Webhook {
 
     /// A reload's settings replace the instance's, and its target is asked about afresh.
     fn refresh(&self, settings: &[u8], _: &[&[u8]], _: u64) -> Result<Refreshed, Refusal> {
+        let settings = parse(settings)?;
         *self
             .settings
             .write()
-            .unwrap_or_else(PoisonError::into_inner) = parse(settings).ok();
+            .unwrap_or_else(PoisonError::into_inner) = Some(settings);
         *self.live.lock().unwrap_or_else(PoisonError::into_inner) = None;
         Ok(Refreshed::default())
     }
@@ -550,9 +552,99 @@ fn instances(input: Lent<'_, CheckIn>) -> Vec<(String, serde_json::Value)> {
 /// The instance state every slot reads.
 type State = Held<Webhook>;
 
+struct Refreshing {
+    settings: Settings,
+    probe: usize,
+    issued: u32,
+    exchange: Option<Exchange>,
+}
+
+/// The neutral fixture can check a candidate through two real pending connector exchanges before
+/// accepting it. Ordinary fixture URLs retain the SDK's synchronous refresh behavior.
+pub struct Refresh;
+
+impl SafeSlot for Refresh {
+    type In = RefreshIn;
+    type Out = OutHead;
+    type State = State;
+
+    fn call(
+        instance: Instance<'_, State>,
+        input: Lent<'_, RefreshIn>,
+        mut out: Out<'_, OutHead>,
+    ) -> Outcome {
+        let Some(h) = instance.get() else {
+            return Outcome::Refused;
+        };
+        let settings = match parse(input.field(|i| &i.settings).bytes()) {
+            Ok(settings) => settings,
+            Err(error) => return out.fail(error),
+        };
+        if !settings.url.contains("/pending-refresh") {
+            return <busbar_contract::abi::sdk::life::Refresh<Webhook> as SafeSlot>::call(
+                instance, input, out,
+            );
+        }
+        let mut pending = instance.resume::<Refreshing>().map_or_else(
+            || Refreshing {
+                settings,
+                probe: 0,
+                issued: 0,
+                exchange: None,
+            },
+            |pending| *pending,
+        );
+        let Some(host) = h.host() else {
+            return Outcome::Refused;
+        };
+        while pending.probe < 2 {
+            let mut connector = host.connector_from(instance.ticket(), pending.issued);
+            let mut exchange = match pending.exchange.take() {
+                Some(exchange) => exchange,
+                None => match Exchange::request(request(
+                    &pending.settings,
+                    format!("{{\"refresh_probe\":{}}}", pending.probe).as_bytes(),
+                )) {
+                    Ok(exchange) => exchange,
+                    Err(error) => return out.fail(Refusal::failed(error.to_string())),
+                },
+            };
+            match busbar_contract::abi::sdk::exchange::exchange(
+                &mut connector,
+                &mut exchange,
+                NEED,
+                None,
+            ) {
+                Poll::Pending => {
+                    pending.exchange = Some(exchange);
+                    instance.park(pending);
+                    return Outcome::Pending;
+                }
+                Poll::Ready(Ok(_)) => {
+                    pending.issued = connector.issued();
+                    pending.probe += 1;
+                }
+                Poll::Ready(Err(error)) => return out.fail(Refusal::failed(error.to_string())),
+            }
+        }
+        if pending.settings.url.contains("pending-refresh-refuse") {
+            return out.fail(Refusal::refused(
+                "the neutral fixture refused its checked candidate",
+            ));
+        }
+        *h.life()
+            .settings
+            .write()
+            .unwrap_or_else(PoisonError::into_inner) = Some(pending.settings);
+        *h.life().live.lock().unwrap_or_else(PoisonError::into_inner) = None;
+        Outcome::Ready
+    }
+}
+
 /// What a delivery parks across PENDING: the line it is on, the handles issued before that line's
 /// exchange, and the exchange.
 struct Posting {
+    settings: Settings,
     line: usize,
     issued: u32,
     exchange: Option<Exchange>,
@@ -575,26 +667,29 @@ impl SafeSlot for Deliver {
             return Outcome::Refused;
         };
         let hook = h.life();
-        let Some(s) = hook.settings() else {
-            return Outcome::Ready;
+        let mut at = match instance.resume::<Posting>() {
+            Some(posting) => *posting,
+            None => {
+                let Some(settings) = hook.settings() else {
+                    return Outcome::Ready;
+                };
+                if !hook.admitted(h.host()) {
+                    return Outcome::Ready;
+                }
+                Posting {
+                    settings,
+                    line: 0,
+                    issued: 0,
+                    exchange: None,
+                }
+            }
         };
-        if !hook.admitted(h.host()) {
-            return Outcome::Ready;
-        }
         let lines: Vec<&[u8]> = input
             .field(|i| &i.batch)
             .bytes()
             .split(|b| *b == b'\n')
             .filter(|l| !l.is_empty())
             .collect();
-        let mut at = instance.resume::<Posting>().map_or(
-            Posting {
-                line: 0,
-                issued: 0,
-                exchange: None,
-            },
-            |p| *p,
-        );
         while let Some(line) = lines.get(at.line) {
             let answered = match h.host() {
                 None => Err(ConnFailure::Unarmed),
@@ -602,7 +697,7 @@ impl SafeSlot for Deliver {
                     let mut c = host.connector_from(instance.ticket(), at.issued);
                     let started = match at.exchange.take() {
                         Some(ex) => Ok(ex),
-                        None => Exchange::request(request(&s, line)),
+                        None => Exchange::request(request(&at.settings, line)),
                     };
                     match started {
                         Err(e) => Err(e),
@@ -620,7 +715,7 @@ impl SafeSlot for Deliver {
                     }
                 }
             };
-            report(&s.url, answered);
+            report(&at.settings.url, answered);
             at.line += 1;
         }
         Outcome::Ready
@@ -693,12 +788,20 @@ impl SafeSlot for Serve {
 }
 
 mod table {
-    use super::{Check, Deliver, Safe, Scrape, Serve, Status, Webhook};
+    use super::{Check, Deliver, Refresh, Safe, Scrape, Serve, Status, Webhook};
+    use busbar_contract::abi::sdk::life;
 
     busbar_contract::plugin_door! {
         ops: busbar_contract::abi::export::Ops,
         statement: super::STATEMENT,
-        lifecycle: life(Webhook, ready),
+        lifecycle: {
+            validate: Safe<life::Validate<Webhook>>, open: Safe<life::Open<Webhook>>,
+            refresh: Safe<Refresh>, retire: Safe<life::Retire<Webhook>>,
+            tick: Safe<life::Tick<Webhook>>, drive: Safe<life::Drive<Webhook>>,
+            cancel: Safe<life::Cancel<Webhook>>, release: Safe<life::Release<Webhook>>,
+            close: Safe<life::Close<Webhook>>,
+        },
+        ready: Safe<life::Ready<Webhook>>,
         kind_ops: {
             deliver: Safe<Deliver>, scrape: Safe<Scrape>, status: Safe<Status>,
             check: Safe<Check>, serve: Safe<Serve>,
