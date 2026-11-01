@@ -143,3 +143,35 @@ fn frames_are_whole_and_in_order_however_chunked() {
         assert_eq!(r.pending(), 1, "chunked by {size}");
     }
 }
+
+/// Compaction must erase its duplicate tail before a later push can reuse those bytes.
+#[test]
+#[allow(unsafe_code)]
+fn compaction_wipes_only_the_known_initialized_vacated_tail_before_truncating() {
+    const FRAME: &[u8] = b"data: private-complete-frame\n\n";
+    const PENDING: &[u8] = b"data: tail";
+    let mut frames = SseFrames::new();
+    frames.push(FRAME);
+    frames.push(PENDING);
+    let initialized_len = frames.buffer().len();
+    assert_eq!(frames.next_frame(), Some(FRAME));
+    assert!(frames.next_frame().is_none());
+    frames.push(b"");
+    assert_eq!(frames.buffer(), PENDING);
+    let vacated_len = initialized_len - frames.buf.len();
+    for byte in &frames.buf.spare_capacity_mut()[..vacated_len] {
+        // SAFETY: these are exactly the initialized bytes vacated by this empty push's in-place
+        // compaction. u8 has no destructor, and truncating does not uninitialize their memory.
+        // The current Vec owns this region; no never-initialized spare byte or stale pointer is read.
+        assert_eq!(unsafe { byte.assume_init() }, 0);
+    }
+    frames.push(b"\n\n");
+    assert_eq!(frames.next_frame(), Some(&b"data: tail\n\n"[..]));
+    let initialized_len = frames.buf.len();
+    frames.push(b"");
+    assert!(frames.buffer().is_empty());
+    for byte in &frames.buf.spare_capacity_mut()[..initialized_len] {
+        // SAFETY: the fully consumed frame initialized precisely this prefix before compaction.
+        assert_eq!(unsafe { byte.assume_init() }, 0);
+    }
+}

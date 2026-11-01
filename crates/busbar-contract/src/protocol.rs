@@ -18,6 +18,8 @@
 //! with its inbound-auth field and its DECLARED egress scheme ([`EgressScheme`]); the registry and
 //! the dialect-specific helpers are not shapes and stay there.
 
+use zeroize::{Zeroize, Zeroizing};
+
 use crate::codec::CodecHost;
 use crate::operation::OpVerb;
 
@@ -231,9 +233,28 @@ impl SseFrames {
     /// Add a chunk, first dropping every frame already yielded.
     pub fn push(&mut self, chunk: &[u8]) {
         if self.consumed > 0 {
-            self.buf.drain(..self.consumed);
+            let remaining = self.buf.len() - self.consumed;
+            self.buf.copy_within(self.consumed.., 0);
+            // These vacated bytes were initialized before the move. Wipe them while still in
+            // bounds: truncating first would hide the duplicated tail from the final owner.
+            self.buf[remaining..].zeroize();
+            self.buf.truncate(remaining);
             self.scanned -= self.consumed;
             self.consumed = 0;
+        }
+        let required = self
+            .buf
+            .len()
+            .checked_add(chunk.len())
+            .expect("SSE buffer length overflow");
+        if required > self.buf.capacity() {
+            let mut grown = Zeroizing::new(Vec::new());
+            // Reserve on an empty Vec so no live payload ever passes through realloc. Keep
+            // geometric growth for byte-at-a-time readers, without copying secret spare bytes.
+            grown.reserve(required.max(self.buf.capacity().saturating_mul(2)));
+            grown.extend_from_slice(&self.buf);
+            self.buf.zeroize();
+            self.buf = std::mem::take(&mut *grown);
         }
         self.buf.extend_from_slice(chunk);
     }
@@ -279,6 +300,12 @@ impl SseFrames {
     #[must_use]
     pub fn pending(&self) -> usize {
         self.buf.len() - self.consumed
+    }
+}
+
+impl Drop for SseFrames {
+    fn drop(&mut self) {
+        self.buf.zeroize();
     }
 }
 
