@@ -191,3 +191,186 @@ fn a_linked_plane_registry_row_binds_no_probe_until_its_section_is_judged() {
         "judging its section binds the one probe that answers every judge"
     );
 }
+
+#[test]
+fn concurrent_facing_owns_its_probe_until_completion_then_closes_the_spare() {
+    let gate = Arc::new(Gate::default());
+    let parks = Arc::clone(&gate);
+    let held = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let observed = Arc::clone(&held);
+    let inner = linked_probe(crate::plane_door_plugin::door, "concurrent-probe");
+    let bind: ProbeBind = Arc::new(move || {
+        let p = inner()?;
+        observed.lock().unwrap().push(Arc::clone(&p.inner));
+        parks.park();
+        Ok(p)
+    });
+    let reg = registration(bind).unwrap();
+    gate.armed.store(true, Ordering::SeqCst);
+    let (parked, second, first) = std::thread::scope(|s| {
+        let facing = Arc::clone(&reg.facing);
+        let first = s.spawn(move || facing(b"{}", b"", Some("https://one.example"), &[]));
+        let parked = gate.entered_within(Duration::from_secs(10));
+        let facing = Arc::clone(&reg.facing);
+        let (tx, rx) = std::sync::mpsc::channel();
+        s.spawn(move || {
+            let _ = tx.send(facing(b"{}", b"", Some("https://two.example"), &[]));
+        });
+        let second = rx.recv_timeout(Duration::from_secs(5));
+        gate.released.store(true, Ordering::SeqCst);
+        (parked, second, first.join())
+    });
+    assert!(parked);
+    let second = second
+        .expect("second input runs without the first's lock")
+        .unwrap();
+    let first = first.unwrap().unwrap();
+    assert_eq!(first.claims, second.claims);
+    {
+        let observed = held.lock().unwrap();
+        assert!(
+            observed[1].is_open(),
+            "late completion remains the cached probe"
+        );
+        assert!(!observed[2].is_open(), "displaced completed probe closed");
+    }
+    drop(reg);
+    assert!(held.lock().unwrap().iter().all(|p| !p.is_open()));
+}
+
+extern "C" fn refusing_probe_open(
+    instance: *mut std::ffi::c_void,
+    input: *const std::ffi::c_void,
+    out: *mut std::ffi::c_void,
+) -> busbar_contract::abi::mechanism::call::RawOutcome {
+    // SAFETY: this entry occupies the plane OPEN slot and the host lends its typed input.
+    let input_ref = unsafe { &*input.cast::<PlaneOpenIn>() };
+    if input_ref.open.settings.len == b"refuse-open".len() {
+        return busbar_contract::abi::mechanism::call::RawOutcome::of(Outcome::Refused);
+    }
+    // SAFETY: the fixture's immutable table has this plane's exact shape.
+    let ops = unsafe { &*crate::plane_door_plugin::door().ops().cast::<plane::Ops>() };
+    ops.head.open.unwrap()(instance, input, out)
+}
+
+extern "C" fn refusing_probe_refresh(
+    instance: *mut std::ffi::c_void,
+    input: *const std::ffi::c_void,
+    out: *mut std::ffi::c_void,
+) -> busbar_contract::abi::mechanism::call::RawOutcome {
+    // SAFETY: this entry occupies REFRESH; the host lends its typed input.
+    let input_ref = unsafe { &*input.cast::<RefreshIn>() };
+    if input_ref.settings.len == b"refuse-refresh".len() {
+        return busbar_contract::abi::mechanism::call::RawOutcome::of(Outcome::Refused);
+    }
+    if input_ref.settings.len == b"park-refresh".len() {
+        REFRESH_GATE.park();
+    }
+    // SAFETY: the fixture's immutable table has this plane's exact shape.
+    let ops = unsafe { &*crate::plane_door_plugin::door().ops().cast::<plane::Ops>() };
+    ops.head.refresh.unwrap()(instance, input, out)
+}
+
+static REFRESH_GATE: std::sync::LazyLock<Gate> = std::sync::LazyLock::new(Gate::default);
+
+#[test]
+fn an_open_probe_in_refresh_is_not_closed_by_a_concurrent_same_input() {
+    let held = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let observed = Arc::clone(&held);
+    let inner = linked_probe(refusing_probe_door, "in-use-probe");
+    let bind: ProbeBind = Arc::new(move || {
+        let p = inner()?;
+        observed.lock().unwrap().push(Arc::clone(&p.inner));
+        Ok(p)
+    });
+    let reg = registration(bind).unwrap();
+    let original = (reg.facing)(b"{}", b"", None, &[]).unwrap();
+    REFRESH_GATE.armed.store(true, Ordering::SeqCst);
+    let (parked, second, both_open, first) = std::thread::scope(|s| {
+        let facing = Arc::clone(&reg.facing);
+        let first = s.spawn(move || facing(b"park-refresh", b"", None, &[]));
+        let parked = REFRESH_GATE.entered_within(Duration::from_secs(10));
+        let facing = Arc::clone(&reg.facing);
+        let (tx, rx) = std::sync::mpsc::channel();
+        s.spawn(move || {
+            let _ = tx.send(facing(b"{}", b"", None, &[]));
+        });
+        let second = rx.recv_timeout(Duration::from_secs(5));
+        let both_open = {
+            let observed = held.lock().unwrap();
+            observed.len() == 3 && observed[1].is_open() && observed[2].is_open()
+        };
+        REFRESH_GATE.released.store(true, Ordering::SeqCst);
+        (parked, second, both_open, first.join())
+    });
+    assert!(parked);
+    assert_eq!(
+        second.expect("a different owner can finish").unwrap(),
+        original
+    );
+    assert!(
+        both_open,
+        "in-use owner was not closed or borrowed by the second call"
+    );
+    assert_eq!(first.unwrap().unwrap(), original);
+    assert!(held.lock().unwrap()[1].is_open());
+    assert!(
+        !held.lock().unwrap()[2].is_open(),
+        "displaced spare closed only after first completed"
+    );
+    drop(reg);
+    assert!(held.lock().unwrap().iter().all(|p| !p.is_open()));
+}
+
+extern "C" fn refusing_probe_door() -> &'static busbar_contract::abi::mechanism::door::Door {
+    use busbar_contract::abi::mechanism::door::{Door, DoorParts};
+    let door = crate::plane_door_plugin::door();
+    // SAFETY: the fixture states the plane kind's table.
+    let mut ops = unsafe { *door.ops().cast::<plane::Ops>() };
+    ops.head.open = Some(refusing_probe_open);
+    ops.head.refresh = Some(refusing_probe_refresh);
+    let ops = Box::leak(Box::new(ops));
+    // SAFETY: only two entries changed, retaining their exact slot signatures and input lifetimes.
+    Box::leak(Box::new(unsafe {
+        Door::__from_parts(DoorParts {
+            ops: std::ptr::from_ref(ops).cast(),
+            ..door.parts()
+        })
+    }))
+}
+
+#[test]
+fn refused_probe_attempts_close_and_retry_with_a_fresh_instance() {
+    let held = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let observed = Arc::clone(&held);
+    let fail_bind = Arc::new(AtomicBool::new(false));
+    let failures = Arc::clone(&fail_bind);
+    let inner = linked_probe(refusing_probe_door, "refusing-probe");
+    let bind: ProbeBind = Arc::new(move || {
+        if failures.swap(false, Ordering::SeqCst) {
+            return Err("fixture bind refused".into());
+        }
+        let p = inner()?;
+        observed.lock().unwrap().push(Arc::clone(&p.inner));
+        Ok(p)
+    });
+    let reg = registration(bind).unwrap();
+    assert!((reg.facing)(b"refuse-open", b"", None, &[]).is_err());
+    (reg.facing)(b"{}", b"", None, &[]).unwrap();
+    assert_eq!(held.lock().unwrap().len(), 3, "refused OPEN was not reused");
+    assert!((reg.facing)(b"refuse-refresh", b"", None, &[]).is_err());
+    assert!(
+        !held.lock().unwrap()[2].is_open(),
+        "refused refresh's probe closed"
+    );
+    (reg.facing)(b"{}", b"", None, &[]).unwrap();
+    fail_bind.store(true, Ordering::SeqCst);
+    assert!((reg.facing)(b"{}", b"{}", None, &[]).is_err());
+    assert!(
+        !held.lock().unwrap()[3].is_open(),
+        "changed input relinquished old probe before failed bind"
+    );
+    (reg.facing)(b"{}", b"{}", None, &[]).unwrap();
+    drop(reg);
+    assert!(held.lock().unwrap().iter().all(|p| !p.is_open()));
+}

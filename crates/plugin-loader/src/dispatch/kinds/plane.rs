@@ -857,7 +857,7 @@ fn registered(
     }
     let judge_bind = Arc::clone(&bind);
     let dialects = served.dialects.clone();
-    let probes: std::sync::Mutex<Vec<Probe>> = std::sync::Mutex::new(Vec::new());
+    let probe: std::sync::Mutex<Option<Probe>> = std::sync::Mutex::new(None);
     busbar_contract::plane_calls::PlaneRegistration {
         key,
         section: served.section,
@@ -896,31 +896,30 @@ fn registered(
                   owned: &[u8],
                   public_url: Option<&str>,
                   facts: &[busbar_contract::plane_calls::DialectFacts]| {
-                // NO PLUGIN CODE UNDER THE PROBES' LOCK (THE DESIGN §11.13 M1): the probe is taken
-                // out of the list under it, bound, opened or refreshed with it let go, and put
-                // back under it. A caller that finds its probe out binds one of its own; the one
-                // put back second is let go, outside the lock.
+                // Retain the latest COMPLETED input, not every historical configuration. Each
+                // caller owns its in-use probe until its snapshot has been copied. A concurrent
+                // caller binds its own; completion order affects reuse, never the returned facts.
+                // Binding, closing and dropping a library all happen outside the cache lock.
                 let url = public_url.unwrap_or_default().to_string();
                 let same = |p: &Probe| p.url == url && p.owned == owned && p.facts == facts;
                 let lock = || {
-                    probes
+                    probe
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner)
                 };
-                let taken = {
-                    let mut list = lock();
-                    let at = list.iter().position(same);
-                    at.map(|at| list.swap_remove(at))
-                };
+                let taken = { lock().take() };
                 let mut probe = match taken {
-                    Some(probe) => probe,
-                    None => Probe {
-                        url: url.clone(),
-                        owned: owned.to_vec(),
-                        facts: facts.to_vec(),
-                        plugin: bind()?,
-                        generation: 0,
-                    },
+                    Some(probe) if same(&probe) => probe,
+                    other => {
+                        drop(other);
+                        Probe {
+                            url: url.clone(),
+                            owned: owned.to_vec(),
+                            facts: facts.to_vec(),
+                            plugin: bind()?,
+                            generation: 0,
+                        }
+                    }
                 };
                 let faced = facing(
                     &probe.plugin,
@@ -931,14 +930,10 @@ fn registered(
                     public_url,
                     facts,
                 );
-                let spare = {
-                    let mut list = lock();
-                    if list.iter().any(same) {
-                        Some(probe)
-                    } else {
-                        list.push(probe);
-                        None
-                    }
+                let spare = if faced.is_ok() && !probe.plugin.is_faulted() {
+                    lock().replace(probe)
+                } else {
+                    Some(probe)
                 };
                 drop(spare);
                 faced
@@ -956,6 +951,23 @@ struct Probe {
     plugin: crate::dispatch::Plugin<Plane>,
     /// Its current generation; `0` = not opened yet.
     generation: u64,
+}
+
+impl Drop for Probe {
+    fn drop(&mut self) {
+        if self.plugin.is_open() {
+            let called = self
+                .plugin
+                .call(life::CLOSE, &mut Frame::new(in_head(), out_head()));
+            if called.outcome != Outcome::Ready {
+                tracing::warn!(
+                    plane = self.plugin.name(),
+                    outcome = ?called.outcome,
+                    "plane probe did not close"
+                );
+            }
+        }
+    }
 }
 
 /// THE PROVIDERS' DIALECT FACTS LOWERED for `PlaneOpenIn::providers`, one per entry of `dialects`,
@@ -1138,16 +1150,24 @@ pub fn retire_door(plugin: &crate::dispatch::Plugin<Plane>, generation: u64) {
         },
         out_head(),
     );
-    let _ = plugin.call(life::RETIRE, &mut retire);
+    let called = plugin.call(life::RETIRE, &mut retire);
+    if called.outcome != Outcome::Ready {
+        tracing::warn!(
+            plane = plugin.name(),
+            generation,
+            outcome = ?called.outcome,
+            "plane generation did not retire"
+        );
+    }
 }
 
 /// What `plugin` faces the world with over `settings`, its `owned` sections, `public_url` and the
 /// providers' dialect `facts`, as a snapshot it published: the probe instance is `open`ed on the
 /// first call (with `public_url`, `owned` and `facts`, which a plane states its audience and claims
 /// against) and `refresh`ed onto a new generation on each call after it, the previous generation
-/// retired. The probe instance lives for the process beside the one the composition root serves
-/// through; a public base URL, the owned sections and the providers' dialect facts are read at its
-/// open (a change of any is a restart).
+/// retired. A probe is retained for matching subsequent inputs beside the instance the composition
+/// root serves through; its public base URL, owned sections and providers' dialect facts are read
+/// at open. A changed input replaces and closes an idle probe; in-use probes finish independently.
 fn facing(
     plugin: &crate::dispatch::Plugin<Plane>,
     dialects: &[&'static str],

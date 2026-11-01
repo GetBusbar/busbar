@@ -1050,6 +1050,51 @@ mod door {
         }
     }
 
+    #[test]
+    fn facing_replaces_old_open_inputs_and_closes_its_last_probe() {
+        for make in [linked as fn() -> Plugin<Plane>, dropped] {
+            let held = Arc::new(std::sync::Mutex::new(Vec::new()));
+            let observed = Arc::clone(&held);
+            let bind = Arc::new(move || {
+                let p = make();
+                observed.lock().unwrap().push(Arc::clone(&p.inner));
+                Ok(p)
+            });
+            let reg = crate::dispatch::kinds::plane::registration(bind).unwrap();
+            let first = (reg.facing)(b"{}", b"", Some("https://one.example"), &[]).unwrap();
+            let first_copy = first.clone();
+            let again = (reg.facing)(b"{}", b"", Some("https://one.example"), &[]).unwrap();
+            assert_eq!(again, first);
+            assert_eq!(
+                held.lock().unwrap().len(),
+                2,
+                "same inputs refresh the existing probe"
+            );
+            (reg.facing)(b"{}", b"{}", Some("https://two.example"), &[]).unwrap();
+            assert!(
+                !held.lock().unwrap()[1].is_open(),
+                "superseded input was closed"
+            );
+            (reg.facing)(b"{}", b"", Some("https://one.example"), &[]).unwrap();
+            assert!(
+                !held.lock().unwrap()[2].is_open(),
+                "the second input was closed"
+            );
+            assert_eq!(first, first_copy, "owned facing survives its probe close");
+            let last = Arc::clone(&reg.facing);
+            drop(reg);
+            assert!(
+                held.lock().unwrap()[3].is_open(),
+                "a facing owner still exists"
+            );
+            drop(last);
+            assert!(
+                held.lock().unwrap().iter().all(|p| !p.is_open()),
+                "last owner closes its probe"
+            );
+        }
+    }
+
     /// DECL-FOLD (ARCHITECT RULING 2026-10-03, the declaration-fold ruling): the registry facts a
     /// door states are read off its Statement and tail at bind, linked and dropped alike, and its
     /// own `validate` judges a section: the kernel folds these into its plane registry before the
