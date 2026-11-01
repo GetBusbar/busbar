@@ -54,8 +54,8 @@ impl PublicationState {
     pub(super) fn stop(&mut self) -> (Queue, Queue) {
         if self.running
             || self.recall.iter().any(|recall| *recall)
-            || self.queue.0.is_some()
-            || self.inputs.0.is_some()
+            || !self.queue.is_empty()
+            || !self.inputs.is_empty()
             || self.retained_input != 0
         {
             self.outcome
@@ -75,7 +75,14 @@ impl PublicationState {
 }
 
 #[derive(Default)]
-pub(super) struct Queue(Option<Box<Node>>);
+pub(super) struct Queue {
+    // Both heads are inline in the pairing. Every live job still owns exactly one Node;
+    // transferring a back list changes links without allocating storage or moving jobs.
+    // Oldest first, including deferred source input prepended by the actor.
+    front: Option<Box<Node>>,
+    // Newest first. Reverse existing links into front only when front is exhausted.
+    back: Option<Box<Node>>,
+}
 
 struct Node {
     job: Job,
@@ -94,22 +101,31 @@ struct Job {
 }
 
 impl Queue {
-    fn push_front(&mut self, job: Job) {
-        let next = self.0.take();
-        self.0 = Some(Box::new(Node { job, next }));
+    fn is_empty(&self) -> bool {
+        self.front.is_none() && self.back.is_none()
     }
+
+    fn push_front(&mut self, job: Job) {
+        let next = self.front.take();
+        self.front = Some(Box::new(Node { job, next }));
+    }
+
     fn push(&mut self, job: Job) {
-        let mut tail = &mut self.0;
-        while let Some(node) = tail {
-            tail = &mut node.next;
-        }
-        *tail = Some(Box::new(Node { job, next: None }));
+        let next = self.back.take();
+        self.back = Some(Box::new(Node { job, next }));
     }
 
     fn pop(&mut self) -> Option<Job> {
-        let node = self.0.take()?;
+        if self.front.is_none() {
+            while let Some(mut node) = self.back.take() {
+                self.back = node.next.take();
+                node.next = self.front.take();
+                self.front = Some(node);
+            }
+        }
+        let node = self.front.take()?;
         let Node { job, next } = *node;
-        self.0 = next;
+        self.front = next;
         Some(job)
     }
 }
@@ -597,7 +613,7 @@ impl Pairing {
             }
             let schedule = !state.publications.running
                 && !state.closed
-                && (state.publications.queue.0.is_some()
+                && (!state.publications.queue.is_empty()
                     || state.publications.recall.iter().any(|recall| *recall));
             if schedule {
                 state.publications.running = true;
@@ -883,3 +899,7 @@ pub type PublicationTask = Pin<Box<dyn Future<Output = ()> + Send + 'static>>;
 #[cfg(test)]
 #[path = "tests/line_publication_driver_tests.rs"]
 mod driver_tests;
+
+#[cfg(test)]
+#[path = "tests/line_publication_queue_tests.rs"]
+mod queue_tests;
