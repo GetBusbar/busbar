@@ -474,7 +474,10 @@ fn full_secret_admission_drops_reentrant_custody_without_blocking_appends() {
     running.expect("the controlled secret job entered");
     assert!(admitted, "the declared queue bound remains available");
     assert!(reentered.expect("reentrant Drop returns").is_ok());
-    assert_eq!(appended.expect("the reentrant append completes"), Outcome::Ready);
+    assert_eq!(
+        appended.expect("the reentrant append completes"),
+        Outcome::Ready
+    );
     assert_eq!(submitter.join().unwrap(), Err(LANE_FULL));
     assert_eq!(std::fs::read(&file).unwrap(), b"from-drop\n");
     let _ = std::fs::remove_dir_all(d);
@@ -505,7 +508,9 @@ fn an_append_completion_can_submit_another_whole_append() {
     )
     .unwrap();
     assert_eq!(
-        answered.recv_timeout(std::time::Duration::from_secs(10)).unwrap(),
+        answered
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .unwrap(),
         (Outcome::Ready, Outcome::Ready)
     );
     assert_eq!(std::fs::read(&file).unwrap(), b"first\nsecond\n");
