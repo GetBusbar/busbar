@@ -9,6 +9,9 @@ mod pool_retirement_tests;
 const OWNER: InstanceId = InstanceId(1);
 const OTHER: InstanceId = InstanceId(2);
 
+#[path = "final_insert_retirement_tests.rs"]
+mod final_insert_retirement_tests;
+
 /// The literal judge over a guard that allowlists the loopback far ends these tests dial, and the
 /// private address the scheme-rule test names (the destination guard refuses both by default), so
 /// what those tests assert stays the connector's own rule.

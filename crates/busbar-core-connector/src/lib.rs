@@ -2917,7 +2917,20 @@ impl Conns for Connector {
             true,
             require_secure,
         )?;
-        self.slab.insert(caller, need, held)
+        let rejected = held
+            .line()
+            .map(|(line, stream)| (line, stream, held.pooled.clone()));
+        let inserted = self.slab.insert(caller, need, held);
+        if inserted.is_err() {
+            if let Some((line, stream, pooled)) = rejected {
+                line.leave(stream, false);
+                match pooled {
+                    Some((shard, key)) => self.pools.drop_line(shard, &key, &line),
+                    None => line.close(),
+                }
+            }
+        }
+        inserted
     }
 
     /// A write is taken whole, short, or (no room under
