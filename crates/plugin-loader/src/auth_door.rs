@@ -1127,3 +1127,7 @@ mod tests;
 #[cfg(test)]
 #[path = "tests/auth_carriers_tests.rs"]
 mod carrier_tests;
+
+#[cfg(test)]
+#[path = "tests/auth_instance_carriers_old_api_tests.rs"]
+mod instance_carriers_old_api_tests;
