@@ -833,6 +833,13 @@ impl<'u> Pumping<'u> {
             }
         }
         self.flight = None;
+        if answered.outcome == AbiOutcome::Ready && p.src == Src::Input {
+            // READY returned from the crossing, so no call borrows this consumed allocation.
+            // Retire the bytes AND their custody before record/output waits: either wait may
+            // need capacity that this input held. SHORT needs its original bytes for the re-call;
+            // FAULT may still be crossing, so those paths keep their input with the pump/Keep.
+            self.bufs.input = SessionInput::default();
+        }
         (answered, out, cause)
     }
 

@@ -9,11 +9,15 @@ use busbar_kernel::plane_driver::{CallerEnd, SessionCaller, SessionInput};
 struct Owner {
     id: u32,
     dropped: Arc<Mutex<Vec<u32>>>,
+    released: Option<Arc<tokio::sync::Notify>>,
 }
 
 impl Drop for Owner {
     fn drop(&mut self) {
         self.dropped.lock().unwrap().push(self.id);
+        if let Some(released) = &self.released {
+            released.notify_one();
+        }
     }
 }
 
@@ -23,6 +27,7 @@ fn input(id: u32, dropped: &Arc<Mutex<Vec<u32>>>) -> SessionInput {
         custody: Some(Arc::new(Owner {
             id,
             dropped: dropped.clone(),
+            released: None,
         })),
     }
 }
@@ -44,6 +49,33 @@ impl SessionCaller for OwnedCaller {
 
     async fn read_owned(&self) -> Option<SessionInput> {
         self.0.lock().await.recv().await
+    }
+}
+
+/// Output cannot complete until the input's allocation owner returns its capacity.
+struct CreditCaller {
+    inner: OwnedCaller,
+    released: Arc<tokio::sync::Notify>,
+    wrote: AtomicBool,
+}
+
+impl CallerEnd for CreditCaller {
+    fn head(&self, _: u32, _: Vec<(Vec<u8>, Vec<u8>)>) {}
+
+    async fn write(&self, _: &[u8]) -> bool {
+        self.released.notified().await;
+        self.wrote.store(true, Ordering::SeqCst);
+        true
+    }
+}
+
+impl SessionCaller for CreditCaller {
+    async fn read(&self) -> Option<Vec<u8>> {
+        self.inner.read().await
+    }
+
+    async fn read_owned(&self) -> Option<SessionInput> {
+        self.inner.read_owned().await
     }
 }
 
@@ -133,7 +165,7 @@ async fn cancelling_an_unresolved_owned_read_loses_no_piece() {
 }
 
 #[tokio::test]
-async fn a_session_keeps_consumed_input_custody_until_replacement_or_completion() {
+async fn a_session_retires_consumed_input_before_waiting_for_another_piece() {
     let r = rig(Way::Double, BufferCaps::default(), cases::Book::default());
     let (send, receive) = tokio::sync::mpsc::unbounded_channel();
     let caller = OwnedCaller(tokio::sync::Mutex::new(receive));
@@ -150,9 +182,10 @@ async fn a_session_keeps_consumed_input_custody_until_replacement_or_completion(
     let first_at = first.bytes.as_ptr() as usize;
     assert!(send.send(first).is_ok());
     poll_pending(&mut running).await;
-    assert!(
-        dropped.lock().unwrap().is_empty(),
-        "consumption kept the allocation"
+    assert_eq!(
+        *dropped.lock().unwrap(),
+        vec![1],
+        "the consumed allocation retires while the next caller read is pending"
     );
     assert_eq!(*r.plane.sessions.read_at.lock().unwrap(), vec![first_at]);
 
@@ -162,8 +195,8 @@ async fn a_session_keeps_consumed_input_custody_until_replacement_or_completion(
     poll_pending(&mut running).await;
     assert_eq!(
         *dropped.lock().unwrap(),
-        vec![1],
-        "replacement retires only the old owner"
+        vec![1, 2],
+        "each consumed allocation retires exactly once, without another input or EOF"
     );
     assert_eq!(
         *r.plane.sessions.read_at.lock().unwrap(),
@@ -177,6 +210,76 @@ async fn a_session_keeps_consumed_input_custody_until_replacement_or_completion(
     drop(send);
     assert_eq!(running.await, busbar_contract::caps::Outcome::Completed);
     assert_eq!(*dropped.lock().unwrap(), vec![1, 2]);
+}
+
+#[tokio::test]
+async fn a_session_retires_consumed_input_before_waiting_for_output_credit() {
+    let r = rig(Way::Double, BufferCaps::default(), cases::Book::default());
+    let (send, receive) = tokio::sync::mpsc::unbounded_channel();
+    let released = Arc::new(tokio::sync::Notify::new());
+    let caller = CreditCaller {
+        inner: OwnedCaller(tokio::sync::Mutex::new(receive)),
+        released: released.clone(),
+        wrote: AtomicBool::new(false),
+    };
+    let dropped = Arc::new(Mutex::new(Vec::new()));
+    let piece = SessionInput {
+        bytes: b"credit".to_vec(),
+        custody: Some(Arc::new(Owner {
+            id: 1,
+            dropped: dropped.clone(),
+            released: Some(released),
+        })),
+    };
+    let at = piece.bytes.as_ptr() as usize;
+    assert!(send.send(piece).is_ok());
+    let (steps, far) = (common::TestUnits::passing(), cases::Far::new(&[], &[]));
+    let units = r
+        .driver
+        .unit(&steps, &far, &caller, cases::arrival("/session", b""), 0);
+    let mut running = Box::pin(drive(&units));
+    poll_pending(&mut running).await;
+    assert_eq!(*dropped.lock().unwrap(), vec![1]);
+    assert!(
+        caller.wrote.load(Ordering::SeqCst),
+        "input retirement must return the credit needed to complete this output"
+    );
+    assert_eq!(*r.plane.sessions.read_at.lock().unwrap(), vec![at]);
+    assert_eq!(
+        *r.plane.sessions.read.lock().unwrap(),
+        vec![(7, b"credit".to_vec())]
+    );
+    drop(send);
+    assert_eq!(running.await, busbar_contract::caps::Outcome::Completed);
+    assert_eq!(*dropped.lock().unwrap(), vec![1]);
+}
+
+#[tokio::test]
+async fn a_resumed_session_retires_input_after_its_ready_crossing() {
+    let r = rig(Way::Double, BufferCaps::default(), cases::Book::default());
+    *r.plane.sessions.input_mode.lock().unwrap() = SessionInputMode::Pending;
+    let (send, receive) = tokio::sync::mpsc::unbounded_channel();
+    let caller = OwnedCaller(tokio::sync::Mutex::new(receive));
+    let dropped = Arc::new(Mutex::new(Vec::new()));
+    let piece = input(1, &dropped);
+    let at = piece.bytes.as_ptr() as usize;
+    assert!(send.send(piece).is_ok());
+    let (steps, far) = (common::TestUnits::passing(), cases::Far::new(&[], &[]));
+    let units = r
+        .driver
+        .unit(&steps, &far, &caller, cases::arrival("/session", b""), 0);
+    let mut running = Box::pin(drive(&units));
+    poll_pending(&mut running).await;
+    assert!(dropped.lock().unwrap().is_empty());
+    assert_eq!(borrowed(&r.plane), (at, b"piece:1".to_vec()));
+    // The crossing actually returns its borrow before reporting READY.
+    release_borrowed(&r.plane);
+    assert!(r.plane.release_controlled(true));
+    poll_pending(&mut running).await;
+    assert_eq!(*dropped.lock().unwrap(), vec![1]);
+    drop(send);
+    assert_eq!(running.await, busbar_contract::caps::Outcome::Completed);
+    assert_eq!(*dropped.lock().unwrap(), vec![1]);
 }
 
 #[tokio::test]
