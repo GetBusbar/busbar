@@ -482,9 +482,9 @@ pub fn link_secrets(
     Ok(SECRETS.get_or_init(|| rows))
 }
 
-/// THE PROCESS'S ONE DISK LANE (THE DESIGN §11.11 R4): the kernel's host services append on it
+/// THE PROCESS'S DISK SERVICE (THE DESIGN §11.11 R4): the kernel's host services append on it
 /// ([`crate::root::serve::kernel_services`]) and a disk-declared secret source's config-time
-/// `resolve` runs on it ([`disk_run`]).
+/// `resolve` runs on its isolated secret executor ([`disk_run`]).
 static DISK: std::sync::OnceLock<std::sync::Arc<busbar_kernel::host_disk::DiskLane>> =
     std::sync::OnceLock::new();
 
@@ -493,7 +493,7 @@ pub fn disk_lane() -> std::sync::Arc<busbar_kernel::host_disk::DiskLane> {
     DISK.get_or_init(std::sync::Arc::default).clone()
 }
 
-/// The secret axis's hook onto [`disk_lane`]: a job submitted to the lane thread.
+/// The secret axis's hook onto [`disk_lane`]'s bounded secret executor, separate from appends.
 fn disk_run(job: Box<dyn FnOnce() + Send>) -> Result<(), String> {
     disk_lane().run(job).map_err(str::to_string)
 }
