@@ -17,6 +17,96 @@ use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
 use super::{data_framer, DataFramer, DATA_LINE, DATA_SCHEME};
 
+fn h1_fixture_ingest_chunks(
+    chunks: &[&[u8]],
+) -> Vec<(busbar_contract::abi::mechanism::call::Outcome, u32)> {
+    h1_fixture_ingest_chunks_with_cap(chunks, 1024)
+}
+
+fn h1_fixture_ingest_chunks_with_cap(
+    chunks: &[&[u8]],
+    frame_cap: usize,
+) -> Vec<(busbar_contract::abi::mechanism::call::Outcome, u32)> {
+    use busbar_contract::abi::mechanism::call::Outcome;
+    use busbar_contract::abi::transport::{
+        BeginIn, FramePiece, FramerOut, FramerSink, HeadSlots, IngestIn,
+    };
+    use busbar_core_connector::framer::Call;
+    use busbar_test_kit::test_support::zeroed;
+
+    let door = H1Accept::new(true);
+    let mut begin: BeginIn = zeroed();
+    let mut opened: FramerOut = zeroed();
+    assert_eq!(
+        door.cross(Call::Begin(&mut begin, &mut opened)).outcome,
+        Outcome::Ready
+    );
+    let mut frame = [0_u8; 1024];
+    let mut pieces: [FramePiece; 4] = [zeroed(); 4];
+    let mut heads: [HeadSlots; 2] = [zeroed(); 2];
+    chunks
+        .iter()
+        .map(|bytes| {
+            let mut input: IngestIn = zeroed();
+            input.framing = opened.framing;
+            input.bytes = bytes.as_ptr();
+            input.len = bytes.len();
+            input.sink = FramerSink {
+                frame: frame.as_mut_ptr(),
+                frame_cap,
+                pieces: pieces.as_mut_ptr(),
+                pieces_cap: pieces.len(),
+                heads: heads.as_mut_ptr(),
+                heads_cap: heads.len(),
+                ..zeroed()
+            };
+            let mut out: FramerOut = zeroed();
+            let answer = door.cross(Call::Ingest(&mut input, &mut out));
+            (answer.outcome, out.yielded.pieces_len)
+        })
+        .collect()
+}
+
+#[test]
+fn h1_fixture_refuses_a_request_larger_than_the_lent_frame_capacity() {
+    use busbar_contract::abi::mechanism::call::Outcome;
+    // The real allocation is 1024 bytes even on the old fixture, so its erroneous write is safe;
+    // only one byte is lent, which cannot hold this request's method and target.
+    let got = h1_fixture_ingest_chunks_with_cap(&[b"GET / HTTP/1.1\r\n\r\n"], 1);
+    assert_eq!(got[0].0, Outcome::Failed);
+}
+
+#[test]
+fn h1_fixture_refuses_complete_malformed_heads_without_waiting_for_more_bytes() {
+    use busbar_contract::abi::mechanism::call::Outcome;
+    for request in [
+        b"POST / HTTP/1.1\r\nbroken-field\r\n\r\n".as_slice(),
+        b"POST / HTTP/1.1\r\ncontent-length: nope\r\n\r\n".as_slice(),
+    ] {
+        assert_eq!(h1_fixture_ingest_chunks(&[request])[0].0, Outcome::Failed);
+    }
+    let overflow = format!("POST / HTTP/1.1\r\ncontent-length: {}\r\n\r\n", usize::MAX);
+    assert_eq!(
+        h1_fixture_ingest_chunks(&[overflow.as_bytes()])[0].0,
+        Outcome::Failed
+    );
+}
+
+#[test]
+fn h1_fixture_keeps_incomplete_headers_and_bodies_until_they_complete() {
+    use busbar_contract::abi::mechanism::call::Outcome;
+    let answers =
+        h1_fixture_ingest_chunks(&[b"POST / HTTP/1.1\r\ncontent-length: 3\r\n", b"\r\na", b"bc"]);
+    assert_eq!(
+        answers,
+        [
+            (Outcome::Ready, 0),
+            (Outcome::Ready, 0),
+            (Outcome::Ready, 2)
+        ]
+    );
+}
+
 fn custody_conn(
     router: Router,
 ) -> (

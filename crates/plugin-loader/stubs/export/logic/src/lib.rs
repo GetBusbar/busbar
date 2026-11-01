@@ -210,8 +210,8 @@ impl FileSink {
         if rotation.faults & DISK_RETENTION_FAILED != 0 {
             tracing::warn!(
                 diag = %RETENTION_FAILED,
-                archive = %format!("{path}.{ROTATE_ARCHIVE_LIMIT}"),
-                "request-log archive retention cleanup failed; the archive series may exceed ROTATE_ARCHIVE_LIMIT"
+                path = %path,
+                "request-log archive retention cleanup failed; the archive series may exceed configured retention"
             );
         }
         if rotation.faults & DISK_SHIFT_FAILED != 0 {

@@ -322,6 +322,123 @@ fn an_open_probe_in_refresh_is_not_closed_by_a_concurrent_same_input() {
     assert!(held.lock().unwrap().iter().all(|p| !p.is_open()));
 }
 
+fn copied_declaration(blob: &[u8], token: &str, flags: u32) -> PlaneFacts {
+    use crate::dispatch::Kind;
+    use busbar_contract::abi::mechanism::door::{
+        KindTailHead, Section, Statement, SECTION_DECLARING,
+    };
+    use busbar_contract::abi::plane::{
+        PinMechanism, TrustKey, INGRESS_REQUEST_RESPONSE, TRUST_PIN,
+    };
+    let text = |s: &str| AbiStr {
+        ptr: s.as_ptr(),
+        len: s.len(),
+    };
+    let section = Section {
+        name: text("declared"),
+        flags: SECTION_DECLARING,
+        _reserved: 0,
+    };
+    let mechanism = PinMechanism {
+        token: text(token),
+        flags,
+        _reserved: 0,
+    };
+    let key = TrustKey {
+        key: text("anchor"),
+        role: TRUST_PIN,
+        flags: 0,
+        default: AbiStr::ZERO,
+        mechanisms: &mechanism,
+        mechanisms_len: 1,
+    };
+    let tail = PlaneTail {
+        head: KindTailHead {
+            size: std::mem::size_of::<PlaneTail>() as u32,
+            _reserved: 0,
+        },
+        ingress: INGRESS_REQUEST_RESPONSE,
+        admin_openapi: Blob {
+            ptr: blob.as_ptr(),
+            len: blob.len(),
+            fmt: busbar_contract::abi::mechanism::call::BLOB_JSON,
+            flags: 0,
+        },
+        trust_keys: &key,
+        trust_keys_len: 1,
+        ..PlaneTail::ZERO
+    };
+    // SAFETY: Statement is plain C data; all pointer-bearing data above outlives context's copy.
+    let mut statement: Statement = unsafe { std::mem::zeroed() };
+    statement.sections = &section;
+    statement.sections_len = 1;
+    statement.kind_tail = &tail.head;
+    let context = Plane::context(&statement).unwrap().unwrap();
+    context.downcast_ref::<PlaneFacts>().unwrap().clone()
+}
+
+#[test]
+fn repeated_declarations_share_host_owned_blobs_and_mechanisms() {
+    use busbar_contract::abi::plane::{MECHANISM_PEER_KEY, MECHANISM_ROOT};
+    let mut bytes = br#"{"paths":{}}"#.to_vec();
+    let mut token = String::from("retained-anchor");
+    let first = copied_declaration(&bytes, &token, MECHANISM_ROOT);
+    let second = copied_declaration(&bytes, &token, MECHANISM_ROOT);
+    let a = first.served.admin_openapi.unwrap();
+    let b = second.served.admin_openapi.unwrap();
+    assert_eq!(a, bytes);
+    assert_ne!(a.as_ptr(), bytes.as_ptr(), "declaration owns a host copy");
+    assert!(
+        std::ptr::eq(a, b),
+        "repeated bytes reuse their permanent allocation"
+    );
+    let m = first.declared.trust_keys[0].mechanisms;
+    assert_eq!(m, second.declared.trust_keys[0].mechanisms);
+    assert!(std::ptr::eq(m, second.declared.trust_keys[0].mechanisms));
+    assert_ne!(m[0].token.as_ptr(), token.as_ptr());
+    bytes.fill(b' ');
+    token.clear();
+    drop(bytes);
+    drop(token);
+    assert_eq!(a, br#"{"paths":{}}"#);
+    assert_eq!(m[0].token, "retained-anchor");
+    let changed = copied_declaration(
+        br#"{"paths":{"/different":{}}}"#,
+        "retained-anchor",
+        MECHANISM_ROOT | MECHANISM_PEER_KEY,
+    );
+    assert_ne!(a, changed.served.admin_openapi.unwrap());
+    assert_ne!(m, changed.declared.trust_keys[0].mechanisms);
+    assert!(changed.declared.trust_keys[0].mechanisms[0].peer_key);
+    let concurrent = std::thread::scope(|s| {
+        let calls: Vec<_> = (0..4)
+            .map(|_| {
+                s.spawn(|| {
+                    copied_declaration(
+                        br#"{"concurrent":true}"#,
+                        "concurrent-anchor",
+                        MECHANISM_ROOT,
+                    )
+                })
+            })
+            .collect();
+        calls
+            .into_iter()
+            .map(|call| call.join().unwrap())
+            .collect::<Vec<_>>()
+    });
+    for facts in &concurrent[1..] {
+        assert!(std::ptr::eq(
+            concurrent[0].served.admin_openapi.unwrap(),
+            facts.served.admin_openapi.unwrap()
+        ));
+        assert!(std::ptr::eq(
+            concurrent[0].declared.trust_keys[0].mechanisms,
+            facts.declared.trust_keys[0].mechanisms
+        ));
+    }
+}
+
 extern "C" fn refusing_probe_door() -> &'static busbar_contract::abi::mechanism::door::Door {
     use busbar_contract::abi::mechanism::door::{Door, DoorParts};
     let door = crate::plane_door_plugin::door();

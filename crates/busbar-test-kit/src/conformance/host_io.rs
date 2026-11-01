@@ -40,6 +40,7 @@ pub enum Admit {
 struct Output {
     bytes: VecDeque<u8>,
     eof: bool,
+    error: Option<String>,
     waker: Option<Waker>,
 }
 
@@ -138,13 +139,16 @@ impl SuiteIo {
     }
 
     fn park(&self, id: u64, waker: &Waker) {
-        lock(&self.inner).waiting.push((id, waker.clone()));
+        let waker = waker.clone();
+        lock(&self.inner).waiting.push((id, waker));
     }
 
     /// Wake every op waiting on a socket that is now readable (or at its end).
     pub fn pump(&self) {
         let mut inner = lock(&self.inner);
         let waiting = std::mem::take(&mut inner.waiting);
+        let mut ready_wakes = Vec::new();
+        let mut retired_wakes = Vec::new();
         for (id, waker) in waiting {
             let ready = match inner.handles.get(&id).map(|(_, h)| h) {
                 Some(Handle::Stream(s)) => {
@@ -153,13 +157,21 @@ impl SuiteIo {
                 }
                 Some(Handle::Listener(_)) | None => true,
                 // A program's output wakes its reader from the thread that reads it.
-                Some(Handle::Program { .. }) => continue,
+                Some(Handle::Program { .. }) => {
+                    retired_wakes.push(waker);
+                    continue;
+                }
             };
             if ready {
-                waker.wake();
+                ready_wakes.push(waker);
             } else {
                 inner.waiting.push((id, waker));
             }
+        }
+        drop(inner);
+        drop(retired_wakes);
+        for waker in ready_wakes {
+            waker.wake();
         }
     }
 
@@ -176,7 +188,7 @@ impl SuiteIo {
                     }
                     Some(Handle::Program { output, .. }) => {
                         let o = lock(&output.0);
-                        !o.bytes.is_empty() || o.eof
+                        !o.bytes.is_empty() || o.eof || o.error.is_some()
                     }
                     _ => true,
                 }
@@ -225,7 +237,9 @@ impl IoHost for SuiteIo {
         });
         match got {
             Ok(Some((s, peer))) => {
-                let _ = s.set_nonblocking(true);
+                if let Err(error) = s.set_nonblocking(true) {
+                    return Poll::Ready(Err(failed(&error)));
+                }
                 Poll::Ready(Ok((
                     self.hold(owner, Some(ticket), Handle::Stream(s)),
                     peer,
@@ -240,6 +254,8 @@ impl IoHost for SuiteIo {
     }
 
     fn read(&self, owner: u64, id: u64, buf: &mut [u8], waker: &Waker) -> Poll<IoResult<usize>> {
+        let mut next_wake = Some(waker.clone());
+        let mut retired_wake = None;
         let got = self.on(owner, id, |h| match h {
             Handle::Stream(s) => match s.read(buf) {
                 Ok(n) => Ok(Some(n)),
@@ -248,8 +264,15 @@ impl IoHost for SuiteIo {
             },
             Handle::Program { output, .. } => {
                 let mut o = lock(&output.0);
+                if o.bytes.is_empty() {
+                    if let Some(error) = &o.error {
+                        return Err(IoRefusal::Failed(error.clone()));
+                    }
+                }
                 if o.bytes.is_empty() && !o.eof {
-                    o.waker = Some(waker.clone());
+                    retired_wake = o
+                        .waker
+                        .replace(next_wake.take().expect("one program reader"));
                     return Ok(None);
                 }
                 let n = buf.len().min(o.bytes.len());
@@ -260,6 +283,8 @@ impl IoHost for SuiteIo {
             }
             Handle::Listener(_) => Err(IoRefusal::unknown()),
         });
+        drop(retired_wake);
+        drop(next_wake);
         match got {
             Ok(Some(n)) => Poll::Ready(Ok(n)),
             Ok(None) => {
@@ -358,18 +383,32 @@ impl IoHost for SuiteIo {
         std::thread::spawn(move || {
             let mut buf = [0_u8; 4096];
             loop {
-                let n = out.read(&mut buf).unwrap_or(0);
+                let result = out.read(&mut buf);
+                if matches!(&result, Err(e) if e.kind() == ErrorKind::Interrupted) {
+                    continue;
+                }
                 let mut o = lock(&feed.0);
-                if n == 0 {
-                    o.eof = true;
-                } else {
-                    o.bytes.extend(&buf[..n]);
-                }
-                if let Some(w) = o.waker.take() {
-                    w.wake();
-                }
+                let ended = match result {
+                    Ok(0) => {
+                        o.eof = true;
+                        true
+                    }
+                    Ok(n) => {
+                        o.bytes.extend(&buf[..n]);
+                        false
+                    }
+                    Err(error) => {
+                        o.error = Some(error.to_string());
+                        true
+                    }
+                };
+                let wake = o.waker.take();
+                drop(o);
                 feed.1.notify_all();
-                if n == 0 {
+                if let Some(wake) = wake {
+                    wake.wake();
+                }
+                if ended {
                     return;
                 }
             }

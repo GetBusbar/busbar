@@ -20,6 +20,24 @@ use crate::both_ways;
 use crate::dispatch::{rendering_of, DispatchConfig, Dispatcher};
 use crate::sign::Manifest;
 
+#[test]
+fn trace_diagnostics_mask_userinfo_even_when_the_endpoint_is_malformed() {
+    let mask = both_ways::export_trace_fixture::mask_userinfo;
+    assert_eq!(
+        mask("https://user:secret@collector:bad/v1/traces"),
+        "https://***@collector:bad/v1/traces"
+    );
+    assert_eq!(
+        mask("https://user:secret@/v1/traces"),
+        "https://***@/v1/traces"
+    );
+    assert_eq!(
+        mask("https://collector/v1/traces"),
+        "https://collector/v1/traces"
+    );
+    assert!(!mask("https://user:secret@collector/v1/traces").contains("secret"));
+}
+
 /// A first-party export manifest named `name`, at this host's export ABI.
 fn manifest(name: &str) -> Manifest {
     let v = busbar_contract::abi::export::ABI_VERSION;

@@ -547,19 +547,32 @@ pub mod h1_accept {
     type Request = (Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>);
 
     /// One whole request off the front of `inbound`.
-    fn request(inbound: &mut Vec<u8>) -> Option<Request> {
-        let head_end = find(inbound, b"\r\n\r\n")?;
+    fn request(inbound: &mut Vec<u8>) -> Result<Option<Request>, &'static str> {
+        let Some(head_end) = find(inbound, b"\r\n\r\n") else {
+            return Ok(None);
+        };
         let head = String::from_utf8_lossy(&inbound[..head_end]).into_owned();
         let mut lines = head.split("\r\n");
-        let mut start = lines.next()?.split(' ');
-        let (method, target) = (start.next()?.to_owned(), start.next()?.to_owned());
+        let mut start = lines.next().ok_or("missing request line")?.split(' ');
+        let (method, target) = (
+            start
+                .next()
+                .filter(|s| !s.is_empty())
+                .ok_or("missing method")?
+                .to_owned(),
+            start
+                .next()
+                .filter(|s| !s.is_empty())
+                .ok_or("missing target")?
+                .to_owned(),
+        );
         let mut block = Vec::new();
         let mut len = 0_usize;
         for line in lines {
-            let (name, value) = line.split_once(':')?;
+            let (name, value) = line.split_once(':').ok_or("malformed field line")?;
             let (name, value) = (name.trim().to_ascii_lowercase(), value.trim());
             if name == "content-length" {
-                len = value.parse().ok()?;
+                len = value.parse().map_err(|_| "malformed content-length")?;
                 continue;
             }
             if fields::hop_by_hop(&name, std::iter::empty()) {
@@ -570,16 +583,23 @@ pub mod h1_accept {
             block.extend_from_slice(value.as_bytes());
             block.extend_from_slice(fields::LINE_END);
         }
-        if inbound.len() < head_end + 4 + len {
-            return None;
+        let body_at = head_end.checked_add(4).ok_or("request length overflow")?;
+        let end = body_at.checked_add(len).ok_or("request length overflow")?;
+        if inbound.len() < end {
+            return Ok(None);
         }
-        let body = inbound[head_end + 4..head_end + 4 + len].to_vec();
-        inbound.drain(..head_end + 4 + len);
-        Some((method.into_bytes(), target.into_bytes(), block, body))
+        let body = inbound[body_at..end].to_vec();
+        inbound.drain(..end);
+        Ok(Some((
+            method.into_bytes(),
+            target.into_bytes(),
+            block,
+            body,
+        )))
     }
 
     /// Answer what the framing owes: its wire bytes, and every whole request it holds.
-    fn answer(st: &mut State, sink: &FramerSink, o: &mut FramerOut) {
+    fn answer(st: &mut State, sink: &FramerSink, o: &mut FramerOut) -> Crossed {
         let y = &mut o.yielded;
         let w = st.outbound.len().min(sink.wire_cap);
         for i in 0..w {
@@ -599,9 +619,25 @@ pub mod h1_accept {
             at as u64
         };
         while pieces + 2 <= sink.pieces_cap && heads < sink.heads_cap {
-            let Some((method, target, block, body)) = request(&mut st.inbound) else {
-                break;
+            let (method, target, block, body) = match request(&mut st.inbound) {
+                Ok(Some(request)) => request,
+                Ok(None) => break,
+                Err(reason) => {
+                    return Crossed {
+                        outcome: Outcome::Failed,
+                        error: Some(reason.as_bytes().to_vec()),
+                    }
+                }
             };
+            let needed = [method.len(), target.len(), block.len(), body.len()]
+                .into_iter()
+                .try_fold(frame, usize::checked_add);
+            if !needed.is_some_and(|n| n <= sink.frame_cap) {
+                return Crossed {
+                    outcome: Outcome::Failed,
+                    error: Some(b"request exceeds lent frame buffer".to_vec()),
+                };
+            }
             let stream = st.next * 2 + 1;
             st.next += 1;
             let m = put(&method, &mut frame);
@@ -657,6 +693,10 @@ pub mod h1_accept {
         y.heads_len = heads as u32;
         if st.ended && st.outbound.is_empty() {
             y.flags |= YIELD_ENDED;
+        }
+        Crossed {
+            outcome: Outcome::Ready,
+            error: None,
         }
     }
 
@@ -719,8 +759,7 @@ pub mod h1_accept {
                     Some(st) => {
                         st.inbound.extend_from_slice(raw(i.bytes, i.len));
                         st.ended |= i.end != 0;
-                        answer(st, &i.sink, o);
-                        ok
+                        answer(st, &i.sink, o)
                     }
                 },
                 Call::Emit(i, o) => match framings.get_mut(&i.framing) {
@@ -739,23 +778,16 @@ pub mod h1_accept {
                         } else {
                             st.outbound.extend(bytes);
                         }
-                        answer(st, &i.sink, o);
-                        ok
+                        answer(st, &i.sink, o)
                     }
                 },
                 Call::Timer(i, o) => match framings.get_mut(&i.framing) {
                     None => failed,
-                    Some(st) => {
-                        answer(st, &i.sink, o);
-                        ok
-                    }
+                    Some(st) => answer(st, &i.sink, o),
                 },
                 Call::Refuse(i, o) => match framings.get_mut(&i.framing) {
                     None => failed,
-                    Some(st) => {
-                        answer(st, &i.sink, o);
-                        ok
-                    }
+                    Some(st) => answer(st, &i.sink, o),
                 },
                 Call::Finish(i, o) => {
                     framings.remove(&i.framing);

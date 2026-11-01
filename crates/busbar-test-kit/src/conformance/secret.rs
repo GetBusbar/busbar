@@ -124,7 +124,11 @@ fn resolve_in(
             error_kind,
             blob.flags & BLOB_SECRET != 0
         ),
-        needed,
+        if c.outcome == Outcome::Failed {
+            needed
+        } else {
+            0
+        },
     )
 }
 
