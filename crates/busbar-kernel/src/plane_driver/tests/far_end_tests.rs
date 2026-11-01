@@ -1101,18 +1101,28 @@ async fn the_attempt_cap_and_a_refused_dial_fail_over() {
     );
     let t = token();
     let far = r.egress.unit(route());
-    let mut failed = 0;
+    let mut members = Vec::new();
     for n in 1..=2 {
-        let Pick::Member { .. } = far.member(&t, n).await else {
+        let Pick::Member { name, .. } = far.member(&t, n).await else {
             panic!("a member")
         };
-        if far.send(&t, request()).await {
-            let p = far.next(&t).await.expect("a piece");
-            assert!(p.fail_over, "{p:?}");
+        let sent = far.send(&t, request()).await;
+        match name.as_str() {
+            "m0" => {
+                assert!(
+                    sent,
+                    "the silent connection opens before its answer times out"
+                );
+                let p = far.next(&t).await.expect("the attempt-cap refusal");
+                assert!(p.fail_over, "{p:?}");
+            }
+            "m1" => assert!(!sent, "the refused dial sends nothing"),
+            _ => panic!("unexpected member {name}"),
         }
-        failed += 1;
+        members.push(name);
     }
-    assert_eq!(failed, 2);
+    members.sort();
+    assert_eq!(members, ["m0", "m1"]);
     let observed = r.book.observed.lock().unwrap().clone();
     assert_eq!(observed.len(), 2, "{observed:?}");
     assert!(observed
