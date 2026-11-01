@@ -2185,7 +2185,14 @@ fn what_an_association_out_on_a_crossing_is_owed_its_holder_runs_in_order() {
     let _ = release.send(());
     let (ok, answered) = holder.join().unwrap();
     assert!(ok);
-    assert!(matches!(answered.as_slice(), [(id, Ok(_))] if *id == a));
+    assert!(
+        matches!(
+            answered.as_slice(),
+            [(first, Ok(_)), (datagram, Ok(_)), (second, Ok(_))]
+                if *first == a && *datagram == a && *second == a
+        ),
+        "both Emits and the intervening datagram retain their answers in order"
+    );
     assert_eq!(
         lanes(&da)[before..],
         [0, LANE_CLEAR, 0],

@@ -1476,7 +1476,7 @@ impl PortAssociations {
     /// THE HAND-OFF: take association `id` out, run `first` on it and then what was owed it
     /// meanwhile, each crossing with no lock held, and put it back (or, failed or removed, finish
     /// it with no lock held). Found out, `first` is queued for its holder. The first op's emit
-    /// verdict (`None` = no such association), and what datagrams and the clock answered.
+    /// verdict (`None` = no such association), and what every operation the holder ran answered.
     fn turn(
         &self,
         id: u64,
@@ -1554,10 +1554,8 @@ impl PortAssociations {
                 } => {
                     let answer = f.emit(stream, &bytes, end_of_frame, text, now);
                     let ok = answer.is_ok();
-                    if matches!(busy, WhileBusy::Wait) && emitted.is_none() {
-                        if let Ok(yielded) = answer {
-                            answered.push((id, Ok(yielded)));
-                        }
+                    if let Ok(yielded) = answer {
+                        answered.push((id, Ok(yielded)));
                     }
                     emitted.get_or_insert(ok);
                     (false, None)
