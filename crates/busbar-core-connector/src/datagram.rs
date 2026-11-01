@@ -2748,7 +2748,10 @@ impl Bridge {
             }
             if known {
                 if let Some(stream) = self.across(leg, g.stream) {
-                    if !g.ends_stream() {
+                    // Only payload crosses. A field block (a continued head, trailers, an empty
+                    // head), a failed stream's reason and a stream's end are this leg's metadata:
+                    // the same classification `Pairing::publish` counts accepted frames by.
+                    if is_line_payload(&g) {
                         across.push(Across {
                             stream,
                             bytes: g.bytes,
@@ -2762,6 +2765,18 @@ impl Bridge {
         }
         (session, across)
     }
+}
+
+/// Whether a piece on a known LINE stream is application payload that crosses to the other leg.
+///
+/// `busbar_contract::abi::transport`: a `fields` piece is a field block, never payload
+/// (a head split across pieces, its continuation, trailers, an empty head included); a
+/// `failed` piece's bytes are the failure reason, never payload, and it ends its stream
+/// without `PIECE_END`; an `ends_stream` piece ends the stream whole. Every other piece is
+/// payload, an EMPTY text or binary frame included. `Bridge::sort` and `Pairing::publish` both
+/// classify by this one predicate so a frame is counted accepted exactly when it is enqueued.
+fn is_line_payload(g: &crate::framer::Got) -> bool {
+    !g.fields && !g.failed && !g.ends_stream()
 }
 
 /// A LEG'S DOOR for what crosses into it: the owner of the leg's association (the claim door's
@@ -2998,3 +3013,7 @@ impl Drop for DatagramFraming {
 #[allow(unsafe_code)]
 #[path = "tests/datagram_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "tests/line_payload_tests.rs"]
+mod line_payload_tests;
