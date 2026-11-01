@@ -113,8 +113,8 @@ pub struct MintRequest<'a> {
     /// Whether the operator NAMED the lifetime (`expires_in`/`expires_at`) — an explicit over-ask is
     /// refused, a default is clamped (see [`apply_mint_ttl_ceiling`]).
     pub explicit_ttl: bool,
-    /// The binding mode this mint requests (wire spelling), if any. `None` = no mode named (the admin
-    /// mint path today), so the mode ceiling is not exercised.
+    /// The binding mode this mint will record (wire spelling), including a mode chosen by the
+    /// mint path's default. `None` is for a mint that records no binding mode; it skips mode checks.
     pub requested_mode: Option<&'a str>,
 }
 
