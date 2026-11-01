@@ -14,7 +14,7 @@ use super::{Answered, Owed, PortAssociations};
 pub enum RawIngress {
     /// The ordinary admission result; it can be empty when the selected association closed.
     Answered(Answered),
-    /// The selected live association was busy, before the datagram crossed its framer.
+    /// The selected live association was busy or lacked output credit, before framer acceptance.
     BusyDropped,
     /// No association was found for the datagram.
     Unrouted,
@@ -54,7 +54,8 @@ impl PortAssociations {
         }
     }
 
-    /// Newly received raw datagrams discarded because their selected association was busy.
+    /// Newly received raw datagrams discarded because their association was not receive-ready,
+    /// including unavailable pre-crossing output credit under its configured memory limit.
     /// Unrouted datagrams and selections already closing or removed do not contribute.
     #[must_use]
     pub fn raw_busy_dropped(&self) -> u64 {

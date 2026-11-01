@@ -1929,6 +1929,17 @@ impl PortAssociations {
                 }
                 return Ok(Vec::new());
             }
+            // A raw receive is ready only with its pre-crossing output credit. This host-only
+            // preflight reuses existing credit or reserves into an empty slot: it cannot drop
+            // an old lease, wake a callback, or cross the plugin under the association lock.
+            if drop_busy
+                && assocs
+                    .framings
+                    .get_mut(&id)
+                    .is_some_and(|f| !f.prepare_output())
+            {
+                return Err(BusyIngress);
+            }
             let Some(f) = assocs.framings.remove(&id) else {
                 return Ok(Vec::new());
             };

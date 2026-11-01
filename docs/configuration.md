@@ -1369,8 +1369,9 @@ Accepted input is never replayed as untaken; publication records distinguish han
 cancelled output and unknown crossing results. A synchronous connection-write success still means
 accepted input, rather than an acknowledgment of remote delivery.
 
-New raw UDP packets for an association already busy on the shared socket are discarded before
-framer acceptance and counted separately. The port reports its `raw_busy_dropped` total on close.
+New raw UDP packets for an association that is busy or lacks pre-crossing output credit are
+discarded before framer acceptance and counted separately. The port reports its
+`raw_busy_dropped` total on close.
 Accepted application writes and LINE output keep their ordered publication and failure handling.
 
 ---

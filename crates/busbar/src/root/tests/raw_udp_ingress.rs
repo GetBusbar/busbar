@@ -51,9 +51,14 @@ struct Association {
 
 impl Association {
     fn new(door: &Arc<ClaimDoor>, user: &[u8], stream: u64) -> Self {
+        Self::with_limit(door, user, stream, None)
+    }
+
+    fn with_limit(door: &Arc<ClaimDoor>, user: &[u8], stream: u64, limit: Option<usize>) -> Self {
         let messages = Messages::new(8);
         let leg = CallerLeg::new(door, Arc::clone(&messages));
-        let pair = Pairing::new(Arc::clone(&leg) as Arc<dyn LegSink>, door.local());
+        let pair =
+            Pairing::with_memory_limit(Arc::clone(&leg) as Arc<dyn LegSink>, door.local(), limit);
         *lock(&leg.pairing) = Some(Arc::clone(&pair));
         let framer = Ingress::new(user, stream);
         let (mut framing, _) = DatagramFraming::accept_minted(
@@ -165,6 +170,67 @@ async fn heard(socket: &UdpSocket, door: &Arc<ClaimDoor>, association: &Associat
     })
     .await
     .expect("authenticated check crossed the real socket and framer");
+}
+
+#[tokio::test]
+async fn raw_output_credit_readiness_drops_before_acceptance_and_resumes_without_replay() {
+    use busbar_core_connector::datagram::Leg;
+    use busbar_core_connector::framer::FRAME_CAP;
+    use busbar_core_connector::test_support::datagram_output_reservation_bytes;
+
+    let door = ClaimDoor::serve(ReadyPort::open(bind("127.0.0.1:0").unwrap()).unwrap());
+    let a = Association::with_limit(
+        &door,
+        b"creditfrag",
+        CHANNEL,
+        Some(datagram_output_reservation_bytes() + FRAME_CAP),
+    );
+    let source = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    heard(&source, &door, &a, "creditfrag").await;
+    assert!(a.pair.published().await.failure.is_none());
+    // A real reserved input allocation prevents a second full output reservation while its
+    // association is otherwise idle. Storage is reserved before the allocation is requested.
+    let custody = a
+        .pair
+        .reserve_input_for(Leg::Caller, 2 * FRAME_CAP)
+        .unwrap();
+    let input = vec![b'i'; 2 * FRAME_CAP];
+    let used = a.pair.memory_account().used();
+    let dropped = b"\x80no-output-credit";
+    source.send_to(dropped, door.local()).await.unwrap();
+    tokio::time::timeout(WAIT, async {
+        while door.assocs.raw_busy_dropped() == 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("unavailable output credit is receive-not-ready before raw acceptance");
+    assert_eq!(door.assocs.raw_busy_dropped(), 1);
+    assert_eq!(a.framer.received(), vec![check("creditfrag", 1)]);
+    assert!(a.messages.try_recv().is_err());
+    assert!(!a.pair.closed());
+    assert!(a.pair.publication_outcome().failure.is_none());
+    assert_eq!(a.pair.memory_account().used(), used);
+    drop(input);
+    drop(custody);
+
+    let fresh = b"\x80credit-returned";
+    source.send_to(fresh, door.local()).await.unwrap();
+    let message = tokio::time::timeout(WAIT, a.messages.recv())
+        .await
+        .expect("new raw input progresses after actual storage retirement")
+        .unwrap();
+    assert_eq!(message.bytes, fresh);
+    assert!(message.end);
+    assert!(a.pair.published().await.failure.is_none());
+    assert_eq!(
+        a.framer.received(),
+        vec![check("creditfrag", 1), fresh.to_vec()]
+    );
+    assert!(a.messages.try_recv().is_err());
+    assert_eq!(door.assocs.raw_busy_dropped(), 1);
+    assert!(!a.pair.closed());
+    door.close();
 }
 
 #[tokio::test]
