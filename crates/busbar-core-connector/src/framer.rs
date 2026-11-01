@@ -344,6 +344,12 @@ pub struct Buffers {
     lines: FieldLines,
 }
 
+impl Drop for Buffers {
+    fn drop(&mut self) {
+        zeroize::Zeroize::zeroize(&mut self.wire);
+    }
+}
+
 /// Where a stream's field block stands between two of its pieces.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Line {
@@ -501,10 +507,9 @@ impl Buffers {
 
     /// The default buffers for a framing on `side`.
     pub(crate) fn for_side(side: u32) -> Self {
-        Self {
-            side,
-            ..Self::default()
-        }
+        let mut buffers = Self::default();
+        buffers.side = side;
+        buffers
     }
 
     pub(crate) fn sink(&mut self) -> FramerSink {
@@ -1316,7 +1321,11 @@ pub fn encode_head(
     // start. So it answers whole into the buffer sized for it, and a framer that answers it
     // `YIELD_MORE` owes bytes no re-call can ask for: a FAULT, never a truncated message sent as
     // the whole one.
-    if !bufs.take(&o, &mut y)? {
+    let taken = bufs.take(&o, &mut y);
+    let mut wire = zeroize::Zeroizing::new(std::mem::take(&mut y.wire));
+    #[cfg(test)]
+    crate::support::watch_encoded_wire(&wire);
+    if !taken? {
         return Err(Refused {
             outcome: Outcome::Fault,
             error: "the framer answered `encode` with YIELD_MORE: an encode renders the whole \
@@ -1324,7 +1333,7 @@ pub fn encode_head(
                 .to_owned(),
         });
     }
-    Ok(y.wire)
+    Ok(std::mem::take(&mut *wire))
 }
 
 /// How many `YIELD_MORE` answers in a row may write nothing before the framing FAULTs: a framer

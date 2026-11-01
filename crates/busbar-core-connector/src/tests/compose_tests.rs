@@ -1243,3 +1243,167 @@ fn a_sealed_credential_reaches_the_far_end_and_never_the_framer() {
 #[path = "compose_receive_tests.rs"]
 #[allow(unsafe_code)]
 mod receive_tests;
+
+#[test]
+fn a_nonsealing_wire_yield_is_wiped_after_its_bytes_are_copied_for_sending() {
+    worker().block_on(async {
+        let far = echo().await;
+        let door = Arc::new(TestDoor::identity("bytes"));
+        let mut c = Connection::dial(door, &crate::support::via(), dial(&far)).unwrap();
+        opened(&mut c).await;
+        let value = b"/path?key=unsealed-secret".to_vec();
+        let pointer = value.as_ptr();
+        let len = value.len();
+        let (_, wiped, _) = crate::support::observe_wipe(pointer, len, || {
+            c.absorb(Yielded {
+                wire: value,
+                ..Yielded::default()
+            })
+            .unwrap();
+        });
+        assert_eq!(wiped, Some(true));
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(5), gather(&mut c, len))
+                .await
+                .unwrap(),
+            b"/path?key=unsealed-secret"
+        );
+    });
+}
+
+#[test]
+fn duplex_pending_writes_survive_the_incoming_streams_clean_end() {
+    worker().block_on(async {
+        let far = echo().await;
+        let door = Arc::new(crate::support::PendingDoor::new(
+            TestDoor::identity("bytes"),
+            7,
+        ));
+        let mut c = Connection::dial(door.clone(), &crate::support::via(), dial(&far)).unwrap();
+        opened(&mut c).await;
+        let mut cx = Context::from_waker(std::task::Waker::noop());
+        assert_eq!(c.emit(7, b"first", false, false, &mut cx).unwrap(), 5);
+        assert_eq!(c.emit(7, b"second", true, false, &mut cx).unwrap(), 6);
+        c.absorb(Yielded {
+            pieces: vec![Got {
+                stream: 7,
+                bytes: Vec::new(),
+                end_of_frame: true,
+                status_code: None,
+                handoff: false,
+                status_class: 0,
+                fault: 0,
+                retry_after_secs: None,
+                declared_len: None,
+                fields: false,
+                text: false,
+                reason: None,
+                failed: false,
+                end: true,
+            }],
+            ..Yielded::default()
+        })
+        .unwrap();
+        assert!(next(&mut c).await.unwrap().unwrap().end);
+        door.host.complete(1);
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(5), gather(&mut c, 5))
+                .await
+                .unwrap(),
+            b"first"
+        );
+        door.host.complete(1);
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(5), gather(&mut c, 6))
+                .await
+                .unwrap(),
+            b"second",
+            "incoming EOF does not discard the queued answer"
+        );
+    });
+}
+
+#[test]
+fn query_credentials_reach_the_secure_target_without_crossing_the_framer_as_plaintext() {
+    crate::tls::install_crypto_provider();
+    let (ca, leaf, key) = localhost_cert();
+    worker().block_on(async move {
+        let mut server = rustls::ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(
+                vec![leaf.into()],
+                rustls_pki_types::PrivateKeyDer::try_from(key).unwrap(),
+            )
+            .unwrap();
+        server.alpn_protocols = vec![b"http/1.1".to_vec()];
+        let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(server));
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let far = listener.local_addr().unwrap().to_string();
+        let read = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.unwrap();
+            let mut socket = acceptor.accept(socket).await.unwrap();
+            let mut got = Vec::new();
+            let mut buf = [0_u8; 512];
+            while !got.ends_with(b"BODY") {
+                match tokio::time::timeout(Duration::from_secs(5), socket.read(&mut buf)).await {
+                    Ok(Ok(n)) if n > 0 => got.extend_from_slice(&buf[..n]),
+                    _ => break,
+                }
+            }
+            got
+        });
+        let door = Arc::new(TestDoor::new(
+            "sec",
+            &["sec"],
+            &[],
+            Knobs {
+                secure_name: Some("localhost"),
+                seals: true,
+                render_fields: true,
+                render_target: true,
+                ..Knobs::default()
+            },
+        ));
+        let trust = busbar_contract::transport::trust::EgressTrust {
+            extra_anchors: vec![ca],
+            ..Default::default()
+        };
+        let mut d = dial(&far);
+        d.tls = Some(Arc::new(
+            crate::tls::client::build_client_config(&trust).unwrap(),
+        ));
+        d.head_words = (b"POST".to_vec(), b"/v1?existing=1#fragment".to_vec());
+        d.opening = Some((
+            vec![
+                (
+                    "busbar-sealed-query".into(),
+                    b"key=first%20credential".to_vec(),
+                ),
+                (
+                    "busbar-sealed-query".into(),
+                    b"key=second%2Bcredential".to_vec(),
+                ),
+                ("x-visible".into(), b"yes".to_vec()),
+            ],
+            b"BODY".to_vec().into(),
+        ));
+        let mut c = Connection::dial(door.clone(), &crate::support::via(), d).unwrap();
+        let _ = tokio::time::timeout(Duration::from_secs(2), next(&mut c)).await;
+        let got = read.await.unwrap();
+        assert!(got.starts_with(
+            b"/v1?existing=1&key=first%20credential&key=second%2Bcredential#fragment\r\n"
+        ));
+        assert!(!got
+            .windows(b"busbar-sealed-query".len())
+            .any(|w| w == b"busbar-sealed-query"));
+        let handed = door.handed.lock().unwrap();
+        assert!(!handed
+            .windows(b"credential".len())
+            .any(|w| w == b"credential"));
+        assert_eq!(
+            c.target(),
+            far,
+            "dial identity stays free of query credentials"
+        );
+    });
+}

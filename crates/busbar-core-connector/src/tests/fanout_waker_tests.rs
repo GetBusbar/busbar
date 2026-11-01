@@ -8,6 +8,10 @@ use super::*;
 use std::sync::{atomic::AtomicBool, Mutex, Weak};
 use std::task::{Context, Wake, Waker};
 
+#[path = "fanout_wake_tests.rs"]
+#[allow(unsafe_code)]
+mod wake_callbacks;
+
 const FRAMER_CLAIM: &str = "fan-waker-frames";
 const CARRIER_CLAIM: &str = "fan-waker-carrier";
 const NEED: NeedId = NeedId(0);
