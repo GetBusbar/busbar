@@ -261,10 +261,14 @@ fn a_suppressed_member_is_recorded_with_its_own_reason() {
     }
     let mut ctx = node.request_ctx();
     assert!(node.pick("p", &members, &mut ctx).is_none());
-    assert!(ctx
-        .excluded_reasons()
-        .iter()
-        .all(|(_, why)| matches!(why, Unavailable::BreakerOpen { .. })));
+    let reasons = ctx.excluded_reasons();
+    assert_eq!(reasons.len(), 3, "every suppressed member is recorded");
+    for destination in 0..3 {
+        assert!(reasons.contains(&(
+            DestinationId::new(destination),
+            Unavailable::BreakerOpen { until: 42 }
+        )));
+    }
 }
 
 #[test]
