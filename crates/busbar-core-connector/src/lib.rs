@@ -1226,7 +1226,7 @@ impl Connector {
             .map(|n| Arc::clone(&n.door))
             .ok_or(ConnError::Refused)?;
         endpoint::named(target).map_err(|_| ConnError::Refused)?;
-        let located = framer::locate(door.as_ref(), target).map_err(|_| ConnError::Refused)?;
+        let located = self.located(&door, target).ok_or(ConnError::Refused)?;
         endpoint::named(&located.authority).map_err(|_| ConnError::Refused)?;
         if !scheme_admits(egress_class, located.secure) {
             return Err(ConnError::Refused);

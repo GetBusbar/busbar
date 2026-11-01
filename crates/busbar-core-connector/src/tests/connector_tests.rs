@@ -3909,6 +3909,84 @@ fn pinned_need(transport: &str, class: u32) -> ReadNeed {
     need
 }
 
+/// A carrier answers its carried operations, but does not serve a framer's locate slot.
+struct CarrierWithoutLocate(TestDoor);
+
+impl FramerDoor for CarrierWithoutLocate {
+    fn facts(&self) -> &crate::framer::DoorFacts {
+        self.0.facts()
+    }
+
+    fn cross(&self, call: crate::framer::Call<'_>) -> crate::framer::Crossed {
+        if matches!(call, crate::framer::Call::Locate(..)) {
+            return crate::framer::Crossed {
+                outcome: busbar_contract::abi::mechanism::call::Outcome::Refused,
+                error: Some(b"a carrier does not locate".to_vec()),
+            };
+        }
+        self.0.cross(call)
+    }
+
+    fn side(&self) -> Option<Box<dyn crate::carrier::Side>> {
+        self.0.side()
+    }
+
+    fn carry(
+        &self,
+        side: &dyn crate::carrier::Side,
+        resume: bool,
+        call: crate::carrier::Carry<'_>,
+    ) -> crate::framer::Crossed {
+        self.0.carry(side, resume, call)
+    }
+}
+
+#[test]
+fn a_pinned_carrier_need_uses_the_same_authority_as_its_dial() {
+    worker().block_on(async {
+        let (listening, far) = far_end().await;
+        let door = Arc::new(CarrierWithoutLocate(TestDoor::identity("bytes")));
+        assert_eq!(
+            door.facts().role,
+            busbar_contract::abi::transport::ROLE_CARRIER
+        );
+        assert!(crate::framer::locate(door.as_ref(), &far).is_err());
+        let view = View::of(vec![Entry {
+            door,
+            alpn: Vec::new(),
+        }])
+        .unwrap();
+        let c = Connector::serving(view, loopback_literals(), None, Arc::new(|_, _| {}));
+        let need = pinned_need("bytes", crate::DEFAULT_CLASS);
+        for (id, target) in [(0, far.clone()), (1, format!("bytes://{far}"))] {
+            assert_eq!(
+                DeclaredConns::declare(&c, OWNER, NeedId(id), &need, Some(&target), None),
+                Ok(())
+            );
+            assert_eq!(DeclaredConns::declared(&c, OWNER, NeedId(id)), Some(Ok(())));
+            let conn = c.open(OWNER, NeedId(id), &OpenDesc::default()).unwrap();
+            let (_peer, _) = listening.accept().await.unwrap();
+            c.close(OWNER, conn).unwrap();
+        }
+        // The carrier branch must still meet the existing target and class judgements.
+        for (id, target, class) in [
+            (2, "bytes://127.0.0.1:1/path", crate::DEFAULT_CLASS),
+            (3, "bytes://169.254.169.254:80", crate::DEFAULT_CLASS),
+            (4, "bytes://127.0.0.1:1", EGRESS_OPEN_WEB),
+        ] {
+            let need = pinned_need("bytes", class);
+            assert_eq!(
+                DeclaredConns::declare(&c, OWNER, NeedId(id), &need, Some(target), None),
+                Err(ConnError::Refused)
+            );
+            assert_eq!(
+                DeclaredConns::declared(&c, OWNER, NeedId(id)),
+                Some(Err(ConnError::Refused))
+            );
+        }
+    });
+}
+
 /// RED (1.5.5: a request-log webhook target that is not `https://` was refused when the sink was
 /// configured): an open-web need pinned to a plaintext target is REFUSED at declare, so the host's
 /// admission (`need_admit`) answers what every dial of it already met, and the need opens nothing.
