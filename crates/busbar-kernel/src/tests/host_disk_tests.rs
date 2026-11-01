@@ -257,9 +257,7 @@ fn the_lane_runs_appends_in_order_and_answers_through_later() {
     let _ = std::fs::remove_dir_all(&d);
 }
 
-/// A JOB runs ON THE LANE THREAD, in order with the appends (THE DESIGN §11.11 R4 as the OWNER
-/// amended it: a disk-declared secret source's config-time resolve runs here), and a job that
-/// panics is its own failure: the appends behind it still land.
+/// Secret jobs run off the append executor. A panic leaves both executors usable.
 #[test]
 fn a_job_runs_on_the_lane_thread_and_a_panicking_one_leaves_the_lane_running() {
     let d = dir("job");
@@ -274,12 +272,20 @@ fn a_job_runs_on_the_lane_thread_and_a_panicking_one_leaves_the_lane_running() {
     assert_eq!(
         rx.recv_timeout(std::time::Duration::from_secs(10))
             .expect("the job ran"),
-        Some(LANE_THREAD.to_string())
+        Some("busbar-disk-secrets".to_string())
     );
     assert_ne!(std::thread::current().name(), Some(LANE_THREAD));
 
     lane.run(Box::new(|| panic!("a job that panics")))
         .expect("the lane takes the job");
+    let (healthy_tx, healthy) = std::sync::mpsc::channel();
+    lane.run(Box::new(move || {
+        let _ = healthy_tx.send(());
+    }))
+    .expect("a panic does not disconnect secret admission");
+    healthy
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .expect("the secret worker survives its job's panic");
     let (done_tx, done_rx) = std::sync::mpsc::channel();
     let later: Later = Box::new(move |s| {
         let _ = done_tx.send(s);
@@ -408,4 +414,100 @@ fn a_blocked_disk_job_does_not_block_ordered_appends_or_their_completions() {
         Outcome::Ready
     );
     assert_eq!(bytes.unwrap(), b"first\nsecond\n");
+}
+
+/// Full admission drops the rejected callback outside custody locks: its destructor can submit
+/// on the same lane, and appends can complete reentrantly while secret admission stays full.
+#[test]
+fn full_secret_admission_drops_reentrant_custody_without_blocking_appends() {
+    use std::sync::Arc;
+
+    struct Reenter {
+        lane: Arc<DiskLane>,
+        file: PathBuf,
+        answer: std::sync::mpsc::Sender<Result<(), DiskReport>>,
+        completed: std::sync::mpsc::Sender<Outcome>,
+    }
+    impl Drop for Reenter {
+        fn drop(&mut self) {
+            let done = self.completed.clone();
+            let result = self.lane.submit(
+                dest(&self.file, None),
+                b"from-drop\n".to_vec(),
+                Box::new(move |stored| {
+                    let _ = done.send(stored.outcome);
+                }),
+            );
+            let _ = self.answer.send(result);
+        }
+    }
+
+    let d = dir("reentrant-secret-refusal");
+    let file = d.join("log.jsonl");
+    let lane = Arc::new(DiskLane::default());
+    let (entered_tx, entered) = std::sync::mpsc::channel();
+    let (release, released) = std::sync::mpsc::channel();
+    lane.run(Box::new(move || {
+        let _ = entered_tx.send(());
+        let _ = released.recv_timeout(std::time::Duration::from_secs(30));
+    }))
+    .unwrap();
+    let running = entered.recv_timeout(std::time::Duration::from_secs(10));
+    let mut admitted = true;
+    for _ in 0..LANE_BOUND {
+        admitted &= lane.run(Box::new(|| {})).is_ok();
+    }
+    let (answer, answered) = std::sync::mpsc::channel();
+    let (completed, completion) = std::sync::mpsc::channel();
+    let reenter = Reenter {
+        lane: Arc::clone(&lane),
+        file: file.clone(),
+        answer,
+        completed,
+    };
+    // Keep the test thread able to release the controlled blocker if a lock regression deadlocks
+    // the destructor. Do not join that submitter until it has answered.
+    let submitter = std::thread::spawn(move || lane.run(Box::new(move || drop(reenter))));
+    let reentered = answered.recv_timeout(std::time::Duration::from_secs(2));
+    let appended = completion.recv_timeout(std::time::Duration::from_secs(2));
+    let _ = release.send(());
+    running.expect("the controlled secret job entered");
+    assert!(admitted, "the declared queue bound remains available");
+    assert!(reentered.expect("reentrant Drop returns").is_ok());
+    assert_eq!(appended.expect("the reentrant append completes"), Outcome::Ready);
+    assert_eq!(submitter.join().unwrap(), Err(LANE_FULL));
+    assert_eq!(std::fs::read(&file).unwrap(), b"from-drop\n");
+    let _ = std::fs::remove_dir_all(d);
+}
+
+#[test]
+fn an_append_completion_can_submit_another_whole_append() {
+    let d = dir("reentrant-completion");
+    let file = d.join("log.jsonl");
+    let lane = std::sync::Arc::new(DiskLane::default());
+    let inside = std::sync::Arc::clone(&lane);
+    let next = dest(&file, None);
+    let (answer, answered) = std::sync::mpsc::channel();
+    lane.submit(
+        dest(&file, None),
+        b"first\n".to_vec(),
+        Box::new(move |first| {
+            let done = answer.clone();
+            let result = inside.submit(
+                next,
+                b"second\n".to_vec(),
+                Box::new(move |second| {
+                    let _ = done.send((first.outcome, second.outcome));
+                }),
+            );
+            assert!(result.is_ok());
+        }),
+    )
+    .unwrap();
+    assert_eq!(
+        answered.recv_timeout(std::time::Duration::from_secs(10)).unwrap(),
+        (Outcome::Ready, Outcome::Ready)
+    );
+    assert_eq!(std::fs::read(&file).unwrap(), b"first\nsecond\n");
+    let _ = std::fs::remove_dir_all(d);
 }
