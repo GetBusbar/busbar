@@ -7,7 +7,7 @@
 //!
 //! A ticket is the minting plane's declared issued-id prefix followed by a signed token body whose
 //! claims name the principal's key (`sub`, its binding's current generation), the ticket audience
-//! ([`TICKET_AUDIENCE`]) and the ticket's id (`t`). The prefix is the plane's word; the host never
+//! ([`super::signing::TICKET_AUDIENCE`]) and the ticket's id (`t`). The prefix is the plane's word; the host never
 //! spells one of its own. Beside the ticket the host stores the record the plane handed it, keyed
 //! by the ticket id, until the ticket's expiry.
 //!
@@ -18,7 +18,6 @@
 //! refuses too. A ticket is never a key: its body carries no key prefix, and its audience is refused
 //! everywhere the gate does not expect a ticket.
 
-use super::signing::TICKET_AUDIENCE;
 use super::*;
 use busbar_contract::records::{PlaneDisposition, PlaneRecordRef, Retention};
 
@@ -147,24 +146,23 @@ impl GovState {
     }
 
     /// Check a ticket for inbound preflight without redeeming it or exposing its record. The
-    /// final request gate must still call `admit_ticket`: another request may spend it meanwhile.
+    /// The store checks expiry without consuming the ticket. The final request gate must still
+    /// call `admit_ticket`: another request may spend it meanwhile.
     pub(crate) fn peek_ticket(
         &self,
         prefix: &str,
         credential: &str,
         now: u64,
     ) -> Option<Arc<VirtualKey>> {
-        let (key, id, _) = self.checked_ticket(prefix, credential, now)?;
-        let record = self
-            .store()
-            .get_plane_record(TICKET_RECORD_KIND, &id)
+        let (key, id, exp) = self.checked_ticket(prefix, credential, now)?;
+        self.store()
+            .plane_token_live(TICKET_RECORD_KIND, &id, exp, now)
             .ok()
-            .flatten()?;
-        drop(zeroize::Zeroizing::new(record));
-        Some(key)
+            .filter(|live| *live)
+            .map(|_| key)
     }
 
-    // The single signature, expiry and standing check shared by preflight and redemption.
+    // Signature, audience and key standing are shared. The store owns ticket deadline checks.
     // Both callers use the same ticket-verifier policy.
     fn checked_ticket(
         &self,
@@ -177,10 +175,7 @@ impl GovState {
         }
         let body = credential.strip_prefix(prefix)?;
         let material = self.signing_material()?;
-        let claims = match material
-            .verifier
-            .verify_body(body, now, Some(TICKET_AUDIENCE))
-        {
+        let claims = match material.verifier.verify_ticket_body(body) {
             Ok(c) => c,
             Err(e) => {
                 tracing::debug!(reason = %e, "ticket verify rejected");

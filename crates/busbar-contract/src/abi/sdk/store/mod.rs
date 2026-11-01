@@ -476,6 +476,9 @@ pub trait StoreSlots: Sized + Send + Sync + 'static {
     /// (`KindBeforeIn::retention`); the door calls this, so a store that honours the terminal-only
     /// rule overrides it ([`Retention::drops`]).
     ///
+    /// Reserved ticket records cap the cutoff at store time, as specified by
+    /// [`crate::records::RecordStore::purge_plane_records`]. Other kinds retain their cutoff.
+    ///
     /// DEFAULTED: [`Retention::Age`] is [`StoreSlots::purge_plane_records_before`];
     /// [`Retention::TerminalOnly`] answers `Ok(0)` — a store that has not implemented the
     /// terminal-only predicate purges nothing rather than dropping an ACTIVE row.
@@ -525,6 +528,8 @@ pub trait StoreSlots: Sized + Send + Sync + 'static {
     ) -> Step<RecordStoreResult<()>>;
 
     /// `redeem_plane_token` (slot 24): whether this call was the first redemption.
+    /// Uses the store clock and absolute expiry as specified by
+    /// [`crate::records::RecordStore::redeem_plane_token`]; caller `now` is not authority.
     ///
     /// # Errors
     /// The store's refusal, as the 1.5.5 op set states it.
@@ -537,7 +542,8 @@ pub trait StoreSlots: Sized + Send + Sync + 'static {
         now: u64,
     ) -> Step<RecordStoreResult<bool>>;
 
-    /// `plane_token_live` (slot 25).
+    /// `plane_token_live` (slot 25), including the reserved host ticket's non-consuming,
+    /// store-clock expiry check in [`crate::records::RecordStore::plane_token_live`].
     ///
     /// # Errors
     /// The store's refusal, as the 1.5.5 op set states it.

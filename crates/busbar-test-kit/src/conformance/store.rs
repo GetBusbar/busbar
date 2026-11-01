@@ -68,6 +68,9 @@ const ROOT: &str = match busbar_contract::plugin::Kind::Store.root_key() {
 /// A bridge read answered under a lease: the read, then the `release` of its lease.
 const LEASED: u64 = 2;
 
+/// Clock-independent live deadline: these controls test first/duplicate crossings, not expiry.
+const LIVE_REPLAY_DEADLINE: u64 = u64::MAX;
+
 /// The plane scope kinds the engine registers at boot (busbar's data, not the plugin's: the
 /// scope-kind round trip proves a dropped-in store needs none of them registered).
 const PLANE_SCOPE_KINDS: &str = include_str!("../../tests/fixtures/plane_scope_kinds.txt");
@@ -576,13 +579,11 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     r.line("token live", 1, || {
         ans(b.plane_token_live("tok", "x", 100, 1))
     });
-    r.line(
-        "redeem",
-        1,
-        || ans(b.redeem_plane_token("tok", "x", 100, 1)),
-    );
+    r.line("redeem", 1, || {
+        ans(b.redeem_plane_token("tok", "x", LIVE_REPLAY_DEADLINE, 1))
+    });
     r.line("redeem again", 1, || {
-        ans(b.redeem_plane_token("tok", "x", 100, 1))
+        ans(b.redeem_plane_token("tok", "x", LIVE_REPLAY_DEADLINE, 1))
     });
 
     // ── the typed surface: every v3 addition, submitted and awaited ──
@@ -671,7 +672,7 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     r.line("typed redeem", 1, || {
         ans(block(
             &rt,
-            StoreCalls::redeem_plane_token(&st, "tok", "y", 100, 1),
+            StoreCalls::redeem_plane_token(&st, "tok", "y", LIVE_REPLAY_DEADLINE, 1),
         ))
     });
     r.line("typed live", 1, || {

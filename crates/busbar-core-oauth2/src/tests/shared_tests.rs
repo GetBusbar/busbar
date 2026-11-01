@@ -36,7 +36,8 @@ type Stall = (&'static str, String, std::time::Duration);
 #[derive(Clone, Default)]
 struct OneStore {
     records: Arc<Mutex<Records>>,
-    /// Each claim lapses on the runtime's clock, `expires_at - now` after it was redeemed, so a test
+    /// Claims derive their remaining seconds from store wall time, never caller time; a timer
+    /// includes the deadline second. The paused runtime advances those timers, so a test
     /// on a paused clock moves every claim's lapse with it.
     claims: Arc<Mutex<BTreeMap<(String, String), tokio::time::Instant>>>,
     stalls: Arc<Mutex<Vec<Stall>>>,
@@ -48,14 +49,26 @@ impl OneStore {
     }
 
     /// Redeem `(kind, token)` as another node would.
-    fn redeem(&self, kind: &str, token: &str, expires_at: u64, now: u64) -> bool {
-        let at = tokio::time::Instant::now();
-        let lapses = at + std::time::Duration::from_secs(expires_at.saturating_sub(now));
+    fn redeem(&self, kind: &str, token: &str, expires_at: u64, _now: u64) -> bool {
         let mut claims = self.claims.lock().unwrap_or_else(|p| p.into_inner());
-        claims.retain(|_, l| *l > at);
-        claims
-            .insert((kind.to_string(), token.to_string()), lapses)
-            .is_none()
+        let store_now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        if expires_at < store_now {
+            return false;
+        }
+        let at = tokio::time::Instant::now();
+        let remaining = expires_at.saturating_sub(store_now).saturating_add(1);
+        let lapses = at + std::time::Duration::from_secs(remaining);
+        claims.retain(|_, deadline| *deadline > at);
+        match claims.entry((kind.to_string(), token.to_string())) {
+            std::collections::btree_map::Entry::Occupied(_) => false,
+            std::collections::btree_map::Entry::Vacant(row) => {
+                row.insert(lapses);
+                true
+            }
+        }
     }
 
     /// Hold back the next answer of `slot` for the kind `name` of the server's records by `by`: the
@@ -1044,4 +1057,15 @@ async fn one_unreadable_client_never_ends_the_index_sweep() {
         1,
         "the row it could not judge is kept"
     );
+}
+
+#[tokio::test]
+async fn a_replay_claim_does_not_extend_an_expired_absolute_deadline() {
+    let store = OneStore::default();
+    let storage = SharedStorage::new(Arc::new(Shared::new(store.calls())));
+    let expired = std::time::SystemTime::UNIX_EPOCH;
+    assert!(!storage
+        .claim_replay_id("expired-absolute-deadline", expired)
+        .await
+        .expect("claim"));
 }

@@ -1444,6 +1444,10 @@ pub trait RecordStore: Send + Sync + 'static {
     /// RETENTION, with the predicate named: drop records of `kind` older than `before` under
     /// `retention`, returning how many went.
     ///
+    /// The reserved host `ticket` kind stores absolute expiry in `ts`. Its purge cutoff is
+    /// bounded by the store's own clock under purge serialization, so a fast node cannot delete
+    /// a live ticket. Other kinds retain the requested cutoff. Clock failures return errors.
+    ///
     /// DEFAULTED: [`Retention::Age`] is [`RecordStore::purge_plane_records_before`];
     /// [`Retention::TerminalOnly`] answers `Ok(0)` — a store that has not implemented the
     /// terminal-only predicate purges nothing rather than dropping an ACTIVE row.
@@ -1465,7 +1469,11 @@ pub trait RecordStore: Send + Sync + 'static {
     }
 
     /// TEST-AND-SET one single-use token of `kind`, valid until `expires_at`; `true` means THIS call
-    /// was the first redemption. `now` lets a backend drop lapsed rows in the same call.
+    /// was the first redemption. `expires_at` is an absolute Unix-second deadline. The store
+    /// samples its own clock after serializing the claim, rejects `expires_at < store_now`, and
+    /// uses that same clock for expiry cleanup and reuse. Equality remains valid and spent.
+    /// `now` is retained for wire compatibility and is not expiry authority. A losing claim never
+    /// changes the winner's deadline. Clock-read failures return an error before mutation.
     ///
     /// # The default is FAIL-CLOSED
     ///
@@ -1498,6 +1506,11 @@ pub trait RecordStore: Send + Sync + 'static {
     /// it, and a `redeem` that answered `true` every time would let a captured token replay forever.
     /// The honest verb is this one: live until the task reaches a terminal state (which flips the
     /// record's disposition) or until its deadline passes, and refused from that moment on.
+    ///
+    /// The reserved host `ticket` kind is a non-consuming preflight exception: its record must
+    /// be Terminal, its `ts` must exactly equal the signed `expires_at`, and the store's own clock
+    /// must not have passed that deadline. A missing record refuses; clock failures return errors.
+    /// Other kinds retain the Active-record and caller-`now` policy above.
     ///
     /// # The default is FAIL-CLOSED, and that is the whole point
     ///

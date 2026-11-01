@@ -368,6 +368,20 @@ impl TokenVerifier {
         now: u64,
         expected_aud: Option<&str>,
     ) -> Result<TokenClaims, VerifyError> {
+        self.verify_body_at(body, Some(now), expected_aud)
+    }
+
+    /// Authenticate a ticket; its store checks the signed deadline without trusting node time.
+    pub(crate) fn verify_ticket_body(&self, body: &str) -> Result<TokenClaims, VerifyError> {
+        self.verify_body_at(body, None, Some(TICKET_AUDIENCE))
+    }
+
+    fn verify_body_at(
+        &self,
+        body: &str,
+        expiry_clock: Option<u64>,
+        expected_aud: Option<&str>,
+    ) -> Result<TokenClaims, VerifyError> {
         let (payload_b64, sig_b64) = body.split_once('.').ok_or(VerifyError::Malformed)?;
         let payload = URL_SAFE_NO_PAD
             .decode(payload_b64)
@@ -392,7 +406,7 @@ impl TokenVerifier {
         key.verify(&payload, &signature)
             .map_err(|_| VerifyError::BadSignature)?;
 
-        if claims.exp <= now {
+        if expiry_clock.is_some_and(|now| claims.exp <= now) {
             return Err(VerifyError::Expired);
         }
 
