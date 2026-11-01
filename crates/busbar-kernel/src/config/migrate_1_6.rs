@@ -11,6 +11,10 @@
 
 use serde_yaml::{Mapping, Value};
 
+/// 1.5.5 charged nothing for open billable units absent from its card. The migration writes
+/// that same configured rate; it is not a persisted usage or dollar amount.
+const LEGACY_UNPRICED_BILLABLE_UNIT_RATE: i32 = 0;
+
 /// Run every 1.5.5 -> 1.6.0 step over core's keys, in order.
 pub(super) fn migrate(root: &mut Mapping, changes: &mut Vec<String>, warnings: &mut Vec<String>) {
     drop_hostless_metadata_entries(root, changes);
@@ -113,7 +117,10 @@ fn price_open_units(root: &mut Mapping, changes: &mut Vec<String>) {
             .filter(|u| !units.contains_key(Value::from(*u)))
             .collect();
         for unit in &added {
-            units.insert(Value::from(*unit), Value::from(0));
+            units.insert(
+                Value::from(*unit),
+                Value::from(LEGACY_UNPRICED_BILLABLE_UNIT_RATE),
+            );
         }
         if !added.is_empty() {
             changes.push(format!(

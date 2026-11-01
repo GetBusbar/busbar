@@ -27,6 +27,25 @@ use serde_yaml::{Mapping, Value};
 #[path = "migrate_1_6.rs"]
 mod upgrade_1_6;
 
+/// Accepted 1.4.x `auth.mode` spellings retained by the migration contract below.
+const LEGACY_AUTH_MODE_PASSTHROUGH: &str = "passthrough";
+const LEGACY_AUTH_MODE_NONE: &str = "none";
+
+/// Legacy flat token pricing used cents per thousand tokens; the destination card uses
+/// micro-units per token, so one cent per thousand becomes ten micro-units per token.
+/// This is a configuration conversion only; it does not define persisted usage or money.
+const LEGACY_CENTS_PER_THOUSAND_TO_MICRO_UNITS_PER_TOKEN: f64 = 10.0;
+/// The migrator's existing fallback for an unreadable legacy flat token price.
+const LEGACY_UNREADABLE_TOKEN_PRICE_CENTS: f64 = 0.0;
+/// A legacy group with no budget amount migrated with this existing amount.
+const LEGACY_ABSENT_BUDGET_CENTS: i32 = 0;
+/// Calendar spans used to rescale recurring caps onto the existing monthly fallback.
+const MONTHS_PER_QUARTER: u64 = 3;
+const MONTHS_PER_HALF_YEAR: u64 = 6;
+const MONTHS_PER_YEAR: u64 = 12;
+/// Smallest positive budget accepted by validation; rescaling must not emit a zero cap.
+const MIN_MIGRATED_BUDGET_AMOUNT: u64 = 1;
+
 const MISSING_SIGNING_KEY: &str =
     "auth.signing_key: required now that the chain uses `keys` (busbar no longer \
      auto-generates one); run `busbar --generate-signing-key` and set \
@@ -929,10 +948,10 @@ fn window_noun(period: &str, ctx: &str, todos: &mut Vec<String>) -> (&'static st
                 // SHORTER than a month — unchanged errs tighter (fail-closed).
                 "week" | "weekly" | "per_week" => Some(1),
                 // LONGER than a month — must divide by the number of months it spans.
-                "quarter" | "quarterly" | "per_quarter" => Some(3),
+                "quarter" | "quarterly" | "per_quarter" => Some(MONTHS_PER_QUARTER),
                 "biannual" | "biannually" | "semiannual" | "semiannually" | "semi_annual"
-                | "half_year" | "half_yearly" | "per_half_year" => Some(6),
-                "year" | "yearly" | "annual" | "annually" | "per_year" => Some(12),
+                | "half_year" | "half_yearly" | "per_half_year" => Some(MONTHS_PER_HALF_YEAR),
+                "year" | "yearly" | "annual" | "annually" | "per_year" => Some(MONTHS_PER_YEAR),
                 // Genuinely unrecognized (a typo, a fork's period) — length unknown.
                 _ => None,
             };
@@ -993,7 +1012,7 @@ fn rescale_amount(amount: Value, divisor: u64) -> Value {
         return amount;
     }
     match amount.as_u64() {
-        Some(n) => Value::from((n / divisor).max(1)),
+        Some(n) => Value::from((n / divisor).max(MIN_MIGRATED_BUDGET_AMOUNT)),
         None => amount,
     }
 }
@@ -1089,8 +1108,8 @@ fn migrate_governance(root: &mut Mapping, changes: &mut Vec<String>, todos: &mut
     }
     if let Some(p1k) = take(&mut gov, "price_per_1k_tokens_cents") {
         // N cents per 1k tokens = 10*N micro-units per token, on every tier of every model.
-        let n = p1k.as_f64().unwrap_or(0.0);
-        let per_tier = n * 10.0;
+        let n = p1k.as_f64().unwrap_or(LEGACY_UNREADABLE_TOKEN_PRICE_CENTS);
+        let per_tier = n * LEGACY_CENTS_PER_THOUSAND_TO_MICRO_UNITS_PER_TOKEN;
         // NEVER SILENTLY DROP: `root.remove` takes the key whatever its shape,
         // so a `rate_card:` that is not a mapping is put BACK verbatim and the synthesis is SKIPPED —
         // replacing an operator's malformed-but-present card with a generated one would destroy the
@@ -1159,7 +1178,8 @@ fn migrate_governance(root: &mut Mapping, changes: &mut Vec<String>, todos: &mut
                 if let Some(parent) = take(&mut g, "parent") {
                     entry.insert("parent".into(), parent);
                 }
-                let amount = take(&mut g, "max_budget_cents").unwrap_or(Value::from(0));
+                let amount = take(&mut g, "max_budget_cents")
+                    .unwrap_or(Value::from(LEGACY_ABSENT_BUDGET_CENTS));
                 let period = take(&mut g, "budget_period")
                     .and_then(|v| v.as_str().map(str::to_string))
                     .unwrap_or_else(|| "total".into());
@@ -1298,7 +1318,7 @@ fn migrate_auth(
             let mapped = match e.as_str() {
                 Some("tokens") | Some("static-tokens") => {
                     rewrote = true;
-                    Value::from("keys")
+                    Value::from(crate::config::KEYS_MODULE)
                 }
                 _ => e,
             };
@@ -1330,8 +1350,8 @@ fn migrate_auth(
     let chain_uses_keys = matches!(
         auth.get(Value::from("chain")),
         Some(Value::Sequence(c)) if c.iter().any(|e| {
-            e.as_str() == Some("keys")
-                || e.as_mapping().is_some_and(|m| m.contains_key(Value::from("keys")))
+            e.as_str() == Some(crate::config::KEYS_MODULE)
+                || e.as_mapping().is_some_and(|m| m.contains_key(Value::from(crate::config::KEYS_MODULE)))
         })
     );
     if chain_uses_keys && !auth.contains_key(Value::from("signing_key")) {
@@ -1386,19 +1406,25 @@ fn migrate_auth(
 
     if let Some(mode) = take(auth, "mode").and_then(|v| v.as_str().map(str::to_string)) {
         match mode.as_str() {
-            "passthrough" => {
-                auth.insert("upstream_credentials".into(), "passthrough".into());
+            LEGACY_AUTH_MODE_PASSTHROUGH => {
+                auth.insert(
+                    "upstream_credentials".into(),
+                    LEGACY_AUTH_MODE_PASSTHROUGH.into(),
+                );
                 changes.push(
                     "auth.mode: passthrough -> auth.upstream_credentials: passthrough".into(),
                 );
             }
-            "none" => {
+            LEGACY_AUTH_MODE_NONE => {
                 changes.push(
                     "auth.mode: none removed (an omitted chain is the open front door)".into(),
                 );
             }
             other => {
-                auth.insert("chain".into(), Value::Sequence(vec!["keys".into()]));
+                auth.insert(
+                    "chain".into(),
+                    Value::Sequence(vec![crate::config::KEYS_MODULE.into()]),
+                );
                 changes.push(format!(
                     "auth.mode: {other} -> auth.chain: [keys] (static tokens are removed; mint \
                      signed keys)"
@@ -1437,7 +1463,11 @@ fn migrate_auth(
                     }
                     _ => None,
                 })
-                .filter(|m| m != "keys" && m != "tokens" && m != crate::config::operator_provider())
+                .filter(|m| {
+                    m != crate::config::KEYS_MODULE
+                        && m != "tokens"
+                        && m != crate::config::operator_provider()
+                })
                 .collect()
         })
         .unwrap_or_default();

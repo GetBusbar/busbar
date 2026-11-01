@@ -47,6 +47,10 @@ pub const DEFAULT_OVERLAY_FILENAME: &str = "busbar-overlay.json";
 /// Filename prefix for the boot-time writability probe (a leading-dot temp file, pid-suffixed).
 const PROBE_FILE_PREFIX: &str = ".busbar-overlay-probe-";
 
+/// Unix owner read/write (`S_IRUSR | S_IWUSR`), with no group/other access. An overlay may
+/// contain credential material, so the durable writer applies this mode at file creation.
+const OVERLAY_FILE_MODE_OWNER_READ_WRITE: u32 = 0o600;
+
 /// The resolved config-management posture for a boot/reload: whether config is locked, and the
 /// writable overlay backend path (if any). Computed by [`resolve_backend`].
 #[derive(Debug, Clone)]
@@ -1024,7 +1028,7 @@ pub fn write(path: &Path, doc: &OverlayDoc) -> std::io::Result<()> {
         path,
         &json,
         crate::durable::DurableOpts {
-            mode: Some(0o600),
+            mode: Some(OVERLAY_FILE_MODE_OWNER_READ_WRITE),
             ..Default::default()
         },
     )

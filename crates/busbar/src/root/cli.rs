@@ -37,6 +37,29 @@ use busbar_kernel::{load_config_from_disk, DEFAULT_CONFIG_PATH, ENV_CONFIG, ENV_
 
 use crate::{build_info_line, safe_mode_requested};
 
+/// Process statuses retained from the 1.5.5 command surface: success, command failure,
+/// and invalid command usage respectively. These are process codes, never HTTP statuses.
+const EXIT_SUCCESS: i32 = 0;
+const EXIT_FAILURE: i32 = 1;
+const EXIT_USAGE: i32 = 2;
+
+/// Operator option spellings accepted by the command dispatcher and value readers.
+const OPTION_VERSION: &str = "--version";
+const OPTION_VERSION_SHORT: &str = "-V";
+const OPTION_BUILD_INFO: &str = "--build-info";
+const OPTION_METADATA_BLOCKLIST: &str = "--print-metadata-blocklist";
+const OPTION_VALIDATE: &str = "--validate";
+const OPTION_GENERATE_SIGNING_KEY: &str = "--generate-signing-key";
+const OPTION_LIST_PLUGINS: &str = "--list-plugins";
+const OPTION_MIGRATE_CONFIG: &str = "--migrate-config";
+const OPTION_HELP: &str = "--help";
+const OPTION_HELP_SHORT: &str = "-h";
+const OPTION_CONFIG: &str = "--config";
+const OPTION_CONFIG_SHORT: &str = "-c";
+const OPTION_PROVIDERS: &str = "--providers";
+const OPTION_CONFIG_ASSIGNMENT: &str = "--config=";
+const OPTION_PROVIDERS_ASSIGNMENT: &str = "--providers=";
+
 /// The part of `busbar --help` the root owns, before the linked planes' `Flags:` rows.
 const HELP_HEAD: &str = "
 
@@ -211,21 +234,21 @@ pub(crate) fn handle_cli_flags() -> Option<i32> {
     let mut args = std::env::args().skip(1);
     match args.next().as_deref() {
         None => None, // no args → run the gateway
-        Some("--version" | "-V") => {
+        Some(OPTION_VERSION | OPTION_VERSION_SHORT) => {
             // Version AND build posture on one line each: an operator correlating a perf number to a
             // binary sees immediately whether it was the optimized release build or a local debug/
             // non-PGO build (the misdiagnosis this stamp exists to prevent).
             println!("busbar {}", env!("CARGO_PKG_VERSION"));
             println!("build: {}", build_info_line());
-            Some(0)
+            Some(EXIT_SUCCESS)
         }
-        Some("--build-info") => {
+        Some(OPTION_BUILD_INFO) => {
             // The raw stamp line ALONE (no version prefix), for CI to parse and assert against. Kept
             // separate from `--version` so the gate greps a stable single line.
             println!("{}", build_info_line());
-            Some(0)
+            Some(EXIT_SUCCESS)
         }
-        Some("--print-metadata-blocklist") => {
+        Some(OPTION_METADATA_BLOCKLIST) => {
             // Print the EFFECTIVE cloud-metadata denylist the running binary enforces: the hardcoded
             // set (single source of truth in config_validate) UNION the operator's
             // `security.blocked_metadata_hosts`. The hardcoded set always prints (no config needed);
@@ -274,20 +297,20 @@ pub(crate) fn handle_cli_flags() -> Option<i32> {
             for entry in entries {
                 println!("{entry}");
             }
-            Some(0)
+            Some(EXIT_SUCCESS)
         }
         // A flag a plane declares (its `Flags:` row), compiled in or dropped in, is not an
         // exit-and-print flag: it proceeds to the ordinary boot and is read again inside `run()`,
         // where the line-serve flag swaps the two listeners for the process's own stdin/stdout.
         // Recognised here so it is not refused as an unknown argument.
         Some(arg) if is_plane_flag(&help_rows(), arg) => None,
-        Some("--validate") => Some(validate_config_command()),
-        Some("--generate-signing-key") => Some(generate_signing_key_command()),
-        Some("--list-plugins") => Some(list_plugins_command()),
-        Some("--migrate-config") => Some(migrate_config_command(args.next())),
-        Some("--help" | "-h") => {
+        Some(OPTION_VALIDATE) => Some(validate_config_command()),
+        Some(OPTION_GENERATE_SIGNING_KEY) => Some(generate_signing_key_command()),
+        Some(OPTION_LIST_PLUGINS) => Some(list_plugins_command()),
+        Some(OPTION_MIGRATE_CONFIG) => Some(migrate_config_command(args.next())),
+        Some(OPTION_HELP | OPTION_HELP_SHORT) => {
             print!("{}", render_help(env!("CARGO_PKG_VERSION"), &help_rows()));
-            Some(0)
+            Some(EXIT_SUCCESS)
         }
         // `-c`/`--config`/`--providers` (value-taking flags) as the FIRST argument mean "run the
         // gateway with these config/providers paths" — proceed to boot. `run()` (and each command
@@ -295,17 +318,17 @@ pub(crate) fn handle_cli_flags() -> Option<i32> {
         // recognizing them here only stops the leading one from being rejected as an unknown argument.
         // The unknown-flag rejection below is unchanged.
         Some(a)
-            if a == "-c"
-                || a == "--config"
-                || a == "--providers"
-                || a.starts_with("--config=")
-                || a.starts_with("--providers=") =>
+            if a == OPTION_CONFIG_SHORT
+                || a == OPTION_CONFIG
+                || a == OPTION_PROVIDERS
+                || a.starts_with(OPTION_CONFIG_ASSIGNMENT)
+                || a.starts_with(OPTION_PROVIDERS_ASSIGNMENT) =>
         {
             None
         }
         Some(other) => {
             eprintln!("busbar: unrecognized argument '{other}'. Try 'busbar --help'.");
-            Some(2)
+            Some(EXIT_USAGE)
         }
     }
 }
@@ -334,7 +357,7 @@ fn validate_config_command() -> i32 {
                 "[error] {}: {e}",
                 diagnostics::CLI_VALIDATE_CONFIG_INVALID.banner()
             );
-            return 1;
+            return EXIT_FAILURE;
         }
     };
     let providers_path = loaded.providers_path.clone();
@@ -355,7 +378,7 @@ fn validate_config_command() -> i32 {
                 diagnostics::CLI_VALIDATE_CONFIG_INVALID.banner(),
                 errs.join("\n  - ")
             );
-            return 1;
+            return EXIT_FAILURE;
         }
     };
     // Merge the persisted overlay's hooks/groups sections exactly as boot does, so --validate
@@ -390,28 +413,28 @@ fn validate_config_command() -> i32 {
                 diagnostics::CLI_VALIDATE_CONFIG_INVALID.banner(),
                 errs.join("\n  - ")
             );
-            return 1;
+            return EXIT_FAILURE;
         }
         Err(config_validate::Refusal::Root(e)) => {
             eprintln!(
                 "[error] {}: config validation failed:\n  - {e}",
                 diagnostics::CLI_VALIDATE_CONFIG_INVALID.banner()
             );
-            return 1;
+            return EXIT_FAILURE;
         }
         Err(config_validate::Refusal::Plugins(e)) => {
             eprintln!(
                 "[error] {}: {e}",
                 diagnostics::CLI_VALIDATE_PLUGIN_PREFLIGHT_FAILED.banner()
             );
-            return 1;
+            return EXIT_FAILURE;
         }
         Err(config_validate::Refusal::Unresolved(e)) => {
             eprintln!(
                 "[error] {}: {e}",
                 diagnostics::CLI_VALIDATE_CONFIG_INVALID.banner()
             );
-            return 1;
+            return EXIT_FAILURE;
         }
     };
     // The kernel hands back the contract's view of the registry this root's build made
@@ -421,7 +444,7 @@ fn validate_config_command() -> i32 {
             "[error] {}: the plugin rows are not this root's registry",
             diagnostics::CLI_VALIDATE_PLUGIN_PREFLIGHT_FAILED.banner()
         );
-        return 1;
+        return EXIT_FAILURE;
     };
     // STAGES 0-2 (BUSBAR-1.6.0.md §3: `--validate` runs Plan, Discover and Select, and nothing is
     // opened): what the configuration uses, each dropped-in plugin's stated facts, the plugins it
@@ -438,7 +461,7 @@ fn validate_config_command() -> i32 {
                 "[error] {}: {e}",
                 diagnostics::CLI_VALIDATE_PLUGIN_PREFLIGHT_FAILED.banner()
             );
-            return 1;
+            return EXIT_FAILURE;
         }
     };
     println!(
@@ -481,7 +504,7 @@ fn validate_config_command() -> i32 {
             unset_env_vars.join(", "),
         );
     }
-    0
+    EXIT_SUCCESS
 }
 
 /// THE `--list-plugins` COLUMN HEADER, v1.5.5's bytes (v1.5.5 crates/busbar/src/main.rs:419-422):
@@ -524,7 +547,7 @@ fn list_plugins_command() -> i32 {
                 "[error] {}: plugins.trust is invalid: {e}",
                 diagnostics::CLI_LIST_PLUGINS_TRUST_INVALID.banner()
             );
-            return 1;
+            return EXIT_FAILURE;
         }
     };
     let dir = std::path::PathBuf::from(&plugins_cfg.dir);
@@ -536,7 +559,7 @@ fn list_plugins_command() -> i32 {
     let rows = crate::root::loader::inventory_tarballs(&dir, &policy);
     if rows.is_empty() {
         println!("no plugin tarballs found");
-        return 0;
+        return EXIT_SUCCESS;
     }
     println!("{LIST_PLUGINS_HEADER}");
     for row in rows {
@@ -570,7 +593,7 @@ fn list_plugins_command() -> i32 {
             row.file, name, alias, kind, version, row.signature
         );
     }
-    0
+    EXIT_SUCCESS
 }
 
 /// The disk-load pipeline: read providers.yaml + config.yaml, env-interpolate (from the process's
@@ -587,13 +610,13 @@ fn migrate_config_command(path: Option<String>) -> i32 {
         eprintln!(
             "busbar: --migrate-config requires a path: busbar --migrate-config <old-config.yaml>"
         );
-        return 2;
+        return EXIT_USAGE;
     };
     let raw = match std::fs::read_to_string(&path) {
         Ok(r) => r,
         Err(e) => {
             eprintln!("busbar: cannot read '{path}': {e}");
-            return 1;
+            return EXIT_FAILURE;
         }
     };
     // Core migrates its own keys; each configured plugin migrates its own settings section,
@@ -639,11 +662,11 @@ TODO ({}) - a human must decide:",
                 "
 Review the output, then run `busbar --validate` on it before deploying.                  NOTE: 1.x virtual keys do not carry over - mint fresh signed keys (the 1.5.0                  security headline: keys now expire)."
             );
-            0
+            EXIT_SUCCESS
         }
         Err(e) => {
             eprintln!("busbar: --migrate-config failed: {e}");
-            1
+            EXIT_FAILURE
         }
     }
 }
@@ -687,7 +710,11 @@ pub(crate) fn value_flag(
 /// The `-c`/`--config <path>` flag value from the process args (`None` ⇒ not passed). See
 /// [`resolve_config_path`] for the precedence this feeds.
 pub(crate) fn config_path_flag() -> Option<String> {
-    value_flag(std::env::args().skip(1), "--config", Some("-c"))
+    value_flag(
+        std::env::args().skip(1),
+        OPTION_CONFIG,
+        Some(OPTION_CONFIG_SHORT),
+    )
 }
 
 /// The providers-catalog override handed to [`load_config_from_disk`]: the `--providers <path>` flag
@@ -695,7 +722,7 @@ pub(crate) fn config_path_flag() -> Option<String> {
 /// from `providers_file:` or the default next to config.yaml). Precedence is `--providers` flag >
 /// `BUSBAR_PROVIDERS` env > `providers_file:` config key > `providers.yaml` default.
 pub(crate) fn providers_override() -> Option<std::path::PathBuf> {
-    value_flag(std::env::args().skip(1), "--providers", None)
+    value_flag(std::env::args().skip(1), OPTION_PROVIDERS, None)
         .map(std::path::PathBuf::from)
         .or_else(providers_override_from_env)
 }
@@ -758,7 +785,7 @@ fn generate_signing_key_command() -> i32 {
                 "busbar: {}: could not generate a signing key: {e}",
                 diagnostics::SIGNING_KEY_GENERATION_FAILED.banner()
             );
-            return 1;
+            return EXIT_FAILURE;
         }
     };
     let (secret_line, guidance) = signing_key_command_output(&hex);
@@ -769,7 +796,7 @@ fn generate_signing_key_command() -> i32 {
     // systemd journal, CI/build logs, terminal scrollback). See `signing_key_command_output`.
     println!("{secret_line}");
     eprintln!("{guidance}");
-    0
+    EXIT_SUCCESS
 }
 
 /// Split the `--generate-signing-key` output into (STDOUT secret line, STDERR guidance). The secret
