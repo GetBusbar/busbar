@@ -67,7 +67,8 @@ pub enum KeysetSource {
         /// The keyset cache file written.
         file: PathBuf,
     },
-    /// A later boot with `data_dir`: the file yielded the fingerprint the `Bootstrap` sealed.
+    /// A later boot with `data_dir`: the cache holds the fingerprint the `Bootstrap` sealed,
+    /// restored from the configured store if the file was absent.
     Cached {
         /// The keyset cache file read.
         file: PathBuf,
@@ -203,6 +204,21 @@ fn read_cached(file: &Path) -> Result<Option<AuditSigningKey>, KeysetError> {
     }
 }
 
+fn write_cached(file: &Path, seed: &str) -> Result<(), KeysetError> {
+    crate::root::loader::durable::write_with(
+        file,
+        format!("{seed}\n").as_bytes(),
+        crate::root::loader::durable::DurableOpts {
+            mode: Some(0o600),
+            exclusive: true,
+        },
+    )
+    .map_err(|e| KeysetError::Io {
+        file: file.to_path_buf(),
+        why: e.to_string(),
+    })
+}
+
 /// The fingerprint the newest `Bootstrap` on the chain sealed, if any. A chain that does not verify
 /// yields none: the journal's own finding already names that, and a Bootstrap nobody can verify is
 /// not one this node can be refused over.
@@ -261,7 +277,7 @@ pub fn bind(
     let prior = sealed_fingerprint(durability)?;
     let cached = match (prior, read_cached(&file)) {
         // A sealed Bootstrap and a file that cannot be read are the refusal, not an I/O fault: the
-        // file does not yield the fingerprint, and the store holds no keyset.
+        // corrupt or unreadable file is not replaced by a store fallback.
         (Some(fingerprint), Err(_)) => {
             return Err(KeysetError::Missing(KeysetMissing {
                 data_dir: dir.to_path_buf(),
@@ -269,6 +285,27 @@ pub fn bind(
             }))
         }
         (_, read) => read?,
+    };
+    let cached = match (cached, prior, &store) {
+        (None, Some(expected), Some(calls)) => {
+            match crate::root::durability::stored_keyset(calls.as_ref())
+                .map_err(KeysetError::Store)?
+            {
+                Some(seed) => {
+                    let key = AuditSigningKey::from_hex_seed(&seed).map_err(|e| {
+                        KeysetError::Store(format!("the store's deployment keyset is not one: {e}"))
+                    })?;
+                    if fingerprint_of_signer(&key) == expected {
+                        write_cached(&file, &seed)?;
+                        Some(key)
+                    } else {
+                        None
+                    }
+                }
+                None => None,
+            }
+        }
+        (cached, _, _) => cached,
     };
     let ours = cached.as_ref().map(fingerprint_of_signer);
     match bootstrap(prior, ours) {
@@ -310,18 +347,7 @@ pub fn bind(
                             }
                         }
                     };
-                    crate::root::loader::durable::write_with(
-                        &file,
-                        format!("{seed}\n").as_bytes(),
-                        crate::root::loader::durable::DurableOpts {
-                            mode: Some(0o600),
-                            exclusive: true,
-                        },
-                    )
-                    .map_err(|e| KeysetError::Io {
-                        file: file.clone(),
-                        why: e.to_string(),
-                    })?;
+                    write_cached(&file, &seed)?;
                     AuditSigningKey::from_hex_seed(&seed).map_err(|e| {
                         KeysetError::Store(format!("the deployment keyset is not one: {e}"))
                     })?

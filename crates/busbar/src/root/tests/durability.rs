@@ -1457,6 +1457,146 @@ fn a_first_boot_that_lost_the_keyset_claim_takes_the_winners_key() {
     );
 }
 
+#[test]
+fn an_unreadable_stored_keyset_is_not_absent_or_replaced() {
+    use store_identity::KEYSET_SCHEMA;
+    let slots = crate::root::store_double::RecordSlots::new();
+    let corrupt = b"private-key-material\xff";
+    slots.put_row(KEYSET_SCHEMA, b"deployment", corrupt);
+    let calls = slots.calls();
+    let error = stored_keyset(calls.as_ref()).expect_err("corrupt bytes are not absence");
+    assert!(!error.contains("private-key-material"));
+    keep_keyset(calls.as_ref(), &"bb".repeat(32)).expect_err("never replace corrupt state");
+    let kept = wait_for(calls.record_get(KEYSET_SCHEMA, b"deployment"))
+        .expect("read")
+        .expect("the original row remains");
+    assert_eq!(kept.as_slice(), corrupt);
+}
+
+#[test]
+fn a_missing_keyset_cache_recovers_the_sealed_key_from_the_store() {
+    use crate::root::keyset::{bind, KeysetSource, KEYSET_FILE};
+    let slots = crate::root::store_double::RecordSlots::new();
+    let dir = ScratchDir::new("keyset-cache-recovery");
+    let file = dir.path.join(KEYSET_FILE);
+    let key_id = {
+        let mut first = dir_store_book(&slots, &dir.path, 91);
+        bind(
+            &mut first,
+            Some(&dir.path),
+            &token(),
+            StepName::Meter,
+            1_700_000_000,
+        )
+        .expect("first keyset binds");
+        first
+            .seal_unit(audit_inputs(1), audit_pass(), &token())
+            .expect("signed record");
+        drained(&first);
+        first
+            .record
+            .signing_key_id()
+            .expect("bound key")
+            .to_string()
+    };
+    let cached = std::fs::read(&file).expect("initial cache");
+    std::fs::remove_file(&file).expect("lose only the local cache");
+    let mut restarted = dir_store_book(&slots, &dir.path, 91);
+    let next_seq = restarted.journal.next_seq();
+    assert_eq!(
+        bind(
+            &mut restarted,
+            Some(&dir.path),
+            &token(),
+            StepName::Meter,
+            1_700_000_001
+        ),
+        Ok(KeysetSource::Cached { file: file.clone() })
+    );
+    assert_eq!(restarted.record.signing_key_id(), Some(key_id.as_str()));
+    assert_eq!(
+        restarted.journal.next_seq(),
+        next_seq,
+        "no replacement Bootstrap"
+    );
+    assert!(std::fs::read(&file).expect("cache restored") == cached);
+    assert!(restarted.retained_audit_findings().is_empty());
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        assert_eq!(
+            std::fs::metadata(&file).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
+}
+
+#[test]
+fn keyset_cache_recovery_never_adopts_corrupt_or_mismatched_state() {
+    use crate::root::keyset::{bind, KEYSET_FILE};
+    use store_identity::KEYSET_SCHEMA;
+    for (bad_local_cache, bad_store) in [
+        (Some(b"broken-cache".as_slice()), None),
+        (
+            Some(b"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".as_slice()),
+            None,
+        ),
+        (None, Some(b"broken-store".as_slice())),
+        (None, Some(b"secret\xff".as_slice())),
+        (
+            None,
+            Some(b"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".as_slice()),
+        ),
+    ] {
+        let slots = crate::root::store_double::RecordSlots::new();
+        let dir = ScratchDir::new("keyset-cache-refusal");
+        let file = dir.path.join(KEYSET_FILE);
+        {
+            let mut first = dir_store_book(&slots, &dir.path, 92);
+            bind(
+                &mut first,
+                Some(&dir.path),
+                &token(),
+                StepName::Meter,
+                1_700_000_000,
+            )
+            .expect("first keyset binds");
+            drained(&first);
+        }
+        match bad_local_cache {
+            Some(bytes) => std::fs::write(&file, bytes).expect("corrupt local cache"),
+            None => std::fs::remove_file(&file).expect("remove local cache"),
+        }
+        if let Some(bytes) = bad_store {
+            slots.put_row(KEYSET_SCHEMA, b"deployment", bytes);
+        }
+        let calls = slots.calls();
+        let prior = wait_for(calls.record_get(KEYSET_SCHEMA, b"deployment"))
+            .unwrap()
+            .unwrap();
+        let mut restarted = dir_store_book(&slots, &dir.path, 92);
+        let next_seq = restarted.journal.next_seq();
+        assert!(bind(
+            &mut restarted,
+            Some(&dir.path),
+            &token(),
+            StepName::Meter,
+            1_700_000_001
+        )
+        .is_err());
+        assert!(restarted.record.signing_key_id().is_none());
+        assert_eq!(restarted.journal.next_seq(), next_seq);
+        assert!(std::fs::read(&file).ok().as_deref() == bad_local_cache);
+        let after = wait_for(calls.record_get(KEYSET_SCHEMA, b"deployment"))
+            .unwrap()
+            .unwrap();
+        assert!(
+            after.as_slice() == prior.as_slice(),
+            "stored keyset was replaced"
+        );
+    }
+}
+
 /// A boot that lost the keyset claim and finds nothing kept in time REFUSES rather than mint a
 /// second key; once the claim lapses, a later boot claims it and mints.
 #[test]

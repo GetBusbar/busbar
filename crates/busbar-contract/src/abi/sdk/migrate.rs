@@ -131,6 +131,16 @@ impl<M: Migrate> RawSlot for Migrator<M> {
             }
             Err(e) => (Outcome::Refused, e.into_bytes()),
         };
+        // An oversized answer still leaves room for a fixed, nonsecret refusal reason when the
+        // host lent enough bytes for that reason. Never truncate an answer or a diagnostic.
+        let (outcome, answer) = if answer.len() > input.err_cap {
+            (
+                Outcome::Refused,
+                b"migrate: the answer is larger than the host buffer".as_slice(),
+            )
+        } else {
+            (outcome, answer.as_slice())
+        };
         if input.err_buf.is_null() || answer.len() > input.err_cap {
             return Outcome::Refused;
         }
