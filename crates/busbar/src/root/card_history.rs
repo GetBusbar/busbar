@@ -480,6 +480,24 @@ impl CardStore {
         }
     }
 
+    /// Retry the same owner's immutable records against the latest spool, preserving its order
+    /// and every other owner. A prior rename may have published this owner without a durable
+    /// directory entry; its presence alone is not a successful persistence barrier.
+    fn spool_records(
+        &self,
+        key: &EntryKey,
+        records: &super::card_store::Records,
+    ) -> Result<(), String> {
+        let write = SpooledWrite::of(key, records);
+        self.update_spool(|spool| {
+            if let Some(held) = spool.pending.iter_mut().find(|w| w.key == write.key) {
+                *held = write;
+            } else {
+                spool.pending.push(write);
+            }
+        })
+    }
+
     /// The next key this node writes: `t_ms = max(now, head + 1)`.
     fn next_key(&self, state: &State) -> EntryKey {
         let head = Self::resolve(&state.entries, &state.voids).head_t_ms();
@@ -680,9 +698,7 @@ impl CardStore {
         let key = entry.key;
         let records = entry.records();
         if let Ok(records) = &records {
-            if let Err(why) = self.update_spool(|spool| {
-                spool.pending.push(SpooledWrite::of(&key, records));
-            }) {
+            if let Err(why) = self.spool_records(&key, records) {
                 tracing::error!(
                     "rate card entry {key} could not be spooled before it was written: {why}; it is \
                      held in memory and re-put until the store confirms it"
@@ -880,14 +896,6 @@ impl CardStore {
                                 let Ok(records) = entry.records() else {
                                     continue;
                                 };
-                                if let Err(why) = this.update_spool(|spool| {
-                                    spool.pending.push(SpooledWrite::of(&key, &records));
-                                }) {
-                                    tracing::error!(
-                                        "rate card entry {key} could not be spooled: {why}; it \
-                                         remains held in memory until the store confirms it"
-                                    );
-                                }
                                 let mut state = this.lock();
                                 if let Some((_, pending)) =
                                     state.pending.iter_mut().find(|(k, _)| *k == key)
@@ -897,6 +905,15 @@ impl CardStore {
                                 records
                             }
                         };
+                        // Persistence can have failed before or after rename on any previous
+                        // attempt. Retry it even for already encoded owners, before their puts.
+                        // Only the real store acknowledgments below can discharge this owner.
+                        if let Err(why) = this.spool_records(&key, &records) {
+                            tracing::error!(
+                                "rate card entry {key} could not be spooled: {why}; it \
+                                 remains held in memory until the store confirms it"
+                            );
+                        }
                         match put_all(
                             this.calls.as_ref(),
                             &records,

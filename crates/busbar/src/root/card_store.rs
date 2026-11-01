@@ -537,19 +537,30 @@ impl Spool {
         }
     }
 
-    /// Write the spool under `dir`, durably: a temporary file synced, renamed over the old one,
-    /// and the directory synced.
+    /// Write the spool under `dir`: sync a temporary file and rename it over the old one.
+    /// On Unix, also sync the directory and report any failure of that durability barrier.
+    /// Other platforms retain the existing file-sync/rename behavior; directory-entry durability
+    /// is not established there.
     ///
     /// # Errors
     ///
-    /// The disk refused a step.
+    /// The disk refused a required step. An error after rename leaves the new bytes in place:
+    /// durability is uncertain, so retain the exact pending owner and retry rather than roll back.
     pub fn save(&self, dir: &Path) -> Result<(), String> {
         use std::io::Write as _;
         use std::sync::atomic::{AtomicU64, Ordering};
         static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
         let path = Self::path(dir);
-        let bytes = serde_json::to_vec(self).map_err(|e| e.to_string())?;
-        let step = |e: std::io::Error| format!("{}: {e}", path.display());
+        let bytes = serde_json::to_vec(self)
+            .map_err(|_| format!("{}: card spool encoding failed", path.display()))?;
+        // An I/O error may carry arbitrary content. Report only the operation and error kind.
+        let step = |operation: &str, e: std::io::Error| {
+            format!(
+                "{}: card spool {operation} failed ({:?})",
+                path.display(),
+                e.kind()
+            )
+        };
         let (tmp, mut file) = loop {
             let tmp = dir.join(format!(
                 "{PENDING_FILE}.{}.{}.tmp",
@@ -563,24 +574,30 @@ impl Spool {
             {
                 Ok(file) => break (tmp, file),
                 Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
-                Err(e) => return Err(step(e)),
+                Err(e) => return Err(step("temporary file creation", e)),
             }
         };
+        let mut renamed = false;
         let result = (|| {
-            file.write_all(&bytes).map_err(step)?;
-            #[cfg(test)]
-            save_test::before(dir, save_test::Step::SyncFile).map_err(step)?;
-            file.sync_all().map_err(step)?;
+            file.write_all(&bytes).map_err(|e| step("file write", e))?;
+            #[cfg(all(test, unix))]
+            save_test::before(dir, save_test::Step::SyncFile).map_err(|e| step("file sync", e))?;
+            file.sync_all().map_err(|e| step("file sync", e))?;
             drop(file);
-            #[cfg(test)]
-            save_test::before(dir, save_test::Step::Rename).map_err(step)?;
-            std::fs::rename(&tmp, &path).map_err(step)?;
-            if let Ok(d) = open_spool_directory(dir) {
-                let _ = sync_spool_directory(&d, dir);
+            #[cfg(all(test, unix))]
+            save_test::before(dir, save_test::Step::Rename).map_err(|e| step("rename", e))?;
+            std::fs::rename(&tmp, &path).map_err(|e| step("rename", e))?;
+            renamed = true;
+            #[cfg(unix)]
+            {
+                let d = open_spool_directory(dir)
+                    .map_err(|e| step("directory open after rename; durability uncertain", e))?;
+                sync_spool_directory(&d, dir)
+                    .map_err(|e| step("directory sync after rename; durability uncertain", e))?;
             }
             Ok(())
         })();
-        if result.is_err() {
+        if result.is_err() && !renamed {
             let _ = std::fs::remove_file(tmp);
         }
         result
@@ -593,12 +610,14 @@ impl Spool {
     }
 }
 
+#[cfg(unix)]
 fn open_spool_directory(dir: &Path) -> std::io::Result<std::fs::File> {
     #[cfg(test)]
     save_test::before(dir, save_test::Step::OpenDirectory)?;
     std::fs::File::open(dir)
 }
 
+#[cfg(unix)]
 fn sync_spool_directory(file: &std::fs::File, _dir: &Path) -> std::io::Result<()> {
     #[cfg(test)]
     save_test::before(_dir, save_test::Step::SyncDirectory)?;
@@ -606,7 +625,7 @@ fn sync_spool_directory(file: &std::fs::File, _dir: &Path) -> std::io::Result<()
 }
 
 /// Private, per-directory fault injection; unrelated tests never share a fault or schedule.
-#[cfg(test)]
+#[cfg(all(test, unix))]
 pub(super) mod save_test {
     use super::*;
     use std::sync::Mutex;
