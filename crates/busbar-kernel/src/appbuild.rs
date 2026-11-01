@@ -45,9 +45,8 @@ pub const ENV_CONFIG: &str = "BUSBAR_CONFIG";
 /// operator's existing pin keeps working across the upgrade.
 pub const ENV_PROVIDERS: &str = "BUSBAR_PROVIDERS";
 
-/// DEPRECATED (1.5.3) environment variable name for the config-overlay backend path — migrated to
-/// `config.overlay.file` in config.yaml. Still honored, with a deprecation warning, only when
-/// `config.overlay` is unset.
+/// Deprecated legacy overlay selector. Accepted with a warning and never used for filesystem
+/// access; runtime config is always stored in the configured Store.
 pub const ENV_CONFIG_OVERLAY: &str = "BUSBAR_CONFIG_OVERLAY";
 
 /// DEPRECATED (1.5.3) environment variable that forces HTTP/2 prior-knowledge for cleartext
@@ -215,19 +214,13 @@ pub struct LoadedConfig {
     /// the config dir, the `--providers` flag override, or `providers.yaml` next to the
     /// config. Carried so callers display / re-use the same file across a reload.
     pub providers_path: std::path::PathBuf,
-    /// The resolved config-overlay backend path (1.5.3): `Some` = a writable file backend (mutable
-    /// config); `None` = either the config is LOCKED (`config.locked: true`) or its backend is not
-    /// writable (a read-only config mount — busbar boots and serves, but refuses config mutations).
-    /// The boot invariant guarantees `overlay_path.is_none()` whenever busbar cannot durably persist,
-    /// so a `Some` path is always one that was probed writable.
-    pub overlay_path: Option<std::path::PathBuf>,
+    /// The opened Store overlay anchor. Plain disk loading returns no backend; boot attaches
+    /// the base-config Store and live reload carries that same anchor. No path identifies it.
+    pub overlay_path: Option<Arc<config::overlay::OverlayStore>>,
     /// `config.locked` (1.5.3): `true` ⇒ admin-API config mutations are refused at runtime.
     pub config_locked: bool,
-    /// `true` ⇒ the config did NOT declare `config.locked: true`, but its overlay backend is not
-    /// writable (the read-only config mount the documented Docker quickstart creates). Busbar boots
-    /// and serves; admin-API config mutations are refused because they could not be persisted.
-    /// Distinguished from `config_locked` so the boot log can tell the operator which of the two
-    /// postures they are in — one they chose, one the filesystem chose for them.
+    /// Compatibility posture field. Always false: input-file permissions do not select Store
+    /// writability, and an unavailable Store refuses recovery instead of dropping security state.
     pub config_read_only: bool,
     /// The persisted overlay document (API-registered hooks), applied onto the RESOLVED config
     /// (`overlay::merge_into(&mut RootCfg, …)`) after `config::resolve` - the runtime registry is
@@ -355,11 +348,8 @@ pub fn load_config_from_disk_judged(
         config::providers::catalog_from_str(&interpolated_providers)
             .map_err(|e| format!("providers.yaml: invalid YAML: {e}"))?;
 
-    // 1.5.3: resolve the config-management posture + overlay backend from the `config:` block, and
-    // ENFORCE the boot invariant (`locked` XOR a writable overlay). The deprecated
-    // `BUSBAR_CONFIG_OVERLAY` env var is honored only when `config.overlay` is unset. The writability
-    // probe runs at boot/reload (Strict) but not under `--validate` (Lenient), which must stay
-    // side-effect-free.
+    // Resolve management policy without opening or probing any storage. Legacy file selector
+    // text is accepted for compatibility; the opened base-config Store is attached at boot.
     let env_overlay = std::env::var(ENV_CONFIG_OVERLAY)
         .ok()
         .filter(|s| !s.is_empty())
@@ -371,9 +361,9 @@ pub fn load_config_from_disk_judged(
         env_overlay.as_deref(),
         probe_fs,
     )?;
-    let overlay_path = resolution.path;
+    let overlay_path = None;
     let config_locked = resolution.locked;
-    let config_read_only = resolution.read_only_backend;
+    let config_read_only = false;
 
     if safe_mode {
         // `--safe-mode`: boot on the operator-owned base config ALONE — the persisted overlay
@@ -382,7 +372,7 @@ pub fn load_config_from_disk_judged(
         diag_warn!(
             SAFE_MODE_OVERLAY_QUARANTINED,
             "SAFE MODE: config overlay NOT merged — running on base config.yaml alone (the \
-             overlay file is untouched; boot without --safe-mode to re-apply it)"
+             Store overlay is untouched; boot without --safe-mode to re-apply it)"
         );
         return Ok(LoadedConfig {
             deploy,
@@ -399,27 +389,9 @@ pub fn load_config_from_disk_judged(
     // starting without it would run with the operator's API-registered hooks and groups — security
     // gates included — silently absent. `--safe-mode` boots on base config alone without touching
     // the file, so this is a one-flag recovery rather than a brick.
-    if let Some(p) = overlay_path.as_ref() {
-        if let config::overlay::OverlayReadState::VersionTooNew(v) = config::overlay::read_state(p)
-        {
-            return Err(format!(
-                "config overlay '{}' was written by a newer busbar (overlay version {v}; this                  binary understands {}). Starting without it would silently drop API-registered                  hooks and groups. Upgrade busbar, or boot with --safe-mode to run on config.yaml                  alone (the overlay is left untouched).",
-                p.display(),
-                config::overlay::OVERLAY_VERSION
-            ));
-        }
-    }
-    let overlay_doc = overlay_path.as_ref().and_then(|p| {
-        let doc = config::overlay::read(p);
-        if let Some(ref d) = doc {
-            tracing::info!(
-                path = %p.display(),
-                hooks = d.hooks.len(),
-                "config overlay loaded (merged onto the resolved config after resolve)"
-            );
-        }
-        doc
-    });
+    // Disk loading reads operator inputs only. Boot attaches the actual opened base Store;
+    // reload attaches the running generation's anchor through load_config_from_disk_with_store.
+    let overlay_doc = None;
     Ok(LoadedConfig {
         deploy,
         defs,
@@ -430,6 +402,33 @@ pub fn load_config_from_disk_judged(
         overlay_doc,
         unset_env_vars,
     })
+}
+
+/// Read operator inputs and recover the running deployment's exact Store-owned overlay.
+/// The anchor is selected at boot, never inferred from a path or redirected by an overlay.
+pub fn load_config_from_disk_with_store(
+    config_path: &std::path::Path,
+    providers_override: Option<&std::path::Path>,
+    safe_mode: bool,
+    env_mode: config::EnvSubst,
+    rules: &dyn RootRules,
+    overlay: Option<Arc<config::overlay::OverlayStore>>,
+) -> Result<LoadedConfig, String> {
+    let mut loaded =
+        load_config_from_disk_judged(config_path, providers_override, safe_mode, env_mode, rules)?;
+    if !loaded.config_locked {
+        let store = overlay.ok_or_else(|| {
+            "running config has no Store overlay anchor; restart to bootstrap it".to_string()
+        })?;
+        if safe_mode {
+            loaded.overlay_path = Some(store);
+        } else {
+            let (reopened, doc) = store.reopen_for_reload()?;
+            loaded.overlay_path = Some(reopened);
+            loaded.overlay_doc = doc;
+        }
+    }
+    Ok(loaded)
 }
 
 /// A queued-but-not-yet-applied governance credential rotation: `build_app_from_config` resolves it
@@ -627,18 +626,148 @@ impl RootRules for AcceptAll {
     }
 }
 
+/// Open only the base-config Store needed to recover runtime configuration. The composition
+/// root installs its connector first. This path is never used by validation or a live reload.
+pub fn bootstrap_config_store(
+    cfg: &config::RootCfg,
+    plugins: &config::PluginsCfg,
+) -> Result<busbar_contract::store_calls::OpenedStore, String> {
+    let fetch = || fetch_config_plugins(plugins, cfg, true);
+    let registry = config_validate::check(
+        cfg,
+        config_validate::Check {
+            plugins,
+            unset_env_vars: &[],
+            root: &|_| Ok(()),
+            fetch: (plugins.enabled && !plugins.fetch.is_empty())
+                .then_some(&fetch as &dyn Fn() -> Result<(), String>),
+            resolve_builtins: false,
+        },
+    )
+    .map_err(|error| match error {
+        config_validate::Refusal::Config(errors) => errors.join("; "),
+        config_validate::Refusal::Root(error)
+        | config_validate::Refusal::Plugins(error)
+        | config_validate::Refusal::Unresolved(error) => error,
+    })?;
+    if let Some(admit) = crate::preflight::root_rows().secret_admit {
+        admit(&registry)?;
+    }
+    let resolver = build_secret_resolver(registry.clone(), &cfg.secrets)?;
+    // The same trust/auth material must resolve before the anchor opens as before ordinary boot.
+    let _admin = resolve_admin_token(cfg.auth.as_ref(), &resolver)?;
+    let _signer = resolve_signing_key(cfg.auth.as_ref(), &resolver)?;
+    let _at_rest = resolve_at_rest_keys(&cfg.credentials, &resolver)?;
+    open_config_store(cfg, &registry, &resolver)
+}
+
+fn open_config_store(
+    cfg: &config::RootCfg,
+    registry: &Arc<dyn busbar_contract::plugin_rows::PluginRows>,
+    resolver: &config::secret::SecretResolver,
+) -> Result<busbar_contract::store_calls::OpenedStore, String> {
+    let store = cfg.store.as_ref().ok_or_else(config::store_required)?;
+    let row = registry.resolve(&store.module);
+    let resolved = if row.as_ref().is_some_and(|row| row.in_process) {
+        Default::default()
+    } else {
+        config::secret::resolve_settings(
+            &store.settings,
+            &registry.secret_slots(&store.module),
+            &registry.reference_slots(&store.module),
+            &store.module,
+            resolver,
+            &busbar_contract::config_time::ConfigScope::config_time(),
+        )
+        .map_err(|error| format!("store '{}' settings: {error}", store.module))?
+    };
+    let settings = zeroize::Zeroizing::new(resolved.as_value().to_string());
+    drop(resolved);
+    let failed = |error: String| format!("store '{}' plugin load failed: {error}", store.module);
+    let door = registry.store_door(&store.module).map_err(failed)?;
+    let axis = crate::preflight::root_rows()
+        .store_axis
+        .ok_or_else(|| failed("no store axis is installed".into()))?;
+    axis()
+        .open(door, &store.module, settings.as_bytes())
+        .map_err(failed)
+}
+
+fn fetch_config_plugins(
+    plugins: &config::PluginsCfg,
+    cfg: &config::RootCfg,
+    boot: bool,
+) -> Result<(), String> {
+    let targets = plugins.fetch_targets()?;
+    let dir = std::path::Path::new(&plugins.dir);
+    crate::durable::create_dir_all(dir).map_err(|error| {
+        format!(
+            "plugins.fetch: cannot create plugins dir '{}': {error}",
+            dir.display()
+        )
+    })?;
+    let fetch = crate::preflight::root_rows()
+        .plugins_fetch
+        .ok_or("plugins.fetch failed: no composition root installed the plugins fetch")?;
+    let outcomes = fetch(dir, &targets, boot, &cfg.blocked_metadata_hosts)
+        .map_err(|errors| format!("plugins.fetch failed: {}", errors.join("; ")))?;
+    for outcome in outcomes {
+        match outcome {
+            crate::preflight::Fetched::Cached { filename } => {
+                tracing::info!(filename, "plugins.fetch: cached")
+            }
+            crate::preflight::Fetched::Fetched { filename } => {
+                tracing::info!(filename, "plugins.fetch: downloaded + verified")
+            }
+            crate::preflight::Fetched::Warned { url, error } => diag_warn!(
+                PLUGINS_FETCH_RELOAD_MISS,
+                url,
+                error,
+                "plugins.fetch: miss on reload; keeping current artifact"
+            ),
+        }
+    }
+    Ok(())
+}
+
 #[cold] // boot/admin-only — keeps hot text dense (never inlined into a warm path)
 #[inline(never)]
 #[allow(clippy::too_many_arguments)] // the build's whole input, one argument each; #1001 added the root's rules
 pub fn build_app_from_config(
     cfg: config::RootCfg,
     plugins_cfg: config::PluginsCfg,
-    overlay_path: Option<std::path::PathBuf>,
+    overlay_path: Option<Arc<config::overlay::OverlayStore>>,
     base_hook_names: std::collections::HashSet<String>,
     base_group_names: std::collections::HashSet<String>,
     config_paths: (Option<std::path::PathBuf>, Option<std::path::PathBuf>),
     prior: Option<&state::App>,
     rules: &std::sync::Arc<dyn RootRules>,
+) -> Result<(state::App, Option<GovCredentialRotation>, InstalledLimits), String> {
+    build_app_from_config_with_store(
+        cfg,
+        plugins_cfg,
+        overlay_path,
+        base_hook_names,
+        base_group_names,
+        config_paths,
+        prior,
+        rules,
+        None,
+    )
+}
+
+/// Boot reuses the exact Store opened to recover its overlay, including ephemeral Stores.
+#[allow(clippy::too_many_arguments)]
+pub fn build_app_from_config_with_store(
+    cfg: config::RootCfg,
+    plugins_cfg: config::PluginsCfg,
+    overlay_path: Option<Arc<config::overlay::OverlayStore>>,
+    base_hook_names: std::collections::HashSet<String>,
+    base_group_names: std::collections::HashSet<String>,
+    config_paths: (Option<std::path::PathBuf>, Option<std::path::PathBuf>),
+    prior: Option<&state::App>,
+    rules: &Arc<dyn RootRules>,
+    boot_store: Option<busbar_contract::store_calls::OpenedStore>,
 ) -> Result<(state::App, Option<GovCredentialRotation>, InstalledLimits), String> {
     // The card this configuration resolves, raised at the commit (`InstalledLimits::keep`).
     let configured_card = config::card::CardFields::of_root(&cfg);
@@ -1265,38 +1394,10 @@ pub fn build_app_from_config(
                 diag_warn!(STATEFUL_PLANE_EPHEMERAL_STORE, "{msg}");
             }
         }
-        // Resolve any SecretRef-typed setting (e.g. a `licenseKey`) against the secret store BEFORE
-        // the settings cross the ABI (ADR-0010). FAIL-CLOSED: an unresolvable ref refuses the store
-        // load rather than handing the plugin a dangling reference. A row opened IN PROCESS is
-        // handed no settings, so it has none to resolve (the built-in store never read its own).
-        let resolved = match row.as_ref().is_some_and(|p| p.in_process) {
-            true => Default::default(),
-            false => config::secret::resolve_settings(
-                &g.settings,
-                &plugin_registry.secret_slots(&g.module),
-                &plugin_registry.reference_slots(&g.module),
-                &g.module,
-                secret_resolver.as_ref(),
-                &busbar_contract::config_time::ConfigScope::config_time(),
-            )
-            .map_err(|e| format!("store '{}' settings: {e}", g.module))?,
+        let opened = match boot_store {
+            Some(opened) => opened,
+            None => open_config_store(&cfg, &plugin_registry, secret_resolver.as_ref())?,
         };
-        // The resolved bag's text is a copy of its secrets too: held in a zeroising buffer and
-        // wiped, with the bag, once the store's `open` has answered (security.md:318).
-        let cfg_json = zeroize::Zeroizing::new(resolved.as_value().to_string());
-        drop(resolved);
-        // The configured store's DOOR (a linked row's, or a dropped-in plugin's verified bytes),
-        // loaded through the root's one dispatcher and opened through the store v3 table, on the
-        // store axis the composition root installed (WIRE-STORE Q8/Q9). Compiled in or dropped
-        // in, one path.
-        let load_failed = |e: String| format!("store '{}' plugin load failed: {e}", g.module);
-        let door = plugin_registry.store_door(&g.module).map_err(load_failed)?;
-        let axis = crate::preflight::root_rows()
-            .store_axis
-            .ok_or_else(|| load_failed("no store axis is installed".to_string()))?;
-        let opened = axis().open(door, &g.module, cfg_json.as_bytes());
-        drop(cfg_json);
-        let opened = opened.map_err(load_failed)?;
         let store: Arc<dyn governance::RecordStore> = opened.records;
         let store_calls = opened.calls;
         // The operator ADMIN credential: the operator-credential entry's `token:` secret ref.
@@ -1978,3 +2079,7 @@ pub fn build_app_from_config(
 #[cfg(test)]
 #[path = "tests/root_rules_hearing_tests.rs"]
 mod root_rules_hearing_tests;
+
+#[cfg(test)]
+#[path = "tests/config_store_recovery_tests.rs"]
+mod config_store_recovery_tests;

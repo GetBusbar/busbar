@@ -340,10 +340,10 @@ impl AdminService {
 
     /// The overlay entries of `section` this binary could not parse, read OFF THE ASYNC WORKER.
     ///
-    /// Finding them reads the operator's overlay FILE and parses all of it — every section, the
+    /// Finding them reads the operator's Store overlay and parses all of it — every section, the
     /// group tree a self-service mint grows among them — on a read-scope endpoint the admin limiter
-    /// does not meter. Inline, that file read held the runtime worker the data plane shares for as
-    /// long as the disk took; on a blocking thread it holds nothing. A blocking task that fails to
+    /// does not meter. Inline, that Store read held the runtime worker the data plane shares for as
+    /// long as the Store took; on a blocking thread it holds nothing. A blocking task that fails to
     /// join answers what a panic inside the handler always answered, the `500` `internal` envelope.
     async fn unparseable_overlay_entries(
         &self,
@@ -373,7 +373,8 @@ impl AdminService {
                 "admin blocking task failed"
             );
             AdminError::Internal
-        })
+        })?
+        .map_err(AdminError::Validation)
     }
 
     /// `GET /api/v1/admin/groups` — the `groups:` limit tree read. Read scope. Each entry is the

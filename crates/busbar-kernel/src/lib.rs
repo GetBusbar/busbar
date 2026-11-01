@@ -348,9 +348,9 @@ mod caps_tests;
 
 pub use appbuild::{
     build_app_from_config, inert_durable_keys_banner, load_config_from_disk,
-    load_config_from_disk_judged, open_relay_banner, resolve_model_context_max,
-    GovCredentialRotation, InstalledLimits, LoadedConfig, DEFAULT_CONFIG_PATH, ENV_CONFIG,
-    ENV_PROVIDERS,
+    load_config_from_disk_judged, load_config_from_disk_with_store, open_relay_banner,
+    resolve_model_context_max, GovCredentialRotation, InstalledLimits, LoadedConfig,
+    DEFAULT_CONFIG_PATH, ENV_CONFIG, ENV_PROVIDERS,
 };
 pub use preflight::plugins_preflight;
 pub use router::{

@@ -2,10 +2,14 @@ use busbar_kernel::audit_ring;
 use busbar_kernel::config::migrated_store_module;
 use busbar_kernel::governance::{GovState, MemoryStore, NewKeySpec};
 use busbar_kernel::test_support::warn_capture::WarnCapture;
+use busbar_kernel::test_support::TestOverlayStore;
 use std::sync::Arc;
 
 #[path = "cache_flush_tests.rs"]
 mod cache_flush_tests;
+
+#[path = "store_overlay_tests.rs"]
+mod store_overlay_tests;
 
 /// The OpenAPI 3 Operation Object's status-keyed field, spelled once. It is the OpenAPI
 /// specification's own key, not a busbar or instance word.
@@ -3578,15 +3582,10 @@ async fn test_admin_v1_config_plane_golden_path() {
     busbar_kernel::snapshot::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("t".to_string()));
-    let overlay = std::env::temp_dir().join(format!(
-        "busbar-golden-{}-{}.json",
-        std::process::id(),
-        busbar_kernel::store::now()
-    ));
-    let _ = std::fs::remove_file(&overlay);
+    let overlay = TestOverlayStore::new();
     let app = crate::new_test_app()
         .governance(gov)
-        .overlay_path(overlay.clone())
+        .overlay_backend(overlay.backend())
         .build();
     let router = crate::build_router(app);
     let (addr, handle, c) = spin_up(router).await;
@@ -3633,7 +3632,7 @@ async fn test_admin_v1_config_plane_golden_path() {
         .unwrap();
     assert_eq!(created.status().as_u16(), 201);
 
-    // Live (read sees it), version bumped, persisted to disk.
+    // Live (read sees it), version bumped, persisted to the Store.
     assert!(get("/api/v1/admin/hooks".into()).await["items"]
         .as_array()
         .unwrap()
@@ -3641,7 +3640,7 @@ async fn test_admin_v1_config_plane_golden_path() {
         .any(|h| h["name"] == name));
     assert_eq!(get("/api/v1/admin/info".into()).await["config_version"], 1);
     assert_eq!(get("/api/v1/admin/config".into()).await["version"], 1);
-    assert!(busbar_kernel::config::overlay::read(&overlay)
+    assert!(busbar_kernel::config::overlay::read(&overlay.backend())
         .unwrap()
         .hooks
         .contains_key(name));
@@ -3672,37 +3671,31 @@ async fn test_admin_v1_config_plane_golden_path() {
         0
     );
     assert_eq!(get("/api/v1/admin/info".into()).await["config_version"], 2);
-    assert!(!busbar_kernel::config::overlay::read(&overlay)
+    assert!(!busbar_kernel::config::overlay::read(&overlay.backend())
         .unwrap()
         .hooks
         .contains_key(name));
 
-    let _ = std::fs::remove_file(&overlay);
     handle.abort();
 }
 
-/// Config-overlay PERSISTENCE: with an overlay path set, registering a hook over the API writes it
-/// to the overlay file, and merging that overlay onto a fresh base config (a "restart") restores
+/// Config-overlay PERSISTENCE: with a Store overlay set, registering a hook over the API writes it
+/// to the Store overlay, and merging that overlay onto a fresh base config (a "restart") restores
 /// the hook — so a runtime-registered hook survives a restart.
 #[tokio::test]
 async fn test_admin_v1_hook_register_persists_to_overlay() {
     busbar_kernel::snapshot::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
-    let overlay = std::env::temp_dir().join(format!(
-        "busbar-persist-test-{}-{}.json",
-        std::process::id(),
-        busbar_kernel::store::now()
-    ));
-    let _ = std::fs::remove_file(&overlay);
+    let overlay = TestOverlayStore::new();
     let app = crate::new_test_app()
         .governance(gov)
-        .overlay_path(overlay.clone())
+        .overlay_backend(overlay.backend())
         .build();
     let router = crate::build_router(app);
     let (addr, handle, client) = spin_up(router).await;
 
-    // Register a global gate — the handler persists it to the overlay file.
+    // Register a global gate — the handler persists it to the Store overlay.
     let created = client
         .post(format!("http://{addr}/api/v1/admin/hooks"))
         .header("x-admin-token", "admintok")
@@ -3719,8 +3712,8 @@ async fn test_admin_v1_hook_register_persists_to_overlay() {
         .unwrap();
     assert_eq!(created.status().as_u16(), 201);
 
-    // The overlay file now holds the hook.
-    let doc = busbar_kernel::config::overlay::read(&overlay).expect("overlay written");
+    // The Store overlay now holds the hook.
+    let doc = busbar_kernel::config::overlay::read(&overlay.backend()).expect("overlay written");
     assert!(doc.hooks.contains_key("persisted_gate"));
     assert!(doc.global_hooks.iter().any(|g| g == "persisted_gate"));
 
@@ -3736,7 +3729,6 @@ async fn test_admin_v1_hook_register_persists_to_overlay() {
         "the runtime-registered hook survives a restart via the overlay"
     );
 
-    let _ = std::fs::remove_file(&overlay);
     handle.abort();
 }
 
@@ -3750,15 +3742,10 @@ async fn test_admin_v1_config_apply_preserves_the_persisted_overlay() {
     busbar_kernel::snapshot::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
-    let overlay = std::env::temp_dir().join(format!(
-        "busbar-apply-overlay-{}-{}.json",
-        std::process::id(),
-        busbar_kernel::store::now()
-    ));
-    let _ = std::fs::remove_file(&overlay);
+    let overlay = TestOverlayStore::new();
     let app = crate::new_test_app()
         .governance(gov)
-        .overlay_path(overlay.clone())
+        .overlay_backend(overlay.backend())
         .build();
     let router = crate::build_router(app);
     let (addr, handle, client) = spin_up(router).await;
@@ -3812,9 +3799,10 @@ async fn test_admin_v1_config_apply_preserves_the_persisted_overlay() {
         "an API-created group survives an apply that does not name it"
     );
 
-    // ON DISK: a later, unrelated mutation must not clobber it out of the overlay.
+    // IN THE STORE: a later, unrelated mutation must not clobber it out of the overlay.
     assert_eq!(create_group("second_team").await, 201);
-    let doc = busbar_kernel::config::overlay::read(&overlay).expect("overlay still readable");
+    let doc =
+        busbar_kernel::config::overlay::read(&overlay.backend()).expect("overlay still readable");
     assert!(
         doc.groups.contains_key("api_team"),
         "the next group write must not erase the earlier one from the overlay"
@@ -3824,7 +3812,6 @@ async fn test_admin_v1_config_apply_preserves_the_persisted_overlay() {
         "and records the new one"
     );
 
-    let _ = std::fs::remove_file(&overlay);
     handle.abort();
 }
 
@@ -8591,17 +8578,17 @@ groups:
 
 /// RESET GROUPS after a runtime group POST: the runtime group is gone, the cost model reflects base
 /// (only `team` remains), the config version bumped, and the mutation is audited + version-logged.
-/// The overlay file's groups section is cleared while the (empty) hooks section is preserved.
+/// The Store overlay's groups section is cleared while the (empty) hooks section is preserved.
 #[tokio::test]
 async fn test_admin_v1_overlay_reset_groups_reverts_to_base() {
     busbar_kernel::snapshot::init();
     let (dir, config_path, providers_path) = write_reset_fixture("groups");
-    let overlay = dir.join("overlay.json");
+    let overlay = TestOverlayStore::new();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let mut app = crate::new_test_app()
         .governance(gov)
-        .overlay_path(overlay.clone())
+        .overlay_backend(overlay.backend())
         // The live App starts consistent with disk: `team` is a base group.
         .group(
             "team",
@@ -8652,7 +8639,7 @@ async fn test_admin_v1_overlay_reset_groups_reverts_to_base() {
         "the runtime group is live before the reset"
     );
     assert!(
-        busbar_kernel::config::overlay::read(&overlay)
+        busbar_kernel::config::overlay::read(&overlay.backend())
             .expect("overlay written")
             .groups
             .contains_key("user:alice"),
@@ -8702,8 +8689,9 @@ async fn test_admin_v1_overlay_reset_groups_reverts_to_base() {
         "reverted to base groups only: {names:?}"
     );
 
-    // The overlay's groups section is cleared on disk (the durable half survives a restart).
-    let doc = busbar_kernel::config::overlay::read(&overlay).expect("overlay still present");
+    // The overlay's groups section is cleared in the Store (the durable half survives a restart).
+    let doc =
+        busbar_kernel::config::overlay::read(&overlay.backend()).expect("overlay still present");
     assert!(
         doc.groups.is_empty() && doc.deleted_groups.is_empty(),
         "the overlay groups section is cleared"
@@ -8759,12 +8747,12 @@ async fn test_admin_v1_overlay_reset_groups_reverts_to_base() {
 async fn test_admin_v1_overlay_reset_hooks_reverts_to_base() {
     busbar_kernel::snapshot::init();
     let (dir, config_path, providers_path) = write_reset_fixture("hooks");
-    let overlay = dir.join("overlay.json");
+    let overlay = TestOverlayStore::new();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let mut app = crate::new_test_app()
         .governance(gov)
-        .overlay_path(overlay.clone())
+        .overlay_backend(overlay.backend())
         .build();
     {
         let inner = Arc::get_mut(&mut app).expect("sole owner");
@@ -8790,7 +8778,7 @@ async fn test_admin_v1_overlay_reset_hooks_reverts_to_base() {
         .unwrap();
     assert_eq!(created.status().as_u16(), 201, "{:?}", created.text().await);
     assert!(
-        busbar_kernel::config::overlay::read(&overlay)
+        busbar_kernel::config::overlay::read(&overlay.backend())
             .expect("overlay written")
             .hooks
             .contains_key("runtime_gate"),
@@ -8820,7 +8808,7 @@ async fn test_admin_v1_overlay_reset_hooks_reverts_to_base() {
         hooks["items"].as_array().unwrap().is_empty(),
         "the runtime hook is discarded, base hooks restored: {hooks}"
     );
-    let doc = busbar_kernel::config::overlay::read(&overlay).expect("overlay present");
+    let doc = busbar_kernel::config::overlay::read(&overlay.backend()).expect("overlay present");
     assert!(
         doc.hooks.is_empty() && doc.global_hooks.is_empty() && doc.deleted.is_empty(),
         "the overlay hooks section is cleared"
@@ -8836,12 +8824,12 @@ async fn test_admin_v1_overlay_reset_hooks_reverts_to_base() {
 async fn test_admin_v1_overlay_reset_stale_if_match_conflicts() {
     busbar_kernel::snapshot::init();
     let (dir, config_path, providers_path) = write_reset_fixture("ifmatch");
-    let overlay = dir.join("overlay.json");
+    let overlay = TestOverlayStore::new();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let mut app = crate::new_test_app()
         .governance(gov)
-        .overlay_path(overlay.clone())
+        .overlay_backend(overlay.backend())
         .group(
             "team",
             busbar_kernel::config::GroupCfg {
@@ -8934,15 +8922,10 @@ async fn test_admin_v1_overlay_reset_empty_section_is_idempotent_noop() {
     busbar_kernel::snapshot::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
-    let overlay = std::env::temp_dir().join(format!(
-        "busbar-reset-empty-{}-{}.json",
-        std::process::id(),
-        busbar_kernel::store::now()
-    ));
-    let _ = std::fs::remove_file(&overlay);
+    let overlay = TestOverlayStore::new();
     let app = crate::new_test_app()
         .governance(gov)
-        .overlay_path(overlay.clone())
+        .overlay_backend(overlay.backend())
         .build();
     let router = crate::build_router(app);
     let (addr, handle, client) = spin_up(router).await;
@@ -8986,7 +8969,6 @@ async fn test_admin_v1_overlay_reset_empty_section_is_idempotent_noop() {
     );
 
     handle.abort();
-    let _ = std::fs::remove_file(&overlay);
 }
 
 /// SCOPE: a section reset is a FULL-scope mutation (the `/overlay/*` fallthrough in the scope
@@ -9041,7 +9023,7 @@ async fn settings_test_app(
     tag: &str,
 ) -> (
     std::path::PathBuf,   // temp dir (caller removes)
-    std::path::PathBuf,   // overlay path
+    TestOverlayStore,     // Store-owned overlay
     std::net::SocketAddr, // server addr
     tokio::task::JoinHandle<()>,
     tokio::sync::MutexGuard<'static, ()>, // the process-wide limits slot, held for the test
@@ -9051,12 +9033,12 @@ async fn settings_test_app(
     // A per-test tag keeps parallel `/config/settings` tests on DISTINCT temp dirs (the fixture dir
     // is keyed on pid + coarse timestamp, which collides for same-second parallel starts).
     let (dir, config_path, providers_path) = write_reset_fixture(&format!("settings-{tag}"));
-    let overlay = dir.join("overlay.json");
+    let overlay = TestOverlayStore::new();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let mut app = crate::new_test_app()
         .governance(gov)
-        .overlay_path(overlay.clone())
+        .overlay_backend(overlay.backend())
         .build();
     audit_principal(&mut app, &format!("audit-settings-{tag}"));
     {
@@ -9124,8 +9106,8 @@ async fn test_admin_v1_config_settings_round_trip_survives_reload() {
         "rate_card round-trips"
     );
 
-    // The overlay `root` section is on disk (the durable half).
-    let doc = busbar_kernel::config::overlay::read(&overlay).expect("overlay written");
+    // The overlay `root` section is in the Store (the durable half).
+    let doc = busbar_kernel::config::overlay::read(&overlay.backend()).expect("overlay written");
     let root = doc.root.expect("root section present");
     assert_eq!(root.per_request_fee, Some(7));
 
@@ -9142,23 +9124,20 @@ async fn test_admin_v1_config_settings_round_trip_survives_reload() {
         "the PUT bumped the config version"
     );
 
-    // RESTART EQUIVALENT: re-run the BOOT disk-load pipeline (the exact path a fresh process takes)
-    // and confirm the overlay root re-merges onto the base DeployCfg — the settings survive a
-    // restart. (`config/reload` over HTTP resolves the overlay path from the `BUSBAR_CONFIG_OVERLAY`
-    // env var, which the direct-App test harness does not set; this asserts the same merge that boot
-    // performs, without a process-global env var that would race parallel tests.)
+    // RESTART EQUIVALENT: recover from the same Store anchor through the real loader, then
+    // apply its root section over the operator-owned base config.
     {
         let config_path = dir.join("config.yaml");
         let providers_path = dir.join("providers.yaml");
-        let mut loaded = busbar_kernel::load_config_from_disk(
+        let mut loaded = busbar_kernel::load_config_from_disk_with_store(
             &config_path,
             Some(&providers_path),
             false,
             busbar_kernel::config::EnvSubst::Strict,
+            &busbar_kernel::appbuild::AcceptAll,
+            Some(overlay.backend()),
         )
         .expect("disk reload");
-        // Simulate the env-derived overlay read (boot reads it via BUSBAR_CONFIG_OVERLAY).
-        loaded.overlay_doc = busbar_kernel::config::overlay::read(&overlay);
         assert_eq!(
             loaded.deploy.per_request_fee, 0,
             "base config.yaml has no fee (the override lives only in the overlay)"
@@ -9197,29 +9176,18 @@ async fn test_admin_v1_config_settings_round_trip_survives_reload() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// FULL restart-simulation at the BOOT-RESOLVED DEFAULT overlay path: boot-with-defaults (no
-/// `config.overlay`, no env var) → a REAL admin-API `PUT /config/settings` → a fresh
-/// `load_config_from_disk` (the exact path a restarted process takes) re-reads the mutation, WITHOUT
-/// the test manually substituting `overlay_doc`. This closes the gap the round-trip test leaves: it
-/// proves boot's OWN resolved overlay path (`busbar-overlay.json` next to config.yaml) is the SAME
-/// file the serving App persists mutations to — a divergence between the two would be invisible to a
-/// test that hand-feeds `overlay_doc` from a path it chose itself.
-///
-/// If `load_config_from_disk`'s default-overlay resolution and the App's serving
-/// overlay path ever diverge (or resolution regresses to `None`/RAM-only), the freshly-loaded
-/// `overlay_doc` is absent and the `per_request_fee` assertion fails.
+/// A real admin settings write is recovered through the Store-aware boot loader, without
+/// manually substituting `overlay_doc`. Operator inputs alone never supply runtime overrides.
 #[tokio::test]
-async fn test_admin_v1_config_settings_survives_a_real_boot_reload_at_default_overlay() {
+async fn test_admin_v1_config_settings_survives_a_real_store_reload() {
     busbar_kernel::snapshot::init();
     let (dir, config_path, providers_path) = write_reset_fixture("boot-default-overlay");
-    // The App persists to the SAME path `load_config_from_disk` resolves by default (no `config.overlay`
-    // in config.yaml, no `BUSBAR_CONFIG_OVERLAY`): `busbar-overlay.json` next to config.yaml.
-    let default_overlay = dir.join("busbar-overlay.json");
+    let default_overlay = TestOverlayStore::new();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let mut app = crate::new_test_app()
         .governance(gov)
-        .overlay_path(default_overlay.clone())
+        .overlay_backend(default_overlay.backend())
         .build();
     {
         let inner = Arc::get_mut(&mut app).expect("sole owner");
@@ -9238,19 +9206,20 @@ async fn test_admin_v1_config_settings_survives_a_real_boot_reload_at_default_ov
         .unwrap();
     assert_eq!(put.status().as_u16(), 200, "{:?}", put.text().await);
 
-    // A FRESH boot disk-load — no `overlay_doc` hand-substitution. It must resolve the default overlay
-    // path ITSELF and read back the mutation the running App just persisted there.
-    let loaded = busbar_kernel::load_config_from_disk(
+    // A fresh loader recovers the mutation directly from the same configured Store.
+    let loaded = busbar_kernel::load_config_from_disk_with_store(
         &config_path,
         Some(&providers_path),
         false,
         busbar_kernel::config::EnvSubst::Strict,
+        &busbar_kernel::appbuild::AcceptAll,
+        Some(default_overlay.backend()),
     )
     .expect("fresh boot disk-load");
     assert_eq!(
-        loaded.overlay_path.as_deref(),
-        Some(default_overlay.as_path()),
-        "boot must resolve the SAME default overlay path the App persists to"
+        loaded.overlay_path.as_ref().unwrap().read_bytes().unwrap(),
+        default_overlay.read_bytes(),
+        "the reopened carrier reads the configured Store's persisted generation"
     );
     let root = loaded
         .overlay_doc
@@ -9260,7 +9229,7 @@ async fn test_admin_v1_config_settings_survives_a_real_boot_reload_at_default_ov
     assert_eq!(
         root.per_request_fee,
         Some(9),
-        "the admin mutation survives a real boot reload at the boot-resolved default path"
+        "the admin mutation survives a real reload from the configured Store"
     );
 
     handle.abort();
@@ -9326,13 +9295,13 @@ async fn test_admin_v1_config_settings_process_level_flagged_reload_to_apply() {
         "the note explains the reload-to-apply split"
     );
     // But they ARE durably stored (the overlay carries the new listen).
-    let doc = busbar_kernel::config::overlay::read(&overlay).expect("overlay written");
+    let doc = busbar_kernel::config::overlay::read(&overlay.backend()).expect("overlay written");
     assert_eq!(
         doc.root.unwrap().listen.as_deref(),
         Some("127.0.0.1:0"),
         "the reload-to-apply field is still durably persisted"
     );
-    let root = busbar_kernel::config::overlay::read(&overlay)
+    let root = busbar_kernel::config::overlay::read(&overlay.backend())
         .expect("overlay written")
         .root
         .unwrap();
@@ -9526,7 +9495,7 @@ async fn test_admin_v1_config_settings_unresolvable_store_secret_warns_not_rejec
     );
 
     // And it is persisted, so the next restart uses it — which is the point of staging.
-    let doc = busbar_kernel::config::overlay::read(&overlay).expect("overlay written");
+    let doc = busbar_kernel::config::overlay::read(&overlay.backend()).expect("overlay written");
     assert!(
         doc.root
             .as_ref()
@@ -9587,7 +9556,7 @@ async fn test_admin_v1_config_settings_partial_update_preserves_prior() {
 }
 
 /// RESET: `DELETE /overlay/root` discards the root overrides and reverts to base config.yaml — the
-/// overlay `root` section is cleared on disk (the sibling hooks/groups sections would survive).
+/// overlay `root` section is cleared in the Store (the sibling hooks/groups sections would survive).
 /// SERIALISES the three tests that assert on `AUDIT` rows for the `overlay:root` resource.
 ///
 /// `AUDIT` is a PROCESS-WIDE ring and `resource: "overlay:root"` is a fixed literal every
@@ -9624,7 +9593,7 @@ async fn test_admin_v1_config_settings_reset_reverts_to_base() {
         .await
         .unwrap();
     assert!(
-        busbar_kernel::config::overlay::read(&overlay)
+        busbar_kernel::config::overlay::read(&overlay.backend())
             .and_then(|d| d.root)
             .is_some(),
         "root override present before reset"
@@ -9642,9 +9611,9 @@ async fn test_admin_v1_config_settings_reset_reverts_to_base() {
         "the reset discarded the root override"
     );
 
-    // Root section cleared on disk; GET reflects base (empty overrides).
+    // Root section cleared in the Store; GET reflects base (empty overrides).
     assert!(
-        busbar_kernel::config::overlay::read(&overlay)
+        busbar_kernel::config::overlay::read(&overlay.backend())
             .and_then(|d| d.root)
             .is_none(),
         "the overlay root section is cleared"
@@ -9684,7 +9653,7 @@ async fn test_admin_v1_config_settings_reset_reverts_to_base() {
 /// state" — that short-circuits to a `200 changed:false` + `OUTCOME_APPLIED` audit row without ever
 /// running the fail-closed `clear_section`, which every sibling durable-write path on an unreadable
 /// overlay refuses. Write a non-empty root override first (so the overlay exists), then corrupt the
-/// file bytes and reset — the corruption must be REFUSED (400), not silently reported as an
+/// Store bytes and reset — the corruption must be REFUSED (400), not silently reported as an
 /// idempotent no-op.
 #[tokio::test]
 async fn test_admin_v1_config_settings_reset_refuses_when_overlay_is_corrupt() {
@@ -9712,13 +9681,13 @@ async fn test_admin_v1_config_settings_reset_refuses_when_overlay_is_corrupt() {
         .await
         .unwrap();
     assert!(
-        busbar_kernel::config::overlay::read(&overlay)
+        busbar_kernel::config::overlay::read(&overlay.backend())
             .and_then(|d| d.root)
             .is_some(),
         "root override present before corrupting the overlay"
     );
 
-    std::fs::write(&overlay, b"{ not json").unwrap();
+    overlay.seed_bytes(b"{ not json");
 
     let reset = admin(client.delete(format!("http://{addr}/api/v1/admin/overlay/root")))
         .send()
@@ -9774,9 +9743,9 @@ async fn test_admin_v1_config_settings_reset_refuses_when_overlay_is_too_new() {
         .await
         .unwrap();
     let mut doc: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(&overlay).unwrap()).unwrap();
+        serde_json::from_slice(&overlay.read_bytes().unwrap()).unwrap();
     doc["version"] = serde_json::json!(busbar_kernel::config::overlay::OVERLAY_VERSION + 1);
-    std::fs::write(&overlay, serde_json::to_vec(&doc).unwrap()).unwrap();
+    overlay.seed_bytes(&serde_json::to_vec(&doc).unwrap());
 
     let reset = admin(client.delete(format!("http://{addr}/api/v1/admin/overlay/root")))
         .send()
@@ -9798,8 +9767,8 @@ async fn test_admin_v1_config_settings_reset_refuses_when_overlay_is_too_new() {
 /// (the build reads them) behind a guard that rolls them back on any failure — but the persist step
 /// runs AFTER the build returns, so committing the guard inside the build left a REJECTED config's
 /// limits installed process-wide while the handler told the operator "nothing was changed" and the
-/// old `App` kept serving. Forces the persist failure the same deterministic way its sibling does (a
-/// corrupt overlay `load_for_rmw` refuses to read-modify-write) and asserts the live cap afterwards.
+/// old `App` kept serving. The Store accepts reads and refuses writes, so this exercises the actual
+/// persistence step after the candidate's limits have been built.
 #[tokio::test]
 async fn test_admin_v1_config_settings_persist_failure_does_not_install_limits() {
     busbar_kernel::snapshot::init();
@@ -9807,16 +9776,14 @@ async fn test_admin_v1_config_settings_persist_failure_does_not_install_limits()
     // sibling's install cannot land mid-assertion here.
     let _limits_lock = busbar_kernel::config::limits::LIMITS_TEST_LOCK.lock().await;
     let (dir, config_path, providers_path) = write_reset_fixture("limits-persist-fail");
-    let overlay = dir.join("overlay.json");
-    // Corrupt from the start, so the apply's persist step (`overlay::persist_root`, which
-    // read-modify-writes through `load_for_rmw`) fails deterministically every time.
-    std::fs::write(&overlay, b"{ not json").unwrap();
+    let overlay = TestOverlayStore::new();
+    overlay.fail_writes(true);
 
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let mut app = crate::new_test_app()
         .governance(gov)
-        .overlay_path(overlay.clone())
+        .overlay_backend(overlay.backend())
         .build();
     {
         let inner = Arc::get_mut(&mut app).expect("sole owner");
@@ -9843,7 +9810,7 @@ async fn test_admin_v1_config_settings_persist_failure_does_not_install_limits()
     assert_eq!(
         put.status().as_u16(),
         400,
-        "the corrupt overlay must fail the persist step: {:?}",
+        "the Store refusal must fail the persist step: {:?}",
         put.text().await
     );
 
@@ -9926,17 +9893,17 @@ auth:
         ),
     )
     .unwrap();
-    let overlay = dir.join("overlay.json");
-    // Corrupt from the start: `load_for_rmw` refuses an unparseable-but-present overlay, so the
-    // apply's persist step (`overlay::persist_root`) fails deterministically every time.
-    std::fs::write(&overlay, b"{ not json").unwrap();
+    let overlay = TestOverlayStore::new();
+    // Reads succeed and the rebuilt candidate re-resolves the rotated credential. Refuse only
+    // the Store write, so the assertion covers the deferred rotation at the actual commit boundary.
+    overlay.fail_writes(true);
 
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok-v1".to_string()));
     let before_hash = gov.admin_token_hash();
     let mut app = crate::new_test_app()
         .governance(gov.clone())
-        .overlay_path(overlay.clone())
+        .overlay_backend(overlay.backend())
         .build();
     {
         let inner = Arc::get_mut(&mut app).expect("sole owner");
@@ -9962,7 +9929,7 @@ auth:
     assert_eq!(
         put.status().as_u16(),
         400,
-        "the corrupt overlay must fail the persist step: {:?}",
+        "the Store refusal must fail the persist step: {:?}",
         put.text().await
     );
 
@@ -10003,14 +9970,14 @@ fn test_get_config_settings_warns_when_overlay_is_unreadable() {
         }
     ));
     std::fs::create_dir_all(&dir).unwrap();
-    let overlay = dir.join("overlay.json");
-    std::fs::write(&overlay, b"{ not json").unwrap();
+    let overlay = TestOverlayStore::new();
+    overlay.seed_bytes(b"{ not json");
 
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let mut app = crate::new_test_app()
         .governance(gov)
-        .overlay_path(overlay.clone())
+        .overlay_backend(overlay.backend())
         .build();
     {
         let inner = Arc::get_mut(&mut app).expect("sole owner");
@@ -10207,13 +10174,13 @@ async fn test_admin_v1_config_settings_put_with_persist_true_still_persists_when
         .await
         .unwrap();
     assert_eq!(put.status().as_u16(), 200, "{:?}", put.text().await);
-    let on_disk = busbar_kernel::config::overlay::read(&overlay)
+    let stored = busbar_kernel::config::overlay::read(&overlay.backend())
         .and_then(|d| d.root)
         .expect("root section persisted");
     assert_eq!(
-        on_disk.per_request_fee,
+        stored.per_request_fee,
         Some(7),
-        "persist:true with an overlay present stores the value on disk"
+        "persist:true with an overlay present stores the value in the Store"
     );
 
     handle.abort();

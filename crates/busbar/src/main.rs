@@ -42,8 +42,8 @@ use axum::Router;
 
 // `DEFAULT_CONFIG_PATH` and `ENV_PROVIDERS` left with the flag surface (`root::cli`): they are the
 // config/providers path precedence the scanners there answer for boot AND for every command.
-use busbar_kernel::{build_app_from_config, load_config_from_disk, LoadedConfig, ENV_CONFIG};
 use busbar_kernel::{config, config_validate, diagnostics, export, snapshot};
+use busbar_kernel::{load_config_from_disk, LoadedConfig, ENV_CONFIG};
 // The root's own binds listen through the connector's listener (the one listener source).
 #[cfg(unix)]
 use busbar_core_connector::listen::DEFAULT_HANDSHAKE_TIMEOUT;
@@ -549,6 +549,97 @@ impl ControlWork {
     }
 }
 
+/// One destination seam throughout bootstrap: base policy opens the anchor, then the complete
+/// recovered boot policy replaces it before effective plugins open. Runtime commits retain the
+/// guard's established metadata-only update semantics.
+struct BootstrapDestJudge(std::sync::RwLock<Arc<dyn busbar_kernel::host_services::DestJudge>>);
+
+impl BootstrapDestJudge {
+    fn new(judge: Arc<dyn busbar_kernel::host_services::DestJudge>) -> Arc<Self> {
+        Arc::new(Self(std::sync::RwLock::new(judge)))
+    }
+    fn snapshot(&self) -> Arc<dyn busbar_kernel::host_services::DestJudge> {
+        self.0.read().unwrap_or_else(|p| p.into_inner()).clone()
+    }
+    fn replace(&self, judge: Arc<dyn busbar_kernel::host_services::DestJudge>) {
+        let old = {
+            let mut held = self.0.write().unwrap_or_else(|p| p.into_inner());
+            std::mem::replace(&mut *held, judge)
+        };
+        drop(old);
+    }
+}
+
+impl busbar_kernel::host_services::DestJudge for BootstrapDestJudge {
+    fn judge_name(&self, dest: &str, class: u32, refuse_private: bool) -> Result<(), u64> {
+        self.snapshot().judge_name(dest, class, refuse_private)
+    }
+    fn judge(
+        &self,
+        dest: &str,
+        class: u32,
+        refuse_private: bool,
+        done: Box<dyn FnOnce(busbar_kernel::host_services::Admitted) + Send>,
+    ) -> Option<busbar_kernel::host_services::Admitted> {
+        self.snapshot().judge(dest, class, refuse_private, done)
+    }
+    fn judge_reaching(
+        &self,
+        dest: &str,
+        class: u32,
+        done: Box<dyn FnOnce(busbar_kernel::host_services::Admitted) + Send>,
+    ) -> Option<busbar_kernel::host_services::Admitted> {
+        self.snapshot().judge_reaching(dest, class, done)
+    }
+    fn judge_answer(
+        &self,
+        host: &str,
+        addrs: &[std::net::IpAddr],
+        class: u32,
+    ) -> Result<(), busbar_kernel::host_services::DestRefusal> {
+        self.snapshot().judge_answer(host, addrs, class)
+    }
+    fn judge_host(
+        &self,
+        host: &str,
+        class: u32,
+    ) -> Result<(), busbar_kernel::host_services::DestRefusal> {
+        self.snapshot().judge_host(host, class)
+    }
+    fn destinations_applied(&self, destinations: &config::Destinations) {
+        self.snapshot().destinations_applied(destinations);
+    }
+}
+
+#[cfg(test)]
+mod bootstrap_destination_tests {
+    use super::*;
+    use busbar_kernel::host_services::DestJudge as _;
+
+    #[test]
+    fn the_installed_bootstrap_seam_receives_the_complete_recovered_security_policy() {
+        let policy = |block_private_addresses| config::Destinations {
+            block_private_addresses,
+            allow: Vec::new(),
+            legacy_allow: Vec::new(),
+            url_allow: Vec::new(),
+            blocked: Vec::new(),
+            allow_all_metadata: false,
+        };
+        let holder = BootstrapDestJudge::new(root::connector::guard_for(&policy(false)).unwrap());
+        let installed: Arc<dyn busbar_kernel::host_services::DestJudge> = holder.clone();
+        let class = busbar_contract::abi::host::conn::connector::EGRESS_PROVIDER;
+        assert!(installed
+            .judge_name("https://10.2.3.4", class, false)
+            .is_ok());
+        holder.replace(root::connector::guard_for(&policy(true)).unwrap());
+        assert!(installed
+            .judge_name("https://10.2.3.4", class, false)
+            .is_err());
+        assert!(holder.judge_name("https://10.2.3.4", class, false).is_err());
+    }
+}
+
 async fn run(
     data_workers: usize,
     late_services: std::sync::Arc<root::serve::LateServices>,
@@ -590,12 +681,60 @@ async fn run(
         mut deploy,
         defs,
         providers_path,
-        overlay_path,
+        overlay_path: _,
         config_locked,
-        config_read_only,
-        overlay_doc,
+        config_read_only: _,
+        overlay_doc: _,
         unset_env_vars: _,
     } = loaded;
+
+    // The operator's base Store is the permanent overlay anchor. Bootstrap only its network
+    // dependencies before recovery; no effective plane/export/hook is opened until security has
+    // been recovered. Connector transport settings remain the process's boot-only base settings.
+    let base_cfg = config::resolve(&deploy, &defs)
+        .unwrap_or_else(|errors| die(format!("base config errors: {}", errors.join("; "))));
+    config_validate::validate(&base_cfg)
+        .unwrap_or_else(|errors| die(format!("base config errors: {}", errors.join("; "))));
+    let base_store_settings = serde_json::to_value(&base_cfg.store)
+        .unwrap_or_else(|error| die(format!("base Store settings: {error}")));
+    let dest = BootstrapDestJudge::new(root::connector::dest_judge(&base_cfg));
+    let commit_guard: Arc<dyn busbar_kernel::host_services::DestJudge> = dest.clone();
+    let (credentials, credential_handle) = root::credentials::AppCredentials::late();
+    root::serve::compose(dest.clone(), &late_services, credentials);
+    root::boot::note_provider_urls(
+        base_cfg
+            .providers
+            .values()
+            .map(|provider| provider.base_url.clone()),
+    );
+    let _connector = root::connector::boot(
+        LINKED_TRANSPORT_DOORS,
+        &root::policy::client_settings(&base_cfg.limits),
+        dest.clone(),
+        &[base_cfg.listen.as_str(), base_cfg.admin_listen.as_str()],
+    );
+    let anchor_store = busbar_kernel::appbuild::bootstrap_config_store(&base_cfg, &deploy.plugins)
+        .unwrap_or_else(|error| die(format!("base Store overlay anchor: {error}")));
+    let overlay_path = if config_locked {
+        None
+    } else {
+        let calls = anchor_store
+            .calls
+            .as_ref()
+            .cloned()
+            .unwrap_or_else(|| die("base Store has no typed config-overlay calls"));
+        Some(config::overlay::OverlayStore::new(calls).unwrap_or_else(|error| die(error)))
+    };
+    let overlay_doc = if safe_mode {
+        None
+    } else {
+        overlay_path
+            .as_ref()
+            .map(|store| store.read_required())
+            .transpose()
+            .unwrap_or_else(|error| die(format!("Store config overlay recovery refused: {error}")))
+            .flatten()
+    };
 
     // 1.6.0 effective-source notice for the PROVIDERS catalog: the confusing case is a config.yaml
     // that declares `providers_file:` while the operator ALSO passed `--providers` — the flag wins, so
@@ -677,17 +816,7 @@ async fn run(
     } else if let Some(p) = overlay_path.as_ref() {
         tracing::info!(
             overlay = %p.display(),
-            "config is mutable; admin-API changes persist to the overlay backend (durable across restart)"
-        );
-    } else if config_read_only {
-        // MUTABLE by declaration, but the overlay backend is not writable (a read-only config mount).
-        // `resolve_backend` already warned with the remediation; repeat the posture here so the one
-        // line an operator greps for ("config is ...") never claims a durability busbar does not have.
-        tracing::warn!(
-            diag = %diagnostics::CONFIG_OVERLAY_NOT_WRITABLE.banner(),
-            "config is READ-ONLY (the overlay backend is not writable): busbar serves traffic \
-             normally, but admin-API config mutations are refused. Set `config.locked: true` to \
-             declare this deliberately, or give `config.overlay.file` a writable path."
+            "config is mutable; admin-API changes persist to the configured Store (restart durability follows that Store)"
         );
     }
     // Stamp process start for the `GET /api/v1/admin/info` uptime read.
@@ -701,14 +830,11 @@ async fn run(
     // connection, built once here, before anything dials: the kernel's `dest.judge` asks it
     // (composed below), and the connector dials by it. Its metadata lists are re-published at
     // every config commit, this boot's own build included, through the root's rules that hold it.
-    let dest = root::connector::dest_judge(&cfg);
-    let commit_guard: Arc<dyn busbar_kernel::host_services::DestJudge> = dest.clone();
+    dest.replace(root::connector::dest_judge(&cfg));
     // THE SERVE PATH'S ONE COMPOSITION: the kernel's host services go into the dispatcher built at
     // boot, before any plugin is bound (`root::serve`).
     // `records.secret` reads the App's governance through its swap handle, which exists once the App
     // is built below; until then the read answers REFUSED (`root::credentials`).
-    let (credentials, credential_handle) = root::credentials::AppCredentials::late();
-    root::serve::compose(dest.clone(), &late_services, credentials);
     // The BASE hook + group names (config-defined, pre-overlay): the admin API refuses to
     // PUT-replace / DELETE one (edit config.yaml — the overlay can't durably shadow file config).
     let base_hook_names: std::collections::HashSet<String> = cfg.hooks.keys().cloned().collect();
@@ -759,7 +885,6 @@ async fn run(
     // planes it links; a composition that does not seal exits 2 here, and success writes nothing.
     // The rows are the linked wires and the ones dropped into `plugins.dir`, folded in one pass.
     // The resolved providers' URLs select the dropped-in transports the seal opens (Law 7).
-    root::boot::note_provider_urls(cfg.providers.values().map(|p| p.base_url.clone()));
     let _sealed = root::registry::seal_or_exit(&LINKED, root::policy::client_settings(&cfg.limits));
     // The transports dropped into `plugins.dir`, as the seal just loaded them: their offered auth
     // points and upgrade lines join the linked rows' when the guest lists seal (compiled-in =
@@ -770,12 +895,6 @@ async fn run(
     // transport door as a framer entry opened with the same settings the seal built the transports
     // from, every dial judged by the one destination guard. Inbound listening and outbound egress
     // both take it from `root::connector::the()`.
-    let _connector = root::connector::boot(
-        LINKED_TRANSPORT_DOORS,
-        &root::policy::client_settings(&cfg.limits),
-        dest,
-        &[cfg.listen.as_str(), cfg.admin_listen.as_str()],
-    );
     // The planes that state themselves through a door bind on the process's one dispatcher (built
     // full-size as `main()`'s first act), linked and dropped alike, each declaring its needs on the
     // one connector just built.
@@ -851,6 +970,14 @@ async fn run(
         .store
         .as_ref()
         .map_or_else(String::new, |store| store.module.clone());
+    let boot_store = if serde_json::to_value(&cfg.store)
+        .unwrap_or_else(|error| die(format!("effective Store settings: {error}")))
+        == base_store_settings
+    {
+        Some(anchor_store)
+    } else {
+        None
+    };
     // The secret resolver the listeners resolve TLS cert/key/CA references through - the SAME seam
     // (built-in env/file + kind:secret plugins) that resolved provider keys at build time.
     // Boot has no `prior` App, so `build_app_from_config` never resolves a credential rotation here
@@ -864,17 +991,19 @@ async fn run(
     // The marker sits DIRECTLY above the call it exempts, and must: the lint carries an allow across
     // the comment block that starts it and no further, so the session-credential capture that used to
     // stand between the two silently ate this exemption and left the build itself flagged.
-    let (boot_app, _boot_gov_rotate, boot_limits) = build_app_from_config(
-        cfg,
-        plugins_cfg,
-        overlay_path,
-        base_hook_names,
-        base_group_names,
-        (Some(config_path.clone()), Some(providers_path.clone())),
-        None,
-        &(Arc::clone(&root_rules) as Arc<dyn busbar_kernel::appbuild::RootRules>),
-    )
-    .unwrap_or_else(|e| die(e));
+    let (boot_app, _boot_gov_rotate, boot_limits) =
+        busbar_kernel::appbuild::build_app_from_config_with_store(
+            cfg,
+            plugins_cfg,
+            overlay_path,
+            base_hook_names,
+            base_group_names,
+            (Some(config_path.clone()), Some(providers_path.clone())),
+            None,
+            &(Arc::clone(&root_rules) as Arc<dyn busbar_kernel::appbuild::RootRules>),
+            boot_store,
+        )
+        .unwrap_or_else(|e| die(e));
     // BOOT KEEPS THEM IMMEDIATELY. The admin applies defer this to after their persist-and-swap,
     // because a rejected apply must leave the still-serving generation's limits alone. Boot has no
     // such caller: the config file IS the durable state, this build IS the first generation, and a
