@@ -1,0 +1,241 @@
+use super::*;
+use busbar_contract::abi::{sdk::store::SyncStore, store::OpId};
+use std::collections::VecDeque;
+use std::sync::{atomic::AtomicUsize, Barrier, Mutex};
+
+const NOW: u64 = 1_700_200_000;
+
+enum Reply {
+    Lost,
+    Unknown,
+    Unwind,
+    Block(Arc<Barrier>, Arc<Barrier>),
+}
+
+struct UncertainStore {
+    inner: MemoryStore,
+    replies: Mutex<VecDeque<Reply>>,
+    calls: Mutex<Vec<(OpId, Vec<MeteringDelta>)>>,
+    legacy_calls: AtomicUsize,
+    reenter: Mutex<Option<std::sync::Weak<GovState>>>,
+}
+
+impl UncertainStore {
+    fn new(replies: impl IntoIterator<Item = Reply>) -> Self {
+        Self {
+            inner: MemoryStore::new(),
+            replies: Mutex::new(replies.into_iter().collect()),
+            calls: Mutex::new(Vec::new()),
+            legacy_calls: AtomicUsize::new(0),
+            reenter: Mutex::new(None),
+        }
+    }
+
+    fn attempt(&self, op: OpId, deltas: &[MeteringDelta]) -> RecordStoreResult<()> {
+        self.calls.lock().unwrap().push((op, deltas.to_vec()));
+        let reenter = self.reenter.lock().unwrap().take();
+        if let Some(gov) = reenter.and_then(|gov| gov.upgrade()) {
+            assert_eq!(gov.flush_metering_final(), 0);
+        }
+        let reply = self.replies.lock().unwrap().pop_front();
+        if matches!(reply, Some(Reply::Unknown)) {
+            return Err(RecordStoreError("still unknown".into()));
+        }
+        SyncStore::add_metering_batch(&self.inner, op, deltas)
+            .map_err(|e| RecordStoreError(format!("{e:?}")))?;
+        match reply {
+            Some(Reply::Lost) => Err(RecordStoreError("applied, acknowledgement lost".into())),
+            Some(Reply::Unwind) => panic!("applied, caller unwound before acknowledgement"),
+            Some(Reply::Block(entered, release)) => {
+                entered.wait();
+                release.wait();
+                Err(RecordStoreError("cancelled reply after application".into()))
+            }
+            _ => Ok(()),
+        }
+    }
+}
+
+impl RecordStore for UncertainStore {
+    fn put_key(&self, key: &VirtualKey) -> RecordStoreResult<()> {
+        self.inner.put_key(key)
+    }
+    fn get_key(&self, id: &str) -> RecordStoreResult<Option<VirtualKey>> {
+        self.inner.get_key(id)
+    }
+    fn list_keys(&self) -> RecordStoreResult<Vec<VirtualKey>> {
+        self.inner.list_keys()
+    }
+    fn delete_key(&self, id: &str) -> RecordStoreResult<()> {
+        self.inner.delete_key(id)
+    }
+    fn get_usage(&self, id: &str, window: u64) -> RecordStoreResult<UsageLedger> {
+        self.inner.get_usage(id, window)
+    }
+    fn put_usage(&self, id: &str, window: u64, row: &UsageLedger) -> RecordStoreResult<()> {
+        self.inner.put_usage(id, window, row)
+    }
+    fn add_metering(&self, delta: &MeteringDelta) -> RecordStoreResult<()> {
+        self.legacy_calls.fetch_add(1, Ordering::SeqCst);
+        self.attempt(crate::door::op_id(), std::slice::from_ref(delta))
+    }
+    fn list_metering(&self, bucket: u64) -> RecordStoreResult<Vec<MeteringRow>> {
+        self.inner.list_metering(bucket)
+    }
+}
+
+fn accrue(gov: &GovState, input: u64, era: u64) {
+    gov.record_metered_request_dated(
+        "retry-key",
+        "model",
+        "provider",
+        MeterCounts {
+            requests: 1,
+            tokens_input: input,
+            ..Default::default()
+        },
+        NOW,
+        &|| era,
+        &|at| at,
+    );
+}
+
+fn requests(gov: &GovState) -> u64 {
+    gov.metering_for(metering_bucket(NOW))
+        .unwrap()
+        .iter()
+        .map(|r| r.requests)
+        .sum()
+}
+
+#[test]
+fn lost_ack_then_unknown_replays_exact_body_before_fresh_arrivals() {
+    let store = Arc::new(UncertainStore::new([Reply::Lost, Reply::Unknown]));
+    let gov = GovState::new(store.clone(), None).unwrap();
+    accrue(&gov, 3, 123);
+    assert_eq!(gov.flush_metering(), 0);
+    assert_eq!(requests(&gov), 1);
+    accrue(&gov, 5, 123);
+    accrue(&gov, 7, 456);
+    assert_eq!(gov.flush_metering(), 0);
+    assert_eq!(requests(&gov), 1);
+    gov.flush_metering();
+    gov.flush_metering();
+    assert_eq!(
+        requests(&gov),
+        3,
+        "lost acknowledgement must not duplicate consumption"
+    );
+    let calls = store.calls.lock().unwrap();
+    assert_eq!(calls[0], calls[1]);
+    assert_eq!(calls[0], calls[2]);
+    assert_eq!(calls[0].1[0].tokens_input, 3);
+    assert_eq!(calls[0].1[0].priced_from_ms, 123);
+    assert!(calls[3..].iter().all(|call| call.0 != calls[0].0));
+    assert_eq!(store.legacy_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(gov.pending_metering_totals().1.requests, 0);
+    let rows = gov.metering_for(metering_bucket(NOW)).unwrap();
+    assert_eq!(rows.len(), 2, "historical pricing instants remain distinct");
+    assert_eq!(rows.iter().map(|r| r.tokens_input).sum::<u64>(), 15);
+}
+
+#[test]
+fn unwind_retains_operation_and_releases_flush_owner() {
+    let store = Arc::new(UncertainStore::new([Reply::Unwind]));
+    let gov = GovState::new(store.clone(), None).unwrap();
+    accrue(&gov, 3, 123);
+    assert!(
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| gov.flush_metering())).is_err()
+    );
+    assert_eq!(requests(&gov), 1);
+    assert_eq!(gov.pending_metering_totals().1.requests, 1);
+    assert_eq!(gov.flush_metering_final(), 1);
+    assert_eq!(requests(&gov), 1);
+    let calls = store.calls.lock().unwrap();
+    assert_eq!(calls[0], calls[1]);
+}
+
+#[test]
+fn concurrent_flush_and_abandoned_caller_leave_one_replay_owner() {
+    let entered = Arc::new(Barrier::new(2));
+    let release = Arc::new(Barrier::new(2));
+    let store = Arc::new(UncertainStore::new([Reply::Block(
+        entered.clone(),
+        release.clone(),
+    )]));
+    let gov = Arc::new(GovState::new(store.clone(), None).unwrap());
+    accrue(&gov, 3, 123);
+    let (finished, completion) = std::sync::mpsc::channel();
+    let held = {
+        let gov = gov.clone();
+        std::thread::spawn(move || finished.send(gov.flush_metering()).unwrap())
+    };
+    entered.wait();
+    accrue(&gov, 5, 123);
+    assert_eq!(
+        gov.flush_metering(),
+        0,
+        "another caller cannot replace the active operation"
+    );
+    assert_eq!(gov.pending_metering_totals().1.requests, 2);
+    let final_flush = {
+        let gov = gov.clone();
+        std::thread::spawn(move || gov.flush_metering_final())
+    };
+    drop(held); // dropping a caller's join handle cannot release its running operation
+    release.wait();
+    assert_eq!(completion.recv().unwrap(), 0);
+    assert_eq!(final_flush.join().unwrap(), 2);
+    assert_eq!(requests(&gov), 2);
+    let calls = store.calls.lock().unwrap();
+    assert_eq!(calls[0], calls[1]);
+    assert_ne!(calls[0].0, calls[2].0);
+}
+
+#[test]
+fn acknowledged_independent_operations_each_apply_and_empty_flush_is_noop() {
+    let store = Arc::new(UncertainStore::new([]));
+    let gov = GovState::new(store.clone(), None).unwrap();
+    accrue(&gov, 3, 123);
+    assert_eq!(gov.flush_metering(), 1);
+    accrue(&gov, 3, 123);
+    assert_eq!(gov.flush_metering_final(), 1);
+    assert_eq!(requests(&gov), 2);
+    assert_eq!(gov.flush_metering(), 0);
+    let calls = store.calls.lock().unwrap();
+    assert_eq!(calls.len(), 2);
+    assert_eq!(calls[0].1, calls[1].1);
+    assert_ne!(calls[0].0, calls[1].0);
+}
+
+#[test]
+fn final_flush_reentry_does_not_wait_for_itself_or_change_the_operation() {
+    let store = Arc::new(UncertainStore::new([]));
+    let gov = Arc::new(GovState::new(store.clone(), None).unwrap());
+    *store.reenter.lock().unwrap() = Some(Arc::downgrade(&gov));
+    accrue(&gov, 3, 123);
+    assert_eq!(gov.flush_metering_final(), 1);
+    assert_eq!(requests(&gov), 1);
+    assert_eq!(store.calls.lock().unwrap().len(), 1);
+}
+
+#[test]
+fn repeated_unknowns_retain_one_snapshot_and_coalesce_fresh_pending_separately() {
+    let store = Arc::new(UncertainStore::new(
+        std::iter::once(Reply::Lost).chain(std::iter::repeat_with(|| Reply::Unknown).take(8)),
+    ));
+    let gov = GovState::new(store.clone(), None).unwrap();
+    accrue(&gov, 3, 123);
+    assert_eq!(gov.flush_metering(), 0);
+    for _ in 0..8 {
+        accrue(&gov, 5, 123);
+        assert_eq!(gov.flush_metering(), 0);
+        assert_eq!(gov.pending_metering_totals().0, 2);
+    }
+    let calls = store.calls.lock().unwrap().clone();
+    assert!(calls.iter().all(|call| call == &calls[0]));
+    assert_eq!(gov.pending_metering_totals().1.requests, 9);
+    assert_eq!(gov.flush_metering(), 1);
+    assert_eq!(gov.flush_metering(), 1);
+    assert_eq!(requests(&gov), 9);
+}
