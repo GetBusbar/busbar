@@ -588,3 +588,96 @@ fn a_close_during_queued_line_publication_prevents_later_lines_from_crossing() {
         assert!(dialled.leg.ready.lock().unwrap().is_empty());
     });
 }
+
+struct LatestReadWake {
+    woke: Arc<std::sync::atomic::AtomicUsize>,
+    dropped: Arc<std::sync::atomic::AtomicUsize>,
+    leg: std::sync::Weak<super::UpstreamLeg>,
+}
+
+impl std::task::Wake for LatestReadWake {
+    fn wake(self: Arc<Self>) {
+        if let Some(leg) = self.leg.upgrade() {
+            assert!(leg.framing.try_lock().is_ok());
+            assert!(leg.ready.try_lock().is_ok());
+        }
+        self.woke.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+impl Drop for LatestReadWake {
+    fn drop(&mut self) {
+        if let Some(leg) = self.leg.upgrade() {
+            assert!(
+                leg.framing.try_lock().is_ok(),
+                "waker dropped under the handoff"
+            );
+            assert!(
+                leg.ready.try_lock().is_ok(),
+                "waker dropped under the ready queue"
+            );
+        }
+        self.dropped
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+#[test]
+fn replacing_quiet_read_contexts_releases_old_wakers_without_waking_them() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    crate::support::worker().block_on(async {
+        let (dialled, _, _) = line_outputs();
+        let woke = Arc::new(AtomicUsize::new(0));
+        let dropped = Arc::new(AtomicUsize::new(0));
+        let mut contexts = Vec::new();
+        let mut buf = [0; 16];
+        for _ in 0..128 {
+            let reader = Arc::new(LatestReadWake {
+                woke: Arc::clone(&woke),
+                dropped: Arc::clone(&dropped),
+                leg: Arc::downgrade(&dialled.leg),
+            });
+            contexts.push(Arc::downgrade(&reader));
+            let waker = std::task::Waker::from(reader);
+            assert_eq!(
+                dialled.read(&waker, &mut buf),
+                Err(crate::ConnError::Pending)
+            );
+        }
+        assert_eq!(
+            woke.load(Ordering::SeqCst),
+            0,
+            "no replacement self-wake loop"
+        );
+        assert_eq!(contexts.iter().filter(|w| w.upgrade().is_some()).count(), 1);
+        assert_eq!(dropped.load(Ordering::SeqCst), contexts.len() - 1);
+    });
+}
+
+#[test]
+fn line_publication_wakes_only_the_latest_read_context_as_the_stream_and_reactor_do() {
+    use crate::datagram::LegSink as _;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    crate::support::worker().block_on(async {
+        let (dialled, _, _) = line_outputs();
+        let first = Arc::new(AtomicUsize::new(0));
+        let latest = Arc::new(AtomicUsize::new(0));
+        let mut buf = [0; 16];
+        for count in [&first, &latest] {
+            let waker = std::task::Waker::from(Arc::new(LatestReadWake {
+                woke: Arc::clone(count),
+                dropped: Arc::new(AtomicUsize::new(0)),
+                leg: Arc::downgrade(&dialled.leg),
+            }));
+            assert_eq!(
+                dialled.read(&waker, &mut buf),
+                Err(crate::ConnError::Pending)
+            );
+        }
+        assert_eq!(first.load(Ordering::SeqCst), 0);
+        assert_eq!(latest.load(Ordering::SeqCst), 0);
+        dialled.leg.line(incoming_line(), std::time::Instant::now());
+        assert_eq!(first.load(Ordering::SeqCst), 0);
+        assert!(latest.load(Ordering::SeqCst) > 0);
+    });
+}
