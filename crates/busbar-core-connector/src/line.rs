@@ -214,7 +214,10 @@ enum Turn<R> {
 
 /// A connection a holder has out of its line. Only an unwind out of a drive drops it still holding
 /// the connection: the line is then closed with the connection put back, to be closed (its
-/// plugins' ends crossed) by whoever lets the line go.
+/// plugins' ends crossed) by whoever lets the line go. Nothing else drives a closed line, so the
+/// holders that found the connection out are woken, and the exchanges handed to its owner are
+/// abandoned, exactly as [`Line::bring_back`] does on a line closed meanwhile; both run with the
+/// lock let go, and the connection is not closed here (no plugin crossing in a drop on an unwind).
 struct Taken<'l> {
     line: &'l Line,
     conn: Option<Connection>,
@@ -222,11 +225,20 @@ struct Taken<'l> {
 
 impl Drop for Taken<'_> {
     fn drop(&mut self) {
-        if let Some(conn) = self.conn.take() {
+        let Some(conn) = self.conn.take() else {
+            return;
+        };
+        let (missed, abandoned) = {
             let mut s = self.line.state();
             s.closing = true;
             s.conn = Some(conn);
-        }
+            (
+                std::mem::take(&mut s.missed),
+                std::mem::take(&mut s.opening),
+            )
+        };
+        drop(abandoned);
+        wake(missed);
     }
 }
 
@@ -322,6 +334,9 @@ impl Line {
     /// closed meanwhile, closed here, with no lock held), and the holders that found it out are
     /// woken.
     fn bring_back(&self, taken: &mut Taken<'_>, settle: impl FnOnce(&mut State)) {
+        // Declared before the guard so it is dropped after it, whichever way this returns: a
+        // failure whose exchange is no longer held is retired with the lock let go.
+        let mut discarded: Vec<Failure> = Vec::new();
         let mut s = self.state();
         settle(&mut s);
         loop {
@@ -361,7 +376,16 @@ impl Line {
                 }
             }
             s = self.state();
-            s.refused.extend(refused);
+            // The opens ran with no lock held, so a holder may have left meanwhile
+            // ([`Self::leave`] forgot its stream): nobody reads that failure, and kept it would
+            // be an entry nothing ever removes. A holder still on the line is told why.
+            for (stream, failure) in refused {
+                if s.held.contains(&stream) {
+                    s.refused.insert(stream, failure);
+                } else {
+                    discarded.push(failure);
+                }
+            }
         }
     }
 
