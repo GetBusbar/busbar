@@ -58,6 +58,7 @@ pub fn supported_abi(kind: &str) -> &'static [u32] {
 /// never re-read from disk). A LINKED row ([`LinkedPlugin`], [`PluginRegistry::link`]) states the
 /// same manifest and carries its door instead of bytes. Both are registered by the one [`PluginRegistry`] admission and loaded
 /// by the one load; nothing downstream reads which door a row came in by.
+#[derive(Clone)]
 pub struct LoadablePlugin {
     /// The tarball filename (diagnostics only - identity is the manifest). A linked row's is
     /// [`LINKED_FILE`].
@@ -136,6 +137,26 @@ impl LoadablePlugin {
                 .ok()
                 .map(|row| row.statement),
             None => self.manifest.stated_rendering().ok().flatten(),
+        }
+    }
+
+    /// The declarations this row carries: a linked door's Statement `EXT_DECLARES`, or the
+    /// manifest declarations used by dropped-in rows and older linked doors without that key.
+    /// Reading a linked Statement never opens an instance.
+    ///
+    /// # Errors
+    /// The linked Statement or its declaration document does not read.
+    pub fn declarations(&self) -> Result<crate::sign::Declares, String> {
+        use busbar_contract::abi::mechanism::{extensions, rendering};
+
+        let Some(door) = self.door() else {
+            return Ok(self.manifest.declares.clone());
+        };
+        let row = crate::dispatch::LinkedRow::of_raw(door).map_err(|e| e.to_string())?;
+        let stated = rendering::read(&row.statement).map_err(|e| e.to_string())?;
+        match extensions::get(&stated.extensions.bytes, extensions::EXT_DECLARES) {
+            Some(bytes) => crate::sign::Declares::from_declares_json(bytes),
+            None => Ok(self.manifest.declares.clone()),
         }
     }
 
@@ -450,6 +471,7 @@ impl LinkedPlugin {
 
 /// A plugin that failed phase 2 (untrusted, no matching opt-in; or an anti-downgrade reject) and is
 /// SKIPPED: recorded for logging/`--list-plugins`, never a load candidate, never `dlopen`ed.
+#[derive(Clone)]
 pub struct SkippedPlugin {
     pub file: String,
     pub manifest: Manifest,
@@ -462,6 +484,7 @@ pub struct SkippedPlugin {
 /// The registry of validated, loadable plugins, addressable by canonical name OR alias. Built only
 /// after all three phases pass; this is the ONLY resolution surface (`governance.store:` etc.), so
 /// nothing outside the validated set can ever be selected.
+#[derive(Clone)]
 pub struct PluginRegistry {
     /// Every row, in registration order: the linked rows, then the plugins directory's.
     rows: Vec<LoadablePlugin>,

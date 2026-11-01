@@ -21,54 +21,18 @@ fn installed() -> Vec<&'static Diagnostic> {
     register_diagnostics().all()
 }
 
-/// The codes the linked first-party plugins DECLARE (K9a S3), read off each linked row's `declares`
-/// section exactly as the plugin states it — the same field-by-field reading the composition root's
-/// declaration check makes, so the page documents what the catalogue installs. Read only by the
-/// `linked_axis_export_doors` cells, so gated with them.
+/// The linked declarations, read through the same source and validator as runtime registration.
 #[cfg(linked_axis_export_doors)]
 fn declared_by_linked_plugins() -> Vec<&'static Diagnostic> {
-    use busbar_contract::diagnostic::{Class, Severity};
-    let leak = |v: &serde_json::Value| -> &'static str {
-        Box::leak(
-            v.as_str()
-                .expect("a string field")
-                .to_string()
-                .into_boxed_str(),
-        )
-    };
-    let mut out = Vec::new();
-    // The export axis: each memory-ABI row on `export-doors` states its `declares`.
-    let rows = LINKED.export_doors.iter().map(|d| (d.name, d.declares));
-    for (name, declares) in rows {
-        let decl: serde_json::Value = serde_json::from_str(declares)
-            .unwrap_or_else(|e| panic!("linked export '{name}': its declares section: {e}"));
-        for d in decl["diagnostics"].as_array().into_iter().flatten() {
-            let code = d["code"].as_u64().expect("a code") as u16;
-            let severity = [
-                Severity::BenignRecurring,
-                Severity::Actionable,
-                Severity::Fatal,
-            ]
-            .into_iter()
-            .find(|s| s.as_str() == d["severity"])
-            .expect("a severity token");
-            let class = Class::ALL
-                .into_iter()
-                .find(|c| c.ordinal() == code / 1000)
-                .expect("a class");
-            out.push(&*Box::leak(Box::new(Diagnostic {
-                code,
-                class,
-                slug: leak(&d["slug"]),
-                title: leak(&d["title"]),
-                severity,
-                summary: leak(&d["summary"]),
-                action: leak(&d["action"]),
-                since: leak(&d["since"]),
-                retired: false,
-            })));
-        }
-    }
+    use crate::root::linked::{declared_diagnostics, linked_declared_diagnostics, linked_exports};
+    use crate::root::loader::PluginRegistry;
+
+    let mut out = linked_declared_diagnostics(&LINKED, &[]).expect("linked declarations read");
+    let exports = PluginRegistry::empty()
+        .link(linked_exports(LINKED.export_doors).expect("linked export declarations read"))
+        .expect("linked exports register");
+    let export_codes = declared_diagnostics(&exports, &out).expect("linked export codes join");
+    out.extend(export_codes);
     out
 }
 
@@ -123,7 +87,7 @@ fn every_diagnostic_code_is_unique_across_the_neutral_and_plane_catalogues() {
 fn declared_codes_do_not_collide_with_the_registry() {
     let declared = declared_by_linked_plugins();
     assert!(!declared.is_empty(), "the linked plugins declare codes");
-    let installed = installed();
+    let installed = busbar_kernel::diagnostics::REGISTRY;
     for d in declared {
         assert!(
             installed.iter().all(|r| r.code != d.code),
@@ -171,11 +135,12 @@ mod page {
         let in_registry = |d: &Diagnostic| REGISTRY.iter().any(|r| r.code == d.code);
         let mut page: Vec<&'static Diagnostic> = REGISTRY.to_vec();
         page.extend(declared_by_linked_plugins());
-        page.extend(
-            installed()
-                .into_iter()
-                .filter(|d| !in_registry(d) && published.contains(&u64::from(d.code))),
-        );
+        let declared_codes: std::collections::HashSet<_> = page.iter().map(|d| d.code).collect();
+        page.extend(installed().into_iter().filter(|d| {
+            !in_registry(d)
+                && !declared_codes.contains(&d.code)
+                && published.contains(&u64::from(d.code))
+        }));
         page
     }
 
