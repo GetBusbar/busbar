@@ -4,8 +4,8 @@
 //! The fixed audit chain across a restart: the head read and the anchors answer as they did before.
 
 use super::*;
+use crate::root::store_double::RecordSlots;
 use busbar_kernel_audit::expose;
-use busbar_kernel_wal::NullShipper;
 
 /// A directory nobody else writes to, removed when the test ends.
 pub(crate) struct Scratch(pub(crate) std::path::PathBuf);
@@ -29,16 +29,18 @@ impl Drop for Scratch {
     }
 }
 
-/// A book journalling into `dir`, as node 7.
-pub(super) fn open(dir: &std::path::Path) -> Durability {
-    build_for_node(
+/// A book over the Store as node 7, supplied a legacy directory.
+pub(super) fn open(dir: &std::path::Path, slots: &RecordSlots) -> Durability {
+    let lane = JournalLane::start(slots.calls(), "test-store").unwrap();
+    build_on_store(
         &DurabilityConfig {
             data_dir: Some(dir.to_path_buf()),
         },
         7,
-        Box::new(NullShipper::new()),
+        lane,
+        None,
     )
-    .expect("the directory is writable")
+    .expect("the Store reads back")
 }
 
 /// A unit's facts for the audit step, an hour apart per unit so each one is its own head sample.
@@ -101,9 +103,10 @@ pub(super) fn seal(
 
 #[test]
 fn an_undecodable_audit_record_refuses_the_chain_window_without_reclassifying_the_journal() {
+    let slots = RecordSlots::new();
     use tracing_subscriber::layer::SubscriberExt as _;
     let scratch = Scratch::new("undecodable-window");
-    let mut book = open(&scratch.0);
+    let mut book = open(&scratch.0, &slots);
     let sealed = seal(&mut book, 1..=1);
     assert_eq!(book.chain_at().audit_window(1, 2), Some(sealed));
 
@@ -145,10 +148,15 @@ fn an_undecodable_audit_record_refuses_the_chain_window_without_reclassifying_th
 /// was resumed from its tail and its head history started empty.
 #[test]
 fn after_a_restart_the_head_read_answers_with_the_tip_and_the_anchors_survive() {
+    let slots = RecordSlots::new();
     let scratch = Scratch::new("head-after-restart");
     let (sealed, head_before, anchors_before, range_before) = {
-        let mut book = open(&scratch.0);
+        let mut book = open(&scratch.0, &slots);
         let sealed = seal(&mut book, 1..=3);
+        assert!(book
+            .lane()
+            .unwrap()
+            .drain(std::time::Duration::from_secs(5)));
         (
             sealed.clone(),
             expose::head_body(&book.record),
@@ -158,7 +166,7 @@ fn after_a_restart_the_head_read_answers_with_the_tip_and_the_anchors_survive() 
     };
     assert!(!head_before.contains("\"head\":null"), "{head_before}");
 
-    let restarted = open(&scratch.0);
+    let restarted = open(&scratch.0, &slots);
     assert_eq!(restarted.record.next_seq(), 4);
     let head = expose::head_body(&restarted.record);
     assert!(

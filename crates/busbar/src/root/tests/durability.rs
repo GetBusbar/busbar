@@ -83,8 +83,13 @@ fn token() -> Grant<DurableWrite> {
 }
 
 /// A journal over `cfg` as node `node`, with no card holder to rebuild.
-fn boot(cfg: &DurabilityConfig, node: u64) -> Result<Durability, OpenError> {
-    build_with_cards(cfg, node, Box::new(NullShipper::new()), None)
+fn boot(
+    slots: &crate::root::store_double::RecordSlots,
+    cfg: &DurabilityConfig,
+    node: u64,
+) -> Result<Durability, OpenError> {
+    let lane = JournalLane::start(slots.calls(), "test-store").expect("the lane starts");
+    build_on_store(cfg, node, lane, None)
 }
 
 /// Seal one unit's audit record onto `durability`'s journal: the record every unit leaves.
@@ -237,17 +242,20 @@ fn a_sealed_audit_record_goes_on_the_journal_whole() {
 /// chain (its link names the first record), and the whole chain read back verifies from genesis.
 #[test]
 fn two_boots_minting_the_same_unit_key_seal_distinct_verified_records() {
+    let slots = crate::root::store_double::RecordSlots::new();
     let scratch = ScratchDir::new("audit-two-boots");
     let cfg = DurabilityConfig {
         data_dir: Some(scratch.path.clone()),
     };
     let first = {
-        let mut durability = boot(&cfg, 7).expect("the directory is writable");
+        let mut durability = boot(&slots, &cfg, 7).expect("the Store reads back");
         durability
             .seal_unit(audit_inputs(1), audit_pass(), &token())
-            .expect("sealed")
+            .expect("sealed");
+        drained(&durability);
+        durability.audit_records.last().unwrap().clone()
     };
-    let mut restarted = boot(&cfg, 7).expect("the journal reopens");
+    let mut restarted = boot(&slots, &cfg, 7).expect("the journal reopens");
     let second = restarted
         .seal_unit(audit_inputs(1), audit_pass(), &token())
         .expect("sealed");
@@ -260,7 +268,8 @@ fn two_boots_minting_the_same_unit_key_seal_distinct_verified_records() {
     );
     assert_eq!(second.seq, first.seq + 1);
 
-    let reread = boot(&cfg, 7).expect("the journal reopens");
+    drained(&restarted);
+    let reread = boot(&slots, &cfg, 7).expect("the journal reopens");
     let whole = reread
         .audit_window(1, u64::MAX)
         .expect("the journal reads back");
@@ -273,21 +282,23 @@ fn two_boots_minting_the_same_unit_key_seal_distinct_verified_records() {
 /// empty because the in-memory ring let it go.
 #[test]
 fn a_range_older_than_the_ring_is_read_back_after_a_restart() {
+    let slots = crate::root::store_double::RecordSlots::new();
     let scratch = ScratchDir::new("audit-older-than-ring");
     let cfg = DurabilityConfig {
         data_dir: Some(scratch.path.clone()),
     };
     let total = (AUDIT_RING + 5) as u64;
     {
-        let mut durability = boot(&cfg, 7).expect("the directory is writable");
+        let mut durability = boot(&slots, &cfg, 7).expect("the Store reads back");
         for unit in 1..=total {
             durability
                 .seal_unit(audit_inputs(unit), audit_pass(), &token())
                 .expect("sealed");
         }
         assert_eq!(durability.audit_records.len(), AUDIT_RING);
+        drained(&durability);
     }
-    let restarted = boot(&cfg, 7).expect("the journal reopens");
+    let restarted = boot(&slots, &cfg, 7).expect("the journal reopens");
     assert_eq!(restarted.audit_records.len(), AUDIT_RING);
     assert_eq!(
         restarted.audit_records[0].seq, 6,
@@ -356,12 +367,13 @@ fn strip_signature(record: &mut AuditRecord) {
 /// signature was stripped verified clean.
 #[test]
 fn an_unsigned_record_sealed_under_a_bound_keyset_is_a_verify_finding() {
+    let slots = crate::root::store_double::RecordSlots::new();
     let scratch = ScratchDir::new("audit-unsigned-under-key");
     let cfg = DurabilityConfig {
         data_dir: Some(scratch.path.clone()),
     };
     {
-        let mut durability = boot(&cfg, 7).expect("the directory is writable");
+        let mut durability = boot(&slots, &cfg, 7).expect("the Store reads back");
         bind_keyset(&mut durability, &scratch.path);
         for unit in 1..=2 {
             durability
@@ -375,8 +387,9 @@ fn an_unsigned_record_sealed_under_a_bound_keyset_is_a_verify_finding() {
             findings,
             vec!["record 2 is unsigned, sealed after the keyset was bound".to_string()]
         );
+        drained(&durability);
     }
-    let mut restarted = boot(&cfg, 7).expect("the journal reopens");
+    let mut restarted = boot(&slots, &cfg, 7).expect("the journal reopens");
     bind_keyset(&mut restarted, &scratch.path);
     assert!(restarted.retained_audit_findings().is_empty());
     strip_signature(&mut restarted.audit_records[0]);
@@ -391,29 +404,32 @@ fn an_unsigned_record_sealed_under_a_bound_keyset_is_a_verify_finding() {
 /// and after a restart.
 #[test]
 fn records_sealed_before_the_keyset_was_bound_are_not_findings() {
+    let slots = crate::root::store_double::RecordSlots::new();
     let scratch = ScratchDir::new("audit-unsigned-before-key");
     let cfg = DurabilityConfig {
         data_dir: Some(scratch.path.clone()),
     };
     {
-        let mut keyless = boot(&cfg, 7).expect("the directory is writable");
+        let mut keyless = boot(&slots, &cfg, 7).expect("the Store reads back");
         for unit in 1..=2 {
             keyless
                 .seal_unit(audit_inputs(unit), audit_pass(), &token())
                 .expect("sealed");
         }
         assert!(keyless.retained_audit_findings().is_empty());
+        drained(&keyless);
     }
     {
-        let mut keyed = boot(&cfg, 7).expect("the journal reopens");
+        let mut keyed = boot(&slots, &cfg, 7).expect("the journal reopens");
         bind_keyset(&mut keyed, &scratch.path);
         let third = keyed
             .seal_unit(audit_inputs(3), audit_pass(), &token())
             .expect("sealed");
         assert!(third.key_id.is_some(), "sealed under the bound key");
         assert!(keyed.retained_audit_findings().is_empty());
+        drained(&keyed);
     }
-    let mut reread = boot(&cfg, 7).expect("the journal reopens");
+    let mut reread = boot(&slots, &cfg, 7).expect("the journal reopens");
     bind_keyset(&mut reread, &scratch.path);
     assert!(reread.retained_audit_findings().is_empty());
     strip_signature(&mut reread.audit_records[2]);
@@ -427,12 +443,13 @@ fn records_sealed_before_the_keyset_was_bound_are_not_findings() {
 /// silently skipped or a line silently dropped.
 #[test]
 fn an_audit_record_naming_an_undeclared_class_is_a_restart_finding() {
+    let slots = crate::root::store_double::RecordSlots::new();
     let scratch = ScratchDir::new("audit-undeclared-class");
     let cfg = DurabilityConfig {
         data_dir: Some(scratch.path.clone()),
     };
     {
-        let mut durability = boot(&cfg, 7).expect("the directory is writable");
+        let mut durability = boot(&slots, &cfg, 7).expect("the Store reads back");
         let mut inputs = audit_inputs(1);
         inputs.usage.lines.push(UsageLine {
             class: busbar_contract::MeterClassId::new("a_class_this_node_never_registered"),
@@ -443,8 +460,9 @@ fn an_audit_record_naming_an_undeclared_class_is_a_restart_finding() {
         durability
             .seal_unit(inputs, audit_pass(), &token())
             .expect("sealed");
+        drained(&durability);
     }
-    let restarted = boot(&cfg, 7).expect("the journal reopens");
+    let restarted = boot(&slots, &cfg, 7).expect("the journal reopens");
     assert!(
         restarted.restart_findings.iter().any(|f| {
             let f = f.to_string();
@@ -455,65 +473,65 @@ fn an_audit_record_naming_an_undeclared_class_is_a_restart_finding() {
     );
 }
 
-/// The set branch: the operator asked for a journal on this node's disk, so one appears. The
-/// mirror of the test above, and the reason that one means something — an assertion that no
-/// file appears is only worth having if a file appears when it should.
+/// A legacy directory cannot make a bare shipper into a restart-durable journal.
 #[test]
-fn a_configured_data_dir_opens_a_journal_on_disk() {
+fn a_bare_shipper_with_a_data_dir_keeps_only_ram() {
     let scratch = ScratchDir::new("set");
     let cfg = DurabilityConfig {
         data_dir: Some(scratch.path.clone()),
     };
-    let durability = build(&cfg, Box::new(NullShipper::new())).expect("the directory is writable");
+    let durability = build(&cfg, Box::new(NullShipper::new())).expect("a RAM helper opens");
 
-    assert!(durability.on_disk());
-    assert_eq!(durability.journal.mode(), Mode::OnDisk);
+    assert!(!durability.on_disk());
     assert!(
-        !scratch.entries().is_empty(),
-        "a configured data directory should hold the journal's first segment"
+        !durability.keeps_chain(),
+        "a bare shipper cannot prove restart durability"
     );
+    assert!(!durability.durable_in_store());
+    assert_eq!(durability.journal.mode(), Mode::MemoryBuffered);
+    assert!(scratch.entries().is_empty());
 }
 
-/// The two branches build the same stack. A node without a data directory is not running a
-/// reduced audit chain; only the journal's backing differs.
+/// Both accepted configuration shapes build the same in-process audit chain for a bare shipper.
 #[test]
-fn both_branches_build_the_same_audit_records() {
+fn both_legacy_config_shapes_build_the_same_helper_audit_records() {
     let scratch = ScratchDir::new("same");
     let buffered = build(
         &DurabilityConfig { data_dir: None },
         Box::new(NullShipper::new()),
     )
     .expect("memory-buffered cannot fail");
-    let on_disk = build(
+    let configured = build(
         &DurabilityConfig {
             data_dir: Some(scratch.path.clone()),
         },
         Box::new(NullShipper::new()),
     )
-    .expect("the directory is writable");
+    .expect("the Store reads back");
 
     // The audit chains start at the same place on both, because neither is a function of where
     // the journal lives.
-    assert_eq!(buffered.record.next_seq(), on_disk.record.next_seq());
+    assert_eq!(buffered.record.next_seq(), configured.record.next_seq());
     // And the journal starts at genesis on both.
-    assert_eq!(buffered.journal.head(), on_disk.journal.head());
+    assert_eq!(buffered.journal.head(), configured.journal.head());
     assert_eq!(buffered.journal.next_seq(), 1);
 }
 
-/// A data directory that cannot be opened is an error the caller sees, not a silent fall back
-/// to memory. An operator who asked for a journal on disk and did not get one has to be told:
-/// the quiet downgrade is how a deployment discovers at recovery time that it kept nothing.
+/// An unusable legacy path is never opened by a helper, which makes no restart durability claim.
 #[test]
-fn an_unopenable_data_dir_is_an_error_and_not_a_silent_downgrade() {
+fn a_bare_shipper_never_opens_even_an_unusable_data_dir() {
     let scratch = ScratchDir::new("unopenable");
-    // A regular file where the directory should be: the open fails, and it fails as an error.
+    // A regular file where the legacy directory would be: any attempted open would fail.
     let blocked = scratch.path.join("not-a-directory");
     std::fs::write(&blocked, b"").expect("write the blocking file");
 
     let cfg = DurabilityConfig {
         data_dir: Some(blocked),
     };
-    assert!(build(&cfg, Box::new(NullShipper::new())).is_err());
+    let book = build(&cfg, Box::new(NullShipper::new())).expect("the path is never opened");
+    assert!(!book.keeps_chain());
+    assert!(!book.on_disk());
+    assert_eq!(std::fs::read(cfg.data_dir.unwrap()).unwrap(), b"");
 }
 
 /// A node journalling its units has only its own records on the journal: an administrative row
@@ -604,12 +622,13 @@ fn claim(claim: &str) -> ClaimBalance {
 /// client's retry with a unit that never ran on this boot.
 #[test]
 fn every_idempotency_claim_a_predecessor_took_is_voided_once_at_boot() {
+    let slots = crate::root::store_double::RecordSlots::new();
     let scratch = ScratchDir::new("claim-voided");
     let cfg = DurabilityConfig {
         data_dir: Some(scratch.path.clone()),
     };
     {
-        let mut durability = boot(&cfg, 12).expect("the directory is writable");
+        let mut durability = boot(&slots, &cfg, 12).expect("the Store reads back");
         for (name, mono) in [("idem-a", 5), ("idem-b", 6)] {
             durability
                 .journal_claim(
@@ -620,10 +639,11 @@ fn every_idempotency_claim_a_predecessor_took_is_voided_once_at_boot() {
                 )
                 .expect("the claim goes on the chain");
         }
-        std::mem::forget(durability);
+        drained(&durability);
+        drop(durability);
     }
 
-    let restarted = boot(&cfg, 12).expect("the journal reopens");
+    let restarted = boot(&slots, &cfg, 12).expect("the journal reopens");
     assert_eq!(
         restarted.voided_claims,
         vec!["idem-a".to_string(), "idem-b".to_string()],
@@ -634,9 +654,10 @@ fn every_idempotency_claim_a_predecessor_took_is_voided_once_at_boot() {
         "{:?}",
         restarted.restart_findings
     );
+    drained(&restarted);
     drop(restarted);
 
-    let third = boot(&cfg, 12).expect("the journal reopens again");
+    let third = boot(&slots, &cfg, 12).expect("the journal reopens again");
     assert!(
         third.voided_claims.is_empty(),
         "a voided claim is not voided twice: {:?}",
@@ -644,83 +665,30 @@ fn every_idempotency_claim_a_predecessor_took_is_voided_once_at_boot() {
     );
 }
 
-/// A JOURNAL SEGMENT CORRUPTED MID-LOG DOES NOT STOP THE BOOT, AND IS NOT SILENT: the book opens over
-/// every record that verifies, those behind the damage included, the damaged record is in a
-/// quarantine file beside the segment, the verdict names the file, the offset and the byte count, a
-/// durable `ChainBreak` record of it goes on the chain, and the chain still verifies across it.
+/// A corrupt legacy local segment is untouched and cannot become the source of a Store boot.
 #[test]
-fn a_mid_log_corrupt_journal_boots_quarantines_and_records_it() {
-    use busbar_kernel_wal::{Entry, Journal, QuarantineKept, RecordClass, FRAME_BYTES};
-
-    let dir = ScratchDir::new("quarantine");
-    {
-        let mut journal = Journal::in_directory(
-            0,
-            &dir.path,
-            Box::new(NullShipper::new()),
-            busbar_kernel::store::now_ms,
-        )
-        .expect("opens");
-        for i in 0..4u8 {
-            journal
-                .append(
-                    &token(),
-                    StepName::Meter,
-                    &[Entry::new(RecordClass::Load, vec![i; 8]).at(1, 0)],
-                )
-                .expect("appends");
-        }
-    }
+fn a_corrupt_legacy_segment_is_preserved_without_local_quarantine() {
+    let slots = crate::root::store_double::RecordSlots::new();
+    let dir = ScratchDir::new("legacy-quarantine");
     let segment = dir.path.join("0000000000000000.wal");
-    let mut bytes = std::fs::read(&segment).expect("the segment is there");
-    bytes[FRAME_BYTES + 200] ^= 0xFF;
-    std::fs::write(&segment, &bytes).expect("damaged");
-
-    let mut durability = build_for_node(
-        &DurabilityConfig {
-            data_dir: Some(dir.path.clone()),
-        },
-        0,
-        Box::new(NullShipper::new()),
-    )
-    .expect("a corrupt journal does not stop the boot");
-
-    assert_eq!(durability.quarantined.len(), 1);
-    let q = durability.quarantined[0].clone();
-    assert_eq!(q.segment_file.as_deref(), Some(segment.as_path()));
-    assert_eq!(q.offset, FRAME_BYTES as u64);
-    assert_eq!(q.bytes, FRAME_BYTES as u64, "the damaged record alone");
-    let QuarantineKept::File(file) = &q.kept else {
-        panic!("an on-disk journal quarantines to a file");
-    };
-    assert_eq!(
-        std::fs::read(file).expect("the quarantine file is there"),
-        bytes[FRAME_BYTES..2 * FRAME_BYTES].to_vec()
-    );
-
-    let ack = durability
-        .journal_quarantines(&token(), StepName::Meter, 1_758_700_000)
-        .expect("appends")
-        .expect("a quarantine is recorded");
-    assert_eq!(ack.sealed.len(), 1);
-    assert_eq!(ack.sealed[0].class, RecordClass::ChainBreak);
-    let seqs: Vec<u64> = durability
-        .journal
-        .replay()
-        .expect("reads")
-        .expect("the chain verifies across the quarantine")
-        .iter()
-        .map(|r| r.node_seq)
-        .collect();
-    assert_eq!(seqs[..3], [1, 3, 4], "every kept record: {seqs:?}");
-    assert!(seqs.len() > 3, "and the break after them: {seqs:?}");
+    let bytes = b"corrupt legacy segment";
+    std::fs::write(&segment, bytes).expect("legacy fixture");
+    let mut durability = dir_store_book(&slots, &dir.path, 7);
+    assert!(durability.quarantined.is_empty());
+    assert!(durability.restart_findings.is_empty());
+    assert!(durability
+        .journal_quarantines(&token(), StepName::Meter, 1)
+        .unwrap()
+        .is_none());
+    assert_eq!(std::fs::read(&segment).unwrap(), bytes);
+    assert_eq!(dir.entries(), vec!["0000000000000000.wal"]);
 }
 
 // ---------------------------------------------------------------------------------------------
 // H3: THE JOURNAL KEPT BY THE CONFIGURED STORE
 // ---------------------------------------------------------------------------------------------
 
-/// A book over `slots` with no data directory, as node `node`: the production boot's shape.
+/// A book over `slots` with an unusable legacy directory, as node `node`.
 fn store_book(slots: &crate::root::store_double::RecordSlots, node: u64) -> Durability {
     store_book_bounded(slots, node, busbar_kernel_wal::MEMORY_BUFFER_RECORDS)
 }
@@ -733,8 +701,15 @@ fn store_book_bounded(
 ) -> Durability {
     let lane =
         JournalLane::with_capacity(slots.calls(), "test-store", capacity).expect("the lane starts");
-    build_on_store(&DurabilityConfig { data_dir: None }, node, lane, None)
-        .expect("the store reads back")
+    build_on_store(
+        &DurabilityConfig {
+            data_dir: Some(PathBuf::from("/dev/null/legacy-journal")),
+        },
+        node,
+        lane,
+        None,
+    )
+    .expect("the store reads back")
 }
 
 /// Wait until the store took everything the book's lane holds.
@@ -1474,33 +1449,21 @@ fn an_unreadable_stored_keyset_is_not_absent_or_replaced() {
 }
 
 #[test]
-fn a_missing_keyset_cache_recovers_the_sealed_key_from_the_store() {
-    use crate::root::keyset::{bind, KeysetSource, KEYSET_FILE};
+fn a_legacy_keyset_cache_is_ignored_and_preserved() {
+    use crate::root::keyset::{bind, KeysetSource};
     let slots = crate::root::store_double::RecordSlots::new();
-    let dir = ScratchDir::new("keyset-cache-recovery");
-    let file = dir.path.join(KEYSET_FILE);
-    let key_id = {
-        let mut first = dir_store_book(&slots, &dir.path, 91);
-        bind(
-            &mut first,
-            Some(&dir.path),
-            &token(),
-            StepName::Meter,
-            1_700_000_000,
-        )
-        .expect("first keyset binds");
-        first
-            .seal_unit(audit_inputs(1), audit_pass(), &token())
-            .expect("signed record");
-        drained(&first);
-        first
-            .record
-            .signing_key_id()
-            .expect("bound key")
-            .to_string()
-    };
-    let cached = std::fs::read(&file).expect("initial cache");
-    std::fs::remove_file(&file).expect("lose only the local cache");
+    let dir = ScratchDir::new("keyset-legacy-cache");
+    let file = dir.path.join("deployment-keyset");
+    std::fs::write(&file, b"unusable legacy keyset").unwrap();
+    let mut first = dir_store_book(&slots, &dir.path, 91);
+    assert_eq!(
+        bind(&mut first, Some(&dir.path), &token(), StepName::Meter, 1),
+        Ok(KeysetSource::Stored)
+    );
+    seal(&mut first, 1);
+    let key_id = first.record.signing_key_id().unwrap().to_string();
+    drained(&first);
+    drop(first);
     let mut restarted = dir_store_book(&slots, &dir.path, 91);
     let next_seq = restarted.journal.next_seq();
     assert_eq!(
@@ -1509,9 +1472,9 @@ fn a_missing_keyset_cache_recovers_the_sealed_key_from_the_store() {
             Some(&dir.path),
             &token(),
             StepName::Meter,
-            1_700_000_001
+            2
         ),
-        Ok(KeysetSource::Cached { file: file.clone() })
+        Ok(KeysetSource::Stored)
     );
     assert_eq!(restarted.record.signing_key_id(), Some(key_id.as_str()));
     assert_eq!(
@@ -1519,61 +1482,30 @@ fn a_missing_keyset_cache_recovers_the_sealed_key_from_the_store() {
         next_seq,
         "no replacement Bootstrap"
     );
-    assert!(std::fs::read(&file).expect("cache restored") == cached);
+    assert_eq!(std::fs::read(&file).unwrap(), b"unusable legacy keyset");
+    assert_eq!(dir.entries(), vec!["deployment-keyset"]);
     assert!(restarted.retained_audit_findings().is_empty());
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt as _;
-        assert_eq!(
-            std::fs::metadata(&file).unwrap().permissions().mode() & 0o777,
-            0o600
-        );
-    }
 }
 
 #[test]
-fn keyset_cache_recovery_never_adopts_corrupt_or_mismatched_state() {
-    use crate::root::keyset::{bind, KEYSET_FILE};
+fn a_legacy_keyset_cache_never_repairs_corrupt_or_mismatched_store_state() {
+    use crate::root::keyset::bind;
     use store_identity::KEYSET_SCHEMA;
-    for (bad_local_cache, bad_store) in [
-        (Some(b"broken-cache".as_slice()), None),
-        (
-            Some(b"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".as_slice()),
-            None,
-        ),
-        (None, Some(b"broken-store".as_slice())),
-        (None, Some(b"secret\xff".as_slice())),
-        (
-            None,
-            Some(b"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".as_slice()),
-        ),
+    for bad_store in [
+        b"broken-store".as_slice(),
+        b"secret\xff".as_slice(),
+        b"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".as_slice(),
     ] {
         let slots = crate::root::store_double::RecordSlots::new();
-        let dir = ScratchDir::new("keyset-cache-refusal");
-        let file = dir.path.join(KEYSET_FILE);
-        {
-            let mut first = dir_store_book(&slots, &dir.path, 92);
-            bind(
-                &mut first,
-                Some(&dir.path),
-                &token(),
-                StepName::Meter,
-                1_700_000_000,
-            )
-            .expect("first keyset binds");
-            drained(&first);
-        }
-        match bad_local_cache {
-            Some(bytes) => std::fs::write(&file, bytes).expect("corrupt local cache"),
-            None => std::fs::remove_file(&file).expect("remove local cache"),
-        }
-        if let Some(bytes) = bad_store {
-            slots.put_row(KEYSET_SCHEMA, b"deployment", bytes);
-        }
-        let calls = slots.calls();
-        let prior = wait_for(calls.record_get(KEYSET_SCHEMA, b"deployment"))
-            .unwrap()
-            .unwrap();
+        let dir = ScratchDir::new("keyset-store-refusal");
+        let mut first = dir_store_book(&slots, &dir.path, 92);
+        bind(&mut first, Some(&dir.path), &token(), StepName::Meter, 1).unwrap();
+        let seed = stored_keyset(slots.calls().as_ref()).unwrap().unwrap();
+        let file = dir.path.join("deployment-keyset");
+        std::fs::write(&file, seed.as_bytes()).unwrap();
+        drained(&first);
+        drop(first);
+        slots.put_row(KEYSET_SCHEMA, b"deployment", bad_store);
         let mut restarted = dir_store_book(&slots, &dir.path, 92);
         let next_seq = restarted.journal.next_seq();
         assert!(bind(
@@ -1581,18 +1513,18 @@ fn keyset_cache_recovery_never_adopts_corrupt_or_mismatched_state() {
             Some(&dir.path),
             &token(),
             StepName::Meter,
-            1_700_000_001
+            2
         )
         .is_err());
         assert!(restarted.record.signing_key_id().is_none());
         assert_eq!(restarted.journal.next_seq(), next_seq);
-        assert!(std::fs::read(&file).ok().as_deref() == bad_local_cache);
-        let after = wait_for(calls.record_get(KEYSET_SCHEMA, b"deployment"))
-            .unwrap()
-            .unwrap();
-        assert!(
-            after.as_slice() == prior.as_slice(),
-            "stored keyset was replaced"
+        assert_eq!(std::fs::read(&file).unwrap(), seed.as_bytes());
+        assert_eq!(
+            wait_for(slots.calls().record_get(KEYSET_SCHEMA, b"deployment"))
+                .unwrap()
+                .unwrap()
+                .as_slice(),
+            bad_store
         );
     }
 }
@@ -1925,7 +1857,7 @@ fn a_restart_while_the_old_lease_is_live_takes_a_fresh_id() {
     assert!(walk.chains.contains(&first.id) && walk.chains.contains(&second.id));
 }
 
-/// A book over the store whose journal is on `dir`.
+/// A book over the Store with a legacy directory supplied.
 fn dir_store_book(
     slots: &crate::root::store_double::RecordSlots,
     dir: &std::path::Path,
@@ -1943,120 +1875,229 @@ fn dir_store_book(
     .expect("the directory opens")
 }
 
-/// **A NODE WITH A DATA DIRECTORY KEEPS ITS ID IN IT, AND A RESTART READS IT BACK**: the id
-/// is the directory's own, so two directories on one host name are two identities.
-///
-/// RED before the fix: the id came from the host name in the store, and nothing was kept in the
-/// directory.
+/// A legacy node-id file cannot override the Store registry or cause a local write.
 #[test]
-fn a_restart_over_the_same_data_dir_keeps_its_id() {
-    let slots = crate::root::store_double::RecordSlots::new();
-    let one = ScratchDir::new("node-id-one");
-    let two = ScratchDir::new("node-id-two");
-    let id = persisted_node(slots.calls().as_ref(), &one.path, "host-dir")
-        .expect("an id")
-        .id;
-    assert!(
-        one.entries()
-            .contains(&store_identity::NODE_ID_FILE.to_string()),
-        "the id is kept in the node's own data directory: {:?}",
-        one.entries()
-    );
-    assert_eq!(
-        persisted_node(slots.calls().as_ref(), &one.path, "host-dir")
-            .expect("again")
-            .id,
-        id,
-        "a restart reads the same id back"
-    );
-    assert_ne!(
-        persisted_node(slots.calls().as_ref(), &two.path, "host-dir")
-            .expect("another")
-            .id,
-        id,
-        "another directory on the same host name is another node"
-    );
-    let full = std::fs::read_to_string(one.path.join(store_identity::NODE_ID_FILE)).expect("kept");
-    assert_eq!(full.trim().len(), 32, "a 128-bit id: {full:?}");
-}
-
-/// **MIGRATION: THE HOST NAME'S OLD REGISTRY ID IS ADOPTED, AND THE CHAIN KEEPS READING**:
-/// a data directory written by a build that keyed the node by its host name has no id file; its
-/// first boot on this build adopts the id the registry holds under that name, keeps it in the
-/// directory, and the chain written under it reads back whole.
-///
-/// RED before the fix: nothing was kept in the directory.
-#[test]
-fn the_first_boot_adopts_the_host_names_registry_id_and_the_chain_keeps_reading() {
+fn a_legacy_node_id_does_not_override_the_store_identity() {
     use store_identity::NODE_SCHEMA;
     let slots = crate::root::store_double::RecordSlots::new();
-    let dir = ScratchDir::new("node-id-migrate");
+    let dir = ScratchDir::new("node-id-legacy");
+    let file = dir.path.join("node_id");
+    std::fs::write(&file, b"00000000000000000000000000000063\n").unwrap();
     slots.put_row(NODE_SCHEMA, b"host:host-old", &77u64.to_be_bytes());
-    {
-        // The old build's boot: the journal written under the registry's id.
-        let mut durability = dir_store_book(&slots, &dir.path, 77);
-        for unit in 1..=2 {
-            durability
-                .seal_unit(audit_inputs(unit), audit_pass(), &token())
-                .expect("sealed");
+    let taken = take_node(slots.calls().as_ref(), "host-old").expect("Store identity");
+    assert_eq!(taken.id, 77);
+    let mut first = dir_store_book(&slots, &dir.path, taken.id);
+    seal(&mut first, 1);
+    drained(&first);
+    drop(first);
+    taken
+        .lease
+        .unwrap()
+        .release(slots.calls().as_ref())
+        .unwrap();
+    let restarted_id = take_node(slots.calls().as_ref(), "host-old").unwrap();
+    assert_eq!(restarted_id.id, 77);
+    let restarted = dir_store_book(&slots, &dir.path, restarted_id.id);
+    assert_eq!(restarted.audit_records.len(), 1);
+    assert_eq!(
+        std::fs::read(&file).unwrap(),
+        b"00000000000000000000000000000063\n"
+    );
+    assert_eq!(dir.entries(), vec!["node_id"]);
+}
+
+/// Legacy directory states cannot select a different persistence or recovery source.
+#[test]
+fn every_legacy_data_dir_shape_resumes_the_store_without_creating_files() {
+    let dir = ScratchDir::new("store-only-paths");
+    let blocked = dir.path.join("blocked");
+    std::fs::write(&blocked, b"operator input").unwrap();
+    let missing = dir.path.join("missing").join("nested");
+    let before = dir.entries();
+    for path in [dir.path.clone(), missing.clone(), blocked.join("unusable")] {
+        let slots = crate::root::store_double::RecordSlots::new();
+        let cfg = DurabilityConfig {
+            data_dir: Some(path),
+        };
+        let mut first = boot(&slots, &cfg, 71).expect("Store boot ignores local paths");
+        bind_keyset(&mut first, cfg.data_dir.as_deref().unwrap());
+        let first_audit = first
+            .seal_unit(audit_inputs(1), audit_pass(), &token())
+            .unwrap();
+        assert_eq!(first_audit.node, 71);
+        drained(&first);
+        let head = first.journal.head();
+        let next = first.journal.next_seq();
+        drop(first);
+        let mut restarted = boot(&slots, &cfg, 71).unwrap();
+        bind_keyset(&mut restarted, cfg.data_dir.as_deref().unwrap());
+        assert!(!restarted.on_disk());
+        assert!(restarted.keeps_chain() && restarted.durable_in_store());
+        assert_eq!(restarted.journal.head(), head);
+        assert_eq!(restarted.journal.next_seq(), next);
+        assert_eq!(restarted.audit_records, vec![first_audit.clone()]);
+        assert!(restarted.retained_audit_findings().is_empty());
+        let second = restarted
+            .seal_unit(audit_inputs(1), audit_pass(), &token())
+            .unwrap();
+        assert_eq!(second.prev_hash, first_audit.hash);
+        assert_eq!(second.seq, first_audit.seq + 1);
+        assert_eq!(second.what.incarnation, first_audit.what.incarnation + 1);
+        drained(&restarted);
+        assert_eq!(dir.entries(), before);
+        assert!(!missing.exists());
+        assert_eq!(std::fs::read(&blocked).unwrap(), b"operator input");
+    }
+}
+
+/// A paused Store future must be resumed even if an assertion unwinds the test.
+struct PausedStore(crate::root::store_double::RecordSlots);
+
+impl PausedStore {
+    fn new(slots: &crate::root::store_double::RecordSlots) -> Self {
+        slots.pause(true);
+        Self(slots.clone())
+    }
+
+    fn wait_pending(&self) {
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while self.0.waiting() == 0 && std::time::Instant::now() < until {
+            std::thread::yield_now();
         }
-        drained(&durability);
+        assert!(self.0.waiting() > 0, "a real Store future reached Pending");
     }
-    let taken = persisted_node(slots.calls().as_ref(), &dir.path, "host-old").expect("adopted");
-    let id = taken.id;
-    assert_eq!(id, 77, "the registry's id is adopted");
-    let full = std::fs::read_to_string(dir.path.join(store_identity::NODE_ID_FILE))
-        .expect("the adopted id is kept in the directory");
-    assert_eq!(
-        u128::from_str_radix(full.trim(), 16).expect("hex") & u128::from(u64::MAX),
-        77,
-        "its low 64 bits are the journal key"
-    );
-    let restarted = dir_store_book(&slots, &dir.path, id);
-    assert_eq!(restarted.journal.node(), 77, "the chain keeps its identity");
-    assert_eq!(restarted.audit_records.len(), 2, "and keeps reading");
-    assert!(
-        restarted.restart_findings.is_empty(),
-        "{:?}",
-        restarted.restart_findings
-    );
-    // A clean shutdown releases the adopted id's lease; a later boot reads the kept id back.
-    if let Some(lease) = &taken.lease {
-        lease.release(slots.calls().as_ref()).expect("released");
+}
+
+impl Drop for PausedStore {
+    fn drop(&mut self) {
+        self.0.pause(false);
     }
+}
+
+#[test]
+fn a_pending_store_read_never_boots_an_empty_local_journal() {
+    let slots = crate::root::store_double::RecordSlots::new();
+    {
+        let mut first = store_book(&slots, 72);
+        seal(&mut first, 1);
+        drained(&first);
+    }
+    let paused = PausedStore::new(&slots);
+    let (done, recv) = std::sync::mpsc::channel();
+    let reader = {
+        let slots = slots.clone();
+        std::thread::spawn(move || {
+            let result = store_book(&slots, 72);
+            done.send(result.audit_records.len()).unwrap();
+        })
+    };
+    paused.wait_pending();
+    assert!(matches!(
+        recv.try_recv(),
+        Err(std::sync::mpsc::TryRecvError::Empty)
+    ));
+    drop(paused);
     assert_eq!(
-        persisted_node(slots.calls().as_ref(), &dir.path, "host-old")
-            .expect("again")
-            .id,
-        77,
-        "later boots read the kept id"
+        recv.recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap(),
+        1
+    );
+    reader.join().unwrap();
+}
+
+#[test]
+fn pending_store_puts_keep_lane_and_journal_custody_and_fail_closed_at_the_bound() {
+    let slots = crate::root::store_double::RecordSlots::new();
+    let mut book = store_book_bounded(&slots, 73, 2);
+    let paused = PausedStore::new(&slots);
+    for i in 0..3 {
+        let result = book.journal.append(
+            &token(),
+            StepName::Meter,
+            &[Entry::new(RecordClass::Load, vec![i])],
+        );
+        assert_eq!(result.is_ok(), i < 2);
+    }
+    paused.wait_pending();
+    assert_eq!(
+        slots.rows_under(JOURNAL_SCHEMA),
+        0,
+        "Pending did not commit"
+    );
+    assert_eq!(book.lane().unwrap().pending(), 2);
+    assert_eq!(book.journal.buffered(), 1);
+    assert!(book.refuses_money().is_some());
+    assert_eq!(book.journal.dropped_total(), 0);
+    let held = book.chain_at();
+    drop(paused);
+    assert_eq!(
+        held.read().unwrap().unwrap().len(),
+        3,
+        "every custody owner contributes to the chain"
+    );
+    drained(&book);
+    assert_eq!(book.offer_held_back(), 0);
+    drained(&book);
+    assert!(book.refuses_money().is_none());
+    drop(book);
+    let restarted = store_book(&slots, 73);
+    assert_eq!(restarted.chain().unwrap().unwrap().len(), 3);
+    assert_eq!(restarted.journal.next_seq(), 4);
+}
+
+#[test]
+fn an_unknown_store_commit_stays_queued_and_restart_resumes_the_committed_chain() {
+    let slots = crate::root::store_double::RecordSlots::new();
+    let mut first = store_book_bounded(&slots, 74, 1);
+    slots.lose_acks(true);
+    seal(&mut first, 1);
+    let lane = first.lane().unwrap().clone();
+    assert!(lane
+        .wait_acked(
+            74,
+            first.journal.next_seq() - 1,
+            std::time::Duration::from_secs(5)
+        )
+        .is_err());
+    assert_eq!(lane.pending(), 1, "unknown commit keeps custody");
+    assert!(first.refuses_money().is_some());
+    let head = first.journal.head();
+    // A fresh instance sees what the Store really committed, even while the first awaits its ack.
+    let restarted = store_book(&slots, 74);
+    assert_eq!(restarted.journal.head(), head);
+    assert_eq!(restarted.audit_records.len(), 1);
+    slots.lose_acks(false);
+    drained(&first);
+    assert!(first.refuses_money().is_none());
+    assert_eq!(
+        restarted.chain().unwrap().unwrap().len(),
+        1,
+        "retrying the same key cannot duplicate a record"
     );
 }
 
-/// **A DATA-DIRECTORY NODE THAT ADOPTED ITS HOST NAME'S ID HOLDS THAT NAME'S LEASE**: a live node with no data directory and the same name then takes a fresh id, so the
-/// two never journal under one identity.
-///
-/// RED before the fix: both took the host name's registry id.
 #[test]
-fn a_data_dir_node_that_adopted_the_host_id_holds_its_lease_against_a_no_data_dir_peer() {
-    use store_identity::NODE_SCHEMA;
+fn dropping_a_book_with_a_pending_put_keeps_the_accepted_batch_in_the_store_lane() {
     let slots = crate::root::store_double::RecordSlots::new();
-    let dir = ScratchDir::new("node-id-mixed");
-    slots.put_row(NODE_SCHEMA, b"host:host-mix", &77u64.to_be_bytes());
-    let adopted = persisted_node(slots.calls().as_ref(), &dir.path, "host-mix").expect("adopted");
-    assert_eq!(
-        adopted.id, 77,
-        "the data-dir node adopts the host name's id"
-    );
-    let _live = Refreshing::new(&slots, adopted.lease.as_ref());
-    let peer = take_node(slots.calls().as_ref(), "host-mix").expect("an identity");
-    assert_ne!(
-        peer.id, adopted.id,
-        "a live no-data-dir node with the same name takes the adopted id"
-    );
-    assert!(
-        adopted.lease.is_some(),
-        "the adopted id is held under the lease"
-    );
-    assert!(peer.lease.is_none(), "and the peer holds none");
+    let mut book = store_book(&slots, 75);
+    let paused = PausedStore::new(&slots);
+    seal(&mut book, 1);
+    let head = book.journal.head();
+    paused.wait_pending();
+    drop(book);
+    drop(paused);
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while slots.rows_under(JOURNAL_SCHEMA) == 0 && std::time::Instant::now() < until {
+        std::thread::yield_now();
+    }
+    // Wait for every part, through the worker's backend calls, before building a new reader.
+    let mut kept = read_chain(slots.calls().as_ref(), 75).unwrap();
+    while kept.is_empty() && std::time::Instant::now() < until {
+        std::thread::yield_now();
+        kept = read_chain(slots.calls().as_ref(), 75).unwrap();
+    }
+    assert_eq!(kept.len(), 1);
+    let restarted = store_book(&slots, 75);
+    assert_eq!(restarted.journal.head(), head);
+    assert_eq!(restarted.audit_records.len(), 1);
 }

@@ -59,9 +59,8 @@ impl Durability {
     ///
     /// # Errors
     ///
-    /// The journal could not make the record durable. Without a data directory that means the store
-    /// refused the batch; with one it means a write or a sync failed. The record is sealed on the
-    /// chain and kept in the cache either way.
+    /// The journal could not hand the batch to the Store lane, or its body could not be encoded.
+    /// The record is sealed on the chain and kept in the cache either way.
     pub fn seal_unit(
         &mut self,
         mut inputs: AuditInputs,

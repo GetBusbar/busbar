@@ -2,8 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The deployment keyset (spec #82(a); BUSBAR-1.6.0.md THE DESIGN, §2, PB-13; architect ruling 2026-09-26):
-//! ephemeral without a data directory, minted-and-cached with one, and the one `KeysetMissing`
-//! refusal in its exact words.
+//! ephemeral for helpers without a Store, Store-owned for every deployment configuration.
 
 use super::*;
 use crate::root::durability::{build_with_cards, keyset_of, DurabilityConfig, Scratch};
@@ -28,11 +27,30 @@ fn node(data_dir: Option<&Path>) -> Durability {
     .expect("the book opens")
 }
 
-/// Boot a node over `dir` and bind its keyset, as the boot does.
-fn boot(dir: &Path) -> (Durability, Result<KeysetSource, KeysetError>) {
-    let mut durability = node(Some(dir));
+/// A fresh host over one Store fixture, with a legacy directory supplied to both public APIs.
+fn boot(
+    slots: &crate::root::store_double::RecordSlots,
+    dir: &Path,
+) -> (Durability, Result<KeysetSource, KeysetError>) {
+    let lane = crate::root::durability::JournalLane::start(slots.calls(), "test-store").unwrap();
+    let mut durability = crate::root::durability::build_on_store(
+        &DurabilityConfig {
+            data_dir: Some(dir.to_path_buf()),
+        },
+        7,
+        lane,
+        None,
+    )
+    .unwrap();
     let bound = bind(&mut durability, Some(dir), &token(), StepName::Meter, NOW);
     (durability, bound)
+}
+
+fn drained(book: &Durability) {
+    assert!(book
+        .lane()
+        .unwrap()
+        .drain(std::time::Duration::from_secs(5)));
 }
 
 /// One unit's audit record, sealed on the chain: signed when the chain has a key.
@@ -136,160 +154,144 @@ fn an_ephemeral_node_verifies_its_own_boots_signatures() {
     );
 }
 
-/// FIRST BOOT WITH A DATA DIRECTORY: the keyset is minted, cached under the directory at 0600, and
-/// its fingerprint sealed by a `Bootstrap` record on the journal — the first record on the chain.
+/// Store keysets seal their fingerprint without a local cache.
 #[test]
-fn the_first_boot_with_a_data_dir_mints_caches_0600_and_seals_a_bootstrap() {
+fn the_first_boot_with_a_data_dir_keeps_its_keyset_in_the_store_and_seals_a_bootstrap() {
+    let slots = crate::root::store_double::RecordSlots::new();
     let dir = Scratch::new("keyset-mint");
-    let (durability, bound) = boot(&dir.0);
-    let file = dir.0.join(KEYSET_FILE);
-    assert_eq!(
-        bound.expect("the first boot mints"),
-        KeysetSource::Minted { file: file.clone() }
-    );
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt as _;
-        let mode = std::fs::metadata(&file)
-            .expect("the keyset file is written")
-            .permissions()
-            .mode();
-        assert_eq!(mode & 0o777, 0o600, "the keyset file is 0600");
-    }
-    let records = durability
-        .journal
-        .replay()
-        .expect("reads back")
-        .expect("verifies");
+    let (durability, bound) = boot(&slots, &dir.0);
+    assert_eq!(bound, Ok(KeysetSource::Stored));
+    let records = durability.chain().unwrap().unwrap();
     assert_eq!(records.len(), 1);
     assert_eq!(records[0].class, RecordClass::Bootstrap);
-    let cached = AuditSigningKey::from_hex_seed(
-        &std::fs::read_to_string(&file).expect("the keyset file reads"),
-    )
-    .expect("the file holds a seed");
+    let seed = crate::root::durability::stored_keyset(slots.calls().as_ref())
+        .unwrap()
+        .unwrap();
+    let stored = AuditSigningKey::from_hex_seed(&seed).unwrap();
     assert_eq!(
         bootstrap_fingerprint(&records[0].body),
-        Some(fingerprint_of_signer(&cached)),
-        "the Bootstrap seals the cached key's fingerprint"
+        Some(fingerprint_of_signer(&stored))
     );
-    assert_eq!(
-        durability.record.signing_key_id(),
-        Some(cached.key_id()),
-        "the chain signs with the cached key"
-    );
+    assert_eq!(durability.record.signing_key_id(), Some(stored.key_id()));
+    assert_eq!(std::fs::read_dir(&dir.0).unwrap().count(), 0);
 }
 
-/// A RESTART with the directory intact reads the cache and signs with the SAME key, sealing no
-/// second `Bootstrap`.
 #[test]
-fn a_restart_with_the_data_dir_signs_with_the_same_key() {
+fn a_restart_with_the_data_dir_signs_with_the_same_store_key() {
+    let slots = crate::root::store_double::RecordSlots::new();
     let dir = Scratch::new("keyset-restart");
-    let (first, bound) = boot(&dir.0);
-    bound.expect("the first boot mints");
+    let (mut first, bound) = boot(&slots, &dir.0);
+    bound.unwrap();
+    let record = seal(&mut first);
     let key_id = first.record.signing_key_id().map(str::to_string);
+    drained(&first);
     drop(first);
-
-    let (second, bound) = boot(&dir.0);
-    assert_eq!(
-        bound.expect("the restart reads the cache"),
-        KeysetSource::Cached {
-            file: dir.0.join(KEYSET_FILE)
-        }
-    );
+    let (mut second, bound) = boot(&slots, &dir.0);
+    assert_eq!(bound, Ok(KeysetSource::Stored));
     assert_eq!(second.record.signing_key_id().map(str::to_string), key_id);
-    let bootstraps = second
-        .journal
-        .replay()
-        .expect("reads back")
-        .expect("verifies")
-        .iter()
-        .filter(|r| r.class == RecordClass::Bootstrap)
-        .count();
-    assert_eq!(bootstraps, 1, "one deployment, one Bootstrap");
-}
-
-/// THE REFUSAL, in its exact words: `data_dir` set, a `Bootstrap` on the chain, and the keyset file
-/// gone — neither the file nor the store yields the fingerprint.
-#[test]
-fn keyset_missing_refuses_in_its_exact_words_when_the_file_is_gone() {
-    let dir = Scratch::new("keyset-missing");
-    let (first, bound) = boot(&dir.0);
-    bound.expect("the first boot mints");
-    let fingerprint = sealed_fingerprint(&first)
-        .expect("the chain reads back")
-        .expect("the Bootstrap is sealed");
-    drop(first);
-    std::fs::remove_file(dir.0.join(KEYSET_FILE)).expect("the keyset file is removed");
-
-    let (second, bound) = boot(&dir.0);
-    let refused = bound.expect_err("a bootstrapped deployment with no keyset refuses");
+    assert!(verifies(&record, &keyset_of(&second.record)));
     assert_eq!(
-        refused.to_string(),
-        format!(
-            "KeysetMissing: the journal under {dir} holds a Bootstrap sealing keyset fingerprint \
-             {fp}, and neither the keyset file {dir}/deployment-keyset nor the configured store \
-             yields that fingerprint. Restore this node's data_dir (the keyset file beside its \
-             journal), or boot against a store that holds the deployment keyset",
-            dir = dir.0.display(),
-            fp = hex::encode(fingerprint),
-        )
+        second
+            .chain()
+            .unwrap()
+            .unwrap()
+            .iter()
+            .filter(|r| r.class == RecordClass::Bootstrap)
+            .count(),
+        1
     );
-    assert!(
-        second.record.signing_key_id().is_none(),
-        "a refused node signs nothing"
-    );
-    assert!(
-        !dir.0.join(KEYSET_FILE).exists(),
-        "the refusal never mints a replacement"
-    );
+    let next = seal(&mut second);
+    assert_eq!(next.prev_hash, record.hash);
+    assert_eq!(next.seq, record.seq + 1);
+    assert_eq!(next.what.incarnation, record.what.incarnation + 1);
+    assert_eq!(std::fs::read_dir(&dir.0).unwrap().count(), 0);
 }
 
-/// The file yields a DIFFERENT key than the one the `Bootstrap` sealed: the same refusal.
+/// A Store that kept the journal but lost its keyset refuses with the sealed fingerprint.
 #[test]
-fn keyset_missing_refuses_a_file_holding_another_key() {
-    let dir = Scratch::new("keyset-other");
-    let (first, bound) = boot(&dir.0);
-    bound.expect("the first boot mints");
+fn keyset_missing_refuses_in_its_exact_words_when_the_store_key_is_gone() {
+    let slots = crate::root::store_double::RecordSlots::new();
+    let dir = Scratch::new("keyset-missing");
+    let (first, bound) = boot(&slots, &dir.0);
+    bound.unwrap();
+    let fingerprint = sealed_fingerprint(&first).unwrap().unwrap();
+    drained(&first);
+    let records = crate::root::durability::read_chain(slots.calls().as_ref(), 7).unwrap();
     drop(first);
-    std::fs::write(dir.0.join(KEYSET_FILE), format!("{}\n", "11".repeat(32)))
-        .expect("the file is replaced");
-    let (_, bound) = boot(&dir.0);
+    // Restore only the journal through the Store's real lane; this Store has no keyset row.
+    let restored = crate::root::store_double::RecordSlots::new();
+    let lane =
+        crate::root::durability::JournalLane::start(restored.calls(), "restored-store").unwrap();
+    lane.shipper().ship(&records).unwrap();
+    assert!(lane.drain(std::time::Duration::from_secs(5)));
+    let (second, bound) = boot(&restored, &dir.0);
+    assert_eq!(bound, Err(KeysetError::StoreMissing { fingerprint }));
+    assert_eq!(bound.unwrap_err().to_string(), format!(
+        "KeysetMissing: the journal the configured store keeps holds a Bootstrap sealing keyset fingerprint {}, and the store does not yield that fingerprint. Restore the store's deployment keyset, or boot against a store that holds it",
+        hex::encode(fingerprint),
+    ));
+    assert!(second.record.signing_key_id().is_none());
     assert!(
-        matches!(bound, Err(KeysetError::Missing(_))),
-        "another key is not the deployment keyset: {bound:?}"
+        crate::root::durability::stored_keyset(restored.calls().as_ref())
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(std::fs::read_dir(&dir.0).unwrap().count(), 0);
+}
+
+#[test]
+fn keyset_missing_refuses_a_store_holding_another_key() {
+    let slots = crate::root::store_double::RecordSlots::new();
+    let dir = Scratch::new("keyset-other");
+    let (first, bound) = boot(&slots, &dir.0);
+    bound.unwrap();
+    drained(&first);
+    drop(first);
+    slots.put_row(
+        "busbar.keyset.v1",
+        b"deployment",
+        "11".repeat(32).as_bytes(),
+    );
+    let (_, bound) = boot(&slots, &dir.0);
+    assert!(
+        matches!(bound, Err(KeysetError::StoreMissing { .. })),
+        "{bound:?}"
     );
 }
 
-/// No `Bootstrap` and no data directory: never `KeysetMissing` (PB-13), however many boots.
+/// A helper has no restart contract, even when supplied a data directory.
 #[test]
-fn no_data_dir_never_refuses_and_writes_nothing() {
-    for _ in 0..2 {
-        let mut durability = node(None);
+fn helpers_never_cache_a_keyset_with_or_without_a_data_dir() {
+    let dir = Scratch::new("keyset-helper");
+    for path in [None, Some(dir.0.as_path())] {
+        let mut durability = node(path);
         assert_eq!(
-            bind(&mut durability, None, &token(), StepName::Meter, NOW),
+            bind(&mut durability, path, &token(), StepName::Meter, NOW),
             Ok(KeysetSource::Ephemeral)
         );
-        assert_eq!(
-            durability.journal.next_seq(),
-            1,
-            "an ephemeral keyset seals no Bootstrap: nothing depends on it"
-        );
+        assert!(!durability.keeps_chain());
+        assert_eq!(durability.journal.next_seq(), 1);
     }
+    assert_eq!(std::fs::read_dir(&dir.0).unwrap().count(), 0);
 }
 
-/// A cache file with no `Bootstrap` on the chain (the journal started over) is ADOPTED and sealed,
-/// never replaced: keys are only ever added.
+/// The Store is authoritative even if a different key was left in a legacy local cache.
 #[test]
-fn a_cached_keyset_with_no_bootstrap_is_adopted_not_replaced() {
+fn a_stored_keyset_with_no_bootstrap_is_adopted_and_a_legacy_cache_is_untouched() {
+    let slots = crate::root::store_double::RecordSlots::new();
     let dir = Scratch::new("keyset-adopt");
     let seed = "22".repeat(32);
-    std::fs::write(dir.0.join(KEYSET_FILE), format!("{seed}\n")).expect("the file is planted");
-    let expected = AuditSigningKey::from_hex_seed(&seed).expect("a seed");
-    let (durability, bound) = boot(&dir.0);
-    bound.expect("the cached keyset is adopted");
+    let legacy = "33".repeat(32);
+    let file = dir.0.join("deployment-keyset");
+    std::fs::write(&file, legacy.as_bytes()).unwrap();
+    slots.put_row("busbar.keyset.v1", b"deployment", seed.as_bytes());
+    let expected = AuditSigningKey::from_hex_seed(&seed).unwrap();
+    let (durability, bound) = boot(&slots, &dir.0);
+    assert_eq!(bound, Ok(KeysetSource::Stored));
     assert_eq!(durability.record.signing_key_id(), Some(expected.key_id()));
     assert_eq!(
         sealed_fingerprint(&durability),
         Ok(Some(fingerprint_of_signer(&expected)))
     );
+    assert_eq!(std::fs::read(&file).unwrap(), legacy.as_bytes());
 }
