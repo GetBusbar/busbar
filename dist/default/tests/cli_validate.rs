@@ -1468,10 +1468,9 @@ models:
 }
 
 /// FAIL-CLOSED: a provider `api_key` naming an UNSET variable fails `--validate` (exit 1), naming
-/// the config path and the reference. `run_busbar` sets `MOCK_KEY` to a known value, so this also
-/// proves the refusal carries no credential material — a diagnostic must never print a resolved
-/// secret, and the whole point of this change is that the credential path is fail-closed WITHOUT
-/// becoming a place secrets leak.
+/// the config path and the reference. The child explicitly removes this variable from its
+/// environment. This fixture exercises unresolved-reference diagnostics; resolved-credential
+/// custody requires a separate witness that actually resolves a credential.
 // PROVIDER-SHAPED, THEREFORE CODEC-SHAPED. The fixture declares a `mock` provider on protocol
 // `anthropic`, and a build with no wire codec compiled in refuses that config at BUSBAR-3015 --
 // "no protocol with a wire codec compiled in, so no provider lane can be served" -- before it ever
@@ -1484,7 +1483,7 @@ models:
 #[test]
 fn validate_refuses_a_provider_api_key_that_does_not_resolve() {
     let dir = fixture_dir("apikey-unresolvable");
-    let unset = format!("BUSBAR_CLI_UNSET_PROVIDER_KEY_{}", std::process::id());
+    let unset = UNSET_INTERPOLATION_VAR;
     write_configs_with_api_key(&dir, &format!("{{ env: {unset} }}"), "");
     let (code, stdout, stderr) = run_busbar(&dir, &["--validate"]);
     assert_eq!(code, 1, "an unresolvable api_key fails validate: {stdout}");
@@ -1495,10 +1494,6 @@ fn validate_refuses_a_provider_api_key_that_does_not_resolve() {
     assert!(
         stderr.contains(&format!("env:{unset}")),
         "the refusal names the reference: {stderr}"
-    );
-    assert!(
-        !stderr.contains("test-key-value"),
-        "a resolved credential value must never appear in a refusal"
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
