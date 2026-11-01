@@ -1800,6 +1800,14 @@ impl RecordStore for LoadedStore {
         )
     }
 
+    fn supports_usage_batch_deduped(&self) -> bool {
+        true
+    }
+
+    fn supports_metering_batch_deduped(&self) -> bool {
+        true
+    }
+
     fn add_usage_batch_deduped(
         &self,
         op: OpId,
@@ -1828,15 +1836,22 @@ impl RecordStore for LoadedStore {
     }
 
     fn add_metering(&self, delta: &MeteringDelta) -> RecordStoreResult<()> {
-        // One row through the batch slot: one op_id, atomic.
+        self.add_metering_batch_deduped(self.mint(), std::slice::from_ref(delta))
+    }
+
+    fn add_metering_batch_deduped(
+        &self,
+        op: OpId,
+        deltas: &[MeteringDelta],
+    ) -> RecordStoreResult<()> {
         self.plain(
             slot::ADD_METERING_BATCH,
             owned_in(|o, head| {
-                let record = o.json(to_json(delta));
-                let (records, records_len) = o.rows(vec![record]);
+                let rows = deltas.iter().map(|delta| o.json(to_json(delta))).collect();
+                let (records, records_len) = o.rows(rows);
                 OpBlobsIn {
                     head,
-                    op_id: self.mint(),
+                    op_id: op,
                     records,
                     records_len,
                 }
