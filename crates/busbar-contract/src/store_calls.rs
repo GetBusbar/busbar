@@ -211,6 +211,14 @@ pub trait StoreCalls: Send + Sync {
         let _ = (kind, before);
         not_served("purge_plane_records_before")
     }
+    /// The usage ledger's purge: every usage window whose start is nonzero and earlier than
+    /// `before` removed, the all-time window kept; how many went
+    /// ([`RETENTION_USAGE_WINDOWS`](crate::abi::store::RETENTION_USAGE_WINDOWS)). An
+    /// implementation that does not serve it REFUSES it.
+    fn purge_usage_before(&self, before: u64) -> StoreCall<'_, u64> {
+        let _ = before;
+        not_served("purge_usage_before")
+    }
 }
 
 /// The answer of a [`StoreCalls`] op an implementation does not serve: REFUSED, naming the op.

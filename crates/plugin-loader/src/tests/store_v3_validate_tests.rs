@@ -39,7 +39,7 @@ impl Hooks for Picky {
     fn validate(settings: &[u8]) -> Result<(), String> {
         parse(settings)
     }
-    fn open(settings: &[u8], _: Option<Host>) -> Result<Arc<MemoryStore>, String> {
+    fn open(settings: &[u8], _: &[&[u8]], _: Option<Host>) -> Result<Arc<MemoryStore>, String> {
         OPENS.with(|n| n.set(n.get() + 1));
         parse(settings)?;
         Ok(Arc::new(MemoryStore::new()))

@@ -22,13 +22,19 @@ use crate::both_ways::store_fixture::MemoryStore;
 /// The ops a test bends; every default is the memory store's own.
 #[allow(clippy::too_many_arguments)]
 pub(crate) trait Hooks: Send + Sync + 'static {
+    /// Whether the store states itself ephemeral (the memory store does).
+    const EPHEMERAL: bool = true;
     /// The settings check.
     fn validate(settings: &[u8]) -> Result<(), String> {
         <MemoryStore as StoreSlots>::validate(settings)
     }
     /// The backing store an open serves.
-    fn open(settings: &[u8], host: Option<Host>) -> Result<Arc<MemoryStore>, String> {
-        let _ = (settings, host);
+    fn open(
+        settings: &[u8],
+        secrets: &[&[u8]],
+        host: Option<Host>,
+    ) -> Result<Arc<MemoryStore>, String> {
+        let _ = (settings, secrets, host);
         Ok(Arc::new(MemoryStore::new()))
     }
     /// `open`'s connect step.
@@ -321,14 +327,21 @@ pub(crate) struct Wrapped<H>(pub(crate) Arc<MemoryStore>, PhantomData<fn() -> H>
 
 #[allow(clippy::too_many_arguments)]
 impl<H: Hooks> StoreSlots for Wrapped<H> {
-    const TAIL: Tail = <MemoryStore as StoreSlots>::TAIL;
+    const TAIL: Tail = Tail {
+        ephemeral: H::EPHEMERAL,
+        ..<MemoryStore as StoreSlots>::TAIL
+    };
 
     fn validate(settings: &[u8]) -> Result<(), String> {
         H::validate(settings)
     }
 
-    fn open(settings: &[u8], host: Option<Host>) -> Result<Self, String> {
-        H::open(settings, host).map(|m| Self(m, PhantomData))
+    fn open_with_secrets(
+        settings: &[u8],
+        secrets: &[&[u8]],
+        host: Option<Host>,
+    ) -> Result<Self, String> {
+        H::open(settings, secrets, host).map(|m| Self(m, PhantomData))
     }
 
     fn connect(&self, cx: &mut Op<'_>) -> Step<Result<(), String>> {
@@ -559,6 +572,10 @@ impl<H: Hooks> StoreSlots for Wrapped<H> {
         before: u64,
     ) -> Step<RecordStoreResult<u64>> {
         H::purge_plane_records_before(&self.0, cx, kind, before)
+    }
+
+    fn purge_usage_before(&self, cx: &mut Op<'_>, before: u64) -> Step<RecordStoreResult<u64>> {
+        <MemoryStore as StoreSlots>::purge_usage_before(&self.0, cx, before)
     }
 
     fn purge_plane_records(

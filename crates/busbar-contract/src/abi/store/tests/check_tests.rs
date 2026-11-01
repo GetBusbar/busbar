@@ -11,7 +11,9 @@ use crate::abi::mechanism::call::{
 };
 use crate::abi::mechanism::lifecycle::CancelOut;
 use crate::abi::store::ledger::{HostRecords, RecordEntry};
-use crate::abi::store::plane::{KindBeforeIn, RETENTION_AGE, RETENTION_TERMINAL_ONLY};
+use crate::abi::store::plane::{
+    KindBeforeIn, RETENTION_AGE, RETENTION_TERMINAL_ONLY, RETENTION_USAGE_WINDOWS,
+};
 use crate::abi::store::{
     CountOut, HostBlobs, HostBuf, HostBytesOut, HostListOut, LeasedBlobOut, LeasedListOut,
     LeasedStrListOut, VerdictOut, ABSENT, FOUND,
@@ -636,6 +638,10 @@ fn green_a_purge_carries_a_known_retention() {
         check_kind_before(&kind_before(RETENTION_TERMINAL_ONLY)),
         Ok(())
     );
+    assert_eq!(
+        check_kind_before(&kind_before(RETENTION_USAGE_WINDOWS)),
+        Ok(())
+    );
     assert_eq!(RETENTION_AGE, 0);
     assert_eq!(
         crate::records::Retention::from_code(0),
@@ -646,7 +652,7 @@ fn green_a_purge_carries_a_known_retention() {
 /// RED: a purge whose retention names no rule is refused.
 #[test]
 fn red_a_purge_with_an_unknown_retention_is_refused() {
-    for code in [RETENTION_TERMINAL_ONLY + 1, u32::MAX] {
+    for code in [RETENTION_USAGE_WINDOWS + 1, u32::MAX] {
         assert_eq!(
             check_kind_before(&kind_before(code)),
             Err(KIND_BEFORE_RETENTION)
