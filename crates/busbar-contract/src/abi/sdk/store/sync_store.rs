@@ -24,6 +24,23 @@ pub trait SyncStore: RecordStore + Sized + Send + Sync + 'static {
     /// [`StoreSlots::TAIL`].
     const TAIL: Tail;
 
+    /// Explicit opt-in to the atomic conditional-record protocol.
+    const RECORD_TRANSACTION: bool = false;
+
+    /// [`StoreSlots::record_transaction`], answered synchronously.
+    ///
+    /// # Errors
+    /// Unsupported by default; an implementation must commit rows and receipt atomically.
+    fn record_transaction(
+        &self,
+        request: &super::conditional::Request,
+    ) -> OpResult<super::conditional::Decision> {
+        let _ = request;
+        Err(super::OpRefused::Refused(
+            "record transactions unsupported".into(),
+        ))
+    }
+
     /// [`StoreSlots::validate`].
     ///
     /// # Errors
@@ -93,6 +110,15 @@ macro_rules! extra {
 
 impl<T: SyncStore> StoreSlots for T {
     const TAIL: Tail = <T as SyncStore>::TAIL;
+    const RECORD_TRANSACTION: bool = <T as SyncStore>::RECORD_TRANSACTION;
+
+    fn record_transaction(
+        &self,
+        _: &mut Op<'_>,
+        request: &super::conditional::Request,
+    ) -> Step<OpResult<super::conditional::Decision>> {
+        Step::Ready(<T as SyncStore>::record_transaction(self, request))
+    }
 
     fn validate(settings: &[u8]) -> Result<(), String> {
         <T as SyncStore>::validate(settings)

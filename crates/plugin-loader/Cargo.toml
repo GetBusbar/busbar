@@ -37,6 +37,16 @@ path = "tests/fixtures/store_v3_door.rs"
 crate-type = ["cdylib"]
 
 [[example]]
+name = "conditional_store_door"
+path = "tests/fixtures/conditional_store_door.rs"
+crate-type = ["cdylib"]
+
+[[example]]
+name = "conditional_store_legacy_door"
+path = "tests/fixtures/conditional_store_legacy_door.rs"
+crate-type = ["cdylib"]
+
+[[example]]
 name = "open_reason_store_door"
 path = "tests/fixtures/open_reason_store_door.rs"
 crate-type = ["cdylib"]

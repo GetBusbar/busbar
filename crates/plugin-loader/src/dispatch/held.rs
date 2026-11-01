@@ -41,6 +41,7 @@ struct Cycle {
     pending: HashSet<u32>,
     /// One inspection per issuing instance, outside the completion-handle namespace.
     inspections: HashSet<usize>,
+    conditionals: HashSet<usize>,
 }
 
 /// The driver tickets' cycles, by ticket.
@@ -127,13 +128,20 @@ impl Held {
         if let Some(c) = self.lock().get_mut(&driver) {
             c.pending.clear();
             c.inspections.clear();
+            c.conditionals.clear();
         }
     }
 
     /// How many exchanges are held on `driver`.
     pub(crate) fn held(&self, driver: Ticket) -> u32 {
         self.lock().get(&driver).map_or(0, |c| {
-            u32::try_from(c.pending.len().saturating_add(c.inspections.len())).unwrap_or(u32::MAX)
+            u32::try_from(
+                c.pending
+                    .len()
+                    .saturating_add(c.inspections.len())
+                    .saturating_add(c.conditionals.len()),
+            )
+            .unwrap_or(u32::MAX)
         })
     }
 
@@ -147,6 +155,19 @@ impl Held {
                 c.inspections.insert(caller);
             } else {
                 c.inspections.remove(&caller);
+            }
+        }
+    }
+
+    pub(crate) fn conditional(&self, ticket: Ticket, caller: usize, pending: bool) {
+        if !self.tracks(ticket) {
+            return;
+        }
+        if let Some(c) = self.lock().get_mut(&ticket) {
+            if pending {
+                c.conditionals.insert(caller);
+            } else {
+                c.conditionals.remove(&caller);
             }
         }
     }

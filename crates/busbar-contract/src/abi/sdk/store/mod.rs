@@ -21,6 +21,7 @@
 //! short-buffer answer never reaches the store and is never recorded (the S1 addendum). The check,
 //! the answers and what is recorded are [`dedupe`]'s; the store keeps the log.
 
+pub mod conditional;
 pub mod door;
 // The `op_id` dedupe: the state machine and the body a store records.
 pub mod dedupe;
@@ -84,6 +85,26 @@ pub struct Tail {
 pub trait StoreSlots: Sized + Send + Sync + 'static {
     /// What this store states in its Statement tail.
     const TAIL: Tail;
+
+    /// Explicit opt-in to the atomic conditional-record protocol. Never enabled by default.
+    const RECORD_TRANSACTION: bool = false;
+
+    /// Compare all predicates against one pre-state, then atomically mutate records and record
+    /// the applied receipt. Condition conflicts write neither rows nor receipts. Ambiguous
+    /// failures require exact id/body replay within the existing dedupe retention window.
+    ///
+    /// # Errors
+    /// Unsupported by default; operation-id conflicts remain `OpRefused::Conflict`.
+    fn record_transaction(
+        &self,
+        cx: &mut Op<'_>,
+        request: &conditional::Request,
+    ) -> Step<OpResult<conditional::Decision>> {
+        let _ = (cx, request);
+        Step::Ready(Err(OpRefused::Refused(
+            "record transactions unsupported".into(),
+        )))
+    }
 
     /// PARSE the operator's settings (the section's JSON) and nothing more: `validate` never opens,
     /// connects to or migrates a store (`--validate` runs no store).

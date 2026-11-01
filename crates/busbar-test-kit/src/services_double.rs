@@ -35,6 +35,38 @@ fn refused() -> Ran {
 /// override only what the test serves. Each method is the [`HostServices`] method of the same
 /// name; the blanket impl forwards one to the other.
 pub trait ServicesDouble: Send + Sync {
+    /// Read-only observation; unserved by default.
+    fn observe_chain_life(
+        &self,
+        _caller: &Caller,
+        _kind: u32,
+        _scope: &[u8],
+        _done: Box<
+            dyn FnOnce(
+                    Result<busbar_contract::abi::sdk::store::conditional::Expected, &'static str>,
+                ) + Send,
+        >,
+    ) -> Result<(), &'static str> {
+        Err(UNSERVED)
+    }
+    /// Optional conditional record publication; unserved by default.
+    fn supports_record_transactions(&self) -> bool {
+        false
+    }
+
+    /// Accepted work remains host-owned after caller loss.
+    fn conditional_record_transaction(
+        &self,
+        _caller: &Caller,
+        _unit: Option<u64>,
+        _candidate: busbar_contract::abi::sdk::plane::conditional::ConditionalCandidate,
+        _acked: Box<
+            dyn FnOnce(busbar_contract::abi::sdk::plane::conditional::ConditionalResult) + Send,
+        >,
+    ) -> Result<(), &'static str> {
+        Err(UNSERVED)
+    }
+
     /// Optional read-only main-extension host inspection. Unserved: Unsupported.
     fn inspect(
         &self,
@@ -298,6 +330,36 @@ impl<T> std::ops::Deref for Double<T> {
 }
 
 impl<T: ServicesDouble> HostServices for Double<T> {
+    fn observe_chain_life(
+        &self,
+        caller: &Caller,
+        kind: u32,
+        scope: &[u8],
+        done: Box<
+            dyn FnOnce(
+                    Result<busbar_contract::abi::sdk::store::conditional::Expected, &'static str>,
+                ) + Send,
+        >,
+    ) -> Result<(), &'static str> {
+        self.0.observe_chain_life(caller, kind, scope, done)
+    }
+    fn supports_record_transactions(&self) -> bool {
+        self.0.supports_record_transactions()
+    }
+
+    fn conditional_record_transaction(
+        &self,
+        caller: &Caller,
+        unit: Option<u64>,
+        candidate: busbar_contract::abi::sdk::plane::conditional::ConditionalCandidate,
+        acked: Box<
+            dyn FnOnce(busbar_contract::abi::sdk::plane::conditional::ConditionalResult) + Send,
+        >,
+    ) -> Result<(), &'static str> {
+        self.0
+            .conditional_record_transaction(caller, unit, candidate, acked)
+    }
+
     fn inspect(
         &self,
         caller: &Caller,

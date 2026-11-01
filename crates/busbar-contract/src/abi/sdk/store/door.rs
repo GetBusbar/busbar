@@ -338,6 +338,10 @@ impl<'a, B: StoreSlots> Door<'a, B> {
         self.held.life().text(text)
     }
 
+    fn record_transaction_supported(&self) -> bool {
+        B::RECORD_TRANSACTION
+    }
+
     /// Hold an off-path answer under a new lease of the instance's one lease table; its number.
     fn lease(&self, held: Leased) -> u64 {
         self.held.leases().keep_new(held)
@@ -983,6 +987,34 @@ slot!(
 slot!(
     /// `record_get` (slot 27): the value into the host buffer.
     RecordGet(RecordGetIn, HostBytesOut) |s, i, o, cx| {
+        let extensions = i.field(|i| &i.head.extensions).bytes();
+        let request = match super::conditional::intent(extensions) {
+            Ok(request) => request,
+            Err(error) => return refused(s, o, Text::render(format_args!("{error}"))),
+        };
+        if let Some(request) = request {
+            if !s.record_transaction_supported() {
+                return refused(s, o, Text::render(format_args!("record transactions unsupported")));
+            }
+            let schema = match text_of(i.field(|i| &i.schema)) { Ok(t) => t, Err(e) => return refused(s, o, e) };
+            if request.carrier() != Some((schema, i.field(|i| &i.key).bytes())) {
+                return refused(s, o, Text::render(format_args!("record transaction carrier mismatch")));
+            }
+            return match step!(o, s.store.record_transaction(cx, &request)) {
+                Ok(decision) => {
+                    let result = super::conditional::encode_result(&request, decision);
+                    let bytes = crate::abi::mechanism::extensions::encode(&[(super::conditional::RESULT, &result)]).into_boxed_slice();
+                    // Ordinary GET fields remain absent/empty; a plain GET READY is never Applied.
+                    o.found = ABSENT;
+                    o.written = 0;
+                    o.needed = 0;
+                    o.head.extensions = blob_over(&bytes, BLOB_OCTETS, false);
+                    o.head.lease = s.lease(Leased { bytes: vec![bytes], _blobs: Box::new([]), _strs: Box::new([]), secret: false });
+                    Outcome::Ready
+                }
+                Err(error) => op_answer(s, o, Err(error)),
+            };
+        }
         let schema = match text_of(i.field(|i| &i.schema)) { Ok(t) => t, Err(e) => return refused(s, o, e) };
         match step!(o, s.store.record_get(cx, schema, i.field(|i| &i.key).bytes())) {
             Ok(v) => bytes_into(o, i.field(|i| &i.value).ptr(), v.as_ref().map(RecordBytes::as_slice)),

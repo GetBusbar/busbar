@@ -392,8 +392,14 @@ impl PlaneDriver {
         section: (&str, &serde_yaml::Value),
     ) -> Result<Self, String> {
         let d = calls.declared();
+        if d.conditional_records && !services.supports_record_transactions() {
+            return Err(
+                "the configured store does not support conditional record transactions".into(),
+            );
+        }
         let trust = parse_section(section.0, section.1, &d.trust_keys)?;
         let facts = InstanceFacts {
+            conditional_record_kinds: d.conditional_record_kinds.clone(),
             record_kinds: d
                 .record_kinds
                 .iter()

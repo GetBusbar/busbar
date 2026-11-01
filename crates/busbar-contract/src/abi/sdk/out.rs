@@ -699,6 +699,93 @@ impl<'a, T: AbiOut> Out<'a, T> {
         self.head().wake_at_ns = mono_ns;
     }
 
+    /// Lease an immutable logical publication intent. Return PENDING with no ordinary output;
+    /// read its exact result on RESUME/DRIVE before publishing any effects.
+    pub fn conditional_request(
+        &mut self,
+        leases: &Leases,
+        request: &crate::abi::sdk::plane::conditional::Request,
+    ) -> Result<(), &'static str> {
+        use crate::abi::sdk::plane::conditional as wire;
+        self.conditional_extension(leases, wire::INTENT, wire::encode_request(request)?)
+    }
+
+    /// Lease a read-only original-incarnation observation. Return PENDING, then issue fresh
+    /// planning reads only after the exact observation arrives on RESUME/DRIVE.
+    pub fn conditional_observation(
+        &mut self,
+        leases: &Leases,
+        request: &crate::abi::sdk::plane::conditional::Observation,
+    ) -> Result<(), &'static str> {
+        use crate::abi::sdk::plane::conditional as wire;
+        self.conditional_extension(leases, wire::OBSERVE, wire::encode_observation(request)?)
+    }
+
+    fn conditional_extension(
+        &mut self,
+        leases: &Leases,
+        key: &str,
+        encoded: Vec<u8>,
+    ) -> Result<(), &'static str> {
+        use crate::abi::mechanism::call::{BLOB_OCTETS, BLOB_SECRET};
+        use crate::abi::sdk::plane::conditional as wire;
+        let ext = self.head().extensions;
+        if ext.len > crate::abi::mechanism::check::HARD_MAX_BYTES as usize
+            || (ext.len != 0 && (ext.ptr.is_null() || ext.fmt != BLOB_OCTETS))
+        {
+            return Err(wire::INVALID);
+        }
+        let prior = if ext.len == 0 {
+            &[][..]
+        } else {
+            // SAFETY: SDK writers retain this bounded output blob for the answer's lifetime.
+            unsafe { std::slice::from_raw_parts(ext.ptr, ext.len) }
+        };
+        let mut repeated = false;
+        for other in [
+            wire::INTENT,
+            wire::OBSERVE,
+            wire::RESULT,
+            wire::OBSERVED,
+            wire::CAPABILITY,
+        ] {
+            if let Some(value) = wire::entry(prior, other)? {
+                if other != key || wire::entry(&encoded, key)? != Some(value) {
+                    return Err(wire::INVALID);
+                }
+                repeated = true;
+            }
+        }
+        if crate::abi::mechanism::extensions::get(
+            prior,
+            crate::abi::mechanism::inspection::EXT_REQUEST,
+        )
+        .is_some()
+        {
+            return Err(wire::INVALID);
+        }
+        if repeated {
+            return Ok(());
+        }
+        let len = prior
+            .len()
+            .checked_add(encoded.len())
+            .filter(|&n| n <= crate::abi::mechanism::check::HARD_MAX_BYTES as usize)
+            .ok_or(wire::INVALID)?;
+        let mut bytes = Vec::with_capacity(len);
+        bytes.extend_from_slice(prior);
+        bytes.extend_from_slice(&encoded);
+        self.held_by(&leases.alive);
+        let mut blob = if ext.flags & BLOB_SECRET != 0 {
+            leases.secret_blob(self.head(), bytes, BLOB_OCTETS)
+        } else {
+            leases.blob(self.head(), bytes, BLOB_OCTETS)
+        };
+        blob.flags = ext.flags;
+        self.head().extensions = blob;
+        Ok(())
+    }
+
     /// Answer `refusal`: its outcome, the head's error naming its text. A `'static` text is named
     /// where it lives. An owned text is kept by the answering instance until [`KEPT_RING`] newer
     /// texts of it; with no instance yet it is written into the host's lent reason buffer (cut on a

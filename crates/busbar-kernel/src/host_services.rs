@@ -431,6 +431,27 @@ impl Drop for Unwritten {
     }
 }
 
+struct LifeObservationOwed(Option<crate::host_records::ChainLifeAcked>);
+
+impl LifeObservationOwed {
+    fn answer(
+        mut self,
+        result: Result<busbar_contract::abi::sdk::store::conditional::Expected, &'static str>,
+    ) {
+        if let Some(done) = self.0.take() {
+            done(result);
+        }
+    }
+}
+
+impl Drop for LifeObservationOwed {
+    fn drop(&mut self) {
+        if let Some(done) = self.0.take() {
+            done(Err("chain life observation was not run"));
+        }
+    }
+}
+
 /// Run `job` on `pool` and answer what it returns through `later`; FAILED if the pool refuses it.
 fn submit(pool: &dyn Offload, later: Later, job: impl FnOnce() -> Stored + Send + 'static) -> Ran {
     let owed = Owed(Some(later));
@@ -466,6 +487,9 @@ pub struct Signing {
 pub struct InstanceFacts {
     /// Its record kinds, each the schema its records are kept under.
     pub record_kinds: Vec<RecordSchemaId>,
+    /// Declared kind indices requiring conditional publication, established before admission.
+    /// Ordinary record writes must never share these namespaces with conditional candidates.
+    pub conditional_record_kinds: Vec<u32>,
     /// Its signing declaration; `None` = `sign` is refused.
     pub signing: Option<Signing>,
     /// Its trust entries, one per counterparty, as `trust::section` parsed them.
@@ -551,6 +575,11 @@ pub enum AdmitRefused {
         /// The declaration's framing word.
         framing: u32,
     },
+    /// A conditional kind index is undeclared or repeated.
+    ConditionalKind {
+        /// The invalid declared-kind index.
+        kind: u32,
+    },
     /// The store could not be read for the demotions and the operator's trust decisions this
     /// instance's trust stands on.
     TrustUnread(String),
@@ -586,6 +615,7 @@ impl std::fmt::Display for AdmitRefused {
                 "the instance declares chained record kind {kind} with framing {framing}, which \
                  this host cannot chain: a declared chain is kept, never dropped to plain records"
             ),
+            Self::ConditionalKind { kind } => write!(f, "invalid conditional record kind {kind}"),
             Self::TrustUnread(why) => write!(
                 f,
                 "{why}; the instance is not admitted over trust it cannot read"
@@ -1040,6 +1070,22 @@ impl KernelServices {
                 return Err(unknown);
             }
         }
+        let mut conditional_kinds = std::collections::HashSet::new();
+        for &kind in &facts.conditional_record_kinds {
+            let Some(schema) = facts.record_kinds.get(kind as usize) else {
+                return Err(AdmitRefused::ConditionalKind { kind });
+            };
+            if !conditional_kinds.insert(kind)
+                || facts
+                    .record_kinds
+                    .iter()
+                    .filter(|other| *other == schema)
+                    .count()
+                    != 1
+            {
+                return Err(AdmitRefused::ConditionalKind { kind });
+            }
+        }
         let key: Arc<str> = Arc::from(instance);
         // An unreadable trust record refuses the admit: re-opening an upstream this deployment
         // demoted, or standing over a revoke the operator made, is not a degraded mode.
@@ -1285,6 +1331,9 @@ impl KernelServices {
         acked: Acked,
     ) -> Result<(), &'static str> {
         let (schema, records, pool) = self.scope(caller, kind).map_err(|s| s.error)?;
+        if self.conditional_kind(&caller.instance, kind) {
+            return Err("this record kind requires conditional publication");
+        }
         let chain = self.chain_of(caller, kind);
         if chain.is_some() {
             if crate::host_chains::scope_of(key).is_none() {
@@ -1313,6 +1362,220 @@ impl KernelServices {
             }
         });
         match started {
+            Some(true) => self.start_flush(records, pool),
+            Some(false) => {}
+            None => return Err(QUEUE_FULL),
+        }
+        Ok(())
+    }
+
+    fn conditional_kind(&self, instance: &str, kind: &str) -> bool {
+        self.lock_instances().get(instance).is_some_and(|facts| {
+            facts.conditional_record_kinds.iter().any(|index| {
+                facts
+                    .record_kinds
+                    .get(*index as usize)
+                    .is_some_and(|schema| schema.as_str() == kind)
+            })
+        })
+    }
+
+    /// Whether the configured store negotiated atomic conditional record publication.
+    #[must_use]
+    pub fn supports_record_transactions(&self) -> bool {
+        self.records
+            .get()
+            .is_some_and(|r| r.reads.supports_record_transaction())
+    }
+
+    /// Read the original chain life before a consumer reads the records for its candidate.
+    ///
+    /// # Errors
+    /// Undeclared or unselected chains, unavailable services, and malformed observations refuse.
+    pub fn observe_chain_life(
+        &self,
+        caller: &Caller,
+        kind: u32,
+        scope: &[u8],
+        done: crate::host_records::ChainLifeAcked,
+    ) -> Result<(), &'static str> {
+        let facts = self.facts(caller).ok_or(NOT_A_KIND)?;
+        if !facts.conditional_record_kinds.contains(&kind) {
+            return Err("this record kind did not negotiate conditional publication");
+        }
+        let schema = facts
+            .record_kinds
+            .get(kind as usize)
+            .copied()
+            .ok_or(NOT_A_KIND)?;
+        if !facts.record_chains.iter().any(|chain| chain.kind == kind) {
+            return Err("life observation requires a declared chain");
+        }
+        let scope = crate::host_chains::scope_of(scope)
+            .ok_or(crate::host_chains::CHAIN_SCOPE_UNFIT)?
+            .to_string();
+        let records = self.records.get().ok_or(NO_STORE)?;
+        let pool = self.pool().ok_or(NO_POOL)?;
+        if !records.reads.supports_record_transaction() {
+            return Err("record transactions are unsupported");
+        }
+        let rows = Arc::clone(&records.reads);
+        let instance = Arc::clone(&caller.instance);
+        let owed = LifeObservationOwed(Some(done));
+        pool.run(Box::new(move || {
+            owed.answer(crate::host_chains::observe_life(
+                &*rows, &instance, schema, &scope,
+            ));
+        }));
+        Ok(())
+    }
+
+    /// Admit one logical candidate into host-owned write custody. The caller's existing declared
+    /// kinds and instance scope are authoritative; guest bytes never choose a raw store schema.
+    ///
+    /// # Errors
+    /// Unsupported stores, undeclared kinds, invalid chain operations, or a full queue refuse
+    /// before submission. Unresolved submitted operations retain their exact body and operation
+    /// identity after caller cancellation; an expired replay horizon reports Indeterminate.
+    pub fn record_transaction(
+        &self,
+        caller: &Caller,
+        unit: Option<u64>,
+        candidate: crate::host_records::ConditionalCandidate,
+        acked: crate::host_records::ConditionalAcked,
+    ) -> Result<(), &'static str> {
+        use crate::host_records::{
+            ChainMutation, ConditionalOwed, ConditionalWrite, RecordMutation,
+        };
+        use busbar_contract::abi::sdk::store::conditional::{
+            Mutation, Predicate, Request, VERSION,
+        };
+        let facts = self.facts(caller).ok_or(NOT_A_KIND)?;
+        let records = self.records.get().ok_or(NO_STORE)?;
+        let pool = self.pool().ok_or(NO_POOL)?;
+        if !records.reads.supports_record_transaction() {
+            return Err("record transactions are unsupported");
+        }
+        let unit = unit
+            .map(|id| self.units.get(id).ok_or("record transaction unit ended"))
+            .transpose()?;
+        let chain_at = |kind: u32| {
+            facts
+                .record_chains
+                .iter()
+                .find(|chain| chain.kind == kind)
+                .and_then(crate::host_chains::ChainFraming::of)
+        };
+        let schema_at = |kind: u32, chained: bool| {
+            if !facts.conditional_record_kinds.contains(&kind) {
+                return Err("this record kind did not negotiate conditional publication");
+            }
+            let schema = facts
+                .record_kinds
+                .get(kind as usize)
+                .copied()
+                .ok_or(NOT_A_KIND)?;
+            if chain_at(kind).is_some() != chained {
+                return Err("record transaction kind has incompatible chain declaration");
+            }
+            Ok(schema)
+        };
+        let mut request = Request {
+            version: VERSION,
+            op_id: crate::door::op_id(),
+            predicates: Vec::new(),
+            mutations: Vec::new(),
+        };
+        for predicate in candidate.predicates {
+            let schema = schema_at(predicate.kind, false)?;
+            request.predicates.push(Predicate {
+                schema: schema.as_str().to_string(),
+                key: record_key(&caller.instance, &predicate.key),
+                expected: predicate.expected,
+            });
+        }
+        for mutation in candidate.mutations {
+            request.mutations.push(match mutation {
+                RecordMutation::Put { kind, key, value } => {
+                    let schema = schema_at(kind, false)?;
+                    Mutation::Put {
+                        schema: schema.as_str().to_string(),
+                        key: record_key(&caller.instance, &key),
+                        value,
+                    }
+                }
+                RecordMutation::Delete { kind, key } => {
+                    let schema = schema_at(kind, false)?;
+                    Mutation::Delete {
+                        schema: schema.as_str().to_string(),
+                        key: record_key(&caller.instance, &key),
+                    }
+                }
+            });
+        }
+        let mut chains: Vec<crate::host_chains::ConditionalChain> = Vec::new();
+        let mut chain_scopes = std::collections::HashMap::new();
+        for chain in candidate.chains {
+            use crate::host_chains::ConditionalChainAction;
+            let (kind, scope, life, action) = match chain {
+                ChainMutation::Append {
+                    kind,
+                    scope,
+                    life,
+                    content,
+                } => (
+                    kind,
+                    scope,
+                    life,
+                    ConditionalChainAction::Append(vec![content]),
+                ),
+                ChainMutation::Drop { kind, scope, life } => {
+                    (kind, scope, life, ConditionalChainAction::Drop)
+                }
+                ChainMutation::Check { kind, scope, life } => {
+                    (kind, scope, life, ConditionalChainAction::Check)
+                }
+            };
+            let schema = schema_at(kind, true)?;
+            let scope = crate::host_chains::scope_of(&scope)
+                .ok_or(crate::host_chains::CHAIN_SCOPE_UNFIT)?
+                .to_string();
+            let address = (schema.as_str(), scope.clone());
+            if let Some(&index) = chain_scopes.get(&address) {
+                let previous: &mut crate::host_chains::ConditionalChain = &mut chains[index];
+                if previous.life != life {
+                    return Err("conflicting conditional chain observations");
+                }
+                match (&mut previous.action, action) {
+                    (
+                        ConditionalChainAction::Append(existing),
+                        ConditionalChainAction::Append(mut additional),
+                    ) => existing.append(&mut additional),
+                    _ => return Err("overlapping conditional chain operations"),
+                }
+                continue;
+            }
+            chain_scopes.insert(address, chains.len());
+            let framing = chain_at(kind).ok_or(NOT_A_KIND)?;
+            chains.push(crate::host_chains::ConditionalChain {
+                schema,
+                scope,
+                framing,
+                life,
+                action,
+            });
+        }
+        if chains.is_empty() {
+            request.encode().map_err(|_| "invalid record transaction")?;
+        }
+        let write = ConditionalWrite::new(
+            Arc::clone(&caller.instance),
+            request,
+            chains,
+            ConditionalOwed::new(candidate.correlation, acked),
+            unit,
+        );
+        match self.batcher.push_conditional(write) {
             Some(true) => self.start_flush(records, pool),
             Some(false) => {}
             None => return Err(QUEUE_FULL),
@@ -1374,6 +1637,11 @@ impl KernelServices {
         kind: &str,
         before: u64,
     ) -> RecordStoreResult<u64> {
+        if self.conditional_kind(instance, kind) {
+            return Err(busbar_contract::records::RecordStoreError(
+                "this record kind requires conditional retirement".into(),
+            ));
+        }
         store.purge_plane_records(kind, before, self.record_retention(instance, kind))
     }
 
@@ -1677,6 +1945,30 @@ pub fn claim_token(instance: &str, kind: &str, key: &[u8]) -> String {
 }
 
 impl HostServices for KernelServices {
+    fn observe_chain_life(
+        &self,
+        caller: &Caller,
+        kind: u32,
+        scope: &[u8],
+        done: crate::host_records::ChainLifeAcked,
+    ) -> Result<(), &'static str> {
+        KernelServices::observe_chain_life(self, caller, kind, scope, done)
+    }
+
+    fn supports_record_transactions(&self) -> bool {
+        KernelServices::supports_record_transactions(self)
+    }
+
+    fn conditional_record_transaction(
+        &self,
+        caller: &Caller,
+        unit: Option<u64>,
+        candidate: crate::host_records::ConditionalCandidate,
+        acked: crate::host_records::ConditionalAcked,
+    ) -> Result<(), &'static str> {
+        self.record_transaction(caller, unit, candidate, acked)
+    }
+
     fn inspect(
         &self,
         caller: &Caller,

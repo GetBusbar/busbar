@@ -310,6 +310,10 @@ impl std::fmt::Debug for PlaneRegistration {
 /// instance from these and its configured section.
 #[derive(Debug, Clone, Default)]
 pub struct InstanceDecl {
+    /// Explicit protocol support, carried by the Statement extensions.
+    pub conditional_records: bool,
+    /// Declared kind indices guarded against ordinary writes and purge.
+    pub conditional_record_kinds: Vec<u32>,
     /// The host's label for the instance: the key every caller-scoped host service answers by.
     pub label: Arc<str>,
     /// The record kinds it keeps.

@@ -17,6 +17,12 @@ pub(super) struct Kept {
 }
 
 impl ServiceStore {
+    pub(crate) fn inspection_active(&self, caller: usize, ticket: Ticket) -> bool {
+        self.lock(ticket)
+            .get(&ticket)
+            .and_then(|h| h.inspections.get(&caller))
+            .is_some_and(|kept| !kept.cancelled)
+    }
     /// The epoch and immutable receipt lent to this crossing. Unit binding is host-derived.
     pub(crate) fn inspection_input(
         &self,
@@ -33,6 +39,8 @@ impl ServiceStore {
                 epoch: self.epochs.fetch_add(1, Ordering::Relaxed) + 1,
                 entries: HashMap::new(),
                 inspections: HashMap::new(),
+                conditionals: HashMap::new(),
+                conditional_units: HashMap::new(),
             });
             let receipt = match held.inspections.get_mut(&caller) {
                 Some(kept) if !kept.cancelled => {

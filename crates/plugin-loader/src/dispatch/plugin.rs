@@ -295,8 +295,6 @@ pub(crate) struct Crossed {
     pub(crate) outcome: Outcome,
     pub(crate) error: Option<Vec<u8>>,
     pub(crate) lease: u64,
-    /// A copied inspection request owns this PENDING answer's intermediate lease.
-    pub(crate) inspection: bool,
     pub(crate) wake_at_ns: u64,
     /// A FAILED answer the kind calls short ([`Kind::short`]).
     pub(crate) short: bool,
@@ -315,7 +313,6 @@ impl Crossed {
             outcome,
             error: None,
             lease: 0,
-            inspection: false,
             wake_at_ns: 0,
             short: false,
             disposition: None,
@@ -1427,6 +1424,22 @@ impl Instance {
                 Ok(loan) => loan,
                 Err(()) => return Crossed::host(Outcome::Fault),
             };
+        // SAFETY: host-owned frame; each guard restores the preceding input loan in reverse order.
+        let _conditional_input = match unsafe {
+            super::conditional::prepare(
+                self.wake,
+                self.context
+                    .as_deref()
+                    .and_then(|c| c.downcast_ref::<super::kinds::plane::PlaneFacts>())
+                    .is_some_and(|f| f.declared.conditional_records),
+                s,
+                input,
+                unit,
+            )
+        } {
+            Ok(loan) => loan,
+            Err(()) => return Crossed::host(Outcome::Refused),
+        };
         // The deadline of the op this crossing is, for the host services it calls (`auth.call`).
         // SAFETY: the host's own `in`, led by its head, live for the crossing.
         let _deadline = super::services::op_deadline(unsafe { &*input });
@@ -1529,12 +1542,32 @@ impl Instance {
         } else {
             ticket
         };
-        let inspection = match unsafe {
+        // Copy and validate the transaction before any independent inspection effect or lease release.
+        // SAFETY: the answer remains live under its lease and its kind's checks passed.
+        if unsafe {
+            super::conditional::answer(
+                self.wake,
+                self.kind,
+                s,
+                inspection_ticket,
+                unit,
+                outcome,
+                &head,
+                &answer,
+            )
+        }
+        .is_err()
+        {
+            return Crossed::host(Outcome::Refused).unread(head.lease);
+        }
+        // SAFETY: the same validated answer remains live under its lease.
+        if unsafe {
             super::inspection::answer(self.wake, s, inspection_ticket, unit, outcome, &head)
-        } {
-            Ok(requested) => requested,
-            Err(()) => return Crossed::host(Outcome::Fault).unread(head.lease),
-        };
+        }
+        .is_err()
+        {
+            return Crossed::host(Outcome::Fault).unread(head.lease);
+        }
         if self.kind == KindCode::Transport {
             use busbar_contract::abi::mechanism::{call::BLOB_OCTETS, extensions};
             use busbar_contract::abi::transport::{guest_policy, FramerOut, YIELD_MORE};
@@ -1661,7 +1694,6 @@ impl Instance {
             outcome,
             error,
             lease: if handed { head.lease } else { 0 },
-            inspection,
             unread: if handed { 0 } else { head.lease },
             wake_at_ns: if outcome == Outcome::Pending {
                 head.wake_at_ns

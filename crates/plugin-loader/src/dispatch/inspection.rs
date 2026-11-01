@@ -69,6 +69,13 @@ pub(crate) unsafe fn prepare(
     let caller = caller_key(wake);
     let (epoch, receipt) = served.store.inspection_input(caller, head.ticket, unit)?;
     let original = head.extensions;
+    if original.len > inspection::MAX_BYTES {
+        return if served.store.inspection_active(caller, head.ticket) {
+            Err(())
+        } else {
+            Ok(None)
+        };
+    }
     // SAFETY: the host retains this original blob for the frame's lifetime.
     let prior = unsafe { super::validate::lent(original.ptr, original.len) }.ok_or(())?;
     // Inspection is optional. Old callers keep their original format, truncated trailing
@@ -215,7 +222,15 @@ pub(crate) unsafe fn answer(
         served.store.inspection_cancel(caller, ticket);
         return Ok(false);
     }
-    // SAFETY: the answer is still leased; decode copies every request byte before returning.
+    if head.extensions.len > inspection::MAX_BYTES {
+        return if served.store.inspection_active(caller, ticket) {
+            Err(())
+        } else {
+            Ok(false)
+        };
+    }
+    // SAFETY: the raw length is bounded above and the answer is still leased; decoding copies
+    // every request byte before returning.
     let bytes =
         unsafe { super::validate::lent(head.extensions.ptr, head.extensions.len) }.ok_or(())?;
     if bytes.is_empty() {

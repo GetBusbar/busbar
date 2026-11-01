@@ -87,6 +87,8 @@ pub struct StoreFacts {
     pub durable_plane: bool,
     /// A different record at a used `seq` is refused as a fork.
     pub fork_refusal: bool,
+    /// Negotiated version-one conditional record transaction support.
+    pub record_transaction: bool,
 }
 
 /// The store's tail, read from the Statement: a whole [`store::StoreTail`] whose flags are `0` or
@@ -106,6 +108,13 @@ fn store_facts(st: &Statement) -> Result<StoreFacts, String> {
         ephemeral: st.marks & busbar_contract::abi::mechanism::door::MARK_EPHEMERAL != 0,
         durable_plane: flag(t.durable_plane, "durable_plane")?,
         fork_refusal: flag(t.fork_refusal, "fork_refusal")?,
+        record_transaction: st.extensions.fmt == busbar_contract::abi::mechanism::call::BLOB_OCTETS
+            && st.extensions.flags == 0
+            && st.extensions.len as u64 <= busbar_contract::abi::mechanism::check::HARD_MAX_BYTES
+            // SAFETY: the raw byte length passed HARD_MAX_BYTES before any slice was formed.
+            // Statement extensions are static plugin memory; `lent` also checks the pointer.
+            && unsafe { crate::dispatch::validate::lent(st.extensions.ptr, st.extensions.len) }
+                .is_some_and(busbar_contract::abi::sdk::store::conditional::supported),
     })
 }
 

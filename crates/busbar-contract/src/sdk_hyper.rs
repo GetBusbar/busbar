@@ -133,7 +133,11 @@ macro_rules! hyper_io {
                     let mut tasks = std::mem::take(&mut *self.0.lock().expect("exec"));
                     tasks.retain_mut(|t| t.as_mut().poll(cx).is_pending());
                     let mut q = self.0.lock().expect("exec");
-                    // Tasks spawned during the pass run on the next round.
+                    // Children queued during this pass have not been polled. Schedule their
+                    // next round even if the parent completed without waking the drive.
+                    if !q.is_empty() {
+                        cx.waker().wake_by_ref();
+                    }
                     tasks.append(&mut q);
                     *q = tasks;
                 }

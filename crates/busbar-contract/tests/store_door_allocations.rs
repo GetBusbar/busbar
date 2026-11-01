@@ -132,9 +132,34 @@ fn down<T>() -> RecordStoreResult<T> {
     Err(RecordStoreError(DOWN_TEXT.to_string()))
 }
 
-struct Canned;
+struct Canned<const CONDITIONAL: bool = false>;
 
-impl StoreSlots for Canned {
+impl<const CONDITIONAL: bool> StoreSlots for Canned<CONDITIONAL> {
+    const RECORD_TRANSACTION: bool = CONDITIONAL;
+
+    fn record_transaction(
+        &self,
+        cx: &mut StoreOp<'_>,
+        request: &busbar_contract::abi::sdk::store::conditional::Request,
+    ) -> Step<OpResult<busbar_contract::abi::sdk::store::conditional::Decision>> {
+        use busbar_contract::abi::sdk::store::conditional::Decision;
+        match request.predicates[0].schema.as_str() {
+            "condition-conflict" => Step::Ready(Ok(Decision::ConditionConflict)),
+            "opid-conflict" => Step::Ready(Err(OpRefused::Conflict)),
+            "pending-transaction" => {
+                if let Some(parked) =
+                    cx.resume::<busbar_contract::abi::sdk::store::conditional::Request>()
+                {
+                    assert_eq!(&parked, request);
+                    Step::Ready(Ok(Decision::Applied))
+                } else {
+                    cx.park(request.clone());
+                    Step::Pending { wake_at_ns: 1 }
+                }
+            }
+            _ => Step::Ready(Ok(Decision::Applied)),
+        }
+    }
     const TAIL: Tail = Tail {
         ephemeral: true,
         durable_plane: false,
@@ -176,6 +201,13 @@ impl StoreSlots for Canned {
         schema: &str,
         _: &[u8],
     ) -> Step<Result<Option<RecordBytes>, String>> {
+        assert!(
+            !matches!(
+                schema,
+                "transaction" | "condition-conflict" | "opid-conflict" | "pending-transaction"
+            ),
+            "transaction must never fall through to ordinary GET"
+        );
         Step::Ready(unwitnessed(|| {
             if schema == DOWN {
                 Err(DOWN_TEXT.to_string())
@@ -948,4 +980,271 @@ fn the_store_door_refuses_a_release_of_a_lease_it_does_not_hold() {
         Outcome::Refused,
         "a lease already released is refused"
     );
+}
+
+mod conditional_canned {
+    busbar_contract::store_door!(super::Canned<true>, "conditional-canned", "0", 8);
+}
+
+fn conditional_ops() -> &'static Ops {
+    // SAFETY: the store_door macro publishes the store Ops table for the program lifetime.
+    unsafe { &*conditional_canned::door().ops().cast::<Ops>() }
+}
+
+fn conditional_open(ops: &Ops) -> *mut c_void {
+    let mut input: OpenIn = zeroed();
+    input.head = in_head::<OpenIn>(life::OPEN);
+    input.settings = octets(b"{}");
+    let mut output: OpenOut = zeroed();
+    output.head = out_head::<OpenOut>();
+    assert_eq!(
+        call(ops.head.open, ptr::null_mut(), &input, &mut output),
+        Outcome::Ready
+    );
+    output.instance
+}
+
+fn transaction_candidate(schema: &str) -> busbar_contract::abi::sdk::store::conditional::Request {
+    use busbar_contract::abi::sdk::store::conditional::{
+        Expected, Mutation, Predicate, Request, VERSION,
+    };
+    Request {
+        version: VERSION,
+        op_id: OpId::from_parts(9, 1),
+        predicates: vec![Predicate {
+            schema: schema.into(),
+            key: vec![0xff, 0],
+            expected: Expected::Absent,
+        }],
+        mutations: vec![Mutation::Put {
+            schema: schema.into(),
+            key: vec![0xff, 0],
+            value: vec![1],
+        }],
+    }
+}
+
+fn transaction_input<'a>(
+    request: &'a busbar_contract::abi::sdk::store::conditional::Request,
+    extensions: &'a [u8],
+) -> RecordGetIn {
+    let (schema, key) = request.carrier().unwrap();
+    RecordGetIn {
+        head: InHead {
+            extensions: Blob {
+                ptr: extensions.as_ptr(),
+                len: extensions.len(),
+                fmt: busbar_contract::abi::mechanism::call::BLOB_OCTETS,
+                flags: 0,
+            },
+            ..in_head::<RecordGetIn>(slot::RECORD_GET)
+        },
+        schema: AbiStr {
+            ptr: schema.as_ptr(),
+            len: schema.len(),
+        },
+        key: Blob {
+            ptr: key.as_ptr(),
+            len: key.len(),
+            fmt: busbar_contract::abi::mechanism::call::BLOB_OCTETS,
+            flags: 0,
+        },
+        value: HostBuf {
+            ptr: ptr::null_mut(),
+            cap: 0,
+        },
+    }
+}
+
+fn transaction_output() -> HostBytesOut {
+    HostBytesOut {
+        head: out_head::<HostBytesOut>(),
+        ..zeroed()
+    }
+}
+
+#[test]
+fn conditional_get_is_opt_in_and_never_ordinary_get_or_short() {
+    use busbar_contract::abi::{mechanism::extensions, sdk::store::conditional as tx};
+    assert!(tx::capability::<Canned>().is_none());
+    assert_eq!(
+        tx::capability::<Canned<true>>(),
+        Some((tx::CAPABILITY, b"1".as_slice()))
+    );
+    let request = transaction_candidate("transaction");
+    let encoded = request.encode().unwrap();
+    let ext = extensions::encode(&[(tx::INTENT, &encoded)]);
+    let input = transaction_input(&request, &ext);
+    let unsupported = conditional_open(ops());
+    let mut output = transaction_output();
+    assert_eq!(
+        call(ops().record_get, unsupported, &input, &mut output),
+        Outcome::Refused
+    );
+    assert_eq!(output.head.lease, 0);
+    let supported = conditional_open(conditional_ops());
+    let mut output = transaction_output();
+    assert_eq!(
+        call(conditional_ops().record_get, supported, &input, &mut output),
+        Outcome::Ready
+    );
+    assert_eq!((output.found, output.written, output.needed), (0, 0, 0));
+    assert_ne!(
+        output.head.lease, 0,
+        "zero-capacity carrier must return leased decision, never SHORT"
+    );
+    // SAFETY: output extension bytes are owned by the live, unreleased lease.
+    let bytes = unsafe {
+        std::slice::from_raw_parts(output.head.extensions.ptr, output.head.extensions.len)
+    };
+    assert_eq!(
+        tx::read_result(Outcome::Ready, true, bytes, &request),
+        Ok(tx::Decision::Applied)
+    );
+    let input = ReleaseIn {
+        head: in_head::<ReleaseIn>(life::RELEASE),
+        lease: output.head.lease,
+    };
+    let mut released = out_head::<OutHead>();
+    assert_eq!(
+        call(
+            conditional_ops().head.release,
+            supported,
+            &input,
+            &mut released
+        ),
+        Outcome::Ready
+    );
+    assert_eq!(
+        call(
+            conditional_ops().head.release,
+            supported,
+            &input,
+            &mut released
+        ),
+        Outcome::Refused
+    );
+}
+
+#[test]
+fn malformed_and_unknown_conditional_get_intent_refuse_before_backend() {
+    use busbar_contract::abi::{mechanism::extensions, sdk::store::conditional as tx};
+    let instance = conditional_open(conditional_ops());
+    let request = transaction_candidate("transaction");
+    let mut bytes = request.encode().unwrap();
+    bytes[..4].copy_from_slice(&2u32.to_le_bytes());
+    for payload in [vec![], bytes] {
+        let ext = extensions::encode(&[(tx::INTENT, &payload)]);
+        let input = transaction_input(&request, &ext);
+        let mut output = transaction_output();
+        assert_eq!(
+            call(conditional_ops().record_get, instance, &input, &mut output),
+            Outcome::Refused
+        );
+        assert_eq!(output.head.lease, 0);
+    }
+    let encoded = request.encode().unwrap();
+    let mut ext = extensions::encode(&[(tx::INTENT, &encoded)]);
+    ext.pop();
+    let input = transaction_input(&request, &ext);
+    let mut output = transaction_output();
+    assert_eq!(
+        call(conditional_ops().record_get, instance, &input, &mut output),
+        Outcome::Refused
+    );
+    let ext = extensions::encode(&[(tx::INTENT, &encoded)]);
+    let mut input = transaction_input(&request, &ext);
+    input.schema = s(b"wrong-carrier");
+    let mut output = transaction_output();
+    assert_eq!(
+        call(conditional_ops().record_get, instance, &input, &mut output),
+        Outcome::Refused
+    );
+}
+
+#[test]
+fn condition_conflict_is_a_leased_decision_separate_from_opid_conflict() {
+    use busbar_contract::abi::{mechanism::extensions, sdk::store::conditional as tx};
+    let instance = conditional_open(conditional_ops());
+    for (schema, expected) in [
+        ("condition-conflict", Outcome::Ready),
+        ("opid-conflict", Outcome::Refused),
+    ] {
+        let request = transaction_candidate(schema);
+        let encoded = request.encode().unwrap();
+        let ext = extensions::encode(&[(tx::INTENT, &encoded)]);
+        let input = transaction_input(&request, &ext);
+        let mut output = transaction_output();
+        assert_eq!(
+            call(conditional_ops().record_get, instance, &input, &mut output),
+            expected
+        );
+        if expected == Outcome::Ready {
+            assert_ne!(output.head.lease, 0);
+            // SAFETY: the result belongs to this still-live lease.
+            let bytes = unsafe {
+                std::slice::from_raw_parts(output.head.extensions.ptr, output.head.extensions.len)
+            };
+            assert_eq!(
+                tx::read_result(expected, true, bytes, &request),
+                Ok(tx::Decision::ConditionConflict)
+            );
+        } else {
+            assert_eq!(output.head.lease, 0);
+            assert!(text(output.head.error).contains("STORE_OPID_CONFLICT"));
+        }
+    }
+}
+
+#[test]
+fn conditional_get_pending_reentry_retains_exact_candidate_then_leases_result() {
+    use busbar_contract::abi::{mechanism::extensions, sdk::store::conditional as tx};
+    let instance = conditional_open(conditional_ops());
+    let request = transaction_candidate("pending-transaction");
+    let encoded = request.encode().unwrap();
+    let ext = extensions::encode(&[(tx::INTENT, &encoded)]);
+    let mut input = transaction_input(&request, &ext);
+    input.head.ticket = Ticket {
+        slot: 12,
+        generation: 1,
+    };
+    let mut output = transaction_output();
+    assert_eq!(
+        call(conditional_ops().record_get, instance, &input, &mut output),
+        Outcome::Pending
+    );
+    assert_eq!(output.head.lease, 0);
+    input.head.flags |= busbar_contract::abi::mechanism::call::FLAG_RESUME;
+    let mut output = transaction_output();
+    assert_eq!(
+        call(conditional_ops().record_get, instance, &input, &mut output),
+        Outcome::Ready
+    );
+    // SAFETY: the result belongs to this still-live lease.
+    let bytes = unsafe {
+        std::slice::from_raw_parts(output.head.extensions.ptr, output.head.extensions.len)
+    };
+    assert_eq!(
+        tx::read_result(Outcome::Ready, output.head.lease != 0, bytes, &request),
+        Ok(tx::Decision::Applied)
+    );
+}
+
+#[test]
+fn ordinary_get_without_conditional_intent_preserves_bytes_and_has_no_result() {
+    use busbar_contract::abi::sdk::store::conditional as tx;
+    let instance = conditional_open(conditional_ops());
+    let request = transaction_candidate("ordinary");
+    let mut bytes = [0u8; 32];
+    let mut input = transaction_input(&request, &[]);
+    input.value = bytes_buf(&mut bytes);
+    let mut output = transaction_output();
+    assert_eq!(
+        call(conditional_ops().record_get, instance, &input, &mut output),
+        Outcome::Ready
+    );
+    assert_eq!(output.found, busbar_contract::abi::store::FOUND);
+    assert_eq!(&bytes[..output.written as usize], b"a value");
+    assert_eq!(output.head.lease, 0);
+    assert!(tx::read_result(Outcome::Ready, false, &[], &request).is_err());
 }

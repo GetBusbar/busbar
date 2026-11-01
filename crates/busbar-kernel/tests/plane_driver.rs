@@ -1741,6 +1741,8 @@ async fn the_driver_ticks_at_each_next_tick_and_stops_at_none() {
 fn declaring() -> Double {
     Double {
         declared: InstanceDecl {
+            conditional_records: false,
+            conditional_record_kinds: Vec::new(),
             label: Arc::from("inst"),
             record_kinds: vec!["approval"],
             signing: None,

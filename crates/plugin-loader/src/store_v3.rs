@@ -40,7 +40,9 @@ use std::time::Duration;
 use busbar_contract::abi::mechanism::call::{
     AbiStr, Blob, DeadlineClass, InHead, OutHead, Outcome, BLOB_JSON, BLOB_OCTETS, BLOB_SECRET,
 };
+use busbar_contract::abi::mechanism::extensions;
 use busbar_contract::abi::mechanism::lifecycle::{slot as life, OpenIn, OpenOut, LIFECYCLE_SLOTS};
+use busbar_contract::abi::sdk::store::conditional;
 use busbar_contract::abi::store::{
     self as st, slot, AddUsageBatchIn, AppendPlaneRecordIn, BlobIn, CountOut, GetPlaneRecordIn,
     HostBlobs, HostBuf, HostBytesOut, HostListOut, HostRecords, IdIn, IdReasonIn,
@@ -306,7 +308,7 @@ impl LoadedStore {
             return (Ran::host(Outcome::Refused, r.out()), Lend::new(r));
         };
         let _recycle = Recycle(&self.dispatcher, ticket);
-        let (class, deadline) = deadline_of(s);
+        let (class, deadline) = r.schedule();
         let r = Lend::new(r);
         let mut regrown = false;
         loop {
@@ -325,6 +327,7 @@ impl LoadedStore {
             let done = reply.await;
             let out = done.frame.as_ref().map_or_else(|| r.get().out(), |f| f.out);
             if done.short && !regrown {
+                self.release(done.lease);
                 regrown = true;
                 r.grow(&out);
                 continue;
@@ -591,6 +594,10 @@ trait Req: 'static {
     type I: InFrame;
     type O: OutFrame;
     fn slot(&self) -> u32;
+    /// Host-selected scheduling; only the typed transaction request overrides the slot default.
+    fn schedule(&self) -> (DeadlineClass, u64) {
+        deadline_of(self.slot())
+    }
     /// The `in`, pointing at the request's own buffers and borrowed data.
     fn input(&mut self) -> Self::I;
     /// A blank `out`.
@@ -769,6 +776,92 @@ impl<I> BytesReq<I> {
     fn read(&self, ran: &Ran<HostBytesOut>) -> Result<Option<Vec<u8>>, StoreFailure> {
         ran.ok()?;
         Ok((ran.out.found == FOUND).then(|| self.buf[..ran.out.written as usize].to_vec()))
+    }
+}
+
+/// A transaction is a typed host request carried on GET, with its own immutable intent.
+struct ConditionalReq {
+    read: BytesReq<RecordGetIn>,
+    candidate: conditional::Request,
+}
+
+impl ConditionalReq {
+    fn new(candidate: &conditional::Request) -> Result<Self, StoreFailure> {
+        let encoded = candidate
+            .encode()
+            .map_err(|s| StoreFailure::Refused(s.into()))?;
+        let (schema, key) = candidate.carrier().ok_or_else(|| {
+            StoreFailure::Refused("record transaction requires a predicate".into())
+        })?;
+        let mut read = LoadedStore::record_get_req(schema, key);
+        read.input.head.extensions = read._owned.octets(&extensions::encode(&[(
+            conditional::INTENT,
+            encoded.as_slice(),
+        )]));
+        Ok(Self {
+            read,
+            candidate: candidate.clone(),
+        })
+    }
+}
+
+impl Req for ConditionalReq {
+    type I = RecordGetIn;
+    type O = HostBytesOut;
+    fn slot(&self) -> u32 {
+        slot::RECORD_GET
+    }
+    fn schedule(&self) -> (DeadlineClass, u64) {
+        (DeadlineClass::WriteBehind, 0)
+    }
+    fn input(&mut self) -> Self::I {
+        self.read.input()
+    }
+    fn out(&self) -> Self::O {
+        self.read.out()
+    }
+    fn grow(&mut self, out: &Self::O) {
+        self.read.grow(out);
+    }
+}
+
+/// Releases a handed answer after validation, including every early failure.
+struct AnswerLease<'a>(&'a LoadedStore, u64);
+impl Drop for AnswerLease<'_> {
+    fn drop(&mut self) {
+        self.0.release(self.1);
+    }
+}
+
+impl LoadedStore {
+    fn transaction_result(
+        &self,
+        ran: Ran<HostBytesOut>,
+        candidate: &conditional::Request,
+    ) -> Result<conditional::Decision, StoreFailure> {
+        let _lease = AnswerLease(self, ran.lease);
+        ran.ok()?;
+        let extension = ran.out.head.extensions;
+        if ran.lease == 0 || extension.fmt != BLOB_OCTETS || extension.flags != 0 {
+            return Err(StoreFailure::Fault(
+                "record transaction outcome unknown: missing leased result".into(),
+            ));
+        }
+        if extension.len as u64 > busbar_contract::abi::mechanism::check::HARD_MAX_BYTES {
+            return Err(StoreFailure::Fault(
+                "record transaction outcome unknown: oversized result bytes".into(),
+            ));
+        }
+        // SAFETY: the raw byte length passed HARD_MAX_BYTES before any slice was formed. A READY
+        // reply's plugin memory remains live under `_lease`; `lent` checks the pointer as well.
+        let bytes = unsafe { crate::dispatch::validate::lent(extension.ptr, extension.len) }
+            .ok_or_else(|| {
+                StoreFailure::Fault(
+                    "record transaction outcome unknown: invalid result bytes".into(),
+                )
+            })?;
+        conditional::read_result(ran.outcome, true, bytes, candidate)
+            .map_err(|s| StoreFailure::Fault(format!("record transaction outcome unknown: {s}")))
     }
 }
 
@@ -1012,6 +1105,26 @@ fn boxed<'a, T>(f: impl Future<Output = Result<T, StoreFailure>> + Send + 'a) ->
 }
 
 impl StoreCalls for LoadedStore {
+    fn supports_record_transaction(&self) -> bool {
+        self.facts.record_transaction
+    }
+
+    fn record_transaction<'a>(
+        &'a self,
+        candidate: &'a conditional::Request,
+    ) -> StoreCall<'a, conditional::Decision> {
+        boxed(async move {
+            if !self.supports_record_transaction() {
+                return Err(StoreFailure::Refused(
+                    "store does not support record transactions".into(),
+                ));
+            }
+            let request = ConditionalReq::new(candidate)?;
+            let (ran, request) = self.submit(request).await;
+            self.transaction_result(ran, &request.get().candidate)
+        })
+    }
+
     fn add_usage_batch<'a>(
         &'a self,
         op: OpId,
@@ -1849,3 +1962,7 @@ mod axis_tests;
 #[cfg(test)]
 #[path = "tests/store_v3_lent_tests.rs"]
 mod lent_tests;
+
+#[cfg(test)]
+#[path = "tests/store_v3_conditional_tests.rs"]
+mod conditional_tests;

@@ -564,3 +564,56 @@ fn two_nodes_appending_to_one_chain_continue_each_other_and_never_overwrite() {
         "every node's record is kept, in one chain that verifies"
     );
 }
+
+#[test]
+fn malformed_persisted_chain_life_refuses_append_without_reinterpreting_it_as_genesis() {
+    let (services, store) = rig();
+    let key = crate::host_chains::life_key(INST, EV, "broken-life");
+    store
+        .record_put(
+            crate::host_chains::CHAIN_LIFE_SCHEMA,
+            &key,
+            &RecordBytes::new(vec![1]).unwrap(),
+        )
+        .unwrap();
+    assert!(append(&services, b"broken-life", b"event").is_err());
+    assert!(store
+        .record_get(EV, &stored_at("broken-life", 1))
+        .unwrap()
+        .is_none());
+    assert_eq!(
+        store
+            .record_get(crate::host_chains::CHAIN_LIFE_SCHEMA, &key)
+            .unwrap()
+            .unwrap()
+            .as_slice(),
+        &[1]
+    );
+}
+
+#[test]
+fn exhausted_chain_life_refuses_drop_without_deleting_its_records() {
+    let (services, store) = rig();
+    append(&services, b"last-life", b"event").unwrap();
+    let key = crate::host_chains::life_key(INST, EV, "last-life");
+    store
+        .record_put(
+            crate::host_chains::CHAIN_LIFE_SCHEMA,
+            &key,
+            &RecordBytes::new(u64::MAX.to_be_bytes().to_vec()).unwrap(),
+        )
+        .unwrap();
+    assert!(append(&services, b"last-life", b"").is_err());
+    assert!(store
+        .record_get(EV, &stored_at("last-life", 1))
+        .unwrap()
+        .is_some());
+    assert_eq!(
+        store
+            .record_get(crate::host_chains::CHAIN_LIFE_SCHEMA, &key)
+            .unwrap()
+            .unwrap()
+            .as_slice(),
+        &u64::MAX.to_be_bytes()
+    );
+}

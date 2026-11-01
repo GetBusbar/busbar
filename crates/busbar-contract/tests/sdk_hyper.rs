@@ -461,3 +461,72 @@ fn fill_states_a_heads_declared_length_where_it_declared_one() {
         (PIECE_FIELDS | PIECE_END_OF_FRAME, 0)
     );
 }
+
+/// A child spawned while the executor polls its parent must write during the same host drive.
+/// Neither the parent nor the caller supplies a spare wake or another host operation.
+#[test]
+fn a_spawned_child_runs_before_the_host_drive_returns() {
+    use hyper::rt::Executor;
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    };
+    for pending_parent in [false, true] {
+        let io = HostIo::new(0);
+        let mut spawn = Some(io.exec());
+        let mut stream = Some(io.stream());
+        let polls = Arc::new(AtomicUsize::new(0));
+        let parent_polls = Arc::clone(&polls);
+        io.exec().execute(std::future::poll_fn(move |_| {
+            parent_polls.fetch_add(1, Ordering::Relaxed);
+            if let Some(spawn) = spawn.take() {
+                let mut stream = stream.take().expect("one child owns the stream");
+                spawn.execute(std::future::poll_fn(move |cx| {
+                    Pin::new(&mut stream)
+                        .poll_write(cx, b"child wire")
+                        .map(|result| {
+                            assert_eq!(result.expect("write through the real host pipe"), 10);
+                        })
+                }));
+            }
+            if pending_parent {
+                Poll::Pending
+            } else {
+                Poll::Ready(())
+            }
+        }));
+        io.rounds(|_| Ok::<(), ()>(())).expect("drive");
+        assert_eq!(
+            io.take_wire(64),
+            b"child wire",
+            "newly spawned work is not stranded"
+        );
+        assert_eq!(
+            polls.load(Ordering::Relaxed),
+            if pending_parent { 2 } else { 1 }
+        );
+    }
+}
+
+/// A pending task that creates no new work must not spin until MAX_ROUNDS on every host call.
+#[test]
+fn a_pending_task_without_a_child_is_polled_once_per_host_drive() {
+    use hyper::rt::Executor;
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    };
+    let io = HostIo::new(0);
+    let polls = Arc::new(AtomicUsize::new(0));
+    let task_polls = Arc::clone(&polls);
+    io.exec().execute(std::future::poll_fn(move |_| {
+        task_polls.fetch_add(1, Ordering::Relaxed);
+        Poll::<()>::Pending
+    }));
+    io.rounds(|_| Ok::<(), ()>(())).expect("drive");
+    assert_eq!(polls.load(Ordering::Relaxed), 1);
+    assert!(!io.wire_pending());
+    io.rounds(|_| Ok::<(), ()>(()))
+        .expect("a later explicit host drive");
+    assert_eq!(polls.load(Ordering::Relaxed), 2);
+}

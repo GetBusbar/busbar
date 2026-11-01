@@ -175,6 +175,8 @@ struct Held {
     entries: HashMap<Issue, (Bound, Entry)>,
     /// Inspection receipts share this epoch, but never a completion-handle namespace.
     inspections: HashMap<usize, inspection_store::Kept>,
+    conditionals: HashMap<usize, conditional_store::Kept>,
+    conditional_units: HashMap<usize, Result<Option<u64>, ()>>,
 }
 
 /// What one result is kept under on its ticket: the CALLER whose context issued the handle (THE
@@ -282,6 +284,8 @@ impl ServiceStore {
                 epoch,
                 entries: HashMap::new(),
                 inspections: HashMap::new(),
+                conditionals: HashMap::new(),
+                conditional_units: HashMap::new(),
             })
             .entries
             .insert(
@@ -609,6 +613,8 @@ fn serve_kept(
             epoch: store.epochs.fetch_add(1, Ordering::Relaxed) + 1,
             entries: HashMap::new(),
             inspections: HashMap::new(),
+            conditionals: HashMap::new(),
+            conditional_units: HashMap::new(),
         });
         let epoch = held.epoch;
         match held.entries.entry(issue) {
@@ -2538,3 +2544,6 @@ service! {
 
 #[path = "inspection_store.rs"]
 mod inspection_store;
+
+#[path = "conditional_store.rs"]
+mod conditional_store;

@@ -13,6 +13,8 @@ use crate::abi::plane::{PlaneCancelIn, CANCEL_ABORTED, CANCEL_OK_PARTIAL};
 use crate::abi::sdk::lent::Lent;
 use crate::abi::sdk::publish::Keyed;
 
+pub mod conditional;
+
 /// The refusal of a dealt blob that is JSON but not an object.
 pub const NOT_A_MAP: &str = "the dealt settings are not a map of the plane's sections";
 

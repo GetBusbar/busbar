@@ -888,3 +888,80 @@ fn plane_tick_lease_is_released_when_future_drops_before_crossing_returns() {
     assert!(state.leases.lock().unwrap().is_empty());
     instance.recycle(driver);
 }
+
+#[test]
+fn oversized_optional_blobs_are_not_sliced_and_active_inspection_fails_closed() {
+    let (route, wake, mut input) = input_route();
+    let oversized = Blob {
+        ptr: std::ptr::NonNull::<u8>::dangling().as_ptr(),
+        len: inspection::MAX_BYTES + 1,
+        fmt: BLOB_OCTETS,
+        flags: 0,
+    };
+    input.extensions = oversized;
+    // SAFETY: the input head is valid; its fabricated oversized blob must not be dereferenced.
+    assert!(unsafe { prepare(wake, slot::TICK, &mut input, None) }
+        .unwrap()
+        .is_none());
+    let mut output = out_head();
+    output.extensions = oversized;
+    assert_eq!(
+        unsafe {
+            answer(
+                wake,
+                slot::TICK,
+                input.ticket,
+                None,
+                Outcome::Pending,
+                &output,
+            )
+        },
+        Ok(false)
+    );
+    let (epoch, _) = route
+        .store
+        .inspection_input(caller_key(wake), input.ticket, None)
+        .unwrap();
+    let request = InspectionRequest {
+        ticket: input.ticket,
+        epoch,
+        id: 1,
+        query: InspectionQuery::CarrierSessions { sessions: vec![7] },
+    };
+    assert_eq!(
+        route
+            .store
+            .inspection_begin(caller_key(wake), None, &request),
+        Ok(true)
+    );
+    assert!(unsafe { prepare(wake, slot::TICK, &mut input, None) }.is_err());
+    assert_eq!(
+        unsafe {
+            answer(
+                wake,
+                slot::TICK,
+                input.ticket,
+                None,
+                Outcome::Pending,
+                &output,
+            )
+        },
+        Err(())
+    );
+    route
+        .store
+        .inspection_cancel(caller_key(wake), input.ticket);
+    assert_eq!(
+        unsafe {
+            answer(
+                wake,
+                slot::TICK,
+                input.ticket,
+                None,
+                Outcome::Pending,
+                &output,
+            )
+        },
+        Ok(false)
+    );
+}

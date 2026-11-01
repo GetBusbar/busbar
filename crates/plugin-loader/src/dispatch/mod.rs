@@ -48,6 +48,7 @@ pub mod auth_handle;
 pub mod auth_outbound;
 pub mod auth_ticks;
 pub(crate) mod call;
+pub(crate) mod conditional;
 pub mod conn_services;
 pub mod framing_context;
 pub mod handle;
