@@ -10,6 +10,8 @@
 //! * [`LOG`] — logs through `tracing` and through `log`, from this crate and from two libraries
 //!   inside it: `h2` (`tracing`), driving a client handshake over an in-memory pipe, and
 //!   `tungstenite` (`log`), sending a frame into a buffer.
+//! * `log:<label>` — the same script with a caller-supplied label in its warning, so a test can
+//!   identify its own dropped plugin's message in the shared host log.
 //! * [`FLOOD`] — more records than one reply may carry.
 //! * [`OUTSIDE`] — writes straight to standard error, and logs from a thread of its own, both
 //!   outside any capture: neither may reach the plugin's log file.
@@ -170,6 +172,9 @@ pub mod a {
         unsafe fn call(_: *mut c_void, input: &TickIn, _: &mut TickOut) -> Outcome {
             match mode(input) {
                 LOG => log_everything("a"),
+                named if named.starts_with(b"log:") => log_everything(
+                    std::str::from_utf8(&named[4..]).expect("the test's log label is UTF-8"),
+                ),
                 FLOOD => {
                     (0..FLOOD_RECORDS).for_each(|i| tracing::info!(target: TARGET, i, "flood"))
                 }
