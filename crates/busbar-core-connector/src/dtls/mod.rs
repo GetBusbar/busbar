@@ -635,6 +635,11 @@ impl Association {
     }
 
     /// The next thing for the framer.
+    pub(crate) fn has_host_output(&self) -> bool {
+        !self.up.is_empty() || !self.wire.is_empty()
+    }
+
+    /// The next thing for the framer.
     pub fn poll_up(&mut self) -> Option<Up> {
         self.up.pop_front()
     }

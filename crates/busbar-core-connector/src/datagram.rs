@@ -218,6 +218,7 @@ pub struct DatagramTurn<'f> {
     opened: VecDeque<Vec<u8>>,
     closed: bool,
     complete: bool,
+    custody: Custody,
 }
 
 /// An owned same-op continuation. It holds no ABI loan and cannot accept fresh input.
@@ -229,6 +230,7 @@ struct Continuation {
     opened: VecDeque<Vec<u8>>,
     closed: bool,
     complete: bool,
+    custody: Custody,
 }
 
 impl<'f> DatagramTurn<'f> {
@@ -241,6 +243,7 @@ impl<'f> DatagramTurn<'f> {
             opened: std::mem::take(&mut self.opened),
             closed: self.closed,
             complete: self.complete,
+            custody: std::mem::take(&mut self.custody),
         };
         self.complete = true;
         continuation
@@ -256,6 +259,7 @@ impl<'f> DatagramTurn<'f> {
             opened: continuation.opened,
             closed: continuation.closed,
             complete: continuation.complete,
+            custody: continuation.custody,
         }
     }
     fn settling(framing: &'f mut DatagramFraming, now: Instant) -> Self {
@@ -268,6 +272,7 @@ impl<'f> DatagramTurn<'f> {
             opened: VecDeque::new(),
             closed: false,
             complete: false,
+            custody: Custody::default(),
         }
     }
 
@@ -295,6 +300,25 @@ impl<'f> DatagramTurn<'f> {
         // initialized copy on success and error; routes already leave through poll_send.
         zeroize::Zeroize::zeroize(&mut batch.wire);
         let done = taken?;
+        batch.split_piece_custody();
+        self.framing.metadata_custody = batch.custody.split(self.framing.bufs.field_storage());
+        self.custody = batch.custody.split(
+            std::mem::size_of::<Continuation>()
+                + self.opened.capacity() * std::mem::size_of::<Vec<u8>>()
+                + self.opened.iter().map(Vec::capacity).sum::<usize>(),
+        );
+        if !self.framing.send.is_empty() {
+            self.framing.send_custody = batch.custody.split(
+                self.framing.send.capacity() * std::mem::size_of::<(SocketAddr, Vec<u8>)>()
+                    + self
+                        .framing
+                        .send
+                        .iter()
+                        .map(|(_, bytes)| bytes.capacity())
+                        .sum::<usize>(),
+            );
+        }
+        batch.custody.reduce(batch.retained_capacity());
         if done {
             self.recall = None;
             self.recalls = crate::framer::Recalls::default();
@@ -375,6 +399,15 @@ impl<'f> DatagramTurn<'f> {
                 }
                 return answer.map(Some);
             }
+            if self
+                .framing
+                .secure
+                .as_ref()
+                .is_some_and(Association::has_host_output)
+                && self.framing.credit.is_none()
+            {
+                self.framing.credit = Some(self.framing.reserve_output()?);
+            }
             if let Some(secure) = self.framing.secure.as_mut() {
                 while let Some(datagram) = secure.poll_wire() {
                     self.framing.send.push_back(datagram);
@@ -392,6 +425,26 @@ impl<'f> DatagramTurn<'f> {
                         Up::Closed => self.closed = true,
                     }
                 }
+            }
+            if let Some(mut credit) = self.framing.credit.take() {
+                if !self.framing.send.is_empty() {
+                    self.framing.send_custody = credit.split(
+                        self.framing.send.capacity() * std::mem::size_of::<(SocketAddr, Vec<u8>)>()
+                            + self
+                                .framing
+                                .send
+                                .iter()
+                                .map(|(_, bytes)| bytes.capacity())
+                                .sum::<usize>(),
+                    );
+                }
+                self.custody = credit.split(
+                    std::mem::size_of::<Continuation>()
+                        + self.opened.capacity() * std::mem::size_of::<Vec<u8>>()
+                        + self.opened.iter().map(Vec::capacity).sum::<usize>(),
+                );
+                // A later ABI crossing reserves its full bound independently of these
+                // now-owned secure outputs; no credit is reused after it has been split.
             }
             self.security_valid()?;
             if !self.opened.is_empty() || self.closed {
@@ -440,6 +493,7 @@ fn append_batch(into: &mut Yielded, mut batch: Yielded) {
     into.custody = batch.custody;
     into.heads.append(&mut batch.heads);
     into.pieces.append(&mut batch.pieces);
+    into.piece_custody.append(&mut batch.piece_custody);
     into.flow.append(&mut batch.flow);
     into.interim.append(&mut batch.interim);
     into.ended |= batch.ended;
@@ -485,6 +539,9 @@ pub struct DatagramFraming {
     /// The host state the framer was last told: the bound path and the verified bit.
     told: (u32, bool),
     send: VecDeque<(SocketAddr, Vec<u8>)>,
+    send_custody: Custody,
+    retired_send: Custody,
+    metadata_custody: Custody,
     refused_routes: u64,
     deadline_ns: Option<u64>,
     ended: bool,
@@ -791,6 +848,9 @@ impl DatagramFraming {
             presented: false,
             told: (0, false),
             send: VecDeque::new(),
+            send_custody: Custody::default(),
+            retired_send: Custody::default(),
+            metadata_custody: Custody::default(),
             refused_routes: 0,
             deadline_ns: None,
             ended: false,
@@ -945,7 +1005,17 @@ impl DatagramFraming {
 
     /// The next datagram owed to the port, and where it goes.
     pub fn poll_send(&mut self) -> Option<(SocketAddr, Vec<u8>)> {
-        self.send.pop_front()
+        // The previous returned datagram has retired before a caller requests the next one.
+        self.retired_send = Custody::default();
+        let next = self.send.pop_front();
+        if next.is_some() {
+            self.retired_send = self.send_custody.clone();
+        }
+        if self.send.is_empty() {
+            self.send = VecDeque::new();
+            self.send_custody = Custody::default();
+        }
+        next
     }
 
     /// How many routes the host refused to send (to a path the secure layer does not allow, or
@@ -1709,6 +1779,167 @@ impl Drop for Taken<'_> {
 }
 
 impl PortAssociations {
+    /// The serving caller's incremental datagram path. The existing raw busy-ingress queue
+    /// remains unchanged; checked LINE/CHANNEL output uses the pairing's publication account.
+    pub fn datagram_incremental(
+        &self,
+        from: SocketAddr,
+        bytes: &[u8],
+        now: Instant,
+        send: &dyn Fn(SocketAddr, &[u8]),
+    ) -> Answered {
+        let Some(id) = self.lock().find(from, bytes) else {
+            return Vec::new();
+        };
+        self.incremental(id, Owed::Datagram(from, bytes.into()), now, send)
+    }
+
+    /// The serving caller's incremental clock path. A busy producer retains its ordinary
+    /// queued timer until its same-op continuation and older publication can progress.
+    pub fn timeout_incremental(&self, now: Instant, send: &dyn Fn(SocketAddr, &[u8])) -> Answered {
+        let due: Vec<_> = {
+            let mut assocs = self.lock();
+            for out in assocs.out.values_mut() {
+                if out.deadline.is_some_and(|deadline| deadline <= now) {
+                    out.deadline = None;
+                    out.owed.push_back(Owed::Timer);
+                }
+            }
+            assocs
+                .framings
+                .iter()
+                .filter_map(|(id, f)| {
+                    f.deadline()
+                        .is_some_and(|deadline| deadline <= now)
+                        .then_some(*id)
+                })
+                .collect()
+        };
+        due.into_iter()
+            .flat_map(|id| self.incremental(id, Owed::Timer, now, send))
+            .collect()
+    }
+
+    fn incremental(
+        &self,
+        id: u64,
+        op: Owed<'_>,
+        now: Instant,
+        send: &dyn Fn(SocketAddr, &[u8]),
+    ) -> Answered {
+        let f = {
+            let mut assocs = self.lock();
+            if let Some(out) = assocs.out.get_mut(&id) {
+                if !out.closing {
+                    out.owed.push_back(op.owned());
+                }
+                return Vec::new();
+            }
+            let Some(f) = assocs.framings.remove(&id) else {
+                return Vec::new();
+            };
+            assocs.out.insert(
+                id,
+                Out {
+                    deadline: f.deadline(),
+                    ..Out::default()
+                },
+            );
+            f
+        };
+        let mut taken = Taken {
+            port: self,
+            id,
+            framing: Some(f),
+        };
+        let f = taken
+            .framing
+            .as_mut()
+            .expect("the producer owns its framing");
+        let from = match &op {
+            Owed::Datagram(from, _) => Some(*from),
+            _ => None,
+        };
+        let result = match &op {
+            Owed::Datagram(from, bytes) => f.datagram_step(*from, bytes, now),
+            Owed::Timer => f.timeout_step(now),
+            Owed::Emit {
+                stream,
+                bytes,
+                end_of_frame,
+                text,
+            } => {
+                if f.prepare_output() {
+                    f.start_step(
+                        Op::Emit {
+                            stream: *stream,
+                            bytes,
+                            end_of_frame: *end_of_frame,
+                            text: *text,
+                        },
+                        now,
+                    )
+                } else {
+                    Ok(LineStep::Credit)
+                }
+            }
+        };
+        while let Some((to, bytes)) = f.poll_send() {
+            send(to, &bytes);
+        }
+        let mut assocs = self.lock();
+        if let Some(from) = from {
+            assocs.route(id, from, f);
+        }
+        if assocs.out.get(&id).is_none_or(|out| out.closing) || result.is_err() {
+            assocs.forget(id);
+            drop(assocs);
+            drop(taken.framing.take());
+            return vec![(
+                id,
+                result.and_then(|_| Err(fault("the association closed during its producer"))),
+            )];
+        }
+        let yielded = match result.expect("the producer result was checked") {
+            LineStep::Batch { yielded, .. } => yielded,
+            LineStep::Credit => {
+                assocs
+                    .out
+                    .get_mut(&id)
+                    .expect("the producer's routing record")
+                    .owed
+                    .push_front(op.owned());
+                Yielded {
+                    continuing: true,
+                    ..Yielded::default()
+                }
+            }
+            LineStep::Complete => Yielded::default(),
+        };
+        let pending = f.continuing() || assocs.out.get(&id).is_some_and(|out| !out.owed.is_empty());
+        if pending {
+            assocs
+                .out
+                .get_mut(&id)
+                .expect("the producer's routing record")
+                .continuing = taken.framing.take();
+        } else {
+            assocs.out.remove(&id);
+            assocs.framings.insert(
+                id,
+                taken.framing.take().expect("the producer owns its framing"),
+            );
+        }
+        drop(assocs);
+        vec![(
+            id,
+            Ok(Yielded {
+                continuing: pending,
+                ..yielded
+            }),
+        )]
+    }
+
     /// Drive a single LINE producer batch without retaining exclusive association custody
     /// during publication. A busy association registers this scheduler's actual wake.
     pub fn poll_line(
@@ -1725,14 +1956,17 @@ impl PortAssociations {
             return std::task::Poll::Ready(Err(fault("the association is closed")));
         };
         emission.wake.register(cx.waker());
-        let f = {
+        let (f, owed) = {
             let mut assocs = self.lock();
             if let Some(out) = assocs.out.get_mut(&id) {
                 if out.closing {
                     return std::task::Poll::Ready(Err(fault("the association is closing")));
                 }
                 match out.continuing.take() {
-                    Some(f) => f,
+                    Some(f) => {
+                        let owed = (!f.continuing()).then(|| out.owed.pop_front()).flatten();
+                        (f, owed)
+                    }
                     None => return std::task::Poll::Pending,
                 }
             } else {
@@ -1746,7 +1980,7 @@ impl PortAssociations {
                         ..Out::default()
                     },
                 );
-                f
+                (f, None)
             }
         };
         let mut taken = Taken {
@@ -1758,11 +1992,53 @@ impl PortAssociations {
             .framing
             .as_mut()
             .expect("the producer owns its framing");
-        let result = f.line_step(input, text, now);
+        let mut result = match owed.as_ref() {
+            Some(Owed::Datagram(from, bytes)) => f.datagram_step(*from, bytes, now),
+            Some(Owed::Timer) => f.timeout_step(now),
+            Some(Owed::Emit {
+                stream,
+                bytes,
+                end_of_frame,
+                text,
+            }) => {
+                if f.prepare_output() {
+                    f.start_step(
+                        Op::Emit {
+                            stream: *stream,
+                            bytes,
+                            end_of_frame: *end_of_frame,
+                            text: *text,
+                        },
+                        now,
+                    )
+                } else {
+                    Ok(LineStep::Credit)
+                }
+            }
+            None => f.line_step(input, text, now),
+        };
+        if owed.is_some() {
+            if let Ok(LineStep::Batch { accepted, .. }) = &mut result {
+                *accepted = false;
+            }
+        }
         while let Some((to, bytes)) = f.poll_send() {
             send(to, &bytes);
         }
         let mut assocs = self.lock();
+        if let Some(Owed::Datagram(from, _)) = &owed {
+            assocs.route(id, *from, f);
+        }
+        if matches!(result, Ok(LineStep::Credit)) {
+            if let Some(owed) = owed {
+                assocs
+                    .out
+                    .get_mut(&id)
+                    .expect("the producer's routing record")
+                    .owed
+                    .push_front(owed);
+            }
+        }
         let closing = assocs.out.get(&id).is_none_or(|out| out.closing);
         if closing || result.is_err() {
             assocs.forget(id);
@@ -1788,6 +2064,13 @@ impl PortAssociations {
                 );
             } else {
                 out.continuing = taken.framing.take();
+                result = Ok(LineStep::Batch {
+                    yielded: Yielded {
+                        continuing: true,
+                        ..Yielded::default()
+                    },
+                    accepted: false,
+                });
             }
         } else {
             assocs
@@ -1897,9 +2180,15 @@ impl PortAssociations {
     /// Stop carrying association `id`: its framing finishes, here with no lock held, or by its
     /// holder when it is out.
     pub fn remove(&self, id: u64) {
-        let (gone, emission) = {
+        let (gone, pending, emission) = {
             let mut assocs = self.lock();
             let emission = assocs.emissions.get(&id).cloned();
+            let pending = assocs
+                .out
+                .get(&id)
+                .is_some_and(|out| out.continuing.is_some())
+                .then(|| assocs.out.remove(&id))
+                .flatten();
             let gone = match assocs.out.get_mut(&id) {
                 Some(out) => {
                     out.closing = true;
@@ -1907,13 +2196,18 @@ impl PortAssociations {
                 }
                 None => assocs.remove(id),
             };
-            (gone, emission)
+            if pending.is_some() {
+                assocs.forget(id);
+            }
+            (gone, pending, emission)
         };
         if let Some(emission) = emission {
             emission.order.close();
             emission.ready.notify_waiters();
+            emission.wake.wake();
         }
         drop(gone);
+        drop(pending);
     }
 
     /// How many associations the port carries.
@@ -2254,6 +2548,7 @@ pub struct Bridge {
     /// The caller's channels' labels, in the order it opened them.
     channels: Vec<String>,
     stopped: bool,
+    custody: Vec<Custody>,
 }
 
 impl Bridge {
@@ -2363,7 +2658,7 @@ impl Bridge {
             }
             if known {
                 if let Some(stream) = self.across(leg, g.stream) {
-                    if !g.bytes.is_empty() {
+                    if !g.ends_stream() {
                         across.push(Across {
                             stream,
                             bytes: g.bytes,

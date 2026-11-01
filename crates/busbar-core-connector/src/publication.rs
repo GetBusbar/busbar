@@ -117,9 +117,31 @@ struct Lease {
 
 impl Drop for Lease {
     fn drop(&mut self) {
+        if self.bytes == 0 {
+            return;
+        }
+        let mut released = self.bytes;
+        let mut previous = std::mem::take(&mut self.previous).0;
+        while let Some(lease) = previous {
+            match Arc::try_unwrap(lease) {
+                Ok(mut lease) if Arc::ptr_eq(&self.memory, &lease.memory) => {
+                    previous = std::mem::take(&mut lease.previous).0;
+                    released += lease.bytes;
+                    lease.bytes = 0;
+                }
+                Ok(lease) => {
+                    drop(lease);
+                    break;
+                }
+                Err(lease) => {
+                    drop(lease);
+                    break;
+                }
+            }
+        }
         {
             let mut state = lock(&self.memory.state);
-            state.used -= self.bytes;
+            state.used -= released;
         }
         self.memory.changed.notify_waiters();
         self.memory.wake.wake();
@@ -140,6 +162,51 @@ impl PartialEq for Custody {
 impl Eq for Custody {}
 
 impl Custody {
+    /// Split already reserved storage into an independent owner before the parent reservation
+    /// is shared. The child allocation and its Arc header are paid from pre-crossing credit.
+    pub(crate) fn split(&mut self, bytes: usize) -> Self {
+        let Some(lease) = self.0.as_mut() else {
+            return Self::default();
+        };
+        let lease =
+            Arc::get_mut(lease).expect("a producer splits only exclusive pre-crossing credit");
+        let bytes = bytes
+            .checked_add(std::mem::size_of::<Lease>() + 2 * std::mem::size_of::<usize>())
+            .expect("the checked pre-crossing reservation covers owner layout");
+        assert!(
+            bytes <= lease.bytes,
+            "an owner exceeded the pre-crossing reservation"
+        );
+        lease.bytes -= bytes;
+        Self(Some(Arc::new(Lease {
+            memory: Arc::clone(&lease.memory),
+            bytes,
+            previous: Self::default(),
+        })))
+    }
+
+    /// Return unused pre-crossing credit once every requested allocation is known. This is
+    /// only valid before the fresh reservation is shared with publication or reader owners.
+    pub(crate) fn reduce(&mut self, retained: usize) {
+        let Some(lease) = self.0.as_mut() else {
+            return;
+        };
+        let lease =
+            Arc::get_mut(lease).expect("a producer releases unused credit before sharing it");
+        let retained = retained
+            .checked_add(std::mem::size_of::<Lease>() + 2 * std::mem::size_of::<usize>())
+            .expect("retained storage was covered by the checked pre-crossing bound");
+        assert!(
+            retained <= lease.bytes,
+            "the retained storage exceeded its pre-crossing reservation"
+        );
+        let released = lease.bytes - retained;
+        lease.bytes = retained;
+        lock(&lease.memory.state).used -= released;
+        lease.memory.changed.notify_waiters();
+        lease.memory.wake.wake();
+    }
+
     /// Chain a fresh batch's reservation to older eager output without another allocation.
     pub fn prepend(&mut self, older: Self) {
         if let Some(lease) = self.0.as_mut() {

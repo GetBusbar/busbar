@@ -79,8 +79,9 @@ struct Job {
     now: Instant,
     text: bool,
     original: bool,
-    _admission: Option<Box<dyn Send + 'static>>,
+    unpaired: Option<(Leg, u64)>,
     _custody: Custody,
+    _admission: Option<Box<dyn Send + 'static>>,
 }
 
 impl Queue {
@@ -130,6 +131,8 @@ pub struct SessionBatch {
     pub pieces: Vec<crate::framer::Got>,
     /// Retain this custody alongside every queued or partially consumed payload.
     pub custody: Custody,
+    /// Per-piece reservations, parallel to `pieces`. Old uncharged/manual batches may omit them.
+    pub owners: Vec<Custody>,
 }
 
 /// Fresh input has not been accepted when reservation is unavailable.
@@ -229,6 +232,7 @@ impl Pairing {
                 now: Instant::now(),
                 text,
                 original: true,
+                unpaired: None,
                 _admission: admission,
                 _custody: custody,
             });
@@ -302,45 +306,107 @@ impl Pairing {
             pieces,
             custody,
             continuing,
+            piece_custody,
             ..
         } = yielded;
-        let (pieces, schedule, caller) = {
+        let mut retired = Vec::new();
+        let (pieces, owners, schedule, caller) = {
             let mut state = self.lock();
-            if state.closed {
-                return SessionBatch {
-                    pieces: Vec::new(),
-                    custody,
-                };
+            let mut session = Vec::new();
+            let mut owners = Vec::new();
+            let mut piece_custody = piece_custody.into_iter();
+            for piece in pieces {
+                let owner = piece_custody.next().unwrap_or_else(|| custody.clone());
+                let line = state
+                    .bridge
+                    .lines(leg)
+                    .iter()
+                    .any(|(stream, _)| *stream == piece.stream)
+                    && !piece.fields
+                    && !piece.ends_stream();
+                let bytes = piece.bytes.len() as u64;
+                if line {
+                    state.publications.outcome.accepted_frames += 1;
+                    state.publications.outcome.accepted_bytes += bytes;
+                    if state.closed {
+                        state.publications.outcome.cancelled_frames += 1;
+                        state.publications.outcome.cancelled_bytes += bytes;
+                        retired.push(owner);
+                    } else {
+                        let stream = state.bridge.across(leg, piece.stream);
+                        state.publications.queue.push(Job {
+                            to: other(leg),
+                            unpaired: stream.is_none().then_some((leg, piece.stream)),
+                            across: Across {
+                                stream: stream.unwrap_or(piece.stream),
+                                bytes: piece.bytes,
+                                end_of_frame: piece.end_of_frame,
+                            },
+                            now,
+                            text: false,
+                            original: false,
+                            _admission: None,
+                            _custody: owner,
+                        });
+                    }
+                    continue;
+                }
+                let heads = state.bridge.caller.len()
+                    + state.bridge.upstream.len()
+                    + state.bridge.channels.len();
+                let (mut channel, across) = state.bridge.sort(leg, vec![piece]);
+                let new_heads = state.bridge.caller.len()
+                    + state.bridge.upstream.len()
+                    + state.bridge.channels.len();
+                if new_heads != heads {
+                    state.bridge.custody.push(owner.clone());
+                }
+                if state.closed {
+                    retired.push(owner);
+                    continue;
+                }
+                for across in across {
+                    state.publications.queue.push(Job {
+                        to: other(leg),
+                        across,
+                        now,
+                        text: false,
+                        original: false,
+                        unpaired: None,
+                        _admission: None,
+                        _custody: owner.clone(),
+                    });
+                }
+                for piece in channel.drain(..) {
+                    session.push(piece);
+                    owners.push(owner.clone());
+                }
+                retired.push(owner);
             }
-            let (pieces, across) = state.bridge.sort(leg, pieces);
-            state.publications.recall[index(leg)] |= continuing;
-            for across in across {
-                state.publications.outcome.accepted_frames += 1;
-                state.publications.outcome.accepted_bytes += across.bytes.len() as u64;
-                state.publications.queue.push(Job {
-                    to: other(leg),
-                    across,
-                    now,
-                    text: false,
-                    original: false,
-                    _admission: None,
-                    _custody: custody.clone(),
-                });
+            retired.extend(piece_custody);
+            if !state.closed {
+                state.publications.recall[index(leg)] |= continuing;
             }
             let schedule = !state.publications.running
+                && !state.closed
                 && (state.publications.queue.0.is_some()
                     || state.publications.recall.iter().any(|recall| *recall));
             if schedule {
                 state.publications.running = true;
             }
-            (pieces, schedule, state.caller.clone())
+            (session, owners, schedule, state.caller.clone())
         };
+        drop(retired);
         if schedule {
             // Construct the guard before spawn, so cancellation before first poll closes the
             // accepted episode too. The real caller schedules on its captured reactor/tracker.
             self.schedule_publication(caller);
         }
-        SessionBatch { pieces, custody }
+        SessionBatch {
+            pieces,
+            custody,
+            owners,
+        }
     }
 
     /// Completed or partial publication counters for this connection. A successful ABI Emit
@@ -413,6 +479,14 @@ impl Pairing {
                         .pop()
                         .or_else(|| state.publications.inputs.pop());
                 }
+                if let Some(job) = &mut current {
+                    if let Some((from, stream)) = job.unpaired {
+                        if let Some(stream) = state.bridge.across(from, stream) {
+                            job.across.stream = stream;
+                            job.unpaired = None;
+                        }
+                    }
+                }
                 let leg = match current.as_ref() {
                     Some(job) => job.to,
                     None if state.publications.recall[0] => Leg::Caller,
@@ -447,6 +521,16 @@ impl Pairing {
                 self.publication_failed("LINE output has no attached destination".into());
                 return;
             };
+            if current.as_ref().is_some_and(|job| job.unpaired.is_some()) {
+                if self.lock().upstream.is_none() {
+                    attached.await;
+                    continue;
+                }
+                self.publication_failed(
+                    "LINE output could not be paired after upstream admission".into(),
+                );
+                return;
+            }
             let result = std::future::poll_fn(|cx| {
                 sink.poll_line(
                     cx,
@@ -479,6 +563,15 @@ impl Pairing {
                             } else {
                                 state.publications.outcome.original_handed_bytes +=
                                     job.across.bytes.len() as u64;
+                            }
+                            if state.closed {
+                                let outcome = &mut state.publications.outcome;
+                                outcome.cancelled_frames =
+                                    outcome.accepted_frames - outcome.handed_frames;
+                                outcome.cancelled_bytes =
+                                    outcome.accepted_bytes - outcome.handed_bytes;
+                                outcome.original_cancelled_bytes =
+                                    outcome.original_bytes - outcome.original_handed_bytes;
                             }
                             drop(state);
                             drop(job);

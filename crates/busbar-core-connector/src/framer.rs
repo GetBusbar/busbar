@@ -313,6 +313,8 @@ pub struct Yielded {
     pub custody: crate::publication::Custody,
     /// A datagram producer still owes a same-op recall or secure-layer settle.
     pub continuing: bool,
+    /// Independent reservations for each `pieces` allocation and its later queue/reader owners.
+    pub piece_custody: Vec<crate::publication::Custody>,
     /// Head slots, in order.
     pub heads: Vec<Head>,
     /// Bytes owed to the far side, in order.
@@ -332,6 +334,46 @@ pub struct Yielded {
     /// The protocol the framer last stated it agreed on an accepted connection
     /// (`FramerYield::agreed`): a 1-based position in its accepting offer; `0` = not stated.
     pub agreed: u32,
+}
+
+impl Yielded {
+    pub(crate) fn split_piece_custody(&mut self) {
+        use std::mem::size_of;
+        self.piece_custody = Vec::with_capacity(self.pieces.len());
+        for piece in &self.pieces {
+            let bytes = piece.bytes.capacity()
+                + piece.reason.as_ref().map_or(0, Vec::capacity)
+                + if piece.fields { piece.bytes.len() } else { 0 }
+                + 3 * size_of::<Got>()
+                + 3 * size_of::<crate::publication::Message>()
+                + 16 * size_of::<usize>();
+            self.piece_custody.push(self.custody.split(bytes));
+        }
+    }
+
+    pub(crate) fn retained_capacity(&self) -> usize {
+        use std::mem::size_of;
+        let piece = |got: &Got| got.bytes.capacity() + got.reason.as_ref().map_or(0, Vec::capacity);
+        let head = |head: &Head| {
+            [&head.method, &head.target, &head.authority, &head.reason]
+                .into_iter()
+                .map(|slot| slot.as_ref().map_or(0, Vec::capacity))
+                .sum::<usize>()
+        };
+        self.wire.capacity()
+            + self.pieces.capacity() * size_of::<Got>()
+            + self.interim.capacity() * size_of::<Got>()
+            + self.heads.capacity() * size_of::<Head>()
+            + self.flow.capacity() * size_of::<StreamFlow>()
+            + self.piece_custody.capacity() * size_of::<crate::publication::Custody>()
+            + self.interim.iter().map(piece).sum::<usize>()
+            + self.heads.iter().map(head).sum::<usize>()
+            // Splitting a batch temporarily retains its original vector and separately
+            // allocated FIFO/reader nodes. Empty pieces pay these positive owner costs too.
+            + self.interim.len()
+                * (3 * size_of::<Got>() + 3 * size_of::<crate::publication::Message>() + 16 * size_of::<usize>())
+            + 4 * size_of::<Yielded>() + 32 * size_of::<usize>()
+    }
 }
 
 /// The host's buffers a framer op writes into.
@@ -496,6 +538,16 @@ const EMPTY_PIECE: FramePiece = FramePiece {
 };
 
 impl Buffers {
+    pub(crate) fn field_storage(&self) -> usize {
+        // HashMap capacity excludes empty control buckets. Account an upper bound including
+        // those buckets and per-entry alignment, rather than charging only occupied entries.
+        if self.lines.open.capacity() == 0 {
+            return 0;
+        }
+        (self.lines.open.capacity() + 8)
+            * 4
+            * (std::mem::size_of::<(u64, Line)>() + std::mem::align_of::<(u64, Line)>())
+    }
     /// Conservative deep-copy storage for one answer, including independently overlapping
     /// spans, duplicate reasons, containers and the subsequent publication/reader owners.
     pub(crate) fn retention_bound(&self) -> Option<usize> {
@@ -504,18 +556,27 @@ impl Buffers {
         let heads = self.heads.len();
         let payload = pieces
             .checked_mul(self.frame.len())?
+            .checked_mul(2)?
             .checked_add(heads.checked_mul(5)?.checked_mul(self.frame.len())?)?
             .checked_add(self.wire.len())?;
         let metadata = pieces
             .checked_mul(
-                4 * size_of::<Got>()
-                    + 4 * size_of::<StreamFlow>()
-                    + 4 * size_of::<crate::publication::Message>()
-                    + 16 * size_of::<usize>(),
+                8 * size_of::<Got>()
+                    + 8 * size_of::<StreamFlow>()
+                    + 8 * size_of::<crate::publication::Message>()
+                    + 32 * size_of::<usize>(),
             )?
             .checked_add(heads.checked_mul(4 * size_of::<Head>())?)?
-            .checked_add(4 * size_of::<Yielded>() + 32 * size_of::<usize>())?;
-        payload.checked_add(metadata)
+            .checked_add(8 * size_of::<Yielded>() + 64 * size_of::<usize>())?;
+        let fields = self
+            .lines
+            .open
+            .capacity()
+            .checked_add(pieces)?
+            .checked_add(8)?
+            .checked_mul(8)?
+            .checked_mul(size_of::<(u64, Line)>() + std::mem::align_of::<(u64, Line)>())?;
+        payload.checked_add(metadata)?.checked_add(fields)
     }
 
     /// Buffers of the given capacities (each at least one).
