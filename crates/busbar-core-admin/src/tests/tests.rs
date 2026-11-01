@@ -55,6 +55,28 @@ fn gov_without_at_rest_key(
     )
 }
 
+/// Give this fixture a distinct authenticated principal for its process-wide audit witnesses.
+/// The existing test auth module identifies `grp:<role>` as `test:<role>`.
+fn audit_principal(app: &mut Arc<busbar_kernel::state::App>, role: &str) {
+    let inner = Arc::get_mut(app).expect("sole owner");
+    let module = "test-scope-module";
+    inner.admin_chain.insert(0, module.to_string());
+    inner
+        .role_bindings
+        .entry(module.to_string())
+        .or_default()
+        .insert(
+            role.to_string(),
+            busbar_kernel::config::RoleBindingCfg {
+                admin_scope: Some("full".to_string()),
+                ..Default::default()
+            },
+        );
+    inner
+        .auth_scope_caps
+        .insert(module.to_string(), "full".to_string());
+}
+
 /// Spin up an already-built `router` on an ephemeral local port: the listener bind, the address
 /// read-back, the live `axum::serve` task, and a fresh client to hit it — the "spin up a real
 /// router" preamble every v1-transport test in this file repeated inline.
@@ -8589,6 +8611,7 @@ async fn test_admin_v1_overlay_reset_groups_reverts_to_base() {
             },
         )
         .build();
+    audit_principal(&mut app, "audit-overlay-groups");
     {
         let inner = Arc::get_mut(&mut app).expect("sole owner");
         inner.config_path = Some(config_path.clone());
@@ -8646,7 +8669,9 @@ async fn test_admin_v1_overlay_reset_groups_reverts_to_base() {
     let v_before = ver_before["config_version"].as_u64().unwrap();
 
     // RESET the groups section.
-    let reset = admin(client.delete(format!("http://{addr}/api/v1/admin/overlay/groups")))
+    let reset = client
+        .delete(format!("http://{addr}/api/v1/admin/overlay/groups"))
+        .header("x-admin-token", "grp:audit-overlay-groups")
         .send()
         .await
         .unwrap();
@@ -8694,14 +8719,15 @@ async fn test_admin_v1_overlay_reset_groups_reverts_to_base() {
     .json()
     .await
     .unwrap();
-    // The audit log is a process-global static shared across parallel tests, so match on BOTH the
-    // resource AND the applied outcome (another test may log an `overlay:groups`/rejected first).
+    // The resource and outcome are shared by parallel tests; only this fixture uses this principal.
     assert!(
         audit["items"]
             .as_array()
             .unwrap()
             .iter()
-            .any(|e| e["resource"] == "overlay:groups" && e["outcome"] == "applied"),
+            .any(|e| e["resource"] == "overlay:groups"
+                && e["outcome"] == "applied"
+                && e["principal"] == "test:audit-overlay-groups"),
         "the applied reset is audited"
     );
     let versions: serde_json::Value =
@@ -9032,6 +9058,7 @@ async fn settings_test_app(
         .governance(gov)
         .overlay_path(overlay.clone())
         .build();
+    audit_principal(&mut app, &format!("audit-settings-{tag}"));
     {
         let inner = Arc::get_mut(&mut app).expect("sole owner");
         inner.config_path = Some(config_path.clone());
@@ -9064,7 +9091,9 @@ async fn test_admin_v1_config_settings_round_trip_survives_reload() {
     // PUT live-swappable sections only. The card configures EVERY billable class the pools plane
     // declares: the open classes have no reserved tier, so each is
     // named under `units:` — 0 makes it free — or the whole PUT is refused 400.
-    let put = admin(client.put(format!("http://{addr}/api/v1/admin/config/settings")))
+    let put = client
+        .put(format!("http://{addr}/api/v1/admin/config/settings"))
+        .header("x-admin-token", "grp:audit-settings-roundtrip")
         .header("content-type", "application/json")
         .body(
             serde_json::json!({
@@ -9158,7 +9187,9 @@ async fn test_admin_v1_config_settings_round_trip_survives_reload() {
             .as_array()
             .unwrap()
             .iter()
-            .any(|e| e["resource"] == "config:settings" && e["outcome"] == "applied"),
+            .any(|e| e["resource"] == "config:settings"
+                && e["outcome"] == "applied"
+                && e["principal"] == "test:audit-settings-roundtrip"),
         "the applied PUT is audited"
     );
 
