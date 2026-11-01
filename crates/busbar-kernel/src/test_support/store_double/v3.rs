@@ -19,6 +19,7 @@ use busbar_contract::abi::sdk::conn::Host;
 use busbar_contract::abi::sdk::store::{OpRefused, OpResult, Scanned, SyncStore, Tail};
 use busbar_contract::abi::store::{OpId, OP_ID_RETENTION_SECS};
 use busbar_contract::kinds::RecordBytes;
+use busbar_contract::records::correction;
 use busbar_contract::records::{
     MeteringDelta, PlaneRecordRef, RecordStore, RecordStoreResult, UsageDelta,
 };
@@ -32,7 +33,8 @@ const SECRET_REFS: &[busbar_contract::abi::mechanism::call::AbiStr] =
     )];
 
 busbar_contract::statement_extensions!(REWRAP_EXTENSIONS: [
-    (busbar_contract::abi::sdk::store::rewrap::INTENT, b"1")
+    (busbar_contract::abi::sdk::store::rewrap::INTENT, b"1"),
+    (correction::CAPABILITY, busbar_contract::abi::sdk::store::correction::CAPABILITY_VALUE),
 ]);
 
 busbar_contract::store_door!(
@@ -52,8 +54,15 @@ enum Answer {
 
 /// One remembered op: its value fields and its answer.
 struct Recorded {
-    body: String,
+    body: Body,
     answer: Answer,
+}
+
+/// Keep correction identities in the same operation namespace as ordinary writes.
+#[derive(PartialEq, Eq)]
+enum Body {
+    Ordinary(String),
+    UsageCorrection([u8; 32]),
 }
 
 #[derive(Default)]
@@ -77,16 +86,16 @@ enum Seen {
 }
 
 impl Inner {
-    fn seen(&self, op: OpId, body: &str) -> Seen {
+    fn seen(&self, op: OpId, body: &Body) -> Seen {
         match self.ops.get(&op) {
             None => Seen::New,
-            Some(r) if r.body == body => Seen::Replay(r.answer.clone()),
+            Some(r) if &r.body == body => Seen::Replay(r.answer.clone()),
             Some(_) => Seen::Conflict,
         }
     }
 
     /// Remember an APPLIED op, and forget every op past its retention.
-    fn record(&mut self, now: u64, op: OpId, body: String, answer: Answer) {
+    fn record(&mut self, now: u64, op: OpId, body: Body, answer: Answer) {
         while let Some(&(at, old)) = self.aged.front() {
             if at.saturating_add(OP_ID_RETENTION_SECS) > now {
                 break;
@@ -119,6 +128,7 @@ impl MemoryStore {
         apply: impl FnOnce(&Self, &mut Inner) -> OpResult<Answer>,
     ) -> OpResult<Answer> {
         let mut inner = self.v3.lock();
+        let body = Body::Ordinary(body);
         match inner.seen(op, &body) {
             Seen::Replay(a) => Ok(a),
             Seen::Conflict => Err(OpRefused::Conflict),
@@ -134,6 +144,67 @@ impl MemoryStore {
 /// The store v3 slots' own bodies: each op's ONE body, which the table's slot answers inline (the
 /// memory store never pends).
 impl MemoryStore {
+    pub(crate) fn v3_apply_usage_correction(
+        &self,
+        request: &correction::Request,
+    ) -> OpResult<correction::Decision> {
+        request
+            .validate()
+            .map_err(|reason| OpRefused::Refused(reason.into()))?;
+        let body = Body::UsageCorrection(request.fingerprint());
+        let mut inner = self.v3.lock();
+        // The receipt answers before predicates: after an unknown outcome, the accepted rows
+        // may already differ from the original expected state, or the key may be revoked.
+        match inner.seen(request.op_id, &body) {
+            Seen::Replay(_) => return Ok(correction::Decision::Applied),
+            Seen::Conflict => return Err(OpRefused::Conflict),
+            Seen::New => {}
+        }
+        // Match delete_key's keys → usage order. Holding every guard through the receipt makes
+        // direct writes and count batches share this acceptance authority.
+        let keys = self.keys_read();
+        let mut usage = self.usage();
+        let metering = self.metering_read();
+        if !keys
+            .get(&request.key_id)
+            .is_some_and(|key| key.deleted_at.is_none())
+        {
+            return Ok(correction::Decision::ConditionConflict);
+        }
+        let mut selected: Vec<_> = metering
+            .iter()
+            .filter(|((key, day, ..), _)| key == &request.key_id && *day == request.day_start)
+            .map(|(_, row)| row.clone())
+            .collect();
+        correction::canonical_metering(&mut selected);
+        if selected != request.metering {
+            return Ok(correction::Decision::ConditionConflict);
+        }
+        for change in &request.usage {
+            let address = (&change.address.bucket_id, change.address.window_start);
+            let mut actual = usage
+                .get(&(address.0.clone(), address.1))
+                .cloned()
+                .unwrap_or_default();
+            correction::canonical_ledger(&mut actual)
+                .map_err(|reason| OpRefused::Failed(reason.into()))?;
+            if actual != change.expected {
+                return Ok(correction::Decision::ConditionConflict);
+            }
+        }
+        for change in &request.usage {
+            usage.insert(
+                (
+                    change.address.bucket_id.clone(),
+                    change.address.window_start,
+                ),
+                change.replacement.clone(),
+            );
+        }
+        inner.record(now(), request.op_id, body, Answer::Done);
+        Ok(correction::Decision::Applied)
+    }
+
     pub(crate) fn v3_append_plane_record_op(
         &self,
         op: OpId,
@@ -184,7 +255,15 @@ impl MemoryStore {
     ) -> OpResult<()> {
         let body = format!("add_usage_batch:{cells:?}");
         self.deduped(op, body, |s, _| {
-            // A RAM ledger cannot fail an add, so applying in order is atomic.
+            // Reject the whole body before any ordinary cell is written.
+            if cells
+                .iter()
+                .any(|(bucket, _, _)| correction::reserved_bucket(bucket))
+            {
+                return Err(OpRefused::Refused(
+                    "reserved usage correction bucket".into(),
+                ));
+            }
             for (bucket, window, delta) in cells {
                 s.add_usage(bucket, *window, delta).map_err(failed)?;
             }
@@ -208,6 +287,8 @@ impl MemoryStore {
 /// Served whole by the SDK ([`SyncStore`]): the 1.5.5 op set is the double's
 /// [`RecordStore`](busbar_contract::records::RecordStore) impl, and every slot answers at once.
 impl SyncStore for MemoryStore {
+    const USAGE_CORRECTION: bool = true;
+
     const TAIL: Tail = Tail {
         ephemeral: true,
         durable_plane: false,
@@ -254,6 +335,13 @@ impl SyncStore for MemoryStore {
 
     fn add_usage_batch(&self, op: OpId, cells: &[(&str, u64, UsageDelta)]) -> OpResult<()> {
         self.v3_add_usage_batch(op, cells)
+    }
+
+    fn apply_usage_correction(
+        &self,
+        request: &correction::Request,
+    ) -> OpResult<correction::Decision> {
+        self.v3_apply_usage_correction(request)
     }
 
     fn add_metering_batch(&self, op: OpId, deltas: &[MeteringDelta]) -> OpResult<()> {
