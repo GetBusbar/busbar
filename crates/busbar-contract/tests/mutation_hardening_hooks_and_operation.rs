@@ -203,11 +203,13 @@ fn prompt_projection_debug_writes_shape_not_empty_and_never_the_text() {
     assert!(dbg.contains("system_chars"), "{dbg}");
     assert!(dbg.contains("message_count"), "{dbg}");
     assert!(
-        dbg.contains('2'),
+        dbg.contains("message_count: 2"),
         "message_count must reflect the real count: {dbg}"
     );
     assert!(
-        !dbg.contains("capital of France") && !dbg.contains("Paris"),
+        !dbg.contains("capital of France")
+            && !dbg.contains("Paris")
+            && !dbg.contains("you are a helpful assistant"),
         "prompt text must never appear in Debug: {dbg}"
     );
 }

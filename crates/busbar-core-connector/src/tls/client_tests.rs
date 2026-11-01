@@ -352,7 +352,7 @@ fn a_sealed_identity_keeps_its_key_redacted_until_the_seal_parses_it() {
     let printed = format!("{identity:?}");
     assert!(printed.contains("<redacted>"), "{printed}");
     assert!(
-        !printed.contains(&format!("{:?}", &key[..8])),
+        !printed.contains(&format!("{key:?}")),
         "the key's bytes leaked into the identity's text: {printed}"
     );
     let base = build_client_config(&EgressTrust::default()).expect("the base config");
