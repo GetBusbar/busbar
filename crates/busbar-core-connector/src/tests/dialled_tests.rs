@@ -122,6 +122,7 @@ fn every_channel_message_reaches_the_reader_empty_ones_and_past_the_bound() {
         let port = crate::udp::ReadyPort::open(crate::udp::bind("127.0.0.1:0").unwrap()).unwrap();
         let leg = super::UpstreamLeg {
             framing: Mutex::default(),
+            pairing: std::sync::Weak::new(),
             port,
             ready: Mutex::new(VecDeque::new()),
             channel: Mutex::new(None),
@@ -286,11 +287,18 @@ fn a_close_beside_a_hung_datagram_emit_never_waits_and_the_holder_finishes_it() 
 
 /// The caller observes LINE feedback without knowing what its frame contains.
 #[derive(Default)]
-struct ReturnedLines(Mutex<Vec<crate::datagram::Across>>);
+struct ReturnedLines(
+    Mutex<Vec<crate::datagram::Across>>,
+    Mutex<Option<Box<dyn FnOnce() + Send>>>,
+);
 
 impl crate::datagram::LegSink for ReturnedLines {
     fn line(&self, frame: crate::datagram::Across, _: std::time::Instant) {
         self.0.lock().unwrap().push(frame);
+        let hook = self.1.lock().unwrap().take();
+        if let Some(hook) = hook {
+            hook();
+        }
     }
 
     fn close(&self) {}
@@ -303,6 +311,7 @@ struct LineOutputs {
     pending: Mutex<VecDeque<(u64, Vec<u8>, u32)>>,
     calls: Mutex<Vec<(usize, bool, bool)>>,
     count: std::sync::atomic::AtomicUsize,
+    finished: std::sync::atomic::AtomicUsize,
     during_emit: Mutex<Option<Box<dyn FnOnce() + Send>>>,
 }
 
@@ -374,6 +383,10 @@ impl crate::framer::FramerDoor for LineOutputs {
                     out.yielded.flags = YIELD_MORE;
                 }
             }
+            crate::framer::Call::Finish(..) => {
+                self.finished
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
             _ => {}
         }
         crate::framer::Crossed {
@@ -398,6 +411,7 @@ fn line_outputs() -> (Arc<super::Dialled>, Arc<LineOutputs>, Arc<ReturnedLines>)
         pending: Mutex::default(),
         calls: Mutex::default(),
         count: std::sync::atomic::AtomicUsize::new(0),
+        finished: std::sync::atomic::AtomicUsize::new(0),
         during_emit: Mutex::new(None),
     });
     let (framing, _) = crate::datagram::DatagramFraming::accept_minted(
@@ -490,26 +504,87 @@ fn a_line_handed_to_the_active_holder_publishes_after_the_holders_older_output()
 fn a_line_emit_wakes_an_already_pending_reader_after_publishing_its_output() {
     use crate::datagram::LegSink as _;
     use std::sync::atomic::{AtomicUsize, Ordering};
-    struct ReadWake(AtomicUsize);
+    struct ReadWake {
+        count: AtomicUsize,
+        leg: std::sync::Weak<super::UpstreamLeg>,
+    }
     impl std::task::Wake for ReadWake {
         fn wake(self: Arc<Self>) {
-            self.0.fetch_add(1, Ordering::SeqCst);
+            if let Some(leg) = self.leg.upgrade() {
+                assert!(leg.framing.try_lock().is_ok());
+                assert!(leg.ready.try_lock().is_ok());
+                assert!(leg.channel.try_lock().is_ok());
+            }
+            self.count.fetch_add(1, Ordering::SeqCst);
         }
     }
     crate::support::worker().block_on(async {
         let (dialled, _, _) = line_outputs();
-        let woke = Arc::new(ReadWake(AtomicUsize::new(0)));
+        let woke = Arc::new(ReadWake {
+            count: AtomicUsize::new(0),
+            leg: Arc::downgrade(&dialled.leg),
+        });
         let waker = std::task::Waker::from(Arc::clone(&woke));
         let mut buf = [0; 16];
         assert_eq!(
             dialled.read(&waker, &mut buf),
             Err(crate::ConnError::Pending)
         );
-        let before = woke.0.load(Ordering::SeqCst);
+        let before = woke.count.load(Ordering::SeqCst);
+        assert_eq!(before, 0, "an idle drive must not wake itself repeatedly");
         dialled.leg.line(incoming_line(), std::time::Instant::now());
-        assert!(woke.0.load(Ordering::SeqCst) > before);
+        assert!(woke.count.load(Ordering::SeqCst) > before);
         let piece = dialled.read(&waker, &mut buf).unwrap();
         assert_eq!(&buf[..piece.len], b"0");
         assert!(piece.end);
+    });
+}
+
+#[test]
+fn an_unwinding_queued_line_publication_keeps_its_framing_guard_until_finish() {
+    use crate::datagram::LegSink as _;
+    crate::support::worker().block_on(async {
+        let (dialled, door, caller) = line_outputs();
+        *caller.1.lock().unwrap() = Some(Box::new(|| panic!("publication unwinds")));
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            dialled.leg.turn(
+                (),
+                |_, ()| panic!("the association starts at home"),
+                |()| panic!("the association starts open"),
+                |_, ()| dialled.leg.line(incoming_line(), std::time::Instant::now()),
+            );
+        }));
+        assert!(result.is_err());
+        let held = dialled.leg.framing.lock().unwrap();
+        assert!(held.closing);
+        assert!(!held.out);
+        assert!(held.framing.is_none());
+        drop(held);
+        assert_eq!(door.finished.load(std::sync::atomic::Ordering::SeqCst), 1);
+        drop(dialled);
+        assert_eq!(door.finished.load(std::sync::atomic::Ordering::SeqCst), 1);
+    });
+}
+
+#[test]
+fn a_close_during_queued_line_publication_prevents_later_lines_from_crossing() {
+    use crate::datagram::LegSink as _;
+    crate::support::worker().block_on(async {
+        let (dialled, door, caller) = line_outputs();
+        let closing = Arc::downgrade(&dialled);
+        *caller.1.lock().unwrap() = Some(Box::new(move || closing.upgrade().unwrap().close()));
+        dialled.leg.turn(
+            (),
+            |_, ()| panic!("the association starts at home"),
+            |()| panic!("the association starts open"),
+            |_, ()| {
+                dialled.leg.line(incoming_line(), std::time::Instant::now());
+                dialled.leg.line(incoming_line(), std::time::Instant::now());
+            },
+        );
+        let calls = door.calls.lock().unwrap();
+        assert_eq!(calls.iter().filter(|call| call.0 != 0).count(), 1);
+        assert_eq!(door.finished.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert!(dialled.leg.ready.lock().unwrap().is_empty());
     });
 }
