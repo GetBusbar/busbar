@@ -13,7 +13,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, RwLock};
 
 mod exact_debt;
-use exact_debt::ExactUsageDelta;
+use exact_debt::{BudgetFlushFlight, ExactUsageDelta};
 
 use crate::diagnostics::{
     diag_debug, diag_warn, GOVERNANCE_KEY_RESERVED_NAMESPACE_COLLISION, LIMIT_WINDOW_UNRECOGNIZED,
@@ -164,14 +164,15 @@ struct BudgetCell {
     /// derives from this, never from `requests`. Charged with `requests` at admission; a non-2xx
     /// outcome decrements ONLY this via `refund_bucket`.
     billable_requests: u64,
-    /// The last durably-acknowledged admission-request count - the additive-flush baseline. Each
+    /// The additive-flush watermark: durably acknowledged counts, or counts whose exact outbound
+    /// debt has transferred to `budget_flushes`. That owner retains every unconfirmed chunk. Each
     /// flush writes only the DELTA (current - flushed) via `Store::add_usage`, then advances the
     /// baselines on success, so a shared store accumulates the TRUE fleet total across nodes. On
     /// a failed flush the baseline does not advance and the cell is re-marked dirty, so the
     /// unacked delta is retried (at-least-once: an ack lost after the write landed can
     /// double-count at most one flush interval - documented).
     flushed_requests: u64,
-    /// The billable-request flush baseline (twin of `flushed_requests` for the fee-base counter).
+    /// The billable-request flush watermark (twin of `flushed_requests` for the fee-base counter).
     flushed_billable_requests: u64,
     /// Per-(model, era, tier) token counters + flush baselines. Small Vec (the models this bucket
     /// actually used), scanned linearly.
@@ -179,7 +180,7 @@ struct BudgetCell {
     /// The fee base split by the card era each billable request was admitted under, so each fee
     /// prices at the card in force when that request was admitted.
     fee_eras: busbar_kernel_ledger::usage::FeeEras,
-    /// The fee eras' flush baseline (twin of `flushed_billable_requests`, per dated era).
+    /// The fee eras' flush watermark (twin of `flushed_billable_requests`, per dated era).
     flushed_fee_eras: busbar_kernel_ledger::usage::FeeEras,
     /// THE ROLLED WINDOWS' UNACKNOWLEDGED DELTAS, each under the window it was earned in. A roll to
     /// a newer window moves what the old window held past its last acknowledged flush here
@@ -849,6 +850,11 @@ pub struct GovState {
     correction_claims: claims::ClaimSet<String>,
     /// Exact immutable operations retained across unknown results until a definitive replay.
     corrections: std::sync::Mutex<HashMap<String, state::ledger_adjust::PendingCorrection>>,
+    /// Outbound raw debt and immutable chunk identities, retained until every chunk is confirmed.
+    budget_flushes:
+        std::sync::Mutex<std::collections::BTreeMap<(String, u64), Arc<BudgetFlushFlight>>>,
+    /// Local key deletion excludes creation of another outbound flight until its durable purge.
+    deleting_budget_buckets: std::sync::Mutex<std::collections::BTreeSet<String>>,
     /// Write-behind ACCUMULATOR for metering rows, keyed by the stores' own upsert key
     /// `(key_id, bucket, model, provider)` and SHARDED [`GOV_SHARDS`] ways (see [`PendingMetering`])
     /// so concurrent request-completion accruals contend only within a shard, not on one process-wide

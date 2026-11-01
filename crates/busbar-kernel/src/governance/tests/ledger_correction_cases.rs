@@ -132,8 +132,8 @@ fn rolled_large_raw_debt_survives_legacy_flush_and_is_captured_by_correction() {
     gov.flush_budgets();
     assert_eq!(
         input(&store.get_usage(GROUP_BUCKET, now).unwrap()),
-        0,
-        "oversized raw debt was retained without a partial capped write"
+        LARGE_INPUT,
+        "ordinary chunks persist the entire raw debt before correction"
     );
     gov.adjust_usage(&cm, &correction(&key, &delta(), now))
         .unwrap()

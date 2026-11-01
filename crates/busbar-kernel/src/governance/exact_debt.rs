@@ -17,6 +17,44 @@ pub(super) struct ExactUsageDelta {
     pub(super) models: Vec<ExactModelDelta>,
 }
 impl ExactUsageDelta {
+    /// The next wire-representable part of every counter. No policy limit is imposed: successive
+    /// chunks cover the entire exact debt using the existing signed integer domain.
+    fn chunk(&self) -> UsageDelta {
+        let part = |count: i128| count.clamp(i128::from(i64::MIN), i128::from(i64::MAX)) as i64;
+        UsageDelta {
+            requests: part(self.requests),
+            billable_requests: part(self.billable_requests),
+            models: self
+                .models
+                .iter()
+                .filter_map(|model| {
+                    let usage_units: BTreeMap<_, _> = model
+                        .usage_units
+                        .iter()
+                        .filter(|(_, count)| **count != 0)
+                        .map(|(unit, count)| (unit.clone(), part(*count)))
+                        .collect();
+                    (!usage_units.is_empty()).then(|| busbar_contract::records::ModelTokensDelta {
+                        model: model.model.clone(),
+                        usage_units,
+                    })
+                })
+                .collect(),
+        }
+    }
+
+    fn subtract(&mut self, chunk: &UsageDelta) {
+        let mut acknowledged = Self::from_signed(chunk);
+        acknowledged.requests = -acknowledged.requests;
+        acknowledged.billable_requests = -acknowledged.billable_requests;
+        for model in &mut acknowledged.models {
+            for count in model.usage_units.values_mut() {
+                *count = -*count;
+            }
+        }
+        self.merge(&acknowledged);
+    }
+
     pub(super) fn is_zero(&self) -> bool {
         self.requests == 0
             && self.billable_requests == 0
@@ -146,5 +184,304 @@ impl ExactUsageDelta {
             }
         }
         debt
+    }
+}
+
+/// One immutable wire operation. Its identity remains paired with its body through errors,
+/// unwinding, caller cancellation and a later flusher invocation.
+#[derive(Clone)]
+struct Chunk {
+    op: busbar_contract::abi::store::OpId,
+    plain: UsageDelta,
+    dated: UsageDelta,
+    started: std::time::Instant,
+}
+
+struct FlightDebt {
+    plain: ExactUsageDelta,
+    dated: ExactUsageDelta,
+    chunk: Option<Chunk>,
+    finished: bool,
+}
+
+/// A window's exact outbound debt. Cell baselines are capture watermarks while this owner exists;
+/// only receipt-confirmed chunks leave this debt. This is raw write custody, never another book.
+pub(super) struct BudgetFlushFlight {
+    bucket: String,
+    window: u64,
+    debt: std::sync::Mutex<FlightDebt>,
+    running: std::sync::atomic::AtomicBool,
+}
+
+struct FlightRun<'a>(&'a std::sync::atomic::AtomicBool);
+impl Drop for FlightRun<'_> {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
+}
+
+pub(super) struct BudgetDeleteGuard<'a> {
+    state: &'a GovState,
+    bucket: String,
+}
+impl Drop for BudgetDeleteGuard<'_> {
+    fn drop(&mut self) {
+        self.state
+            .deleting_budget_buckets
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(&self.bucket);
+    }
+}
+
+impl GovState {
+    pub(super) fn hold_budget_flush_deletion(&self, bucket: &str) -> BudgetDeleteGuard<'_> {
+        let _cells = self.budget.write(bucket);
+        self.deleting_budget_buckets
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(bucket.into());
+        BudgetDeleteGuard {
+            state: self,
+            bucket: bucket.into(),
+        }
+    }
+
+    pub(super) fn budget_bucket_deleting(&self, bucket: &str) -> bool {
+        self.deleting_budget_buckets
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .contains(bucket)
+    }
+
+    /// Called with this bucket's shard held. Transfer exact debt only when a single legacy delta
+    /// cannot represent it. Small ordinary writes retain their established path.
+    pub(super) fn capture_large_budget_flushes(
+        &self,
+        bucket: &str,
+        cell: &mut BudgetCell,
+    ) -> Vec<Arc<BudgetFlushFlight>> {
+        let mut captured = Vec::new();
+        if self.budget_bucket_deleting(bucket) {
+            return captured;
+        }
+        let mut windows = std::collections::BTreeSet::from([cell.window_start]);
+        windows.extend(cell.rolled.iter().map(|(window, _)| *window));
+        windows.extend(cell.rolled_eras.iter().map(|(window, _)| *window));
+        for window in windows {
+            if cell.flushing_windows.contains_key(&window)
+                || cell
+                    .correction
+                    .as_ref()
+                    .is_some_and(|branch| branch.window == window)
+            {
+                continue;
+            }
+            let mut plain = ExactUsageDelta::default();
+            let mut dated = ExactUsageDelta::default();
+            let mut requires_chunks = false;
+            for (_, debt) in cell.rolled.iter().filter(|(at, _)| *at == window) {
+                requires_chunks |= debt.signed().is_none();
+                plain.merge(debt);
+            }
+            for (_, debt) in cell.rolled_eras.iter().filter(|(at, _)| *at == window) {
+                requires_chunks |= debt.signed().is_none();
+                dated.merge(debt);
+            }
+            if cell.window_start == window {
+                let current = ExactUsageDelta::of(cell, false);
+                let current_dated = ExactUsageDelta::of(cell, true);
+                requires_chunks |= current.signed().is_none() || current_dated.signed().is_none();
+                plain.merge(&current);
+                dated.merge(&current_dated);
+            }
+            requires_chunks |= plain.signed().is_none() || dated.signed().is_none();
+            if !requires_chunks {
+                continue;
+            }
+            let flight = Arc::new(BudgetFlushFlight {
+                bucket: bucket.into(),
+                window,
+                debt: std::sync::Mutex::new(FlightDebt {
+                    plain,
+                    dated,
+                    chunk: None,
+                    finished: false,
+                }),
+                running: std::sync::atomic::AtomicBool::new(false),
+            });
+            self.budget_flushes
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .insert((bucket.into(), window), flight.clone());
+            captured.push(flight);
+            cell.mutate(|cell| {
+                cell.rolled.retain(|(at, _)| *at != window);
+                cell.rolled_eras.retain(|(at, _)| *at != window);
+                if cell.window_start == window {
+                    // Ownership transfers to the flight, not to a durable acknowledgement. New
+                    // semantic mutations stay beyond these exact capture watermarks.
+                    cell.flushed_requests = cell.requests;
+                    cell.flushed_billable_requests = cell.billable_requests;
+                    cell.flushed_fee_eras = cell.fee_eras.clone();
+                    for model in &mut cell.models {
+                        model.flushed = model.cur.clone();
+                        model.flushed_era = model.cur.clone();
+                    }
+                }
+                cell.flushing += 1;
+                *cell.flushing_windows.entry(window).or_default() += 1;
+                cell.dirty = true;
+            });
+        }
+        captured
+    }
+
+    fn drive_budget_flush_flight(
+        &self,
+        flight: &Arc<BudgetFlushFlight>,
+    ) -> (usize, Option<RecordStoreError>) {
+        if flight
+            .running
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_err()
+        {
+            return (
+                0,
+                Some(RecordStoreError("raw usage chunk already in flight".into())),
+            );
+        }
+        let _running = FlightRun(&flight.running);
+        let mut confirmed = 0;
+        loop {
+            let chunk = {
+                let mut debt = flight.debt.lock().unwrap_or_else(|p| p.into_inner());
+                if debt.finished {
+                    return (confirmed, None);
+                }
+                if debt.plain.is_zero() && debt.dated.is_zero() {
+                    drop(debt);
+                    let mut cells = self.budget.write(&flight.bucket);
+                    if let Some(cell) = cells.get_mut(&flight.bucket) {
+                        cell.mutate(|cell| {
+                            cell.flushing = cell
+                                .flushing
+                                .checked_sub(1)
+                                .expect("flight owns a snapshot");
+                            let count = cell
+                                .flushing_windows
+                                .get_mut(&flight.window)
+                                .expect("flight owns its window");
+                            *count -= 1;
+                            if *count == 0 {
+                                cell.flushing_windows.remove(&flight.window);
+                            }
+                            cell.dirty |= !ExactUsageDelta::of(cell, false).is_zero()
+                                || !ExactUsageDelta::of(cell, true).is_zero()
+                                || !cell.rolled.is_empty()
+                                || !cell.rolled_eras.is_empty();
+                        });
+                    }
+                    flight
+                        .debt
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .finished = true;
+                    let mut flights = self
+                        .budget_flushes
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner());
+                    let address = (flight.bucket.clone(), flight.window);
+                    if flights
+                        .get(&address)
+                        .is_some_and(|held| Arc::ptr_eq(held, flight))
+                    {
+                        flights.remove(&address);
+                    }
+                    drop(flights);
+                    drop(cells);
+                    return (confirmed, None);
+                }
+                if debt.chunk.is_none() {
+                    debt.chunk = Some(Chunk {
+                        op: crate::door::op_id(),
+                        plain: debt.plain.chunk(),
+                        dated: debt.dated.chunk(),
+                        started: std::time::Instant::now(),
+                    });
+                }
+                debt.chunk
+                    .as_ref()
+                    .expect("immutable chunk retained")
+                    .clone()
+            };
+            if chunk.started.elapsed().as_secs()
+                >= busbar_contract::abi::store::OP_ID_RETENTION_SECS
+            {
+                return (confirmed,Some(RecordStoreError("raw usage chunk receipt retention expired; exact debt and identity retained".into())));
+            }
+            let era_bucket = era_bucket(&flight.bucket);
+            let mut cells = Vec::new();
+            if !chunk.plain.is_zero() {
+                cells.push((flight.bucket.as_str(), flight.window, chunk.plain.clone()));
+            }
+            if !chunk.dated.is_zero() {
+                cells.push((era_bucket.as_str(), flight.window, chunk.dated.clone()));
+            }
+            // The immutable chunk is already owned before entering the store. No budget or flight
+            // mutex spans a call that may pend, fail after commit, time out, or unwind.
+            if let Err(error) = self.store.add_usage_batch_deduped(chunk.op, &cells) {
+                return (confirmed, Some(error));
+            }
+            let mut debt = flight.debt.lock().unwrap_or_else(|p| p.into_inner());
+            debt.plain.subtract(&chunk.plain);
+            debt.dated.subtract(&chunk.dated);
+            debt.chunk = None;
+            confirmed += 1;
+        }
+    }
+
+    pub(super) fn resume_large_budget_flushes(&self) -> (usize, Vec<String>) {
+        let flights: Vec<_> = self
+            .budget_flushes
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .values()
+            .cloned()
+            .collect();
+        self.resume_budget_flush_list(flights)
+    }
+
+    pub(super) fn resume_budget_flush_list(
+        &self,
+        flights: Vec<Arc<BudgetFlushFlight>>,
+    ) -> (usize, Vec<String>) {
+        let mut confirmed = 0;
+        let mut errors = Vec::new();
+        for flight in flights {
+            let (done, error) = self.drive_budget_flush_flight(&flight);
+            confirmed += done;
+            if let Some(error) = error {
+                errors.push(format!("{}@{}: {error}", flight.bucket, flight.window));
+            }
+        }
+        (confirmed, errors)
+    }
+
+    pub(super) fn settle_budget_flush_for_delete(&self, bucket: &str) -> RecordStoreResult<()> {
+        let flights: Vec<_> = self
+            .budget_flushes
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .iter()
+            .filter(|((id, _), _)| id == bucket)
+            .map(|(_, flight)| flight.clone())
+            .collect();
+        for flight in flights {
+            if let (_, Some(error)) = self.drive_budget_flush_flight(&flight) {
+                return Err(error);
+            }
+        }
+        Ok(())
     }
 }

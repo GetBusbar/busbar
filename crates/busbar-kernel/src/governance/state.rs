@@ -152,6 +152,8 @@ impl GovState {
             budget: Sharded::new(),
             correction_claims: claims::ClaimSet::new(),
             corrections: std::sync::Mutex::new(HashMap::new()),
+            budget_flushes: std::sync::Mutex::new(std::collections::BTreeMap::new()),
+            deleting_budget_buckets: std::sync::Mutex::new(std::collections::BTreeSet::new()),
             pending_metering: PendingMetering::new(),
             money_view: money_view::MoneyView::default(),
             caller_refs: Arc::new(RwLock::new(Some(Arc::new(match signer.as_ref() {
@@ -1460,6 +1462,8 @@ impl GovState {
     pub fn delete_key(&self, id: &str) -> RecordStoreResult<()> {
         let _correction = self.correction_claims.claim(id.to_string());
         self.settle_correction_for_delete(id)?;
+        let _budget_delete = self.hold_budget_flush_deletion(id);
+        self.settle_budget_flush_for_delete(id)?;
         self.store.delete_key(id)?;
         // The targeted eviction FIRST and unconditionally: this is the step that stops the
         // credential resolving, and it must happen whether or not the full reconcile succeeds.
@@ -2566,6 +2570,18 @@ impl GovState {
 
     fn flush_budgets_inner(&self, shutdown: bool) -> usize {
         let mut unresolved_corrections = self.retry_usage_corrections();
+        // Establish long-lived custody before entering any potentially pending chunk call. The
+        // ordinary snapshot vector is built afterwards, so cancellation of this driver cannot
+        // strand unrelated short-lived legacy snapshots prepared by this invocation.
+        for mut map in self.budget.write_all() {
+            for (id, cell) in map.iter_mut() {
+                if cell.dirty {
+                    let _ = self.capture_large_budget_flushes(id, cell);
+                }
+            }
+        }
+        let (mut flushed, chunk_errors) = self.resume_large_budget_flushes();
+        unresolved_corrections.extend(chunk_errors);
         /// The baselines a live cell's delta was taken against: they become the acked baseline on
         /// success.
         struct Acked {
@@ -2590,20 +2606,24 @@ impl GovState {
         // time (the `write_all` iterator acquires each guard lazily), so a concurrent charge
         // blocks only on the single shard the snapshot currently holds, not the whole map.
         let mut dirty: Vec<DirtySnap> = Vec::new();
+        let mut new_large = Vec::new();
         for mut map in self.budget.write_all() {
             for (id, cell) in map.iter_mut() {
-                if !cell.dirty || cell.flushing != 0 {
+                if !cell.dirty || self.budget_bucket_deleting(id) {
                     continue;
                 }
+                // Accrual or a roll may have enlarged debt since the first capture pass. Give it
+                // an owner under this same shard guard; drive these flights only after every
+                // ordinary snapshot below has been consumed.
+                new_large.extend(self.capture_large_budget_flushes(id, cell));
                 let reserved_window = cell.correction.as_ref().map(|branch| branch.window);
                 let mut rolled = BTreeMap::<u64, (UsageDelta, UsageDelta)>::new();
                 let mut drained_plain = std::collections::BTreeSet::new();
                 let mut drained_dated = std::collections::BTreeSet::new();
                 for (window, delta) in std::mem::take(&mut cell.rolled) {
-                    if Some(window) == reserved_window || delta.signed().is_none() {
-                        if Some(window) != reserved_window {
-                            unresolved_corrections.push(format!("{id}@{window}: raw debt exceeds one signed flush; retained exactly"));
-                        }
+                    if Some(window) == reserved_window
+                        || cell.flushing_windows.contains_key(&window)
+                    {
                         cell.rolled.push((window, delta));
                     } else {
                         drained_plain.insert(window);
@@ -2612,10 +2632,9 @@ impl GovState {
                     }
                 }
                 for (window, eras) in std::mem::take(&mut cell.rolled_eras) {
-                    if Some(window) == reserved_window || eras.signed().is_none() {
-                        if Some(window) != reserved_window {
-                            unresolved_corrections.push(format!("{id}@{window}: dated raw debt exceeds one signed flush; retained exactly"));
-                        }
+                    if Some(window) == reserved_window
+                        || cell.flushing_windows.contains_key(&window)
+                    {
                         cell.rolled_eras.push((window, eras));
                     } else {
                         drained_dated.insert(window);
@@ -2623,17 +2642,12 @@ impl GovState {
                             eras.signed().expect("checked representability");
                     }
                 }
-                let current_fits = ExactUsageDelta::of(cell, false).signed().is_some()
-                    && ExactUsageDelta::of(cell, true).signed().is_some();
-                let flush_current = Some(cell.window_start) != reserved_window && current_fits;
-                if Some(cell.window_start) != reserved_window && !current_fits {
-                    unresolved_corrections.push(format!(
-                        "{id}@{}: raw debt exceeds one signed flush; retained exactly",
-                        cell.window_start
-                    ));
+                let flush_current = Some(cell.window_start) != reserved_window
+                    && !cell.flushing_windows.contains_key(&cell.window_start);
+                cell.flushing += rolled.len() + usize::from(flush_current);
+                for window in rolled.keys() {
+                    *cell.flushing_windows.entry(*window).or_default() += 1;
                 }
-                cell.flushing = rolled.len() + usize::from(flush_current);
-                cell.flushing_windows = rolled.keys().map(|window| (*window, 1)).collect();
                 if flush_current {
                     *cell.flushing_windows.entry(cell.window_start).or_default() += 1;
                 }
@@ -2679,7 +2693,6 @@ impl GovState {
                     || !flush_current;
             }
         }
-        let mut flushed = 0usize;
         // Aggregate failures: during a store outage every dirty bucket fails on the same tick, so a
         // per-bucket `warn!` spams. Emit exactly ONE throttled warn per tick with the failed count;
         // per-bucket detail (bucket + error) stays at `debug!`.
@@ -2780,6 +2793,15 @@ impl GovState {
                 }
                 last_error = error.map(|error| error.to_string());
             }
+        }
+        let (late_flushed, late_errors) = self.resume_budget_flush_list(new_large);
+        flushed += late_flushed;
+        failed += late_errors.len();
+        if let Some(error) = late_errors.last() {
+            last_error = Some(error.clone());
+        }
+        if shutdown {
+            unrecorded.extend(late_errors);
         }
         if failed > 0 && shutdown {
             diag_error!(

@@ -1923,6 +1923,9 @@ mod ledger_ownership_cases;
 #[path = "ledger_correction_cases.rs"]
 mod ledger_correction_cases;
 
+#[path = "large_flush_cases.rs"]
+mod large_flush_cases;
+
 /// The per-minute group bucket the window-roll tests read, under a fee-10 card pricing `m`.
 fn minute_fee_model() -> CostModel {
     model_with_card(
