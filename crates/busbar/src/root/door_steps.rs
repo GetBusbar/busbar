@@ -557,6 +557,8 @@ pub struct DoorFacts {
     pub scope_kind: Option<String>,
     /// Its billable classes, in its tail's order: a unit count's class indexes them.
     pub classes: Arc<[String]>,
+    /// The validated plane recipe: billable-class index and default expected units.
+    pub route_cost: Vec<(u32, f64)>,
     /// The same classes as the meter's class ids.
     pub meter_classes: Arc<[MeterClassId]>,
     /// Its fee units, as indices into [`Self::classes`].
@@ -767,6 +769,42 @@ impl<'s> DoorSteps<'s> {
     #[must_use]
     pub fn plane(&self) -> &str {
         &self.facts.plane
+    }
+
+    /// The plane's recipe priced against this unit's admitted generation, by opaque lane key.
+    pub fn route_cost(&self, lane: &str) -> busbar_contract::SignalBag {
+        use busbar_contract::signal::route_cost::{append, Term};
+        use busbar_kernel_ledger::cost::ClassPrice;
+        let pricing = self.app.cost.card().lane_pricing(lane);
+        let mut bag = busbar_contract::SignalBag::new();
+        append(
+            &mut bag,
+            self.facts
+                .route_cost
+                .iter()
+                .map(|&(class, expected_units)| {
+                    let class = self
+                        .facts
+                        .classes
+                        .get(class as usize)
+                        .map(String::as_str)
+                        .unwrap_or_default();
+                    let nanos_per_unit = if pricing.card.pricing_enabled() {
+                        match pricing.class_price(class) {
+                            ClassPrice::Nanos(price) => Some(price),
+                            ClassPrice::FeeMinor(_) | ClassPrice::Unpriced => None,
+                        }
+                    } else {
+                        None
+                    };
+                    Term {
+                        class,
+                        nanos_per_unit,
+                        expected_units,
+                    }
+                }),
+        );
+        bag
     }
 
     /// Whether the unit was charged (its money facts opened).
@@ -1397,6 +1435,7 @@ pub fn door_facts(
         plane: plane.to_string(),
         scope_kind: scope_kinds.first().map(|k| (*k).to_string()),
         classes: classes.iter().map(|c| (*c).to_string()).collect(),
+        route_cost: Vec::new(),
         meter_classes: classes.iter().map(|c| MeterClassId::new(c)).collect(),
         fee_units: fee_units
             .iter()

@@ -102,8 +102,13 @@ fn signal_value(e: Lent<'_, SignalEntry>) -> Option<SignalValue> {
 fn bag(list: LentList<'_, SignalEntry>) -> SignalBag {
     let mut b = SignalBag::new();
     for e in list.iter() {
-        if let (Some(sig), Some(v)) = (Signal::ALL.get(e.id as usize).copied(), signal_value(e)) {
-            b.push(sig, v);
+        if let Some(sig) = Signal::ALL.get(e.id as usize).copied() {
+            match signal_value(e) {
+                Some(value) => b.push(sig, value),
+                // A malformed recipe must not disappear and fall back to legacy cost data.
+                None if sig == Signal::CandidateRouteCost => b.push(sig, SignalValue::I64(-1)),
+                None => {}
+            }
         }
     }
     b

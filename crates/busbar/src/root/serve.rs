@@ -1873,6 +1873,7 @@ fn seal_live(
             .collect(),
     );
     facts.bench_below_trip_threshold = bench_below_trip_threshold;
+    facts.route_cost = served_facts.route_cost.clone();
     // THE PLANE'S STATED STREAM CEILING (ARCHITECT ruling 2026-10-07, STREAM-CEILING), off its
     // tail: the deadline of its streamed units once their route is known; `0` = none.
     facts.stream_ceiling_secs = served_facts.stream_ceiling_secs;
@@ -4259,7 +4260,11 @@ impl FarEnd for DoorFar<'_, '_> {
     }
 
     fn candidates(&self, token: &Pass<Route>) -> Option<busbar_kernel::plane_driver::Candidates> {
-        self.far().and_then(|far| far.candidates(token))
+        let mut candidates = self.far()?.candidates(token)?;
+        for candidate in &mut candidates.members {
+            candidate.route_cost = self.steps.route_cost(&candidate.model);
+        }
+        Some(candidates)
     }
 
     fn constrain(&self, token: &Pass<Route>, constraint: busbar_kernel::plane_driver::Constraint) {

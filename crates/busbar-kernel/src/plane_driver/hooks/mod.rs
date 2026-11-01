@@ -559,6 +559,8 @@ pub struct CandidateFacts {
     pub tier: Option<String>,
     /// The member's cost per million tokens.
     pub cost_per_mtok: Option<f64>,
+    /// The host's plane-declared cost terms, already priced for this lane and generation.
+    pub route_cost: SignalBag,
     /// The member's tags.
     pub tags: Vec<String>,
     /// The member's latency average, in milliseconds.
@@ -1136,7 +1138,7 @@ fn candidates_of<'a>(
         .iter()
         .filter(|c| keep.contains(&c.idx))
         .map(|c| {
-            let mut signals = SignalBag::new();
+            let mut signals = c.route_cost.clone();
             let wants = &hooks.requested;
             if !wants.is_empty() {
                 if wants.wants(Signal::CandidateBreakerState) {

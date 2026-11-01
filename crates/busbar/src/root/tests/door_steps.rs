@@ -36,6 +36,87 @@ fn owned(label: &str, members: &[&str]) -> Option<(String, Vec<String>)> {
 const SECTION: &str = "a: {}\nb: {}\nhooks: [h]\nupstream_credentials: own\n\
      pools:\n  both:\n    members: [a, {name: b}]";
 
+#[tokio::test]
+async fn routing_recipe_uses_the_admitted_planes_card_and_keeps_unknown_prices_unknown() {
+    use busbar_contract::signal::route_cost::decode;
+    use busbar_kernel::config::RateEntryCfg;
+    use busbar_kernel_ledger::cost::UnitRate;
+    use std::collections::BTreeMap;
+    use std::sync::Arc;
+
+    let mut facts = super::door_facts("p", &[], &["frames", "seconds"], &[], "a", Vec::new());
+    facts.route_cost = vec![(0, 2.5), (1, 0.0), (0, 1.0)];
+    let p = pools("a: {}");
+    let app = |price| {
+        let entry = RateEntryCfg {
+            units: BTreeMap::from([
+                ("frames".into(), UnitRate::from_whole_micros(price).unwrap()),
+                ("seconds".into(), UnitRate::from_whole_micros(0).unwrap()),
+            ]),
+            ..RateEntryCfg::default()
+        };
+        let card = BTreeMap::from([(super::plane_lane("p", "a"), entry)]);
+        busbar_kernel::test_support::TestApp::new()
+            .cost(busbar_kernel::cost::CostModel::resolve_parts(
+                Some(&card),
+                0,
+                &BTreeMap::new(),
+            ))
+            .build()
+    };
+    let steps = |app| {
+        super::DoorSteps::new(
+            &facts,
+            &p,
+            Arc::new(|_: &str| None),
+            app,
+            None,
+            super::DoorCaller {
+                principal: busbar_contract::caps::PrincipalId::new("caller"),
+                key: None,
+                open: true,
+                arrived: 0,
+                records: None,
+                depth: 0,
+                credential: None,
+                ticket: None,
+            },
+        )
+    };
+    let old = steps(app(3));
+    let new = steps(app(7));
+    for (unit, expected) in [(&old, 3_000), (&new, 7_000), (&old, 3_000)] {
+        let bag = unit.route_cost(&super::plane_lane("p", "a"));
+        let terms = decode(&bag).unwrap().unwrap();
+        assert_eq!(
+            terms.iter().map(|t| t.nanos_per_unit).collect::<Vec<_>>(),
+            vec![Some(expected), Some(0), Some(expected)]
+        );
+        assert_eq!(
+            terms.iter().map(|t| t.expected_units).collect::<Vec<_>>(),
+            vec![2.5, 0.0, 1.0]
+        );
+        for lane in [
+            super::plane_lane("q", "a"),
+            super::plane_lane("p", "unknown"),
+        ] {
+            let bag = unit.route_cost(&lane);
+            assert!(decode(&bag)
+                .unwrap()
+                .unwrap()
+                .iter()
+                .all(|t| t.nanos_per_unit.is_none()));
+        }
+    }
+    let no_card = steps(busbar_kernel::test_support::TestApp::new().build());
+    let bag = no_card.route_cost(&super::plane_lane("p", "a"));
+    assert!(decode(&bag)
+        .unwrap()
+        .unwrap()
+        .iter()
+        .all(|t| t.nanos_per_unit.is_none()));
+}
+
 #[test]
 fn a_pool_route_walks_its_named_pools_members_under_its_label() {
     let p = pools(SECTION);

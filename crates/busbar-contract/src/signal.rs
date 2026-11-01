@@ -93,12 +93,13 @@ pub enum Signal {
     /// buffered answer); absent on a stream still flowing at head time and on a transfer that
     /// reported no usage.
     ResponseTokensOut,
+    /// The plane's routing-cost recipe and this candidate's prices. Repeated scalar entries
+    /// form the typed stream described by [`route_cost`], over the existing signal array.
+    CandidateRouteCost,
 }
 
 impl Signal {
-    /// Every catalog entry, in declaration order — the source of truth an exhaustiveness test
-    /// checks [`Signal::name`] against (mirrors the `KNOWN_PROTOCOLS`-driven exhaustiveness
-    /// pattern already used elsewhere in the codebase for a similarly append-only vocabulary).
+    /// Every catalog entry, in wire-id order. New entries append; existing positions are stable.
     pub const ALL: &'static [Signal] = &[
         Signal::RequestedModel,
         Signal::RequestTotalChars,
@@ -110,6 +111,7 @@ impl Signal {
         Signal::CandidateLatencyP95Ms,
         Signal::RoutingPolicy,
         Signal::ResponseTokensOut,
+        Signal::CandidateRouteCost,
     ];
 
     /// The stable wire/config key for this signal — snake_case, matching the `#[serde(rename_all =
@@ -127,13 +129,12 @@ impl Signal {
             Signal::CandidateLatencyP95Ms => "candidate_latency_p95_ms",
             Signal::RoutingPolicy => "routing_policy",
             Signal::ResponseTokensOut => "response_tokens_out",
+            Signal::CandidateRouteCost => "candidate_route_cost",
         }
     }
 
     /// A dense, stable bit position for this signal — the `RequestedSignals` bitmask's index.
-    /// Ordinal into [`Signal::ALL`], NOT the enum's discriminant (keeps the bitmask stable even if
-    /// a future variant is inserted between existing ones rather than only appended, as long as
-    /// `ALL` is updated in the same change — checked by a same-crate test).
+    /// Ordinal into [`Signal::ALL`], not the enum's discriminant.
     pub fn bit(self) -> u32 {
         Self::ALL
             .iter()
@@ -141,6 +142,9 @@ impl Signal {
             .expect("Signal::ALL must list every variant") as u32
     }
 }
+
+/// The typed, plane-neutral routing-cost signal carried by a candidate.
+pub mod route_cost;
 
 /// A compact, closed scalar wire value — deliberately NOT `serde_json::Value`: a `Value` admits
 /// nested objects/arrays, which would let a compute fn accidentally emit an unbounded structure
@@ -208,9 +212,8 @@ impl SignalBag {
         self.0.len()
     }
 
-    /// Insert one signal's computed value. The caller is responsible for only calling this behind
-    /// a `requested.wants(signal)` gate (see `busbar::hooks::RequestedSignals`) — the bag itself
-    /// does not enforce that; it is a plain container.
+    /// Insert one signal's value. Optional telemetry is computed only when requested; the
+    /// routing-cost recipe accompanies the candidate's existing price projection.
     pub fn push(&mut self, signal: Signal, value: SignalValue) {
         self.0.push((signal, value));
     }

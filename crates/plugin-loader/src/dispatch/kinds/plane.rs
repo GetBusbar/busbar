@@ -143,6 +143,8 @@ pub struct ServedFacts {
     /// The tail's billable classes, in order: a unit count's `class` indexes them (the money
     /// steps ledger each count under its class name, THE DESIGN §7).
     pub billable_classes: Vec<&'static str>,
+    /// The validated routing-cost terms: billable-class index and default expected units.
+    pub route_cost: Vec<(u32, f64)>,
     /// The tail's fee units, each also one of [`Self::billable_classes`]: the plane's report of
     /// whether a unit incurred its fee (THE DESIGN §7, "the plane reports ... whether a fee unit was
     /// incurred").
@@ -395,6 +397,10 @@ fn tail_facts_read(st: &Statement) -> Result<PlaneFacts, String> {
             billable_classes: listed(tail.billable_classes, tail.billable_classes_len)
                 .into_iter()
                 .map(|c| kept(c.class))
+                .collect(),
+            route_cost: listed(tail.route_cost, tail.route_cost_len)
+                .into_iter()
+                .map(|term| (term.class, term.weight))
                 .collect(),
             fee_units: listed(tail.fee_units, tail.fee_units_len)
                 .into_iter()

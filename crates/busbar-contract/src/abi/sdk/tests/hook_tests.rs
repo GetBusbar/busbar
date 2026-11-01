@@ -147,6 +147,78 @@ fn budget() -> Vec<K> {
     ]
 }
 
+#[test]
+fn routing_cost_terms_survive_the_hook_memory_view() {
+    use crate::abi::hook::{
+        SignalEntry, SignalValue as RawValue, SIGNAL_TAG_BOOL, SIGNAL_TAG_F64, SIGNAL_TAG_STR,
+        SIGNAL_TAG_U64,
+    };
+    let class = "relay_frames";
+    let entries = [
+        SignalEntry {
+            id: 10,
+            tag: SIGNAL_TAG_BOOL,
+            value: RawValue { boolean: 1 },
+        },
+        SignalEntry {
+            id: 10,
+            tag: SIGNAL_TAG_STR,
+            value: RawValue {
+                str_: AbiStr {
+                    ptr: class.as_ptr(),
+                    len: class.len(),
+                },
+            },
+        },
+        SignalEntry {
+            id: 10,
+            tag: SIGNAL_TAG_U64,
+            value: RawValue { u64_: 17 },
+        },
+        SignalEntry {
+            id: 10,
+            tag: SIGNAL_TAG_F64,
+            value: RawValue { f64_: 2.5 },
+        },
+    ];
+    let req = request(false, false);
+    let candidates = candidates(&[]);
+    let ctx = RoutingContext {
+        pool: "p",
+        budget_remaining: None,
+        budget: &[],
+    };
+    let frame = DecideFrame::first(DecideView::build(&req, &candidates, &ctx));
+    let mut input = frame.input();
+    // SAFETY: the frame owns both candidate rows for this test's scope.
+    let mut dynamics =
+        unsafe { std::slice::from_raw_parts(input.candidate_dynamics, input.candidates_len) }
+            .to_vec();
+    dynamics[0].signals = entries.as_ptr();
+    dynamics[0].signals_len = entries.len();
+    input.candidate_dynamics = dynamics.as_ptr();
+    let decoded = Decoded::of(lend(&input));
+    let values: Vec<_> = decoded.candidates[0]
+        .signals
+        .iter()
+        .filter(|(signal, _)| signal.name() == "candidate_route_cost")
+        .map(|(_, value)| value.clone())
+        .collect();
+    assert_eq!(
+        values,
+        vec![
+            SignalValue::Bool(true),
+            SignalValue::Str(class.into()),
+            SignalValue::U64(17),
+            SignalValue::F64(2.5)
+        ]
+    );
+    assert_eq!(
+        decoded.candidates[0].cost_per_mtok,
+        candidates[0].cost_per_mtok
+    );
+}
+
 /// The bytes 1.5.5's host sent, and the bytes the SDK rebuilds from the fixed view.
 fn both(op: &'static str, prompt: bool, user: bool, with_cands: bool) -> (String, String) {
     let t = tags();

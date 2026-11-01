@@ -2209,6 +2209,7 @@ impl FarEnd for EgressFarEnd<'_> {
                         context_max: m.context_max.and_then(|c| usize::try_from(c).ok()),
                         tier: facts.and_then(|f| f.tier.clone()),
                         cost_per_mtok: facts.and_then(|f| f.cost_per_mtok),
+                        route_cost: busbar_contract::SignalBag::new(),
                         tags: facts.map(|f| f.tags.clone()).unwrap_or_default(),
                         latency_ms: standing.latency_ms,
                         available_concurrency: standing.available_concurrency,
