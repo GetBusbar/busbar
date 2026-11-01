@@ -12,7 +12,7 @@ use super::{Answered, Owed, PortAssociations};
 /// The admission result for one newly received network datagram.
 #[derive(Debug)]
 pub enum RawIngress {
-    /// The selected association took the datagram; publish its checked output normally.
+    /// The ordinary admission result; it can be empty when the selected association closed.
     Answered(Answered),
     /// The selected live association was busy, before the datagram crossed its framer.
     BusyDropped,
@@ -21,7 +21,7 @@ pub enum RawIngress {
 }
 
 impl RawIngress {
-    /// Output to publish, if this datagram acquired framing custody.
+    /// Checked output to publish from this admission attempt.
     #[must_use]
     pub fn into_answered(self) -> Answered {
         match self {
@@ -55,7 +55,7 @@ impl PortAssociations {
     }
 
     /// Newly received raw datagrams discarded because their selected association was busy.
-    /// Unrouted datagrams and late close/removal races do not contribute to this port's count.
+    /// Unrouted datagrams and selections already closing or removed do not contribute.
     #[must_use]
     pub fn raw_busy_dropped(&self) -> u64 {
         self.raw_busy_dropped.load(Ordering::Relaxed)
