@@ -304,3 +304,147 @@ fn an_expired_queued_disk_resolve_releases_its_instance_before_the_queue_runs() 
         "draining the expired callback cannot resurrect its owner"
     );
 }
+
+/// Exercise queued custody without waiting out the production deadline or scheduling the waiter.
+#[test]
+fn an_expired_callback_with_an_unscheduled_waiter_drops_without_running() {
+    let owned = Arc::new(());
+    let weak = Arc::downgrade(&owned);
+    let ran = Arc::new(AtomicUsize::new(0));
+    let called = Arc::clone(&ran);
+    let work: super::DiskJob = Box::new(move || {
+        called.fetch_add(1, Ordering::SeqCst);
+        drop(owned);
+    });
+    let pending = Arc::new(std::sync::Mutex::new(Some(work)));
+    let waiting = super::QueuedDiskResolve {
+        pending: Arc::clone(&pending),
+        deadline: std::time::Instant::now(),
+    };
+    let queued = super::QueuedDiskResolve {
+        pending,
+        deadline: waiting.deadline,
+    };
+    queued.run();
+    assert_eq!(ran.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        weak.strong_count(),
+        0,
+        "no waiter poll is needed for expiry"
+    );
+    drop(waiting);
+}
+
+#[test]
+fn dropped_waiter_and_completed_callback_release_queued_custody() {
+    for abandon in [true, false] {
+        let owned = Arc::new(());
+        let weak = Arc::downgrade(&owned);
+        let ran = Arc::new(AtomicUsize::new(0));
+        let called = Arc::clone(&ran);
+        let work: super::DiskJob = Box::new(move || {
+            called.fetch_add(1, Ordering::SeqCst);
+            drop(owned);
+        });
+        let pending = Arc::new(std::sync::Mutex::new(Some(work)));
+        let waiting = super::QueuedDiskResolve {
+            pending: Arc::clone(&pending),
+            deadline: std::time::Instant::now() + super::WAIT,
+        };
+        let queued = super::QueuedDiskResolve {
+            pending,
+            deadline: waiting.deadline,
+        };
+        if abandon {
+            drop(waiting);
+            assert_eq!(
+                weak.strong_count(),
+                0,
+                "the queue retains no abandoned owner"
+            );
+            queued.run();
+        } else {
+            queued.run();
+            assert_eq!(
+                weak.strong_count(),
+                0,
+                "the waiter retains no completed owner"
+            );
+            drop(waiting);
+        }
+        assert_eq!(ran.load(Ordering::SeqCst), usize::from(!abandon));
+    }
+}
+
+#[test]
+fn withdrawing_queued_custody_runs_reentrant_drop_outside_the_mutex() {
+    struct Reenter {
+        pending: std::sync::Weak<std::sync::Mutex<Option<super::DiskJob>>>,
+        answered: std::sync::mpsc::Sender<bool>,
+    }
+    impl Drop for Reenter {
+        fn drop(&mut self) {
+            let outside = self
+                .pending
+                .upgrade()
+                .is_some_and(|pending| pending.try_lock().is_ok_and(|job| job.is_none()));
+            let _ = self.answered.send(outside);
+        }
+    }
+
+    let pending = Arc::new(std::sync::Mutex::new(None));
+    let (answered, answer) = std::sync::mpsc::channel();
+    let reenter = Reenter {
+        pending: Arc::downgrade(&pending),
+        answered,
+    };
+    let work: super::DiskJob = Box::new(move || drop(reenter));
+    *pending.lock().unwrap() = Some(work);
+    let waiting = super::QueuedDiskResolve {
+        pending: Arc::clone(&pending),
+        deadline: std::time::Instant::now() + super::WAIT,
+    };
+    drop(waiting);
+    assert!(answer
+        .recv_timeout(std::time::Duration::from_secs(2))
+        .unwrap());
+    assert!(pending.lock().unwrap().is_none());
+}
+
+#[test]
+fn abandoning_a_running_resolve_keeps_its_custody_until_the_crossing_returns() {
+    let owned = Arc::new(());
+    let weak = Arc::downgrade(&owned);
+    let (entered_tx, entered) = std::sync::mpsc::channel();
+    let (release, released) = std::sync::mpsc::channel();
+    let (finished_tx, finished) = std::sync::mpsc::channel();
+    let work: super::DiskJob = Box::new(move || {
+        let _ = entered_tx.send(());
+        let _ = released.recv_timeout(std::time::Duration::from_secs(30));
+        drop(owned);
+        let _ = finished_tx.send(());
+    });
+    let pending = Arc::new(std::sync::Mutex::new(Some(work)));
+    let waiting = super::QueuedDiskResolve {
+        pending: Arc::clone(&pending),
+        deadline: std::time::Instant::now() + super::WAIT,
+    };
+    let queued = super::QueuedDiskResolve {
+        pending,
+        deadline: waiting.deadline,
+    };
+    let crossing = std::thread::spawn(move || queued.run());
+    let running = entered.recv_timeout(std::time::Duration::from_secs(10));
+    drop(waiting);
+    let retained = weak.strong_count();
+    let _ = release.send(());
+    let returned = finished.recv_timeout(std::time::Duration::from_secs(10));
+    running.expect("the crossing took custody before abandonment");
+    returned.expect("the controlled crossing returns");
+    crossing.join().unwrap();
+    assert_eq!(
+        retained, 1,
+        "the running crossing still owns its lent memory"
+    );
+    assert_eq!(weak.strong_count(), 0, "return releases that final owner");
+}

@@ -916,8 +916,8 @@ impl KernelServices {
         self
     }
 
-    /// The same services appending on `lane`: the process's ONE disk lane (THE DESIGN §11.11 R4),
-    /// the lane a disk-declared secret source's config-time `resolve` runs on too.
+    /// The same services appending on `lane`: the process's disk service (THE DESIGN §11.11 R4).
+    /// Its config-time secret executor is isolated from this FIFO append executor.
     #[must_use]
     pub fn with_disk_lane(mut self, lane: Arc<crate::host_disk::DiskLane>) -> Self {
         self.disk = lane;
