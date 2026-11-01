@@ -62,3 +62,66 @@ fn a_second_answer_replaces_the_first_and_is_spent_once() {
     assert_eq!(sessions.spend("session-1", "key-1"), Some(true));
     assert_eq!(sessions.spend("session-1", "key-1"), None);
 }
+
+#[test]
+fn a_session_in_a_later_cookie_field_resolves_the_same_subject() {
+    let sessions = std::sync::Arc::new(Sessions::default());
+    sessions.open("cookie-operator", "split-session".to_string());
+    let resolve = super::subject_resolver(sessions);
+    let mut split = axum::http::HeaderMap::new();
+    split.append("cookie", "unrelated=first".parse().unwrap());
+    split.append(
+        "cookie",
+        "busbar_as_session=split-session; other=last"
+            .parse()
+            .unwrap(),
+    );
+    let mut joined = axum::http::HeaderMap::new();
+    joined.insert(
+        "cookie",
+        "unrelated=first; busbar_as_session=split-session; other=last"
+            .parse()
+            .unwrap(),
+    );
+    assert_eq!(super::session_id(&split), super::session_id(&joined));
+    assert_eq!(resolve(&split), Some("cookie-operator".to_string()));
+}
+
+#[test]
+fn consent_cookie_fields_preserve_first_match_and_malformed_refusal() {
+    for (fields, expected) in [
+        (
+            vec!["busbar_as_session=first", "busbar_as_session=second"],
+            Some("first"),
+        ),
+        (
+            vec![
+                "unrelated=x",
+                "busbar_as_session=first; busbar_as_session=second",
+            ],
+            Some("first"),
+        ),
+        (
+            vec!["busbar_as_session=", "busbar_as_session=second"],
+            Some(""),
+        ),
+        (
+            vec!["bad-pair; unrelated=x", " busbar_as_session = value "],
+            Some("value"),
+        ),
+        (vec!["other_busbar_as_session=wrong", "unrelated=x"], None),
+    ] {
+        let mut headers = axum::http::HeaderMap::new();
+        for field in fields {
+            headers.append("cookie", field.parse().unwrap());
+        }
+        assert_eq!(super::session_id(&headers).as_deref(), expected);
+    }
+    let mut headers = axum::http::HeaderMap::new();
+    headers.append(
+        "cookie",
+        axum::http::HeaderValue::from_bytes(b"unreadable=\x80").unwrap(),
+    );
+    headers.append("cookie", "busbar_as_session=later".parse().unwrap());
+    assert_eq!(super::session_id(&headers), None);
+}

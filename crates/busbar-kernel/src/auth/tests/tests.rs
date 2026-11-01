@@ -4199,3 +4199,129 @@ async fn the_admin_gate_admits_only_the_listed_verbs() {
     }
     handle.abort();
 }
+
+#[test]
+fn bearer_separators_consume_ascii_spaces_without_normalizing_token_bytes() {
+    for header in ["Bearer token", "Bearer  token", "bEaReR     token"] {
+        assert_eq!(
+            AuthMiddleware::extract_bearer_token(header).as_deref(),
+            Some("token")
+        );
+    }
+    for header in [
+        "Bearer",
+        "Bearer ",
+        "Bearer     ",
+        "Bearer\ttoken",
+        "Basic token",
+        "Béarer token",
+    ] {
+        assert_eq!(AuthMiddleware::extract_bearer_token(header), None);
+    }
+    // The separator fix does not trim or reinterpret bytes belonging to the credential.
+    for (header, expected) in [
+        ("Bearer token ", "token "),
+        ("Bearer token other", "token other"),
+        ("Bearer \ttoken", "\ttoken"),
+    ] {
+        assert_eq!(
+            AuthMiddleware::extract_bearer_token(header).as_deref(),
+            Some(expected)
+        );
+    }
+}
+
+#[test]
+fn repeated_authorization_fields_keep_the_first_credential_after_separator_parsing() {
+    let mut headers = HeaderMap::new();
+    headers.append(AUTHORIZATION, HeaderValue::from_static("Bearer   first"));
+    headers.append(AUTHORIZATION, HeaderValue::from_static("Bearer second"));
+    assert_eq!(
+        carried_credential(&[AUTHORIZATION], &headers).as_deref(),
+        Some("first")
+    );
+    headers.insert(AUTHORIZATION, HeaderValue::from_static("Basic first"));
+    headers.append(AUTHORIZATION, HeaderValue::from_static("Bearer second"));
+    assert_eq!(carried_credential(&[AUTHORIZATION], &headers), None);
+}
+
+#[tokio::test]
+async fn admin_unauthorized_challenges_without_changing_the_frozen_error_body() {
+    let response = admin_unauthorized_response();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        response.headers()[axum::http::header::WWW_AUTHENTICATE],
+        "Bearer"
+    );
+    let expected = crate::admin::gate::ApiError::Unauthorized;
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(
+        body,
+        serde_json::json!({"error": {"code": expected.code(), "message": expected.message()}})
+    );
+}
+
+#[tokio::test]
+async fn absent_challenge_omits_error_advice_but_keeps_resource_discovery() {
+    let metadata = "https://resource.example/.well-known/oauth-protected-resource";
+    let response = challenge::refuse(
+        challenge::ChallengeError::Absent,
+        metadata,
+        "Authentication is required for this resource.",
+        Some("read"),
+    );
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        response.headers()[axum::http::header::WWW_AUTHENTICATE],
+        format!("Bearer resource_metadata=\"{metadata}\"")
+    );
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(body, serde_json::json!({"error": "unauthorized"}));
+}
+
+#[tokio::test]
+async fn presented_credentials_keep_challenge_error_descriptions_and_scope_rules() {
+    for (error, status, code) in [
+        (
+            challenge::ChallengeError::InvalidToken,
+            StatusCode::UNAUTHORIZED,
+            "invalid_token",
+        ),
+        (
+            challenge::ChallengeError::InsufficientScope,
+            StatusCode::FORBIDDEN,
+            "insufficient_scope",
+        ),
+    ] {
+        let response = challenge::refuse(
+            error,
+            "https://resource.example/metadata",
+            "Safe advisory.",
+            Some("read"),
+        );
+        assert_eq!(response.status(), status);
+        let header = response.headers()[axum::http::header::WWW_AUTHENTICATE]
+            .to_str()
+            .unwrap();
+        assert!(header.contains(&format!("error=\"{code}\"")));
+        assert!(header.contains("error_description=\"Safe advisory.\""));
+        assert_eq!(
+            header.contains("scope=\"read\""),
+            error == challenge::ChallengeError::InsufficientScope
+        );
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(
+            body,
+            serde_json::json!({"error": code, "error_description": "Safe advisory."})
+        );
+    }
+}

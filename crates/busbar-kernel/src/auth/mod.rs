@@ -1380,6 +1380,7 @@ impl AuthMiddleware {
     /// with a multibyte character in the scheme position can't panic on a UTF-8 boundary.
     pub fn extract_bearer_token(auth_header: &str) -> Option<String> {
         let (scheme, token) = auth_header.split_once(' ')?;
+        let token = token.trim_start_matches(' ');
         if scheme.eq_ignore_ascii_case(AUTH_SCHEME_BEARER) && !token.is_empty() {
             Some(token.to_string())
         } else {
@@ -2266,6 +2267,7 @@ fn admin_unauthorized_response() -> Response {
     Response::builder()
         .status(StatusCode::UNAUTHORIZED)
         .header(axum::http::header::CONTENT_TYPE, "application/json")
+        .header(axum::http::header::WWW_AUTHENTICATE, "Bearer")
         .body(Body::from(body))
         .expect("static unauthorized response")
 }
