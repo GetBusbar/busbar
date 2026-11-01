@@ -913,32 +913,29 @@ impl GovState {
         self.pending_metering.totals()
     }
 
-    /// Drain `pending_metering` and write each entry to the store as one `MeteringDelta`. A DRAIN,
-    /// not a baseline (contrast `flush_budgets`): nothing in the tree enforces against a metering
-    /// cell, so there is no authoritative running total to protect, and a successfully-flushed
-    /// entry is simply gone. In steady state cardinality is bounded by arrival rate x the flush
-    /// interval; under a SUSTAINED store outage the re-queue below plus fresh arrivals would grow it
-    /// without bound, so the re-queue goes through `accrue_pending`, which caps the map at
-    /// [`MAX_PENDING_METERING`] and coalesces the overflow into a per-bucket sentinel (totals kept,
-    /// attribution collapsed) rather than dropping billable usage. On a store error the entry's
-    /// counts are merged BACK into whatever
-    /// accumulated meanwhile (saturating add, not overwrite) so the next tick retries the full
-    /// amount exactly once — this is what makes two concurrently-running flushes safe without a
-    /// gate: [`PendingMetering::drain`] `mem::take`s each shard under its own lock (an atomic
-    /// per-shard swap) and a key never migrates shards, so any two calls partition the arrivals
-    /// between them by construction and cannot double-send. Returns the number of deltas written.
+    /// Write pending raw metering counts. Stores explicitly supporting supplied operation IDs
+    /// retain one immutable drained snapshot until acknowledgement; unknown outcomes replay the
+    /// same ID and body, while fresh arrivals stay in the bounded accumulator. Concurrent ordinary
+    /// callers skip its active runner. Returns the number of acknowledged deltas.
+    ///
+    /// Legacy `RecordStore` implementations keep their additive drain/requeue path. Its separate
+    /// drains partition arrivals, but an error after application cannot provide retry deduplication.
     pub fn flush_metering(&self) -> usize {
         self.flush_metering_inner(false)
     }
 
-    /// The SHUTDOWN flush: [`Self::flush_metering`], except that a failure is reported as the
-    /// terminal loss it is (one error naming the unrecorded cells), not as a retry that will never
-    /// run because the process is about to exit.
+    /// Final metering flush. Supplied-ID stores wait another thread's active runner, replay its
+    /// retained operation and then flush fresh arrivals. Same-thread reentry is diagnosed rather
+    /// than waiting on itself. WriteBehind I/O retains its existing absence of a deadline.
+    /// Unacknowledged counts at exit are reported as terminal uncertainty, not persisted success.
     pub fn flush_metering_final(&self) -> usize {
         self.flush_metering_inner(true)
     }
 
     fn flush_metering_inner(&self, shutdown: bool) -> usize {
+        if self.store.supports_metering_batch_deduped() {
+            return self.flush_metering_deduped(shutdown);
+        }
         let taken = self.pending_metering.drain();
         let mut flushed = 0usize;
         // Aggregate failures: during a store outage EVERY pending key fails on the same tick, so a
