@@ -2202,3 +2202,58 @@ fn what_an_association_out_on_a_crossing_is_owed_its_holder_runs_in_order() {
     assert_eq!(lanes(&da).len(), before + 1, "only the parked call crossed");
     assert!(port.is_empty(), "removed while out, finished by its holder");
 }
+
+/// Host registration is completed before the association becomes available to port callers.
+#[test]
+fn association_admission_publishes_host_routing_before_unlocking() {
+    let port = super::PortAssociations::new();
+    let published = std::cell::Cell::new(None);
+    let id = port
+        .add_with(settled(scripted(Knobs::default())), |id| {
+            assert!(matches!(
+                port.assocs.try_lock(),
+                Err(std::sync::TryLockError::WouldBlock)
+            ));
+            published.set(Some(id));
+        })
+        .unwrap();
+    assert_eq!(published.get(), Some(id));
+    assert_eq!(port.len(), 1);
+    let (accepted, _) = port.emit(
+        id,
+        1,
+        b"after registration",
+        true,
+        false,
+        Instant::now(),
+        &|_, _| {},
+    );
+    assert!(accepted);
+    port.remove(id);
+}
+
+/// Even an unwinding host publisher must finish its unregistered framing outside the map lock.
+#[test]
+fn unwinding_association_publication_finishes_after_unlocking() {
+    let port = Arc::new(super::PortAssociations::new());
+    let door = scripted(Knobs::default());
+    let framing = settled(Arc::clone(&door));
+    let (entered, release) = park(&door, Parks::Finish);
+    let owner = {
+        let port = Arc::clone(&port);
+        std::thread::spawn(move || {
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let _ = port.add_with(framing, |_| panic!("publisher unwinds"));
+            }))
+        })
+    };
+    let reached_finish = entered.recv_timeout(Duration::from_secs(5)).is_ok();
+    let unlocked = match port.assocs.try_lock() {
+        Ok(_) | Err(std::sync::TryLockError::Poisoned(_)) => true,
+        Err(std::sync::TryLockError::WouldBlock) => false,
+    };
+    let _ = release.send(());
+    let unwound = owner.join().unwrap().is_err();
+    assert!(reached_finish && unlocked && unwound);
+    assert!(port.is_empty(), "a failed publisher exposes no association");
+}

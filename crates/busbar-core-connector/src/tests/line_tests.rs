@@ -151,11 +151,12 @@ fn a_hung_carrier_crossing_holds_no_lock_and_a_close_beside_it_never_waits() {
         let closer = thread::spawn(move || {
             let mut cx = Context::from_waker(Waker::noop());
             let before = closing.poll_ready(EXCHANGE_STREAM, &mut cx);
+            let empty_write = closing.emit(EXCHANGE_STREAM, b"", true, true);
             closing.close();
             let after = closing.poll_ready(EXCHANGE_STREAM, &mut cx);
-            done_tx.send((before, after)).unwrap();
+            done_tx.send((before, after, empty_write)).unwrap();
         });
-        let (before, after) = done.recv_timeout(Duration::from_secs(5)).expect(
+        let (before, after, empty_write) = done.recv_timeout(Duration::from_secs(5)).expect(
             "a poll and a close beside a hung carrier crossing returned while it still hangs",
         );
         assert!(
@@ -177,6 +178,11 @@ fn a_hung_carrier_crossing_holds_no_lock_and_a_close_beside_it_never_waits() {
         release.send(()).unwrap();
         holder.join().unwrap();
         closer.join().unwrap();
+        assert_eq!(
+            empty_write.map_err(|f| crate::map(&f)),
+            Err(busbar_contract::conn::ConnError::Pending),
+            "an empty frame is not accepted while the connection is out"
+        );
         let crossings = door.crossings.lock().unwrap().clone();
         assert!(
             crossings.iter().all(|(.., locked)| !locked),

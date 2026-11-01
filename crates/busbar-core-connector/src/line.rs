@@ -53,17 +53,21 @@ struct FanOut {
 
 impl FanOut {
     fn wait(&self, stream: u64, waker: &Waker) {
-        let mut w = self.waiting.lock().expect("waiters");
-        match w.get_mut(&stream) {
-            Some(held) if held.will_wake(waker) => {}
-            _ => {
-                w.insert(stream, waker.clone());
+        // Waker cloning and destruction can run caller code. The map only owns the handoff.
+        let incoming = waker.clone();
+        let displaced = {
+            let mut w = self.waiting.lock().expect("waiters");
+            match w.get(&stream) {
+                Some(held) if held.will_wake(waker) => None,
+                _ => w.insert(stream, incoming),
             }
-        }
+        };
+        drop(displaced);
     }
 
     fn forget(&self, stream: u64) {
-        self.waiting.lock().expect("waiters").remove(&stream);
+        let removed = self.waiting.lock().expect("waiters").remove(&stream);
+        drop(removed);
     }
 
     fn wake_one(&self, stream: u64) {
@@ -614,7 +618,7 @@ impl Line {
     }
 
     /// Offer `bytes` on `stream` (`end` = its message is complete); answers how many were taken:
-    /// none while another holder has the connection out (the caller re-offers them after its next
+    /// Pending while another holder has the connection out (the caller re-offers them after its next
     /// read or wait, as it does a full buffer).
     ///
     /// # Errors
@@ -627,16 +631,31 @@ impl Line {
         end: bool,
         text: bool,
     ) -> Result<usize, Failure> {
+        self.emit_waking(stream, bytes, end, text, None)
+    }
+
+    /// A retained write also waits for the line/socket that can make room for its next retry.
+    pub(crate) fn emit_waking(
+        &self,
+        stream: u64,
+        bytes: &[u8],
+        end: bool,
+        text: bool,
+        missed: Option<&Waker>,
+    ) -> Result<usize, Failure> {
+        if let Some(waker) = missed {
+            self.fan.wait(stream, waker);
+        }
         let waker = self.fan_waker();
         let s = self.state();
         match self.turn(
             s,
-            None,
+            missed,
             |conn| conn.emit(stream, bytes, end, text, &mut Context::from_waker(&waker)),
             |_, _| {},
         ) {
             Turn::Ran(took) => took,
-            Turn::Out => Ok(0),
+            Turn::Out => Err(Failure::Pending),
             Turn::Closed => Err(Failure::Closed),
         }
     }

@@ -792,6 +792,39 @@ fn one_stream_pending_auth_holds_only_that_stream_on_the_connection() {
     });
 }
 
+#[test]
+fn a_parked_streams_empty_write_backpressures_only_that_stream() {
+    worker().block_on(async {
+        let far = echo().await;
+        let door = Arc::new(crate::support::PendingDoor::new(
+            TestDoor::identity("bytes"),
+            EXCHANGE_STREAM,
+        ));
+        let mut d = dial(&far);
+        d.opening = Some((Vec::new(), b"held".to_vec().into()));
+        let mut c = Connection::dial(door, &crate::support::via(), d).unwrap();
+        let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+        c.open_exchange(
+            3,
+            Some((Vec::new(), b"second".to_vec().into())),
+            HeadWords::default(),
+            &mut cx,
+        )
+        .unwrap();
+        assert_eq!(gather(&mut c, 6).await, b"second");
+        assert_eq!(c.emit(EXCHANGE_STREAM, b"", true, true, &mut cx), Ok(0));
+        assert_eq!(
+            c.emit(EXCHANGE_STREAM, b"", false, false, &mut cx)
+                .map_err(|f| crate::map(&f)),
+            Err(busbar_contract::conn::ConnError::Pending)
+        );
+        assert_eq!(c.emit(3, b"next", true, false, &mut cx), Ok(4));
+        assert_eq!(gather(&mut c, 4).await, b"next");
+        assert!(c.live(), "backpressure does not fail the connection");
+        assert!(c.cause().is_none());
+    });
+}
+
 /// RED (THE DESIGN §5: TLS is the connector's, "today's code moved byte-identically"; a write is
 /// taken up to `WRITE_BUFFER_BYTES`): one write larger than the TLS library's default send buffer
 /// (64 KiB) crosses whole, encrypted, in order. Handed to the TLS writer in one piece past that

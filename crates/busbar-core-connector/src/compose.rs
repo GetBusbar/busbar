@@ -77,6 +77,8 @@ pub const RECEIVE_BUFFER_BYTES: usize = 1024 * 1024;
 /// Why a connection did not answer.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Failure {
+    /// The write took nothing; retry after the connection's next readiness wake.
+    Pending,
     /// The target was refused before any dial (a cloud metadata host, a name the connector does
     /// not resolve, a target the entry does not locate) or the far end said no.
     Refused(String),
@@ -91,6 +93,7 @@ pub enum Failure {
 impl std::fmt::Display for Failure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::Pending => f.write_str("the connection's write is pending"),
             Self::Refused(why) => write!(f, "refused: {why}"),
             Self::Timeout => f.write_str("the connection's deadline passed"),
             Self::Closed => f.write_str("the connection is closed"),
@@ -193,8 +196,8 @@ pub struct Connection {
     /// Bytes for the carrier (ciphertext under TLS).
     out: VecDeque<u8>,
     /// Where a frame of the carrier's own wire ends in what was queued for it, as counts of every
-    /// byte ever queued (a connection with no framer above its carrier).
-    ends: VecDeque<u64>,
+    /// byte ever queued, and whether that write was empty (no framer above its carrier).
+    ends: VecDeque<(u64, bool)>,
     /// Every byte ever queued for the carrier.
     queued: u64,
     /// Bytes the carrier took since its last `flush` answered READY.
@@ -1343,7 +1346,7 @@ impl Connection {
         self.out.extend(bytes);
         self.queued += bytes.len() as u64;
         if end {
-            self.ends.push_back(self.queued);
+            self.ends.push_back((self.queued, bytes.is_empty()));
         }
     }
 }
@@ -1514,7 +1517,7 @@ impl Connection {
             Failure::Refused(t) | Failure::Failed(t) => framer
                 .or_else(|| self.security_error.take())
                 .unwrap_or_else(|| t.clone()),
-            Failure::Timeout | Failure::Closed => String::new(),
+            Failure::Pending | Failure::Timeout | Failure::Closed => String::new(),
         };
         if !matches!(self.phase, Phase::Failed(_)) {
             self.cause = Some(ConnCause { stage, text });
@@ -1600,6 +1603,7 @@ impl Connection {
     /// socket takes them as its readiness allows, driven by `cx`. At most the room left under
     /// [`WRITE_BUFFER_BYTES`] is taken (`end` holds only when all of `bytes` was), so `Ok(0)` for a
     /// non-empty `bytes` means the buffer is full until the socket drains it.
+    /// [`Failure::Pending`] also takes nothing, including an empty frame: retry after readiness.
     ///
     /// # Errors
     ///
@@ -1618,6 +1622,7 @@ impl Connection {
     /// message): the framer's `emit`
     /// on that stream, now if the framing has begun, else once it does. An accepted connection
     /// answers each piece on the stream the piece came on.
+    /// [`Failure::Pending`] takes nothing, including an empty frame: retry after readiness.
     ///
     /// # Errors
     ///
@@ -1644,6 +1649,21 @@ impl Connection {
         if let Err(f) = self.drive(cx) {
             self.fail(f.clone());
             return Err(f);
+        }
+        // Empty early frames spend no byte allowance. Keep one until it drains, preserving
+        // end/text. Once open, a parked stream still leaves other streams free to write.
+        let tail = if matches!(self.phase, Phase::Connecting | Phase::Handshaking) {
+            self.early.last()
+        } else {
+            self.early.iter().rev().find(|e| e.stream == stream)
+        };
+        if tail.is_some_and(|e| e.bytes.is_empty()) {
+            return Err(Failure::Pending);
+        }
+        // A raw carrier's empty frame must cross even without payload bytes. While it is
+        // pending, preserve it and re-offer later writes after the carrier wakes us.
+        if self.door.is_none() && self.ends.back().is_some_and(|(_, empty)| *empty) {
+            return Err(Failure::Pending);
         }
         // A FULL STREAM takes nothing (not-ready: the drive above parked `cx` on the socket, whose
         // bytes bring the framer's writable piece). An empty write adds nothing to the stream's
@@ -1816,13 +1836,13 @@ impl Connection {
                     Poll::Ready(Err(e)) => return Err(failed(e)),
                 }
             }
-            if self.out.is_empty() {
+            if self.out.is_empty() && self.ends.is_empty() {
                 return Ok(moved);
             }
             let (a, _) = self.out.as_slices();
             // Up to the next frame's end, and that end marked when the offer reaches it.
             let (a, end) = match self.ends.front() {
-                Some(&at) => {
+                Some(&(at, _)) => {
                     let left =
                         usize::try_from(at.saturating_sub(self.flushed)).unwrap_or(usize::MAX);
                     if left <= a.len() {
