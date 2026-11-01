@@ -20,3 +20,4 @@ busbar-contract = { path = "../busbar-contract" }
 ring = { workspace = true }
 ed25519-dalek = { workspace = true }
 zeroize = { workspace = true }
+serde_json = { workspace = true }
