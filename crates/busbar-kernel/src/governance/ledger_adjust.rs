@@ -84,8 +84,8 @@ pub struct UsageAdjustment {
     pub lane: String,
     /// The era (`priced_from_ms`) of the metering rows it lands on.
     pub era: u64,
-    /// The signed net delta per class. Zero nets are left off.
-    pub delta: BTreeMap<String, i64>,
+    /// The exact signed difference of two raw `u64` counters per class. Zero nets are left off.
+    pub delta: BTreeMap<String, i128>,
 }
 
 /// One class's count on a metering row: the four token columns under their reserved spellings,
@@ -369,16 +369,7 @@ impl GovState {
             let delta: BTreeMap<_, _> = counts
                 .into_iter()
                 .filter(|(_, count)| *count != 0)
-                .map(|(class, count)| {
-                    i64::try_from(count)
-                        .map(|count| (class, count))
-                        .map_err(|_| {
-                            RecordStoreError(
-                                "adjustment net exceeds signed public view range".into(),
-                            )
-                        })
-                })
-                .collect::<RecordStoreResult<_>>()?;
+                .collect();
             if !delta.is_empty() {
                 result.push(UsageAdjustment {
                     key_id: key.into(),
@@ -414,3 +405,7 @@ fn moved(count: u64, delta: i64) -> Option<u64> {
         count.checked_sub(delta.unsigned_abs())
     }
 }
+
+#[cfg(test)]
+#[path = "ledger_adjust_view_tests.rs"]
+mod view_tests;
