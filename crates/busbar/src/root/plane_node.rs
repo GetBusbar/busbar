@@ -493,6 +493,16 @@ impl Node {
             if !slot.is_marked() {
                 continue;
             }
+            // Claim the facts before taking the hold. Another sweep may see this marked slot
+            // while this sweep settles it; only its owner may retire either part of the unit.
+            let Some(lost) = self
+                .lost
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .remove(&slot.key())
+            else {
+                continue;
+            };
             let verdict = busbar_kernel::tick::sweep(
                 &slot,
                 busbar_contract::caps::StepName::Route,
@@ -511,22 +521,13 @@ impl Node {
                 &self.canary,
                 &self.gauge,
             );
-            // What the unit's guard recorded when it marked the slot. Every slot in this node's
-            // table is marked by that guard, which writes this entry before it marks.
-            let lost = self
-                .lost
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .remove(&slot.key());
             if let Some(busbar_kernel::tick::Swept { end, line, audit }) = settled {
                 if let Ok(posted) = end.posted() {
                     let principal = posted.principal().clone();
                     // The unit's own ARRIVAL, as its guard recorded it: a unit found gone after
                     // midnight was admitted, and is charged, in the day before — and the same
-                    // reading closes the hold its entry opened on the journal. The fallback — the
-                    // sweeping arrival's own reading — is an answer for a slot nothing on this node
-                    // could have marked.
-                    let entered = lost.as_ref().map_or(now, |l| l.arrived);
+                    // reading closes the hold its entry opened on the journal.
+                    let entered = lost.arrived;
                     // THE UNIT'S ONE AUDIT RECORD, sealed beside the line the sweep posted (THE
                     // DESIGN §1, `BUSBAR-1.6.0.md` l.190-197: "The audit step writes one fixed
                     // record, for every plane ... never optional"; §7 U14, l.1061-1065: one record
@@ -544,10 +545,20 @@ impl Node {
                         .map(|class| RecordLine { class, ..line })
                         .into_iter()
                         .collect();
-                    let seal = lost.map(|lost| Sealing {
+                    let (history, op_class, ran) = match lost.open {
+                        Some(open) => (
+                            Some(open.history),
+                            open.sealing
+                                .door
+                                .map_or(lost.op_class, |(facts, _)| facts.op_class),
+                            open.sealing.ran,
+                        ),
+                        None => (None, lost.op_class, Ran::default()),
+                    };
+                    let seal = Some(Sealing {
                         seal: UnitSeal {
                             facts: busbar_contract::caps::AuditFacts {
-                                op_class: lost.op_class,
+                                op_class,
                                 finish: busbar_contract::FinishClass::Error,
                             },
                             pass: audit,
@@ -558,9 +569,9 @@ impl Node {
                                 _ => None,
                             },
                         },
-                        ran: Ran::default(),
+                        ran,
                     });
-                    let card = crate::root::kernel::ROOT_CARD.pin();
+                    let card = history.unwrap_or_else(|| crate::root::kernel::ROOT_CARD.pin());
                     self.seal_end(
                         &principal,
                         entered,
@@ -661,6 +672,7 @@ impl Node {
         };
         let mut occupied = Occupied {
             node: self,
+            post: Some(post),
             slot: Arc::clone(&slot),
             arrived,
             op_class: audit_kind,
@@ -734,16 +746,16 @@ impl Node {
     /// audit door stated, or under `audit_kind` (the plane's stated audit kind) when that door
     /// handed nothing back.
     #[allow(clippy::too_many_arguments)]
-    pub async fn open_borrowed<U: Units>(
-        &self,
+    pub async fn open_borrowed<'n, U: Units>(
+        &'n self,
         key: UnitKey,
         arrived: Arrived,
         principal: &PrincipalId,
-        post: &'_ NodeEndPost,
+        post: &'n NodeEndPost,
         units: &U,
         history: Option<crate::root::kernel::PinnedHistory>,
         audit_kind: OpClassId,
-    ) -> Option<(busbar_kernel::teller::SessionOpen, UnitCtx, SessionSlot<'_>)> {
+    ) -> Option<(busbar_kernel::teller::SessionOpen, UnitCtx, SessionSlot<'n>)> {
         self.sweep(arrived);
         if self.journal_refusal().is_some() {
             return None;
@@ -771,6 +783,7 @@ impl Node {
         };
         let mut occupied = Occupied {
             node: self,
+            post: Some(post),
             slot: Arc::clone(&slot),
             arrived,
             op_class: audit_kind,
@@ -956,6 +969,7 @@ impl Node {
                 // the case where it does not finish.
                 let mut occupied = Occupied {
                     node: self,
+                    post: None,
                     slot: Arc::clone(&slot),
                     arrived,
                     op_class,
@@ -1338,6 +1352,8 @@ impl Drop for LateBody {
 /// happen, so ending the unit is the sweep's job and marking is the whole of this one's.
 struct Occupied<'n> {
     node: &'n Node,
+    /// Borrowed units' facts must move with their slot if the future is cancelled before its end.
+    post: Option<&'n NodeEndPost>,
     slot: Arc<busbar_kernel::inflight::UnitSlot>,
     /// The unit's arrival, handed to the sweep with the mark.
     arrived: Arrived,
@@ -1350,12 +1366,13 @@ struct Occupied<'n> {
 /// WHAT THE DROP GUARD HANDS THE SWEEP for a unit whose end nobody reached ([`Occupied`]): where
 /// the sweep's posting lands, and what the unit's one audit record is sealed with beside it (THE
 /// DESIGN §7 U14, `BUSBAR-1.6.0.md` l.1061-1065).
-#[derive(Debug, Clone, Copy)]
 struct Lost {
     /// The unit's arrival: the window its line posts in, and the reading that closes its hold.
     arrived: Arrived,
     /// The operation class its record is sealed under.
     op_class: OpClassId,
+    /// Facts removed from the posting site at cancellation, held until the sweep retires the slot.
+    open: Option<OpenUnit>,
 }
 
 /// THE IN-FLIGHT SLOT A BORROWED SESSION HOLDS while it runs ([`Node::open_borrowed`]).
@@ -1389,6 +1406,7 @@ impl Drop for Occupied<'_> {
         if self.reached_end {
             self.node.inflight.remove(self.slot.key());
         } else {
+            let open = self.post.and_then(|post| post.take(self.slot.key()));
             self.node
                 .lost
                 .lock()
@@ -1398,6 +1416,7 @@ impl Drop for Occupied<'_> {
                     Lost {
                         arrived: self.arrived,
                         op_class: self.op_class,
+                        open,
                     },
                 );
             self.slot.mark();

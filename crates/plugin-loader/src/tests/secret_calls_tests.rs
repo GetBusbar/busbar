@@ -111,14 +111,11 @@ fn a_linked_secret_plugin_answers_and_resolves_through_the_axis() {
     assert_eq!(refused, "no linked secret module answers to 'absent'");
 }
 
-/// A dropped-in plugin answers as the linked one does, is not linked, and leaves with its set.
-#[test]
-fn a_dropped_in_secret_plugin_is_the_same_plugin_through_the_axis() {
-    environment();
+fn dropped_secret_candidate() -> Candidate {
     let path = fixture_cdylib("secret");
     let stated = rendering_of(door).expect("the door renders its Statement");
     let bytes = std::fs::read(&path).expect("the plugin's cdylib reads");
-    let candidate = Candidate::from_rendering(
+    Candidate::from_rendering(
         stated,
         None,
         Origin::Dropped {
@@ -126,7 +123,14 @@ fn a_dropped_in_secret_plugin_is_the_same_plugin_through_the_axis() {
             bytes: Arc::new(bytes),
         },
     )
-    .expect("the rendering reads back");
+    .expect("the rendering reads back")
+}
+
+/// A dropped-in plugin answers as the linked one does, is not linked, and leaves with its set.
+#[test]
+fn a_dropped_in_secret_plugin_is_the_same_plugin_through_the_axis() {
+    environment();
+    let candidate = dropped_secret_candidate();
     assert_eq!(candidate.kind, KindCode::Secret);
     let rows = SecretRows::new(dispatcher, || None);
     rows.set_dropped([candidate]);
@@ -147,6 +151,158 @@ fn a_dropped_in_secret_plugin_is_the_same_plugin_through_the_axis() {
     // RED: the set replaced by an empty one answers nothing.
     rows.set_dropped(std::iter::empty());
     assert!(!rows.answers(NAME));
+}
+
+fn unloadable_replacement(mut candidate: Candidate) -> Candidate {
+    candidate.origin = Origin::Dropped {
+        file: "secret-checker-replacement.tar.gz".to_string(),
+        bytes: Arc::new(b"this replacement is not a loadable library".to_vec()),
+    };
+    candidate
+}
+
+#[test]
+fn replacing_or_removing_a_dropped_set_retires_its_cached_checker() {
+    let candidate = dropped_secret_candidate();
+    let replacement = unloadable_replacement(candidate.clone());
+    for admitted in [false, true] {
+        let rows = SecretRows::new(dispatcher, || None);
+        let replace = |candidates: Vec<Candidate>| {
+            if admitted {
+                rows.admit_dropped(candidates)
+                    .expect("no name or sugar conflict");
+            } else {
+                rows.set_dropped(candidates);
+            }
+        };
+        replace(vec![candidate.clone()]);
+        assert_eq!(rows.check(NAME, &settings()), Ok(()));
+        replace(vec![replacement.clone()]);
+        assert!(
+            rows.open(NAME, &settings(), &unreached).is_err(),
+            "open already selects the current replacement image"
+        );
+        let error = rows
+            .check(NAME, &settings())
+            .expect_err("the current image must load, even when its Statement name is unchanged");
+        assert!(
+            error.iter().any(|e| e.contains("could not be loaded")),
+            "{error:?}"
+        );
+        replace(vec![candidate.clone()]);
+        assert_eq!(rows.check(NAME, &settings()), Ok(()));
+        replace(Vec::new());
+        assert!(!rows.answers(NAME));
+        assert_eq!(
+            rows.check(NAME, &settings()),
+            Ok(()),
+            "unknown modules remain the registry's to refuse"
+        );
+        replace(vec![replacement.clone()]);
+        assert!(
+            rows.check(NAME, &settings()).is_err(),
+            "a removed checker must not return after re-admission"
+        );
+    }
+}
+
+#[test]
+fn same_name_candidates_are_checked_using_the_exact_selected_row() {
+    let mut good = dropped_secret_candidate();
+    good.aliases.push("checker-good".into());
+    let mut bad = unloadable_replacement(good.clone());
+    bad.aliases = vec!["checker-bad".into()];
+    let rows = SecretRows::new(dispatcher, || None);
+    rows.admit_dropped([good, bad])
+        .expect("the rows state one plugin name and version");
+    assert_eq!(rows.check("checker-good", &settings()), Ok(()));
+    assert!(
+        rows.check("checker-bad", &settings()).is_err(),
+        "the alias selects its own candidate image rather than a same-name cached checker"
+    );
+}
+
+static CHECK_LOAD_GATE: (std::sync::Mutex<(bool, bool)>, std::sync::Condvar) = (
+    std::sync::Mutex::new((false, false)),
+    std::sync::Condvar::new(),
+);
+
+fn gated_checker_dispatcher() -> Arc<Dispatcher> {
+    let (lock, cv) = &CHECK_LOAD_GATE;
+    let mut state = lock.lock().unwrap();
+    if !state.0 {
+        state.0 = true;
+        cv.notify_all();
+        while !state.1 {
+            state = cv.wait(state).unwrap();
+        }
+    }
+    drop(state);
+    dispatcher()
+}
+
+struct ReleaseCheckerLoad;
+
+impl Drop for ReleaseCheckerLoad {
+    fn drop(&mut self) {
+        let (lock, cv) = &CHECK_LOAD_GATE;
+        lock.lock().unwrap().1 = true;
+        cv.notify_all();
+    }
+}
+
+#[test]
+fn a_retired_inflight_checker_load_neither_blocks_nor_repopulates_the_new_set() {
+    let candidate = dropped_secret_candidate();
+    let replacement = unloadable_replacement(candidate.clone());
+    let rows = Arc::new(SecretRows::new(gated_checker_dispatcher, || None));
+    rows.set_dropped([candidate]);
+    let release = ReleaseCheckerLoad;
+    let first = {
+        let rows = Arc::clone(&rows);
+        std::thread::spawn(move || rows.check(NAME, &settings()))
+    };
+    {
+        let (lock, cv) = &CHECK_LOAD_GATE;
+        let (state, _) = cv
+            .wait_timeout_while(
+                lock.lock().unwrap(),
+                std::time::Duration::from_secs(5),
+                |s| !s.0,
+            )
+            .unwrap();
+        assert!(state.0, "the old check reaches its loader callback");
+    }
+    // This admission happens while the old candidate is selected but not yet loaded.
+    rows.admit_dropped([replacement])
+        .expect("the replacement has no name or sugar conflict");
+    let (done_tx, done) = std::sync::mpsc::channel();
+    let second = {
+        let rows = Arc::clone(&rows);
+        std::thread::spawn(move || {
+            let _ = done_tx.send(rows.check(NAME, &settings()));
+        })
+    };
+    let current = done.recv_timeout(std::time::Duration::from_secs(5));
+    // Always release and join the old load before any outcome assertion.
+    drop(release);
+    let old_result = first.join().expect("old checker thread returns");
+    second.join().expect("current checker thread returns");
+    assert_eq!(
+        old_result,
+        Ok(()),
+        "an already-started check keeps its admitted snapshot"
+    );
+    assert!(
+        current
+            .expect("a checker load must not hold the global checker mutex")
+            .is_err(),
+        "the new set must load its replacement rather than use the old image"
+    );
+    assert!(
+        rows.check(NAME, &settings()).is_err(),
+        "the late old load must not republish its checker into the new set"
+    );
 }
 
 /// RED: a door of another kind is refused on the secret axis.
