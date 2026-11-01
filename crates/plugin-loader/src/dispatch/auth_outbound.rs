@@ -274,6 +274,7 @@ impl Lend {
                     name: take(f.name),
                     value: Secret::new(take(f.value)),
                     sensitive: f.flags & FIELD_SENSITIVE != 0,
+                    query: f.flags & busbar_contract::abi::auth::FIELD_QUERY != 0,
                     require_secure,
                 })
                 .collect(),
@@ -559,4 +560,4 @@ impl Fielding for Pending<FieldsIn, FieldsOut, Asked> {
 
 #[cfg(test)]
 #[path = "tests/auth_outbound_tests.rs"]
-mod tests;
+pub(crate) mod tests;

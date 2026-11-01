@@ -942,6 +942,7 @@ mod outbound {
                 name: b"authorization".to_vec(),
                 value: Secret::new(b"Bearer k".to_vec()),
                 sensitive: false,
+                query: false,
                 require_secure: false,
             }]))
         );

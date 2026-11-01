@@ -677,6 +677,8 @@ pub struct AuthField {
     /// `abi::auth::FIELD_SENSITIVE`, as the plugin stated it: the h2 encoding the field asks for.
     /// Logging never reads it: every auth field's value is withheld, marked or not.
     pub sensitive: bool,
+    /// `abi::auth::FIELD_QUERY`: append to the request target, never a header.
+    pub query: bool,
     /// The credential requires host-secured delivery; never discard this before opening.
     pub require_secure: bool,
 }
@@ -689,6 +691,7 @@ impl std::fmt::Debug for AuthField {
             .field("name", &String::from_utf8_lossy(&self.name))
             .field("value", &"<redacted>")
             .field("sensitive", &self.sensitive)
+            .field("query", &self.query)
             .field("require_secure", &self.require_secure)
             .finish()
     }
@@ -699,11 +702,44 @@ impl PartialEq for AuthField {
         self.name == other.name
             && self.value == other.value
             && self.sensitive == other.sensitive
+            && self.query == other.query
             && self.require_secure == other.require_secure
     }
 }
 
 impl Eq for AuthField {}
+
+impl AuthField {
+    /// Encode a query pair for the host connector, retaining secret ownership until handed on.
+    pub fn query_pair<S: crate::plugin::KernelSeal + ?Sized>(&self, seal: &S) -> Secret<Vec<u8>> {
+        fn append(out: &mut Vec<u8>, bytes: &[u8]) {
+            const HEX: &[u8; 16] = b"0123456789ABCDEF";
+            for &byte in bytes {
+                if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
+                    out.push(byte);
+                } else {
+                    out.extend_from_slice(&[
+                        b'%',
+                        HEX[usize::from(byte >> 4)],
+                        HEX[usize::from(byte & 15)],
+                    ]);
+                }
+            }
+        }
+        let value = self.value.expose(seal);
+        let mut pair = Vec::with_capacity(
+            self.name
+                .len()
+                .saturating_add(value.len())
+                .saturating_mul(3)
+                .saturating_add(1),
+        );
+        append(&mut pair, &self.name);
+        pair.push(b'=');
+        append(&mut pair, value);
+        Secret::new(pair)
+    }
+}
 
 /// One `fields`' answer.
 #[derive(Debug, Clone, PartialEq, Eq)]

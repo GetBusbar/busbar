@@ -1282,6 +1282,8 @@ impl EgressFarEnd<'_> {
             } else if busbar_contract::abi::host::conn::connector::is_within_field(name) {
                 pin = Some(value.clone());
                 false
+            } else if busbar_contract::conn::is_sealed_query_field(name) {
+                false
             } else {
                 true
             }
@@ -1425,10 +1427,17 @@ impl EgressFarEnd<'_> {
             request.fields.len() + auth.len() + defaults.len(),
         ));
         // The auth fields FIRST, then the plane's: 1.5.5's egress header order.
-        head.0.extend(auth.iter().map(|f| {
+        head.0.extend(auth.iter().filter(|f| !f.query).map(|f| {
             (
                 String::from_utf8_lossy(&f.name).into_owned(),
                 f.value.expose(&crate::seal::lend()).clone(),
+            )
+        }));
+        head.0.extend(auth.iter().filter(|f| f.query).map(|f| {
+            (
+                busbar_contract::conn::SEALED_QUERY_FIELD.to_owned(),
+                f.query_pair(&crate::seal::lend())
+                    .into_exposed(&crate::seal::lend()),
             )
         }));
         // A plane field named like an auth field never doubles it: the auth binding's stands.
@@ -1436,8 +1445,13 @@ impl EgressFarEnd<'_> {
             request
                 .fields
                 .iter()
-                .filter(|(n, _)| !auth.iter().any(|f| f.name.eq_ignore_ascii_case(n)))
+                .filter(|(n, _)| {
+                    !auth
+                        .iter()
+                        .any(|f| !f.query && f.name.eq_ignore_ascii_case(n))
+                })
                 .filter(|(n, _)| !busbar_contract::conn::is_sealed_fields_field(n))
+                .filter(|(n, _)| !busbar_contract::conn::is_sealed_query_field(n))
                 .map(|(n, v)| (String::from_utf8_lossy(n).into_owned(), v.clone())),
         );
         // The framer's own lines last, as 1.5.5's client added its defaults after every field the
@@ -1448,7 +1462,9 @@ impl EgressFarEnd<'_> {
                 .iter()
                 .filter(|(n, _)| {
                     !n.eq_ignore_ascii_case(CONTENT_LENGTH)
-                        && !auth.iter().any(|f| f.name.eq_ignore_ascii_case(n))
+                        && !auth
+                            .iter()
+                            .any(|f| !f.query && f.name.eq_ignore_ascii_case(n))
                 })
                 .map(|(n, v)| (String::from_utf8_lossy(n).into_owned(), v.clone())),
         );
@@ -1458,6 +1474,7 @@ impl EgressFarEnd<'_> {
         // that name was dropped above: only the host names what is sealed.
         let sealed: Vec<String> = auth
             .iter()
+            .filter(|f| !f.query)
             .map(|f| String::from_utf8_lossy(&f.name).to_ascii_lowercase())
             .collect();
         if !sealed.is_empty() {

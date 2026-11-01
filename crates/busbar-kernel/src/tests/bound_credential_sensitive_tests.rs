@@ -25,6 +25,7 @@ impl OutboundAuth for Presenting {
             name: b"authorization".to_vec(),
             value: Secret::new(VALUE.to_vec()),
             sensitive: true,
+            query: false,
             require_secure: self.require_secure,
         }]))
     }

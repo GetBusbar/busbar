@@ -8,7 +8,11 @@ use crate::abi::mechanism::extensions;
 /// An opening Emit input's credential field names; never a wire field.
 pub const EXT_SENSITIVE_FIELDS: &str = "fields.sensitive";
 
-/// The immutable header-name classification of one outbound request head. No values cross here.
+/// The request-target pseudo-field classified by the sensitive-field extension.
+pub const REQUEST_TARGET_FIELD: &str = ":path";
+
+/// The immutable field-name classification of one outbound request head. `:path` identifies an
+/// auth query credential in the target; every other name is an ordinary header. No values cross here.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SensitiveFields(Vec<String>);
 
@@ -16,11 +20,12 @@ impl SensitiveFields {
     /// Normalize the host's credential field names, independently of whether sealing is offered.
     ///
     /// # Errors
-    /// A name is not an HTTP header token.
+    /// A name is neither an HTTP header token nor the request target's `:path` field.
     pub fn new(names: Vec<String>) -> Result<Self, &'static str> {
         let mut normalized = Vec::new();
         for name in names {
-            if !crate::header::is_header_name_token(name.as_bytes()) {
+            if name != REQUEST_TARGET_FIELD && !crate::header::is_header_name_token(name.as_bytes())
+            {
                 return Err("a sensitive field name is not a header token");
             }
             let name = name.to_ascii_lowercase();
@@ -140,5 +145,17 @@ mod tests {
         trailing.push(0);
         assert!(SensitiveFields::decode(&trailing).is_err());
         assert!(SensitiveFields::new(vec!["bad:name".into()]).is_err());
+    }
+
+    #[test]
+    fn only_the_target_pseudo_field_can_be_classified_sensitive() {
+        let fields = SensitiveFields::new(vec![":path".into(), "x-key".into()]).unwrap();
+        assert_eq!(
+            SensitiveFields::from_extensions(&fields.extensions().unwrap()).unwrap(),
+            Some(fields)
+        );
+        for other in [":authority", ":method", ":scheme", ":status"] {
+            assert!(SensitiveFields::new(vec![other.into()]).is_err());
+        }
     }
 }

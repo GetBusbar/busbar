@@ -45,7 +45,7 @@ pub struct ConnId(pub u64);
 /// What opening a connection asks for: where, the head fields and body to open with (a framed
 /// transport sends them as its first message; a raw byte stream takes none), and how long the open
 /// may take.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Default, PartialEq, Eq)]
 pub struct OpenDesc<'a> {
     /// The target, as the operator's settings spell it (the need's `target_from`).
     pub target: &'a str,
@@ -77,6 +77,22 @@ pub struct OpenDesc<'a> {
     /// applies to this open and to no other; an open whose transport needs no such registration
     /// ignores it.
     pub unit: u64,
+}
+
+impl std::fmt::Debug for OpenDesc<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OpenDesc")
+            .field("target", &self.target)
+            .field("fields", &"<redacted>")
+            .field("body", &"<redacted>")
+            .field("timeout_ms", &self.timeout_ms)
+            .field("method", &self.method)
+            .field("head_target", &"<redacted>")
+            .field("within", &self.within)
+            .field("member", &self.member)
+            .field("unit", &self.unit)
+            .finish()
+    }
 }
 
 /// What a piece a connection delivered carries.
@@ -639,6 +655,17 @@ impl std::fmt::Debug for ConnAuth {
 /// (`abi::transport::EXT_SEALED_VALUES`), hands the framer filler for those values and splices the
 /// real bytes into its output only where the host secures the connection; no wire ever carries it.
 pub const SEALED_FIELDS_FIELD: &str = "busbar-sealed-fields";
+
+/// One host-owned auth query pair, percent-encoded as `name=value`. Repeated entries retain
+/// order and duplicate names. The connector removes these before framing and appends them to
+/// the request target under the same credential custody as [`SEALED_FIELDS_FIELD`].
+pub const SEALED_QUERY_FIELD: &str = "busbar-sealed-query";
+
+/// Whether a field carries the host's auth query metadata, never a wire header.
+#[must_use]
+pub fn is_sealed_query_field(name: &[u8]) -> bool {
+    name.eq_ignore_ascii_case(SEALED_QUERY_FIELD.as_bytes())
+}
 
 /// Whether the field `name` is [`SEALED_FIELDS_FIELD`] (a field name compares case-insensitively).
 #[must_use]

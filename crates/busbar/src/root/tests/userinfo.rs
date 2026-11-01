@@ -94,6 +94,7 @@ impl OutboundAuth for Answers {
             name: self.0.to_vec(),
             value: Secret::new(b"k".to_vec()),
             sensitive: true,
+            query: false,
             require_secure: false,
         }]))
     }
@@ -167,4 +168,23 @@ fn a_token_posts_head_is_led_by_the_basic_value_unless_it_names_authorization() 
     assert!(read
         .leading(&[("Authorization", b"Bearer t".as_slice())])
         .is_none());
+}
+
+#[test]
+fn an_authorization_query_does_not_displace_the_basic_header() {
+    let basic = UserinfoBasic::of("https://user:pass@api.example.com").unwrap();
+    let query = AuthField {
+        name: b"Authorization".to_vec(),
+        value: Secret::new(b"query-key".to_vec()),
+        sensitive: true,
+        query: true,
+        require_secure: true,
+    };
+    let Fields::Ready(fields) = basic.lead(Fields::Ready(vec![query])) else {
+        panic!("a ready answer stays ready");
+    };
+    assert_eq!(fields.len(), 2);
+    assert!(!fields[0].query);
+    assert_eq!(fields[0].name, b"authorization");
+    assert!(fields[1].query && fields[1].require_secure);
 }
