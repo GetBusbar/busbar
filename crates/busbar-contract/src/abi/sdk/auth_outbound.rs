@@ -703,6 +703,10 @@ impl<T: VerifyPlugin + OutboundPlugin> Life for Both<T> {
         <T as OutboundPlugin>::open(settings, secrets, generation).map(Both)
     }
 
+    fn extensions(&self) -> Vec<u8> {
+        crate::abi::sdk::auth_door::carrier_extensions(&self.0)
+    }
+
     fn refresh(
         &self,
         settings: &[u8],

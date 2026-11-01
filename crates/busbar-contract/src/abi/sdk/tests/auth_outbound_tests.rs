@@ -264,7 +264,7 @@ fn cross<I, O>(op: Option<RawOp>, instance: *mut std::ffi::c_void, i: &I, o: &mu
         .outcome()
 }
 
-fn opened(t: &Ops) -> *mut std::ffi::c_void {
+fn open_answer(t: &Ops) -> OpenOut {
     let input = OpenIn {
         head: head::<OpenIn>(life::OPEN),
         host: ptr::null(),
@@ -283,6 +283,27 @@ fn opened(t: &Ops) -> *mut std::ffi::c_void {
     let o = cross(t.head.open, ptr::null_mut(), &input, &mut out);
     assert_eq!(o, Outcome::Ready);
     assert!(!out.instance.is_null());
+    out
+}
+
+fn release_reply(t: &Ops, instance: *mut std::ffi::c_void, reply: &OutHead) {
+    if reply.lease == 0 {
+        return;
+    }
+    let input = crate::abi::mechanism::lifecycle::ReleaseIn {
+        head: head::<crate::abi::mechanism::lifecycle::ReleaseIn>(life::RELEASE),
+        lease: reply.lease,
+    };
+    let mut out = out_head(size_of::<OutHead>());
+    assert_eq!(
+        cross(t.head.release, instance, &input, &mut out),
+        Outcome::Ready
+    );
+}
+
+fn opened(t: &Ops) -> *mut std::ffi::c_void {
+    let out = open_answer(t);
+    release_reply(t, out.instance, &out.head);
     out.instance
 }
 
@@ -843,6 +864,10 @@ fn a_stray_field_flag_is_fault() {
 struct Sig;
 
 impl VerifyPlugin for Sig {
+    fn carriers(&self) -> Option<Vec<String>> {
+        Some(vec!["x-sig".into()])
+    }
+
     fn validate(settings: &[u8]) -> Result<(), crate::abi::sdk::life::Refusal> {
         crate::abi::sdk::auth_door::validate_by_opening::<Self>(settings)
     }
@@ -894,7 +919,61 @@ const BOTH: &AuthTail = &with_inbound(outbound_tail(0, STYLES), AuthPoints::HEAD
 
 mod both {
     use super::*;
-    crate::auth_door!(verify_and_outbound: Sig, with_tail(statement("sig", "1.0.0", 8), BOTH));
+    const CARRIERS: &[crate::abi::mechanism::door::MarkWord] = &[
+        crate::abi::sdk::auth_door::carrier("x-sig"),
+        crate::abi::sdk::auth_door::carrier("x-unused"),
+    ];
+    crate::auth_door!(verify_and_outbound: Sig, with_tail(
+        crate::abi::mechanism::door::Statement {
+            mark_words: CARRIERS.as_ptr(),
+            mark_words_len: CARRIERS.len(),
+            ..statement("sig", "1.0.0", 8)
+        }, BOTH
+    ));
+}
+
+#[test]
+fn combined_door_leases_instance_carriers_on_open_and_refresh() {
+    use crate::abi::mechanism::extensions;
+    use crate::abi::mechanism::lifecycle::RefreshIn;
+    let t = ops_of(both::door);
+    let opened = open_answer(t);
+    // Exercise OPEN's instance move and another allocation before reading its leased bytes.
+    let other = open_answer(t);
+    let selected = |head: &OutHead| {
+        assert_ne!(head.lease, 0);
+        assert_eq!(head.extensions.fmt, BLOB_OCTETS);
+        // SAFETY: the successful reply keeps these bytes alive until release_reply.
+        let bytes = unsafe { std::slice::from_raw_parts(head.extensions.ptr, head.extensions.len) };
+        extensions::get(bytes, crate::abi::auth::EXT_CARRIERS)
+            .unwrap()
+            .to_vec()
+    };
+    assert_eq!(selected(&opened.head), br#"["x-sig"]"#);
+    release_reply(t, opened.instance, &opened.head);
+    release_reply(t, other.instance, &other.head);
+    let refresh = RefreshIn {
+        head: head::<RefreshIn>(life::REFRESH),
+        generation: 2,
+        settings: blob(b"{}", BLOB_JSON, 0),
+        secrets: ptr::null(),
+        secrets_len: 0,
+    };
+    let mut out = out_head(size_of::<OutHead>());
+    assert_eq!(
+        cross(t.head.refresh, opened.instance, &refresh, &mut out),
+        Outcome::Ready
+    );
+    assert_eq!(selected(&out), br#"["x-sig"]"#);
+    release_reply(t, opened.instance, &out);
+    for instance in [opened.instance, other.instance] {
+        let input = head::<InHead>(life::CLOSE);
+        let mut out = out_head(size_of::<OutHead>());
+        assert_eq!(
+            cross(t.head.close, instance, &input, &mut out),
+            Outcome::Ready
+        );
+    }
 }
 
 /// THE COMBINED DOOR (`auth_door!(verify_and_outbound: ..)`): one instance verifies inbound and

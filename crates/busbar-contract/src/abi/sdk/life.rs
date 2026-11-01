@@ -433,6 +433,12 @@ pub trait Life: Send + Sync + Sized + 'static {
     /// Why it will not open.
     fn open(settings: &[u8], secrets: &[&[u8]], generation: u64) -> Result<Self, Refusal>;
 
+    /// Instance metadata carried in successful OPEN and REFRESH reply extensions. The SDK leases
+    /// these bytes until the host has copied and released the reply; an empty blob states none.
+    fn extensions(&self) -> Vec<u8> {
+        Vec::new()
+    }
+
     /// `open` over the host tables the call hands it (`OpenIn.host`; `None` when none): what the
     /// `open` slot calls. The default is [`Life::open`]; a kind whose instance keeps the tables
     /// from its first moment (the store's) states it.
@@ -610,9 +616,13 @@ fn entry(counted: Option<Counted>) -> MetricEntry {
     }
 }
 
-/// Put what `h`'s instance raises ([`Life::flagged`]) in `head`'s envelope as its one declared
-/// diagnostic, held by the instance until its next lifecycle op; nothing when it raises none.
+/// Lease the instance's metadata and report its one declared diagnostic, when present.
 fn raise<L: Life>(h: &Held<L>, head: &mut OutHead) {
+    head.extensions = h.leases.blob(
+        head,
+        h.life.extensions(),
+        crate::abi::mechanism::call::BLOB_OCTETS,
+    );
     let Some(flag) = h.life.flagged() else {
         return;
     };

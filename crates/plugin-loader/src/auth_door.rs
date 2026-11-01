@@ -31,7 +31,7 @@
 
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 use std::time::Duration;
@@ -53,7 +53,7 @@ use busbar_contract::auth_calls::{
 
 use crate::dispatch::call::{Answering, Pending, Ticketed};
 use crate::dispatch::kinds::auth::{Auth, AuthFacts};
-use crate::dispatch::lifecycle::{lend, lend_opt, open_frame, validate_call, why};
+use crate::dispatch::lifecycle::{close, lend, lend_opt, open_frame, release, validate_call, why};
 use crate::dispatch::{
     in_head, now_ns, out_head, Diagnostic, Dispatcher, Done, Dropped, EnvelopeSink, Frame, InFrame,
     Metric, OutFrame, Plugin,
@@ -603,6 +603,8 @@ pub struct AuthInstance {
     shared: Arc<Shared>,
     sink: AuthSink,
     facts: AuthFacts,
+    carriers: Mutex<Vec<String>>,
+    metadata_valid: AtomicBool,
     // settings-leak-lint: allow — NON-PROJECTION engine type: the settings bytes this instance was
     // opened over, re-sent on `refresh`. No `Serialize`; the hand-written `Debug` below prints the
     // plugin and the label only (`an_instance_debug_never_shows_its_settings_or_secrets`).
@@ -691,6 +693,60 @@ impl std::fmt::Debug for KeptSecrets {
     }
 }
 
+/// Copy the selected carrier names while the READY reply still owns its extension bytes.
+fn instance_carriers(
+    blob: Blob,
+    previous: &[String],
+    facts: &AuthFacts,
+) -> Result<Vec<String>, String> {
+    use busbar_contract::abi::auth::{EXT_CARRIERS, FACT_DEFAULT_INBOUND_STYLE};
+    use busbar_contract::abi::mechanism::extensions;
+
+    let invalid = || "auth instance returned invalid carrier metadata".to_string();
+    if blob.fmt == BLOB_ABSENT && blob.len == 0 {
+        return Ok(previous.to_vec());
+    }
+    if blob.fmt != BLOB_OCTETS || (blob.len != 0 && blob.ptr.is_null()) {
+        return Err(invalid());
+    }
+    // SAFETY: the validated READY reply owns these bytes until its lease is released by the caller.
+    let bytes = unsafe { crate::dispatch::plugin::blob_bytes(blob) };
+    let mut consumed = 0;
+    let mut selection = None;
+    for (key, value) in extensions::entries(bytes) {
+        consumed += 2 + key.len() + 4 + value.len();
+        if key != EXT_CARRIERS.as_bytes() {
+            continue;
+        }
+        if selection.is_some() {
+            return Err(invalid());
+        }
+        let names: Vec<String> = serde_json::from_slice(value).map_err(|_| invalid())?;
+        let mut selected = Vec::new();
+        for name in names {
+            if !facts
+                .carriers
+                .iter()
+                .any(|declared| declared.eq_ignore_ascii_case(&name))
+            {
+                return Err(invalid());
+            }
+            let name = name.to_ascii_lowercase();
+            if !selected.contains(&name) {
+                selected.push(name);
+            }
+        }
+        if selected.is_empty() && facts.facts & FACT_DEFAULT_INBOUND_STYLE != 0 {
+            return Err(invalid());
+        }
+        selection = Some(selected);
+    }
+    if consumed != bytes.len() {
+        return Err(invalid());
+    }
+    Ok(selection.unwrap_or_else(|| previous.to_vec()))
+}
+
 impl AuthInstance {
     /// OPEN `plugin` (bound to `dispatcher` with `sink`) with `settings` (one JSON document) and the
     /// resolved `secrets`, after `validate`, as the host's instance `label`.
@@ -723,12 +779,25 @@ impl AuthInstance {
         if called.outcome != Outcome::Ready {
             return Err(why(called.outcome, called.error));
         }
+        let carriers = instance_carriers(f.out.head.extensions, &facts.carriers, &facts);
+        release(&plugin, called.lease);
+        let carriers = match carriers {
+            Ok(carriers) => carriers,
+            Err(error) => {
+                // OPEN installed a live instance. Return its output lease before CLOSE drops it.
+                close(&plugin);
+                return Err(error);
+            }
+        };
         drop(blobs);
         // READY, as boot runs it for every door instance (`boot::open_ready`): what the instance
         // must do on the network before it serves (an IdP's discovery and key warm-up through its
         // declared needs), awaited on a ticket; a door that states none is not called. A refusal
         // refuses the open in the plugin's words.
-        plugin.ready(&dispatcher, crate::dispatch::ready::READY_DEADLINE)?;
+        if let Err(error) = plugin.ready(&dispatcher, crate::dispatch::ready::READY_DEADLINE) {
+            close(&plugin);
+            return Err(error);
+        }
         // ITS TICK SCHEDULE, on the runtime the composition runs on, as an outbound instance's: it
         // shares the instance (a `Plugin` is `!Clone`).
         let plugin = Arc::new(plugin);
@@ -742,6 +811,8 @@ impl AuthInstance {
             }),
             sink,
             facts,
+            carriers: Mutex::new(carriers),
+            metadata_valid: AtomicBool::new(true),
             settings: settings.to_vec(),
             secrets,
             generation: AtomicU64::new(1),
@@ -806,7 +877,10 @@ impl AuthCalls for AuthInstance {
     }
 
     fn carriers(&self) -> Vec<String> {
-        self.facts.carriers.clone()
+        self.carriers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 
     fn issued_shape(&self) -> Option<busbar_contract::auth_calls::IssuedShape> {
@@ -818,6 +892,9 @@ impl AuthCalls for AuthInstance {
     }
 
     fn verify_now(&self, request: &VerifyRequest) -> Option<VerifyAnswer> {
+        if !self.metadata_valid.load(Ordering::Acquire) {
+            return Some(Verified::Failed.into());
+        }
         let presented = request.credential.is_some();
         let plugin = &self.shared.plugin;
         // No seal lent to the dispatcher: secret material is not revealed, and the verify fails.
@@ -851,6 +928,9 @@ impl AuthCalls for AuthInstance {
     }
 
     fn verify(&self, request: VerifyRequest) -> Box<dyn Verifying> {
+        if !self.metadata_valid.load(Ordering::Acquire) {
+            return Box::new(Settled(Some(Verified::Failed.into())));
+        }
         let sh = &self.shared;
         let p = &sh.plugin;
         if p.max_inflight() != 0 && p.inflight() >= p.max_inflight() {
@@ -916,9 +996,32 @@ impl AuthCalls for AuthInstance {
             },
             out_head(),
         );
+        let was_valid = self.metadata_valid.swap(false, Ordering::AcqRel);
         let called = self.shared.plugin.call(lc::REFRESH, &mut f);
         if called.outcome != Outcome::Ready {
+            // A refusal/failure leaves the previous selection in force. FAULT (including a
+            // ticket-less PENDING) gives no trustworthy completed refresh to serve afterwards.
+            self.metadata_valid.store(
+                was_valid && matches!(called.outcome, Outcome::Refused | Outcome::Failed),
+                Ordering::Release,
+            );
             return Err(why(called.outcome, called.error));
+        }
+        let current = self.carriers();
+        let carriers = instance_carriers(f.out.extensions, &current, &self.facts);
+        release(&self.shared.plugin, called.lease);
+        match carriers {
+            Ok(carriers) => {
+                *self
+                    .carriers
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = carriers;
+                self.metadata_valid.store(true, Ordering::Release);
+            }
+            Err(error) => {
+                self.metadata_valid.store(false, Ordering::Release);
+                return Err(error);
+            }
         }
         Ok(self.sink.0.flushed.load(Ordering::Acquire))
     }
@@ -1020,3 +1123,7 @@ pub mod login;
 #[cfg(test)]
 #[path = "tests/auth_door_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "tests/auth_carriers_tests.rs"]
+mod carrier_tests;

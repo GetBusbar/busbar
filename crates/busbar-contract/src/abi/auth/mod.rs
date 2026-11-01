@@ -697,6 +697,14 @@ pub fn scope_extensions(scope: Option<&[u8]>) -> Vec<u8> {
 /// value is printed, and it is zeroised after encode (an undeclared sensitivity is sensitive, owner
 /// ruling 2026-10-27).
 pub const FIELD_SENSITIVE: u32 = 1;
+
+/// An auth instance's carrier selection in successful OPEN and REFRESH reply extensions: a JSON
+/// list of field names, drawn from its Statement's carrier marks. An absent key uses the
+/// Statement's carriers at OPEN and keeps the current selection at REFRESH; an instance may
+/// narrow that union for its configured variant. The host copies the selection before releasing
+/// the reply; changing it does not rewrite the input already owned by an in-flight verify.
+pub const EXT_CARRIERS: &str = "auth.carriers";
+
 /// [`FieldSpan::flags`]: this field is a QUERY PARAMETER, not a header. The host's framer appends
 /// it to the request target (`name=value`, each percent-encoded outside RFC 3986's unreserved set,
 /// after any query the target already has, in the order written) and never sends it as a header.

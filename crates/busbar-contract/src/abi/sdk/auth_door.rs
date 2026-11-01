@@ -368,6 +368,13 @@ pub trait VerifyPlugin: Send + Sync + Sized + 'static {
     /// caches nothing.
     const CACHE_FAMILY: Option<u32> = None;
 
+    /// The carrier fields this configured instance reads, selected from its Statement's carrier
+    /// marks. `None` uses all those marks. The SDK advertises a selection only after successful
+    /// OPEN or REFRESH; a host rejects a name outside the declared union.
+    fn carriers(&self) -> Option<Vec<String>> {
+        None
+    }
+
     /// `validate`: whether `settings` (one JSON document) are this plugin's, refused in the words
     /// and with the outcome boot's `open` would refuse them with, so `busbar --validate` refuses
     /// what boot refuses (boot runs it before every `open`, too). It is handed NO secrets, so it
@@ -454,6 +461,13 @@ pub fn validate_by_opening<T: VerifyPlugin>(settings: &[u8]) -> Result<(), Refus
     T::open_refusing(settings, &[]).map(drop)
 }
 
+pub(crate) fn carrier_extensions(plugin: &impl VerifyPlugin) -> Vec<u8> {
+    plugin.carriers().map_or_else(Vec::new, |carriers| {
+        let value = serde_json::to_vec(&carriers).expect("carrier names serialize as JSON");
+        crate::abi::mechanism::extensions::encode(&[(crate::abi::auth::EXT_CARRIERS, &value)])
+    })
+}
+
 /// What [`VerifyPlugin::open`]'s default answers: the plugin implements neither open.
 pub const OPENS_NOTHING: &str =
     "the auth plugin implements neither `open` nor `open_refusing`: it cannot open";
@@ -497,6 +511,10 @@ impl<T: VerifyPlugin> Life for Verifier<T> {
 
     fn open(settings: &[u8], secrets: &[&[u8]], _: u64) -> Result<Self, Refusal> {
         T::open_refusing(settings, secrets).map(Verifier)
+    }
+
+    fn extensions(&self) -> Vec<u8> {
+        carrier_extensions(&self.0)
     }
 
     fn refresh(&self, settings: &[u8], secrets: &[&[u8]], _: u64) -> Result<Refreshed, Refusal> {
