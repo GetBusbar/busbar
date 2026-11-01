@@ -34,6 +34,38 @@ SRC='https://github.com/GetBusbar/busbar'
 # The [patch] spelling of the same repo (busbar-release render.rs CONTRACT_PATCH_GIT).
 PATCH_SRC='https://www.github.com/GetBusbar/busbar'
 
+semver_order() {
+  # SemVer precedence: releases follow prereleases; build metadata has no precedence.
+  python3 -I - "$1" "$2" <<'PY'
+import re
+import sys
+
+def precedence(version):
+    match = re.fullmatch(
+        r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)"
+        r"(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?"
+        r"(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?", version)
+    if match is None:
+        raise ValueError(f"not a semantic version: {version!r}")
+    prerelease = match[4]
+    identifiers = []
+    for part in prerelease.split(".") if prerelease is not None else []:
+        if part.isdigit():
+            if len(part) > 1 and part[0] == "0":
+                raise ValueError(f"leading zero in prerelease: {version!r}")
+            identifiers.append((0, int(part)))
+        else:
+            identifiers.append((1, part))
+    return tuple(map(int, match.group(1, 2, 3))), prerelease is None, tuple(identifiers)
+
+try:
+    incoming, recorded = map(precedence, sys.argv[1:])
+except ValueError as error:
+    sys.exit(f"::error::decide: {error}")
+print("older" if incoming < recorded else "equal" if incoming == recorded else "newer")
+PY
+}
+
 decide() {
   local in_sha="${1-}" in_ver="${2-}" rec_sha="" rec_ver=""
   in_ver="${in_ver#v}"
@@ -49,11 +81,16 @@ decide() {
     say skip "no incoming busbar commit (recorded=${rec_sha:-none}) -> nothing to compare"
   elif [ "$in_sha" = "$rec_sha" ]; then
     say skip "incoming busbar ${in_sha} IS the recorded pin -> nothing to do"
-  elif [ -n "$in_ver" ] && [ -n "$rec_ver" ] && [ "$in_ver" != "$rec_ver" ] \
-       && [ "$(printf '%s\n%s\n' "$rec_ver" "$in_ver" | sort -V | tail -1)" = "$rec_ver" ]; then
-    say skip "incoming busbar ${in_ver} is older than the recorded ${rec_ver} -> a pin never moves backwards"
   else
-    say cut "upstream moved: busbar ${in_ver:-?} at ${in_sha}, recorded pin ${rec_ver:-none} at ${rec_sha:-none} -> cut"
+    local order=""
+    if [ -n "$in_ver" ] && [ -n "$rec_ver" ]; then
+      order="$(semver_order "$in_ver" "$rec_ver")" || return 1
+    fi
+    if [ "$order" = older ]; then
+      say skip "incoming busbar ${in_ver} is older than the recorded ${rec_ver} -> a pin never moves backwards"
+    else
+      say cut "upstream moved: busbar ${in_ver:-?} at ${in_sha}, recorded pin ${rec_ver:-none} at ${rec_sha:-none} -> cut"
+    fi
   fi
 }
 

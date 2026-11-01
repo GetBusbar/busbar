@@ -6,7 +6,7 @@
     python3 scripts/conformance/sync.py --write    # write conformance/manifest.json
 
     # A RELEASE (docs/design/conformance-release.md): only ModernCI's outputs count.
-    python3 scripts/conformance/sync.py --release <V> --commit <T> --from-modernci <DIR> [--write | --out FILE]
+    python3 scripts/conformance/sync.py --release <V> --commit <T> --from-modernci <DIR> [--testkit <K>] [--write | --out FILE]
 
 A pure function of the two inputs (generated_at is the latest verdict's), so the same inputs always
 give the same bytes. It replaces `cargo xtask gate conformance-sync --write`, deleted with the gate
@@ -25,7 +25,8 @@ A RELEASE render (`--release`) reads no file of conformance/verdicts/. It reads 
 scripts/release/conformance_gate.py fetched from ModernCI: one `<owner>/<name>/receipt.json` per repo
 (what ModernCI's `artifact` answered) with that check's `verdicts/<id>.json` beside it. Every
 registered suite is rendered; a suite's verdict counts only when its stamp names the suite's registry
-`repo`, the commit it ships at (T for busbar, the plugin's shipped pin P), core pin T, the run id and
+`repo`, the commit it ships at (T for busbar, the plugin's shipped pin P), core pin T (or K for
+plugins when --testkit is supplied), the run id and
 the ModernCI move of that commit. Anything else is `not-run`, with the reason. The manifest-level
 `commit` is T. The bytes are canonical: sorted keys, LF.
 """
@@ -89,6 +90,8 @@ def read_registry(path):
 
 def verdict_problem(v, sid):
     """Why `v`, filed under `sid`, breaks verdict.schema.json's rules; None when it keeps them."""
+    if isinstance(v, ValueError):
+        return f"not JSON: {v}"
     if not isinstance(v, dict):
         return "the verdict is not a JSON object"
     if v.get("schema") != VERDICT_SCHEMA:
@@ -228,7 +231,7 @@ def load_fetched(directory):
                 try:
                     verdicts[f.stem] = json.loads(f.read_text())
                 except ValueError as e:
-                    verdicts[f.stem] = f"not JSON: {e}"
+                    verdicts[f.stem] = e
         out[repo] = {"receipt": rec, "verdicts": verdicts}
     return out
 
@@ -307,8 +310,11 @@ def render_release(registry_path, fetched_dir, *, release, commit, pins, excepti
         if x and e["status"] != "pass" and x.get("status") == e["status"]:
             e["reason"] = f"owner exception (signed): {x.get('reason', '')}; {e.get('reason', '')}"
         entries.append(e)
+    regenerate = f"--release {release} --commit {commit} --from-modernci <DIR>"
+    if testkit:
+        regenerate += f" --testkit {testkit}"
     doc = {
-        "_generated": BANNER.replace("--write", f"--release {release} --commit {commit} --from-modernci"),
+        "_generated": BANNER.replace("--write", regenerate),
         "commit": commit,
         "generated_at": max(stamps) if stamps else "",
         "release": release,
@@ -321,8 +327,10 @@ def render_release(registry_path, fetched_dir, *, release, commit, pins, excepti
 def release_main(argv, opts):
     root = Path(__file__).resolve().parents[2]
     rel, commit, src = opts.get("release"), opts.get("commit"), opts.get("from-modernci")
-    if not (rel and commit and src) or not SHA_RE.fullmatch(commit) or not Path(src).is_dir():
-        print("usage: sync.py --release <V> --commit <40-hex T> --from-modernci <DIR> [--write | --out FILE]",
+    testkit = opts.get("testkit")
+    if (not (rel and commit and src) or not SHA_RE.fullmatch(commit) or not Path(src).is_dir()
+            or ("testkit" in opts and (not testkit or not SHA_RE.fullmatch(testkit)))):
+        print("usage: sync.py --release <V> --commit <40-hex T> --from-modernci <DIR> [--testkit <40-hex K>] [--write | --out FILE]",
               file=sys.stderr)
         return 2
     head = subprocess.run(["git", "-C", str(root), "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
@@ -332,7 +340,7 @@ def release_main(argv, opts):
         return 1
     try:
         text = render_release(root / "conformance" / "registry.toml", src, release=rel, commit=commit,
-                              pins=shipped_pins(root), exceptions=read_exceptions(root, rel))
+                              pins=shipped_pins(root), exceptions=read_exceptions(root, rel), testkit=testkit)
     except (Refused, ValueError, KeyError) as e:
         print(f"conformance sync: REFUSED: {e}", file=sys.stderr)
         return 1
@@ -348,7 +356,7 @@ def release_main(argv, opts):
 def main(argv):
     opts, it = {}, iter(argv)
     for a in it:
-        if a in ("--release", "--commit", "--from-modernci", "--out"):
+        if a in ("--release", "--commit", "--from-modernci", "--out", "--testkit"):
             opts[a[2:]] = next(it, None)
     if opts:
         return release_main(argv, opts)
