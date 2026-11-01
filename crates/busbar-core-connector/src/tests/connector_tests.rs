@@ -1653,6 +1653,133 @@ fn a_configured_mint_endpoint_takes_loopback_plaintext_and_nothing_else_in_plain
     });
 }
 
+#[test]
+fn a_host_bind_failure_keeps_its_cause_without_echoing_the_configured_input() {
+    let cap = crate::warn_capture::WarnCapture::default();
+    tracing::subscriber::with_default(cap.clone(), || {
+        worker().block_on(async {
+            let c = literal_connector();
+            c.declare_over(OWNER, NeedId(0), "bytes").unwrap();
+            let limits = crate::listen::AcceptLimits::default();
+            assert_eq!(
+                c.listen(
+                    OWNER,
+                    NeedId(0),
+                    "user:bind-secret@127.0.0.1:1",
+                    None,
+                    limits
+                ),
+                Err(ConnError::Fault)
+            );
+            assert!(cap.contains("not an ip:port bind address"));
+            assert!(cap.contains("inbound listener bind failed"));
+            assert!(!cap.contains("bind-secret"));
+            assert!(!cap.contains("user:"));
+            c.listen(OWNER, NeedId(0), "127.0.0.1:0", None, limits)
+                .expect("a failed bind leaves the need able to retry");
+            assert_eq!(cap.count("host listener bind failed"), 1);
+            assert_eq!(cap.count("inbound listener bind failed"), 1);
+            c.forget(OWNER);
+        });
+    });
+}
+
+#[cfg(unix)]
+#[test]
+fn an_address_in_use_keeps_the_actual_host_os_cause() {
+    let cap = crate::warn_capture::WarnCapture::default();
+    tracing::subscriber::with_default(cap.clone(), || {
+        worker().block_on(async {
+            let occupied = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let address = occupied.local_addr().unwrap().to_string();
+            let c = literal_connector();
+            c.declare_over(OWNER, NeedId(0), "bytes").unwrap();
+            let limits = crate::listen::AcceptLimits::default();
+            assert_eq!(
+                c.listen(OWNER, NeedId(0), &address, None, limits),
+                Err(ConnError::Fault)
+            );
+            let cause = std::io::Error::from_raw_os_error(libc::EADDRINUSE).to_string();
+            assert!(
+                cap.contains(&cause),
+                "the actual bind error must remain diagnosable"
+            );
+            drop(occupied);
+            c.listen(OWNER, NeedId(0), &address, None, limits).unwrap();
+            c.forget(OWNER);
+        });
+    });
+}
+
+struct FailingBindCarrier {
+    inner: TestDoor,
+    fail: std::sync::atomic::AtomicBool,
+}
+
+impl FramerDoor for FailingBindCarrier {
+    fn facts(&self) -> &crate::framer::DoorFacts {
+        self.inner.facts()
+    }
+
+    fn cross(&self, call: crate::framer::Call<'_>) -> crate::framer::Crossed {
+        self.inner.cross(call)
+    }
+
+    fn side(&self) -> Option<Box<dyn crate::carrier::Side>> {
+        self.inner.side()
+    }
+
+    fn carry(
+        &self,
+        side: &dyn crate::carrier::Side,
+        resume: bool,
+        call: crate::carrier::Carry<'_>,
+    ) -> crate::framer::Crossed {
+        if matches!(call, crate::carrier::Carry::Listen(..))
+            && self.fail.swap(false, std::sync::atomic::Ordering::SeqCst)
+        {
+            return crate::framer::Crossed {
+                outcome: busbar_contract::abi::mechanism::call::Outcome::Failed,
+                error: Some(b"carrier echoed credential carrier-secret-value".to_vec()),
+            };
+        }
+        self.inner.carry(side, resume, call)
+    }
+}
+
+#[test]
+fn a_carrier_bind_failure_identifies_the_need_without_printing_its_failure_text() {
+    let cap = crate::warn_capture::WarnCapture::default();
+    tracing::subscriber::with_default(cap.clone(), || {
+        worker().block_on(async {
+            let view = View::of(vec![Entry {
+                door: Arc::new(FailingBindCarrier {
+                    inner: TestDoor::identity("bytes"),
+                    fail: std::sync::atomic::AtomicBool::new(true),
+                }),
+                alpn: Vec::new(),
+            }])
+            .unwrap();
+            let c = Connector::serving(view, loopback_literals(), None, Arc::new(|_, _| {}));
+            c.declare_over(OWNER, NeedId(0), "bytes").unwrap();
+            let limits = crate::listen::AcceptLimits::default();
+            assert_eq!(
+                c.listen(OWNER, NeedId(0), "127.0.0.1:0", None, limits),
+                Err(ConnError::Fault)
+            );
+            assert_eq!(cap.count("inbound listener bind failed"), 1);
+            assert!(cap.contains("owner=1"));
+            assert!(cap.contains("need=0"));
+            assert!(!cap.contains("carrier-secret-value"));
+            assert!(!cap.contains("carrier echoed"));
+            assert_eq!(cap.count("host listener bind failed"), 0);
+            c.listen(OWNER, NeedId(0), "127.0.0.1:0", None, limits)
+                .unwrap();
+            c.forget(OWNER);
+        });
+    });
+}
+
 /// An inbound need listens through the table: the listener is bound for the need's owner, an
 /// accepted connection is held for that owner (read and answered on the piece's stream through the
 /// table), another instance can neither accept on the need nor read the connection, and a need

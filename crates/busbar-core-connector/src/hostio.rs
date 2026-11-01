@@ -519,9 +519,24 @@ impl IoHost for HostIo {
 
     fn listen(&self, owner: u64, ticket: Ticket, bind: &str) -> IoResult<(u64, String)> {
         self.admits(ticket, |a| matches!(a, Admission::Bind(b) if b == bind))?;
-        let l = socket::listen(bind).map_err(|e| failed(&e))?;
-        let local = l.local_addr().map_err(|e| failed(&e))?;
-        let sock = reactor::register(l).map_err(|e| failed(&e))?;
+        let failed_bind = |stage: &str, error: &io::Error| {
+            // These are host parser/OS/reactor errors, before conversion into a carrier's
+            // arbitrary failure text. Never include the configured bind string.
+            tracing::warn!(
+                owner,
+                ticket_slot = ticket.slot,
+                ticket_generation = ticket.generation,
+                stage,
+                error = %error,
+                "host listener bind failed"
+            );
+            failed(error)
+        };
+        let l = socket::listen(bind).map_err(|e| failed_bind("bind", &e))?;
+        let local = l
+            .local_addr()
+            .map_err(|e| failed_bind("local address", &e))?;
+        let sock = reactor::register(l).map_err(|e| failed_bind("register", &e))?;
         let id = self.handles.make(owner, Kind::Listener(sock))?;
         self.record(ticket, Some(id), None);
         Ok((id, local.to_string()))

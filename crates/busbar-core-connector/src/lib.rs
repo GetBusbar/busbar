@@ -1477,7 +1477,17 @@ impl Connector {
             .ride_on(&door)
             .ok_or(ConnError::Refused)
             .and_then(|(framer, via)| {
-                Listening::bind(framer, &via, bind, tls, alpn, limits).map_err(|_| ConnError::Fault)
+                Listening::bind(framer, &via, bind, tls, alpn, limits).map_err(|error| {
+                    // A carrier's failure text may echo settings. The host logs its own typed
+                    // I/O cause at the producer; this boundary identifies the affected need.
+                    tracing::warn!(
+                        owner = owner.0,
+                        need = need.0,
+                        kind = ?error.kind(),
+                        "inbound listener bind failed"
+                    );
+                    ConnError::Fault
+                })
             });
         match bound {
             Ok(l) => {
