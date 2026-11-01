@@ -12,6 +12,9 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, RwLock};
 
+mod exact_debt;
+use exact_debt::ExactUsageDelta;
+
 use crate::diagnostics::{
     diag_debug, diag_warn, GOVERNANCE_KEY_RESERVED_NAMESPACE_COLLISION, LIMIT_WINDOW_UNRECOGNIZED,
 };
@@ -147,6 +150,10 @@ struct ModelCell {
 struct BudgetCell {
     group_owners: std::collections::BTreeSet<String>,
     flushing: usize,
+    /// Window identities still owned by off-lock flush snapshots.
+    flushing_windows: std::collections::BTreeMap<u64, usize>,
+    /// Both possible raw states of an unresolved correction. Ordinary mutations update both.
+    correction: Option<Box<CorrectionBranch>>,
     window_start: u64,
     /// ADMISSION count: incremented once per admitted request, NEVER refunded. This backs the
     /// `requests`-LIMIT metric, so a caller cannot escape the requests cap by hammering failing
@@ -179,8 +186,8 @@ struct BudgetCell {
     /// ([`BudgetCell::roll`]) instead of discarding it; `flush_budgets` drains them to the store
     /// under their OWN window and parks a failed one back, so a store outage across a boundary
     /// loses nothing. Empty in steady state.
-    rolled: Vec<(u64, UsageDelta)>,
-    rolled_eras: Vec<(u64, UsageDelta)>,
+    rolled: Vec<(u64, ExactUsageDelta)>,
+    rolled_eras: Vec<(u64, ExactUsageDelta)>,
     dirty: bool,
     /// Wall-clock of the last accrual or admission charge. The eviction sweep ages cells by
     /// `window_start`, but a key's own bucket and a synthesized SSO principal's bucket both live in
@@ -191,7 +198,24 @@ struct BudgetCell {
     last_touch: u64,
 }
 
+#[derive(Clone)]
+struct CorrectionBranch {
+    op_id: busbar_contract::abi::store::OpId,
+    window: u64,
+    accepted: BudgetCell,
+}
+
 impl BudgetCell {
+    /// Apply the same semantic operation to both possible states, without subtracting branches.
+    fn mutate(&mut self, mut operation: impl FnMut(&mut Self)) {
+        let mut branch = self.correction.take();
+        operation(self);
+        if let Some(branch) = branch.as_mut() {
+            operation(&mut branch.accepted);
+        }
+        self.correction = branch;
+    }
+
     fn fresh(window_start: u64) -> Self {
         Self {
             window_start,
@@ -204,101 +228,96 @@ impl BudgetCell {
     /// old window ([`BudgetCell::park`]) for the flusher to write there. The cell stays dirty while
     /// anything is parked.
     fn roll(&mut self, window: u64) {
-        let (old, unacked, eras) = (self.window_start, self.unflushed(), self.unflushed_eras());
-        let rolled = std::mem::take(&mut self.rolled);
-        let rolled_eras = std::mem::take(&mut self.rolled_eras);
-        let owners = std::mem::take(&mut self.group_owners);
-        let flushing = self.flushing;
-        *self = Self::fresh(window);
-        self.group_owners = owners;
-        self.flushing = flushing;
-        self.rolled = rolled;
-        self.rolled_eras = rolled_eras;
-        self.park(old, unacked);
-        self.park_eras(old, eras);
-        self.dirty = !self.rolled.is_empty() || !self.rolled_eras.is_empty();
+        self.mutate(|cell| {
+            let (old, unacked, eras) = (
+                cell.window_start,
+                ExactUsageDelta::of(cell, false),
+                ExactUsageDelta::of(cell, true),
+            );
+            let rolled = std::mem::take(&mut cell.rolled);
+            let rolled_eras = std::mem::take(&mut cell.rolled_eras);
+            let owners = std::mem::take(&mut cell.group_owners);
+            let flushing = cell.flushing;
+            let flushing_windows = std::mem::take(&mut cell.flushing_windows);
+            *cell = Self::fresh(window);
+            cell.group_owners = owners;
+            cell.flushing = flushing;
+            cell.flushing_windows = flushing_windows;
+            cell.rolled = rolled;
+            cell.rolled_eras = rolled_eras;
+            park_window(&mut cell.rolled, old, unacked);
+            park_window(&mut cell.rolled_eras, old, eras);
+            cell.dirty = !cell.rolled.is_empty() || !cell.rolled_eras.is_empty();
+        });
     }
 
     /// Add `delta` to what is parked under `window` (signed: a negative delta takes back counts the
     /// store already holds). An entry that nets to nothing is dropped.
     fn park(&mut self, window: u64, delta: UsageDelta) {
-        park_window(&mut self.rolled, window, delta);
+        self.mutate(|cell| {
+            park_window(
+                &mut cell.rolled,
+                window,
+                ExactUsageDelta::from_signed(&delta),
+            );
+        });
     }
 
     fn park_eras(&mut self, window: u64, delta: UsageDelta) {
-        park_window(&mut self.rolled_eras, window, delta);
+        self.mutate(|cell| {
+            park_window(
+                &mut cell.rolled_eras,
+                window,
+                ExactUsageDelta::from_signed(&delta),
+            );
+        });
     }
 
     /// The cell's counts past its last acknowledged plain-row flush.
     fn unflushed(&self) -> UsageDelta {
-        let deltas = (self.models.iter()).map(|m| (&*m.model, units_delta(&m.cur, &m.flushed)));
-        UsageDelta {
-            requests: signed(self.requests) - signed(self.flushed_requests),
-            billable_requests: signed(self.billable_requests)
-                - signed(self.flushed_billable_requests),
-            models: model_deltas(deltas),
-        }
+        ExactUsageDelta::of(self, false)
+            .signed()
+            .expect("legacy flush checks raw debt representability")
     }
 
     /// The dated row has its own acknowledged baselines: a successful plain-row write does
     /// not acknowledge a failed era-row write.
     fn unflushed_eras(&self) -> UsageDelta {
-        let mut rows: Vec<(String, std::collections::BTreeMap<String, i64>)> = (self.models.iter())
-            .filter(|m| m.era != 0)
-            .map(|m| {
-                (
-                    format!("{}{ERA_MODEL_SEP}{}", m.era, m.model),
-                    units_delta(&m.cur, &m.flushed_era),
-                )
-            })
-            .collect();
-        let fees =
-            |f: &busbar_kernel_ledger::usage::FeeEras| -> std::collections::BTreeMap<String, u64> {
-                let fee = f.dated().iter();
-                fee.map(|(era, n)| (era.to_string(), *n)).collect()
-            };
-        let (cur, flushed) = (fees(&self.fee_eras), fees(&self.flushed_fee_eras));
-        for (era, n) in units_delta(&cur, &flushed) {
-            rows.push((
-                era,
-                std::collections::BTreeMap::from([(ERA_FEE_UNIT.into(), n)]),
-            ));
-        }
-        UsageDelta {
-            requests: 0,
-            billable_requests: 0,
-            models: model_deltas(rows.iter().map(|(m, d)| (m.as_str(), d.clone()))),
-        }
+        ExactUsageDelta::of(self, true)
+            .signed()
+            .expect("legacy flush checks raw debt representability")
     }
 
     /// Accrue one response's keyed units under `model` in card era `era`, interning the pair on
     /// first sight and each unit key on first sight of that (model, era, unit).
     fn accrue(&mut self, model: &str, era: u64, units: &std::collections::BTreeMap<String, u64>) {
-        let at = self
-            .models
-            .iter()
-            .position(|m| &*m.model == model && m.era == era);
-        let cell = match at {
-            Some(i) => &mut self.models[i],
-            None => {
-                // Allocate ONLY on the first sight of a (bucket, model, era).
-                self.models.push(ModelCell {
-                    model: std::sync::Arc::from(model),
-                    era,
-                    cur: std::collections::BTreeMap::new(),
-                    flushed: std::collections::BTreeMap::new(),
-                    flushed_era: std::collections::BTreeMap::new(),
-                });
-                self.models.last_mut().expect("just pushed")
+        self.mutate(|cell| {
+            let at = cell
+                .models
+                .iter()
+                .position(|m| &*m.model == model && m.era == era);
+            let cell = match at {
+                Some(i) => &mut cell.models[i],
+                None => {
+                    // Allocate ONLY on the first sight of a (bucket, model, era).
+                    cell.models.push(ModelCell {
+                        model: std::sync::Arc::from(model),
+                        era,
+                        cur: std::collections::BTreeMap::new(),
+                        flushed: std::collections::BTreeMap::new(),
+                        flushed_era: std::collections::BTreeMap::new(),
+                    });
+                    cell.models.last_mut().expect("just pushed")
+                }
+            };
+            for (k, v) in units {
+                if *v == 0 {
+                    continue;
+                }
+                let slot = cell.cur.entry(k.clone()).or_insert(0);
+                *slot = slot.saturating_add(*v);
             }
-        };
-        for (k, v) in units {
-            if *v == 0 {
-                continue;
-            }
-            let slot = cell.cur.entry(k.clone()).or_insert(0);
-            *slot = slot.saturating_add(*v);
-        }
+        });
     }
 
     /// THE CELL, PRICED, each era at the card in force when it was earned: every (model, era)
@@ -332,6 +351,9 @@ impl BudgetCell {
     /// A segment pruned while a flush of it is still in flight is restored when that flush is
     /// acknowledged ([`BudgetCell::advance_model_baselines`]).
     fn prune_dead_models(&mut self) {
+        if self.correction.is_some() {
+            return;
+        }
         self.models.retain(|m| {
             units_total(&m.cur) != 0
                 || units_total(&m.flushed) != 0
@@ -347,37 +369,39 @@ impl BudgetCell {
     /// over (THE DESIGN §7: a refund returns the bucket actually charged; the write-behind loses no
     /// delta).
     fn advance_model_baselines(&mut self, acked: &[ModelCell], dated: bool) {
-        for s in acked {
-            let at = (self.models.iter()).position(|m| m.model == s.model && m.era == s.era);
-            match at {
-                Some(i) => {
-                    if dated {
-                        self.models[i].flushed_era = s.cur.clone();
-                    } else {
-                        self.models[i].flushed = s.cur.clone();
+        self.mutate(|cell| {
+            for s in acked {
+                let at = (cell.models.iter()).position(|m| m.model == s.model && m.era == s.era);
+                match at {
+                    Some(i) => {
+                        if dated {
+                            cell.models[i].flushed_era = s.cur.clone();
+                        } else {
+                            cell.models[i].flushed = s.cur.clone();
+                        }
                     }
+                    None if units_total(&s.cur) != 0 => {
+                        cell.models.push(ModelCell {
+                            model: s.model.clone(),
+                            era: s.era,
+                            cur: std::collections::BTreeMap::new(),
+                            flushed: if dated {
+                                Default::default()
+                            } else {
+                                s.cur.clone()
+                            },
+                            flushed_era: if dated {
+                                s.cur.clone()
+                            } else {
+                                Default::default()
+                            },
+                        });
+                        cell.dirty = true;
+                    }
+                    None => {}
                 }
-                None if units_total(&s.cur) != 0 => {
-                    self.models.push(ModelCell {
-                        model: s.model.clone(),
-                        era: s.era,
-                        cur: std::collections::BTreeMap::new(),
-                        flushed: if dated {
-                            Default::default()
-                        } else {
-                            s.cur.clone()
-                        },
-                        flushed_era: if dated {
-                            s.cur.clone()
-                        } else {
-                            Default::default()
-                        },
-                    });
-                    self.dirty = true;
-                }
-                None => {}
             }
-        }
+        });
     }
 
     /// Total current TOKENS across models — every token-family class (the scalar view for admin
@@ -393,19 +417,6 @@ impl BudgetCell {
             acc.saturating_add(m.cur.get(unit).copied().unwrap_or(0))
         })
     }
-}
-
-/// `cur - flushed` per unit, over the UNION of their units (freshly accrued, or taken back).
-fn units_delta(
-    cur: &std::collections::BTreeMap<String, u64>,
-    flushed: &std::collections::BTreeMap<String, u64>,
-) -> std::collections::BTreeMap<String, i64> {
-    let at = |side: &std::collections::BTreeMap<String, u64>, k: &String| {
-        signed(side.get(k).copied().unwrap_or(0))
-    };
-    let keys = cur.keys().chain(flushed.keys());
-    keys.map(|k| (k.clone(), at(cur, k) - at(flushed, k)))
-        .collect()
 }
 
 /// The unit a card-era row counts a dated fee era's billable requests under.
@@ -443,23 +454,17 @@ fn dated_delta(delta: &UsageDelta, era: u64) -> UsageDelta {
     }
 }
 
-fn park_window(parked: &mut Vec<(u64, UsageDelta)>, window: u64, delta: UsageDelta) {
+fn park_window(parked: &mut Vec<(u64, ExactUsageDelta)>, window: u64, delta: ExactUsageDelta) {
     if delta.is_zero() {
         return;
     }
-    let Some(i) = parked.iter().position(|(w, _)| *w == window) else {
+    if let Some(index) = parked.iter().position(|(at, _)| *at == window) {
+        parked[index].1.merge(&delta);
+        if parked[index].1.is_zero() {
+            parked.remove(index);
+        }
+    } else {
         parked.push((window, delta));
-        return;
-    };
-    let into = &mut parked[i].1;
-    into.requests = into.requests.saturating_add(delta.requests);
-    into.billable_requests = into
-        .billable_requests
-        .saturating_add(delta.billable_requests);
-    let both = into.models.iter().chain(delta.models.iter());
-    into.models = model_deltas(both.map(|m| (m.model.as_str(), m.usage_units.clone())));
-    if into.is_zero() {
-        parked.remove(i);
     }
 }
 
@@ -473,23 +478,9 @@ fn era_bucket(bucket: &str) -> String {
 }
 
 /// Clamp a u64 counter into the signed delta domain.
+#[cfg(test)]
 fn signed(v: u64) -> i64 {
     i64::try_from(v).unwrap_or(i64::MAX)
-}
-
-/// Signed per-unit deltas folded to one entry per model (a model's eras summed), zero units and
-/// all-zero models dropped: the shape `Store::add_usage` takes.
-fn model_deltas<'r>(
-    segments: impl IntoIterator<Item = (&'r str, std::collections::BTreeMap<String, i64>)>,
-) -> Vec<busbar_contract::records::ModelTokensDelta> {
-    busbar_kernel_ledger::usage::by_lane(segments, i64::saturating_add)
-        .into_iter()
-        .map(|(model, mut usage_units)| {
-            usage_units.retain(|_, v| *v != 0);
-            busbar_contract::records::ModelTokensDelta { model, usage_units }
-        })
-        .filter(|d| !d.usage_units.is_empty())
-        .collect()
 }
 
 /// Whether `class` counts toward a `tokens:` cap: a reserved token tier, or a class an installed
@@ -854,6 +845,10 @@ pub struct GovState {
     /// stores raw tokens and spend derives at read time, so there is no remainder to carry and no
     /// O(n) carry sweep to amortize.
     budget: Sharded<BudgetCell>,
+    /// Per-key correction calls serialize without holding a mutex across a store call.
+    correction_claims: claims::ClaimSet<String>,
+    /// Exact immutable operations retained across unknown results until a definitive replay.
+    corrections: std::sync::Mutex<HashMap<String, state::ledger_adjust::PendingCorrection>>,
     /// Write-behind ACCUMULATOR for metering rows, keyed by the stores' own upsert key
     /// `(key_id, bucket, model, provider)` and SHARDED [`GOV_SHARDS`] ways (see [`PendingMetering`])
     /// so concurrent request-completion accruals contend only within a shard, not on one process-wide

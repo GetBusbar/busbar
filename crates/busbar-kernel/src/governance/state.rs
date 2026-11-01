@@ -26,7 +26,7 @@ mod self_serve;
 /// The one ledger's admin read and its one correction (MONEY-DESIGN §4, PR-C): a child module, so
 /// it reaches this module's private helpers as the methods here do.
 #[path = "ledger_adjust.rs"]
-mod ledger_adjust;
+pub(super) mod ledger_adjust;
 pub use ledger_adjust::{
     metering_lane, AdjustRefused, Adjustment, PricedBucket, UsageAdjustment, ADJUST_DOWN_BUCKET,
     ADJUST_UP_BUCKET,
@@ -150,6 +150,8 @@ impl GovState {
                     .map(|t| busbar_contract::redacted::sha256_hex(t.as_bytes())),
             ),
             budget: Sharded::new(),
+            correction_claims: claims::ClaimSet::new(),
+            corrections: std::sync::Mutex::new(HashMap::new()),
             pending_metering: PendingMetering::new(),
             money_view: money_view::MoneyView::default(),
             caller_refs: Arc::new(RwLock::new(Some(Arc::new(match signer.as_ref() {
@@ -792,12 +794,14 @@ impl GovState {
                 .entry(bucket_id.to_string())
                 .or_insert_with(|| BudgetCell::fresh(window)),
         };
-        if let Some(group) = group {
-            cell.group_owners.insert(group.to_string());
-        }
-        cell.accrue(model, era, units);
-        cell.dirty = true;
-        cell.last_touch = now;
+        cell.mutate(|cell| {
+            if let Some(group) = group {
+                cell.group_owners.insert(group.to_string());
+            }
+            cell.accrue(model, era, units);
+            cell.dirty = true;
+            cell.last_touch = now;
+        });
     }
 
     /// Record one completed response's RAW consumption into the per-(key, day-bucket, model,
@@ -1454,6 +1458,8 @@ impl GovState {
     /// DEGRADED-BUT-APPLIED ([`REVOCATION_DURABLE_MARKER`]), never as a bare error implying nothing
     /// happened. Same discipline `refresh_self` already applies to its tombstone path.
     pub fn delete_key(&self, id: &str) -> RecordStoreResult<()> {
+        let _correction = self.correction_claims.claim(id.to_string());
+        self.settle_correction_for_delete(id)?;
         self.store.delete_key(id)?;
         // The targeted eviction FIRST and unconditionally: this is the step that stops the
         // credential resolving, and it must happen whether or not the full reconcile succeeds.
@@ -1465,7 +1471,11 @@ impl GovState {
         //
         // A still-dirty cell would also be flushed after the store cascade-deleted the key's
         // ledger rows; whether that re-creates a durable row depends on the delta being non-zero.
-        self.budget.write(id).remove(id);
+        let mut cells = self.budget.write(id);
+        if !cells.get(id).is_some_and(|cell| cell.correction.is_some()) {
+            cells.remove(id);
+        }
+        drop(cells);
         self.money_view.forget(id);
         if let Err(refresh_err) = refreshed {
             diag_error!(
@@ -1531,7 +1541,11 @@ impl GovState {
             // A DIRTY cell still owes the store a delta, so it stays until a flush has taken it
             // (the sweep's retain does the same); only a clean cell is dropped here.
             shard.retain(|_, cell| {
-                if cell.dirty || cell.flushing != 0 || !cell.group_owners.contains(group) {
+                if cell.dirty
+                    || cell.flushing != 0
+                    || cell.correction.is_some()
+                    || !cell.group_owners.contains(group)
+                {
                     return true;
                 }
                 cell.group_owners.remove(group);
@@ -1724,6 +1738,11 @@ impl GovState {
                 cell.group_owners.insert(group.to_string());
             }
             if let Some(previous) = cells.get(bucket_id) {
+                if previous.correction.is_some() || previous.dirty || previous.flushing != 0 {
+                    return Err(RecordStoreError(
+                        "budget hydration has unresolved raw usage custody".into(),
+                    ));
+                }
                 cell.group_owners
                     .extend(previous.group_owners.iter().cloned());
             }
@@ -1846,9 +1865,21 @@ impl GovState {
     /// HYDRATED FROM THEM ([`durable_cell`]), so a read that reaches the store answers what the same
     /// read answers once the bucket is hydrated — never the current card over stored history.
     fn bucket_cell(&self, bucket_id: &str, window: u64) -> RecordStoreResult<BudgetCell> {
-        let live = (self.budget.read(bucket_id).get(bucket_id))
-            .filter(|c| c.window_start == window)
-            .cloned();
+        let live = {
+            let cells = self.budget.read(bucket_id);
+            if cells
+                .get(bucket_id)
+                .is_some_and(|cell| cell.correction.is_some())
+            {
+                return Err(RecordStoreError(
+                    "usage correction outcome unresolved".into(),
+                ));
+            }
+            cells
+                .get(bucket_id)
+                .filter(|cell| cell.window_start == window)
+                .cloned()
+        };
         Ok(match live {
             Some(cell) => cell,
             None => self.stored_cell(bucket_id, window)?,
@@ -2179,7 +2210,8 @@ impl GovState {
                         // window's parked under it): it waits for its write whatever its age. The
                         // flusher's failure arm re-creates a removed cell at its OLD window to hold
                         // that delta, and through a long outage that cell is past the horizon.
-                        return c.dirty
+                        return c.correction.is_some()
+                            || c.dirty
                             || c.flushing != 0
                             || c.window_start.saturating_add(max_window) > now;
                     }
@@ -2197,7 +2229,8 @@ impl GovState {
                     // on a product that advertises ~5 MB RSS. A cell whose group is gone, or whose
                     // bucket carries no cap, enforces NOTHING; it now ages out by last touch like
                     // any other attribution cell (and, like them, only while clean).
-                    still_enforces_a_cap(cost, id)
+                    c.correction.is_some()
+                        || still_enforces_a_cap(cost, id)
                         || c.dirty
                         || c.flushing != 0
                         || c.last_touch.saturating_add(max_window) > now
@@ -2248,18 +2281,43 @@ impl GovState {
             // class, so a cache-read count never counts against it.
             let (requests, tokens, live, derived) = match map.get(bucket.bucket_id) {
                 Some(cell) if cell.window_start >= window => (
-                    cell.requests,
-                    bucket.tokens_cap.map_or(0, |_| cell.total_tokens()),
+                    cell.correction.as_ref().map_or(cell.requests, |branch| {
+                        cell.requests.max(branch.accepted.requests)
+                    }),
+                    bucket.tokens_cap.map_or(0, |_| {
+                        cell.correction
+                            .as_ref()
+                            .map_or(cell.total_tokens(), |branch| {
+                                cell.total_tokens().max(branch.accepted.total_tokens())
+                            })
+                    }),
                     Some(cell),
                     bucket.budget_cap.map_or(Ok(0), |_| {
-                        (cell.spend(cost, true)).and_then(Money::minor_i64)
+                        let before = cell.spend(cost, true).and_then(Money::minor_i64)?;
+                        match &cell.correction {
+                            Some(branch) => branch
+                                .accepted
+                                .spend(cost, true)
+                                .and_then(Money::minor_i64)
+                                .map(|after| before.max(after)),
+                            None => Ok(before),
+                        }
                     }),
                 ),
                 // stale or absent cell = fresh window = nothing used
                 _ => (0, 0, None, Ok(0)),
             };
             let class_blocked = (bucket.class_caps.iter())
-                .find(|c| live.map_or(0, |cell| cell.total_tier(c.class)) >= c.cap)
+                .find(|c| {
+                    live.map_or(0, |cell| {
+                        cell.correction
+                            .as_ref()
+                            .map_or(cell.total_tier(c.class), |branch| {
+                                cell.total_tier(c.class)
+                                    .max(branch.accepted.total_tier(c.class))
+                            })
+                    }) >= c.cap
+                })
                 .map(|c| c.metric.as_str());
             // #42 AT THE DOOR (item 124): a spend the one function REFUSES — the card present and
             // silent about a model or class this bucket holds, or an overflow — BLOCKS on the
@@ -2341,18 +2399,20 @@ impl GovState {
                     .entry(bucket.bucket_id.to_string())
                     .or_insert_with(|| BudgetCell::fresh(window)),
             };
-            if let Some(group) = bucket.group_name {
-                cell.group_owners.insert(group.to_string());
-            }
-            cell.requests = cell.requests.saturating_add(1);
-            if let Some((lane, one)) = &plane_fee {
-                cell.accrue(lane, era, one);
-            } else {
-                cell.billable_requests = cell.billable_requests.saturating_add(1);
-                cell.fee_eras.charge(era);
-            }
-            cell.dirty = true;
-            cell.last_touch = now;
+            cell.mutate(|cell| {
+                if let Some(group) = bucket.group_name {
+                    cell.group_owners.insert(group.to_string());
+                }
+                cell.requests = cell.requests.saturating_add(1);
+                if let Some((lane, one)) = &plane_fee {
+                    cell.accrue(lane, era, one);
+                } else {
+                    cell.billable_requests = cell.billable_requests.saturating_add(1);
+                    cell.fee_eras.charge(era);
+                }
+                cell.dirty = true;
+                cell.last_touch = now;
+            });
             // The cell this fee reached, by its window: what the refund returns it from.
             let reached = (bucket.bucket_id.to_string(), cell.window_start);
             grant.charge.cells.push(reached);
@@ -2384,27 +2444,29 @@ impl GovState {
             let Some(cell) = map.get_mut(bucket_id) else {
                 continue; // swept: nothing in memory holds the charge any more
             };
-            if cell.window_start == *window {
-                refund_in_place(cell, lane, charge.era);
-            } else if cell.window_start > *window {
-                // The charge's window has rolled away; its counts were parked under it.
-                let taken_back = match lane {
-                    None => UsageDelta {
-                        billable_requests: -1,
-                        ..UsageDelta::default()
-                    },
-                    Some((lane, unit)) => UsageDelta {
-                        models: vec![busbar_contract::records::ModelTokensDelta {
-                            model: lane.to_string(),
-                            usage_units: BTreeMap::from([(unit.to_string(), -1)]),
-                        }],
-                        ..UsageDelta::default()
-                    },
-                };
-                cell.park_eras(*window, dated_delta(&taken_back, charge.era));
-                cell.park(*window, taken_back);
-                cell.dirty = true;
-            }
+            cell.mutate(|cell| {
+                if cell.window_start == *window {
+                    refund_in_place(cell, lane, charge.era);
+                } else if cell.window_start > *window {
+                    // The charge's window has rolled away; its counts were parked under it.
+                    let taken_back = match lane {
+                        None => UsageDelta {
+                            billable_requests: -1,
+                            ..UsageDelta::default()
+                        },
+                        Some((lane, unit)) => UsageDelta {
+                            models: vec![busbar_contract::records::ModelTokensDelta {
+                                model: lane.to_string(),
+                                usage_units: BTreeMap::from([(unit.to_string(), -1)]),
+                            }],
+                            ..UsageDelta::default()
+                        },
+                    };
+                    cell.park_eras(*window, dated_delta(&taken_back, charge.era));
+                    cell.park(*window, taken_back);
+                    cell.dirty = true;
+                }
+            });
         }
     }
 
@@ -2457,15 +2519,17 @@ impl GovState {
             // An equality test here would leave the flat fee for a failed straddling request on the
             // rolled cell forever, and the derived spend the budget cap reads one fee too high for
             // the rest of that window.
-            if cell.window_start >= window {
-                let held = (cell.models.iter_mut())
-                    .filter(|m| &*m.model == lane && m.cur.get(unit).is_some_and(|n| *n > 0))
-                    .max_by_key(|m| m.era);
-                if let Some(m) = held {
-                    take_one(&mut m.cur, unit);
+            cell.mutate(|cell| {
+                if cell.window_start >= window {
+                    let held = (cell.models.iter_mut())
+                        .filter(|m| &*m.model == lane && m.cur.get(unit).is_some_and(|n| *n > 0))
+                        .max_by_key(|m| m.era);
+                    if let Some(m) = held {
+                        take_one(&mut m.cur, unit);
+                    }
+                    cell.dirty = true;
                 }
-                cell.dirty = true;
-            }
+            });
         }
     }
 
@@ -2501,6 +2565,7 @@ impl GovState {
     }
 
     fn flush_budgets_inner(&self, shutdown: bool) -> usize {
+        let mut unresolved_corrections = self.retry_usage_corrections();
         /// The baselines a live cell's delta was taken against: they become the acked baseline on
         /// success.
         struct Acked {
@@ -2530,14 +2595,61 @@ impl GovState {
                 if !cell.dirty || cell.flushing != 0 {
                     continue;
                 }
+                let reserved_window = cell.correction.as_ref().map(|branch| branch.window);
                 let mut rolled = BTreeMap::<u64, (UsageDelta, UsageDelta)>::new();
+                let mut drained_plain = std::collections::BTreeSet::new();
+                let mut drained_dated = std::collections::BTreeSet::new();
                 for (window, delta) in std::mem::take(&mut cell.rolled) {
-                    rolled.entry(window).or_default().0 = delta;
+                    if Some(window) == reserved_window || delta.signed().is_none() {
+                        if Some(window) != reserved_window {
+                            unresolved_corrections.push(format!("{id}@{window}: raw debt exceeds one signed flush; retained exactly"));
+                        }
+                        cell.rolled.push((window, delta));
+                    } else {
+                        drained_plain.insert(window);
+                        rolled.entry(window).or_default().0 =
+                            delta.signed().expect("checked representability");
+                    }
                 }
                 for (window, eras) in std::mem::take(&mut cell.rolled_eras) {
-                    rolled.entry(window).or_default().1 = eras;
+                    if Some(window) == reserved_window || eras.signed().is_none() {
+                        if Some(window) != reserved_window {
+                            unresolved_corrections.push(format!("{id}@{window}: dated raw debt exceeds one signed flush; retained exactly"));
+                        }
+                        cell.rolled_eras.push((window, eras));
+                    } else {
+                        drained_dated.insert(window);
+                        rolled.entry(window).or_default().1 =
+                            eras.signed().expect("checked representability");
+                    }
                 }
-                cell.flushing = rolled.len() + 1;
+                let current_fits = ExactUsageDelta::of(cell, false).signed().is_some()
+                    && ExactUsageDelta::of(cell, true).signed().is_some();
+                let flush_current = Some(cell.window_start) != reserved_window && current_fits;
+                if Some(cell.window_start) != reserved_window && !current_fits {
+                    unresolved_corrections.push(format!(
+                        "{id}@{}: raw debt exceeds one signed flush; retained exactly",
+                        cell.window_start
+                    ));
+                }
+                cell.flushing = rolled.len() + usize::from(flush_current);
+                cell.flushing_windows = rolled.keys().map(|window| (*window, 1)).collect();
+                if flush_current {
+                    *cell.flushing_windows.entry(cell.window_start).or_default() += 1;
+                }
+                if let Some(branch) = cell.correction.as_mut() {
+                    branch
+                        .accepted
+                        .rolled
+                        .retain(|(window, _)| !drained_plain.contains(window));
+                    branch
+                        .accepted
+                        .rolled_eras
+                        .retain(|(window, _)| !drained_dated.contains(window));
+                    branch.accepted.flushing = cell.flushing;
+                    branch.accepted.flushing_windows = cell.flushing_windows.clone();
+                    branch.accepted.dirty = true;
+                }
                 for (window, (delta, eras)) in rolled {
                     dirty.push(DirtySnap {
                         bucket_id: id.clone(),
@@ -2547,28 +2659,37 @@ impl GovState {
                         acked: None,
                     });
                 }
-                dirty.push(DirtySnap {
-                    bucket_id: id.clone(),
-                    window: cell.window_start,
-                    delta: cell.unflushed(),
-                    eras: cell.unflushed_eras(),
-                    acked: Some(Acked {
-                        requests: cell.requests,
-                        billable_requests: cell.billable_requests,
-                        models: cell.models.clone(),
-                        fee_eras: cell.fee_eras.clone(),
-                    }),
-                });
-                cell.dirty = false;
+                if flush_current {
+                    dirty.push(DirtySnap {
+                        bucket_id: id.clone(),
+                        window: cell.window_start,
+                        delta: cell.unflushed(),
+                        eras: cell.unflushed_eras(),
+                        acked: Some(Acked {
+                            requests: cell.requests,
+                            billable_requests: cell.billable_requests,
+                            models: cell.models.clone(),
+                            fee_eras: cell.fee_eras.clone(),
+                        }),
+                    });
+                }
+                cell.dirty = cell.correction.is_some()
+                    || !cell.rolled.is_empty()
+                    || !cell.rolled_eras.is_empty()
+                    || !flush_current;
             }
         }
         let mut flushed = 0usize;
         // Aggregate failures: during a store outage every dirty bucket fails on the same tick, so a
         // per-bucket `warn!` spams. Emit exactly ONE throttled warn per tick with the failed count;
         // per-bucket detail (bucket + error) stays at `debug!`.
-        let mut failed = 0usize;
-        let mut unrecorded: Vec<String> = Vec::new();
-        let mut last_error: Option<String> = None;
+        let mut failed = unresolved_corrections.len();
+        let mut unrecorded: Vec<String> = if shutdown {
+            unresolved_corrections.clone()
+        } else {
+            Vec::new()
+        };
+        let mut last_error: Option<String> = unresolved_corrections.last().cloned();
         for snap in dirty {
             let outcome = if snap.delta.is_zero() {
                 // Nothing new since the last acked flush (e.g. a charge fully refunded back to the
@@ -2590,42 +2711,52 @@ impl GovState {
             };
             let mut map = self.budget.write(&snap.bucket_id);
             if let Some(cell) = map.get_mut(&snap.bucket_id) {
-                if cell.flushing != 0 {
-                    cell.flushing -= 1;
-                }
+                cell.mutate(|cell| {
+                    if cell.flushing != 0 {
+                        cell.flushing -= 1;
+                    }
+                    if let Some(count) = cell.flushing_windows.get_mut(&snap.window) {
+                        *count -= 1;
+                        if *count == 0 {
+                            cell.flushing_windows.remove(&snap.window);
+                        }
+                    }
+                });
             }
             let plain_ok = outcome.is_ok();
             let era_ok = matches!(era_outcome, Some(Ok(())));
             if let Some(cell) = map.get_mut(&snap.bucket_id) {
-                if let Some(acked) = &snap.acked {
-                    if cell.window_start == snap.window {
-                        if plain_ok {
-                            cell.flushed_requests = acked.requests;
-                            cell.flushed_billable_requests = acked.billable_requests;
-                            cell.advance_model_baselines(&acked.models, false);
+                cell.mutate(|cell| {
+                    if let Some(acked) = &snap.acked {
+                        if cell.window_start == snap.window {
+                            if plain_ok {
+                                cell.flushed_requests = acked.requests;
+                                cell.flushed_billable_requests = acked.billable_requests;
+                                cell.advance_model_baselines(&acked.models, false);
+                            }
+                            if era_ok {
+                                cell.flushed_fee_eras = acked.fee_eras.clone();
+                                cell.advance_model_baselines(&acked.models, true);
+                            }
+                        } else if cell.window_start > snap.window {
+                            if plain_ok {
+                                cell.park(snap.window, negated(&snap.delta));
+                            }
+                            if era_ok {
+                                cell.park_eras(snap.window, negated(&snap.eras));
+                            }
+                            cell.dirty = true;
                         }
-                        if era_ok {
-                            cell.flushed_fee_eras = acked.fee_eras.clone();
-                            cell.advance_model_baselines(&acked.models, true);
+                    } else {
+                        if !plain_ok {
+                            cell.park(snap.window, snap.delta.clone());
                         }
-                    } else if cell.window_start > snap.window {
-                        if plain_ok {
-                            cell.park(snap.window, negated(&snap.delta));
+                        if !era_ok {
+                            cell.park_eras(snap.window, snap.eras.clone());
                         }
-                        if era_ok {
-                            cell.park_eras(snap.window, negated(&snap.eras));
-                        }
-                        cell.dirty = true;
                     }
-                } else {
-                    if !plain_ok {
-                        cell.park(snap.window, snap.delta.clone());
-                    }
-                    if !era_ok {
-                        cell.park_eras(snap.window, snap.eras.clone());
-                    }
-                }
-                cell.dirty |= !plain_ok || !era_ok;
+                    cell.dirty |= !plain_ok || !era_ok;
+                });
             } else if !plain_ok || !era_ok {
                 let mut cell = BudgetCell::fresh(snap.window);
                 if !plain_ok {
@@ -2855,20 +2986,22 @@ fn still_enforces_a_cap(cost: &crate::cost::CostModel, bucket_id: &str) -> bool 
 /// `requests` counter is NEVER refunded, so a failed request still consumed its requests-limit slot
 /// (a caller cannot escape the requests cap by hammering failures). Floored at 0.
 fn refund_in_place(cell: &mut BudgetCell, lane: Option<(&str, &str)>, era: u64) {
-    match lane {
-        None => {
-            cell.billable_requests = cell.billable_requests.saturating_sub(1);
-            cell.fee_eras.refund(era);
-        }
-        // A plane's fee unit: one count off its fee lane, in the era the charge accrued it under.
-        Some((lane, unit)) => {
-            let charged = (cell.models.iter_mut()).find(|m| &*m.model == lane && m.era == era);
-            if let Some(m) = charged {
-                take_one(&mut m.cur, unit);
+    cell.mutate(|cell| {
+        match lane {
+            None => {
+                cell.billable_requests = cell.billable_requests.saturating_sub(1);
+                cell.fee_eras.refund(era);
+            }
+            // A plane's fee unit: one count off its fee lane, in the era the charge accrued it under.
+            Some((lane, unit)) => {
+                let charged = (cell.models.iter_mut()).find(|m| &*m.model == lane && m.era == era);
+                if let Some(m) = charged {
+                    take_one(&mut m.cur, unit);
+                }
             }
         }
-    }
-    cell.dirty = true;
+        cell.dirty = true;
+    });
 }
 
 /// One count off `unit`, floored at 0; a unit that reaches 0 is dropped (the map is sparse).

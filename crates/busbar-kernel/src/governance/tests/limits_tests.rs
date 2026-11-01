@@ -1826,6 +1826,8 @@ struct FlakyStore {
     meter_down: std::sync::atomic::AtomicBool,
     era_down: std::sync::atomic::AtomicBool,
     before_add: std::sync::Mutex<Option<Box<dyn FnOnce() + Send>>>,
+    lose_correction_reply: std::sync::atomic::AtomicBool,
+    correction_calls: std::sync::Mutex<Vec<busbar_contract::records::correction::Request>>,
 }
 
 impl FlakyStore {
@@ -1836,6 +1838,8 @@ impl FlakyStore {
             meter_down: std::sync::atomic::AtomicBool::new(false),
             era_down: std::sync::atomic::AtomicBool::new(false),
             before_add: std::sync::Mutex::new(None),
+            lose_correction_reply: std::sync::atomic::AtomicBool::new(false),
+            correction_calls: std::sync::Mutex::new(Vec::new()),
         }
     }
     fn set_down(&self, down: bool) {
@@ -1844,6 +1848,30 @@ impl FlakyStore {
 }
 
 impl RecordStore for FlakyStore {
+    fn supports_usage_correction(&self) -> bool {
+        true
+    }
+    fn apply_usage_correction(
+        &self,
+        request: &busbar_contract::records::correction::Request,
+    ) -> RecordStoreResult<busbar_contract::records::correction::Decision> {
+        self.correction_calls.lock().unwrap().push(request.clone());
+        let hook = self.before_add.lock().unwrap().take();
+        if let Some(hook) = hook {
+            hook();
+        }
+        if self.down.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(RecordStoreError("planted correction write failure".into()));
+        }
+        let result = self.inner.apply_usage_correction(request);
+        if self
+            .lose_correction_reply
+            .swap(false, std::sync::atomic::Ordering::SeqCst)
+        {
+            return Err(RecordStoreError("planted lost correction reply".into()));
+        }
+        result
+    }
     fn put_key(&self, key: &VirtualKey) -> RecordStoreResult<()> {
         self.inner.put_key(key)
     }
@@ -1891,6 +1919,9 @@ impl RecordStore for FlakyStore {
 
 #[path = "ledger_ownership_cases.rs"]
 mod ledger_ownership_cases;
+
+#[path = "ledger_correction_cases.rs"]
+mod ledger_correction_cases;
 
 /// The per-minute group bucket the window-roll tests read, under a fee-10 card pricing `m`.
 fn minute_fee_model() -> CostModel {

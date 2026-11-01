@@ -18,10 +18,10 @@
 //!   none of that lane), and on the metering day holding the epoch;
 //! - it lands on every bucket an accrual of the unit would have landed on (the key's own, and each
 //!   group bucket its pool participates in), all or nothing;
-//! - it is applied in RAM at once — to the live cell's `cur` when the cell still holds the epoch's
-//!   window, else parked under that window ([`BudgetCell::park`]) like a rolled window's counts — so
-//!   every view and every admission sees it, and the write-behind flush carries it to the store as a
-//!   signed `add_usage` delta under that window — today's path, until the poster replaces it (PR-B2);
+//! - its affected raw rows, captured local debt and metering adjustment commit atomically, after
+//!   comparing their exact shared pre-state. No compensation write or unconditional negative
+//!   flush can accept a correction. RAM adopts the acknowledged branch only after that decision;
+//!   ordinary operations update both possible branches while the result is unknown;
 //! - FAIL CLOSED: a correction whose card cannot be resolved (no entry covers its epoch, or it names
 //!   another entry than the one its counts were dated with), whose epoch's window holds none of its
 //!   counts for a downward delta to move, or that would take any count of its segment below zero is
@@ -43,14 +43,19 @@ use super::*;
 
 /// The usage row a day's UPWARD adjustments accumulate on: per slot ([`adjustment_slot`]), per
 /// class, the sum of every positive delta. Only ever added to.
-pub const ADJUST_UP_BUCKET: &str = "adjust:usage+";
+pub use busbar_contract::records::correction::ADJUST_UP_BUCKET;
 
 /// The usage row a day's DOWNWARD adjustments accumulate on: per slot, per class, the sum of every
 /// negative delta's magnitude. Only ever added to. Up minus down is the day's signed adjustment.
-pub const ADJUST_DOWN_BUCKET: &str = "adjust:usage-";
+pub use busbar_contract::records::correction::ADJUST_DOWN_BUCKET;
 
 /// The separator of an adjustment slot's three parts. Not [`PLANE_LANE_SEP`], which a lane carries.
-const SLOT_SEP: char = '\u{1e}';
+use busbar_contract::records::correction::SLOT_SEP;
+
+#[path = "ledger_correction.rs"]
+mod correction_impl;
+
+pub(in crate::governance) use correction_impl::PendingCorrection;
 
 /// The model name an adjustment row keeps one (key, lane, era) under.
 fn adjustment_slot(key_id: &str, lane: &str, era: u64) -> String {
@@ -259,26 +264,34 @@ impl GovState {
     /// u32 #18): every bucket an accrual of the unit lands on (the key's own, and each group bucket
     /// of its chain the pool participates in; the key's own alone when its group is missing, as
     /// accrual degrades), in the window holding `card_epoch_ms`, on `model` in the latest era not
-    /// after it. Checked under every bucket's shard lock, taken in ascending shard order, and applied
-    /// under the same locks: all of it or none of it.
+    /// after it. Local raw facts are captured under ordered shard locks; the store compares all
+    /// exact durable pre-states and commits all replacements and its receipt atomically.
     ///
     /// FAIL CLOSED: a card epoch no rate-card entry covers, an `entry_era` other than the entry the
     /// unit's counts were dated with, an epoch window holding none of the counts a downward delta
     /// moves, or a count taken below zero refuses the whole correction with its reason, and nothing
     /// moves.
     ///
-    /// The delta reaches the store through the write-behind flush, as a signed `add_usage` delta
-    /// under the epoch's window.
+    /// The store accepts exact raw row replacements and the applied receipt atomically. The
+    /// immutable operation and both raw branches survive an unknown answer for exact replay.
     ///
     /// # Errors
     ///
-    /// The store could not read a key or a durable row (outer); the correction was refused and
-    /// nothing was applied (inner).
+    /// A store error can have an unknown commit outcome (outer): the exact operation and both
+    /// raw branches remain owned for replay, including through another call of this API. A named
+    /// refusal (inner) accepted no correction.
     pub fn adjust_usage(
         &self,
         cost: &crate::cost::CostModel,
         adj: &Adjustment<'_>,
     ) -> RecordStoreResult<Result<(), AdjustRefused>> {
+        let _claim = self.correction_claims.claim(adj.key_id.to_string());
+        if self.resume_usage_correction(adj)? {
+            return Ok(Ok(()));
+        }
+        if !self.store.supports_usage_correction() {
+            return Err(RecordStoreError("usage corrections unsupported".into()));
+        }
         let delta: BTreeMap<&str, i64> = adj
             .delta
             .iter()
@@ -288,9 +301,9 @@ impl GovState {
         if delta.is_empty() {
             return Ok(Err(AdjustRefused::Empty));
         }
-        let Some(key) = self.store.get_key(adj.key_id)? else {
+        if self.store.get_key(adj.key_id)?.is_none() {
             return Ok(Err(AdjustRefused::UnknownKey));
-        };
+        }
         // THE UNIT'S CARD: the entry in force at its epoch, resolved or refused. A dated history
         // with no entry covering the epoch cannot say what the unit's counts are worth.
         let at = adj.card_epoch_ms;
@@ -311,147 +324,7 @@ impl GovState {
         let epoch = at / 1_000;
         // THE METERED VIEW must carry it: checked against the epoch day's rows before anything moves.
         let day = crate::governance::metering_bucket(epoch);
-        if let Err(refused) = self.metered_check(adj, &delta, day)? {
-            return Ok(Err(refused));
-        }
-        // The buckets, as `record_usage` picks them, each at the window holding the epoch.
-        let mut group_owners: BTreeMap<String, std::collections::BTreeSet<String>> =
-            BTreeMap::new();
-        let mut buckets: Vec<(String, u64)> = match cost.chain_for(&key) {
-            Ok(chain) => chain
-                .iter()
-                .filter(|b| b.applies_to_pool(adj.pool))
-                .map(|b| {
-                    if let Some(group) = b.group_name {
-                        group_owners
-                            .entry(b.bucket_id.to_string())
-                            .or_default()
-                            .insert(group.to_string());
-                    }
-                    (b.bucket_id.to_string(), budget_window(b.window, epoch))
-                })
-                .collect(),
-            Err(_) => vec![(
-                adj.key_id.to_string(),
-                budget_window(super::super::WINDOW_TOTAL, epoch),
-            )],
-        };
-        buckets.sort();
-        buckets.dedup();
-        // The budget book is checked first and moved last: the adjustment row is durable before
-        // RAM moves, so a store that refuses the row leaves nothing applied. A refusal on the
-        // second, applying pass (a concurrent charge moved a count between the two) writes the
-        // opposite row, so the metered view never keeps an adjustment the book refused.
-        if let Err(refused) = self.budget_pass(&buckets, &group_owners, adj, &delta, false)? {
-            return Ok(Err(refused));
-        }
-        self.write_usage_adjustment(adj, &delta, day, 1)?;
-        match self.budget_pass(&buckets, &group_owners, adj, &delta, true)? {
-            Ok(()) => Ok(Ok(())),
-            Err(refused) => {
-                self.write_usage_adjustment(adj, &delta, day, -1)?;
-                Ok(Err(refused))
-            }
-        }
-    }
-
-    /// The day's metering rows of the adjustment's key, lane and era, with the day's earlier
-    /// adjustments of that slot folded in: refused when the day's rows of the key and lane are
-    /// dated with a later entry at or before the unit's epoch, when no such row exists, or when a
-    /// delta would take a class below zero.
-    fn metered_check(
-        &self,
-        adj: &Adjustment<'_>,
-        delta: &BTreeMap<&str, i64>,
-        day: u64,
-    ) -> RecordStoreResult<Result<(), AdjustRefused>> {
-        let lane_rows: Vec<MeteringRow> = self
-            .store
-            .list_metering(day)?
-            .into_iter()
-            .filter(|r| r.key_id == adj.key_id && metering_lane(&r.model, &r.provider) == adj.model)
-            .collect();
-        // THE UNIT'S ENTRY, as its counts were dated: the latest era this day's rows of the key and
-        // lane were dated with at or before the unit's epoch. A later one there means the named
-        // entry was not the one in force when the unit was served (refused); the dates the rows
-        // carry are what the budget book's segments carry too, so a rate-card amendment appended
-        // since does not move them.
-        let dated = (lane_rows.iter())
-            .map(|r| r.priced_from_ms)
-            .filter(|era| *era > adj.entry_era && *era <= adj.card_epoch_ms)
-            .max();
-        if let Some(in_force) = dated {
-            return Ok(Err(AdjustRefused::NotInForce {
-                named: adj.entry_era,
-                in_force,
-            }));
-        }
-        let rows: Vec<&MeteringRow> = (lane_rows.iter())
-            .filter(|r| r.priced_from_ms == adj.entry_era)
-            .collect();
-        if rows.is_empty() {
-            return Ok(Err(AdjustRefused::NotMetered { day }));
-        }
-        let earlier = self
-            .usage_adjustments(day)?
-            .into_iter()
-            .find(|a| a.key_id == adj.key_id && a.lane == adj.model && a.era == adj.entry_era);
-        for (class, d) in delta {
-            let metered: i128 = rows
-                .iter()
-                .map(|r| i128::from(metered_count(r, class)))
-                .sum::<i128>()
-                + earlier
-                    .as_ref()
-                    .and_then(|a| a.delta.get(*class))
-                    .map_or(0, |e| i128::from(*e));
-            if metered + i128::from(*d) < 0 {
-                return Ok(Err(AdjustRefused::Exceeds {
-                    bucket: format!("metering@{day}"),
-                    class: (*class).to_string(),
-                    count: u64::try_from(metered).unwrap_or(0),
-                    delta: *d,
-                }));
-            }
-        }
-        Ok(Ok(()))
-    }
-
-    /// Put `sign` x the delta on the day's adjustment rows: its positive part on
-    /// [`ADJUST_UP_BUCKET`], its negative part's magnitude on [`ADJUST_DOWN_BUCKET`].
-    fn write_usage_adjustment(
-        &self,
-        adj: &Adjustment<'_>,
-        delta: &BTreeMap<&str, i64>,
-        day: u64,
-        sign: i64,
-    ) -> RecordStoreResult<()> {
-        let slot = adjustment_slot(adj.key_id, adj.model, adj.entry_era);
-        let mut up = BTreeMap::new();
-        let mut down = BTreeMap::new();
-        for (class, d) in delta {
-            let d = d.saturating_mul(sign);
-            if d > 0 {
-                up.insert((*class).to_string(), d);
-            } else if d < 0 {
-                down.insert((*class).to_string(), d.saturating_neg());
-            }
-        }
-        for (bucket, units) in [(ADJUST_UP_BUCKET, up), (ADJUST_DOWN_BUCKET, down)] {
-            if units.is_empty() {
-                continue;
-            }
-            let row = UsageDelta {
-                requests: 0,
-                billable_requests: 0,
-                models: vec![busbar_contract::records::ModelTokensDelta {
-                    model: slot.clone(),
-                    usage_units: units,
-                }],
-            };
-            self.store.add_usage(bucket, day, &row)?;
-        }
-        Ok(())
+        self.correct_usage(cost, adj, &delta, day)
     }
 
     /// **THE DAY'S ADJUSTMENTS**, net per (key, lane, era): what the usage read folds into the
@@ -461,239 +334,61 @@ impl GovState {
     ///
     /// The store could not read an adjustment row.
     pub fn usage_adjustments(&self, day: u64) -> RecordStoreResult<Vec<UsageAdjustment>> {
-        let mut net: BTreeMap<String, BTreeMap<String, i64>> = BTreeMap::new();
-        for (bucket, sign) in [(ADJUST_UP_BUCKET, 1i64), (ADJUST_DOWN_BUCKET, -1i64)] {
-            for m in self.store.get_usage(bucket, day)?.models {
-                let slot = net.entry(m.model).or_default();
-                for (class, n) in m.usage_units {
-                    let n = i64::try_from(n).unwrap_or(i64::MAX).saturating_mul(sign);
-                    let e = slot.entry(class).or_insert(0);
-                    *e = e.saturating_add(n);
+        if self
+            .corrections
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .values()
+            .any(|pending| pending.unresolved_day() == Some(day))
+        {
+            return Err(RecordStoreError(
+                "usage correction outcome unresolved".into(),
+            ));
+        }
+        let mut net: BTreeMap<String, BTreeMap<String, i128>> = BTreeMap::new();
+        for (bucket, sign) in [(ADJUST_UP_BUCKET, 1i128), (ADJUST_DOWN_BUCKET, -1i128)] {
+            for model in self.store.get_usage(bucket, day)?.models {
+                for (class, count) in model.usage_units {
+                    *net.entry(model.model.clone())
+                        .or_default()
+                        .entry(class)
+                        .or_default() += i128::from(count) * sign;
                 }
             }
         }
-        Ok(net
-            .into_iter()
-            .filter_map(|(slot, mut delta)| {
-                delta.retain(|_, d| *d != 0);
-                let mut parts = slot.splitn(3, SLOT_SEP);
-                let key_id = parts.next()?.to_string();
-                let lane = parts.next()?.to_string();
-                let era = parts.next()?.parse().ok()?;
-                (!delta.is_empty()).then_some(UsageAdjustment {
-                    key_id,
-                    lane,
+        let mut result = Vec::new();
+        for (slot, counts) in net {
+            let mut parts = slot.splitn(3, SLOT_SEP);
+            let (Some(key), Some(lane), Some(era)) = (parts.next(), parts.next(), parts.next())
+            else {
+                continue;
+            };
+            let Ok(era) = era.parse() else {
+                continue;
+            };
+            let delta: BTreeMap<_, _> = counts
+                .into_iter()
+                .filter(|(_, count)| *count != 0)
+                .map(|(class, count)| {
+                    i64::try_from(count)
+                        .map(|count| (class, count))
+                        .map_err(|_| {
+                            RecordStoreError(
+                                "adjustment net exceeds signed public view range".into(),
+                            )
+                        })
+                })
+                .collect::<RecordStoreResult<_>>()?;
+            if !delta.is_empty() {
+                result.push(UsageAdjustment {
+                    key_id: key.into(),
+                    lane: lane.into(),
                     era,
                     delta,
-                })
-            })
-            .collect())
-    }
-
-    /// The budget book's half of an adjustment: every bucket's segment in the window holding the
-    /// unit's epoch, checked under every bucket's shard lock, taken in ascending shard order, and —
-    /// when `apply` — moved under the same locks: all of it or none of it.
-    ///
-    /// Where a bucket's counts of that window live decides where the delta goes:
-    ///
-    /// - the live cell holds the window: its segment of the unit's lane in the latest era not after
-    ///   the epoch ([`segment_at`]), or a new segment at the entry in force then when the window
-    ///   holds none of that lane (an upward delta only: a downward one has nothing to move);
-    /// - the live cell has moved past the window (it rolled away): the window's durable row plus
-    ///   what the cell still has parked under it ([`rolled_count`]), and the delta is parked under
-    ///   the window ([`BudgetCell::park`]) for the flusher to write there, as a rolled window's own
-    ///   counts are;
-    /// - no live cell, or an older one: the window is hydrated from its durable row, as boot would,
-    ///   and is the live cell.
-    ///
-    /// Never the current window when it is not the epoch's: a correction with nowhere to land in
-    /// its own window is refused ([`AdjustRefused::Unplaced`]).
-    fn budget_pass(
-        &self,
-        buckets: &[(String, u64)],
-        group_owners: &BTreeMap<String, std::collections::BTreeSet<String>>,
-        adj: &Adjustment<'_>,
-        delta: &BTreeMap<&str, i64>,
-        apply: bool,
-    ) -> RecordStoreResult<Result<(), AdjustRefused>> {
-        // A bucket whose live cell does not hold the epoch's window has that window's durable row
-        // read first, OUTSIDE the locks, as the cell boot would hydrate from it: the store already
-        // holds those counts, so the flush baselines start level and only the correction is
-        // written. It is installed when no cell holds that window or a newer one, and it is the
-        // rolled-away window's stored count when one does.
-        let mut durable: HashMap<String, BudgetCell> = HashMap::new();
-        for (bucket_id, window) in buckets {
-            let holds = (self.budget.read(bucket_id).get(bucket_id.as_str()))
-                .is_some_and(|c| c.window_start == *window);
-            if !holds {
-                let mut cell = self.stored_cell(bucket_id, *window)?;
-                cell.last_touch = adj.now;
-                durable.insert(bucket_id.clone(), cell);
+                });
             }
         }
-        // Every bucket's shard, write-locked in ascending index order (the admission charge's
-        // canonical order, so the two cannot deadlock), held across the check and the apply.
-        let mut order: Vec<usize> = buckets
-            .iter()
-            .map(|(bucket_id, _)| self.budget.shard_index(bucket_id))
-            .collect();
-        order.sort_unstable();
-        order.dedup();
-        let mut guards: Vec<(
-            usize,
-            std::sync::RwLockWriteGuard<'_, HashMap<String, BudgetCell>>,
-        )> = order
-            .iter()
-            .map(|&sh| {
-                let map = self
-                    .budget
-                    .shard_at(sh)
-                    .map
-                    .write()
-                    .unwrap_or_else(|p| p.into_inner());
-                (sh, map)
-            })
-            .collect();
-        let map_of = |bucket_id: &str| -> usize {
-            let sh = self.budget.shard_index(bucket_id);
-            guards
-                .iter()
-                .position(|(s, _)| *s == sh)
-                .expect("every bucket's shard is locked")
-        };
-        let at: Vec<usize> = buckets.iter().map(|(b, _)| map_of(b)).collect();
-        // Install the hydrated cells where nothing as new appeared while the store was read.
-        for ((bucket_id, window), i) in buckets.iter().zip(&at) {
-            let map = &mut guards[*i].1;
-            let stale = map
-                .get(bucket_id.as_str())
-                .is_none_or(|c| c.window_start < *window);
-            if stale {
-                if let Some(cell) = durable.remove(bucket_id) {
-                    match map.get_mut(bucket_id.as_str()) {
-                        // An older window's cell rolls first, so what it still owes is kept.
-                        Some(old) => {
-                            old.roll(*window);
-                            let parked = std::mem::take(&mut old.rolled);
-                            let parked_eras = std::mem::take(&mut old.rolled_eras);
-                            let owners = std::mem::take(&mut old.group_owners);
-                            let flushing = old.flushing;
-                            *old = cell;
-                            old.rolled = parked;
-                            old.rolled_eras = parked_eras;
-                            old.group_owners.extend(owners);
-                            old.flushing = flushing;
-                            old.dirty = !old.rolled.is_empty() || !old.rolled_eras.is_empty();
-                        }
-                        None => {
-                            map.insert(bucket_id.clone(), cell);
-                        }
-                    }
-                }
-            }
-        }
-        // THE CHECK, every bucket first: a downward delta with no count of its own window to move,
-        // or a count of the segment taken out of range, refuses the whole.
-        for ((bucket_id, _), i) in buckets.iter().zip(&at) {
-            if let (Some(cell), Some(owners)) = (
-                guards[*i].1.get_mut(bucket_id.as_str()),
-                group_owners.get(bucket_id),
-            ) {
-                cell.group_owners.extend(owners.iter().cloned());
-            }
-        }
-        for ((bucket_id, window), i) in buckets.iter().zip(&at) {
-            let cell = guards[*i].1.get(bucket_id.as_str());
-            for (class, d) in delta {
-                let held = match cell {
-                    Some(c) if c.window_start == *window => {
-                        segment_at(&c.models, adj.model, adj.card_epoch_ms)
-                            .map(|s| i128::from(c.models[s].cur.get(*class).copied().unwrap_or(0)))
-                    }
-                    Some(c) if c.window_start > *window => {
-                        rolled_count(durable.get(bucket_id), c, *window, adj.model, class)
-                    }
-                    // Neither held nor read (the cell went between the read and the lock): there
-                    // is nothing to place the correction against, so it is refused.
-                    _ => None,
-                };
-                let unplaced = match cell {
-                    Some(c) => held.is_none() && (*d < 0 || c.window_start < *window),
-                    None => true,
-                };
-                if unplaced {
-                    return Ok(Err(AdjustRefused::Unplaced {
-                        bucket: bucket_id.clone(),
-                        window: *window,
-                        class: (*class).to_string(),
-                    }));
-                }
-                let count = held.unwrap_or(0);
-                let next = count + i128::from(*d);
-                if next < 0 || u64::try_from(next).is_err() {
-                    return Ok(Err(AdjustRefused::Exceeds {
-                        bucket: bucket_id.clone(),
-                        class: (*class).to_string(),
-                        count: u64::try_from(count).unwrap_or(0),
-                        delta: *d,
-                    }));
-                }
-            }
-        }
-        if !apply {
-            return Ok(Ok(()));
-        }
-        // THE APPLY, under the same locks. The check left every bucket a cell holding the epoch's
-        // window or a newer one.
-        for ((bucket_id, window), i) in buckets.iter().zip(&at) {
-            let map = &mut guards[*i].1;
-            let cell = map
-                .get_mut(bucket_id.as_str())
-                .expect("checked under the same lock");
-            if cell.window_start == *window {
-                let segment = match segment_at(&cell.models, adj.model, adj.card_epoch_ms) {
-                    Some(p) => &mut cell.models[p],
-                    None => {
-                        cell.models.push(ModelCell {
-                            model: std::sync::Arc::from(adj.model),
-                            era: adj.entry_era,
-                            cur: BTreeMap::new(),
-                            flushed: BTreeMap::new(),
-                            flushed_era: BTreeMap::new(),
-                        });
-                        cell.models.last_mut().expect("just pushed")
-                    }
-                };
-                for (class, d) in delta {
-                    let count = segment.cur.get(*class).copied().unwrap_or(0);
-                    let next = moved(count, *d).expect("checked under the same lock");
-                    if next == 0 {
-                        segment.cur.remove(*class);
-                    } else {
-                        segment.cur.insert((*class).to_string(), next);
-                    }
-                }
-            } else {
-                // The window rolled away: parked under it for the flusher to write there, never
-                // folded into the newer window the cell holds.
-                let usage_units = (delta.iter())
-                    .map(|(class, d)| ((*class).to_string(), *d))
-                    .collect();
-                let parked = UsageDelta {
-                    requests: 0,
-                    billable_requests: 0,
-                    models: vec![busbar_contract::records::ModelTokensDelta {
-                        model: adj.model.to_string(),
-                        usage_units,
-                    }],
-                };
-                cell.park_eras(*window, dated_delta(&parked, adj.entry_era));
-                cell.park(*window, parked);
-            }
-            cell.dirty = true;
-            cell.last_touch = adj.now;
-        }
-        Ok(Ok(()))
+        Ok(result)
     }
 }
 
@@ -710,28 +405,6 @@ fn segment_at(models: &[ModelCell], lane: &str, at_ms: u64) -> Option<usize> {
 /// What a ROLLED-AWAY `window` holds of `lane`'s `class`: its durable row (`stored`, read before
 /// the locks; it carries no era) plus what the live cell still has parked under it. `None` when
 /// neither holds that lane at all — the window's segment is gone, or was not read.
-fn rolled_count(
-    stored: Option<&BudgetCell>,
-    live: &BudgetCell,
-    window: u64,
-    lane: &str,
-    class: &str,
-) -> Option<i128> {
-    let mut held: Option<i128> = None;
-    for m in (stored.into_iter().flat_map(|c| c.models.iter())).filter(|m| *m.model == *lane) {
-        let n = i128::from(m.cur.get(class).copied().unwrap_or(0));
-        held = Some(held.unwrap_or(0) + n);
-    }
-    let parked = (live.rolled.iter())
-        .filter(|(w, _)| *w == window)
-        .flat_map(|(_, d)| d.models.iter())
-        .filter(|m| m.model == lane);
-    for m in parked {
-        let n = i128::from(m.usage_units.get(class).copied().unwrap_or(0));
-        held = Some(held.unwrap_or(0) + n);
-    }
-    held
-}
 
 /// `count` moved by `delta`, or `None` when that leaves `u64`.
 fn moved(count: u64, delta: i64) -> Option<u64> {
