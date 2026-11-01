@@ -733,9 +733,9 @@ fn linked_transports_source(manifest: &str, enabled: &dyn Fn(&str) -> bool) -> (
              transport is linked only as its memory-ABI door"
         );
         // A door row's entry exports its memory-ABI `door`, and nothing else is read off it: its
-        // key, layers and session are its door's Statement's, read by the root's own reader
-        // (`root::doors::row_facts`, mounted here under its own name: the tests including this file
-        // have no root), as the root's linked table reads them (BUSBAR-1.6.0.md l.3560-3561).
+        // key, layers and session are its door's Statement's, read by the connector's reader
+        // (`busbar_core_connector::doors::row_facts`), as the root's linked table reads them
+        // (BUSBAR-1.6.0.md l.3560-3561).
         door_builds.push_str(&format!(
             "fn __door_build_{n}(settings: &::busbar_contract::transport::TransportSettings) -> Wire {{\n    \
              let key = self::__busbar_doors::row_facts({door_fn}).key;\n    \
@@ -815,18 +815,10 @@ fn linked_transports_source(manifest: &str, enabled: &dyn Fn(&str) -> bool) -> (
     );
     let mut source = source;
     source.push_str(&door_builds);
-    {
-        let doors = core_dir(manifest).join("src/root/doors.rs");
-        source.push_str(&format!(
-            "/// The root's transport doors, mounted for this file's door rows.\n\
-             #[allow(dead_code)]\n\
-             #[path = {:?}]\n\
-             mod __busbar_doors;\n\
-             /// The loader, as the doors reach it (`super::loader`, the root's one naming module).\n\
-             #[allow(unused_imports)]\n\
-             mod loader {{\n    pub use busbar_plugin_loader::*;\n}}\n",
-            doors.display().to_string()
-        ));
-    }
+    source.push_str(
+        "/// The connector's transport adapter, shared with the running product.\n\
+         #[allow(unused_imports)]\n\
+         use busbar_core_connector::doors as __busbar_doors;\n",
+    );
     (source, off)
 }

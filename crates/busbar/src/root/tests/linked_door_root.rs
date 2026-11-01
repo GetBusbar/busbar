@@ -11,9 +11,9 @@
 
 use busbar_contract::transport::TransportSettings;
 
-use crate::root::doors::{row_facts, stated_row, RowFacts};
 use crate::root::linked::linked_transport;
 use crate::root::registry::{compose, Dropped};
+use busbar_core_connector::doors::{row_facts, stated_row, RowFacts};
 // The door-root crates in miniature, built in the loader's test fixtures: the root holds no door
 // macro (status row 195).
 use busbar_test_kit::root_door_fixtures::{layered, misnamed, wire};
