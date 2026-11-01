@@ -148,7 +148,7 @@ struct State {
     seen: Seen,
     /// Exchanges opened while the connection was out, in order: its owner opens them on the way
     /// back, before anyone else can take it.
-    opening: Vec<(u64, HeldOpening)>,
+    opening: VecDeque<(u64, HeldOpening)>,
     /// An exchange whose open was handed to the owner and failed: its holder's next read answers
     /// why.
     refused: HashMap<u64, Failure>,
@@ -276,7 +276,7 @@ impl Line {
                 conn: Some(conn),
                 closing: false,
                 seen,
-                opening: Vec::new(),
+                opening: VecDeque::new(),
                 refused: HashMap::new(),
                 missed: Vec::new(),
                 parked: HashMap::new(),
@@ -351,8 +351,7 @@ impl Line {
                 wake(missed);
                 return;
             }
-            let opening = std::mem::take(&mut s.opening);
-            if opening.is_empty() {
+            if s.opening.is_empty() {
                 let Some(conn) = taken.conn.take() else {
                     return;
                 };
@@ -363,23 +362,23 @@ impl Line {
                 wake(missed);
                 return;
             }
+            // Select just one opening under the same lock that a leaving holder uses to
+            // cancel it. Later openings stay queued, cancellable while this one crosses. Once
+            // selected, an open is in flight: cancellation cannot unsend it.
+            let (stream, held) = s.opening.pop_front().expect("an opening waits");
             drop(s);
             let waker = self.fan_waker();
             let mut cx = Context::from_waker(&waker);
-            let mut refused = Vec::new();
-            if let Some(conn) = taken.conn.as_mut() {
-                for (stream, held) in opening {
-                    let (opening, head_words) = held.take();
-                    if let Err(f) = conn.open_exchange(stream, opening, head_words, &mut cx) {
-                        refused.push((stream, f));
-                    }
-                }
-            }
+            let failure = taken.conn.as_mut().and_then(|conn| {
+                let (opening, head_words) = held.take();
+                conn.open_exchange(stream, opening, head_words, &mut cx)
+                    .err()
+            });
             s = self.state();
-            // The opens ran with no lock held, so a holder may have left meanwhile
+            // The open ran with no lock held, so a holder may have left meanwhile
             // ([`Self::leave`] forgot its stream): nobody reads that failure, and kept it would
             // be an entry nothing ever removes. A holder still on the line is told why.
-            for (stream, failure) in refused {
+            if let Some(failure) = failure {
                 if s.held.contains(&stream) {
                     s.refused.insert(stream, failure);
                 } else {
@@ -489,7 +488,7 @@ impl Line {
             return Err((stream, Failure::Closed));
         }
         if s.conn.is_none() {
-            s.opening.push((stream, held));
+            s.opening.push_back((stream, held));
             return Ok(stream);
         }
         match self.turn(
@@ -784,12 +783,20 @@ impl Line {
     /// `stream`'s holder leaves (`whole` = its answer was read to its end); answers how many
     /// holders are left.
     pub(crate) fn leave(&self, stream: u64, whole: bool) -> usize {
-        let unparked = {
+        let retired = {
             let mut s = self.state();
             s.held.remove(&stream);
-            s.refused.remove(&stream);
-            s.parked.remove(&stream).is_some_and(|q| !q.is_empty())
+            let opening = s
+                .opening
+                .iter()
+                .position(|(queued, _)| *queued == stream)
+                .and_then(|at| s.opening.remove(at));
+            (opening, s.refused.remove(&stream), s.parked.remove(&stream))
         };
+        let unparked = retired.2.as_ref().is_some_and(|q| !q.is_empty());
+        // A cancelled opening still owns its fields, target and body. Wiping it and releasing
+        // payload owners (including parked pieces) may run caller code, with the lock let go.
+        drop(retired);
         self.fan.forget(stream);
         if unparked {
             // What it left parked is dropped: under the cap, the connection is read again for
