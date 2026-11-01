@@ -32,6 +32,265 @@ fn z<T>() -> T {
     unsafe { zeroed() }
 }
 
+fn bounded_tail_context(
+    change: impl FnOnce(&mut busbar_contract::abi::plane::PlaneTail),
+) -> Result<Option<Box<crate::dispatch::Context>>, String> {
+    use busbar_contract::abi::mechanism::door::{
+        KindTailHead, Section, Statement, SECTION_DECLARING,
+    };
+    use busbar_contract::abi::plane::{PlaneTail, INGRESS_REQUEST_RESPONSE};
+    let section = [Section {
+        name: AbiStr {
+            ptr: b"door".as_ptr(),
+            len: 4,
+        },
+        flags: SECTION_DECLARING,
+        _reserved: 0,
+    }];
+    let mut tail: PlaneTail = z();
+    tail.head = KindTailHead {
+        size: size_of::<PlaneTail>() as u32,
+        _reserved: 0,
+    };
+    tail.ingress = INGRESS_REQUEST_RESPONSE;
+    change(&mut tail);
+    let mut statement: Statement = z();
+    statement.kind_tail = &tail.head;
+    statement.sections = section.as_ptr();
+    statement.sections_len = section.len();
+    Plane::context(&statement)
+}
+
+#[test]
+fn plane_context_refuses_dialect_lists_above_the_statement_limit() {
+    use busbar_contract::abi::mechanism::check::STATEMENT_LIST_MAX;
+    let dialects = vec![
+        AbiStr {
+            ptr: b"plain".as_ptr(),
+            len: 5
+        };
+        STATEMENT_LIST_MAX + 1
+    ];
+    assert!(bounded_tail_context(|tail| {
+        tail.dialects = dialects.as_ptr();
+        tail.dialects_len = STATEMENT_LIST_MAX;
+    })
+    .is_ok());
+    assert!(bounded_tail_context(|tail| {
+        tail.dialects = dialects.as_ptr();
+        tail.dialects_len = dialects.len();
+    })
+    .is_err());
+}
+
+#[test]
+fn plane_context_refuses_a_refusal_list_before_reading_past_its_storage() {
+    crate::dispatch_tests::assert_child_passes(
+        "plane_context_refuses_a_refusal_list_before_reading_past_its_storage",
+        "an oversized refusal list was read",
+        || {
+            let row: busbar_contract::abi::plane::RefusalStatus = z();
+            assert!(bounded_tail_context(|tail| {
+                tail.refusal_statuses = &row;
+                tail.refusal_statuses_len = usize::MAX;
+            })
+            .is_err());
+        },
+    );
+}
+
+#[test]
+fn plane_context_refuses_an_openapi_blob_before_reading_past_its_storage() {
+    crate::dispatch_tests::assert_child_passes(
+        "plane_context_refuses_an_openapi_blob_before_reading_past_its_storage",
+        "an oversized OpenAPI blob was copied",
+        || {
+            assert!(bounded_tail_context(|tail| {
+                tail.admin_openapi.ptr = b"{}".as_ptr();
+                tail.admin_openapi.len =
+                    busbar_contract::abi::mechanism::check::HARD_MAX_BYTES as usize + 1;
+            })
+            .is_err());
+        },
+    );
+}
+
+#[test]
+fn plane_context_refuses_trust_key_counts_before_forming_a_slice() {
+    crate::dispatch_tests::assert_child_passes(
+        "plane_context_refuses_trust_key_counts_before_forming_a_slice",
+        "an oversized trust-key list was read",
+        || {
+            let key: busbar_contract::abi::plane::TrustKey = z();
+            assert!(bounded_tail_context(|tail| {
+                tail.trust_keys = &key;
+                tail.trust_keys_len = usize::MAX;
+            })
+            .is_err());
+        },
+    );
+}
+
+#[test]
+fn plane_context_refuses_nested_pin_counts_before_forming_a_slice() {
+    crate::dispatch_tests::assert_child_passes(
+        "plane_context_refuses_nested_pin_counts_before_forming_a_slice",
+        "an oversized pin-mechanism list was read",
+        || {
+            use busbar_contract::abi::plane::{PinMechanism, TrustKey, TRUST_PIN};
+            let mechanism: PinMechanism = z();
+            let key = TrustKey {
+                key: AbiStr {
+                    ptr: b"pin".as_ptr(),
+                    len: 3,
+                },
+                role: TRUST_PIN,
+                flags: 0,
+                default: z(),
+                mechanisms: &mechanism,
+                mechanisms_len: usize::MAX,
+            };
+            assert!(bounded_tail_context(|tail| {
+                tail.trust_keys = &key;
+                tail.trust_keys_len = 1;
+            })
+            .is_err());
+        },
+    );
+}
+
+#[test]
+fn plane_context_keeps_a_valid_openapi_blob() {
+    let document = b"{\"openapi\":\"3.1.0\"}";
+    let facts = bounded_tail_context(|tail| {
+        tail.admin_openapi.ptr = document.as_ptr();
+        tail.admin_openapi.len = document.len();
+    })
+    .expect("a bounded document")
+    .expect("the plane context")
+    .downcast::<PlaneFacts>()
+    .expect("plane facts");
+    assert_eq!(facts.served.admin_openapi, Some(document.as_slice()));
+}
+
+#[test]
+fn plane_context_refuses_misaligned_trust_keys_before_forming_a_slice() {
+    crate::dispatch_tests::assert_child_passes(
+        "plane_context_refuses_misaligned_trust_keys_before_forming_a_slice",
+        "a misaligned trust-key list was read",
+        || {
+            use busbar_contract::abi::plane::TrustKey;
+            let storage = vec![0_u64; size_of::<TrustKey>()];
+            // SAFETY: one byte into the allocated storage, deliberately misaligned for TrustKey.
+            let pointer = unsafe { storage.as_ptr().cast::<u8>().add(1).cast::<TrustKey>() };
+            assert!(bounded_tail_context(|tail| {
+                tail.trust_keys = pointer;
+                tail.trust_keys_len = 1;
+            })
+            .is_err());
+        },
+    );
+}
+
+#[test]
+fn plane_context_refuses_misaligned_pin_mechanisms_before_forming_a_slice() {
+    crate::dispatch_tests::assert_child_passes(
+        "plane_context_refuses_misaligned_pin_mechanisms_before_forming_a_slice",
+        "a misaligned pin-mechanism list was read",
+        || {
+            use busbar_contract::abi::plane::{PinMechanism, TrustKey, TRUST_PIN};
+            let storage = vec![0_u64; size_of::<PinMechanism>()];
+            // SAFETY: one byte into the allocation, deliberately misaligned for PinMechanism.
+            let pointer = unsafe { storage.as_ptr().cast::<u8>().add(1).cast::<PinMechanism>() };
+            let key = TrustKey {
+                key: AbiStr {
+                    ptr: b"pin".as_ptr(),
+                    len: 3,
+                },
+                role: TRUST_PIN,
+                flags: 0,
+                default: z(),
+                mechanisms: pointer,
+                mechanisms_len: 1,
+            };
+            assert!(bounded_tail_context(|tail| {
+                tail.trust_keys = &key;
+                tail.trust_keys_len = 1;
+            })
+            .is_err());
+        },
+    );
+}
+
+#[test]
+fn plane_context_refuses_oversized_tail_text_before_copying() {
+    crate::dispatch_tests::assert_child_passes(
+        "plane_context_refuses_oversized_tail_text_before_copying",
+        "oversized tail text was copied",
+        || {
+            assert!(bounded_tail_context(|tail| {
+                tail.label = AbiStr {
+                    ptr: b"label".as_ptr(),
+                    len: busbar_contract::abi::mechanism::check::HARD_MAX_BYTES as usize + 1,
+                };
+            })
+            .is_err());
+        },
+    );
+}
+
+#[test]
+fn plane_context_bounds_fee_text_before_the_fee_validator_reads_it() {
+    crate::dispatch_tests::assert_child_passes(
+        "plane_context_bounds_fee_text_before_the_fee_validator_reads_it",
+        "oversized fee text was read by the validator",
+        || {
+            let fee = AbiStr {
+                ptr: b"fee".as_ptr(),
+                len: busbar_contract::abi::mechanism::check::HARD_MAX_BYTES as usize + 1,
+            };
+            let class = busbar_contract::abi::plane::BillableClass {
+                class: fee,
+                family: AbiStr {
+                    ptr: b"money".as_ptr(),
+                    len: 5,
+                },
+            };
+            assert!(bounded_tail_context(|tail| {
+                tail.billable_classes = &class;
+                tail.billable_classes_len = 1;
+                tail.fee_units = &fee;
+                tail.fee_units_len = 1;
+            })
+            .is_err());
+            assert!(bounded_tail_context(|tail| {
+                tail.fee_units = &fee;
+                tail.fee_units_len = 1;
+            })
+            .is_err());
+        },
+    );
+}
+
+#[test]
+fn plane_context_bounds_metric_text_before_the_metric_validator_reads_it() {
+    crate::dispatch_tests::assert_child_passes(
+        "plane_context_bounds_metric_text_before_the_metric_validator_reads_it",
+        "oversized metric text was read by the validator",
+        || {
+            let lane = AbiStr {
+                ptr: b"lane".as_ptr(),
+                len: busbar_contract::abi::mechanism::check::HARD_MAX_BYTES as usize + 1,
+            };
+            assert!(bounded_tail_context(|tail| {
+                tail.metric_lanes = &lane;
+                tail.metric_lanes_len = 1;
+            })
+            .is_err());
+        },
+    );
+}
+
 #[test]
 fn projection_unit_requires_a_whole_frame_and_a_nonzero_unit() {
     let mut input: ProjectIn = z();
@@ -1048,7 +1307,11 @@ fn routing_recipe_is_kept_after_plane_tail_validation() {
     statement.kind_tail = &tail.head;
     statement.sections = sections.as_ptr();
     statement.sections_len = sections.len();
-    let facts = Plane::context(&statement).expect("valid declared recipe");
+    let facts = Plane::context(&statement)
+        .expect("valid declared recipe")
+        .expect("the plane context")
+        .downcast::<PlaneFacts>()
+        .expect("plane facts");
     assert_eq!(facts.served.route_cost, vec![(1, 0.0), (0, 2.5), (0, 1.0)]);
 }
 

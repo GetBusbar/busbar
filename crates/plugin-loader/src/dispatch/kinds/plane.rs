@@ -51,10 +51,9 @@ use busbar_contract::abi::plane::check::{
     check_snapshot, check_tail, check_trust_keys, Bounds, Caps, ProjectHost, MAX_SESSIONS,
 };
 use busbar_contract::abi::plane::{
-    self, slot, ArriveIn, ArriveOut, BillableClass, OnPieceIn, OnPieceOut, PinMechanism,
-    PlaneDriveIn, PlaneDriveOut, PlaneOpenIn, PlaneOpenOut, PlaneRefreshOut, PlaneSnapshot,
-    PlaneTail, ProjectIn, ProjectOut, RecordWrite, RefusalIn, RefusalOut, RefusalStatus, ServeIn,
-    ServeOut, TrustKey,
+    self, slot, ArriveIn, ArriveOut, BillableClass, OnPieceIn, OnPieceOut, PlaneDriveIn,
+    PlaneDriveOut, PlaneOpenIn, PlaneOpenOut, PlaneRefreshOut, PlaneSnapshot, PlaneTail, ProjectIn,
+    ProjectOut, RecordWrite, RefusalIn, RefusalOut, RefusalStatus, ServeIn, ServeOut,
 };
 use busbar_contract::plane::{PinMechanismDecl, TrustKeyDecl, TrustRole};
 use busbar_contract::plane_calls::InstanceDecl;
@@ -280,25 +279,19 @@ fn tail_facts_read(st: &Statement) -> Result<PlaneFacts, String> {
         tail.billable_classes_len as u64,
     )
     .map_err(|f| format!("the plane tail breaks {:?} at {}", f.rule, f.field))?;
-    check_metric_lanes(&listed(tail.metric_lanes, tail.metric_lanes_len))
+    let metric_lanes = listed(tail.metric_lanes, tail.metric_lanes_len);
+    for lane in &metric_lanes {
+        check_tail_text(*lane, "tail.metric_lanes")
+            .map_err(|f| format!("the plane tail breaks {:?} at {}", f.rule, f.field))?;
+    }
+    check_metric_lanes(&metric_lanes)
         .map_err(|f| format!("the plane tail breaks {:?} at {}", f.rule, f.field))?;
     // A plane declares exactly one section: its verb. The loader's Statement check already
     // refused a NULL list with a count.
-    let sections = if st.sections_len == 0 {
-        &[][..]
-    } else {
-        // SAFETY: a non-NULL `sections` holds `sections_len` `'static` entries.
-        unsafe { std::slice::from_raw_parts(st.sections, st.sections_len) }
-    };
-    check_sections(sections)
+    let sections = listed(st.sections, st.sections_len);
+    check_sections(&sections)
         .map_err(|f| format!("the plane's sections break {:?} at {}", f.rule, f.field))?;
-    let refusal_statuses: Vec<RefusalStatus> = (0..tail.refusal_statuses_len)
-        .map(|i| {
-            // SAFETY: `check_tail` refused a count over a NULL list; the list is `'static` plugin
-            // data of `refusal_statuses_len` entries.
-            unsafe { tail.refusal_statuses.add(i).read_unaligned() }
-        })
-        .collect();
+    let refusal_statuses = listed(tail.refusal_statuses, tail.refusal_statuses_len);
     check_refusal_statuses(&refusal_statuses, tail.dialects_len as u64)
         .map_err(|f| format!("the plane tail breaks {:?} at {}", f.rule, f.field))?;
     // Each dialect's default style and its parameters, judged before they are kept.
@@ -382,13 +375,8 @@ fn tail_facts_read(st: &Statement) -> Result<PlaneFacts, String> {
                     audit_verb: kept(r.audit_verb),
                 })
                 .collect(),
-            admin_openapi: (!tail.admin_openapi.ptr.is_null()).then(|| {
-                // SAFETY: the tail check accepted the blob: `len` bytes of `'static` plugin data.
-                let bytes = unsafe {
-                    std::slice::from_raw_parts(tail.admin_openapi.ptr, tail.admin_openapi.len)
-                };
-                &*bytes.to_vec().leak()
-            }),
+            admin_openapi: (!tail.admin_openapi.ptr.is_null())
+                .then(|| kept_blob(tail.admin_openapi)),
             op_classes: listed(tail.op_classes, tail.op_classes_len)
                 .into_iter()
                 .map(|c| kept(c.op))
@@ -494,7 +482,7 @@ fn stated_provider_keys(
 /// `dialect_auth` lines' flags (`check_dialect_auth` judged every line's index and bits), `0` for a
 /// dialect with none.
 fn dialect_flags(tail: &busbar_contract::abi::plane::PlaneTail) -> Vec<u32> {
-    let mut flags = vec![0; tail.dialects_len];
+    let mut flags = vec![0; listed(tail.dialects, tail.dialects_len).len()];
     for d in listed(tail.dialect_auth, tail.dialect_auth_len) {
         if let Some(f) = flags.get_mut(d.dialect as usize) {
             *f |= d.flags;
@@ -505,7 +493,11 @@ fn dialect_flags(tail: &busbar_contract::abi::plane::PlaneTail) -> Vec<u32> {
 
 /// A tail string, kept for the process (`""` when absent).
 fn kept(s: AbiStr) -> &'static str {
-    if s.ptr.is_null() || s.len == 0 {
+    if check_tail_text(s, "plane.tail.text").is_err() {
+        over_cap();
+        return "";
+    }
+    if s.len == 0 {
         return "";
     }
     // SAFETY: `check_tail` judged every tail string: a non-NULL span of `len` bytes of `'static`
@@ -519,7 +511,13 @@ fn kept(s: AbiStr) -> &'static str {
 
 /// A tail blob's bytes, kept for the process (empty when absent).
 fn kept_blob(b: Blob) -> &'static [u8] {
-    if b.ptr.is_null() || b.len == 0 {
+    if busbar_contract::abi::mechanism::check::blob(&b, "plane.tail.blob", "plane.tail.blob")
+        .is_err()
+    {
+        over_cap();
+        return &[];
+    }
+    if b.len == 0 {
         return &[];
     }
     // SAFETY: `check_dialect_auth` judged the blob (`tail_facts`): a non-NULL span of `len` bytes of
@@ -534,7 +532,8 @@ fn kept_blob(b: Blob) -> &'static [u8] {
 
 /// A tail list of `n` `T`s at `p`, copied.
 fn listed<T: Copy>(p: *const T, n: usize) -> Vec<T> {
-    if p.is_null() || n == 0 {
+    if busbar_contract::abi::mechanism::check::bounded(p, n, "plane.tail.list").is_err() {
+        over_cap();
         return Vec::new();
     }
     // SAFETY: `check_tail` refused a NULL list counted non-zero; the list is `'static` plugin data
@@ -553,10 +552,7 @@ fn listed<T: Copy>(p: *const T, n: usize) -> Vec<T> {
 fn ticket_prefix(st: &Statement) -> Result<Option<&'static str>, String> {
     use busbar_contract::abi::mechanism::door::MARK_WORD_ISSUED_ID_PREFIX;
     let mut found = None;
-    for i in 0..st.mark_words_len {
-        // SAFETY: the loader's Statement check refused a NULL `mark_words` with a count; it holds
-        // `mark_words_len` `'static` word marks.
-        let w = unsafe { st.mark_words.add(i).read_unaligned() };
+    for w in listed(st.mark_words, st.mark_words_len) {
         if w.class != MARK_WORD_ISSUED_ID_PREFIX {
             continue;
         }
@@ -705,6 +701,8 @@ pub fn linked_cli_help(
     let tail: PlaneTail =
         unsafe { crate::dispatch::plugin::kind_tail(&st, "a plane", PLANE_TAIL_FROZEN) }?;
     check_tail(&tail).map_err(|f| format!("the plane tail breaks {:?} at {}", f.rule, f.field))?;
+    check_tail_text(tail.cli_help, "tail.cli_help")
+        .map_err(|f| format!("the plane tail breaks {:?} at {}", f.rule, f.field))?;
     let help = kept(tail.cli_help);
     Ok((!help.is_empty()).then_some(help))
 }
@@ -1198,32 +1196,35 @@ fn facing(
 /// unit no class lists could never be reported, and its fee would be refunded on every unit).
 fn check_tail_fee_units(tail: &PlaneTail) -> Result<(), Fault> {
     let classes: Vec<BillableClass> = listed(tail.billable_classes, tail.billable_classes_len);
+    for class in &classes {
+        check_tail_text(class.class, "billable_class.class")?;
+    }
     check_billable_classes(&classes)?;
     let fee_units: Vec<AbiStr> = listed(tail.fee_units, tail.fee_units_len);
+    for fee in &fee_units {
+        check_tail_text(*fee, "tail.fee_units")?;
+    }
     check_fee_units(&fee_units, &classes)
+}
+
+/// The same byte bound the canonical tail rendering applies, before a validator reads text.
+fn check_tail_text(text: AbiStr, field: &'static str) -> Result<(), Fault> {
+    busbar_contract::abi::mechanism::check::text(text, field)?;
+    if text.len as u64 > busbar_contract::abi::mechanism::check::HARD_MAX_BYTES {
+        return Err(fault(Rule::OverMax, field));
+    }
+    Ok(())
 }
 
 /// The tail's kernel-owned trust keys, judged PER ELEMENT: each key by `check_trust_keys`, each
 /// pin's mechanisms by `check_pin_mechanisms`. `check_tail` proved only that no list is counted over
 /// a NULL pointer; the elements are read here, once, at bind.
 fn check_tail_trust_keys(tail: &PlaneTail) -> Result<(), Fault> {
-    let keys: &[TrustKey] = if tail.trust_keys_len == 0 {
-        &[]
-    } else {
-        // SAFETY: `check_tail` refused a NULL `trust_keys` counted non-zero; the tail is `'static`
-        // plugin data whose list is `trust_keys_len` `TrustKey`s.
-        unsafe { std::slice::from_raw_parts(tail.trust_keys, tail.trust_keys_len) }
-    };
-    check_trust_keys(keys)?;
+    let keys = listed(tail.trust_keys, tail.trust_keys_len);
+    check_trust_keys(&keys)?;
     for key in keys {
-        let mechanisms: &[PinMechanism] = if key.mechanisms_len == 0 {
-            &[]
-        } else {
-            // SAFETY: `check_trust_keys` refused a NULL `mechanisms` counted non-zero; the list is
-            // `'static` plugin data of `mechanisms_len` `PinMechanism`s.
-            unsafe { std::slice::from_raw_parts(key.mechanisms, key.mechanisms_len) }
-        };
-        check_pin_mechanisms(mechanisms)?;
+        let mechanisms = listed(key.mechanisms, key.mechanisms_len);
+        check_pin_mechanisms(&mechanisms)?;
     }
     Ok(())
 }
