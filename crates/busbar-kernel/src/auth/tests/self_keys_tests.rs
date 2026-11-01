@@ -832,6 +832,113 @@ fn no_policy_mints_at_the_self_serve_default_and_self_mint_off_still_refuses() {
     ));
 }
 
+/// The default self-serve mode is still a real mode: omitted, empty and explicit policy lists
+/// retain their three-state meaning at the shared admission seam used by exchange and login.
+#[test]
+fn self_mint_checks_its_recorded_mode_against_block_and_role_lists() {
+    use crate::governance::mint_policy::{MintPolicy, RoleCeiling};
+    use crate::governance::SELF_KEY_BINDING_MODE;
+
+    let rb = bindings("test-idp-double", "eng", Some("team"));
+    let verdict = identified("test-idp-double", principal("sam", &["eng"]));
+    let user = SELF_KEY_BINDING_MODE;
+    let time = crate::governance::SELF_KEY_BINDING_MODE_APP;
+    for (block, role, allowed) in [
+        (None, None, true),
+        (Some(vec![user]), None, true),
+        (None, Some(vec![user]), true),
+        (Some(vec![user, time]), Some(vec![user]), true),
+        (Some(vec![time]), None, false),
+        (Some(vec![]), None, false),
+        (None, Some(vec![time]), false),
+        (None, Some(vec![]), false),
+        (Some(vec![user, time]), Some(vec![time]), false),
+        (Some(vec![time]), Some(vec![user]), false),
+        (Some(vec![]), Some(vec![user]), false),
+    ] {
+        let mut policy = MintPolicy {
+            block_binding_modes: block.map(|modes| modes.into_iter().map(str::to_string).collect()),
+            ..Default::default()
+        };
+        if let Some(modes) = role {
+            policy.ceilings.insert(
+                "eng".into(),
+                RoleCeiling {
+                    binding_modes: Some(modes.into_iter().map(str::to_string).collect()),
+                    ..Default::default()
+                },
+            );
+        }
+        match admit_self_mint(&verdict, &rb, &policy, SELF_TTL) {
+            Ok(mint) => {
+                assert!(allowed, "{policy:?}");
+                assert_eq!(mint.principal.id, "sam");
+                assert_eq!(mint.team, "team");
+                assert_eq!(mint.granted_scopes, None);
+                assert_eq!(mint.ttl, Duration::from_secs(SELF_TTL));
+            }
+            Err(ExchangeError::OverCeiling(message)) => {
+                assert!(!allowed, "{policy:?}: {message}");
+                assert!(message.contains(SELF_KEY_BINDING_MODE), "{message}");
+            }
+            Err(other) => panic!("unexpected admission error: {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn self_mint_unions_held_role_modes_then_narrows_by_the_block() {
+    use crate::governance::mint_policy::{MintPolicy, RoleCeiling};
+    use crate::governance::{SELF_KEY_BINDING_MODE, SELF_KEY_BINDING_MODE_APP};
+
+    let rb = bindings("test-idp-double", "eng", Some("team"));
+    let verdict = identified("test-idp-double", principal("sam", &["eng", "ops"]));
+    for second_role_modes in [Some(vec![SELF_KEY_BINDING_MODE.to_string()]), None] {
+        let mut policy = MintPolicy::default();
+        for (role, modes) in [
+            ("eng", Some(vec![SELF_KEY_BINDING_MODE_APP.to_string()])),
+            ("ops", second_role_modes),
+        ] {
+            policy.ceilings.insert(
+                role.into(),
+                RoleCeiling {
+                    binding_modes: modes,
+                    ..Default::default()
+                },
+            );
+        }
+        assert!(admit_self_mint(&verdict, &rb, &policy, SELF_TTL).is_ok());
+        policy.block_binding_modes = Some(vec![SELF_KEY_BINDING_MODE_APP.to_string()]);
+        assert!(matches!(
+            admit_self_mint(&verdict, &rb, &policy, SELF_TTL),
+            Err(ExchangeError::OverCeiling(_))
+        ));
+    }
+}
+
+#[test]
+fn self_mint_mode_refusal_preserves_identity_and_disabled_policy_errors() {
+    use crate::governance::mint_policy::MintPolicy;
+
+    let rb = bindings("test-idp-double", "eng", Some("team"));
+    let mut policy = MintPolicy {
+        block_binding_modes: Some(Vec::new()),
+        ..Default::default()
+    };
+    for verdict in [ChainVerdict::Open, ChainVerdict::Denied] {
+        assert!(matches!(
+            admit_self_mint(&verdict, &rb, &policy, SELF_TTL),
+            Err(ExchangeError::Unauthorized)
+        ));
+    }
+    let verdict = identified("test-idp-double", principal("sam", &["eng"]));
+    policy.self_mint = Some(false);
+    assert!(matches!(
+        admit_self_mint(&verdict, &rb, &policy, SELF_TTL),
+        Err(ExchangeError::SelfMintDisabled)
+    ));
+}
+
 // ── resolve_exchange: identity source + refusal matrix ────────────────────────────────────────────
 
 #[test]
@@ -1488,4 +1595,269 @@ async fn proof_self_mint_disabled_refuses_self_serve() {
             assert_eq!(gov.all_keys().unwrap().len(), 1);
         }
     }
+}
+
+/// Both real entry points must reject a forbidden mode before group provisioning, overlay
+/// persistence or any binding write. The same identities mint user-bound keys under an explicit
+/// allowance and the omitted-policy default; login refresh passes through the same gate.
+#[tokio::test]
+async fn self_mint_mode_policy_gates_exchange_login_and_refresh_before_mutation() {
+    use crate::auth::login::{issue_self_key, SelfKeyIssue};
+    use crate::governance::mint_policy::{MintPolicy, RoleCeiling};
+    use crate::governance::{SELF_KEY_BINDING_MODE, SELF_KEY_BINDING_MODE_APP};
+
+    crate::snapshot::init();
+    for route in ["exchange", "login", "refresh"] {
+        for (block, role, allowed) in [
+            (None, None, true),
+            (Some(vec![SELF_KEY_BINDING_MODE]), None, true),
+            (Some(vec![SELF_KEY_BINDING_MODE_APP]), None, false),
+            (Some(vec![]), None, false),
+            (None, Some(vec![SELF_KEY_BINDING_MODE_APP]), false),
+        ] {
+            let mut policy = MintPolicy {
+                block_binding_modes: block
+                    .map(|modes| modes.into_iter().map(str::to_string).collect()),
+                ..Default::default()
+            };
+            if let Some(modes) = role {
+                policy.ceilings.insert(
+                    "idp-user".into(),
+                    RoleCeiling {
+                        binding_modes: Some(modes.into_iter().map(str::to_string).collect()),
+                        ..Default::default()
+                    },
+                );
+            }
+            let gov = gov();
+            let dir = tempfile::tempdir().unwrap();
+            let overlay = dir.path().join("overlay.json");
+            let app = crate::test_support::TestApp::new()
+                .idp_chain()
+                .governance(gov.clone())
+                .group("team", GroupCfg::default())
+                .role_bindings(bindings("test-idp-module", "idp-user", Some("team")))
+                .mint_policy(policy)
+                .overlay_path(overlay.clone())
+                .build();
+            let handle = Arc::new(crate::state::AppHandle::new(app));
+            let before = handle.load();
+            let token = if route == "exchange" {
+                let anonymous = crate::auth::exchange::exchange(
+                    axum::extract::State(handle.clone()),
+                    axum::http::Request::builder()
+                        .method("POST")
+                        .uri("/auth/token")
+                        .body(axum::body::Body::empty())
+                        .unwrap(),
+                )
+                .await;
+                assert_eq!(anonymous.status(), axum::http::StatusCode::UNAUTHORIZED);
+                assert!(Arc::ptr_eq(&before, &handle.load()));
+                assert!(gov.all_keys().unwrap().is_empty());
+                assert!(!overlay.exists());
+                let response = crate::auth::exchange::exchange(
+                    axum::extract::State(handle.clone()),
+                    axum::http::Request::builder()
+                        .method("POST")
+                        .uri("/auth/token")
+                        .header("authorization", "Bearer eligible-idp-credential")
+                        .body(axum::body::Body::empty())
+                        .unwrap(),
+                )
+                .await;
+                let status = response.status();
+                let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+                    .await
+                    .unwrap();
+                let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+                if allowed {
+                    assert_eq!(status, axum::http::StatusCode::OK, "{body}");
+                    Some(body["api_key"].as_str().expect("issued token").to_string())
+                } else {
+                    assert_eq!(status, axum::http::StatusCode::FORBIDDEN, "{body}");
+                    assert_eq!(
+                        body["error"],
+                        "the key this identity would mint is over the mint ceiling (auth.policy)"
+                    );
+                    assert!(body.get("api_key").is_none());
+                    None
+                }
+            } else {
+                match issue_self_key(
+                    &before,
+                    &handle,
+                    "test-idp-module",
+                    principal("idp:subject", &["idp-user"]),
+                    route == "refresh",
+                )
+                .await
+                {
+                    SelfKeyIssue::Issued { secret, .. } => {
+                        assert!(allowed);
+                        Some(secret.expose(&crate::seal::lend()).clone())
+                    }
+                    SelfKeyIssue::OverCeiling => {
+                        assert!(!allowed);
+                        None
+                    }
+                    other => panic!("unexpected {route} result: {other:?}"),
+                }
+            };
+            if let Some(token) = token {
+                let key = gov.verify_token(&token, crate::store::now(), None).unwrap();
+                assert_eq!(key.binding_mode.as_deref(), Some(SELF_KEY_BINDING_MODE));
+                assert_eq!(key.group.as_deref(), Some("user:idp:subject"));
+                assert_eq!(gov.all_keys().unwrap().len(), 1);
+                assert!(handle
+                    .load()
+                    .groups_registry
+                    .contains_key("user:idp:subject"));
+                assert!(
+                    overlay.exists(),
+                    "the allowed mint really provisions its group"
+                );
+            } else {
+                assert!(gov.all_keys().unwrap().is_empty(), "no binding was written");
+                assert!(
+                    Arc::ptr_eq(&before, &handle.load()),
+                    "no group snapshot swap"
+                );
+                assert!(!before.groups_registry.contains_key("user:idp:subject"));
+                assert!(!overlay.exists(), "no group overlay was persisted");
+            }
+        }
+    }
+}
+
+/// A verified identity asking for a real replay claim, as an inbound auth door does.
+struct ModeReplayIdentity;
+
+struct ModeReplayAnswer(Option<busbar_contract::auth_calls::VerifyAnswer>);
+
+impl std::future::Future for ModeReplayAnswer {
+    type Output = busbar_contract::auth_calls::VerifyAnswer;
+
+    fn poll(
+        mut self: std::pin::Pin<&mut Self>,
+        _: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Self::Output> {
+        std::task::Poll::Ready(self.0.take().expect("the verify answers once"))
+    }
+}
+
+impl busbar_contract::auth_calls::Verifying for ModeReplayAnswer {
+    fn settled(&mut self) -> Option<busbar_contract::auth_calls::VerifyAnswer> {
+        self.0.take()
+    }
+}
+
+impl busbar_contract::auth_calls::AuthCalls for ModeReplayIdentity {
+    fn name(&self) -> &str {
+        "mode-replay-idp"
+    }
+
+    fn facts(&self) -> u32 {
+        0
+    }
+
+    fn verify_now(
+        &self,
+        _: &busbar_contract::auth_calls::VerifyRequest,
+    ) -> Option<busbar_contract::auth_calls::VerifyAnswer> {
+        use busbar_contract::auth_calls::{Replay, Verified, VerifiedIdentity};
+        Some(
+            Verified::Identity(VerifiedIdentity {
+                subject: "sam".into(),
+                groups: vec!["eng".into()],
+                replay: Some(Box::new(Replay {
+                    key: "self-mode-refused".into(),
+                    ttl_secs: 300,
+                })),
+                ..Default::default()
+            })
+            .into(),
+        )
+    }
+
+    fn verify(
+        &self,
+        request: busbar_contract::auth_calls::VerifyRequest,
+    ) -> Box<dyn busbar_contract::auth_calls::Verifying> {
+        Box::new(ModeReplayAnswer(self.verify_now(&request)))
+    }
+
+    fn refresh(&self) -> Result<u64, String> {
+        Ok(0)
+    }
+}
+
+#[tokio::test]
+async fn mode_refused_exchange_leaves_its_verified_identitys_replay_claim_unclaimed() {
+    use busbar_contract::store_calls::StoreDoor;
+
+    crate::snapshot::init();
+    let opened = crate::test_support::store_axis_stand_in()
+        .open(
+            StoreDoor::Linked(crate::test_support::store_double::door),
+            crate::test_support::store_double::NAME,
+            b"{}",
+        )
+        .unwrap();
+    let gov = Arc::new(
+        GovState::new_with_signer(
+            opened.records,
+            None,
+            Some(crate::governance::signing::TokenSigner::from_secret_bytes(
+                &SEED,
+                crate::governance::signing::DEFAULT_KID,
+            )),
+        )
+        .unwrap(),
+    );
+    assert!(gov.attach_store_calls(opened.calls.unwrap()));
+    let auth = Arc::new(super::super::AuthMiddleware::from_doors_for_test(vec![(
+        "mode-replay-idp".into(),
+        Arc::new(ModeReplayIdentity),
+    )]));
+    let app = crate::test_support::TestApp::new()
+        .auth(auth)
+        .governance(gov.clone())
+        .group("team", GroupCfg::default())
+        .role_bindings(bindings("mode-replay-idp", "eng", Some("team")))
+        .mint_policy(crate::governance::mint_policy::MintPolicy {
+            block_binding_modes: Some(vec![crate::governance::SELF_KEY_BINDING_MODE_APP.into()]),
+            ..Default::default()
+        })
+        .build();
+    let handle = Arc::new(crate::state::AppHandle::new(app));
+    let before = handle.load();
+    for _ in 0..2 {
+        let response = crate::auth::exchange::exchange(
+            axum::extract::State(handle.clone()),
+            axum::http::Request::builder()
+                .method("POST")
+                .uri("/auth/token")
+                .header("authorization", "Bearer verified-message")
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(response.status(), axum::http::StatusCode::FORBIDDEN);
+    }
+    assert!(Arc::ptr_eq(&before, &handle.load()));
+    assert!(gov.all_keys().unwrap().is_empty());
+    let claim = busbar_contract::auth_calls::Replay {
+        key: "self-mode-refused".into(),
+        ttl_secs: 300,
+    };
+    let now = crate::store::now();
+    assert!(
+        super::super::replay_claimed(Some(&gov), "mode-replay-idp", &claim, now).await,
+        "the refused exchanges leave the verified replay claim available"
+    );
+    assert!(
+        !super::super::replay_claimed(Some(&gov), "mode-replay-idp", &claim, now).await,
+        "the attached store really enforces replay claims"
+    );
 }
