@@ -545,6 +545,18 @@ const IDEMPOTENCY_KEY_HEADER: &str = "idempotency-key";
 /// ([`durable`]).
 pub type KeyReplayCache = crate::idempotency::IdempotencyCache<Value>;
 
+/// Keep mutation, audit and replay settlement under one owner after the request disconnects.
+/// Dropping the caller's join handle detaches this task; it does not cancel the mutation owner.
+async fn complete_key_mutation(
+    op: &'static str,
+    mutation: impl std::future::Future<Output = Response> + Send + 'static,
+) -> Response {
+    match tokio::spawn(mutation).await {
+        Ok(response) => response,
+        Err(error) => join_error(op, &error),
+    }
+}
+
 /// Claim `key` in the configured store before a mint or rotate becomes irreversible (see
 /// [`durable`]), off the async workers.
 async fn claim_in_store(
@@ -673,6 +685,20 @@ pub(crate) async fn create_key(
     headers: axum::http::HeaderMap,
     // The node's replay cache.
     axum::Extension(replays): axum::Extension<std::sync::Arc<KeyReplayCache>>,
+    body: Bytes,
+) -> Response {
+    complete_key_mutation(
+        "create_key",
+        create_key_owned(handle, principal, headers, replays, body),
+    )
+    .await
+}
+
+async fn create_key_owned(
+    handle: std::sync::Arc<busbar_kernel::state::AppHandle>,
+    principal: busbar_kernel::auth::AuthPrincipal,
+    headers: axum::http::HeaderMap,
+    replays: std::sync::Arc<KeyReplayCache>,
     body: Bytes,
 ) -> Response {
     // A fresh snapshot for the mint's pool/group READS; the auto-provision path (below) swaps
@@ -979,10 +1005,8 @@ pub(crate) async fn create_key(
         }
         None => None,
     };
-    // The mint is about to be handed to `config_transaction`'s uncancellable blocking half — from
-    // here on, a dropped handler future (client disconnect) must NOT clear the sentinel, since the
-    // mint may already be landing, so a drop from here on leaves the sentinel (a client retry gets
-    // the honest 409 "already in flight") until the mint answers and commits or clears it.
+    // The detached owner finishes the claim even if the request disconnects while queued on the
+    // config lock. An owner panic must still retain the sentinel: the blocking write may land.
     if let Some(r) = idem_reservation.as_mut() {
         r.in_flight();
     }
@@ -1102,13 +1126,14 @@ pub(crate) async fn create_key(
         // neither carries a `Cond`, so the envelope stays untagged.
         Err(e) => {
             record_key_refusal(who);
-            // The transaction's OWN fail-closed outcome — reached only when the `.await` completed
-            // normally, never on genuine cancellation — so nothing committed and the reservation is
-            // safe to free for a legitimate retry.
             if let Some(r) = idem_reservation.take() {
                 r.clear();
             }
-            settle_in_store(replay_store, claim, Settled::Released).await;
+            // Internal includes a lost store reply or a panic after the write. Keep that durable
+            // claim ambiguous; only an explicit pre-mutation refusal is safe to release.
+            if !matches!(e, AdminError::Internal) {
+                settle_in_store(replay_store, claim, Settled::Released).await;
+            }
             return crate::v1::json::err_json(&e);
         }
     };
@@ -1217,6 +1242,20 @@ pub(crate) async fn update_key(
     >,
     axum::Extension(principal): axum::Extension<busbar_kernel::auth::AuthPrincipal>,
     Path(id): Path<String>,
+    headers: axum::http::HeaderMap,
+    body: Bytes,
+) -> Response {
+    complete_key_mutation(
+        "update_key",
+        update_key_owned(handle, principal, id, headers, body),
+    )
+    .await
+}
+
+async fn update_key_owned(
+    handle: std::sync::Arc<busbar_kernel::state::AppHandle>,
+    principal: busbar_kernel::auth::AuthPrincipal,
+    id: String,
     headers: axum::http::HeaderMap,
     body: Bytes,
 ) -> Response {
@@ -1424,7 +1463,10 @@ pub(crate) async fn update_key(
         // generic store failure, which carries no condition of its own.
         Err(e @ AdminError::Validation(_)) => key_err(who, &e, Cond::RebindTargetMissing),
         Err(e @ AdminError::Conflict(_)) => key_err(who, &e, Cond::GovernanceOff),
-        Err(e) => crate::v1::json::err_json(&e),
+        Err(e) => {
+            record_key_refusal(who);
+            crate::v1::json::err_json(&e)
+        }
     }
 }
 
@@ -1606,6 +1648,20 @@ pub(crate) async fn rotate_key(
     // See `create_key`'s identical parameter.
     axum::Extension(replays): axum::Extension<std::sync::Arc<KeyReplayCache>>,
 ) -> Response {
+    complete_key_mutation(
+        "rotate_key",
+        rotate_key_owned(app, principal, id, headers, replays),
+    )
+    .await
+}
+
+async fn rotate_key_owned(
+    app: std::sync::Arc<busbar_kernel::state::App>,
+    principal: busbar_kernel::auth::AuthPrincipal,
+    id: String,
+    headers: axum::http::HeaderMap,
+    replays: std::sync::Arc<KeyReplayCache>,
+) -> Response {
     let actor = principal.actor_id().to_string();
     // The ONE audit identity for this operation: `key_err` writes the `rejected` row from it, so a
     // refusal cannot be shaped without being recorded. See `KeyAudit`.
@@ -1687,9 +1743,8 @@ pub(crate) async fn rotate_key(
         }
         None => None,
     };
-    // The rotate is about to be handed to `spawn_blocking`'s uncancellable task — from here on, a
-    // dropped handler future (client disconnect) must NOT clear the sentinel. See
-    // `Reservation::in_flight`.
+    // The detached owner finishes replay settlement after a disconnect. If that owner panics,
+    // retain the sentinel because the blocking mutation may already have landed.
     if let Some(r) = idem_reservation.as_mut() {
         r.in_flight();
     }
@@ -1751,9 +1806,7 @@ pub(crate) async fn rotate_key(
             settle_in_store(replay_store, claim, Settled::Applied(resource.clone())).await;
             json_response(StatusCode::OK, body)
         }
-        // All four arms below are the transaction's OWN fail-closed outcomes, reached only after
-        // the `.await` completed normally (never on genuine cancellation) — safe to free the
-        // reservation for a legitimate retry.
+        // These explicit refusals precede the write, so their claims are safe to release.
         Ok(Ok(RotateOutcome::Unknown)) => {
             if let Some(r) = idem_reservation.take() {
                 r.clear();
@@ -1772,7 +1825,9 @@ pub(crate) async fn rotate_key(
             if let Some(r) = idem_reservation.take() {
                 r.clear();
             }
-            settle_in_store(replay_store, claim, Settled::Released).await;
+            // A store error may follow a committed rotation (including a cache-reconcile failure).
+            // Leave the durable claim unsettled rather than permitting another credential issue.
+            record_key_refusal(who);
             internal_error("rotate_key", &e)
         }
         // A rotate that did not run to completion may or may not have landed: its store claim is
@@ -1781,6 +1836,7 @@ pub(crate) async fn rotate_key(
             if let Some(r) = idem_reservation.take() {
                 r.clear();
             }
+            record_key_refusal(who);
             join_error("rotate_key", &e)
         }
     }
@@ -1795,6 +1851,14 @@ pub(crate) async fn revoke_key(
     busbar_kernel::state::CurrentApp(app): busbar_kernel::state::CurrentApp,
     axum::Extension(principal): axum::Extension<busbar_kernel::auth::AuthPrincipal>,
     Path(id): Path<String>,
+) -> Response {
+    complete_key_mutation("revoke_key", revoke_key_owned(app, principal, id)).await
+}
+
+async fn revoke_key_owned(
+    app: std::sync::Arc<busbar_kernel::state::App>,
+    principal: busbar_kernel::auth::AuthPrincipal,
+    id: String,
 ) -> Response {
     let actor = principal.actor_id().to_string();
     // The ONE audit identity for this operation: `key_err` writes the `rejected` row from it, so a
@@ -1838,8 +1902,14 @@ pub(crate) async fn revoke_key(
             json_response(StatusCode::OK, json!({ "revoked": id }))
         }
         Ok(Ok(false)) => key_err(who, &AdminError::not_found("key"), Cond::UnknownResource),
-        Ok(Err(e)) => internal_error("revoke_key", &e),
-        Err(e) => join_error("revoke_key", &e),
+        Ok(Err(e)) => {
+            record_key_refusal(who);
+            internal_error("revoke_key", &e)
+        }
+        Err(e) => {
+            record_key_refusal(who);
+            join_error("revoke_key", &e)
+        }
     }
 }
 
@@ -2045,6 +2115,15 @@ pub(crate) async fn delete_key(
     Path(id): Path<String>,
     headers: axum::http::HeaderMap,
 ) -> Response {
+    complete_key_mutation("delete_key", delete_key_owned(app, principal, id, headers)).await
+}
+
+async fn delete_key_owned(
+    app: std::sync::Arc<busbar_kernel::state::App>,
+    principal: busbar_kernel::auth::AuthPrincipal,
+    id: String,
+    headers: axum::http::HeaderMap,
+) -> Response {
     let actor = principal.actor_id().to_string();
     // The ONE audit identity for this operation: `key_err` writes the `rejected` row from it, so a
     // refusal cannot be shaped without being recorded. See `KeyAudit`.
@@ -2100,6 +2179,7 @@ pub(crate) async fn delete_key(
     }
     let gov = gov.clone();
     let id_for_task = id.clone();
+    let task_actor = actor.clone();
     let res = tokio::task::spawn_blocking(move || {
         let _existence_guard = EXISTENCE_GATE.claim(id_for_task.clone());
         // The key RECORD (not just existence) is read under the gate: the If-Match compare must be
@@ -2126,8 +2206,18 @@ pub(crate) async fn delete_key(
                 // write failure is fatal to the delete (fail-closed: never report a delete that did
                 // not durably revoke).
                 gov.revoke(&id_for_task, "key deleted")?;
-                gov.delete_key(&id_for_task)
-                    .map(|()| DeleteOutcome::Deleted)
+                match gov.delete_key(&id_for_task) {
+                    Ok(()) => Ok(DeleteOutcome::Deleted),
+                    Err(error) => {
+                        audit::AUDIT.record_by(
+                            "key.revoke",
+                            &format!("key:{id_for_task}"),
+                            audit::OUTCOME_APPLIED,
+                            &task_actor,
+                        );
+                        Err(error)
+                    }
+                }
             }
         }
     })
@@ -2150,8 +2240,14 @@ pub(crate) async fn delete_key(
             ),
             Cond::StaleIfMatch,
         ),
-        Ok(Err(e)) => internal_error("delete_key", &e),
-        Err(e) => join_error("delete_key", &e),
+        Ok(Err(e)) => {
+            record_key_refusal(who);
+            internal_error("delete_key", &e)
+        }
+        Err(e) => {
+            record_key_refusal(who);
+            join_error("delete_key", &e)
+        }
     }
 }
 
@@ -2173,3 +2269,7 @@ mod tests;
 #[cfg(test)]
 #[path = "tests/provision_tests.rs"]
 mod provision_tests;
+
+#[cfg(test)]
+#[path = "tests/key_custody_tests.rs"]
+mod key_custody_tests;
