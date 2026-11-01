@@ -43,6 +43,45 @@ fn status_metric_hints_cap_char_safe() {
     assert!(parsed2[0].max.is_none());
 }
 
+#[test]
+fn status_metric_text_does_not_inherit_the_rejection_fallback() {
+    for raw in ["", "\r\n\t\u{2028}\u{2029}\u{200B}\u{202E}\u{2066}\u{FEFF}"] {
+        let metrics = [serde_json::json!({
+            "name": "requests_total", "type": "counter", "value": 1.0,
+            "help": raw, "label": raw, "unit": raw, "labels": {"pool": raw}
+        })];
+        let parsed = reply::parse_status_metrics(&metrics);
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].help.as_deref(), Some(""));
+        assert_eq!(parsed[0].label.as_deref(), Some(""));
+        assert_eq!(parsed[0].unit, None);
+        assert_eq!(parsed[0].labels.as_ref().unwrap()["pool"], "");
+        assert_eq!(
+            reply::sanitize_reject_message(raw),
+            reply::REJECT_MESSAGE_DEFAULT
+        );
+    }
+
+    // Printable text, including spaces, keeps its content; rejected requests alone get a fallback.
+    for (raw, expected) in [("  ", "  "), (" €\r\n\u{202E}ms ", " €ms ")] {
+        let metrics = [serde_json::json!({
+            "name": "requests_total", "type": "counter", "value": 1.0,
+            "help": raw, "label": raw, "unit": raw, "labels": {"pool": raw}
+        })];
+        let parsed = reply::parse_status_metrics(&metrics);
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].help.as_deref(), Some(expected));
+        assert_eq!(parsed[0].label.as_deref(), Some(expected));
+        assert_eq!(parsed[0].unit.as_deref(), Some(expected));
+        assert_eq!(parsed[0].labels.as_ref().unwrap()["pool"], expected);
+    }
+    assert_eq!(
+        reply::sanitize_reject_message("  "),
+        reply::REJECT_MESSAGE_DEFAULT
+    );
+    assert_eq!(reply::sanitize_reject_message(" €\r\n\u{202E}ms "), " €ms ");
+}
+
 /// The redesigned metric shape (the compression-hook fit-test): a Prometheus-style ARRAY carrying
 /// per-dimension LABELS, a HISTOGRAM distribution via quantiles, and an ESTIMATE with a CI —
 /// the shapes a real plugin dashboard needs and the old flat map could not express. Malformed
@@ -133,6 +172,49 @@ fn status_metrics_validates_native_buckets() {
         parsed[1].buckets.is_none(),
         "all-invalid buckets map drops to None"
     );
+}
+
+#[test]
+fn status_metrics_rejects_nonfinite_bucket_bounds_except_exact_positive_inf() {
+    let invalid = [
+        "NaN",
+        "nan",
+        "inf",
+        "-inf",
+        "infinity",
+        "+Infinity",
+        "-Inf",
+        "1e999",
+    ];
+    let mut buckets = serde_json::Map::new();
+    for bound in invalid {
+        buckets.insert(bound.into(), serde_json::json!(1.0));
+    }
+    let invalid_buckets = buckets.clone();
+    for bound in ["-1", "0", "1.5", "1e2", "+Inf"] {
+        buckets.insert(bound.into(), serde_json::json!(2.0));
+    }
+    let metrics = [
+        serde_json::json!({"name": "duration", "type": "histogram", "value": 2.0,
+                          "buckets": buckets}),
+        serde_json::json!({"name": "invalid_bounds", "type": "histogram", "value": 1.0,
+                          "buckets": invalid_buckets}),
+    ];
+    let parsed = reply::parse_status_metrics(&metrics);
+    assert_eq!(
+        parsed.len(),
+        2,
+        "invalid optional bounds do not discard the metric"
+    );
+    let kept = parsed[0].buckets.as_ref().unwrap();
+    assert_eq!(kept.len(), 5);
+    for bound in ["-1", "0", "1.5", "1e2", "+Inf"] {
+        assert_eq!(kept[bound], 2.0);
+    }
+    for bound in invalid {
+        assert!(!kept.contains_key(bound), "invalid bound retained: {bound}");
+    }
+    assert!(parsed[1].buckets.is_none());
 }
 
 use super::{decision as answered, transformed};

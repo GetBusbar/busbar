@@ -140,7 +140,7 @@ pub struct StatusEnvelope {
 pub const MAX_HOOK_METRICS: usize = 64;
 /// Per-entry cap on label pairs (a labeled series stays small — cardinality guard).
 pub const MAX_METRIC_LABELS: usize = 8;
-/// Metric-help length cap (chars), sanitized through `sanitize_reject_message` before exposure.
+/// Metric-help length cap (chars), sanitized through `sanitize_cap` before exposure.
 pub const MAX_METRIC_HELP_CHARS: usize = 200;
 /// Display-hint + label-value caps (same sanitize rule as help).
 pub const MAX_METRIC_LABEL_CHARS: usize = 64;
@@ -160,8 +160,23 @@ pub fn valid_metric_name(name: &str) -> bool {
 /// Char-boundary-safe sanitize + cap (`String::truncate` takes BYTES and panics off a
 /// char boundary; `.chars().take(n)` is panic-free and matches the documented "≤ N chars" rule).
 /// An over-cap value is cut at the cap with nothing added, as 1.5.5 cut it.
+/// Empty text stays empty; only rejection messages receive a default explanation.
 pub fn sanitize_cap(raw: &str, n: usize) -> String {
-    sanitize_reject_message(raw).chars().take(n).collect()
+    raw.chars()
+        .filter(|c| {
+            !c.is_control()
+                && !matches!(
+                    *c,
+                    '\u{2028}'
+                        | '\u{2029}'
+                        | '\u{200B}'..='\u{200F}'
+                        | '\u{202A}'..='\u{202E}'
+                        | '\u{2066}'..='\u{2069}'
+                        | '\u{FEFF}'
+                )
+        })
+        .take(n)
+        .collect()
 }
 
 /// Parse + validate the metrics ARRAY of a `status` reply FAIL-OPEN: a malformed entry (bad
@@ -218,7 +233,9 @@ pub fn parse_status_metrics(raw: &[serde_json::Value]) -> Vec<HookMetric> {
             .map(|b| {
                 b.into_iter()
                     .filter(|(k, val)| {
-                        val.is_finite() && *val >= 0.0 && (k == "+Inf" || k.parse::<f64>().is_ok())
+                        val.is_finite()
+                            && *val >= 0.0
+                            && (k == "+Inf" || k.parse::<f64>().is_ok_and(f64::is_finite))
                     })
                     .take(MAX_METRIC_LABELS * 8)
                     .collect::<std::collections::BTreeMap<_, _>>()
@@ -299,22 +316,7 @@ pub const REJECT_MESSAGE_DEFAULT: &str = "Request rejected by the routing policy
 /// depth for a `RoutingDecision::Reject` constructed directly by a policy impl), so the "safe to
 /// log, safe for the client" guarantee holds for EVERY producer of a rejection.
 pub fn sanitize_reject_message(raw: &str) -> String {
-    let message: String = raw
-        .chars()
-        .filter(|c| {
-            !c.is_control()
-                && !matches!(
-                    *c,
-                    '\u{2028}'
-                        | '\u{2029}'
-                        | '\u{200B}'..='\u{200F}'
-                        | '\u{202A}'..='\u{202E}'
-                        | '\u{2066}'..='\u{2069}'
-                        | '\u{FEFF}'
-                )
-        })
-        .take(REJECT_MESSAGE_MAX_CHARS)
-        .collect();
+    let message = sanitize_cap(raw, REJECT_MESSAGE_MAX_CHARS);
     if message.trim().is_empty() {
         REJECT_MESSAGE_DEFAULT.to_string()
     } else {

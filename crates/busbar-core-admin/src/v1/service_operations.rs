@@ -38,6 +38,21 @@ fn refused(refusal: Refusal) -> AdminError {
     }
 }
 
+/// A failed durable operation is a server failure, not a malformed upload. Log only the operation
+/// and OS error classification: paths and arbitrary I/O error text never reach the response or log.
+/// A directory fsync can fail after rename/unlink, so neither the error nor this mapping promises
+/// that the artifact is unchanged, and the caller must not roll it back on that assumption.
+fn plugin_io_failed(operation: &'static str, error: std::io::Error) -> AdminError {
+    diag_error!(
+        ADMIN_STORE_OPERATION_FAILED,
+        operation,
+        error = ?error.kind(),
+        os_error = ?error.raw_os_error(),
+        "admin plugin persistence failed; the filesystem mutation may already have taken effect"
+    );
+    AdminError::Internal
+}
+
 impl AdminService {
     pub(crate) fn new(app: Arc<App>) -> Self {
         Self {
@@ -839,15 +854,16 @@ impl AdminService {
                 .as_ref()
                 .map(|m| m.name.clone())
                 .unwrap_or_else(|| row.file.clone());
-            // `r#type` reflects the manifest's OWN `kind` (`GET /plugins?type=secret` support,
-            // plus real rows for `auth`) — not hardcoded "store".
-            // `kind: hook` and a manifest-less (invalid/corrupt) row both fall back to "store",
-            // preserving the exact pre-existing behavior for every case this change doesn't newly
-            // cover (a broken upload of unknown kind still surfaces somewhere an operator will see
-            // it, and `type=hooks` has its own, unrelated listing mechanism below — not this scan).
+            // Preserve every recognized manifest kind in the shared inventory. Unknown kinds and
+            // unreadable manifests retain the store fallback so broken uploads remain visible.
+            // `type=hooks` still lists the separate hook registry, not this directory inventory.
             let r#type = match row.stated.as_ref().map(|m| m.kind.as_str()) {
                 Some("secret") => "secret",
                 Some("auth") => "auth",
+                Some("hook") => "hook",
+                Some("export") => "export",
+                Some("transport") => "transport",
+                Some("plane") => "plane",
                 _ => "store",
             };
             // `schema_url`/`schema_error`: non-null whenever the manifest
@@ -1022,11 +1038,10 @@ impl AdminService {
         // the same per-call-uniqueness property.
         let dir = &self.app.plugins_dir;
         busbar_kernel::durable::create_dir_all(dir)
-            .map_err(|e| AdminError::Validation(format!("cannot create plugins dir: {e}")))?;
+            .map_err(|e| plugin_io_failed("plugins.install.create_dir", e))?;
         let final_path = dir.join(&file);
-        busbar_kernel::durable::write(&final_path, tarball).map_err(|e| {
-            AdminError::Validation(format!("cannot publish plugin into plugins dir: {e}"))
-        })?;
+        busbar_kernel::durable::write(&final_path, tarball)
+            .map_err(|e| plugin_io_failed("plugins.install.publish", e))?;
 
         Ok(crate::v1::contract::PluginInstallView {
             file,
@@ -1142,7 +1157,7 @@ impl AdminService {
         // the asymmetric half -- a crash right after a delete could resurrect the artifact and load
         // it on the next boot.
         busbar_kernel::durable::remove(&lib_path)
-            .map_err(|e| AdminError::Validation(format!("cannot remove plugin: {e}")))?;
+            .map_err(|e| plugin_io_failed("plugins.remove", e))?;
         Ok(crate::v1::contract::PluginRemoveView {
             file,
             removed: true,
