@@ -17,14 +17,19 @@ run by the owner from his own clone at the release commit with his hardware keys
             signs SHA256SUMS, SHA256SUMS.plugins, IMAGES and release-evidence.json, and each
             signature is checked against the trusted allowed_signers.
   upload    pushes the images by digest (untagged), cosign-signs and verifies them, creates the
-            GitHub Release as a draft, uploads to Rekor, publishes, tags, and verifies everything
-            again as a user would. Only then does it move X.Y, X and latest.
+            GitHub Release as a draft on the owner's K2-signed version tag (G-15; the tag must
+            already be on GitHub, the same tag object), uploads to Rekor, publishes, tags the
+            images, and verifies everything again as a user would. Only then does it move X.Y, X
+            and latest.
   plugin-release <repo> <tag> --plugins DIR
             the same flow for one plugin released between core releases. Its unsigned tarballs come
             from the candidate-plugins checks, built from the committed pins.
   spot-rebuild
             rebuilds the host target locally and byte-compares it with the candidate. Report only;
             the result is recorded in the evidence.
+
+The owner's clone also holds the version tag v<V>: annotated, signed with K2 under the sshsig
+namespace `git` (`git tag -s`, gpg.format=ssh) and naming the release commit (G-15).
 
 THE RULE SET IS THIS FILE. No flag, environment variable or config skips a rule. A rule that is
 not here is recorded as `not-run` in the evidence, and the site claims nothing for it. A rule that
@@ -39,7 +44,9 @@ builders"):
 
   candidate.json   {"version","commit","repo","test_kit":{"tag","commit"},
                     "plugins":[{"repo","version","tag","commit"}]}
-  artifacts/       busbar-<target>.<archive> for every published target, busbar-openapi-v<V>.json
+  artifacts/       busbar-<target>.<archive> for every published target, busbar-openapi-v<V>.json,
+                   plugin-index.json (the release index `busbar --migrate-config` reads; see
+                   render_plugin_index)
   plugins/         <repo>-<version>-<target>.tar.gz, UNSIGNED, for every plugin and plugin target
   sboms/           busbar-v<V>-<target>.cdx.json for every published target and image platform
   internal/        busbar-<musl target>.tar.gz (the binaries the image carries; not published)
@@ -81,6 +88,10 @@ PLUGIN_TARGETS = (
 # is signed, and allowed_signers restricts each key to one namespace (G-14).
 K2_NAMESPACE = "busbar-release"
 STATEMENT_NAMESPACE = "busbar-release-statement"
+# K2 also signs the version tag (`git tag -s` with gpg.format=ssh), which git signs and verifies under
+# the sshsig namespace "git". allowed_signers carries the same K2 key on its own line limited to that
+# namespace (G-14), so a tag signature can never stand in for a file signature, nor the reverse.
+TAG_NAMESPACE = "git"
 K2_IDENTITY = "busbar-release"
 # A K2 key must be a FIDO2 hardware key: the key type proves it.
 K2_HARDWARE_TYPES = ("sk-ssh-ed25519@openssh.com", "sk-ecdsa-sha2-nistp256@openssh.com")
@@ -190,6 +201,27 @@ class Net:
             return None
         raise CannotRun(f"skopeo inspect {ref}: {err.strip()}")
 
+    def repo_full_name(self, repo: str) -> str | None:
+        """The repository GitHub serves for `org/name` (a renamed repo redirects), or None."""
+        p = run([tool("gh"), "api", f"repos/{repo}", "-q", ".full_name"])
+        if p.returncode == 0:
+            return p.stdout.decode().strip() or None
+        err = p.stderr.decode(errors="replace").lower()
+        if "not found" in err or "404" in err:
+            return None
+        raise CannotRun(f"gh api repos/{repo}: {err.strip()}")
+
+    def remote_tag(self, repo: str, tag: str) -> str | None:
+        """The object `refs/tags/<tag>` names on GitHub (the tag object for an annotated tag), or None."""
+        p = run(["git", "ls-remote", f"https://github.com/{repo}.git", f"refs/tags/{tag}"])
+        if p.returncode != 0:
+            raise CannotRun(f"git ls-remote {repo} {tag}: {p.stderr.decode(errors='replace').strip()}")
+        for line in p.stdout.decode().splitlines():
+            sha, ref = line.split("\t")
+            if ref == f"refs/tags/{tag}":
+                return sha
+        return None
+
     def repo_file(self, repo: str, path: str, ref: str) -> str:
         p = run([tool("gh"), "api", f"repos/{repo}/contents/{path}?ref={ref}", "-q", ".content"])
         if p.returncode != 0:
@@ -269,6 +301,70 @@ def registry_plugins(root: Path) -> list:
     return [e["repo"] for e in registry_entries(root) if e.get("pending_crate", "false") != "true"]
 
 
+# ── the release index ────────────────────────────────────────────────────────────────────────────
+
+INDEX = "plugin-index.json"
+INDEX_TARGET = "x86_64-unknown-linux-gnu"  # the tarball whose manifest states a plugin's ABI version
+
+
+def _once(v: list, s: str) -> None:
+    if s and s not in v:
+        v.append(s)
+
+
+def tarball_manifest(p: Path) -> dict:
+    """The manifest.json inside a plugin tarball."""
+    with tarfile.open(p) as t:
+        for m in t.getmembers():
+            if m.isfile() and m.name.rsplit("/", 1)[-1] == "manifest.json":
+                return json.loads(t.extractfile(m).read())
+    raise ValueError(f"{p.name} holds no manifest.json")
+
+
+def render_plugin_index(root: Path, cand: Path, plugins: list, net: Net) -> bytes:
+    """plugin-index.json, the release index `busbar --migrate-config` reads from this release's own
+    GitHub Release (crates/busbar/src/root/config_migrate.rs, `Index::parse`):
+
+      {"plugins": [{"repo", "former_repos", "kind", "answers_to", "releases": [{"tag", "abi_version"}]}]}
+
+    One entry per plugin the candidate releases (candidate.json, which G-3 holds equal to
+    release/plugin-pins.tsv and plugins.yaml), in repo order:
+    - repo `GetBusbar/<repo>`; former_repos: the earlier names GitHub still redirects to it
+      (`<kind>-<name>`, `<name>-<kind>`, each former manifest name without `busbar-`/`-plugin`);
+    - kind, and answers_to: the manifest name, alias, crate and former names (plugins.yaml);
+    - releases: this release's tag, with the ABI version the built tarball's manifest states.
+    The same bytes for the same inputs: candidate.py assemble writes it, the gate re-renders it."""
+    entries = {e["repo"]: e for e in registry_entries(root)}
+    out = []
+    for p in sorted(plugins, key=lambda p: p["repo"]):
+        repo = p["repo"]
+        e = entries.get(repo)
+        if e is None:
+            raise ValueError(f"{repo} is not registered in plugins.yaml")
+        unq = lambda k, d="": e.get(k, d).strip().strip('"')  # noqa: E731
+        kind = unq("kind")
+        former_names = re.findall(r"[A-Za-z0-9._-]+", e.get("former_names", ""))
+        answers: list = []
+        for w in (unq("manifest_name", repo), unq("alias"), unq("crate"), *former_names):
+            _once(answers, w)
+        stem = repo[len("busbar-"):] if repo.startswith("busbar-") else repo
+        name = stem[len(kind) + 1:] if stem.startswith(kind + "-") else ""
+        cands: list = []
+        _once(cands, stem)
+        _once(cands, f"{name}-{kind}" if name else "")
+        for n in former_names:
+            n = n[len("busbar-"):] if n.startswith("busbar-") else n
+            _once(cands, n[:-len("-plugin")] if n.endswith("-plugin") else n)
+        former = [f"GetBusbar/{c}" for c in cands if c != repo
+                  and (net.repo_full_name(f"GetBusbar/{c}") or "").lower() == f"getbusbar/{repo}".lower()]
+        abi = tarball_manifest(cand / "plugins" / f"{repo}-{p['version']}-{INDEX_TARGET}.tar.gz").get("abi_version")
+        if not isinstance(abi, int) or isinstance(abi, bool) or not 0 <= abi < 2**32:
+            raise ValueError(f"{repo}'s {INDEX_TARGET} manifest states no abi_version")
+        out.append({"repo": f"GetBusbar/{repo}", "former_repos": former, "kind": kind, "answers_to": answers,
+                    "releases": [{"tag": p["tag"], "abi_version": abi}]})
+    return (json.dumps({"plugins": out}, indent=2) + "\n").encode()
+
+
 # ── the rules ────────────────────────────────────────────────────────────────────────────────────
 
 
@@ -285,6 +381,7 @@ def expected_files(inp: Inputs, cj: dict) -> tuple:
         elif t.get("kind") == "image":
             sboms.add(f"busbar-v{v}-{t['target']}.cdx.json")
     pub.add(f"busbar-openapi-v{v}.json")
+    pub.add(INDEX)
     for p in cj["plugins"]:
         for target, _, _ in PLUGIN_TARGETS:
             plugins.add(f"{p['repo']}-{p['version']}-{target}.tar.gz")
@@ -385,6 +482,18 @@ def g3_g4_sets_and_sums(inp: Inputs, cj: dict, vd: Verdict) -> None:
     for r in sorted(got - reg):
         vd.refuse("G-3", f"plugin {r}", "in plugins.yaml", "not registered",
                   "Only registered first-party plugins are released.")
+    # The release index is the render of this candidate's plugins (the binary's default URL fetches it).
+    index = inp.cand / "artifacts" / INDEX
+    if index.is_file():
+        try:
+            want_index = render_plugin_index(inp.root, inp.cand, cj["plugins"], inp.net)
+        except (OSError, ValueError, KeyError, tarfile.TarError) as e:
+            vd.refuse("G-3", f"artifacts/{INDEX}", "the index rendered from the candidate's plugins",
+                      f"no render: {e}", "Every plugin's tarball must state its ABI version; rebuild the plugins slice.")
+        else:
+            if index.read_bytes() != want_index:
+                vd.refuse("G-3", f"artifacts/{INDEX}", "the index rendered from the candidate's plugins",
+                          "different bytes", "Run candidate.py assemble again; the index is never edited by hand.")
     # SHA256SUMS covers exactly artifacts/ + sboms/, and every line matches the bytes.
     try:
         sums = read_sums(inp.cand / "SHA256SUMS")
@@ -614,14 +723,73 @@ def g14_trust(inp: Inputs, vd: Verdict) -> None:
                   "different or missing", "Users verify against the committed file; it must be yours.")
     for line in inp.trust["k2_allowed_signers"]:
         m = re.search(r'(?:^|\s|,)namespaces="([^"]*)"', line)
-        if not m or m.group(1) != K2_NAMESPACE:
-            vd.refuse("G-14", "K2 allowed_signers", f'namespaces="{K2_NAMESPACE}" and nothing else',
+        if not m or m.group(1) not in (K2_NAMESPACE, TAG_NAMESPACE):
+            vd.refuse("G-14", "K2 allowed_signers",
+                      f'namespaces="{K2_NAMESPACE}" (files) or namespaces="{TAG_NAMESPACE}" (the version tag), one per line, nothing else',
                       m.group(0).strip() if m else "no namespaces= restriction",
-                      f"Restrict each line to {K2_NAMESPACE}; statements ({STATEMENT_NAMESPACE}) are checked from ModernCI's own list.")
+                      f"Restrict each line to one namespace; statements ({STATEMENT_NAMESPACE}) are checked from ModernCI's own list.")
         if inp.require_hardware_k2 and not any(t in line.split() for t in K2_HARDWARE_TYPES):
             vd.refuse("G-14", "K2", f"a hardware key type ({' or '.join(K2_HARDWARE_TYPES)})", line.split()[2] if len(line.split()) > 2 else line,
                       "K2 lives on the YubiKey (ssh-keygen -t ed25519-sk).")
     vd.ok("G-14")
+
+
+def signer_key(line: str) -> tuple:
+    """(key type, key blob) of an allowed_signers line: the two fields after principal and options."""
+    f = line.split()
+    return tuple(f[2:4]) if len(f) >= 4 else ()
+
+
+def lines_for(inp: Inputs, namespace: str) -> list:
+    return [l for l in inp.trust["k2_allowed_signers"]
+            if (m := re.search(r'(?:^|\s|,)namespaces="([^"]*)"', l)) and m.group(1) == namespace]
+
+
+def g15_version_tag(inp: Inputs, cj: dict, vd: Verdict) -> None:
+    """The version tag v<V> in the owner's clone is an annotated tag, signed by K2 under the sshsig
+    namespace `git`, verifying (git verify-tag, gpg.format=ssh) against the trust file's K2 `git`
+    lines, and naming the release commit. SECURITY.md: releases are cut under a signed version tag."""
+    tag = f"v{cj['version']}"
+    git_lines = lines_for(inp, TAG_NAMESPACE)
+    k2_keys = {signer_key(l) for l in lines_for(inp, K2_NAMESPACE)}
+    if not git_lines:
+        vd.refuse("G-15", "K2 allowed_signers", f'a K2 line limited to namespaces="{TAG_NAMESPACE}"', "none",
+                  f"Add the release key's line for the version tag: {K2_IDENTITY} namespaces=\"{TAG_NAMESPACE}\" <K2 key>.")
+        return
+    strangers = [l for l in git_lines if signer_key(l) not in k2_keys]
+    for l in strangers:
+        vd.refuse("G-15", "K2 allowed_signers", f"each {TAG_NAMESPACE} line to name a release key ({K2_NAMESPACE} line)",
+                  " ".join(signer_key(l))[:48] + "…", "Only K2 signs the version tag.")
+    if strangers:
+        return
+    kind = run(["git", "-C", str(inp.root), "cat-file", "-t", f"refs/tags/{tag}"])
+    if kind.returncode != 0:
+        vd.refuse("G-15", tag, "a signed version tag in your clone", "no such tag",
+                  f"Sign it with K2 at the release commit: git tag -s {tag} -m 'busbar {cj['version']}' {cj['commit']}.")
+        return
+    if kind.stdout.decode().strip() != "tag":
+        vd.refuse("G-15", tag, "an annotated, signed tag", f"a lightweight tag ({kind.stdout.decode().strip()})",
+                  f"Delete it and sign one with K2: git tag -s {tag}.")
+        return
+    at = run(["git", "-C", str(inp.root), "rev-parse", f"refs/tags/{tag}^{{commit}}"]).stdout.decode().strip()
+    if at != cj["commit"]:
+        vd.refuse("G-15", tag, f"the release commit {cj['commit']}", at or "none",
+                  "The version tag names the commit the candidate was built from.")
+    fd, name = tempfile.mkstemp()
+    os.close(fd)
+    signers = Path(name)
+    try:
+        signers.write_text("\n".join(git_lines) + "\n")
+        p = run(["git", "-C", str(inp.root), "-c", "gpg.format=ssh", "-c", f"gpg.ssh.allowedSignersFile={signers}",
+                 "verify-tag", "--raw", f"refs/tags/{tag}"])
+    finally:
+        signers.unlink()
+    said = (p.stdout + p.stderr).decode(errors="replace")
+    if p.returncode != 0 or f'Good "{TAG_NAMESPACE}" signature for {K2_IDENTITY} ' not in said:
+        vd.refuse("G-15", tag, f"signed by K2 (a Good \"{TAG_NAMESPACE}\" signature for {K2_IDENTITY})",
+                  " ".join(said.split())[:160] or "no signature",
+                  f"Sign the tag with the release key: git -c gpg.format=ssh -c user.signingkey=<K2 sk handle> tag -s {tag}.")
+    vd.ok("G-15")
 
 
 def verify_all(inp: Inputs) -> tuple:
@@ -636,6 +804,7 @@ def verify_all(inp: Inputs) -> tuple:
         return vd, {}, []
     g14_trust(inp, vd)
     g1_version(inp, cj, vd)
+    g15_version_tag(inp, cj, vd)
     g3_g4_sets_and_sums(inp, cj, vd)
     rows = g5_plugins_unsigned(inp, cj, vd)
     g6_embedded_keys(inp, cj, vd)
@@ -649,7 +818,7 @@ def verify_all(inp: Inputs) -> tuple:
         vd.refuse("G-9", "provenance/", "no provenance (G-9 is not in 1.6.0's rule set)", "present",
                   "Land G-9 with ModernCI's pinned builder key before shipping provenance; an unchecked file is never published.")
     # G-0: every class ran on something.
-    for rule in ("G-1", "G-2", "G-3", "G-4", "G-5", "G-6", "G-8", "G-10", "G-11", "G-12", "G-14"):
+    for rule in ("G-1", "G-2", "G-3", "G-4", "G-5", "G-6", "G-8", "G-10", "G-11", "G-12", "G-14", "G-15"):
         if not vd.checked.get(rule):
             vd.refuse("G-0", rule, "at least one subject checked", "none", "A rule that checked nothing is not a pass.")
     vd.evidence = {
@@ -825,6 +994,12 @@ def cmd_upload(inp: Inputs, out: Path) -> int:
     for name, digest in plugin_sums.items():
         if sha256_file(out / "signed" / name) != digest:
             vd.refuse("G-4", f"signed/{name}", digest, "different bytes", "Run `sign` again.")
+    # G-15 on GitHub: the release is created on the signed tag, never on one gh would make.
+    local_tag = run(["git", "-C", str(inp.root), "rev-parse", f"refs/tags/{tag}"]).stdout.decode().strip()
+    remote = inp.net.remote_tag(REPO, tag)
+    if remote != local_tag:
+        vd.refuse("G-15", f"{REPO} {tag}", f"the signed tag object {local_tag}", str(remote),
+                  f"Push your signed tag to GitHub ({REPO}) first: git push <github remote> {tag}.")
     if vd.refusals:
         return finish(vd)
     digest = read_images(out / "IMAGES")["busbar"]
@@ -843,12 +1018,12 @@ def cmd_upload(inp: Inputs, out: Path) -> int:
     assets = [inp.cand / "artifacts" / n for n in core if (inp.cand / "artifacts" / n).is_file()]
     assets += [inp.cand / "sboms" / n for n in core if (inp.cand / "sboms" / n).is_file()]
     assets += signed_files + [Path(str(f) + ".sig") for f in signed_files]
-    run([tool("gh"), "release", "create", tag, "-R", REPO, "--draft", "--target", cj["commit"],
+    run([tool("gh"), "release", "create", tag, "-R", REPO, "--draft", "--verify-tag",
          "--title", f"busbar {v}", "--notes-file", "-"], stdin=b"See CHANGELOG.md and docs/verify.md.", check=True)
     run([tool("gh"), "release", "upload", tag, "-R", REPO, *map(str, assets)], check=True)
     # 5. Rekor: every K2 signature in the public log.
     k2pub = Path(tempfile.mkstemp(suffix=".pub")[1])
-    k2pub.write_text(" ".join(inp.trust["k2_allowed_signers"][0].split()[2:4]) + "\n")
+    k2pub.write_text(" ".join(signer_key(lines_for(inp, K2_NAMESPACE)[0])) + "\n")
     rekor = {}
     for f in signed_files:
         p = run([tool("rekor-cli"), "upload", "--artifact", str(f), "--signature", str(f) + ".sig",
