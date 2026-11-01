@@ -1257,18 +1257,17 @@ pub fn dropped_transports(
 ///
 /// **The journal is KEPT BY THE CONFIGURED STORE** (ARCHITECT 2026-10-07 H3 ruling (a)-(c)): each
 /// record goes through `lane`, the host's bounded write-behind lane, to the store's v3 `record_put`
-/// slot under the journal schema. With no data directory the chain the store kept is READ BACK
+/// slot under the journal schema. The chain the store kept is always READ BACK
 /// first and the journal resumes it, so the audit records, the dated rate-card history and the
-/// amendment journal are what they were before the restart; with one the disk is the record and
-/// the store is catch-up work.
+/// amendment journal are what they were before the restart. `data_dir` never selects a local
+/// journal or keyset cache.
 ///
 /// No money is opened here. The ledger is the store's usage and metering rows, the rows 1.5.5 left
 /// included, read as they are; there is no second book to seal opening balances into.
 ///
 /// # Errors
 ///
-/// The journal could not be opened (a configured data directory that could not be read, a store
-/// that would not read its chain back), or the deployment keyset could not be bound.
+/// The Store chain could not be read or verified, or the deployment keyset could not be bound.
 pub fn compose_book(
     lane: super::durability::JournalLane,
     data_dir: Option<std::path::PathBuf>,
@@ -1277,9 +1276,7 @@ pub fn compose_book(
     token: &busbar_contract::caps::Grant<busbar_contract::caps::DurableWrite>,
 ) -> Result<super::durability::Durability, String> {
     let mut durability = super::durability::build_on_store(
-        &super::durability::DurabilityConfig {
-            data_dir: data_dir.clone(),
-        },
+        &super::durability::DurabilityConfig { data_dir },
         node,
         lane,
         Some(&crate::root::kernel::ROOT_CARD),
@@ -1296,12 +1293,11 @@ pub fn compose_book(
         );
     }
     // THE DEPLOYMENT KEYSET (spec #82(a); BUSBAR-1.6.0.md THE DESIGN, §2, PB-13; architect ruling
-    // 2026-09-26), the key the audit chain signs with. With a data directory the first boot mints
-    // it, caches it there (0600) and seals its fingerprint in a `Bootstrap` record; a later boot that
-    // cannot produce that fingerprint refuses `KeysetMissing`. Without one it is ephemeral.
+    // 2026-09-26), the key the audit chain signs with. The Store keeps it for every boot and node;
+    // the chain seals its fingerprint. A legacy data_dir must not select a filesystem cache.
     super::keyset::bind(
         &mut durability,
-        data_dir.as_deref(),
+        None,
         token,
         busbar_contract::caps::StepName::Meter,
         now,
@@ -1318,19 +1314,12 @@ pub fn compose_book(
 /// second opening.
 ///
 /// The book's journal is kept by the configured store, `store` by name: its records go to the store's
-/// v3 record slots and a boot with no data directory reads them back (ARCHITECT 2026-10-07 H3
-/// ruling). The opening is sealed from the rows the previous release left in that store.
+/// v3 record slots and every boot reads them back. A legacy data directory does not select a
+/// local journal, identity file, or keyset cache.
 ///
 /// A configuration names its store (Q-STORE = (B), Appendix B 2026-09-27), so a boot that resolved
 /// none refuses; and a store that does not offer the record slots cannot keep a journal, so the
 /// boot refuses that too, naming the store and the slots.
-///
-/// The data directory is the one [`busbar_kernel::preflight::fleet_data_dir`] resolves — the SAME
-/// accessor the plugin anti-downgrade floor persists under, so the two can never disagree about
-/// where this node keeps its own files. Absent, the branch in
-/// [`super::durability::build_for_node`] is the unset one and nothing is probed, nothing is opened
-/// and no file appears: this wiring gives a node with a CONFIGURED directory somewhere to write, and
-/// deliberately does not make writing unconditional.
 ///
 /// # Errors
 ///
@@ -1354,20 +1343,14 @@ pub fn book(
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs());
-    // THIS NODE'S IDENTITY (ARCHITECT 2026-10-07 H3 ruling, follow-up; Q128 root part 12 HIGH 2):
-    // with a data directory, the id kept in it (adopting the registry's id for this host on the
-    // first boot that has none, and then holding the host name's lease for it); without one, the store registry's id for this host while this
-    // process holds the host name's lease, else a fresh id of its own. Its journal records are
-    // keyed by it, so two live nodes on one store never write under one identity, whatever their
-    // host names. The host name is only a label.
+    // The Store registry owns identity for every configuration. The host lease lets a restart
+    // resume its chain while two live processes never write under one identity. A legacy local
+    // node-id must not choose a different identity from the chain we now resume in the Store.
     let data_dir = busbar_kernel::preflight::fleet_data_dir();
     let host = super::durability::host_identity();
     let calls = lane.calls();
-    let taken = match data_dir.as_deref() {
-        Some(dir) => super::durability::persisted_node(calls.as_ref(), dir, &host),
-        None => super::durability::take_node(calls.as_ref(), &host),
-    }
-    .map_err(|why| format!("this node's identity in the store `{store}`: {why}"))?;
+    let taken = super::durability::take_node(calls.as_ref(), &host)
+        .map_err(|why| format!("this node's identity in the store `{store}`: {why}"))?;
     // THE FIRST-PARTY ANTI-DOWNGRADE FLOOR, held in the store for this host: the scan ran before
     // the store opened, so a dropped-in first-party plugin below the mark the store keeps refuses
     // the boot here, and the marks rise to what loaded.
@@ -1384,14 +1367,13 @@ pub fn book(
     }
     let node = taken.id;
     // THE RATE-CARD HISTORY IS KEPT IN THE STORE (MONEY-DESIGN section 3a): the book's rebuild loads it
-    // from `busbar.card.v1` under this node's durable id, re-puts a pending entry from the data
-    // directory's spool, and migrates every chain's journalled cards into it.
-    super::kernel::ROOT_CARD.keep_in_store(calls.clone(), node, data_dir.clone());
+    // from `busbar.card.v1` under this node's durable id and migrates journalled cards into it.
+    super::kernel::ROOT_CARD.keep_in_store(calls.clone(), node);
     let token = super::kernel::new_kernel().durability_token();
     let mut durability = compose_book(lane, data_dir, node, now, &token)?;
     // The node amendment journal — the one the boot generation carries — is rebuilt from the chain
-    // before anything can seal onto it, so every recorded content access survives the restart: off
-    // the disk, or off the chain the store kept. A chain that will not read back refuses the boot
+    // before anything can seal onto it, so every stored content access survives the restart.
+    // A chain that will not read back refuses the boot
     // here as it would have at the build.
     durability.restore_amendments(&app.amendments, &token)?;
     // WHAT THE DISASTER-RECOVERY VERBS LEFT (row 187): the chain's operator breaks, read as

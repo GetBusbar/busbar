@@ -580,14 +580,8 @@ impl Drop for BookDir {
     }
 }
 
-/// THE REAL PATH, END TO END: a real `App`, then `root::boot::book` — the function `run()` calls at
-/// the line that used to read `node_book()` — against a CONFIGURED data directory.
-///
-/// THE JOURNAL REACHES THE CONFIGURED STORE. With `BUSBAR_DATA_DIR` set, the node's own journal is
-/// ON DISK and files appear IN THAT DIRECTORY. Under the old `node_book()` the directory was never
-/// read — `data_dir: None` was a literal — so the journal was memory-buffered and this listing was
-/// empty no matter what the operator configured. The one record on the chain when the boot hands
-/// the journal over is the deployment keyset's `Bootstrap` (spec #82(a)): no money record.
+/// The production boot uses the configured Store even with a legacy data directory supplied.
+/// No journal, identity file, or keyset cache appears there; Bootstrap is the only initial record.
 // A PROVIDER NEEDS A WIRE CODEC. `cfg_with_provider_api_key` configures one provider on the
 // registry's residual-default dialect, and a build that links no protocol (a single-plane build of a
 // plane with no body-ingress codec) has none to name: the fixture refuses, and which test happened to
@@ -595,7 +589,7 @@ impl Drop for BookDir {
 // the root's other provider-configuring cells are.
 #[cfg(linked_axis_body_ingress)]
 #[test]
-fn the_boot_path_opens_the_configured_directory() {
+fn the_boot_path_keeps_its_journal_in_the_store_with_a_configured_directory() {
     // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
     busbar_kernel::test_support::register_neutral_test_plane();
     use busbar_kernel_wal::RecordClass;
@@ -648,16 +642,9 @@ fn the_boot_path_opens_the_configured_directory() {
         (durability.on_disk(), replayed)
     };
 
-    assert!(
-        on_disk,
-        "with a data directory configured the node's journal must be on this node's own disk; it \
-         was memory-buffered, which is the `data_dir: None` literal the boot used to hard-code"
-    );
-    assert!(
-        !dir.entries().is_empty(),
-        "the configured data directory holds no file: the journal never reached it. The listing \
-         is the assertion, not the mode flag above"
-    );
+    assert!(!on_disk, "the configured Store owns journal persistence");
+    assert!(dir.entries().is_empty(), "boot created local state");
+    assert!(book.durability.lock().unwrap().durable_in_store());
     assert_eq!(
         first_record.iter().map(|r| r.class).collect::<Vec<_>>(),
         vec![RecordClass::Bootstrap],
@@ -809,75 +796,75 @@ fn no_configured_directory_still_opens_nothing_and_writes_nothing() {
     );
 }
 
-/// THE DEPLOYMENT KEYSET AT THE BOOT SEAM (spec #82(a); BUSBAR-1.6.0.md THE DESIGN, §2, PB-13; architect
-/// ruling 2026-09-26): the audit chain `root::boot::compose_book` hands over SIGNS with the keyset it
-/// bound — ephemeral without a directory, cached under it with one — and a restart over a directory
-/// whose keyset file is gone refuses `KeysetMissing` in the refusal's own words, which `die` prints.
+/// The production compose seam uses the Store keyset on every restart, with a legacy directory
+/// supplied. A mismatched Store keyset refuses even if a local legacy cache has the right key.
 #[test]
-fn the_boot_book_binds_its_keyset_and_refuses_keyset_missing_without_the_cache() {
+fn the_boot_book_binds_the_store_keyset_and_refuses_a_mismatched_store_key() {
     let token = root::kernel::new_kernel().durability_token();
-
-    // No directory: ephemeral, and the chain signs with a key its own keyset holds.
-    let memory = root::boot::compose_book(
-        journal_lane(&crate::root::store_double::RecordSlots::new()),
-        None,
-        0,
-        1_700_000_000,
-        &token,
-    )
-    .expect("a memory-buffered journal composes");
-    let key_id = memory
-        .record
-        .signing_key_id()
-        .expect("the chain signs")
-        .to_string();
-    assert!(
-        root::durability::keyset_of(&memory.record)
-            .get(&key_id)
-            .is_some(),
-        "the node's own keyset holds the key its chain signs with"
-    );
-
-    // A directory: minted and cached; then the cache is lost and the restart refuses.
     let dir = BookDir::new("keyset");
+    let slots = crate::root::store_double::RecordSlots::new();
     let first = root::boot::compose_book(
-        journal_lane(&crate::root::store_double::RecordSlots::new()),
+        journal_lane(&slots),
         Some(dir.0.clone()),
-        0,
+        7,
         1_700_000_000,
         &token,
     )
-    .expect("the first boot mints the keyset");
-    assert!(first.record.signing_key_id().is_some());
+    .unwrap();
+    let key_id = first.record.signing_key_id().unwrap().to_string();
+    assert!(root::durability::keyset_of(&first.record)
+        .get(&key_id)
+        .is_some());
+    let seed = root::durability::stored_keyset(slots.calls().as_ref())
+        .unwrap()
+        .unwrap();
+    assert!(first
+        .lane()
+        .unwrap()
+        .drain(std::time::Duration::from_secs(5)));
     drop(first);
-    std::fs::remove_file(dir.0.join(root::keyset::KEYSET_FILE)).expect("the cache is removed");
-    let refused = root::boot::compose_book(
-        journal_lane(&crate::root::store_double::RecordSlots::new()),
+    let restarted = root::boot::compose_book(
+        journal_lane(&slots),
         Some(dir.0.clone()),
-        0,
-        1_700_000_000,
+        7,
+        1_700_000_001,
         &token,
     )
-    .expect_err("a bootstrapped directory with no keyset refuses");
-    let prefix = format!(
-        "KeysetMissing: the journal under {} holds a Bootstrap sealing keyset fingerprint ",
-        dir.0.display()
-    );
-    let suffix = format!(
-        ", and neither the keyset file {}/deployment-keyset nor the configured store yields that \
-         fingerprint. Restore this node's data_dir (the keyset file beside its journal), or boot \
-         against a store that holds the deployment keyset",
-        dir.0.display()
-    );
-    assert!(
-        refused.starts_with(&prefix) && refused.ends_with(&suffix),
-        "the refusal is not KeysetMissing in its own words: {refused}"
-    );
+    .unwrap();
+    assert_eq!(restarted.record.signing_key_id(), Some(key_id.as_str()));
+    assert!(restarted.keeps_chain());
     assert_eq!(
-        refused.len(),
-        prefix.len() + 64 + suffix.len(),
-        "the fingerprint is 64 hex characters: {refused}"
+        restarted
+            .chain()
+            .unwrap()
+            .unwrap()
+            .iter()
+            .filter(|r| r.class == busbar_kernel_wal::RecordClass::Bootstrap)
+            .count(),
+        1
     );
+    assert!(dir.entries().is_empty());
+    drop(restarted);
+    let legacy = dir.0.join("deployment-keyset");
+    std::fs::write(&legacy, seed.as_bytes()).unwrap();
+    slots.put_row(
+        "busbar.keyset.v1",
+        b"deployment",
+        "11".repeat(32).as_bytes(),
+    );
+    let refused = root::boot::compose_book(
+        journal_lane(&slots),
+        Some(dir.0.clone()),
+        7,
+        1_700_000_002,
+        &token,
+    )
+    .unwrap_err();
+    assert!(
+        refused.starts_with("KeysetMissing: the journal the configured store keeps"),
+        "{refused}"
+    );
+    assert_eq!(std::fs::read(&legacy).unwrap(), seed.as_bytes());
 }
 
 /// STAGE 4 BOOK IS BOOT-ONLY — ONE SEAL AFTER TWO RELOADS (`BUSBAR-1.6.0.md` §3: "Reload runs

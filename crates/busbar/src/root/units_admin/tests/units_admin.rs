@@ -2840,8 +2840,7 @@ fn amend_through_a_journal(
 #[cfg(test)]
 fn replayed_amendments(durability: &crate::root::durability::Durability) -> Vec<AmendmentRecord> {
     durability
-        .journal
-        .replay()
+        .chain()
         .expect("the journal reads back")
         .expect("the journal verifies")
         .iter()
@@ -3487,7 +3486,7 @@ fn a_replayed_signed_correction_is_refused_and_appends_nothing() {
 
 /// A scratch data directory, removed on drop.
 #[cfg(test)]
-struct AmendScratch(std::path::PathBuf);
+struct AmendScratch(std::path::PathBuf, crate::root::store_double::RecordSlots);
 
 #[cfg(test)]
 impl AmendScratch {
@@ -3499,18 +3498,22 @@ impl AmendScratch {
         ));
         let _ = std::fs::remove_dir_all(&path);
         std::fs::create_dir_all(&path).expect("scratch directory");
-        AmendScratch(path)
+        AmendScratch(path, crate::root::store_double::RecordSlots::new())
     }
 
     fn book(&self) -> Arc<Mutex<crate::root::durability::Durability>> {
+        let lane =
+            crate::root::durability::JournalLane::start(self.1.calls(), "test-store").unwrap();
         Arc::new(Mutex::new(
-            crate::root::durability::build(
+            crate::root::durability::build_on_store(
                 &crate::root::durability::DurabilityConfig {
                     data_dir: Some(self.0.clone()),
                 },
-                Box::new(busbar_kernel_wal::NullShipper::new()),
+                0,
+                lane,
+                None,
             )
-            .expect("the directory is writable"),
+            .expect("the Store reads back"),
         ))
     }
 }
@@ -3539,7 +3542,7 @@ fn a_priced_correction(fee: i64, micro: serde_json::Value) -> Vec<u8> {
 /// THE DEFECT THIS CLOSES. The only trail an amendment left was the root's legacy admin ring — a
 /// volatile thousand entries behind `NoSeam`, four strings (action, path, outcome, principal) and no
 /// figure. One restart erased it. The record now goes onto the node's journal: after the book is
-/// dropped and reopened over the same data directory, the amendment is there with the window, the
+/// dropped and reopened over the same Store, the amendment is there with the window, the
 /// sealed fee and rate, the submitter and the canonical bytes of the correction; the signer and
 /// signature slots are empty (#77(9)).
 #[test]
@@ -3558,8 +3561,10 @@ fn a_sealed_amendment_survives_a_restart_with_its_figures() {
         .expect("the correction applies");
     }
 
-    // RESTART: a fresh book over the same directory.
+    // RESTART: a fresh book over the same Store.
     let restarted = scratch.book();
+    assert!(restarted.lock().unwrap().durable_in_store());
+    assert_eq!(std::fs::read_dir(&scratch.0).unwrap().count(), 0);
     let records = replayed_amendments(&restarted.lock().unwrap());
     assert_eq!(records.len(), 1, "the amendment survived the restart");
     let record = &records[0];
@@ -3685,6 +3690,8 @@ fn a_thousand_later_amendments_do_not_erase_the_first() {
         }
     }
     let restarted = scratch.book();
+    assert!(restarted.lock().unwrap().durable_in_store());
+    assert_eq!(std::fs::read_dir(&scratch.0).unwrap().count(), 0);
     let records = replayed_amendments(&restarted.lock().unwrap());
     assert_eq!(records.len(), 1_001, "every amendment is on the journal");
     assert_eq!(

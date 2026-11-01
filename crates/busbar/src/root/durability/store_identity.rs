@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! WHO A NODE IS, AND THE KEY IT SIGNS WITH, KEPT IN THE CONFIGURED STORE: two facts a node with no data directory has nowhere else to keep.
+//! The node identity and deployment signing key, owned by the configured Store.
 //!
 //! ## The node's identity
 //!
@@ -11,22 +11,10 @@
 //! record never vanishes silently). There is no `node_id` configuration key: adding one changes the frozen
 //! configuration schema.
 //!
-//! * WITH A DATA DIRECTORY the identity is the node's own: a 128-bit random id generated at its
-//!   first boot and kept in the directory ([`NODE_ID_FILE`], written atomically), read back on every
-//!   later boot ([`persisted_node`]); the journal is keyed by its low 64 bits. A directory with no id
-//!   file yet ADOPTS the id the store's registry holds under this host's name, so one node
-//!   continuing on its host keeps its chain (unless another live node holds that name's lease),
-//!   and then holds that name's lease as a node with no data directory does.
-//! * WITH NO DATA DIRECTORY there is nowhere of its own to keep one, so
-//!   the identity is the STABLE one the store's node registry ([`NODE_SCHEMA`]) keeps for this host,
-//!   minted the first time it booted, and a restart resumes that chain and recovers the holds it
-//!   left open. The host name is held under a LEASE ([`take_node`]): a boot that finds the name's
-//!   lease free or expired takes it and resumes; one that finds it held by another live process
-//!   journals under a fresh id of its own and logs the clash. A boot that finds it held WATCHES it
-//!   for up to one lease period first: a holder that never refreshes it is a crashed predecessor,
-//!   and the boot takes the lease once it lapses and resumes. The lease is refreshed on every
-//!   [`LEASE_REFRESH_TICKS`]-th checkpoint flush tick and released on a clean shutdown, so a clean
-//!   restart resumes at once and a crash-restart waits at most one lease period.
+//! The identity is the stable one the Store registry keeps for this host, regardless of
+//! `data_dir`. The host name is held under a lease: a restart takes a free or expired lease and
+//! resumes its chain; a concurrent live process receives a fresh registered id. A clean shutdown
+//! releases the lease; a crash restart watches for at most one lease period before deciding.
 //!
 //! The host is the operating system's host name ([`host_identity`]), a label: two processes with one
 //! name, or two with none, never journal under one identity while both are live. A deployment whose
@@ -39,9 +27,8 @@
 //!
 //! The one key that signs the audit chain and the checkpoints is the DEPLOYMENT's (spec #82(a)), so
 //! it is kept once in the store ([`KEYSET_SCHEMA`]) and every node on that store signs with it. A
-//! node with no data directory mints it once and reads it back on every boot, so `/admin/verify`
-//! verifies the records a predecessor signed; with a data directory the file beside the journal is a
-//! cache of the same key (see `root::keyset`).
+//! node mints it once and reads it back on every boot, so `/admin/verify` verifies the records a
+//! predecessor signed. There is no filesystem cache.
 //!
 //! ## Minting races on the store's one atomic step
 //!
@@ -622,110 +609,6 @@ impl HeldLease {
             tracing::warn!(reason = %why, "this node's lease was not released");
         }
     }
-}
-
-/// The file in a node's data directory its identity is kept in.
-pub const NODE_ID_FILE: &str = "node_id";
-
-/// THE IDENTITY OF A NODE WITH A DATA DIRECTORY: the 128-bit id kept in `dir` ([`NODE_ID_FILE`]),
-/// its low 64 bits being the journal's key. A directory with none yet takes one now and keeps it:
-/// the id the store's registry holds under `host`'s name when this boot takes that name's lease
-/// (MIGRATION: one node continuing on its host keeps its chain), otherwise a fresh one. An id file
-/// that does not read back is replaced the same way; a chain the directory already holds keeps the
-/// identity it was written under regardless (the journal adopts it).
-///
-/// A node whose id IS the host name's registry id (it adopted it) holds that name's lease on every
-/// boot, as a node with no data directory does, so a live node with no data directory and the same
-/// name takes a fresh id rather than the adopted one. A node whose id is its own holds none.
-///
-/// # Errors
-///
-/// The store refused or failed a read, a claim or a write, or the directory would not keep the file.
-pub fn persisted_node(
-    calls: &dyn StoreCalls,
-    dir: &std::path::Path,
-    host: &str,
-) -> Result<TakenNode, String> {
-    let path = dir.join(NODE_ID_FILE);
-    let kept = match std::fs::read_to_string(&path) {
-        Ok(text) => {
-            let id = u128::from_str_radix(text.trim(), 16)
-                .ok()
-                .and_then(|full| u64::try_from(full & u128::from(u64::MAX)).ok())
-                .filter(|&id| id != 0);
-            if id.is_none() {
-                tracing::warn!(
-                    path = %path.display(),
-                    "this node's id file does not hold an id; it is kept again"
-                );
-            }
-            id
-        }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
-        Err(e) => {
-            return Err(format!(
-                "this node's id file {} would not read: {e}",
-                path.display()
-            ))
-        }
-    };
-    let registry = registry_get(calls, &host_key(host))?;
-    let holder = random::<16>()?;
-    let lease = || NodeLease {
-        host: host.to_string(),
-        holder,
-    };
-    if let Some(id) = kept {
-        // An adopted id is the host name's: held under its lease, as a node with no data
-        // directory holds it.
-        if registry != Some(id) {
-            return Ok(TakenNode { id, lease: None });
-        }
-        if take_lease(calls, host, holder)? {
-            return Ok(TakenNode {
-                id,
-                lease: Some(lease()),
-            });
-        }
-        tracing::warn!(
-            host = %host,
-            node = id,
-            "another live process on this store holds this host name's lease; this node's data \
-             directory keeps the id it adopted"
-        );
-        return Ok(TakenNode { id, lease: None });
-    }
-    let taken = match registry {
-        Some(id) if take_lease(calls, host, holder)? => TakenNode {
-            id,
-            lease: Some(lease()),
-        },
-        _ => TakenNode {
-            id: fresh_node_id(calls, host)?,
-            lease: None,
-        },
-    };
-    let high = u64::from_be_bytes(random()?);
-    let full = (u128::from(high) << 64) | u128::from(taken.id);
-    write_atomically(dir, &path, format!("{full:032x}\n").as_bytes())
-        .map_err(|e| format!("this node's id file {} was not kept: {e}", path.display()))?;
-    Ok(taken)
-}
-
-/// Write `bytes` to `path` in `dir` ATOMICALLY AND DURABLY, through the one durable-write owner
-/// (`durable::create_dir_all`, then `durable::write`: a sibling temp fsynced, renamed over `path`,
-/// and the directory fsynced so the rename is kept).
-///
-/// # Errors
-///
-/// The directory would not take the file.
-fn write_atomically(
-    dir: &std::path::Path,
-    path: &std::path::Path,
-    bytes: &[u8],
-) -> std::io::Result<()> {
-    crate::root::loader::durable::create_dir_all(dir)?;
-    crate::root::loader::durable::write(path, bytes)
 }
 
 /// Every readable node the registry names: `(host, node id)`, in key order. The verification and

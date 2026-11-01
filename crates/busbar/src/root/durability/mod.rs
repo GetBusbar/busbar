@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The node's journal and the audit unit's record chain — and the one `if` that decides whether
-//! this node writes to a disk.
+//! The node's journal and the audit unit's record chain, kept by the configured Store.
 //!
 //! ## What the journal carries, and what it does not
 //!
@@ -18,21 +17,15 @@
 //! process-wide lock around `fsync`). A chain a pre-release build wrote may still hold such
 //! records; they verify as chain links and are read as nothing else.
 //!
-//! ## The branch, and why it is the only place the data directory is read
-//!
-//! A deployment that configures no data directory needs none: without one the journal is
-//! memory-buffered and its records are kept by the configured store. The journal unit states the
-//! rule as a type: *constructing an on-disk log IS the decision to write to a disk*. So there is
-//! exactly one branch, it is here, and it is the only place on this path that reads the configured
-//! directory. Nothing downstream may probe, resolve a keyset path speculatively, or open anything
-//! "just in case".
+//! The journal never opens a local file. `data_dir` remains an accepted configuration field, but
+//! does not select journal persistence. Only a Store owns how its records are physically kept.
 //!
 //! ## Where the records go, and how a restart gets them back
 //!
 //! The production boot builds the journal over the configured store ([`build_on_store`]). Each
 //! record is written through the store's v3 `record_put` slot under the journal schema, keyed
 //! `(node, node_seq)` big-endian so `record_scan` returns chain order ([`store_chain`]). The write
-//! is WRITE-BEHIND on the host's one bounded lane ([`JournalLane`]). With no data directory the boot
+//! is WRITE-BEHIND on the host's one bounded lane ([`JournalLane`]). Every production boot
 //! RESUMES the chain from the store: the audit records, the dated rate-card history and the
 //! amendment journal are rebuilt from it ([`Durability::keeps_chain`]).
 //!
@@ -74,7 +67,7 @@ pub use store_chain::{part_key, JOURNAL_SCHEMA};
 /// Who a node is and the key it signs with, kept in the configured store: the node registry, the
 /// deployment keyset, and the walk `/admin/verify` makes of every stored chain.
 mod store_identity;
-pub use store_identity::{host_identity, keep_keyset, persisted_node, stored_keyset, take_node};
+pub use store_identity::{host_identity, keep_keyset, stored_keyset, take_node};
 // The host registry's own id, read by the boot through `take_node`; the tests reach it directly.
 #[cfg(test)]
 pub use store_identity::node_id;
@@ -116,20 +109,17 @@ pub use plugin_floor::hold as hold_plugin_floor;
 /// The journal holds every one (`audit.v4`), and a window older than this is read back off it.
 pub const AUDIT_RING: usize = 1_024;
 
-/// What the root reads out of configuration to decide the durability shape.
-///
-/// One field, because there is one decision. Its absence is the previous release's shape and its
-/// presence is a deliberate statement that this node keeps its own journal.
+/// The accepted journal configuration. Persistence is always owned by the configured Store.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct DurabilityConfig {
-    /// The configured data directory, if the operator named one.
+    /// The legacy data directory, accepted for compatibility and never opened by these builders.
     pub data_dir: Option<PathBuf>,
 }
 
 /// The durability stack the root owns: the journal and the audit record chain.
 pub struct Durability {
-    /// The one journal. On disk only where a data directory was configured; otherwise
-    /// memory-buffered, its records kept by the configured store through [`Durability::lane`].
+    /// The memory-buffered journal, its records kept by the configured store through
+    /// [`Durability::lane`]. A bare-shipper helper keeps no restart-durable source.
     pub journal: Journal,
     /// The new fixed record's chain.
     pub record: AuditChain,
@@ -170,7 +160,7 @@ pub struct Durability {
     /// one ([`build_on_store`]). `None` on a journal built over a bare shipper.
     lane: Option<JournalLane>,
     /// The memory-buffered journal was RESUMED from the chain the configured store kept, so the
-    /// chain has a durable source as a disk would be one.
+    /// chain has a verified Store source. This includes a Store whose chain is initially empty.
     resumed: bool,
 }
 
@@ -197,7 +187,7 @@ pub struct ChainAt(ChainSource);
 
 /// Where a [`ChainAt`] reads from.
 enum ChainSource {
-    /// Already read, under the lock: a disk, or a journal with no store behind it, reads no plugin.
+    /// Already read, under the lock: a journal with no store behind it reads no plugin.
     Read(ChainRead),
     /// What the node holds of a chain the store keeps; the store is read by [`ChainAt::read`].
     Stored(store_chain::HeldChain),
@@ -243,23 +233,23 @@ impl std::fmt::Debug for Durability {
 }
 
 impl Durability {
-    /// Whether this node writes its journal to a disk.
+    /// Whether the journal medium is a disk. Every builder in this module answers false.
     #[must_use]
     pub fn on_disk(&self) -> bool {
         matches!(self.journal.mode(), Mode::OnDisk)
     }
 
-    /// WHETHER THE CHAIN HAS A DURABLE SOURCE: on a disk, or resumed from the configured store. The
+    /// WHETHER THE CHAIN HAS A DURABLE SOURCE: resumed from the configured store. The
     /// chain-rebuilt state — the dated history, the amendment journal, an audit window older than
     /// the cache — is rebuilt from it then, and only then.
     #[must_use]
     pub fn keeps_chain(&self) -> bool {
-        self.on_disk() || self.resumed
+        self.resumed
     }
 
     /// THE WHOLE CHAIN, read back oldest first and verified: every chain read after boot goes
-    /// through here. On a disk, and on a journal with no store behind it, that is the log's own
-    /// replay. On a journal RESUMED from the configured store it is the store's chain joined to
+    /// through here. A journal with no Store behind it reads its in-process log. A journal
+    /// resumed from the configured Store reads the Store chain joined to
     /// what the node has not handed it yet ([`store_chain::whole_chain`]): the memory log keeps
     /// only its newest segment resident, so its own replay is a suffix once the chain outgrows one.
     ///
@@ -314,22 +304,18 @@ impl Durability {
         Some((lane.clone(), self.journal.node(), keyset_of(&self.record)))
     }
 
-    /// Whether the store is where this journal's durability is: no disk, and a lane to the store.
+    /// Whether this journal resumes and writes its chain through the configured Store.
     /// A durable verb then answers only once the store acknowledged its record.
     #[must_use]
     pub fn durable_in_store(&self) -> bool {
-        !self.on_disk() && self.lane.is_some()
+        self.store_kept().is_some()
     }
 
     /// WHY A NEW MONEY-BEARING UNIT IS REFUSED (ARCHITECT 2026-10-07 H3 ruling): the store is where
     /// this journal is kept and the lane to it is full, so admitting more work would grow what the
-    /// node holds for the store without bound. `None` otherwise — always on a disk, where the store
-    /// is catch-up work.
+    /// node holds for the store without bound. A bare-shipper helper has no Store lane.
     #[must_use]
     pub fn refuses_money(&self) -> Option<String> {
-        if self.on_disk() {
-            return None;
-        }
         self.lane.as_ref().and_then(JournalLane::refuses_money)
     }
 
@@ -634,16 +620,14 @@ pub fn build(
 
 /// Build the journal and the audit record chain.
 ///
-/// The whole decision is the first `match`. Everything after it is the same on both branches: a
-/// node without a data directory is not running a reduced stack, it is running the same stack over
-/// a journal that keeps its records in memory and ships them to the store.
+/// A bare shipper has no read-back contract: this helper keeps its journal in RAM, regardless of
+/// `data_dir`. Production uses [`build_on_store`] to resume a verified Store chain.
 ///
 /// `node` is the identity the journal's records carry: half of the pair the log deduplicates on.
 ///
 /// # Errors
 ///
-/// A configured data directory could not be opened, or the journal already there could not be read
-/// or does not verify.
+/// Rebuilding the supplied card holder could not append its initial record.
 pub fn build_for_node(
     cfg: &DurabilityConfig,
     node: u64,
@@ -669,9 +653,8 @@ pub fn build_with_cards(
 }
 
 /// THE JOURNAL OVER THE CONFIGURED STORE — the production boot's: the journal ships through `lane`
-/// to the store's record slots, and with no data directory it RESUMES from the chain the store kept
-/// ([`read_chain`]), keeping every record at its bound. With a data directory the disk is the
-/// record and the store is catch-up work, read nothing back from.
+/// to the store's record slots and always RESUMES from the chain the store kept ([`read_chain`]),
+/// keeping every record at its bound. `data_dir` is never read or opened.
 ///
 /// # Errors
 ///
@@ -683,30 +666,20 @@ pub fn build_on_store(
     lane: JournalLane,
     cards: Option<&'static crate::root::kernel::RootHistory>,
 ) -> Result<Durability, OpenError> {
-    let resume = match cfg.data_dir {
-        Some(_) => None,
-        None => Some(read_chain(lane.calls().as_ref(), node).map_err(|why| {
-            OpenError::Io(std::io::Error::other(format!(
-                "the journal could not be read back from the store `{}`: {why}",
-                lane.store()
-            )))
-        })?),
-    };
+    let resume = read_chain(lane.calls().as_ref(), node).map_err(|why| {
+        OpenError::Io(std::io::Error::other(format!(
+            "the journal could not be read back from the store `{}`: {why}",
+            lane.store()
+        )))
+    })?;
     let shipper = lane.shipper();
-    build_inner(
-        cfg,
-        node,
-        shipper,
-        Some((lane, resume.unwrap_or_default())),
-        cards,
-    )
+    build_inner(cfg, node, shipper, Some((lane, resume)), cards)
 }
 
 /// The one construction every builder above shares. `over_store` is `Some` on a journal over the
-/// configured store: the lane to it, and with no data directory the records the journal is seeded
-/// with (the chain the store kept, possibly none).
+/// configured store: the lane to it and the records the journal is seeded with (possibly none).
 fn build_inner(
-    cfg: &DurabilityConfig,
+    _cfg: &DurabilityConfig,
     node: u64,
     shipper: Box<dyn Shipper<busbar_kernel_wal::Record>>,
     over_store: Option<(JournalLane, Vec<busbar_kernel_wal::Record>)>,
@@ -716,17 +689,12 @@ fn build_inner(
     let clock = busbar_kernel::store::now_ms;
     let (lane, resume) =
         over_store.map_or((None, None), |(lane, records)| (Some(lane), Some(records)));
-    let resumed = cfg.data_dir.is_none() && resume.is_some();
-    let journal = match (cfg.data_dir.as_deref(), &resume) {
-        // No disk, and the store is where the chain is kept: resume it.
-        (None, Some(records)) => {
+    let resumed = resume.is_some();
+    let journal = match &resume {
+        Some(records) => {
             Journal::memory_resumed(node, records, shipper, clock)?.retaining_at_bound()
         }
-        // No disk and no store behind the shipper: the chain lives as long as the process.
-        (None, None) => Journal::memory_buffered_to(node, shipper, clock),
-        // The operator asked for a journal on this node's own disk. This call is that decision.
-        (Some(dir), Some(_)) => Journal::in_directory_adopting(node, dir, shipper, clock)?,
-        (Some(dir), None) => Journal::in_directory(node, dir, shipper, clock)?,
+        None => Journal::memory_buffered_to(node, shipper, clock),
     };
 
     let mut durability = Durability {
@@ -753,8 +721,8 @@ fn build_inner(
         resumed,
     };
 
-    // A CORRUPT JOURNAL DOES NOT STOP THE BOOT, AND IT IS NEVER SILENT. The log kept every record
-    // before the damage and copied the damaged remainder into a quarantine file; the alarm is here.
+    // Preserve the log's recovery findings if it supplies any. Store chain corruption is refused
+    // below; this builder never opens or quarantines a local segment.
     durability.quarantined = durability.journal.log().quarantined().to_vec();
     for q in &durability.quarantined {
         tracing::error!(

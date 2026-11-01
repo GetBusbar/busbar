@@ -3,11 +3,9 @@
 
 //! Tests for `durability/amend.rs`: the node amendment journal survives a restart.
 //!
-//! A restart is proven with two real processes over one data directory, as a node restarts: the
-//! parent test runs this same test binary twice, filtered to itself — first to seal a content access
-//! on the booted node's journal, then, in a fresh process, to read it back off the one its boot
-//! rebuilt. Each phase boots through [`crate::root::boot::book`] itself, over an `App` whose
-//! governance owns the journal (item 404: an instance the node owns, never a process static).
+//! A restart uses fresh host/App instances over one Store fixture. The child process isolates
+//! boot globals; no filesystem journal bridges the instances. Both boots call
+//! [`crate::root::boot::book`], and governance owns each amendment journal.
 
 use super::*;
 use busbar_kernel::audit::amend::{NodeAmendments, Reader};
@@ -93,7 +91,10 @@ fn accessed(journal: &NodeAmendments) -> Vec<String> {
 /// amendment journal from the chain and binds it to the book. The data directory is
 /// `BUSBAR_DATA_DIR`, which [`run_phase`] sets for the child process to `dir`. Answers the book and
 /// the booted App, whose `amendments` is the journal every phase seals on and reads back.
-fn boot(dir: &std::path::Path) -> (Arc<Mutex<Durability>>, Arc<busbar_kernel::state::App>) {
+fn boot(
+    slots: &crate::root::store_double::RecordSlots,
+    dir: &std::path::Path,
+) -> (Arc<Mutex<Durability>>, Arc<busbar_kernel::state::App>) {
     assert_eq!(
         busbar_kernel::preflight::fleet_data_dir().as_deref(),
         Some(dir),
@@ -106,7 +107,7 @@ fn boot(dir: &std::path::Path) -> (Arc<Mutex<Durability>>, Arc<busbar_kernel::st
         )
         .expect("a governance over the memory store"),
     );
-    gov.attach_store_calls(crate::root::store_double::RecordSlots::new().calls());
+    gov.attach_store_calls(slots.calls());
     let app = busbar_kernel::test_support::TestApp::new()
         .governance(gov)
         .build();
@@ -130,23 +131,43 @@ fn restart_phase(phase: &str, dir: &str) {
         store_phase();
         return;
     }
-    let (book, app) = boot(std::path::Path::new(dir));
+    let slots = crate::root::store_double::RecordSlots::new();
+    let (book, app) = boot(&slots, std::path::Path::new(dir));
     // The journal the boot rebuilt and bound: the one the booted App carries.
     let journal = Arc::clone(&app.amendments);
     match phase {
-        "seal" => access(&app, HOOK),
-        "read" => {
-            let durability = book.lock().unwrap_or_else(|p| p.into_inner());
+        "restart" => {
+            access(&app, HOOK);
+            store_drained(&book);
+            let lane = book
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .lane()
+                .unwrap()
+                .clone();
+            lane.release_held_lease();
+            drop(lane);
+            drop(journal);
+            drop(app);
+            drop(book);
+            let (restarted, app) = boot(&slots, std::path::Path::new(dir));
+            let durability = restarted.lock().unwrap_or_else(|p| p.into_inner());
             assert!(
                 durability.restart_findings.is_empty(),
                 "{:?}",
                 durability.restart_findings
             );
             assert_eq!(
-                accessed(&journal),
+                accessed(&app.amendments),
                 vec![HOOK.to_string()],
-                "the content access survived the restart"
+                "the content access survived the restart through Store records"
             );
+            assert_eq!(
+                std::fs::read_dir(dir).unwrap().count(),
+                0,
+                "boot created local state"
+            );
+            return;
         }
         // U15: the on-demand verify sees an edit to the HELD amendment run. One access is sealed
         // and `/verify` reports nothing; the held run is then edited in place, and `/verify` names
@@ -214,12 +235,14 @@ fn store_boot(
 
 /// Wait until the store took everything the book's lane holds.
 fn store_drained(book: &Arc<Mutex<Durability>>) {
-    let durability = book.lock().unwrap_or_else(|p| p.into_inner());
+    let lane = book
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .lane()
+        .expect("Store lane")
+        .clone();
     assert!(
-        durability
-            .lane()
-            .expect("a book over the store")
-            .drain(std::time::Duration::from_secs(120)),
+        lane.drain(std::time::Duration::from_secs(120)),
         "the store takes the journal's records"
     );
 }
@@ -329,10 +352,8 @@ fn verify_reports_an_edit_to_the_held_amendment_run() {
     );
 }
 
-/// A CONTENT ACCESS SURVIVES A RESTART. The first process boots through `root::boot::book` and seals
-/// a hook's content access on its App's journal; the second boots the same way over the same data
-/// directory and finds it on the journal its own boot rebuilt. With the
-/// amendments held in memory only, the second process found no access.
+/// A content access survives fresh App and host instances over the same Store. Both use the
+/// production boot, with a legacy data directory configured that remains empty.
 #[test]
 fn a_content_access_survives_a_restart() {
     if child_phase() {
@@ -340,14 +361,12 @@ fn a_content_access_survives_a_restart() {
     }
     let dir = crate::root::durability::Scratch::new("amend-restart");
     let test = "a_content_access_survives_a_restart";
-    run_phase(test, "seal", &dir.0);
-    run_phase(test, "read", &dir.0);
+    run_phase(test, "restart", &dir.0);
 }
 
-/// A NODE WITH NO DATA DIRECTORY rebuilds nothing, so it binds nothing: the node journal stays
-/// memory-only, the previous release's shape, and no amendment reaches its memory-buffered journal.
+/// A bare-shipper helper has no Store to rebuild from, so it binds no amendment persistence.
 #[test]
-fn without_a_data_dir_the_amendment_journal_is_neither_rebuilt_nor_bound() {
+fn without_a_store_the_amendment_journal_is_neither_rebuilt_nor_bound() {
     let mut durability = build_with_cards(
         &DurabilityConfig { data_dir: None },
         0,

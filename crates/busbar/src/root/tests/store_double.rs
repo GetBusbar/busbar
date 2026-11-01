@@ -11,6 +11,7 @@
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
+use std::task::{Poll, Waker};
 
 use busbar_contract::abi::store::OpId;
 use busbar_contract::kinds::RecordBytes;
@@ -42,6 +43,9 @@ pub(crate) struct RecordSlots {
     put_probe: PutProbe,
     /// Keep every put and answer it FAILED: a store that committed and lost the ack.
     lost_acks: Arc<AtomicBool>,
+    /// Calls remain genuinely Pending until the test releases them.
+    paused: Arc<AtomicBool>,
+    parked: Arc<Mutex<Vec<Waker>>>,
 }
 
 impl RecordSlots {
@@ -53,6 +57,42 @@ impl RecordSlots {
     /// The same store as the root's journal reaches it.
     pub(crate) fn calls(&self) -> Arc<dyn StoreCalls> {
         Arc::new(self.clone())
+    }
+
+    /// Pause or release Store futures. Wake outside the fixture lock, as a backend completion does.
+    pub(crate) fn pause(&self, paused: bool) {
+        self.paused.store(paused, Ordering::Release);
+        if !paused {
+            let parked =
+                std::mem::take(&mut *self.parked.lock().unwrap_or_else(|p| p.into_inner()));
+            for waker in parked {
+                waker.wake();
+            }
+        }
+    }
+
+    /// How many calls reached Pending and registered a wakeup.
+    pub(crate) fn waiting(&self) -> usize {
+        self.parked.lock().unwrap_or_else(|p| p.into_inner()).len()
+    }
+
+    async fn ready(&self) {
+        std::future::poll_fn(|cx| {
+            if !self.paused.load(Ordering::Acquire) {
+                return Poll::Ready(());
+            }
+            let waker = cx.waker().clone();
+            self.parked
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .push(waker);
+            if self.paused.load(Ordering::Acquire) {
+                Poll::Pending
+            } else {
+                Poll::Ready(())
+            }
+        })
+        .await;
     }
 
     /// From now on, refuse (`true`) or take (`false`) every put.
@@ -170,24 +210,25 @@ impl StoreCalls for RecordSlots {
         key: &'a [u8],
         value: &'a RecordBytes,
     ) -> StoreCall<'a, ()> {
-        let probe = self
-            .put_probe
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .clone();
-        if let Some(failure) = probe.and_then(|probe| probe()) {
-            return Box::pin(async move { Err(failure) });
-        }
-        let refused = self.refuses_put();
-        if !refused {
-            self.rows
+        Box::pin(async move {
+            self.ready().await;
+            let probe = self
+                .put_probe
                 .lock()
                 .unwrap_or_else(|p| p.into_inner())
-                .insert((schema.to_string(), key.to_vec()), value.clone());
-            self.puts.fetch_add(1, Ordering::AcqRel);
-        }
-        let lost = self.lost_acks.load(Ordering::Acquire);
-        Box::pin(async move {
+                .clone();
+            if let Some(failure) = probe.and_then(|probe| probe()) {
+                return Err(failure);
+            }
+            let refused = self.refuses_put();
+            if !refused {
+                self.rows
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .insert((schema.to_string(), key.to_vec()), value.clone());
+                self.puts.fetch_add(1, Ordering::AcqRel);
+            }
+            let lost = self.lost_acks.load(Ordering::Acquire);
             if refused {
                 Err(StoreFailure::Refused(
                     "the test store refuses writes".to_string(),
@@ -220,29 +261,30 @@ impl StoreCalls for RecordSlots {
         prefix: &'a [u8],
         limit: u32,
     ) -> StoreCall<'a, Vec<(Vec<u8>, RecordBytes)>> {
-        // Taken out of the lock before it runs, so a probe that waits on another scanning thread
-        // (a barrier) does not hold every other scan behind it.
-        let probe = self.probe.lock().unwrap_or_else(|p| p.into_inner()).clone();
-        if let Some(probe) = probe {
-            probe();
-        }
-        if self.unreadable.load(Ordering::Acquire) {
-            return Box::pin(async {
-                Err(StoreFailure::Failed(
+        Box::pin(async move {
+            self.ready().await;
+            // Taken out of the lock before it runs, so a probe that waits on another scanning thread
+            // (a barrier) does not hold every other scan behind it.
+            let probe = self.probe.lock().unwrap_or_else(|p| p.into_inner()).clone();
+            if let Some(probe) = probe {
+                probe();
+            }
+            if self.unreadable.load(Ordering::Acquire) {
+                return Err(StoreFailure::Failed(
                     "the test store will not read".to_string(),
-                ))
-            });
-        }
-        let rows: Vec<(Vec<u8>, RecordBytes)> = self
-            .rows
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .iter()
-            .filter(|((s, k), _)| s == schema && k.starts_with(prefix))
-            .take(limit as usize)
-            .map(|((_, k), v)| (k.clone(), v.clone()))
-            .collect();
-        Box::pin(async move { Ok(rows) })
+                ));
+            }
+            let rows: Vec<(Vec<u8>, RecordBytes)> = self
+                .rows
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .iter()
+                .filter(|((s, k), _)| s == schema && k.starts_with(prefix))
+                .take(limit as usize)
+                .map(|((_, k), v)| (k.clone(), v.clone()))
+                .collect();
+            Ok(rows)
+        })
     }
     fn upsert_plane_record<'a>(&'a self, _: PlaneRecordRef<'a>) -> StoreCall<'a, ()> {
         not_this()
