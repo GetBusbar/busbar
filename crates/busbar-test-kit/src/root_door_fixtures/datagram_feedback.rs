@@ -5,7 +5,7 @@
 //! ABI loans; it never retains their pointers or reads spare or freed allocation bytes.
 
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use busbar_contract::abi::mechanism::call::Outcome;
@@ -53,6 +53,7 @@ pub struct Branching {
     terminals: Terminals,
     state: Mutex<State>,
     finished: AtomicUsize,
+    consume_only: AtomicBool,
 }
 
 impl Branching {
@@ -84,6 +85,7 @@ impl Branching {
             terminals,
             state: Mutex::new(State::default()),
             finished: AtomicUsize::new(0),
+            consume_only: AtomicBool::new(false),
         })
     }
 
@@ -100,6 +102,12 @@ impl Branching {
     /// Actual Finish crossings, including cancellation and destruction.
     pub fn finishes(&self) -> usize {
         self.finished.load(Ordering::SeqCst)
+    }
+
+    /// Have subsequent fresh Emits accept and record their complete input without new output.
+    /// An already owed operation must finish before a fresh inert input can cross.
+    pub fn consume_without_output(&self) {
+        self.consume_only.store(true, Ordering::Release);
     }
 
     fn enqueue(&self, state: &mut State, bytes: &[u8]) {
@@ -217,6 +225,12 @@ impl FramerDoor for Branching {
                         "fresh input cannot overtake same-op MORE"
                     );
                     state.emitted.push(bytes.to_vec());
+                    if self.consume_only.load(Ordering::Acquire) {
+                        return Crossed {
+                            outcome: Outcome::Ready,
+                            error: None,
+                        };
+                    }
                     if let Terminals::OverlapAndEmpty {
                         payload_bytes,
                         empty_pieces,

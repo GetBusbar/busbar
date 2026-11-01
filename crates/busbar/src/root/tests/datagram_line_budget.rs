@@ -284,6 +284,105 @@ async fn an_idle_upstream_reader_releases_crossing_credit_before_the_callers_nex
 }
 
 #[tokio::test]
+async fn a_caller_waits_before_accepting_input_until_actual_upstream_readers_release_credit() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[derive(Default)]
+    struct CreditWake(AtomicUsize);
+    impl Wake for CreditWake {
+        fn wake(self: Arc<Self>) {
+            self.wake_by_ref();
+        }
+        fn wake_by_ref(self: &Arc<Self>) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    const EPISODES: usize = 256;
+    const MESSAGES: usize = 2 * EPISODES;
+    const PAYLOAD_BYTES: usize = MESSAGES * FRAME_CAP;
+    const METADATA_HEADROOM: usize = 32 * FRAME_CAP;
+    let crossing = datagram_output_reservation_bytes();
+    let limit = crossing + PAYLOAD_BYTES + METADATA_HEADROOM;
+    // Setup alone uses the crossing layout. Independently initialized reader payloads plus
+    // this input exceed L, while this input plus a real crossing fits L after reader retirement.
+    assert!(2 * PAYLOAD_BYTES > limit);
+    let actual = ActualPair::new(
+        Some(limit),
+        2,
+        Terminals::OverlapAndEmpty {
+            payload_bytes: FRAME_CAP,
+            empty_pieces: 0,
+        },
+    );
+    for _ in 0..EPISODES {
+        assert_eq!(actual.upstream.write(&[0], true, false), Ok(1));
+        assert!(actual.published().await.failure.is_none());
+    }
+    // Every episode is genuinely quiescent. Only actual CHANNEL reader allocations hold
+    // the blocking credit; neither a busy association nor an active publisher causes Pending.
+    let before = actual.published().await;
+    assert_eq!(before.original_bytes, EPISODES as u64);
+    assert_eq!(before.original_handed_bytes, EPISODES as u64);
+    assert!(before.failure.is_none());
+    assert_eq!(actual.b.emitted(), vec![vec![0]; EPISODES]);
+    assert!(actual.a.emitted().is_empty());
+    assert!(actual.caller_messages().is_empty());
+    actual.a.consume_without_output();
+    let input = vec![b'i'; PAYLOAD_BYTES];
+    let wakes = Arc::new(CreditWake::default());
+    let wake = Waker::from(Arc::clone(&wakes));
+    let mut cx = Context::from_waker(&wake);
+    let mut writing = Box::pin(actual.caller.write(&input, false));
+    assert!(writing.as_mut().poll(&mut cx).is_pending());
+    assert!(writing.as_mut().poll(&mut cx).is_pending());
+    assert_eq!(
+        actual.pair.publication_outcome(),
+        before,
+        "Pending accepts none"
+    );
+    assert!(
+        actual.a.emitted().is_empty(),
+        "no fresh Emit crossed before credit"
+    );
+    assert!(!actual.pair.closed());
+    let registered = wakes.0.load(Ordering::SeqCst);
+
+    let mut bytes = vec![0; FRAME_CAP];
+    for _ in 0..MESSAGES {
+        let piece = actual.upstream.read(&waker(), &mut bytes).unwrap();
+        assert_eq!(piece.len, FRAME_CAP);
+        assert!(piece.end);
+        assert!(bytes.iter().all(|byte| *byte == b'x'));
+    }
+    assert_eq!(
+        actual.upstream.read(&waker(), &mut bytes),
+        Err(ConnError::Pending)
+    );
+    assert!(
+        wakes.0.load(Ordering::SeqCst) > registered,
+        "actual reader retirement wakes the unaccepted writer"
+    );
+    assert_eq!(actual.pair.publication_outcome(), before);
+    assert!(tokio::time::timeout(COMPLETION_WAIT, writing)
+        .await
+        .expect("the same unaccepted write resumes after real reader consumption"));
+    let outcome = actual.published().await;
+    assert!(outcome.failure.is_none(), "{outcome:?}");
+    assert_eq!(outcome.original_bytes, EPISODES as u64 + input.len() as u64);
+    assert_eq!(outcome.original_handed_bytes, outcome.original_bytes);
+    assert_eq!(outcome.original_cancelled_bytes, 0);
+    assert_eq!(actual.a.emitted(), vec![input]);
+    assert_eq!(actual.b.emitted(), vec![vec![0]; EPISODES]);
+    assert!(actual.caller_messages().is_empty());
+    assert_eq!(
+        actual.upstream.read(&waker(), &mut bytes),
+        Err(ConnError::Pending)
+    );
+    assert!(!actual.pair.closed());
+}
+
+#[tokio::test]
 async fn configured_frontier_exhaustion_reports_real_partial_publication_and_isolates_the_pair() {
     let limit = datagram_output_reservation_bytes() + 4 * FRAME_CAP;
     let actual = ActualPair::new(Some(limit), 2, Terminals::Paths);
