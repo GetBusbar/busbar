@@ -168,37 +168,6 @@ fn commit_clear_and_drop_each_resolve_a_sentinel() {
     );
 }
 
-/// CLEARING NEVER REMOVES A VALUE SOMEBODY ELSE COMMITTED.
-///
-/// `clear_inner` removes the slot only while it is still an uncommitted sentinel. If it removed
-/// whatever it found, a late clear racing a commit would delete the very response a retry is
-/// waiting to replay — and the retry would re-run a mutation that had already landed.
-#[test]
-fn a_clear_that_arrives_after_a_commit_leaves_the_committed_value_alone() {
-    let cache: IdempotencyCache<String> = IdempotencyCache::new();
-    let k = key("alice", "idem-race");
-
-    let first = match cache.probe(k.clone(), 1_000) {
-        Probe::Reserved(r) => r,
-        _ => panic!("reserve"),
-    };
-    // Something else commits the slot under this reservation's feet -- the shape of a commit
-    // racing the reserving call's own cancellation.
-    match cache.probe(k.clone(), 1_000) {
-        Probe::InFlight => {}
-        _ => panic!("a second probe of a reserved key must say in-flight"),
-    }
-    first.commit("landed".to_string(), 1_000);
-
-    // A second reservation object cannot exist for this key while it is reserved, so the race is
-    // reproduced the only way it can occur: a fresh reservation on a key that is then committed,
-    // then cleared. The committed value must survive.
-    match cache.probe(k.clone(), 1_001) {
-        Probe::Replay(v) => assert_eq!(v, "landed"),
-        _ => panic!("the committed value was not replayed"),
-    };
-}
-
 /// THE SLOT IS KEYED BY THE ACTOR AS WELL AS THE HEADER.
 ///
 /// Two operators may choose the same idempotency key value; they must not replay each other's

@@ -206,7 +206,8 @@ fn every_formerly_irreducible_verb_is_refused_to_a_grant_that_does_not_cover_it(
 
 #[test]
 fn a_new_verb_admitted_by_its_scope_reaches_governance() {
-    let verbs = make_verbs(FakeGovernance::new());
+    let log: SeamLog = std::sync::Arc::new(Mutex::new(Vec::new()));
+    let verbs = make_verbs(RoutingGovernance(std::sync::Arc::clone(&log)));
     let admin = admin();
     let out = verbs
         .execute(
@@ -218,7 +219,11 @@ fn a_new_verb_admitted_by_its_scope_reaches_governance() {
             b"{}",
         )
         .unwrap();
-    assert_eq!(out, b"ok");
+    assert_eq!(out, b"new");
+    assert_eq!(
+        *log.lock().unwrap(),
+        vec![(KernelVerb::PlaneRecordWrite, "new")]
+    );
 }
 
 /// D38 `amend_rate_history` is wired like any other money-governance verb: `full` scope and the
