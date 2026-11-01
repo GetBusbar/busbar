@@ -12,6 +12,10 @@ import unittest
 from unittest.mock import patch
 import zipfile
 
+SOURCE_EPOCH = 1700000000
+CHANGED_SOURCE_EPOCH = SOURCE_EPOCH + 3600
+FAILED_BUILD_EXIT = 7
+
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import publish_gate as pg
 import candidate
@@ -69,7 +73,11 @@ output.chmod(0o755)
 with open('cargo-calls.jsonl','a') as f: f.write(json.dumps({'args':args,'flags':os.environ.get('CARGO_ENCODED_RUSTFLAGS',os.environ.get('RUSTFLAGS',''))})+'\\n')
 ''')
                 cargo.chmod(0o755)
-                result = subprocess.run(["bash", str(root / "scripts/release-build.sh"), triple, "--out-dir", str(root / "out")], env={**os.environ, "PATH": str(doubles) + os.pathsep + os.environ["PATH"], "BUSBAR_RELEASE_PUBKEY": "fixture", "CARGO_ENCODED_RUSTFLAGS": "-Cprofile-use=unrelated.profdata"}, capture_output=True)
+                command = ["bash", str(root / "scripts/release-build.sh"), triple, "--out-dir", str(root / "out")]
+                env = {**os.environ, "PATH": str(doubles) + os.pathsep + os.environ["PATH"],
+                       "BUSBAR_RELEASE_PUBKEY": "fixture", "SOURCE_DATE_EPOCH": str(SOURCE_EPOCH),
+                       "CARGO_ENCODED_RUSTFLAGS": "-Cprofile-use=unrelated.profdata"}
+                result = subprocess.run(command, env=env, capture_output=True)
                 self.assertEqual(result.returncode, 0, result.stderr.decode())
                 archive = root / "out" / f"busbar-audit-verify-{triple}.{ext}"
                 self.assertTrue(archive.is_file(), result.stdout.decode())
@@ -94,6 +102,21 @@ with open('cargo-calls.jsonl','a') as f: f.write(json.dumps({'args':args,'flags'
                 self.assertNotIn("profile-use", verifier["flags"])
                 if "windows" in triple:
                     self.assertIn("+crt-static", verifier["flags"])
+                original = archive.read_bytes()
+                os.utime(root / "docs/audit-verify.md", (CHANGED_SOURCE_EPOCH, CHANGED_SOURCE_EPOCH))
+                rebuilt = subprocess.run(command, env=env, capture_output=True)
+                self.assertEqual(rebuilt.returncode, 0, rebuilt.stderr.decode())
+                self.assertEqual(archive.read_bytes(), original, "source timestamps cannot change a release archive")
+                # A failed or interrupted retry must remove the preceding attempt's archives
+                # and success marker, rather than leave a stale downloadable verifier.
+                for failure in (f"exit {FAILED_BUILD_EXIT}", 'kill -TERM "$PPID"; exit 143'):
+                    cargo.write_text("#!/bin/sh\n" + failure + "\n")
+                    archive.write_bytes(original)
+                    failed = subprocess.run(command, env=env, capture_output=True)
+                    self.assertNotEqual(failed.returncode, 0)
+                    self.assertFalse(archive.exists())
+                    self.assertFalse((root / "out" / f"busbar-{triple}.{ext}").exists())
+                    self.assertFalse((root / "build-evidence/artifact.sha256").exists())
 
 
 if __name__ == "__main__":
