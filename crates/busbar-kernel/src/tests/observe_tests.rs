@@ -255,12 +255,25 @@ fn a_reported_metric_name_keeps_one_type_across_plugins_and_label_sets() {
 }
 
 /// THE RESERVED NAMESPACE. A plugin metric named `busbar_*` is dropped so no plugin can impersonate
-/// a first-party series or type-conflict with one. Asserted on the predicate the fold branches on,
-/// because the fold itself writes to a process-global recorder no unit test may install into.
+/// a first-party series or type-conflict with one. The real fold admits the ordinary control and
+/// refuses the reserved name under a local recorder, without changing the process's recorder.
 #[test]
 fn the_reserved_namespace_is_refused() {
-    assert!("busbar_file_logs_rotated_total".starts_with(RESERVED_PREFIX));
-    assert!(!"file_logs_rotated_total".starts_with(RESERVED_PREFIX));
+    let recorder = Registered::default();
+    metrics::with_local_recorder(&recorder, || {
+        fold_metrics(
+            &*TEST_GRANTS,
+            "reserved-namespace-witness",
+            &[
+                serde_json::json!({"name": "busbar_file_logs_rotated_total", "type": "counter", "value": 1}),
+                serde_json::json!({"name": "file_logs_rotated_total", "type": "counter", "value": 1}),
+            ],
+        );
+    });
+    assert_eq!(
+        *recorder.0.lock().unwrap_or_else(|e| e.into_inner()),
+        vec!["file_logs_rotated_total{plugin=reserved-namespace-witness}".to_string()]
+    );
 }
 
 /// ONE VALIDATOR, AND IT IS 1.5.5'S. The entries the host folds are the entries the hook validator
@@ -383,22 +396,42 @@ fn one_plugins_flood_does_not_spend_anothers_budget() {
 /// does NOT fold them, because doing so would give hook metrics a second path with a different
 /// freshness and a different exposition, and the hook kind's behaviour is frozen for 1.6.0.
 ///
-/// Asserted by observing that the hook arm returns before touching anything: the call is made with
-/// entries that WOULD be folded for any other kind, and it must complete having emitted nothing.
-/// (The absence is what is provable here without installing a process-global recorder; the positive
-/// half — that a non-hook kind DOES fold — is proven end-to-end by the compiled-in/dropped-in
-/// equivalence test, which is the only place a recorder legitimately exists.)
+/// A local recorder observes no registration for the hook, then observes the same entry from an
+/// export plugin. The positive control proves the entry and recorder work without installing a
+/// process-global recorder.
 #[test]
 fn hook_envelope_metrics_are_carried_but_not_folded() {
-    let entries = vec![serde_json::json!({"name": "x_total", "type": "counter", "value": 1})];
-    // Must not panic, must not emit. The kind constant is read from the ABI so a kind rename cannot
-    // silently turn the freeze off.
-    OBSERVER.observe(
-        &*TEST_GRANTS,
-        "some-hook",
-        busbar_contract::abi::mechanism::kind::HOOK,
-        &entries,
-        &[serde_json::json!({"code": "BUSBAR-65535"})],
+    let entries = vec![
+        serde_json::json!({"name": "hook_freeze_control_total", "type": "counter", "value": 1}),
+    ];
+    let recorder = Registered::default();
+    metrics::with_local_recorder(&recorder, || {
+        OBSERVER.observe(
+            &*TEST_GRANTS,
+            "hook-freeze-witness",
+            busbar_contract::abi::mechanism::kind::HOOK,
+            &entries,
+            &[],
+        );
+        assert!(
+            recorder
+                .0
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .is_empty(),
+            "the hook's envelope metrics must not be registered"
+        );
+        OBSERVER.observe(
+            &*TEST_GRANTS,
+            "export-freeze-control",
+            busbar_contract::abi::mechanism::kind::EXPORT,
+            &entries,
+            &[],
+        );
+    });
+    assert_eq!(
+        *recorder.0.lock().unwrap_or_else(|e| e.into_inner()),
+        vec!["hook_freeze_control_total{plugin=export-freeze-control}".to_string()]
     );
 }
 

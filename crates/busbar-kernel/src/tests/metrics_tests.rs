@@ -121,8 +121,8 @@ fn sample_vkey(id: &str) -> VirtualKey {
     }
 }
 
-/// `refresh_scrape_gauges` with governance enabled must emit `KEY_SPEND_CENTS`,
-/// `KEY_TOKENS_TOTAL`, and `KEY_BUDGET_REMAINING_CENTS` for each key with a budget cap.
+/// `refresh_scrape_gauges` with governance enabled emits the key's actual spend and tokens. Keys
+/// have no budget cap; remaining-budget gauges belong to group buckets instead.
 #[test]
 fn test_scrape_gauges_key_spend_and_remaining() {
     init();
@@ -158,21 +158,24 @@ fn test_scrape_gauges_key_spend_and_remaining() {
         .governance(gov)
         .build();
 
-    refresh_scrape_gauges(&app);
+    let (recorder, handle) = local_source(GAUGE_IDLE_TIMEOUT);
+    metrics::with_local_recorder(&recorder, || refresh_scrape_gauges(&app));
 
-    let out = render();
+    let out = handle();
     // The key id must appear in the output (cardinality-bounded label).
     assert!(
         out.contains("vk_spend_test01"),
         "key id must appear as label in scrape output; got:\n{out}"
     );
     assert!(
-        out.contains(KEY_SPEND_CENTS),
-        "spend gauge must be present; got:\n{out}"
+        out.lines()
+            .any(|line| line == format!("{KEY_SPEND_CENTS}{{key=\"{}\"}} 200", key.id)),
+        "the seeded key's spend gauge must carry its actual value; got:\n{out}"
     );
     assert!(
-        out.contains(KEY_TOKENS_TOTAL),
-        "tokens gauge must be present; got:\n{out}"
+        out.lines()
+            .any(|line| line == format!("{KEY_TOKENS_TOTAL}{{key=\"{}\"}} 5000", key.id)),
+        "the seeded key's tokens gauge must carry its actual value; got:\n{out}"
     );
     // 1.5.0: keys are pure auth (no cap), so no per-key budget-remaining gauge exists; the
     // remaining/limit dimension lives on the GROUP buckets (asserted below).
