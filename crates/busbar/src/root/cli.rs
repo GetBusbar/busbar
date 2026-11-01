@@ -231,8 +231,40 @@ pub(crate) fn is_plane_flag(planes: &[&[super::linked::CliHelpRow]], arg: &str) 
 /// proceed to normal startup. busbar takes no positional arguments and is configured via
 /// environment + YAML; an unrecognized flag is a usage error rather than a silent server start.
 pub(crate) fn handle_cli_flags() -> Option<i32> {
-    let mut args = std::env::args().skip(1);
-    match args.next().as_deref() {
+    let supplied: Vec<String> = std::env::args().skip(1).collect();
+    let mut values = supplied.iter();
+    while let Some(arg) = values.next() {
+        if arg == OPTION_MIGRATE_CONFIG {
+            // This command's next word is its literal path, including a flag-looking name.
+            values.next();
+            continue;
+        }
+        if matches!(
+            arg.as_str(),
+            OPTION_CONFIG | OPTION_CONFIG_SHORT | OPTION_PROVIDERS
+        ) && values.next().is_none()
+        {
+            eprintln!("busbar: {arg} requires a value. Try 'busbar --help'.");
+            return Some(EXIT_USAGE);
+        }
+    }
+    let mut args = supplied.into_iter();
+    // Boot modifiers may precede an exit command. Their values retain the same meaning as in
+    // the full argument scanners; keep the remaining iterator for a command's own operands.
+    let command = loop {
+        let arg = args.next();
+        match arg.as_deref() {
+            Some(OPTION_CONFIG | OPTION_CONFIG_SHORT | OPTION_PROVIDERS) => {
+                args.next();
+            }
+            Some(crate::OPTION_SAFE_MODE) => {}
+            Some(a)
+                if a.starts_with(OPTION_CONFIG_ASSIGNMENT)
+                    || a.starts_with(OPTION_PROVIDERS_ASSIGNMENT) => {}
+            _ => break arg,
+        }
+    };
+    match command.as_deref() {
         None => None, // no args → run the gateway
         Some(OPTION_VERSION | OPTION_VERSION_SHORT) => {
             // Version AND build posture on one line each: an operator correlating a perf number to a
@@ -311,20 +343,6 @@ pub(crate) fn handle_cli_flags() -> Option<i32> {
         Some(OPTION_HELP | OPTION_HELP_SHORT) => {
             print!("{}", render_help(env!("CARGO_PKG_VERSION"), &help_rows()));
             Some(EXIT_SUCCESS)
-        }
-        // `-c`/`--config`/`--providers` (value-taking flags) as the FIRST argument mean "run the
-        // gateway with these config/providers paths" — proceed to boot. `run()` (and each command
-        // path) scans the FULL arg list for their values, so they are honored wherever they appear;
-        // recognizing them here only stops the leading one from being rejected as an unknown argument.
-        // The unknown-flag rejection below is unchanged.
-        Some(a)
-            if a == OPTION_CONFIG_SHORT
-                || a == OPTION_CONFIG
-                || a == OPTION_PROVIDERS
-                || a.starts_with(OPTION_CONFIG_ASSIGNMENT)
-                || a.starts_with(OPTION_PROVIDERS_ASSIGNMENT) =>
-        {
-            None
         }
         Some(other) => {
             eprintln!("busbar: unrecognized argument '{other}'. Try 'busbar --help'.");
@@ -702,6 +720,13 @@ pub(crate) fn value_flag(
             if let Some(v) = iter.next() {
                 result = Some(v);
             }
+        } else if matches!(
+            a.as_str(),
+            OPTION_MIGRATE_CONFIG | OPTION_CONFIG | OPTION_CONFIG_SHORT | OPTION_PROVIDERS
+        ) {
+            // Every other value-taking option and migration's operand owns its next word.
+            // In particular, a literal migration path never becomes a providers option.
+            iter.next();
         }
     }
     result

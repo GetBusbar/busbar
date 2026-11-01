@@ -151,10 +151,9 @@ fn write_tools_only_configs(dir: &Path, extra: &str) {
 /// here because [`run_busbar`] is what has to guarantee that, per child.
 const UNSET_INTERPOLATION_VAR: &str = "BUSBAR_CLI_VALIDATE_TEST_UNSET_VAR";
 
-/// Run the real busbar binary with the fixture's config env; returns (exit_code, stdout, stderr).
-fn run_busbar(dir: &Path, args: &[&str]) -> (i32, String, String) {
-    let out = Command::new(env!("CARGO_BIN_EXE_busbar"))
-        .args(args)
+fn command(dir: &Path) -> Command {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_busbar"));
+    command
         // The unset-interpolation test needs its var genuinely absent in the CHILD regardless of the
         // ambient environment. Cleared per-child rather than with `std::env::remove_var` in the
         // parent: libtest runs this binary's ~20 tests on concurrent threads and every one of them
@@ -170,14 +169,150 @@ fn run_busbar(dir: &Path, args: &[&str]) -> (i32, String, String) {
             "0000000000000000000000000000000000000000000000000000000000000001",
         )
         .env("BUSBAR_CONFIG", dir.join("config.yaml"))
-        .env("BUSBAR_PROVIDERS", dir.join("providers.yaml"))
-        .output()
-        .expect("run busbar");
+        .env("BUSBAR_PROVIDERS", dir.join("providers.yaml"));
+    command
+}
+
+/// Run the real busbar binary with the fixture's config env; returns (exit_code, stdout, stderr).
+fn run_busbar(dir: &Path, args: &[&str]) -> (i32, String, String) {
+    let out = command(dir).args(args).output().expect("run busbar");
     (
         out.status.code().unwrap_or(-1),
         String::from_utf8_lossy(&out.stdout).into_owned(),
         String::from_utf8_lossy(&out.stderr).into_owned(),
     )
+}
+
+#[test]
+fn safe_mode_as_the_first_flag_proceeds_to_the_requested_configuration() {
+    let dir = fixture_dir("safe-first-missing");
+    let (code, _, error) = run_busbar(&dir, &["--safe-mode"]);
+    assert_eq!(
+        code, 1,
+        "must reach missing configuration, not usage refusal: {error}"
+    );
+    assert!(!error.contains("unrecognized argument"), "{error}");
+    assert!(error.contains("config.yaml"), "{error}");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn a_missing_config_or_provider_flag_value_is_a_usage_error_before_boot() {
+    let dir = fixture_dir("missing-flag-value");
+    for args in [
+        vec!["--config"],
+        vec!["-c"],
+        vec!["--providers"],
+        vec!["--validate", "--config"],
+        vec!["--safe-mode", "--providers"],
+        vec!["--migrate-config", "legacy.yaml", "--providers"],
+    ] {
+        let (code, _, error) = run_busbar(&dir, &args);
+        assert_eq!(code, 2, "{args:?}: {error}");
+        assert!(error.contains("requires a value"), "{args:?}: {error}");
+    }
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn commands_after_boot_options_exit_without_starting_the_gateway() {
+    use std::process::Stdio;
+    use std::time::Duration;
+
+    let dir = fixture_dir("trailing-command");
+    let config = dir.join("config.yaml");
+    let providers = dir.join("providers.yaml");
+    let catalog = if cfg!(linked_section_pools) {
+        "providers: {}\nmodels: {}\n"
+    } else {
+        ""
+    };
+    std::fs::write(
+        &config,
+        format!("listen: '127.0.0.1:0'\nstore: {{module: memory}}\n{catalog}"),
+    )
+    .unwrap();
+    std::fs::write(&providers, "").unwrap();
+    for options in [
+        vec!["-c".to_owned(), config.display().to_string()],
+        vec!["--safe-mode".to_owned()],
+        vec![
+            "--providers".to_owned(),
+            providers.display().to_string(),
+            "--safe-mode".to_owned(),
+        ],
+        vec![
+            format!("--config={}", config.display()),
+            format!("--providers={}", providers.display()),
+        ],
+    ] {
+        let mut child = command(&dir)
+            .args(&options)
+            .arg("--validate")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let result = common::lines::try_wait_bounded(&mut child, Duration::from_secs(10));
+        let output = child.wait_with_output().unwrap();
+        assert_eq!(
+            result,
+            Ok(0),
+            "{options:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(String::from_utf8_lossy(&output.stdout).contains("ok: config valid"));
+    }
+    // A value that looks like a flag remains the option's value, not an early command.
+    std::fs::remove_file(&config).unwrap();
+    let missing = command(&dir)
+        .current_dir(&dir)
+        .args(["--config", "--version"])
+        .output()
+        .unwrap();
+    assert_eq!(missing.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&missing.stderr).contains("--version"));
+    assert!(!String::from_utf8_lossy(&missing.stdout).starts_with("busbar "));
+    let (code, output, error) = run_busbar(&dir, &["--config", "--version", "--version"]);
+    assert_eq!(code, 0, "{error}");
+    assert!(output.starts_with("busbar "));
+
+    let legacy = dir.join("legacy.yaml");
+    std::fs::write(&legacy, "listen: '127.0.0.1:0'\nstore: {module: memory}\n").unwrap();
+    let mut child = command(&dir)
+        .args(["--safe-mode", "--migrate-config"])
+        .arg(&legacy)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let result = common::lines::try_wait_bounded(&mut child, Duration::from_secs(10));
+    let output = child.wait_with_output().unwrap();
+    assert_eq!(
+        result,
+        Ok(0),
+        "migration operand was lost: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    for filename in ["--config", "--providers", "-c"] {
+        std::fs::copy(&legacy, dir.join(filename)).unwrap();
+        let mut child = command(&dir)
+            .current_dir(&dir)
+            .args(["--migrate-config", filename])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let result = common::lines::try_wait_bounded(&mut child, Duration::from_secs(10));
+        let output = child.wait_with_output().unwrap();
+        assert_eq!(
+            result,
+            Ok(0),
+            "literal migration path {filename}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    let _ = std::fs::remove_dir_all(dir);
 }
 
 /// An UNSIGNED (structurally valid) plugin tarball written into the fixture's plugins dir.
