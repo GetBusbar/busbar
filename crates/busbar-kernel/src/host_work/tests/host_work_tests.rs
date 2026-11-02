@@ -63,10 +63,15 @@ struct Rig {
 /// Services over `store` (a restart is a second rig over the same store), "inst" and "other"
 /// admitted, units 1 and 2 in flight as principal "alice", unit 3 as "bob".
 fn rig_over(store: Arc<MemoryStore>, bounds: WorkBounds) -> Rig {
+    let rows = Arc::new(Mem(Arc::clone(&store)));
+    rig_with_rows(store, bounds, rows)
+}
+
+fn rig_with_rows(store: Arc<MemoryStore>, bounds: WorkBounds, rows: Arc<dyn RecordRows>) -> Rig {
     let clock = Arc::new(AtomicU64::new(1_000_000));
     let c = Arc::clone(&clock);
     let s = KernelServices::new()
-        .with_records(Arc::new(Mem(Arc::clone(&store))))
+        .with_records(rows)
         .with_pool(Arc::new(Inline))
         .with_work_bounds(bounds)
         .with_wall_clock(Arc::new(move || c.load(Ordering::SeqCst)));
@@ -892,22 +897,24 @@ impl RecordRows for SettlementRows {
 #[test]
 fn pending_settlement_keeps_capacity_and_survives_sweep_until_store_confirmation() {
     for mode in 0..=4 {
-        let r = rig_over(
-            Arc::new(MemoryStore::new()),
+        let store = Arc::new(MemoryStore::new());
+        let store_mode = Arc::new(AtomicU64::new(0));
+        // Bind the controlled Store before opening: attach_records is intentionally one-shot,
+        // and adopting a prior process's handle would not hold this process's live reservation.
+        let r = rig_with_rows(
+            store.clone(),
             WorkBounds {
                 max_live: 1,
                 retain_ms: 0,
             },
+            Arc::new(SettlementRows {
+                rows: Mem(store),
+                mode: store_mode.clone(),
+            }),
         );
         let (handle, reference) = open(&r, 1, b"working");
         let held = Arc::new(HoldNext::default());
-        let store_mode = Arc::new(AtomicU64::new(0));
-        let s =
-            r.s.with_records(Arc::new(SettlementRows {
-                rows: Mem(r.store.clone()),
-                mode: store_mode.clone(),
-            }))
-            .with_pool(held.clone());
+        let s = r.s.with_pool(held.clone());
         held.armed.store(true, Ordering::SeqCst);
         let answer: Arc<Mutex<Option<Stored>>> = Arc::default();
         let put = answer.clone();
