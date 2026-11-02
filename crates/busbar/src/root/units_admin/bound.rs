@@ -71,7 +71,10 @@ pub(crate) enum EffectReceipt {
 enum EffectDisposition {
     Unapplied,
     Applied,
-    Retained(EffectReceipt),
+    /// A sealed journal operation is waiting for acknowledgement.
+    Pending(EffectReceipt),
+    /// Store submission crossed the boundary but its outcome is unknown.
+    Unknown(EffectReceipt),
 }
 
 #[derive(Debug, Clone)]
@@ -95,10 +98,17 @@ impl EffectAnswer {
         }
     }
 
-    fn retained(answer: AdminAnswer, receipt: EffectReceipt) -> Self {
+    fn pending(answer: AdminAnswer, receipt: EffectReceipt) -> Self {
         Self {
             answer,
-            disposition: EffectDisposition::Retained(receipt),
+            disposition: EffectDisposition::Pending(receipt),
+        }
+    }
+
+    fn unknown(answer: AdminAnswer, receipt: EffectReceipt) -> Self {
+        Self {
+            answer,
+            disposition: EffectDisposition::Unknown(receipt),
         }
     }
 }
@@ -426,7 +436,7 @@ pub(crate) fn plane_record_write_effect(
         ))),
         Err(why @ (StoreFailure::Failed(_) | StoreFailure::Fault(_))) => {
             tracing::error!(reason = %why, "the plane record write has an unknown outcome; its exact record remains in custody");
-            Ok(EffectAnswer::retained(
+            Ok(EffectAnswer::unknown(
                 journal_unavailable("the store did not acknowledge this record write; its outcome is unknown; do not re-submit"),
                 EffectReceipt::PlaneRecordWrite { record },
             ))
@@ -493,7 +503,7 @@ pub(crate) fn commit_upgrade_effect(
         body,
     };
     if let Err(why) = journal.acked(node_seq) {
-        return Ok(EffectAnswer::retained(
+        return Ok(EffectAnswer::pending(
             journal_unavailable(&format!(
             "the commit is sealed at journal position {node_seq} and not yet kept by the store: \
              {why}; do not re-submit"
@@ -508,7 +518,7 @@ pub(crate) fn commit_upgrade_effect(
         "hash": hex::encode(hash),
     })) {
         Ok(answer) => Ok(EffectAnswer::applied(answer)),
-        Err(_) => Ok(EffectAnswer::retained(
+        Err(_) => Ok(EffectAnswer::pending(
             journal_unavailable(
                 "the commit is sealed but its answer could not be encoded; do not re-submit",
             ),
@@ -977,7 +987,8 @@ pub(crate) fn replayable(
                 }
                 Ok(EffectAnswer {
                     answer,
-                    disposition: EffectDisposition::Retained(receipt),
+                    disposition:
+                        EffectDisposition::Pending(receipt) | EffectDisposition::Unknown(receipt),
                 }) => {
                     let value = ReplayValue {
                         digest,
