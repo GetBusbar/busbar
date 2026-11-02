@@ -1354,6 +1354,12 @@ enum ObservedCall {
         end: bool,
         len: usize,
     },
+    EmitResult {
+        status: u32,
+        outcome: busbar_contract::abi::mechanism::call::Outcome,
+        ticket: Option<busbar_contract::abi::mechanism::ticket::Ticket>,
+        resume: bool,
+    },
     Refuse {
         stream: u64,
         status: u32,
@@ -1488,7 +1494,20 @@ impl FramerDoor for ObservedDoor {
         call: busbar_core_connector::framer::Call<'_>,
     ) -> busbar_core_connector::framer::Crossed {
         self.record(&call);
-        self.actual.cross_scoped(context, side, resume, call)
+        let status = match &call {
+            busbar_core_connector::framer::Call::Emit(input, _) => Some(input.status),
+            _ => None,
+        };
+        let result = self.actual.cross_scoped(context, side, resume, call);
+        if let Some(status) = status {
+            self.calls.lock().unwrap().push(ObservedCall::EmitResult {
+                status,
+                outcome: result.outcome,
+                ticket: side.map(busbar_core_connector::carrier::Side::ticket),
+                resume,
+            });
+        }
+        result
     }
     fn cancel_scoped(
         &self,
@@ -3068,144 +3087,146 @@ async fn eof_errors_an_unfinished_body_without_invalidating_a_piece_end_body() {
 async fn eof_waits_for_a_parked_ingest_to_deliver_its_valid_piece_end() {
     use base64::Engine as _;
     use busbar_contract::abi::auth::{AuthPoints, POINT_HEAD, POINT_HEAD_BODY};
-    use busbar_contract::abi::transport::route::{METHOD_POST, PATH_CONTAINS};
+    use busbar_contract::abi::mechanism::call::Outcome;
+    use busbar_contract::abi::transport::route::{METHOD_GET, METHOD_POST, PATH_CONTAINS};
     use busbar_kernel::guest::{Claimant, GuestList, Line, LineAuth, Route};
     use ring::signature::KeyPair as _;
     let _publishing = crate::root::PUBLISHING.lock().await;
     crate::dist_root_install::install();
-    let certificate = rcgen::generate_simple_self_signed(vec!["127.0.0.1".into()]).unwrap();
-    let key = ring::signature::EcdsaKeyPair::from_pkcs8(
-        &ring::signature::ECDSA_P256_SHA256_FIXED_SIGNING,
-        &certificate.signing_key.serialize_der(),
-        &ring::rand::SystemRandom::new(),
-    )
-    .unwrap();
-    let point = key.public_key().as_ref();
-    let b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD;
-    let jwks = serde_json::json!({"keys": [{
-        "kty": "EC", "crv": "P-256", "kid": "listener-eof", "alg": "ES256", "use": "sig",
-        "x": b64.encode(&point[1..33]), "y": b64.encode(&point[33..65]),
-    }]})
-    .to_string();
-    let cert_pem = certificate.cert.pem();
-    let tls = Arc::new(
-        rustls::ServerConfig::builder_with_provider(Arc::new(
-            rustls::crypto::ring::default_provider(),
-        ))
-        .with_safe_default_protocol_versions()
-        .unwrap()
-        .with_no_client_auth()
-        .with_single_cert(
-            vec![certificate.cert.der().clone()],
-            rustls_pki_types::PrivateKeyDer::Pkcs8(rustls_pki_types::PrivatePkcs8KeyDer::from(
-                certificate.signing_key.serialize_der(),
-            )),
+    for first_body in ["", "hi"] {
+        let certificate = rcgen::generate_simple_self_signed(vec!["127.0.0.1".into()]).unwrap();
+        let key = ring::signature::EcdsaKeyPair::from_pkcs8(
+            &ring::signature::ECDSA_P256_SHA256_FIXED_SIGNING,
+            &certificate.signing_key.serialize_der(),
+            &ring::rand::SystemRandom::new(),
         )
-        .unwrap(),
-    );
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let jwks_url = format!("https://{}/jwks", listener.local_addr().unwrap());
-    let (entered, waiting) = tokio::sync::oneshot::channel();
-    let (release, held) = std::sync::mpsc::channel();
-    let peer = std::thread::spawn(move || {
-        use std::io::{Read as _, Write as _};
-        let mut entered = Some(entered);
-        for attempt in 0..2 {
-            let (socket, _) = listener.accept().unwrap();
-            socket
-                .set_read_timeout(Some(Duration::from_secs(10)))
-                .unwrap();
-            socket
-                .set_write_timeout(Some(Duration::from_secs(10)))
-                .unwrap();
-            let session = rustls::ServerConnection::new(tls.clone()).unwrap();
-            let mut socket = rustls::StreamOwned::new(session, socket);
-            let mut head = Vec::new();
-            while !head.ends_with(b"\r\n\r\n") {
-                let mut byte = [0; 1];
-                socket.read_exact(&mut byte).unwrap();
-                head.push(byte[0]);
-                assert!(head.len() <= 8192, "bounded JWKS request");
+        .unwrap();
+        let point = key.public_key().as_ref();
+        let b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD;
+        let jwks = serde_json::json!({"keys": [{
+            "kty": "EC", "crv": "P-256", "kid": "listener-eof", "alg": "ES256", "use": "sig",
+            "x": b64.encode(&point[1..33]), "y": b64.encode(&point[33..65]),
+        }]})
+        .to_string();
+        let cert_pem = certificate.cert.pem();
+        let tls = Arc::new(
+            rustls::ServerConfig::builder_with_provider(Arc::new(
+                rustls::crypto::ring::default_provider(),
+            ))
+            .with_safe_default_protocol_versions()
+            .unwrap()
+            .with_no_client_auth()
+            .with_single_cert(
+                vec![certificate.cert.der().clone()],
+                rustls_pki_types::PrivateKeyDer::Pkcs8(rustls_pki_types::PrivatePkcs8KeyDer::from(
+                    certificate.signing_key.serialize_der(),
+                )),
+            )
+            .unwrap(),
+        );
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let jwks_url = format!("https://{}/jwks", listener.local_addr().unwrap());
+        let (entered, waiting) = tokio::sync::oneshot::channel();
+        let (release, held) = std::sync::mpsc::channel();
+        let peer = std::thread::spawn(move || {
+            use std::io::{Read as _, Write as _};
+            let mut entered = Some(entered);
+            for attempt in 0..2 {
+                let (socket, _) = listener.accept().unwrap();
+                socket
+                    .set_read_timeout(Some(Duration::from_secs(10)))
+                    .unwrap();
+                socket
+                    .set_write_timeout(Some(Duration::from_secs(10)))
+                    .unwrap();
+                let session = rustls::ServerConnection::new(tls.clone()).unwrap();
+                let mut socket = rustls::StreamOwned::new(session, socket);
+                let mut head = Vec::new();
+                while !head.ends_with(b"\r\n\r\n") {
+                    let mut byte = [0; 1];
+                    socket.read_exact(&mut byte).unwrap();
+                    head.push(byte[0]);
+                    assert!(head.len() <= 8192, "bounded JWKS request");
+                }
+                assert!(head.starts_with(b"GET /jwks HTTP/1.1\r\n"));
+                // READY's best-effort warm-up receives an actual outage. The first VERIFY must
+                // fetch its real key document, and this peer withholds that response until EOF.
+                let (status, body) = if attempt == 0 {
+                    ("503 Service Unavailable", "{}")
+                } else {
+                    entered.take().unwrap().send(()).unwrap();
+                    held.recv_timeout(Duration::from_secs(10)).unwrap();
+                    ("200 OK", jwks.as_str())
+                };
+                write!(socket, "HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}", body.len()).unwrap();
+                socket.flush().unwrap();
+                socket.conn.send_close_notify();
+                let _ = socket.flush();
             }
-            assert!(head.starts_with(b"GET /jwks HTTP/1.1\r\n"));
-            // READY's best-effort warm-up receives an actual outage. The first VERIFY must
-            // fetch its real key document, and this peer withholds that response until EOF.
-            let (status, body) = if attempt == 0 {
-                ("503 Service Unavailable", "{}")
-            } else {
-                entered.take().unwrap().send(()).unwrap();
-                held.recv_timeout(Duration::from_secs(10)).unwrap();
-                ("200 OK", jwks.as_str())
-            };
-            write!(socket, "HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}", body.len()).unwrap();
-            socket.flush().unwrap();
-            socket.conn.send_close_notify();
-            let _ = socket.flush();
-        }
-    });
-    let now = busbar_kernel::store::now();
-    let header = b64.encode(
-        serde_json::to_vec(
-            &serde_json::json!({"alg": "ES256", "typ": "JWT", "kid": "listener-eof"}),
-        )
-        .unwrap(),
-    );
-    let claims = b64.encode(
+        });
+        let now = busbar_kernel::store::now();
+        let header = b64.encode(
+            serde_json::to_vec(
+                &serde_json::json!({"alg": "ES256", "typ": "JWT", "kid": "listener-eof"}),
+            )
+            .unwrap(),
+        );
+        let claims = b64.encode(
         serde_json::to_vec(&serde_json::json!({
             "iss": "https://listener-eof.invalid", "aud": "listener-eof", "sub": "listener-client",
             "roles": ["reader"], "exp": now + 3600, "nbf": now.saturating_sub(10),
         }))
         .unwrap(),
     );
-    let signed = format!("{header}.{claims}");
-    let signature = key
-        .sign(&ring::rand::SystemRandom::new(), signed.as_bytes())
-        .unwrap();
-    let token = format!("{signed}.{}", b64.encode(signature.as_ref()));
-    let directory = crate::root::test_plugins::scratch(&format!(
-        "listener-real-eof-{}",
-        busbar_kernel::door::op_id().counter()
-    ));
-    let mut store_module = None;
-    let mut auth_module = None;
-    for (kind, variable) in [
-        ("store", "BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN"),
-        ("auth", "BUSBAR_TEST_OIDC_CDYLIB"),
-    ] {
-        let path = std::path::PathBuf::from(
-            std::env::var_os(variable)
-                .unwrap_or_else(|| panic!("{variable} names the actual built product")),
-        );
-        let statement = crate::root::loader::dispatch::rendering_of_library(&path)
-            .unwrap()
+        let signed = format!("{header}.{claims}");
+        let signature = key
+            .sign(&ring::rand::SystemRandom::new(), signed.as_bytes())
             .unwrap();
-        let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-            .unwrap()
-            .name;
-        let mut manifest = crate::root::test_plugins::manifest(
-            kind,
-            &module,
-            crate::root::loader::sign::FIRST_PARTY_PUBLISHER,
-        );
-        manifest.statement = Some(hex::encode(statement));
-        let bytes = std::fs::read(path).unwrap();
-        let archive = crate::root::test_plugins::signed(
-            &crate::dist_root_install::release_key(),
-            manifest,
-            &bytes,
-        );
-        std::fs::write(directory.join(format!("{kind}.tar.gz")), archive).unwrap();
-        if kind == "auth" {
-            auth_module = Some(module);
-        } else {
-            store_module = Some(module);
+        let token = format!("{signed}.{}", b64.encode(signature.as_ref()));
+        let directory = crate::root::test_plugins::scratch(&format!(
+            "listener-real-eof-{}",
+            busbar_kernel::door::op_id().counter()
+        ));
+        let mut store_module = None;
+        let mut auth_module = None;
+        for (kind, variable) in [
+            ("store", "BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN"),
+            ("auth", "BUSBAR_TEST_OIDC_CDYLIB"),
+        ] {
+            let path = std::path::PathBuf::from(
+                std::env::var_os(variable)
+                    .unwrap_or_else(|| panic!("{variable} names the actual built product")),
+            );
+            let statement = crate::root::loader::dispatch::rendering_of_library(&path)
+                .unwrap()
+                .unwrap();
+            let module = busbar_contract::abi::mechanism::rendering::read(&statement)
+                .unwrap()
+                .name;
+            let mut manifest = crate::root::test_plugins::manifest(
+                kind,
+                &module,
+                crate::root::loader::sign::FIRST_PARTY_PUBLISHER,
+            );
+            manifest.statement = Some(hex::encode(statement));
+            let bytes = std::fs::read(path).unwrap();
+            let archive = crate::root::test_plugins::signed(
+                &crate::dist_root_install::release_key(),
+                manifest,
+                &bytes,
+            );
+            std::fs::write(directory.join(format!("{kind}.tar.gz")), archive).unwrap();
+            if kind == "auth" {
+                auth_module = Some(module);
+            } else {
+                store_module = Some(module);
+            }
         }
-    }
-    let settings: serde_json::Value = serde_json::from_str(
-        &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
-    )
-    .unwrap();
-    let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
+        let settings: serde_json::Value = serde_json::from_str(
+            &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
+        )
+        .unwrap();
+        let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
         "providers": {}, "models": {},
         "store": {"module": store_module.unwrap(), "settings": settings},
         "identity-providers": {"held": {"module": auth_module.unwrap(), "settings": {
@@ -3216,119 +3237,211 @@ async fn eof_waits_for_a_parked_ingest_to_deliver_its_valid_piece_end() {
         "auth": {"chain": ["held"], "admin_auth": [], "role_bindings": {"held": {"reader": {"allowed_pools": []}}}},
         "advanced": {"allow_destinations": ["127.0.0.1"]},
     })).unwrap();
-    let config = busbar_kernel::config::resolve(&deploy, &Default::default()).unwrap();
-    let plugins = busbar_kernel::config::PluginsCfg {
-        enabled: true,
-        dir: directory.to_string_lossy().into_owned(),
-        ..Default::default()
-    };
-    let rules = Arc::new(crate::root::door_steps::Rules::default())
-        as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let (app, rotate, limits) = busbar_kernel::build_app_from_config(
-        config,
-        plugins,
-        None,
-        Default::default(),
-        Default::default(),
-        (None, None),
-        None,
-        &rules,
-    )
-    .expect("the real root opens the product OIDC verifier and Store");
-    drop(limits);
-    if let Some(rotate) = rotate {
-        rotate();
-    }
-    let app = Arc::new(app);
-    let points = app.auth.position_points("held");
-    assert!(points.has(busbar_contract::abi::auth::AuthPoint::Head));
-    let guests = GuestList::seal(vec![Line {
-        route: Route {
-            methods: METHOD_POST,
-            path_form: PATH_CONTAINS,
-            path: "/".into(),
-            fields: Vec::new(),
-            rung: 0,
-        },
-        claimant: Claimant::Plane("listener-real-eof".into()),
-        dialect: 0,
-        auth: LineAuth::Chain(vec!["held".into()], points),
-        upgrade: None,
-        offered: AuthPoints(POINT_HEAD | POINT_HEAD_BODY),
-    }])
-    .unwrap();
-    crate::root::inbound::stage(guests, Vec::new());
-    assert!(crate::root::inbound::publish(&app).is_some());
-    let (answers, mut received) = tokio::sync::mpsc::unbounded_channel();
-    let router = Router::new().route(
-        "/capture",
-        axum::routing::post(move |body: axum::body::Body| {
-            let answers = answers.clone();
-            async move {
-                answers
-                    .send(
-                        axum::body::to_bytes(body, usize::MAX)
-                            .await
-                            .map_err(|error| error.to_string()),
-                    )
-                    .unwrap();
-                "done"
-            }
-        }),
-    );
-    let (mut client, mut conn) = custody_conn(router);
-    let wire = format!("POST /capture HTTP/1.1\r\nhost: t\r\nauthorization: Bearer {token}\r\ncontent-length: 5\r\n\r\nwhole");
-    client.write_all(wire.as_bytes()).await.unwrap();
-    std::future::poll_fn(|cx| {
-        assert!(conn.read(cx));
-        Poll::Ready(())
-    })
-    .await;
-    tokio::time::timeout(Duration::from_secs(10), waiting)
-        .await
-        .expect("the actual OIDC VERIFY reaches its held JWKS peer")
+        let config = busbar_kernel::config::resolve(&deploy, &Default::default()).unwrap();
+        let plugins = busbar_kernel::config::PluginsCfg {
+            enabled: true,
+            dir: directory.to_string_lossy().into_owned(),
+            ..Default::default()
+        };
+        let rules = Arc::new(crate::root::door_steps::Rules::default())
+            as Arc<dyn busbar_kernel::appbuild::RootRules>;
+        let (app, rotate, limits) = busbar_kernel::build_app_from_config(
+            config,
+            plugins,
+            None,
+            Default::default(),
+            Default::default(),
+            (None, None),
+            None,
+            &rules,
+        )
+        .expect("the real root opens the product OIDC verifier and Store");
+        drop(limits);
+        if let Some(rotate) = rotate {
+            rotate();
+        }
+        let app = Arc::new(app);
+        let points = app.auth.position_points("held");
+        assert!(points.has(busbar_contract::abi::auth::AuthPoint::Head));
+        let guests = GuestList::seal(vec![
+            Line {
+                route: Route {
+                    methods: METHOD_GET,
+                    path_form: PATH_CONTAINS,
+                    path: "/first".into(),
+                    fields: Vec::new(),
+                    rung: 0,
+                },
+                claimant: Claimant::Plane("listener-public-first".into()),
+                dialect: 0,
+                auth: LineAuth::None,
+                upgrade: None,
+                offered: AuthPoints(POINT_HEAD | POINT_HEAD_BODY),
+            },
+            Line {
+                route: Route {
+                    methods: METHOD_POST,
+                    path_form: PATH_CONTAINS,
+                    path: "/".into(),
+                    fields: Vec::new(),
+                    rung: 0,
+                },
+                claimant: Claimant::Plane("listener-real-eof".into()),
+                dialect: 0,
+                auth: LineAuth::Chain(vec!["held".into()], points),
+                upgrade: None,
+                offered: AuthPoints(POINT_HEAD | POINT_HEAD_BODY),
+            },
+        ])
         .unwrap();
-    assert!(
-        conn.framing.as_ref().unwrap().parked(),
-        "the actual auth.call owns a pending decoder ticket"
-    );
-    assert!(
-        received.try_recv().is_err(),
-        "no body is published before authentication"
-    );
-    client.shutdown().await.unwrap();
-    std::future::poll_fn(|cx| {
-        assert!(conn.read(cx));
-        Poll::Ready(())
-    })
-    .await;
-    assert!(conn.read_done);
-    assert!(
-        conn.framing.as_ref().unwrap().parked(),
-        "EOF preserves the genuinely parked ingest"
-    );
-    release.send(()).unwrap();
-    tokio::time::timeout(
-        Duration::from_secs(10),
+        crate::root::inbound::stage(guests, Vec::new());
+        assert!(crate::root::inbound::publish(&app).is_some());
+        let (answers, mut received) = tokio::sync::mpsc::unbounded_channel();
+        let router = Router::new().route(
+            "/capture",
+            axum::routing::post(move |body: axum::body::Body| {
+                let answers = answers.clone();
+                async move {
+                    answers
+                        .send(
+                            axum::body::to_bytes(body, usize::MAX)
+                                .await
+                                .map_err(|error| error.to_string()),
+                        )
+                        .unwrap();
+                    "done"
+                }
+            }),
+        );
+        let router = router.route(
+            "/first",
+            axum::routing::get(move || async move { first_body }),
+        );
+        let observed = ObservedDoor::new(actual_transport(busbar_transport_http::door::door));
+        let door: Arc<dyn FramerDoor> = observed.clone();
+        let framer = data_framer(Arc::new(move |scheme| {
+            (scheme == DATA_SCHEME).then(|| door.clone())
+        }))
+        .unwrap();
+        let (mut client, mut conn) = custody_conn_with_framer(router, framer);
+        let wire = format!("GET /first HTTP/1.1\r\nhost: t\r\n\r\nPOST /capture HTTP/1.1\r\nhost: t\r\nauthorization: Bearer {token}\r\ncontent-length: 5\r\n\r\nwhole");
+        client.write_all(wire.as_bytes()).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(10), std::future::poll_fn(|cx| {
+        let finished = conn.poll(cx).is_ready();
+        let pending_emit = observed.count(|call| matches!(call,
+            ObservedCall::EmitResult { outcome: Outcome::Pending, .. }
+        )) > 0;
+        assert!(!finished, "a real pending Emit retains the connection");
+        if pending_emit { Poll::Ready(()) } else { Poll::Pending }
+    })).await.expect("the first response Emit drives later queued head admission into real auth.call Pending");
+        let (pending_status, pending_ticket) = observed
+            .calls
+            .lock()
+            .unwrap()
+            .iter()
+            .find_map(|call| match call {
+                ObservedCall::EmitResult {
+                    status,
+                    outcome: Outcome::Pending,
+                    ticket,
+                    ..
+                } => Some((*status, *ticket)),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(
+            pending_status,
+            if first_body.is_empty() { 200 } else { 0 },
+            "empty responses retain their head; nonempty responses retain their final body Emit"
+        );
+        assert!(
+            pending_ticket.is_some_and(|ticket| !ticket.is_none()),
+            "a real callback owns a concrete native ticket"
+        );
+        tokio::time::timeout(Duration::from_secs(10), waiting)
+            .await
+            .expect("the actual OIDC VERIFY reaches its held JWKS peer")
+            .unwrap();
+        assert!(
+            conn.framing.as_ref().unwrap().parked(),
+            "the actual auth.call owns a pending decoder ticket"
+        );
+        assert!(
+            received.try_recv().is_err(),
+            "no body is published before authentication"
+        );
+        client.shutdown().await.unwrap();
         std::future::poll_fn(|cx| {
-            if conn.parked(cx) {
-                Poll::Ready(())
-            } else {
-                Poll::Pending
-            }
-        }),
-    )
-    .await
-    .expect("the real JWKS reply wakes and resumes the original decoder ticket");
-    let result = tokio::time::timeout(Duration::from_secs(10), received.recv())
+            assert!(conn.read(cx));
+            Poll::Ready(())
+        })
+        .await;
+        assert!(conn.read_done);
+        assert!(
+            conn.framing.as_ref().unwrap().parked(),
+            "EOF preserves the genuinely parked ingest"
+        );
+        release.send(()).unwrap();
+        tokio::time::timeout(
+            Duration::from_secs(10),
+            std::future::poll_fn(|cx| {
+                if conn.parked(cx) {
+                    Poll::Ready(())
+                } else {
+                    Poll::Pending
+                }
+            }),
+        )
         .await
-        .unwrap()
+        .expect("the real JWKS reply wakes and resumes the original decoder ticket");
+        let result = tokio::time::timeout(Duration::from_secs(10), async {
+            tokio::select! {
+                result = received.recv() => result.unwrap(),
+                () = std::future::poll_fn(|cx| conn.poll(cx)) => received.recv().await.unwrap(),
+            }
+        })
+        .await
         .unwrap();
-    assert_eq!(
-        result.unwrap().as_ref(),
-        b"whole",
-        "the actual decoder's PIECE_END remains whole across pending authentication and EOF"
-    );
-    peer.join()
-        .expect("the real TLS peer completes both requests");
+        assert!(observed.count(|call| matches!(call,
+        ObservedCall::EmitResult { outcome: Outcome::Ready, ticket, resume: true, .. } if *ticket == pending_ticket
+    )) > 0, "the original Emit ticket resumes to READY after the real auth callback");
+        tokio::time::timeout(
+            Duration::from_secs(10),
+            std::future::poll_fn(|cx| conn.poll(cx)),
+        )
+        .await
+        .expect("both actual pipeline requests drain after the callback");
+        drop(conn);
+        let mut answer = Vec::new();
+        tokio::time::timeout(Duration::from_secs(10), client.read_to_end(&mut answer))
+            .await
+            .unwrap()
+            .unwrap();
+        let answer = String::from_utf8(answer).unwrap();
+        assert!(answer.starts_with("HTTP/1.1 200 OK\r\n"), "{answer:?}");
+        assert_eq!(
+            answer.matches("HTTP/1.1 200 OK\r\n").count(),
+            2,
+            "each pipeline request answers exactly once"
+        );
+        let first_head = answer.find("\r\n\r\n").unwrap();
+        assert_eq!(
+            &answer.as_bytes()[first_head + 4..first_head + 4 + first_body.len()],
+            first_body.as_bytes()
+        );
+        if !first_body.is_empty() {
+            assert_eq!(
+                answer.matches(first_body).count(),
+                1,
+                "the parked first response body is never duplicated"
+            );
+        }
+        assert_eq!(
+            result.unwrap().as_ref(),
+            b"whole",
+            "the actual decoder's PIECE_END remains whole across pending authentication and EOF"
+        );
+        peer.join()
+            .expect("the real TLS peer completes both requests");
+    }
 }
