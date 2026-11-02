@@ -1461,6 +1461,19 @@ pub(in crate::governance) mod tests {
         first.attach_recovery_sink(sink.clone()).unwrap();
         first.resume_raw_recovery().unwrap();
         let intent = raw_intent(&first, 1);
+        store
+            .add_usage_batch_deduped(
+                busbar_contract::abi::store::OpId(intent.operation_id),
+                &[(
+                    "recovery-bucket",
+                    0,
+                    super::super::UsageDelta {
+                        requests: 1,
+                        ..Default::default()
+                    },
+                )],
+            )
+            .unwrap();
         let child = GovState::usage_recovery_child(
             "child-bucket",
             0,
@@ -1837,5 +1850,73 @@ pub(in crate::governance) mod tests {
         );
         gov.recovery().resolve(&cost, adoption).unwrap();
         assert_eq!(store.get_usage("recovery-bucket", 0).unwrap().requests, 7);
+    }
+    #[test]
+    fn foreign_settled_child_is_observed_as_receipt_without_adoption_or_reposting() {
+        use super::super::{GovState, MemoryStore, RecordStore};
+        let store = Arc::new(MemoryStore::new());
+        let sink = Arc::new(Journal::default());
+        let original = GovState::new(store.clone(), None).unwrap();
+        original.attach_recovery_sink(sink.clone()).unwrap();
+        let intent = raw_intent(&original, 1);
+        store
+            .add_usage_batch_deduped(
+                busbar_contract::abi::store::OpId(intent.operation_id),
+                &[(
+                    "recovery-bucket",
+                    0,
+                    super::super::UsageDelta {
+                        requests: 1,
+                        ..Default::default()
+                    },
+                )],
+            )
+            .unwrap();
+        let child = GovState::usage_recovery_child(
+            "receipt-child",
+            0,
+            super::super::ExactUsageDelta {
+                requests: 7,
+                ..Default::default()
+            },
+            Default::default(),
+        )
+        .unwrap()
+        .unwrap();
+        let mut custody: super::super::raw_recovery::UsageCustody =
+            serde_json::from_slice(&intent.payload).unwrap();
+        custody.plain = Default::default();
+        custody.handoffs.push(child.clone());
+        let applied = original
+            .new_recovery_event(
+                intent.operation_id,
+                intent.kind,
+                intent.body_fingerprint,
+                RecoveryState::Applied,
+                intent.first_sent_at_ms,
+                serde_json::to_vec(&custody).unwrap(),
+            )
+            .unwrap();
+        original.keep_recovery_event(&applied).unwrap();
+        original.drive_recovery_children(&applied).unwrap();
+        original.drive_raw_recovery(child.operation_id).unwrap();
+        assert_eq!(store.get_usage("receipt-child", 0).unwrap().requests, 7);
+        sink.make_foreign(child.operation_id, 42);
+        drop(original);
+
+        let gov = GovState::new(store.clone(), None).unwrap();
+        gov.attach_recovery_sink(sink.clone()).unwrap();
+        assert!(gov.recovery_event(child.operation_id).is_none());
+        gov.resume_raw_recovery().unwrap();
+        let settled = gov.recovery_event(intent.operation_id).unwrap();
+        assert_eq!(settled.state, RecoveryState::Settled);
+        assert!(gov.recovery_children_settled(&settled).unwrap());
+        gov.resume_recovery_children(&settled).unwrap();
+        assert!(
+            gov.recovery_event(child.operation_id).is_none(),
+            "readonly receipt grants no child write ownership"
+        );
+        assert!(sink.adoption_attempts.lock().unwrap().is_empty());
+        assert_eq!(store.get_usage("receipt-child", 0).unwrap().requests, 7);
     }
 }
