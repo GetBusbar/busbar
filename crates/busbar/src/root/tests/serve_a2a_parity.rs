@@ -19,7 +19,7 @@ use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::abi::plane::{slot, *};
 use busbar_contract::abi::sdk::door::{blank_in, blank_out};
 use busbar_contract::conn::{DeclaredConns, PollConns};
-use busbar_kernel::host_services::{BlockingPool, KernelServices};
+use busbar_kernel::host_services::BlockingPool;
 use busbar_kernel::plane_driver::{EndPost, PlaneMoney};
 use ed25519_dalek::Signer as _;
 use http_body_util::BodyExt as _;
@@ -725,6 +725,7 @@ async fn actual_a2a_relay_keeps_whole_narrow_short_and_lifecycle_both_ways() {
     for step in crate::ROOT_UNITS.iter().filter_map(|unit| unit.on_config) {
         step(&config.limits);
     }
+    let destinations = config.destinations();
     let (app, rotate, limits) = busbar_kernel::build_app_from_config(
         config,
         plugins,
@@ -813,15 +814,18 @@ async fn actual_a2a_relay_keeps_whole_narrow_short_and_lifecycle_both_ways() {
         let instance = format!("actual-a2a-{origin:?}");
         let services = crate::root::serve::LateServices::new();
         let kernel = Arc::new(
-            KernelServices::new()
-                .with_signer(gov.clone())
-                .with_pool(Arc::new(BlockingPool::new(
-                    tokio::runtime::Handle::current(),
-                    busbar_kernel::host_records::QUEUE_CAP,
-                )))
-                .with_records(Arc::new(busbar_kernel::host_records::StoreRows(
-                    gov.store_calls().expect("the real Store has typed records"),
-                ))),
+            crate::root::serve::kernel_services(
+                crate::root::connector::guard_for(&destinations)
+                    .expect("the normal deployment destination policy resolves"),
+            )
+            .with_signer(gov.clone())
+            .with_pool(Arc::new(BlockingPool::new(
+                tokio::runtime::Handle::current(),
+                busbar_kernel::host_records::QUEUE_CAP,
+            )))
+            .with_records(Arc::new(busbar_kernel::host_records::StoreRows(
+                gov.store_calls().expect("the real Store has typed records"),
+            ))),
         );
         services.install_kernel(kernel.clone(), kernel).unwrap();
         let dispatcher = Arc::new(Dispatcher::with_services(
