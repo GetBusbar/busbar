@@ -269,6 +269,32 @@ impl GovState {
             .collect()
     }
 
+    /// Remaining unknown positive exposure from selected correction owners only. No pending
+    /// candidate or aggregate Store read grants capacity; callers account for their staged take.
+    pub(in crate::governance) fn quarantined_correction_negative_capacity(
+        &self,
+        bucket: &str,
+        window: u64,
+    ) -> RecordStoreResult<(ExactUsageDelta, ExactUsageDelta)> {
+        use crate::governance::exact_debt::SegmentedUsage;
+        let mut capacity = SegmentedUsage::default();
+        for event in self
+            .correction_quarantine_events()
+            .into_iter()
+            .filter(|event| {
+                matches!(
+                    event.state,
+                    RecoveryState::Intent | RecoveryState::LandedUnknown
+                )
+            })
+        {
+            let custody = recovery::Custody::decode(&event.payload)?;
+            let (plain, dated) = custody.negative_capacity(bucket, window)?;
+            capacity.merge(&SegmentedUsage::of(&plain, &dated)?);
+        }
+        Ok(capacity.positive().deltas())
+    }
+
     pub(in crate::governance) fn quarantined_correction_owns_target(
         &self,
         bucket: &str,
@@ -288,7 +314,16 @@ impl GovState {
         plain: &mut ExactUsageDelta,
         dated: &mut ExactUsageDelta,
     ) -> RecordStoreResult<Option<RecoveryEvent>> {
-        for selected in self.correction_quarantine_events() {
+        for selected in self
+            .correction_quarantine_events()
+            .into_iter()
+            .filter(|event| {
+                matches!(
+                    event.state,
+                    RecoveryState::Intent | RecoveryState::LandedUnknown
+                )
+            })
+        {
             let mut custody = recovery::Custody::decode(&selected.payload)?;
             if !custody.owns_quarantined_target(bucket, window) {
                 continue;
