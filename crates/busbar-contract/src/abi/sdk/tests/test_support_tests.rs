@@ -568,11 +568,13 @@ fn failed_open_writes_its_reason_into_the_caller_owned_buffer() {
 fn concrete_host_callbacks_answer_sdk_clock_records_and_short_buffer_calls() {
     use crate::abi::sdk::services::{ServiceError, Services};
     use core::task::Poll;
-    let mut slots = HostSlots::default();
-    slots.size = size_of::<HostSlots>() as u32;
-    slots.slots = svc::SERVICES;
-    slots.clock_now = Some(clock);
-    slots.records_get = Some(records);
+    let slots = HostSlots {
+        size: size_of::<HostSlots>() as u32,
+        slots: svc::SERVICES,
+        clock_now: Some(clock),
+        records_get: Some(records),
+        ..HostSlots::default()
+    };
     let tables = HostTables {
         size: size_of::<HostTables>() as u32,
         _reserved: 0,
@@ -630,10 +632,12 @@ fn direct_login_validator_refuses_a_null_form_with_a_nonzero_count() {
 
 #[test]
 fn hosted_open_closes_over_the_same_live_concrete_tables() {
-    let mut slots = HostSlots::default();
-    slots.size = size_of::<HostSlots>() as u32;
-    slots.slots = svc::SERVICES;
-    slots.clock_now = Some(clock);
+    let slots = HostSlots {
+        size: size_of::<HostSlots>() as u32,
+        slots: svc::SERVICES,
+        clock_now: Some(clock),
+        ..HostSlots::default()
+    };
     let tables = HostTables {
         size: size_of::<HostTables>() as u32,
         _reserved: 0,
@@ -771,10 +775,12 @@ fn sdk_host_handles_copy_the_concrete_tables_before_the_allocations_drop() {
     use crate::abi::sdk::conn::Host;
     use crate::abi::sdk::services::Services;
     let (host, services) = {
-        let mut slots = HostSlots::default();
-        slots.size = size_of::<HostSlots>() as u32;
-        slots.slots = svc::SERVICES;
-        slots.clock_now = Some(clock);
+        let slots = HostSlots {
+            size: size_of::<HostSlots>() as u32,
+            slots: svc::SERVICES,
+            clock_now: Some(clock),
+            ..HostSlots::default()
+        };
         let mut io: crate::abi::host::io::IoSlots = zeroed();
         io.size = size_of::<crate::abi::host::io::IoSlots>() as u32;
         io.slots = crate::abi::host::io::SLOTS;
@@ -949,10 +955,12 @@ mod pending_open_custody {
     #[test]
     fn pending_open_resumes_once_over_its_original_host_and_nested_secret() {
         reset();
-        let mut slots = HostSlots::default();
-        slots.size = size_of::<HostSlots>() as u32;
-        slots.slots = svc::SERVICES;
-        slots.clock_now = Some(clock);
+        let slots = HostSlots {
+            size: size_of::<HostSlots>() as u32,
+            slots: svc::SERVICES,
+            clock_now: Some(clock),
+            ..HostSlots::default()
+        };
         let tables = HostTables {
             size: size_of::<HostTables>() as u32,
             _reserved: 0,
@@ -1044,10 +1052,12 @@ mod pending_open_custody {
     #[test]
     fn failed_pending_open_retires_its_partial_instance_without_close() {
         reset();
-        let mut slots = HostSlots::default();
-        slots.size = size_of::<HostSlots>() as u32;
-        slots.slots = svc::SERVICES;
-        slots.clock_now = Some(clock);
+        let slots = HostSlots {
+            size: size_of::<HostSlots>() as u32,
+            slots: svc::SERVICES,
+            clock_now: Some(clock),
+            ..HostSlots::default()
+        };
         let tables = HostTables {
             size: size_of::<HostTables>() as u32,
             _reserved: 0,
@@ -1137,10 +1147,12 @@ mod pending_open_custody {
     #[test]
     fn cancelling_then_closing_pending_open_keeps_disposition_and_drops_once() {
         reset();
-        let mut slots = HostSlots::default();
-        slots.size = size_of::<HostSlots>() as u32;
-        slots.slots = svc::SERVICES;
-        slots.clock_now = Some(clock);
+        let slots = HostSlots {
+            size: size_of::<HostSlots>() as u32,
+            slots: svc::SERVICES,
+            clock_now: Some(clock),
+            ..HostSlots::default()
+        };
         let tables = HostTables {
             size: size_of::<HostTables>() as u32,
             _reserved: 0,
@@ -1233,10 +1245,12 @@ mod pending_open_custody {
     #[test]
     fn closing_unfinished_open_retires_while_its_original_host_is_live() {
         reset();
-        let mut slots = HostSlots::default();
-        slots.size = size_of::<HostSlots>() as u32;
-        slots.slots = svc::SERVICES;
-        slots.clock_now = Some(clock);
+        let slots = HostSlots {
+            size: size_of::<HostSlots>() as u32,
+            slots: svc::SERVICES,
+            clock_now: Some(clock),
+            ..HostSlots::default()
+        };
         let tables = HostTables {
             size: size_of::<HostTables>() as u32,
             _reserved: 0,
@@ -1311,10 +1325,12 @@ mod pending_open_custody {
     #[test]
     fn resume_on_another_ticket_does_not_enter_the_pending_continuation() {
         reset();
-        let mut slots = HostSlots::default();
-        slots.size = size_of::<HostSlots>() as u32;
-        slots.slots = svc::SERVICES;
-        slots.clock_now = Some(clock);
+        let slots = HostSlots {
+            size: size_of::<HostSlots>() as u32,
+            slots: svc::SERVICES,
+            clock_now: Some(clock),
+            ..HostSlots::default()
+        };
         let tables = HostTables {
             size: size_of::<HostTables>() as u32,
             _reserved: 0,
@@ -1393,10 +1409,12 @@ mod pending_open_custody {
     #[test]
     fn cancelled_pending_open_cannot_resume_and_retires_once() {
         reset();
-        let mut slots = HostSlots::default();
-        slots.size = size_of::<HostSlots>() as u32;
-        slots.slots = svc::SERVICES;
-        slots.clock_now = Some(clock);
+        let slots = HostSlots {
+            size: size_of::<HostSlots>() as u32,
+            slots: svc::SERVICES,
+            clock_now: Some(clock),
+            ..HostSlots::default()
+        };
         let tables = HostTables {
             size: size_of::<HostTables>() as u32,
             _reserved: 0,

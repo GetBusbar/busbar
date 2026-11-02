@@ -1679,9 +1679,11 @@ fn a_scripted_far_end_drives_a_pending_decide_to_its_answer() {
             let next = state.reads.len();
             (first, *state.reads.entry(input.head.handle).or_insert(next))
         });
-        let mut piece = ReplyPiece::default();
-        piece.kind = [REPLY_HEAD, REPLY_BODY, REPLY_END][index.min(2)];
-        piece.code = 2;
+        let piece = ReplyPiece {
+            kind: [REPLY_HEAD, REPLY_BODY, REPLY_END][index.min(2)],
+            code: 2,
+            ..ReplyPiece::default()
+        };
         let bytes: &[u8] = if index == 1 { b"{}" } else { b"" };
         assert!(bytes.len() <= input.len);
         unsafe {
