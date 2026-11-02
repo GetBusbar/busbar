@@ -40,7 +40,7 @@ struct ObserveActual {
 }
 fn record(units: &Mutex<Vec<u64>>, answer: &Result<AuthCallAnswer, &'static str>) {
     if let Ok(answer) = answer {
-        units.lock().unwrap().push(answer.unit.unit);
+        units.lock().unwrap().push(answer.unit.id);
     }
 }
 impl AuthHandleHost for ObserveActual {
