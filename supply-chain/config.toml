@@ -4,6 +4,10 @@
 [cargo-vet]
 version = "0.10"
 
+[policy.aws-lc-sys]
+audit-as-crates-io = true
+notes = "Exact-revision standalone published-package source fork; local nonimportable full Git audit only, no exemption or claim covering the unfixed registry archive."
+
 [policy.dunce]
 audit-as-crates-io = true
 notes = "Local full audits bind exact reviewed Git snapshots; published registry bases are not certified by those records."
