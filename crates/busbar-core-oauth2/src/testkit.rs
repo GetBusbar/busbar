@@ -37,6 +37,10 @@ pub(crate) fn install_test_seam() {
 // Private owner-unit storage. This is the supplied real product store loaded
 // through its normal ABI, not a Store implementation manufactured by a kit.
 pub(crate) fn store_calls() -> Arc<dyn busbar_contract::store_calls::StoreCalls> {
+    loaded_store()
+}
+
+pub(crate) fn loaded_store() -> Arc<busbar_plugin_loader::store_v3::LoadedStore> {
     use busbar_plugin_loader::dispatch::kinds::store::Store;
     use busbar_plugin_loader::dispatch::{
         load_dropped, rendering_of_library, Bind, ConnTable, DispatchConfig, Dispatcher, NoSink,
