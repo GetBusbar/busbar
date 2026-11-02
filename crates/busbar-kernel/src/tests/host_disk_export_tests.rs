@@ -543,37 +543,99 @@ fn refresh(plugin: &Plugin<Export>, settings: &serde_json::Value, generation: u6
     release(plugin, called.lease);
     called.outcome
 }
-fn finish(
-    plugin: &Plugin<Export>,
-    ticket: Ticket,
-    frame: &mut Frame<DeliverIn, busbar_contract::abi::mechanism::call::OutHead>,
-) {
-    let deadline = Instant::now() + Duration::from_secs(10);
-    loop {
-        let called = plugin.call_inline(ticket, true, export_slot::DELIVER, frame);
-        release(plugin, called.lease);
-        if called.outcome == Outcome::Ready {
-            return;
+// An inline ticket recycles its generation when dropped; it does not cancel the
+// plugin's outstanding loan. This owner therefore retires the actual call before
+// either its stable frame or its batch bytes can be released, including on unwind.
+struct PendingDiskDelivery {
+    ticket: busbar_plugin_loader::dispatch::InlineTicket,
+    frame: Box<Frame<DeliverIn, OutHead>>,
+    _payload: Box<[u8]>,
+    sink: Arc<ExportInstance>,
+    may_be_pending: bool,
+}
+
+impl PendingDiskDelivery {
+    fn new(sink: Arc<ExportInstance>, dispatcher: &Dispatcher, bytes: &[u8], id: u8) -> Self {
+        let payload = bytes.to_vec().into_boxed_slice();
+        let frame = Box::new(batch(&payload, id));
+        Self {
+            ticket: dispatcher
+                .inline_ticket()
+                .expect("an inline delivery ticket"),
+            frame,
+            _payload: payload,
+            sink,
+            may_be_pending: false,
         }
-        assert_eq!(called.outcome, Outcome::Pending);
-        assert!(
-            Instant::now() < deadline,
-            "export delivery never resumed to READY"
-        );
-        std::thread::sleep(Duration::from_millis(1));
+    }
+
+    fn ticket(&self) -> Ticket {
+        self.ticket.ticket()
+    }
+
+    fn cross(&mut self, resume: bool) -> Outcome {
+        // A panic after entry must also cancel while the original allocations live.
+        self.may_be_pending = true;
+        let ticket = self.ticket();
+        let called =
+            self.sink
+                .plugin()
+                .call_inline(ticket, resume, export_slot::DELIVER, &mut *self.frame);
+        // READY proves completion. A host-side refusal may precede plugin entry,
+        // so conservatively retain custody on every other unexpected answer.
+        if called.outcome == Outcome::Ready {
+            self.may_be_pending = false;
+        }
+        release(self.sink.plugin(), called.lease);
+        called.outcome
+    }
+
+    fn finish(&mut self) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let outcome = self.cross(true);
+            if outcome == Outcome::Ready {
+                return;
+            }
+            assert_eq!(outcome, Outcome::Pending);
+            assert!(
+                Instant::now() < deadline,
+                "export delivery never resumed to READY"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+
+    fn cancel(&mut self) -> Outcome {
+        let mut input: CancelIn = busbar_contract::abi::sdk::door::blank_in();
+        input.head = busbar_plugin_loader::dispatch::in_head();
+        input.ticket = self.ticket();
+        let mut output: CancelOut = busbar_contract::abi::sdk::door::blank_out();
+        output.head = busbar_plugin_loader::dispatch::out_head();
+        let mut frame = Frame::new(input, output);
+        let called = self.sink.plugin().call(life::CANCEL, &mut frame);
+        if called.outcome == Outcome::Ready {
+            self.may_be_pending = false;
+        }
+        release(self.sink.plugin(), called.lease);
+        called.outcome
     }
 }
-fn cancel(plugin: &Plugin<Export>, ticket: Ticket) {
-    let mut input: CancelIn = busbar_contract::abi::sdk::door::blank_in();
-    input.head = busbar_plugin_loader::dispatch::in_head();
-    input.ticket = ticket;
-    let mut output: CancelOut = busbar_contract::abi::sdk::door::blank_out();
-    output.head = busbar_plugin_loader::dispatch::out_head();
-    let mut frame = Frame::new(input, output);
-    assert_eq!(
-        plugin.call(life::CANCEL, &mut frame).outcome,
-        Outcome::Ready
-    );
+
+impl Drop for PendingDiskDelivery {
+    fn drop(&mut self) {
+        if self.may_be_pending {
+            let outcome = self.cancel();
+            if outcome != Outcome::Ready {
+                // No unwind may free a loan whose retirement was not confirmed.
+                // This is a failing test process, with every owner still intact.
+                use std::io::Write as _;
+                let _ = writeln!(std::io::stderr(),
+                    "actual exporter cancellation answered {outcome:?}; stopping with its pending frame owned");
+                std::process::abort();
+            }
+        }
+    }
 }
 
 #[test]
@@ -594,33 +656,21 @@ fn pending_export_disk_append_keeps_old_path_and_cancelled_late_reply_cannot_rea
             Arc::new(KernelServices::new().with_disk_lane(disk.lane.clone())),
         ));
         let plugin = load_file(dropped, &d, Arc::new(Tape::default()));
-        let sink = opened(plugin, d.clone(), &file_settings(&a));
-        let old = d.inline_ticket().unwrap();
-        let mut old_batch = batch(b"{\"n\":1}\n", 4);
-        assert_eq!(
-            sink.plugin()
-                .call_inline(old.ticket(), false, export_slot::DELIVER, &mut old_batch)
-                .outcome,
-            Outcome::Pending
-        );
+        let sink = Arc::new(opened(plugin, d.clone(), &file_settings(&a)));
+        let mut old = PendingDiskDelivery::new(Arc::clone(&sink), &d, b"{\"n\":1}\n", 4);
+        assert_eq!(old.cross(false), Outcome::Pending);
         until("the old disk append is held", || disk.pending() == 1);
         assert_eq!(
             refresh(sink.plugin(), &file_settings(&b), 2),
             Outcome::Ready
         );
-        let fresh = d.inline_ticket().unwrap();
-        let mut new_batch = batch(b"{\"n\":2}\n", 5);
-        assert_eq!(
-            sink.plugin()
-                .call_inline(fresh.ticket(), false, export_slot::DELIVER, &mut new_batch)
-                .outcome,
-            Outcome::Pending
-        );
+        let mut fresh = PendingDiskDelivery::new(Arc::clone(&sink), &d, b"{\"n\":2}\n", 5);
+        assert_eq!(fresh.cross(false), Outcome::Pending);
         until("both disk appends are held", || disk.pending() == 2);
         assert_eq!(disk.complete(), a.display().to_string());
-        finish(sink.plugin(), old.ticket(), &mut old_batch);
+        old.finish();
         assert_eq!(disk.complete(), b.display().to_string());
-        finish(sink.plugin(), fresh.ticket(), &mut new_batch);
+        fresh.finish();
         drop(old);
         drop(fresh);
         assert_eq!(ns(&a), Some(vec![1]));
@@ -628,57 +678,25 @@ fn pending_export_disk_append_keeps_old_path_and_cancelled_late_reply_cannot_rea
         let rejected = serde_json::json!({"path":c,"bogus":1});
         assert_ne!(refresh(sink.plugin(), &rejected, 3), Outcome::Ready);
 
-        let cancelled = d.inline_ticket().unwrap();
+        let mut cancelled = PendingDiskDelivery::new(Arc::clone(&sink), &d, b"{\"n\":3}\n", 6);
         let old_ticket = cancelled.ticket();
-        let mut cancelled_batch = batch(b"{\"n\":3}\n", 6);
-        assert_eq!(
-            sink.plugin()
-                .call_inline(
-                    old_ticket,
-                    false,
-                    export_slot::DELIVER,
-                    &mut cancelled_batch
-                )
-                .outcome,
-            Outcome::Pending
-        );
+        assert_eq!(cancelled.cross(false), Outcome::Pending);
         until("the cancelled disk append is held", || disk.pending() == 1);
-        cancel(sink.plugin(), old_ticket);
+        assert_eq!(cancelled.cancel(), Outcome::Ready);
         drop(cancelled);
-        let reused = d.inline_ticket().unwrap();
+        let mut reused = PendingDiskDelivery::new(Arc::clone(&sink), &d, b"{\"n\":4}\n", 7);
         assert_eq!(reused.ticket().slot, old_ticket.slot);
         assert_ne!(reused.ticket().generation, old_ticket.generation);
-        let mut later_batch = batch(b"{\"n\":4}\n", 7);
-        assert_eq!(
-            sink.plugin()
-                .call_inline(
-                    reused.ticket(),
-                    false,
-                    export_slot::DELIVER,
-                    &mut later_batch
-                )
-                .outcome,
-            Outcome::Pending
-        );
+        assert_eq!(reused.cross(false), Outcome::Pending);
         until("the reused ticket disk append is held", || {
             disk.pending() == 2
         });
 
         assert_eq!(disk.complete(), b.display().to_string());
-        assert_eq!(
-            sink.plugin()
-                .call_inline(
-                    reused.ticket(),
-                    true,
-                    export_slot::DELIVER,
-                    &mut later_batch
-                )
-                .outcome,
-            Outcome::Pending
-        );
+        assert_eq!(reused.cross(true), Outcome::Pending);
         assert_eq!(disk.pending(), 1);
         assert_eq!(disk.complete(), b.display().to_string());
-        finish(sink.plugin(), reused.ticket(), &mut later_batch);
+        reused.finish();
         drop(reused);
         assert_eq!(ns(&a), Some(vec![1]));
         assert_eq!(ns(&b), Some(vec![2, 3, 4]));
