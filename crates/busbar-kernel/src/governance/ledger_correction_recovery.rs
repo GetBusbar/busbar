@@ -586,6 +586,14 @@ impl Custody {
         self.repost_operation_id
     }
 
+    pub(super) fn repost_descriptor(&self) -> Option<&RecoveryChild> {
+        self.repost_operation_id.and_then(|operation_id| {
+            self.handoffs.iter().find(|child| {
+                child.operation_id == operation_id && child.kind == RecoveryKind::Correction
+            })
+        })
+    }
+
     pub(super) fn intent_applied(&self) -> bool {
         self.intent_applied
     }

@@ -685,9 +685,8 @@ impl GovState {
     ) -> RecordStoreResult<()> {
         let custody = recovery::Custody::decode(&parent.payload)?;
         let already_applied = if let Some(id) = custody.repost_operation_id() {
-            let child = self
-                .recovery_event(id)
-                .ok_or_else(|| unresolved("conditional successor is not selected"))?;
+            let child = self.correction_successor_receipt(parent, &custody)?;
+            debug_assert_eq!(child.operation_id, id);
             if child.state != RecoveryState::Settled {
                 return Err(unresolved(
                     "conditional successor remains unresolved; resolve its own exact operation",
@@ -738,13 +737,7 @@ impl GovState {
             .recovery_event(parent.operation_id)
             .ok_or_else(|| unresolved("conditional parent disappeared"))?;
         let mut custody = recovery::Custody::decode(&latest.payload)?;
-        let child = self
-            .recovery_event(
-                custody
-                    .repost_operation_id()
-                    .ok_or_else(|| unresolved("conditional parent has no successor identity"))?,
-            )
-            .ok_or_else(|| unresolved("conditional successor disappeared"))?;
+        let child = self.correction_successor_receipt(&latest, &custody)?;
         if child.state != RecoveryState::Settled
             || !recovery::Custody::decode(&child.payload)?.intent_applied()
         {
@@ -775,6 +768,38 @@ impl GovState {
             ));
         }
         Ok(())
+    }
+
+    fn correction_successor_receipt(
+        &self,
+        parent: &RecoveryEvent,
+        custody: &recovery::Custody,
+    ) -> RecordStoreResult<RecoveryEvent> {
+        let descriptor = custody
+            .repost_descriptor()
+            .ok_or_else(|| unresolved("conditional parent has no exact successor descriptor"))?;
+        if let Some(child) = self.recovery_event(descriptor.operation_id) {
+            if child.kind != descriptor.kind
+                || child.body_fingerprint != descriptor.body_fingerprint
+                || child.first_sent_at_ms != descriptor.first_sent_at_ms
+                || child
+                    .origin_reference()
+                    .map_err(|error| unresolved(&error.to_string()))?
+                    .is_none_or(|origin| origin.operation_id != parent.operation_id)
+            {
+                return Err(unresolved(
+                    "conditional successor does not match parent authorization",
+                ));
+            }
+            self.validate_recovery_origin(&child)?;
+            return Ok(child);
+        }
+        self.observed_child_receipt(parent, descriptor)?
+            .ok_or_else(|| {
+                unresolved(
+                    "conditional successor requires explicit foreign adoption before further work",
+                )
+            })
     }
 
     fn remove_correction_owner(&self, pending: &PendingCorrection) {
