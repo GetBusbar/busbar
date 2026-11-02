@@ -130,8 +130,747 @@ impl RecoveryEvent {
                 LandedUnknown,
                 LandedUnknown | Applied | ConditionConflict | VerdictLanded | VerdictNotLanded,
             )
-            | (Applied | ConditionConflict | VerdictLanded | VerdictNotLanded, Settled) => Ok(()),
+            | (Applied, Applied | Settled)
+            | (ConditionConflict, ConditionConflict | Settled)
+            | (VerdictLanded, VerdictLanded | Settled)
+            | (VerdictNotLanded, VerdictNotLanded | Settled) => Ok(()),
             _ => Err(invalid()),
         }
+    }
+}
+
+/// In-memory selection mirrors the Store's selected predecessor chains. A pending
+/// candidate is retained even when persistence returns an ambiguous error.
+#[derive(Default)]
+pub(super) struct RecoveryBook {
+    sink: std::sync::OnceLock<std::sync::Arc<dyn RecoverySink>>,
+    entries: std::sync::Mutex<std::collections::BTreeMap<[u8; 16], RecoveryEntry>>,
+    attaching: super::BudgetFlushRunner,
+}
+
+#[derive(Default)]
+struct RecoveryEntry {
+    selected: Option<RecoveryEvent>,
+    history: std::collections::BTreeMap<[u8; 32], RecoveryEvent>,
+    pending: Option<RecoveryEvent>,
+    runner: std::sync::Arc<super::BudgetFlushRunner>,
+    resolution_runner: std::sync::Arc<super::BudgetFlushRunner>,
+    driver: std::sync::Arc<super::BudgetFlushRunner>,
+    sent_clock: Option<std::time::Instant>,
+}
+
+impl RecoveryBook {
+    pub(super) fn attached(&self) -> bool {
+        self.sink.get().is_some()
+    }
+
+    fn selected(&self, operation_id: [u8; 16]) -> Option<RecoveryEvent> {
+        self.entries
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(&operation_id)
+            .and_then(|entry| entry.selected.clone())
+    }
+
+    fn replay(&self, sink: std::sync::Arc<dyn RecoverySink>) -> Result<(), RecoveryError> {
+        let _attaching = self
+            .attaching
+            .enter(false)
+            .map_err(|reason| RecoveryError::Conflict(reason.into()))?;
+        if self.attached() {
+            return Err(RecoveryError::Conflict(
+                "recovery sink already attached".into(),
+            ));
+        }
+        // The sink returns only selected predecessor chains. Reject omissions,
+        // forks and reordered revisions rather than reconstructing aggregate rows.
+        let events = sink.replay()?;
+        let mut replayed = std::collections::BTreeMap::<[u8; 16], RecoveryEntry>::new();
+        for event in events {
+            let entry = replayed.entry(event.operation_id).or_default();
+            if entry.selected.as_ref() == Some(&event) {
+                continue;
+            }
+            event.follows(entry.selected.as_ref())?;
+            entry.history.insert(event.fingerprint()?, event.clone());
+            entry.selected = Some(event);
+        }
+        let mut entries = self.entries.lock().unwrap_or_else(|p| p.into_inner());
+        if !entries.is_empty() {
+            return Err(RecoveryError::Conflict(
+                "recovery sink must attach before operations are admitted".into(),
+            ));
+        }
+        self.sink
+            .set(sink)
+            .map_err(|_| RecoveryError::Conflict("recovery sink already attached".into()))?;
+        *entries = replayed;
+        Ok(())
+    }
+
+    fn stage(
+        &self,
+        operation_id: [u8; 16],
+        kind: RecoveryKind,
+        body_fingerprint: [u8; 32],
+        state: RecoveryState,
+        first_sent_at_ms: Option<u64>,
+        payload: Vec<u8>,
+    ) -> Result<RecoveryEvent, RecoveryError> {
+        let mut entries = self.entries.lock().unwrap_or_else(|p| p.into_inner());
+        let entry = entries.entry(operation_id).or_default();
+        let event = RecoveryEvent {
+            operation_id,
+            revision: match entry.selected.as_ref() {
+                Some(previous) => previous
+                    .revision
+                    .checked_add(1)
+                    .ok_or_else(|| RecoveryError::Invalid("recovery revision exhausted".into()))?,
+                None => 0,
+            },
+            previous_event: entry
+                .selected
+                .as_ref()
+                .map(RecoveryEvent::fingerprint)
+                .transpose()?,
+            kind,
+            body_fingerprint,
+            state,
+            first_sent_at_ms,
+            payload,
+        };
+        event.follows(entry.selected.as_ref())?;
+        if event.revision == 0 && event.first_sent_at_ms.is_some() && entry.sent_clock.is_none() {
+            entry.sent_clock = Some(std::time::Instant::now());
+        }
+        if let Some(pending) = &entry.pending {
+            if pending != &event {
+                return Err(RecoveryError::Conflict(
+                    "an immutable recovery candidate still awaits selection".into(),
+                ));
+            }
+        } else {
+            entry.pending = Some(event.clone());
+        }
+        Ok(event)
+    }
+
+    fn keep(&self, event: &RecoveryEvent) -> Result<(), RecoveryError> {
+        let sink = self
+            .sink
+            .get()
+            .ok_or_else(|| RecoveryError::Unavailable("recovery Store is not attached".into()))?;
+        let runner = {
+            let mut entries = self.entries.lock().unwrap_or_else(|p| p.into_inner());
+            let entry = entries.entry(event.operation_id).or_default();
+            if entry.selected.as_ref() == Some(event) {
+                return Ok(());
+            }
+            event.follows(entry.selected.as_ref())?;
+            if let Some(pending) = &entry.pending {
+                if pending != event {
+                    return Err(RecoveryError::Conflict(
+                        "a different immutable recovery candidate awaits selection".into(),
+                    ));
+                }
+            } else {
+                entry.pending = Some(event.clone());
+            }
+            entry.runner.clone()
+        };
+        let _running = runner
+            .enter(false)
+            .map_err(|reason| RecoveryError::Conflict(reason.into()))?;
+        // No Book or budget mutex is held during Store I/O. The runner marker
+        // prevents concurrent drivers, including reentrant Store callbacks.
+        sink.persist(event)?;
+        let mut entries = self.entries.lock().unwrap_or_else(|p| p.into_inner());
+        let entry = entries
+            .get_mut(&event.operation_id)
+            .expect("candidate retained");
+        if entry.selected.as_ref() == Some(event) {
+            return Ok(());
+        }
+        if entry.pending.as_ref() != Some(event) {
+            return Err(RecoveryError::Conflict(
+                "recovery candidate changed during persistence".into(),
+            ));
+        }
+        event.follows(entry.selected.as_ref())?;
+        entry.history.insert(event.fingerprint()?, event.clone());
+        entry.selected = entry.pending.take();
+        Ok(())
+    }
+}
+
+impl RecoveryItem {
+    fn from_event(event: &RecoveryEvent) -> Self {
+        Self {
+            operation_id: event.operation_id,
+            body_fingerprint: event.body_fingerprint,
+            revision: event.revision,
+            kind: event.kind,
+            state: event.state,
+            first_sent_at_ms: event.first_sent_at_ms,
+            can_resolve: event.state == RecoveryState::LandedUnknown,
+        }
+    }
+}
+
+/// A borrowed administrative view; every mutation is driven by the owning GovState.
+pub struct RecoveryAdmin<'a> {
+    governance: &'a super::GovState,
+}
+
+impl RecoveryAdmin<'_> {
+    pub fn resolve(
+        &self,
+        cost: &crate::cost::CostModel,
+        resolution: RecoveryResolution,
+    ) -> Result<RecoveryItem, RecoveryError> {
+        if resolution.actor.trim().is_empty()
+            || resolution.actor.len() > 256
+            || resolution.reason.trim().is_empty()
+            || resolution.reason.len() > 4096
+        {
+            return Err(RecoveryError::Invalid(
+                "recovery verdict requires an actor and reason".into(),
+            ));
+        }
+        let governance = self.governance;
+        if !governance.recovery_book.attached() {
+            return Err(RecoveryError::Unavailable(
+                "recovery Store is not attached".into(),
+            ));
+        }
+        let runner = governance
+            .recovery_book
+            .entries
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(&resolution.operation_id)
+            .ok_or_else(|| RecoveryError::Invalid("recovery operation does not exist".into()))?
+            .resolution_runner
+            .clone();
+        let _running = runner
+            .enter(false)
+            .map_err(|reason| RecoveryError::Conflict(reason.into()))?;
+        let selected = governance
+            .recovery_event(resolution.operation_id)
+            .ok_or_else(|| RecoveryError::Invalid("recovery operation is not selected".into()))?;
+        if selected.body_fingerprint != resolution.body_fingerprint {
+            return Err(RecoveryError::Conflict(
+                "recovery operation fingerprint differs".into(),
+            ));
+        }
+        if selected.state == RecoveryState::LandedUnknown
+            && selected.revision != resolution.expected_revision
+        {
+            return Err(RecoveryError::Conflict(
+                "recovery operation revision differs".into(),
+            ));
+        }
+        match selected.kind {
+            RecoveryKind::Correction => {
+                governance.resolve_correction_recovery(cost, &resolution)?
+            }
+            RecoveryKind::Usage | RecoveryKind::Metering => {
+                governance.resolve_raw_recovery(&resolution)?
+            }
+        }
+        let event = governance
+            .recovery_event(resolution.operation_id)
+            .ok_or_else(|| RecoveryError::Unavailable("recovery selection disappeared".into()))?;
+        Ok(RecoveryItem::from_event(&event))
+    }
+
+    pub fn list(
+        &self,
+        after: Option<[u8; 16]>,
+        limit: usize,
+    ) -> Result<Vec<RecoveryItem>, RecoveryError> {
+        if limit == 0 || limit > 1001 {
+            return Err(RecoveryError::Invalid(
+                "recovery list limit must be 1..=1001".into(),
+            ));
+        }
+        if !self.governance.recovery_book.attached() {
+            return Err(RecoveryError::Unavailable(
+                "recovery Store is not attached".into(),
+            ));
+        }
+        Ok(self
+            .governance
+            .recovery_book
+            .entries
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .iter()
+            .filter(|(id, _)| after.is_none_or(|after| **id > after))
+            .filter_map(|(_, entry)| entry.selected.as_ref())
+            .filter(|event| event.state != RecoveryState::Settled)
+            .take(limit)
+            .map(RecoveryItem::from_event)
+            .collect())
+    }
+}
+
+impl super::GovState {
+    pub fn attach_recovery_sink(
+        &self,
+        sink: std::sync::Arc<dyn RecoverySink>,
+    ) -> super::RecordStoreResult<()> {
+        self.recovery_book
+            .replay(sink)
+            .map_err(|error| super::RecordStoreError(error.to_string()))?;
+        for event in self.selected_recovery_events() {
+            self.validate_recovery_origin(&event)?;
+            match event.kind {
+                RecoveryKind::Correction => self.restore_correction_recovery(&event)?,
+                RecoveryKind::Usage | RecoveryKind::Metering => {
+                    self.restore_raw_recovery(&event)?
+                }
+            }
+        }
+        for event in self.selected_recovery_events() {
+            self.drive_recovery_children(&event)?;
+        }
+        self.resume_raw_recovery()
+    }
+
+    pub fn recovery(&self) -> RecoveryAdmin<'_> {
+        RecoveryAdmin { governance: self }
+    }
+
+    pub(super) fn recovery_enabled(&self) -> bool {
+        self.recovery_book.attached()
+    }
+
+    pub(super) fn selected_recovery_events(&self) -> Vec<RecoveryEvent> {
+        self.recovery_book
+            .entries
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .values()
+            .filter_map(|entry| entry.selected.clone())
+            .collect()
+    }
+
+    /// Only a retained same-process monotonic clock authorizes receipt replay.
+    /// Wall timestamps survive reboot as evidence, not as proof of receipt age.
+    pub(super) fn recovery_retention_expired(&self, operation_id: [u8; 16]) -> Option<bool> {
+        self.recovery_book
+            .entries
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(&operation_id)
+            .and_then(|entry| entry.sent_clock)
+            .map(|sent| {
+                sent.elapsed().as_secs() >= busbar_contract::abi::store::OP_ID_RETENTION_SECS
+            })
+    }
+
+    pub(super) fn confirm_pending_recovery(
+        &self,
+        operation_id: [u8; 16],
+    ) -> super::RecordStoreResult<()> {
+        let pending = self
+            .recovery_book
+            .entries
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(&operation_id)
+            .and_then(|entry| entry.pending.clone());
+        if let Some(event) = pending {
+            self.keep_recovery_event(&event)?;
+        }
+        Ok(())
+    }
+
+    pub(super) fn recovery_driver(
+        &self,
+        operation_id: [u8; 16],
+    ) -> super::RecordStoreResult<std::sync::Arc<super::BudgetFlushRunner>> {
+        self.recovery_book
+            .entries
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(&operation_id)
+            .map(|entry| entry.driver.clone())
+            .ok_or_else(|| super::RecordStoreError("recovery operation does not exist".into()))
+    }
+
+    pub(super) fn recovery_initial_event(&self, operation_id: [u8; 16]) -> Option<RecoveryEvent> {
+        self.recovery_book
+            .entries
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(&operation_id)
+            .and_then(|entry| entry.history.values().find(|event| event.revision == 0))
+            .cloned()
+    }
+
+    pub(super) fn recovery_ancestor(
+        &self,
+        operation_id: [u8; 16],
+        fingerprint: [u8; 32],
+    ) -> Option<RecoveryEvent> {
+        self.recovery_book
+            .entries
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(&operation_id)
+            .and_then(|entry| entry.history.get(&fingerprint))
+            .cloned()
+    }
+
+    pub(super) fn recovery_event(&self, operation_id: [u8; 16]) -> Option<RecoveryEvent> {
+        self.recovery_book.selected(operation_id)
+    }
+
+    pub(super) fn new_recovery_event(
+        &self,
+        operation_id: [u8; 16],
+        kind: RecoveryKind,
+        body_fingerprint: [u8; 32],
+        state: RecoveryState,
+        first_sent_at_ms: Option<u64>,
+        payload: Vec<u8>,
+    ) -> Result<RecoveryEvent, RecoveryError> {
+        self.recovery_book.stage(
+            operation_id,
+            kind,
+            body_fingerprint,
+            state,
+            first_sent_at_ms,
+            payload,
+        )
+    }
+
+    pub(super) fn keep_recovery_event(
+        &self,
+        event: &RecoveryEvent,
+    ) -> super::RecordStoreResult<()> {
+        self.recovery_book
+            .keep(event)
+            .map_err(|error| super::RecordStoreError(error.to_string()))
+    }
+}
+
+/// A sealed child template authorized by one selected parent checkpoint. The
+/// child origin is derived AFTER selection, avoiding a circular event hash.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct RecoveryChild {
+    pub(super) operation_id: [u8; 16],
+    pub(super) kind: RecoveryKind,
+    pub(super) body_fingerprint: [u8; 32],
+    pub(super) first_sent_at_ms: Option<u64>,
+    pub(super) payload: Vec<u8>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct RecoveryOrigin {
+    pub(super) operation_id: [u8; 16],
+    pub(super) event_fingerprint: [u8; 32],
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Mutex};
+
+    #[derive(Default)]
+    struct Journal {
+        selected: Mutex<Vec<RecoveryEvent>>,
+        fail_after_write: AtomicBool,
+    }
+    impl RecoverySink for Journal {
+        fn replay(&self) -> Result<Vec<RecoveryEvent>, RecoveryError> {
+            Ok(self.selected.lock().unwrap().clone())
+        }
+        fn persist(&self, event: &RecoveryEvent) -> Result<(), RecoveryError> {
+            let mut selected = self.selected.lock().unwrap();
+            if !selected.contains(event) {
+                selected.push(event.clone());
+            }
+            if self.fail_after_write.load(Ordering::Relaxed) {
+                Err(RecoveryError::Unavailable(
+                    "reply lost after selection".into(),
+                ))
+            } else {
+                Ok(())
+            }
+        }
+    }
+    fn intent() -> RecoveryEvent {
+        RecoveryEvent {
+            operation_id: [1; 16],
+            revision: 0,
+            previous_event: None,
+            kind: RecoveryKind::Usage,
+            body_fingerprint: [2; 32],
+            state: RecoveryState::Intent,
+            first_sent_at_ms: Some(42),
+            payload: vec![3],
+        }
+    }
+    fn successor(previous: &RecoveryEvent, state: RecoveryState) -> RecoveryEvent {
+        RecoveryEvent {
+            revision: previous.revision + 1,
+            previous_event: Some(previous.fingerprint().unwrap()),
+            state,
+            ..previous.clone()
+        }
+    }
+
+    #[test]
+    fn ambiguous_selection_retains_exact_candidate_until_confirmed() {
+        let sink = Arc::new(Journal::default());
+        let book = RecoveryBook::default();
+        book.replay(sink.clone()).unwrap();
+        let event = intent();
+        sink.fail_after_write.store(true, Ordering::Relaxed);
+        assert!(book.keep(&event).is_err());
+        assert!(book.selected(event.operation_id).is_none());
+        let mut different = event.clone();
+        different.payload.push(9);
+        assert!(matches!(
+            book.keep(&different),
+            Err(RecoveryError::Conflict(_))
+        ));
+        sink.fail_after_write.store(false, Ordering::Relaxed);
+        book.keep(&event).unwrap();
+        assert_eq!(book.selected(event.operation_id), Some(event.clone()));
+        book.keep(&event).unwrap();
+        assert_eq!(sink.selected.lock().unwrap().as_slice(), &[event]);
+    }
+
+    #[test]
+    fn staged_candidate_survives_failed_persistence_and_cannot_change() {
+        let sink = Arc::new(Journal::default());
+        let book = RecoveryBook::default();
+        book.replay(sink.clone()).unwrap();
+        let event = intent();
+        let stage = |payload| {
+            book.stage(
+                event.operation_id,
+                event.kind,
+                event.body_fingerprint,
+                event.state,
+                event.first_sent_at_ms,
+                payload,
+            )
+        };
+        assert_eq!(stage(event.payload.clone()).unwrap(), event);
+        assert!(stage(vec![99]).is_err());
+        sink.fail_after_write.store(true, Ordering::Relaxed);
+        assert!(book.keep(&event).is_err());
+        assert_eq!(stage(event.payload.clone()).unwrap(), event);
+    }
+
+    #[test]
+    fn replay_rejects_gap_and_same_revision_fork() {
+        let event = intent();
+        for invalid in [
+            RecoveryEvent {
+                revision: 2,
+                ..successor(&event, RecoveryState::Applied)
+            },
+            RecoveryEvent {
+                payload: vec![99],
+                ..event.clone()
+            },
+        ] {
+            let sink = Arc::new(Journal::default());
+            *sink.selected.lock().unwrap() = vec![event.clone(), invalid];
+            assert!(RecoveryBook::default().replay(sink).is_err());
+        }
+    }
+
+    #[test]
+    fn raw_checkpoints_keep_definitive_decisions_until_custody_is_transferred() {
+        let event = intent();
+        for decision in [RecoveryState::Applied, RecoveryState::ConditionConflict] {
+            let previous = successor(&event, decision);
+            successor(&previous, decision)
+                .follows(Some(&previous))
+                .unwrap();
+        }
+        let unknown = successor(&event, RecoveryState::LandedUnknown);
+        for decision in [
+            RecoveryState::VerdictLanded,
+            RecoveryState::VerdictNotLanded,
+        ] {
+            let previous = successor(&unknown, decision);
+            successor(&previous, decision)
+                .follows(Some(&previous))
+                .unwrap();
+            assert!(successor(&previous, RecoveryState::Intent)
+                .follows(Some(&previous))
+                .is_err());
+        }
+    }
+
+    #[test]
+    fn chain_identity_and_first_sent_time_never_reset() {
+        let event = intent();
+        for invalid in [
+            RecoveryEvent {
+                first_sent_at_ms: Some(43),
+                ..successor(&event, RecoveryState::Applied)
+            },
+            RecoveryEvent {
+                kind: RecoveryKind::Metering,
+                ..successor(&event, RecoveryState::Applied)
+            },
+            RecoveryEvent {
+                body_fingerprint: [8; 32],
+                ..successor(&event, RecoveryState::Applied)
+            },
+        ] {
+            assert!(invalid.follows(Some(&event)).is_err());
+        }
+    }
+    fn raw_intent(gov: &super::super::GovState, requests: i128) -> RecoveryEvent {
+        let child = super::super::GovState::usage_recovery_child(
+            "recovery-bucket",
+            0,
+            super::super::ExactUsageDelta {
+                requests,
+                ..Default::default()
+            },
+            super::super::ExactUsageDelta::default(),
+        )
+        .unwrap()
+        .unwrap();
+        let event = gov
+            .new_recovery_event(
+                child.operation_id,
+                child.kind,
+                child.body_fingerprint,
+                RecoveryState::Intent,
+                child.first_sent_at_ms,
+                child.payload,
+            )
+            .unwrap();
+        gov.keep_recovery_event(&event).unwrap();
+        event
+    }
+
+    #[test]
+    fn restart_cannot_turn_recent_wall_time_into_receipt_age_authority() {
+        use super::super::{GovState, MemoryStore, RecordStore};
+        let store = Arc::new(MemoryStore::new());
+        let sink = Arc::new(Journal::default());
+        let first = GovState::new(store.clone(), None).unwrap();
+        first.attach_recovery_sink(sink.clone()).unwrap();
+        let intent = raw_intent(&first, 7);
+        assert_eq!(
+            first.recovery_retention_expired(intent.operation_id),
+            Some(false)
+        );
+        drop(first);
+        let restarted = GovState::new(store.clone(), None).unwrap();
+        restarted.attach_recovery_sink(sink).unwrap();
+        assert_eq!(
+            restarted.recovery_event(intent.operation_id).unwrap().state,
+            RecoveryState::LandedUnknown
+        );
+        assert_eq!(
+            restarted.recovery_retention_expired(intent.operation_id),
+            None
+        );
+        assert_eq!(store.get_usage("recovery-bucket", 0).unwrap().requests, 0);
+    }
+
+    #[test]
+    fn unknown_usage_absorbs_negative_then_not_landed_reposts_only_net_raw_debt() {
+        use super::super::{GovState, MemoryStore, RecordStore};
+        let store = Arc::new(MemoryStore::new());
+        let sink = Arc::new(Journal::default());
+        let original = GovState::new(store.clone(), None).unwrap();
+        original.attach_recovery_sink(sink.clone()).unwrap();
+        let intent = raw_intent(&original, 7);
+        drop(original);
+        let gov = GovState::new(store.clone(), None).unwrap();
+        gov.attach_recovery_sink(sink).unwrap();
+        let negative = super::super::ExactUsageDelta {
+            requests: -3,
+            ..Default::default()
+        };
+        let captured = gov
+            .capture_usage_recovery(
+                "recovery-bucket",
+                0,
+                negative,
+                super::super::ExactUsageDelta::default(),
+            )
+            .unwrap();
+        assert!(captured.child.is_none());
+        gov.drive_durable_usage_flight(&captured).unwrap();
+        assert_eq!(store.get_usage("recovery-bucket", 0).unwrap().requests, 0);
+        let unknown = gov.recovery_event(intent.operation_id).unwrap();
+        gov.resolve_raw_recovery(&RecoveryResolution {
+            operation_id: intent.operation_id,
+            body_fingerprint: intent.body_fingerprint,
+            expected_revision: unknown.revision,
+            verdict: RecoveryVerdict::NotLanded,
+            actor: "operator".into(),
+            reason: "backend outcome independently checked".into(),
+        })
+        .unwrap();
+        assert_eq!(store.get_usage("recovery-bucket", 0).unwrap().requests, 4);
+        assert_eq!(
+            gov.recovery_event(intent.operation_id).unwrap().state,
+            RecoveryState::Settled
+        );
+    }
+
+    #[test]
+    fn selected_parent_checkpoint_reconstructs_exact_missing_usage_child() {
+        use super::super::{GovState, MemoryStore, RecordStore};
+        let store = Arc::new(MemoryStore::new());
+        let sink = Arc::new(Journal::default());
+        let first = GovState::new(store.clone(), None).unwrap();
+        first.attach_recovery_sink(sink.clone()).unwrap();
+        let intent = raw_intent(&first, 1);
+        let child = GovState::usage_recovery_child(
+            "child-bucket",
+            0,
+            super::super::ExactUsageDelta {
+                requests: 7,
+                ..Default::default()
+            },
+            super::super::ExactUsageDelta::default(),
+        )
+        .unwrap()
+        .unwrap();
+        let mut custody: super::super::raw_recovery::UsageCustody =
+            serde_json::from_slice(&intent.payload).unwrap();
+        custody.plain = Default::default();
+        custody.handoffs.push(child.clone());
+        let applied = first
+            .new_recovery_event(
+                intent.operation_id,
+                intent.kind,
+                intent.body_fingerprint,
+                RecoveryState::Applied,
+                intent.first_sent_at_ms,
+                serde_json::to_vec(&custody).unwrap(),
+            )
+            .unwrap();
+        first.keep_recovery_event(&applied).unwrap();
+        assert!(first.recovery_event(child.operation_id).is_none());
+        drop(first);
+        let restarted = GovState::new(store.clone(), None).unwrap();
+        restarted.attach_recovery_sink(sink).unwrap();
+        let restored = restarted.recovery_event(child.operation_id).unwrap();
+        assert_eq!(restored.body_fingerprint, child.body_fingerprint);
+        assert_eq!(store.get_usage("child-bucket", 0).unwrap().requests, 7);
+        restarted.resume_raw_recovery().unwrap();
+        assert_eq!(store.get_usage("child-bucket", 0).unwrap().requests, 7);
     }
 }

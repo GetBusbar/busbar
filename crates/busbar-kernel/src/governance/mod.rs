@@ -12,6 +12,7 @@ mod exact_debt;
 pub mod recovery;
 use exact_debt::{BudgetFlushFlight, BudgetFlushRunner, ExactUsageDelta};
 mod metering_flush;
+mod raw_recovery;
 
 use crate::diagnostics::{
     diag_debug, diag_warn, GOVERNANCE_KEY_RESERVED_NAMESPACE_COLLISION, LIMIT_WINDOW_UNRECOGNIZED,
@@ -650,6 +651,8 @@ pub struct GovState {
     admin_token_hash: RwLock<Option<String>>,
 
     budget: Sharded<BudgetCell>,
+
+    recovery_book: recovery::RecoveryBook,
 
     correction_claims: claims::ClaimSet<String>,
 
