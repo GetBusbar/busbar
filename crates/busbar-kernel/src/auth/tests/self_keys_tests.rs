@@ -1334,64 +1334,6 @@ async fn issued_key_debug_never_leaks_the_live_token() {
 }
 
 #[tokio::test]
-async fn proof_self_mint_disabled_refuses_self_serve() {
-    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
-    for self_mint in [Some(true), Some(false), None] {
-        let gov = gov();
-        let overlay = crate::test_support::TestOverlayStore::new();
-        let app = crate::test_support::TestApp::new()
-            .idp_chain()
-            .governance(gov.clone())
-            .overlay_backend(overlay.backend())
-            .groups_tree(std::collections::BTreeMap::from([(
-                "team".into(),
-                GroupCfg::default(),
-            )]))
-            .role_bindings(bindings("test-idp-module", "idp-user", Some("team")))
-            .mint_policy(crate::governance::mint_policy::MintPolicy {
-                self_mint,
-                ..Default::default()
-            })
-            .build();
-        let handle = Arc::new(crate::state::AppHandle::new(app));
-
-        let response = crate::auth::exchange::exchange(
-            axum::extract::State(handle),
-            axum::http::Request::builder()
-                .method("POST")
-                .uri("/auth/token")
-                .header("authorization", "Bearer eligible-idp-credential")
-                .body(axum::body::Body::empty())
-                .unwrap(),
-        )
-        .await;
-        let status = response.status();
-        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        if self_mint == Some(false) {
-            assert_eq!(status, axum::http::StatusCode::FORBIDDEN, "{body}");
-            assert!(body.get("api_key").is_none(), "no credential is issued");
-            assert!(
-                gov.all_keys().unwrap().is_empty(),
-                "the refused exchange must not write any key to its attached store"
-            );
-        } else {
-            assert_eq!(status, axum::http::StatusCode::OK, "{body}");
-            let token = body["api_key"].as_str().expect("issued token");
-            let key = gov
-                .verify_token(token, crate::store::now(), None)
-                .expect("the exchange returns a usable signed key");
-            assert_eq!(body["key_id"].as_str(), Some(key.id.as_str()));
-            assert_eq!(key.group.as_deref(), Some("user:idp:subject"));
-            assert_eq!(self_rows(&gov, "idp:subject").len(), 1);
-            assert_eq!(gov.all_keys().unwrap().len(), 1);
-        }
-    }
-}
-
-#[tokio::test]
 async fn self_mint_mode_policy_gates_exchange_login_and_refresh_before_mutation() {
     use crate::auth::login::{issue_self_key, SelfKeyIssue};
     use crate::governance::mint_policy::{MintPolicy, RoleCeiling};
