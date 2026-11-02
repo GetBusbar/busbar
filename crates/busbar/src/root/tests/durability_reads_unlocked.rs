@@ -14,7 +14,7 @@ const NODE: u64 = 47;
 const NOW: u64 = 1_700_000_000;
 
 fn token() -> Grant<DurableWrite> {
-    busbar_kernel_testkit::test_support::tokens::grant::<DurableWrite>()
+    crate::root::kernel::new_kernel().durability_token()
 }
 
 /// What the probe saw: every scan the store answered, and those made while the book's lock was held.
@@ -82,7 +82,7 @@ fn seal(durability: &mut Durability, unit: u64) {
     durability
         .seal_unit(
             inputs(unit),
-            busbar_kernel_testkit::test_support::tokens::pass(),
+            busbar_kernel::teller::verb_audit_pass(&crate::root::kernel::new_kernel()),
             &token(),
         )
         .expect("sealed");
@@ -106,7 +106,7 @@ fn audit_inputs(unit: u64) -> busbar_kernel_audit::AuditInputs {
         },
         wall: NOW + unit,
         mono: unit * 1_000,
-        origin: busbar_kernel_testkit::test_support::tokens::origin(OriginKind::Client),
+        origin: crate::root::kernel::new_kernel().origin(OriginKind::Client),
         outcome: OutcomeFacts {
             unit_end: Outcome::Completed,
             step: None,

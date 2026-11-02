@@ -21,7 +21,7 @@ fn malformed_amendments_are_counted_without_changing_the_accepted_run() {
         Box::new(busbar_kernel_wal::NullShipper::new()),
     )
     .unwrap();
-    let token = busbar_kernel_testkit::test_support::tokens::grant::<DurableWrite>();
+    let token = crate::root::kernel::new_kernel().durability_token();
     let mut chain = amend::AmendChain::default();
     let valid = chain.append(
         amend::content_access(
@@ -32,7 +32,7 @@ fn malformed_amendments_are_counted_without_changing_the_accepted_run() {
             Vec::new(),
             1,
         ),
-        &busbar_kernel_testkit::test_support::tokens::pass(),
+        &busbar_kernel::teller::verb_audit_pass(&crate::root::kernel::new_kernel()),
     );
     let mut truncated = BodyWriter::new();
     truncated.text(AMENDMENT);
@@ -75,6 +75,76 @@ fn accessed(journal: &NodeAmendments) -> Vec<String> {
         .collect()
 }
 
+fn application(slots: &crate::root::store_double::RecordSlots) -> Arc<busbar_kernel::state::App> {
+    crate::dist_root_install::install();
+    let path = std::path::PathBuf::from(
+        std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
+            .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the built product store"),
+    );
+    let statement = crate::root::loader::dispatch::rendering_of_library(&path)
+        .expect("the product store statement reads")
+        .expect("the product store exports its statement");
+    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
+        .expect("the product store statement is valid")
+        .name;
+    let mut manifest = crate::root::test_plugins::manifest(
+        "store",
+        &module,
+        crate::root::loader::sign::FIRST_PARTY_PUBLISHER,
+    );
+    manifest.statement = Some(hex::encode(statement));
+    let library = std::fs::read(path).expect("the product store library reads");
+    let directory = crate::root::durability::Scratch::new("amend-app-plugins");
+    let archive = crate::root::test_plugins::signed(
+        &crate::dist_root_install::release_key(),
+        manifest,
+        &library,
+    );
+    std::fs::write(directory.0.join("store.tar.gz"), archive)
+        .expect("the actual store archive is staged");
+    let settings: serde_json::Value = serde_json::from_str(
+        &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
+    )
+    .expect("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS is JSON");
+    let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
+        "providers": {},
+        "models": {},
+        "auth": { "chain": [], "admin_auth": [] },
+        "store": { "module": module, "settings": settings },
+        "advanced": { "allow_destinations": ["127.0.0.1"] },
+    }))
+    .expect("the amendment deployment parses");
+    let config = busbar_kernel::config::resolve(&deploy, &Default::default())
+        .expect("the amendment deployment resolves");
+    let plugins = busbar_kernel::config::PluginsCfg {
+        enabled: true,
+        dir: directory.0.to_string_lossy().into_owned(),
+        ..Default::default()
+    };
+    let rules = Arc::new(crate::root::door_steps::Rules::default())
+        as Arc<dyn busbar_kernel::appbuild::RootRules>;
+    let (app, rotate, limits) = busbar_kernel::build_app_from_config_with_store(
+        config,
+        plugins,
+        None,
+        Default::default(),
+        Default::default(),
+        (None, None),
+        None,
+        &rules,
+        Some(busbar_contract::store_calls::OpenedStore {
+            records: slots.records(),
+            calls: Some(slots.calls()),
+        }),
+    )
+    .expect("the product builds the amendment deployment over its actual store");
+    limits.keep().expect("the product limits commit");
+    if let Some(rotate) = rotate {
+        rotate();
+    }
+    Arc::new(app)
+}
+
 fn boot(
     slots: &crate::root::store_double::RecordSlots,
     dir: &std::path::Path,
@@ -84,14 +154,7 @@ fn boot(
         Some(dir),
         "the child process boots over the directory its phase names"
     );
-    let gov = Arc::new(
-        busbar_kernel::governance::GovState::new(crate::root::real_store::records(), None)
-            .expect("a governance over the memory store"),
-    );
-    gov.attach_store_calls(slots.calls());
-    let app = busbar_kernel_testkit::test_support::TestApp::new()
-        .governance(gov)
-        .build();
+    let app = application(slots);
     let book = crate::root::boot::book(&app, "test-store").expect("the boot book opens");
     (book.durability, app)
 }
@@ -193,7 +256,7 @@ fn store_boot(
     let mut durability =
         build_on_store(&DurabilityConfig { data_dir: None }, STORE_NODE, lane, None)
             .expect("the store reads back");
-    let token = busbar_kernel_testkit::test_support::tokens::grant::<DurableWrite>();
+    let token = crate::root::kernel::new_kernel().durability_token();
     durability
         .restore_amendments(journal, &token)
         .expect("the chain reads back");
@@ -217,9 +280,9 @@ fn store_drained(book: &Arc<Mutex<Durability>>) {
 
 fn store_phase() {
     let slots = crate::root::store_double::RecordSlots::new();
-    let token = busbar_kernel_testkit::test_support::tokens::grant::<DurableWrite>();
+    let token = crate::root::kernel::new_kernel().durability_token();
     {
-        let app = busbar_kernel_testkit::test_support::TestApp::new().build();
+        let app = application(&slots);
         let book = store_boot(&slots, &app.amendments);
         access(&app, HOOK);
         let pads = usize::try_from(busbar_kernel_wal::SEGMENT_BYTES).expect("fits") / PAD_BODY + 1;
@@ -330,7 +393,7 @@ fn without_a_store_the_amendment_journal_is_neither_rebuilt_nor_bound() {
     )
     .expect("a memory-buffered journal cannot fail to open");
     let journal = NodeAmendments::new();
-    let token = busbar_kernel_testkit::test_support::tokens::grant::<DurableWrite>();
+    let token = crate::root::kernel::new_kernel().durability_token();
     durability
         .restore_amendments(&journal, &token)
         .expect("nothing is read back");
