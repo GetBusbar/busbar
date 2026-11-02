@@ -406,3 +406,12 @@ mod admin_application_service_store_usage;
 
 #[path = "admin_application/service_usage_adjustment.rs"]
 mod admin_application_service_usage_adjustment;
+
+#[path = "kernel_application/central2_handler_panic.rs"]
+mod kernel_application_central2_handler_panic;
+
+#[path = "kernel_application/central2_generation_limits.rs"]
+mod kernel_application_central2_generation_limits;
+
+#[path = "admin_application/admin_hook_replacement.rs"]
+mod admin_application_admin_hook_replacement;
