@@ -153,6 +153,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 90
     env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/plugin/target
       # scripts/signing-gate.sh proves signed-loads + unsigned/wrong-key/tampered-refused for the
       # four kinds it knows a config reference shape for (PB-11). export/plane/transport are outside
       # its coverage today, same as before this became a job condition.
@@ -451,6 +452,8 @@ jobs:
     needs: pin
     runs-on: macos-latest
     timeout-minutes: 90
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/plugin/target
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -624,6 +627,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/plugin/target
       # A step's `if:` cannot read its own `env:` or `secrets`; a job-level flag it can.
       HAS_CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN != '' }}
     steps:
@@ -656,14 +660,31 @@ jobs:
         with:
           components: llvm-tools-preview
       - uses: taiki-e/install-action@b3c2424e62a3f08fd88bf434799847a4d0da36c8 # cargo-llvm-cov
+      - name: fresh actual library for ordinary coverage tests
+        working-directory: plugin
+        env:
+          CRATE: ${{ inputs.plugin_crate }}
+          TEST_FEATURES: ${{ inputs.test_features }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$CARGO_TARGET_DIR"
+          features=()
+          if cargo metadata --format-version 1 --no-deps | python3 -c 'import json,sys; sys.exit(0 if any(p["name"]==sys.argv[1] and "dropped-in" in p["features"] for p in json.load(sys.stdin)["packages"]) else 1)' "$CRATE"; then features+=(--features dropped-in); fi
+          [ -z "$TEST_FEATURES" ] || features+=(--features "$TEST_FEATURES")
+          cargo build --locked -p "$CRATE" --lib "${features[@]}"
+          artifact="$CARGO_TARGET_DIR/debug/lib${CRATE//-/_}.so"
+          [ -f "$artifact" ] || { echo "::error::fresh coverage test library missing"; exit 1; }
+          echo "BUSBAR_PLUGIN_CDYLIB=$artifact" >> "$GITHUB_ENV"
       - name: collect (a failing test fails the job; a plugin that needs a service container ignores run failures here, linux is its gate)
         working-directory: plugin
         env:
           SERVICE: ${{ inputs.service }}
+          TEST_FEATURES: ${{ inputs.test_features }}
         run: |
           set -euo pipefail
           flags=()
           if [ "$SERVICE" != none ]; then flags+=(--ignore-run-fail); fi
+          [ -z "$TEST_FEATURES" ] || flags+=(--features "$TEST_FEATURES")
           cargo llvm-cov --workspace --locked "${flags[@]}" --lcov --output-path lcov.info
       - name: upload
         if: env.HAS_CODECOV_TOKEN == 'true'
