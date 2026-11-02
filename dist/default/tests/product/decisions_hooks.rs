@@ -14,7 +14,7 @@ use axum::{Json, Router};
 use busbar_contract::conn::{DeclaredConns, PollConns};
 use busbar_kernel::governance::NewKeySpec;
 use busbar_kernel::plane_driver::{EndPost, PlaneMoney};
-use busbar_kernel::state::{App, AppHandle};
+use busbar_kernel::state::AppHandle;
 use busbar_plugin_loader::dispatch::kinds::plane::Plane;
 use busbar_plugin_loader::dispatch::{load_linked, Bind, ConnTable, LinkedRow, NoSink};
 use serde_json::{json, Value};
