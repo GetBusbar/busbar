@@ -156,7 +156,7 @@ async fn timeout_only_admin_put_refreshes_the_actual_policy_atomically() {
             .expect("the actual Store exposes typed calls"),
     )
     .expect("the actual Store supports conditional configuration records");
-    let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
+    let (mut app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
         config,
         plugin_config,
         Some(overlay),
@@ -180,13 +180,27 @@ async fn timeout_only_admin_put_refreshes_the_actual_policy_atomically() {
         app.hook_env.registry.resolve("test-hook").is_some(),
         "the actual signed hook is admitted and resolves through its alias"
     );
-    let (_data, admin, handle) =
+    // The original retained-export oracle now uses the actual Prometheus door,
+    // hosted through the existing production snapshot adapter, never a fake SERVE.
+    app.plugin_routes = metrics_routes();
+    let (data, admin, handle) =
         busbar_kernel::build_split_routers_with_limits(Arc::new(app), 1 << 20, 0, false);
+    let data_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let data_address = data_listener.local_addr().unwrap();
+    let data_serving = tokio::spawn(async move { axum::serve(data_listener, data).await.unwrap() });
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let serving = tokio::spawn(async move { axum::serve(listener, admin).await.unwrap() });
     let client = reqwest::Client::new();
     let endpoint = format!("http://{address}/api/v1/admin/hooks/receiver");
+    let metrics = format!("http://{data_address}/metrics");
+    let first_metrics = client.get(&metrics).send().await.unwrap();
+    assert_eq!(first_metrics.status().as_u16(), 200);
+    let first_metrics = first_metrics.text().await.unwrap();
+    assert!(
+        first_metrics.contains("# HELP") || first_metrics.contains("# TYPE"),
+        "the retained endpoint is served by the actual exporter: {first_metrics}"
+    );
     let mut definition = serde_json::json!({
         "kind": "gate", "module": "test-hook", "timeout_ms": 11, "global": true,
         "settings": {"url": "http://127.0.0.1:1/"}
@@ -217,6 +231,26 @@ async fn timeout_only_admin_put_refreshes_the_actual_policy_atomically() {
         !Arc::ptr_eq(&old, &next),
         "the accepted candidate publishes atomically"
     );
+    let retained_metrics = client.get(&metrics).send().await.unwrap();
+    assert_eq!(
+        retained_metrics.status().as_u16(),
+        200,
+        "timeout-only hook updates retain the real export dispatcher on the same listener"
+    );
+    let retained_metrics = retained_metrics.text().await.unwrap();
+    assert!(retained_metrics.contains("# HELP") || retained_metrics.contains("# TYPE"));
+    let retained_export = next
+        .plugin_routes
+        .descriptors()
+        .into_iter()
+        .find(|route| route.path == "/metrics")
+        .expect("the real exporter remains registered");
+    assert_eq!(
+        retained_export.kind,
+        busbar_kernel::plugin_routes::RouteKind::Export
+    );
+    assert!(retained_export.persistent);
+    assert_eq!(retained_export.source_instance, "sink-instance");
     let (next_policy, next_timeout) = policy(&next);
     assert_eq!(next.hook_registry["receiver"].timeout_ms, 29);
     assert_eq!(next_timeout, std::time::Duration::from_millis(29));
@@ -283,6 +317,7 @@ async fn timeout_only_admin_put_refreshes_the_actual_policy_atomically() {
         "zero and explicit default resolve the same actual cached policy"
     );
     serving.abort();
+    data_serving.abort();
     println!("{WITNESS}");
 }
 
@@ -301,4 +336,62 @@ fn policy(
         policy, timeout, ..
     } = &app.global_gates[0].1;
     (policy.clone(), *timeout)
+}
+
+fn metrics_routes() -> std::sync::Arc<busbar_kernel::plugin_routes::PluginRouteTable> {
+    use crate::root::loader::dispatch::{
+        kinds::export::{Export, ExportFacts},
+        load_dropped, rendering_of_library, Bind, ConnTable, DispatchConfig, Dispatcher, NoSink,
+    };
+    let path = std::path::PathBuf::from(
+        std::env::var_os("BUSBAR_TEST_PROMETHEUS_CDYLIB")
+            .expect("BUSBAR_TEST_PROMETHEUS_CDYLIB names the actual built metrics exporter"),
+    );
+    let statement = rendering_of_library(&path)
+        .expect("the actual exporter statement reads")
+        .expect("the actual exporter carries its statement");
+    let dispatcher = std::sync::Arc::new(Dispatcher::new(DispatchConfig::default()));
+    let plugin = load_dropped::<Export>(
+        &path,
+        &statement,
+        Bind {
+            instance: "serve-http-metrics".into(),
+            max_inflight_cap: 64,
+            sink: std::sync::Arc::new(NoSink),
+            dispatcher: dispatcher.adopter(),
+            conns: ConnTable::NoNeeds,
+        },
+    )
+    .expect("the actual HTTP exporter loads through its memory ABI");
+    let routes = plugin
+        .context::<ExportFacts>()
+        .expect("the actual exporter declares its routes")
+        .routes
+        .clone();
+    assert!(
+        routes.iter().any(|route| route.path == "/metrics"),
+        "the actual exporter declares the scrape route"
+    );
+    let exporter = std::sync::Arc::new(
+        crate::root::loader::export_door::ExportInstance::open(plugin, dispatcher, b"{}")
+            .expect("the actual HTTP exporter opens"),
+    );
+    let dispatch = busbar_kernel::export::serve_test_sink(exporter);
+    let declarations = routes
+        .into_iter()
+        .map(|route| busbar_kernel::plugin_routes::RouteDecl {
+            owner: "serve-http-metrics".into(),
+            source_instance: "sink-instance".into(),
+            dispatch_available: true,
+            kind: busbar_kernel::plugin_routes::RouteKind::Export,
+            scrape: matches!(route.path.as_str(), "/metrics" | "/metrics/hooks"),
+            persistent: true,
+            route,
+            dispatch: dispatch.clone(),
+        })
+        .collect();
+    std::sync::Arc::new(
+        busbar_kernel::plugin_routes::build_route_table(declarations)
+            .expect("the actual export routes obey the product namespace rules"),
+    )
 }
