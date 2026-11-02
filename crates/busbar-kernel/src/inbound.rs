@@ -2752,3 +2752,15 @@ mod tests;
 #[cfg(test)]
 #[path = "tests/inbound_owner_policies.rs"]
 mod owner_policies;
+
+#[cfg(test)]
+#[path = "tests/inbound_peer_owner_policies.rs"]
+mod peer_owner_policies;
+
+#[cfg(test)]
+#[path = "tests/inbound_handin_owner_policies.rs"]
+mod handin_owner_policies;
+
+#[cfg(test)]
+#[path = "tests/inbound_signed_order_policies.rs"]
+mod signed_order_policies;

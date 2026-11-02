@@ -463,3 +463,21 @@ mod kernel_application_auth_linked_contracts;
 
 #[path = "kernel_application/plugin_routes_actual.rs"]
 mod kernel_application_plugin_routes_actual;
+
+#[path = "kernel_application/central2_inbound_tickets.rs"]
+mod kernel_application_central2_inbound_tickets;
+
+#[path = "kernel_application/central2_inbound_keys.rs"]
+mod kernel_application_central2_inbound_keys;
+
+#[path = "kernel_application/central2_inbound_generations.rs"]
+mod kernel_application_central2_inbound_generations;
+
+#[path = "kernel_application/central2_inbound_custody.rs"]
+mod kernel_application_central2_inbound_custody;
+
+#[path = "kernel_application/central2_inbound_signed.rs"]
+mod kernel_application_central2_inbound_signed;
+
+#[path = "kernel_application/central2_inbound_refusals.rs"]
+mod kernel_application_central2_inbound_refusals;

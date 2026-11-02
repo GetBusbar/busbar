@@ -2639,3 +2639,7 @@ mod ticket_store_tests;
 #[cfg(test)]
 #[path = "tests/ticket_admission_policy.rs"]
 mod ticket_admission_policy;
+
+#[cfg(test)]
+#[path = "tests/verified_caller_policy.rs"]
+mod verified_caller_policy;
