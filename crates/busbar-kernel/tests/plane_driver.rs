@@ -1581,12 +1581,51 @@ use busbar_contract::abi::host::service as svc;
 use busbar_contract::abi::mechanism::KindCode;
 use busbar_contract::ids::RecordSchemaId;
 use busbar_contract::kinds::{RecordBytes, StoreError};
+use busbar_contract::records::RecordStore;
 use busbar_contract::services::{Caller as Instance, HostServices, Ran, RecordsList, Stored};
 use busbar_kernel::host_records::RecordRows;
 use busbar_kernel::host_services::{InstanceFacts, KernelServices, Offload};
-use busbar_kernel_testkit::test_support::store_double::MemoryStore;
+use busbar_plugin_loader::store_v3::LoadedStore;
 
-struct Rows(Arc<MemoryStore>);
+fn actual_store() -> Arc<LoadedStore> {
+    use busbar_plugin_loader::dispatch::kinds::store::Store;
+    use busbar_plugin_loader::dispatch::{
+        load_dropped, rendering_of_library, Bind, ConnTable, DispatchConfig, Dispatcher, NoSink,
+    };
+    let path = std::path::PathBuf::from(
+        std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
+            .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual built Store"),
+    );
+    let stated = rendering_of_library(&path)
+        .expect("read the actual Store statement")
+        .expect("Store exports its statement");
+    let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
+    let plugin = load_dropped::<Store>(
+        &path,
+        &stated,
+        Bind {
+            instance: format!("plane-records-{}", busbar_kernel::door::op_id().counter()).into(),
+            max_inflight_cap: 1024,
+            sink: Arc::new(NoSink),
+            dispatcher: dispatcher.adopter(),
+            conns: ConnTable::NoNeeds,
+        },
+    )
+    .expect("load the actual Store through its ABI");
+    let settings =
+        std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into());
+    Arc::new(
+        LoadedStore::open(
+            plugin,
+            dispatcher,
+            settings.as_bytes(),
+            busbar_kernel::door::op_id,
+        )
+        .expect("open the actual Store"),
+    )
+}
+
+struct Rows(Arc<LoadedStore>);
 
 impl RecordRows for Rows {
     fn claim(
@@ -1636,7 +1675,7 @@ fn instance() -> Instance {
 }
 
 fn records() -> Arc<KernelServices> {
-    let store = Arc::new(MemoryStore::new());
+    let store = actual_store();
     let s = KernelServices::new()
         .with_records(Arc::new(Rows(Arc::clone(&store))))
         .with_pool(Arc::new(Inline));
@@ -1939,7 +1978,7 @@ fn declaring() -> Double {
 }
 
 fn stored() -> Arc<KernelServices> {
-    let store = Arc::new(MemoryStore::new());
+    let store = actual_store();
     Arc::new(
         KernelServices::new()
             .with_records(Arc::new(Rows(store)))
@@ -2148,7 +2187,7 @@ async fn the_kernels_approve_judges_the_grant_before_the_trust_facts() {
 fn a_planes_work_section_overrides_the_hosts_work_bounds() {
     use busbar_kernel::host_units::UnitRecord;
     use busbar_kernel::host_work::{refusal, WorkBounds};
-    let store = Arc::new(MemoryStore::new());
+    let store = actual_store();
     let host = WorkBounds {
         max_live: 3,
         retain_ms: 300_000,
@@ -2362,7 +2401,7 @@ async fn a_refusal_after_admission_within_limits_is_the_planes_and_nets_no_charg
     }
     const AT: u64 = 1_700_000_000;
 
-    let gov = Arc::new(GovState::new(Arc::new(MemoryStore::new()), None).expect("gov"));
+    let gov = Arc::new(GovState::new(actual_store(), None).expect("gov"));
     let money = Arc::new(PlaneMoney::new(gov.clone(), Arc::new(NoPost)));
     let groups = std::collections::BTreeMap::from([(
         "g".to_string(),
