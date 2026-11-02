@@ -684,6 +684,9 @@ async fn create_key_owned(
     }
 
     enum MintOutcome {
+        Applied {
+            key_id: String,
+        },
         TokenOnly(Box<(busbar_kernel::governance::VirtualKey, Secret<String>)>),
         Aws(
             Box<(
@@ -788,7 +791,7 @@ async fn create_key_owned(
                 );
                 installed.record_version(&actor, &format!("group.provision group:{group} (auto, parent {parent})"));
             }
-            let minted = (|| -> busbar_kernel::governance::RecordStoreResult<MintOutcome> {
+            let minted = (|| -> Result<MintOutcome, busbar_kernel::governance::MintError> {
                 if let Some((group, n)) = check_key_cap(&gov, cap, cap_group.as_deref(), None)? {
                     return Ok(MintOutcome::AtCap { group, n, cap });
                 }
@@ -800,7 +803,7 @@ async fn create_key_owned(
                         return Err(busbar_kernel::governance::RecordStoreError(
                             "no linked auth plugin states the shape of the credential to issue"
                                 .to_string(),
-                        ));
+                        ).into());
                     };
                     gov.mint_signed_with_credential(spec, exp, now, kind, shape)
                         .map(|m| MintOutcome::Aws(Box::new(m)))
@@ -808,7 +811,14 @@ async fn create_key_owned(
                     gov.mint_signed(spec, exp, now)
                         .map(|m| MintOutcome::TokenOnly(Box::new(m)))
                 }
-            })()
+            })();
+            let minted = match minted {
+                Err(busbar_kernel::governance::MintError::Applied { key_id, .. }) => {
+                    diag_error!(ADMIN_STORE_OPERATION_FAILED, operation = "create_key", key_id = %key_id, "key mint committed but cache reconciliation failed; no secret was returned");
+                    Ok(MintOutcome::Applied { key_id })
+                }
+                result => result,
+            }
             .map_err(|e| {
                 diag_error!(ADMIN_STORE_OPERATION_FAILED, operation = "create_key", error = %e, "admin store operation failed");
                 AdminError::Internal
@@ -854,6 +864,26 @@ async fn create_key_owned(
     };
 
     let (key, token, aws) = match minted {
+        MintOutcome::Applied { key_id } => {
+            audit::AUDIT.record_by(
+                "key.create",
+                &format!("key:{key_id}"),
+                audit::OUTCOME_APPLIED,
+                &actor,
+            );
+            if let Some(r) = idem_reservation.take() {
+                r.clear();
+            }
+            settle_in_store(
+                replay_store,
+                claim,
+                Settled::Applied(format!("key:{key_id}")),
+            )
+            .await;
+            return crate::v1::json::err_json(&AdminError::Conflict(format!(
+                "MINT APPLIED (new secret not returned): key '{key_id}' was committed but cache reconciliation failed; revoke or delete this key before minting a replacement"
+            )));
+        }
         MintOutcome::AtCap { group, n, cap } => {
             if let Some(r) = idem_reservation.take() {
                 r.clear();

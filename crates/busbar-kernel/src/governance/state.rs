@@ -28,6 +28,50 @@ pub const REVOCATION_DURABLE_MARKER: &str = "REVOCATION APPLIED (cache reconcile
 
 pub const ROTATION_DURABLE_MARKER: &str = "ROTATION APPLIED (new secret not returned)";
 
+/// A mint can commit its binding before cache reconciliation fails. An applied failure
+/// contains only the public key identifier; no issued credential is returned.
+#[derive(Debug)]
+pub enum MintError {
+    Store(RecordStoreError),
+    Applied {
+        key_id: String,
+        reconcile: RecordStoreError,
+    },
+}
+
+impl std::fmt::Display for MintError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Store(error) => error.fmt(f),
+            Self::Applied { key_id, .. } => write!(
+                f,
+                "MINT APPLIED (new secret not returned): key '{key_id}' was committed but cache reconciliation failed; revoke or delete this key before minting a replacement"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for MintError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(match self {
+            Self::Store(error) => error,
+            Self::Applied { reconcile, .. } => reconcile,
+        })
+    }
+}
+
+impl From<RecordStoreError> for MintError {
+    fn from(error: RecordStoreError) -> Self {
+        Self::Store(error)
+    }
+}
+
+impl From<MintError> for RecordStoreError {
+    fn from(error: MintError) -> Self {
+        Self(error.to_string())
+    }
+}
+
 fn signed_binding(spec: NewKeySpec, now: u64) -> RecordStoreResult<(VirtualKey, String)> {
     let mut raw = [0u8; 16];
     getrandom::fill(&mut raw).map_err(|e| RecordStoreError(format!("CSPRNG unavailable: {e}")))?;
@@ -258,15 +302,19 @@ impl GovState {
         spec: NewKeySpec,
         exp: u64,
         now: u64,
-    ) -> RecordStoreResult<(VirtualKey, Secret<String>)> {
+    ) -> Result<(VirtualKey, Secret<String>), MintError> {
         let Some(material) = self.signing_material() else {
             return Err(RecordStoreError(
                 "signed-token minting is unavailable: no signing key is configured".to_string(),
-            ));
+            )
+            .into());
         };
         let (binding, generation) = signed_binding(spec, now)?;
         self.store.put_key(&binding)?;
-        self.refresh()?;
+        self.refresh().map_err(|reconcile| MintError::Applied {
+            key_id: binding.id.clone(),
+            reconcile,
+        })?;
         let token = material.signer.mint(&binding.id, exp, Some(&generation));
         Ok((binding, token.into()))
     }
@@ -278,15 +326,16 @@ impl GovState {
         now: u64,
         kind: &str,
         shape: &busbar_contract::auth_calls::IssuedShape,
-    ) -> RecordStoreResult<(VirtualKey, Secret<String>, String, Secret<String>)> {
+    ) -> Result<(VirtualKey, Secret<String>, String, Secret<String>), MintError> {
         let Some(material) = self.signing_material() else {
             return Err(RecordStoreError(
                 "signed-token minting is unavailable: no signing key is configured".to_string(),
-            ));
+            )
+            .into());
         };
 
         let Some(keys) = self.at_rest_keys() else {
-            return Err(RecordStoreError(super::at_rest::NO_KEY_REFUSAL.to_string()));
+            return Err(RecordStoreError(super::at_rest::NO_KEY_REFUSAL.to_string()).into());
         };
         let (binding, generation) = signed_binding(spec, now)?;
         let (public_id, secret_value) = super::issue_credential(shape).store()?;
@@ -319,7 +368,10 @@ impl GovState {
             secret: sealed,
         };
         self.store.put_key_with_credential(&binding, &secret)?;
-        self.refresh()?;
+        self.refresh().map_err(|reconcile| MintError::Applied {
+            key_id: binding.id.clone(),
+            reconcile,
+        })?;
         let token = material.signer.mint(&binding.id, exp, Some(&generation));
         Ok((binding, token.into(), public_id, secret_value))
     }
