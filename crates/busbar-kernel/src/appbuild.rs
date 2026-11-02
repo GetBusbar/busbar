@@ -2027,218 +2027,256 @@ pub fn build_app_from_config_with_store(
         crate::export::plugin::record_reads_on(&amendments);
     }
 
-    let mut app = App {
-        // The limits this generation goes live with: `AppHandle::swap` publishes them before any
-        // reader of the new generation runs, and carries them onto the plane breaker store.
-        limits: Some(limits_resolved.clone()),
-        // The boot generation's admin table is a new one; every generation after it carries its
-        // prior's, so the instances the root published stay served across an apply.
-        serve_tables: prior.map_or_else(crate::plane_driver::serve::ServeTables::default, |p| {
-            p.serve_tables.clone()
-        }),
-        root_rules: std::sync::Arc::clone(rules),
-        config_projection,
-        plane_sections: Some(cfg.plane_sections.clone()),
-        // Telemetry-bank slot table for this generation (built above as a local, BEFORE the
-        // config-derived collections moved into the fallback plane's runtime bundle so its
-        // `&lanes`/`&pools`/`&by_model` borrows ran first). Identical label sets across applies re-intern to the same
-        // slots, so hot-path counters accumulate monotonically across config generations.
+    // The limits this generation goes live with: `AppHandle::swap` publishes them before any
+    // reader of the new generation runs, and carries them onto the plane breaker store.
+    let limits = Some(limits_resolved.clone());
+    // The boot generation's admin table is a new one; every generation after it carries its
+    // prior's, so the instances the root published stay served across an apply.
+    let serve_tables = prior.map_or_else(crate::plane_driver::serve::ServeTables::default, |p| {
+        p.serve_tables.clone()
+    });
+    let root_rules = std::sync::Arc::clone(rules);
+    let plane_sections = Some(cfg.plane_sections.clone());
+    // Telemetry-bank slot table for this generation (built above as a local, BEFORE the
+    // config-derived collections moved into the fallback plane's runtime bundle so its
+    // `&lanes`/`&pools`/`&by_model` borrows ran first). Identical label sets across applies re-intern to the same
+    // slots, so hot-path counters accumulate monotonically across config generations.
+    // THE FALLBACK PLANE'S RUNTIME SLOT KEY (R3/R4 sub-phase B): the snapshot names only the
+    // `&'static str` key; no slot is composed under it (every plane is a door plane), so its
+    // read answers the empty default and the read seam walks `config_tables`.
+    // The neutral per-session substrate: PROCESS-LIFETIME, reused across an
+    // apply so a config swap never forgets a live session. Bounded (`SESSION_STORE_CAPACITY`
+    // slots, LRU-evicted) and TTL-defaulted so an idle session's state cannot accumulate — the
+    // memory-safety bound the substrate is built around.
+    let session_store = prior.map_or_else(
+        || {
+            Arc::new(crate::session::SessionStore::new(
+                SESSION_STORE_CAPACITY,
+                Some(SESSION_STORE_TTL_MS),
+            ))
+        },
+        |p| Arc::clone(&p.session_store),
+    );
+    // Operator opt-in for the gate's incremental-scan tenant. Env, not config: OFF (the default,
+    // and any value that is empty or "0") keeps every gate screening the full projection —
+    // byte-identical to 1.5.4 — while an operator can turn it on without a config-schema change.
+    let incremental_scan =
+        std::env::var_os("BUSBAR_INCREMENTAL_SCAN").is_some_and(|v| !v.is_empty() && v != "0");
+    // The failover pools, resolved-verbatim per generation (the CELLS above are process-
+    // lifetime; the pool DECLARATIONS are config like any other): each plane's pools, keyed by
+    // its stable decl key, resolved from the registry so this composition names no plane.
+    let plane_pools = cfg
+        .plane_pools
+        .iter()
+        .filter_map(|(section, pools)| {
+            crate::plane_driver::registry::plane_decl_for_config_section(section)
+                .map(|decl| (decl.key, pools.clone()))
+        })
+        .collect();
+    let auth = auth_mw.clone();
+    // The per-pool routing policy / decision gates / rewrite chains, read by the fallback plane's
+    // relocated engine through `App::pool_{policy,gates,rewrites}` (the pool-hook facade).
+    // The GENERIC per-plane per-container submission-gate map and its rewrite-chain twin, keyed by
+    // each plane's stable decl key (built above).
+    let hook_env = hook_env.clone();
+    let hook_registry = cfg.hooks.clone();
+    let requested_signals = hooks::requested_signals(&cfg.hooks);
+    let any_content_hook = hooks::any_content_hook(&cfg.hooks);
+    let export_projections = cfg.export.projection_union();
+    let global_hooks = cfg.global_hooks.clone();
+    let groups_registry = cfg.groups.clone();
+    // The two NAMED-DEFINITION maps the generic admin CRUD serves, carried verbatim off the
+    // resolved config (the EFFECTIVE base+overlay shape).
+    let identity_providers = cfg.identity_providers.clone();
+    let export_defs = cfg.export_defs.clone();
+    // THE `agents:` CONTAINER PLANE, built only when `agents:` defines one, is NOT mirrored into a
+    // typed `App` field any more: it lives solely in its `plane_slots` entry (built once by
+    // `PlaneDecl::build`), and every reader reaches it through that plane's own runtime accessors,
+    // which downcast that slot inside the plane's module. So there is no dedicated initializer here
+    // and `App` names no plane-owned type for the runtime object. That plane's verify-on-call GATE
+    // and boot-resolved CARD transports moved ONTO that same runtime object too (like the `tools:`
+    // container plane's own verify coalescer): they are carried across this apply INSIDE the
+    // plane's `build` (through its own carried-gates field, off `BuildCtx::prior`), so `App`
+    // carries no dedicated field for them either.
+    // History + rate windows are Arc-shared across applies (process-lifetime state).
+    let admin = prior.map_or_else(
+        || Arc::new(admin::seam::AdminSlot::default()),
+        |p| p.admin.clone(),
+    );
+    let mutation_limiter = prior.map_or_else(
+        || Arc::new(ratelimit::MutationLimiter::new()),
+        |p| p.mutation_limiter.clone(),
+    );
+    let admin_chain = cfg.admin_auth.clone();
+    let public_url = cfg.public_url.clone();
+    // One container plane, and the dispatch table that governs it, are built from ONE validated
+    // object in ONE act: the resource that mounts the ingress is the same resource whose
+    // canonical URI becomes the audience the middleware enforces there. Absent its config section,
+    // the dispatch table is empty and `admission_for` answers `None` for every path, so the
+    // audience check costs one `Option` test on the hot path and changes nothing.
+    //
+    // THE SECOND CONSUMER. The other container plane mounts and admits through the very same two
+    // verbs, with its own strings and no new code in `plane/` — which is the claim that module's
+    // own doc made when it was written for a consumer that did not exist yet. It admits only when
+    // it has a RECEIVING side (its own `admission` fn answers `None` without a `public_url`), so a
+    // delegation-only deployment claims no path and binds no audience.
+    // THE DISPATCH TABLE, folded from the registered plane declarations rather than a hardcoded
+    // block per plane. Each plane's runtime object is handed to its decl (type-erased as
+    // `&dyn Any`), and the decl computes the plane's claims and admission from it — the same
+    // strings the former hardcoded per-plane blocks used to compute, now stated beside the plane
+    // they describe so an extracted plane crate contributes its own door. `build_dispatch` refuses
+    // the boot if any plane claims a path but binds no audience (ratchet R2).
+    //
+    // The slot lookup reads `plane_slots` (built above, once, via each decl's `build` fn) rather
+    // than naming either container plane's crate directly — the CLAIMS and ADMISSION logic, and now
+    // the object the two are computed from, are all reached through the decl.
+    let planes = Arc::new({
+        let ref_slots: std::collections::BTreeMap<&'static str, &dyn std::any::Any> = plane_slots
+            .iter()
+            .map(|(k, v)| (*k, v.as_ref() as &dyn std::any::Any))
+            .collect();
+        crate::plane_driver::registry::build_dispatch(
+            crate::plane_driver::registry::plane_decls(),
+            &ref_slots,
+            auth_mw.keys_in_chain,
+        )?
+    });
+    // THE TYPE-ERASED SLOT MAP ITSELF (Step 2.3). Moved in last: every typed field above that
+    // reads a plane's object does so by cloning out of this map first, so `plane_slots` and any
+    // per-plane accessor are guaranteed to agree — there is no second `build` call anywhere that
+    // could disagree with what is stored here.
+    // A CONTAINER PLANE'S PER-GENERATION RUNTIME (and the verify-on-call coalescer folded into it)
+    // is no longer a flat `App` field: it was inserted into `plane_slots` above under
+    // `runtime_slot_key(<its decl key>)`, through the plane's own `build_runtime` seam. `plane_slots`
+    // is moved into `App` on the line just above; each plane reads its runtime back through its own
+    // runtime accessor, which downcasts that slot inside the plane.
+    let oauth_as = oauth_as_plane.clone();
+    // CARRIED ACROSS THE APPLY, and here the reason is sharper than for the two above: the
+    // durable sink is attached to this instance once at boot, so rebuilding it on an apply would
+    // silently detach it and every later quarantine would stop being written down.
+    let demotion_record = prior.map_or_else(
+        || Arc::new(crate::trust::demotion::DemotionRecord::new()),
+        |p| p.demotion_record.clone(),
+    );
+    let auth_scope_caps = cfg
+        .auth
+        .as_ref()
+        .map(project_auth_scope_caps)
+        .unwrap_or_default();
+    let role_bindings = cfg
+        .auth
+        .as_ref()
+        .map(|a| a.role_bindings.clone())
+        .unwrap_or_default();
+    let config_path = config_paths.0;
+    let providers_path = config_paths.1;
+    let config_version = app_config_version;
+    let max_keys_per_principal = cfg.limits.max_keys_per_principal;
+    let max_auto_provisioned_groups = cfg.limits.max_auto_provisioned_groups;
+    let plugins_dir = std::path::PathBuf::from(&plugins_cfg.dir);
+    let plugin_admission = crate::preflight::root_rows().admission;
+    // Where `auth.key_ttl` is finally READ: the self-serve mint's token lifetime.
+    // Config-validate already proved this parses; the fallback keeps a bad value from panicking.
+    let self_key_ttl_secs = cfg
+        .auth
+        .as_ref()
+        .and_then(|a| a.key_ttl.as_deref())
+        .map(|s| {
+            config::parse::parse_duration_secs(s)
+                .unwrap_or(governance::mint_policy::DEFAULT_KEY_TTL_SECS)
+        })
+        .unwrap_or(governance::mint_policy::DEFAULT_KEY_TTL_SECS);
+    // Where `auth.policy:` is finally READ: the resolved mint policy (block TTL/mode ceiling +
+    // per-role `mint_ceilings`). Config-validate already proved the durations parse; a stray bad
+    // value falls back to no cap rather than fabricating a ceiling nobody wrote.
+    let mint_policy = std::sync::Arc::new(governance::mint_policy::MintPolicy::from_auth(
+        cfg.auth.as_ref(),
+    ));
+    // Arc-shared like `admin`/`mutation_limiter`: a REBUILD carries the SAME counter forward
+    // (ids stay monotonic across a config reload) while a fresh boot seeds it once from OS
+    // entropy (see `state::seed_request_id_counter`) so restarts don't restamp `0, 1, 2, …`.
+    let request_id_counter = prior.map_or_else(
+        || {
+            Arc::new(std::sync::atomic::AtomicU64::new(
+                state::seed_request_id_counter(),
+            ))
+        },
+        |p| p.request_id_counter.clone(),
+    );
+    let planes_awaiting_restart = planes_awaiting_restart
+        .iter()
+        .map(|section| (*section).to_string())
+        .collect();
+    let mut app = App::assemble(
+        crate::state::AppParts {
+            limits,
+            serve_tables,
+            root_rules,
+            config_projection,
+            plane_sections,
+            fallback_runtime_key,
+            config_tables,
+            store,
+            session_store,
+            incremental_scan,
+            plane_pools,
+            auth,
+            rewrite_hooks,
+            tap_hooks,
+            tap_hooks_candidate,
+            tap_hooks_routing,
+            tap_hooks_response,
+            global_gates,
+            pool_orderings,
+            pool_decision_gates,
+            pool_rewrite_chains,
+            plane_gates,
+            plane_rewrites,
+            hook_env,
+            hook_registry,
+            requested_signals,
+            any_content_hook,
+            global_hooks,
+            groups_registry,
+            base_group_names,
+            identity_providers,
+            export_defs,
+            admin,
+            base_hook_names,
+            admin_chain,
+            admin_modules,
+            public_url,
+            planes,
+            plane_slots,
+            oauth_as,
+            demotion_record,
+            amendments,
+            auth_scope_caps,
+            role_bindings,
+            config_path,
+            providers_path,
+            overlay_path,
+            config_version,
+            max_keys_per_principal,
+            max_auto_provisioned_groups,
+            governance,
+            secret_resolver,
+            cost,
+            plugins_dir,
+            plugins_cfg,
+            plugin_admission,
+            self_key_ttl_secs,
+            mint_policy,
+            request_id_counter,
+            plugin_routes,
+            boot_route_paths,
+            planes_awaiting_restart,
+        },
         tslots,
-        // THE FALLBACK PLANE'S RUNTIME SLOT KEY (R3/R4 sub-phase B): the snapshot names only the
-        // `&'static str` key; no slot is composed under it (every plane is a door plane), so its
-        // read answers the empty default and the read seam walks `config_tables`.
-        fallback_runtime_key,
-        config_tables,
-        store,
-        // The neutral per-session substrate: PROCESS-LIFETIME, reused across an
-        // apply so a config swap never forgets a live session. Bounded (`SESSION_STORE_CAPACITY`
-        // slots, LRU-evicted) and TTL-defaulted so an idle session's state cannot accumulate — the
-        // memory-safety bound the substrate is built around.
-        session_store: prior.map_or_else(
-            || {
-                Arc::new(crate::session::SessionStore::new(
-                    SESSION_STORE_CAPACITY,
-                    Some(SESSION_STORE_TTL_MS),
-                ))
-            },
-            |p| Arc::clone(&p.session_store),
-        ),
-        // Operator opt-in for the gate's incremental-scan tenant. Env, not config: OFF (the default,
-        // and any value that is empty or "0") keeps every gate screening the full projection —
-        // byte-identical to 1.5.4 — while an operator can turn it on without a config-schema change.
-        incremental_scan: std::env::var_os("BUSBAR_INCREMENTAL_SCAN")
-            .is_some_and(|v| !v.is_empty() && v != "0"),
-        // The failover pools, resolved-verbatim per generation (the CELLS above are process-
-        // lifetime; the pool DECLARATIONS are config like any other): each plane's pools, keyed by
-        // its stable decl key, resolved from the registry so this composition names no plane.
-        plane_pools: cfg
-            .plane_pools
-            .iter()
-            .filter_map(|(section, pools)| {
-                crate::plane_driver::registry::plane_decl_for_config_section(section)
-                    .map(|decl| (decl.key, pools.clone()))
-            })
-            .collect(),
-        auth: auth_mw.clone(),
-        rewrite_hooks,
-        tap_hooks,
-        tap_hooks_candidate,
-        tap_hooks_routing,
-        tap_hooks_response,
-        global_gates,
-        // The per-pool routing policy / decision gates / rewrite chains, read by the fallback plane's
-        // relocated engine through `App::pool_{policy,gates,rewrites}` (the pool-hook facade).
-        pool_orderings,
-        pool_decision_gates,
-        pool_rewrite_chains,
-        // The GENERIC per-plane per-container submission-gate map and its rewrite-chain twin, keyed by
-        // each plane's stable decl key (built above).
-        plane_gates,
-        plane_rewrites,
-        hook_env: hook_env.clone(),
-        hook_registry: cfg.hooks.clone(),
-        requested_signals: hooks::requested_signals(&cfg.hooks),
-        any_content_hook: hooks::any_content_hook(&cfg.hooks),
-        export_projections: cfg.export.projection_union(),
-        global_hooks: cfg.global_hooks.clone(),
-        groups_registry: cfg.groups.clone(),
-        base_group_names,
-        // The two NAMED-DEFINITION maps the generic admin CRUD serves, carried verbatim off the
-        // resolved config (the EFFECTIVE base+overlay shape).
-        identity_providers: cfg.identity_providers.clone(),
-        export_defs: cfg.export_defs.clone(),
-        // THE `agents:` CONTAINER PLANE, built only when `agents:` defines one, is NOT mirrored into a
-        // typed `App` field any more: it lives solely in its `plane_slots` entry (built once by
-        // `PlaneDecl::build`), and every reader reaches it through that plane's own runtime accessors,
-        // which downcast that slot inside the plane's module. So there is no dedicated initializer here
-        // and `App` names no plane-owned type for the runtime object. That plane's verify-on-call GATE
-        // and boot-resolved CARD transports moved ONTO that same runtime object too (like the `tools:`
-        // container plane's own verify coalescer): they are carried across this apply INSIDE the
-        // plane's `build` (through its own carried-gates field, off `BuildCtx::prior`), so `App`
-        // carries no dedicated field for them either.
-        // History + rate windows are Arc-shared across applies (process-lifetime state).
-        admin: prior.map_or_else(
-            || Arc::new(admin::seam::AdminSlot::default()),
-            |p| p.admin.clone(),
-        ),
-        mutation_limiter: prior.map_or_else(
-            || Arc::new(ratelimit::MutationLimiter::new()),
-            |p| p.mutation_limiter.clone(),
-        ),
-        base_hook_names,
-        admin_chain: cfg.admin_auth.clone(),
-        admin_modules,
+        export_projections,
+        mutation_limiter,
         login_methods,
-        public_url: cfg.public_url.clone(),
-        // One container plane, and the dispatch table that governs it, are built from ONE validated
-        // object in ONE act: the resource that mounts the ingress is the same resource whose
-        // canonical URI becomes the audience the middleware enforces there. Absent its config section,
-        // the dispatch table is empty and `admission_for` answers `None` for every path, so the
-        // audience check costs one `Option` test on the hot path and changes nothing.
-        //
-        // THE SECOND CONSUMER. The other container plane mounts and admits through the very same two
-        // verbs, with its own strings and no new code in `plane/` — which is the claim that module's
-        // own doc made when it was written for a consumer that did not exist yet. It admits only when
-        // it has a RECEIVING side (its own `admission` fn answers `None` without a `public_url`), so a
-        // delegation-only deployment claims no path and binds no audience.
-        // THE DISPATCH TABLE, folded from the registered plane declarations rather than a hardcoded
-        // block per plane. Each plane's runtime object is handed to its decl (type-erased as
-        // `&dyn Any`), and the decl computes the plane's claims and admission from it — the same
-        // strings the former hardcoded per-plane blocks used to compute, now stated beside the plane
-        // they describe so an extracted plane crate contributes its own door. `build_dispatch` refuses
-        // the boot if any plane claims a path but binds no audience (ratchet R2).
-        //
-        // The slot lookup reads `plane_slots` (built above, once, via each decl's `build` fn) rather
-        // than naming either container plane's crate directly — the CLAIMS and ADMISSION logic, and now
-        // the object the two are computed from, are all reached through the decl.
-        planes: Arc::new({
-            let ref_slots: std::collections::BTreeMap<&'static str, &dyn std::any::Any> =
-                plane_slots
-                    .iter()
-                    .map(|(k, v)| (*k, v.as_ref() as &dyn std::any::Any))
-                    .collect();
-            crate::plane_driver::registry::build_dispatch(
-                crate::plane_driver::registry::plane_decls(),
-                &ref_slots,
-                auth_mw.keys_in_chain,
-            )?
-        }),
-        // THE TYPE-ERASED SLOT MAP ITSELF (Step 2.3). Moved in last: every typed field above that
-        // reads a plane's object does so by cloning out of this map first, so `plane_slots` and any
-        // per-plane accessor are guaranteed to agree — there is no second `build` call anywhere that
-        // could disagree with what is stored here.
-        // A CONTAINER PLANE'S PER-GENERATION RUNTIME (and the verify-on-call coalescer folded into it)
-        // is no longer a flat `App` field: it was inserted into `plane_slots` above under
-        // `runtime_slot_key(<its decl key>)`, through the plane's own `build_runtime` seam. `plane_slots`
-        // is moved into `App` on the line just above; each plane reads its runtime back through its own
-        // runtime accessor, which downcasts that slot inside the plane.
-        plane_slots,
-        oauth_as: oauth_as_plane.clone(),
-        // CARRIED ACROSS THE APPLY, and here the reason is sharper than for the two above: the
-        // durable sink is attached to this instance once at boot, so rebuilding it on an apply would
-        // silently detach it and every later quarantine would stop being written down.
-        demotion_record: prior.map_or_else(
-            || Arc::new(crate::trust::demotion::DemotionRecord::new()),
-            |p| p.demotion_record.clone(),
-        ),
-        amendments,
-        auth_scope_caps: cfg
-            .auth
-            .as_ref()
-            .map(project_auth_scope_caps)
-            .unwrap_or_default(),
-        role_bindings: cfg
-            .auth
-            .as_ref()
-            .map(|a| a.role_bindings.clone())
-            .unwrap_or_default(),
-        config_path: config_paths.0,
-        providers_path: config_paths.1,
-        overlay_path,
-        config_version: app_config_version,
-        max_keys_per_principal: cfg.limits.max_keys_per_principal,
-        max_auto_provisioned_groups: cfg.limits.max_auto_provisioned_groups,
-        governance,
-        secret_resolver,
-        cost,
-        plugins_dir: std::path::PathBuf::from(&plugins_cfg.dir),
-        plugins_cfg,
-        plugin_admission: crate::preflight::root_rows().admission,
-        // Where `auth.key_ttl` is finally READ: the self-serve mint's token lifetime.
-        // Config-validate already proved this parses; the fallback keeps a bad value from panicking.
-        self_key_ttl_secs: cfg
-            .auth
-            .as_ref()
-            .and_then(|a| a.key_ttl.as_deref())
-            .map(|s| {
-                config::parse::parse_duration_secs(s)
-                    .unwrap_or(governance::mint_policy::DEFAULT_KEY_TTL_SECS)
-            })
-            .unwrap_or(governance::mint_policy::DEFAULT_KEY_TTL_SECS),
-        // Where `auth.policy:` is finally READ: the resolved mint policy (block TTL/mode ceiling +
-        // per-role `mint_ceilings`). Config-validate already proved the durations parse; a stray bad
-        // value falls back to no cap rather than fabricating a ceiling nobody wrote.
-        mint_policy: std::sync::Arc::new(governance::mint_policy::MintPolicy::from_auth(
-            cfg.auth.as_ref(),
-        )),
-        // Arc-shared like `admin`/`mutation_limiter`: a REBUILD carries the SAME counter forward
-        // (ids stay monotonic across a config reload) while a fresh boot seeds it once from OS
-        // entropy (see `state::seed_request_id_counter`) so restarts don't restamp `0, 1, 2, …`.
-        request_id_counter: prior.map_or_else(
-            || {
-                Arc::new(std::sync::atomic::AtomicU64::new(
-                    state::seed_request_id_counter(),
-                ))
-            },
-            |p| p.request_id_counter.clone(),
-        ),
-        plugin_routes,
-        boot_route_paths,
-        planes_awaiting_restart: planes_awaiting_restart
-            .iter()
-            .map(|section| (*section).to_string())
-            .collect(),
-    };
+    );
     rules.check_built(&app)?;
     if let Some(paths) = rules.mounted_plugin_paths(&app) {
         app.boot_route_paths = Arc::new(paths);

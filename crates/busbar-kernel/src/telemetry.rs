@@ -104,6 +104,7 @@ struct LaneFamily {
 /// Every lookup method returns the slots for values in THIS generation's bounded label space; a
 /// miss (custom protocol, label from a different generation, bare test `App`) falls back to the
 /// exact macro emission the site used before the bank, so `/metrics` output is preserved always.
+#[derive(Default)]
 pub(crate) struct AppSlots {
     /// The plane this bank's request families belong to. The bank's inputs (`lanes`, `pools`,
     /// `by_model`) are the MODEL plane's routing tables, so a request from any other plane must

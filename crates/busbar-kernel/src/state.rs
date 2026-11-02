@@ -476,6 +476,144 @@ pub struct App {
     /// written plane is served.
     pub planes_awaiting_restart: Vec<String>,
 }
+/// The already-public values of an [`App`], carried without initialization or callbacks.
+/// Private kernel bookkeeping is assembled internally and is never exposed by this carrier.
+pub struct AppParts {
+    /// The existing [`App::fallback_runtime_key`] value.
+    pub fallback_runtime_key: &'static str,
+    /// The existing [`App::serve_tables`] value.
+    pub serve_tables: crate::plane_driver::serve::ServeTables,
+    /// The existing [`App::root_rules`] value.
+    pub root_rules: Arc<dyn crate::appbuild::RootRules>,
+    /// The existing [`App::config_projection`] value.
+    pub config_projection: Option<Arc<dyn std::any::Any + Send + Sync>>,
+    /// The existing [`App::config_tables`] value.
+    pub config_tables: Arc<busbar_kernel::plane_driver::route_tables::ConfigTables>,
+    /// The existing [`App::store`] value.
+    pub store: Arc<dyn LaneRuntime>,
+    /// The existing [`App::limits`] value.
+    pub limits: Option<crate::config::LimitsResolved>,
+    /// The existing [`App::session_store`] value.
+    pub session_store: Arc<crate::session::SessionStore>,
+    /// The existing [`App::incremental_scan`] value.
+    pub incremental_scan: bool,
+    /// The existing [`App::plane_pools`] value.
+    pub plane_pools: std::collections::BTreeMap<
+        &'static str,
+        std::collections::BTreeMap<String, crate::config::pools::CandidatePoolCfg>,
+    >,
+    /// The existing [`App::auth`] value.
+    pub auth: Arc<crate::auth::AuthMiddleware>,
+    /// The existing [`App::rewrite_hooks`] value.
+    pub rewrite_hooks: Vec<(std::time::Duration, Arc<dyn crate::hooks::RoutingPolicy>)>,
+    /// The existing [`App::tap_hooks`] value.
+    pub tap_hooks: Vec<crate::hooks::TapEntry>,
+    /// The existing [`App::tap_hooks_candidate`] value.
+    pub tap_hooks_candidate: Vec<crate::hooks::TapEntry>,
+    /// The existing [`App::tap_hooks_routing`] value.
+    pub tap_hooks_routing: Vec<crate::hooks::TapEntry>,
+    /// The existing [`App::tap_hooks_response`] value.
+    pub tap_hooks_response: Vec<crate::hooks::TapEntry>,
+    /// The existing [`App::global_gates`] value.
+    pub global_gates: Vec<(u16, crate::hooks::ResolvedPolicy)>,
+    /// The existing [`App::pool_orderings`] value.
+    pub pool_orderings: std::collections::HashMap<String, crate::hooks::ResolvedPolicy>,
+    /// The existing [`App::pool_decision_gates`] value.
+    pub pool_decision_gates:
+        std::collections::HashMap<String, Vec<(u16, crate::hooks::ResolvedPolicy)>>,
+    /// The existing [`App::pool_rewrite_chains`] value.
+    pub pool_rewrite_chains: std::collections::HashMap<
+        String,
+        Vec<(
+            std::time::Duration,
+            std::sync::Arc<dyn crate::hooks::RoutingPolicy>,
+        )>,
+    >,
+    /// The existing [`App::plane_gates`] value.
+    pub plane_gates: PlaneGateMap,
+    /// The existing [`App::plane_rewrites`] value.
+    pub plane_rewrites: PlaneRewriteMap,
+    /// The existing [`App::hook_env`] value.
+    pub hook_env: crate::hooks::HookEnv,
+    /// The existing [`App::hook_registry`] value.
+    pub hook_registry: HashMap<String, crate::config::HookCfg>,
+    /// The existing [`App::requested_signals`] value.
+    pub requested_signals: crate::hooks::RequestedSignals,
+    /// The existing [`App::any_content_hook`] value.
+    pub any_content_hook: bool,
+    /// The existing [`App::global_hooks`] value.
+    pub global_hooks: Vec<String>,
+    /// The existing [`App::base_hook_names`] value.
+    pub base_hook_names: std::collections::HashSet<String>,
+    /// The existing [`App::groups_registry`] value.
+    pub groups_registry: std::collections::BTreeMap<String, crate::config::GroupCfg>,
+    /// The existing [`App::base_group_names`] value.
+    pub base_group_names: std::collections::HashSet<String>,
+    /// The existing [`App::identity_providers`] value.
+    pub identity_providers: crate::config::IdentityProviders,
+    /// The existing [`App::export_defs`] value.
+    pub export_defs: crate::config::ExportDefs,
+    /// The existing [`App::admin`] value.
+    pub admin: Arc<crate::admin::seam::AdminSlot>,
+    /// The existing [`App::admin_chain`] value.
+    pub admin_chain: Vec<String>,
+    /// The existing [`App::admin_modules`] value.
+    pub admin_modules: Arc<crate::auth::AdminAuthChain>,
+    /// The existing [`App::public_url`] value.
+    pub public_url: Option<String>,
+    /// The existing [`App::oauth_as`] value.
+    pub oauth_as: Option<Arc<dyn std::any::Any + Send + Sync>>,
+    /// The existing [`App::demotion_record`] value.
+    pub demotion_record: Arc<crate::trust::demotion::DemotionRecord>,
+    /// The existing [`App::amendments`] value.
+    pub amendments: Arc<crate::audit::amend::NodeAmendments>,
+    /// The existing [`App::planes`] value.
+    pub planes: Arc<crate::plane_driver::dispatch::PlaneDispatch>,
+    /// The existing [`App::plane_slots`] value.
+    pub plane_slots: std::collections::BTreeMap<&'static str, Arc<dyn std::any::Any + Send + Sync>>,
+    /// The existing [`App::plane_sections`] value.
+    pub plane_sections: Option<std::collections::BTreeSet<&'static str>>,
+    /// The existing [`App::auth_scope_caps`] value.
+    pub auth_scope_caps: std::collections::HashMap<String, String>,
+    /// The existing [`App::role_bindings`] value.
+    pub role_bindings: crate::config::RoleBindings,
+    /// The existing [`App::config_path`] value.
+    pub config_path: Option<std::path::PathBuf>,
+    /// The existing [`App::providers_path`] value.
+    pub providers_path: Option<std::path::PathBuf>,
+    /// The existing [`App::overlay_path`] value.
+    pub overlay_path: Option<Arc<crate::config::overlay::OverlayStore>>,
+    /// The existing [`App::config_version`] value.
+    pub config_version: u64,
+    /// The existing [`App::max_keys_per_principal`] value.
+    pub max_keys_per_principal: usize,
+    /// The existing [`App::max_auto_provisioned_groups`] value.
+    pub max_auto_provisioned_groups: usize,
+    /// The existing [`App::governance`] value.
+    pub governance: Option<std::sync::Arc<crate::governance::GovState>>,
+    /// The existing [`App::secret_resolver`] value.
+    pub secret_resolver: std::sync::Arc<crate::config::secret::SecretResolver>,
+    /// The existing [`App::cost`] value.
+    pub cost: std::sync::Arc<crate::cost::CostModel>,
+    /// The existing [`App::plugins_dir`] value.
+    pub plugins_dir: std::path::PathBuf,
+    /// The existing [`App::plugins_cfg`] value.
+    pub plugins_cfg: crate::config::PluginsCfg,
+    /// The existing [`App::plugin_admission`] value.
+    pub plugin_admission: Option<&'static dyn crate::admission::PluginAdmission>,
+    /// The existing [`App::self_key_ttl_secs`] value.
+    pub self_key_ttl_secs: u64,
+    /// The existing [`App::mint_policy`] value.
+    pub mint_policy: std::sync::Arc<crate::governance::mint_policy::MintPolicy>,
+    /// The existing [`App::request_id_counter`] value.
+    pub request_id_counter: Arc<std::sync::atomic::AtomicU64>,
+    /// The existing [`App::plugin_routes`] value.
+    pub plugin_routes: Arc<crate::plugin_routes::PluginRouteTable>,
+    /// The existing [`App::boot_route_paths`] value.
+    pub boot_route_paths: Arc<std::collections::HashSet<String>>,
+    /// The existing [`App::planes_awaiting_restart`] value.
+    pub planes_awaiting_restart: Vec<String>,
+}
 
 /// THE PLANE HALF OF THE RESTART-TO-APPLY SIGNAL, keyed on the DELTA like
 /// [`crate::plugin_routes::paths_awaiting_restart`]: the plane sections `installed` holds awaiting
@@ -492,6 +630,161 @@ pub fn planes_awaiting_restart_added(installed: &App, previous: &App) -> Vec<Str
 }
 
 impl App {
+    /// Assemble prepared state without resolving configuration, invoking callbacks, or publishing it.
+    pub(crate) fn assemble(
+        parts: AppParts,
+        tslots: Arc<crate::telemetry::AppSlots>,
+        export_projections: crate::export::projection::ProjectionUnion,
+        mutation_limiter: Arc<crate::ratelimit::MutationLimiter>,
+        login_methods: Arc<crate::auth::login::LoginMethods>,
+    ) -> Self {
+        let AppParts {
+            fallback_runtime_key,
+            serve_tables,
+            root_rules,
+            config_projection,
+            config_tables,
+            store,
+            limits,
+            session_store,
+            incremental_scan,
+            plane_pools,
+            auth,
+            rewrite_hooks,
+            tap_hooks,
+            tap_hooks_candidate,
+            tap_hooks_routing,
+            tap_hooks_response,
+            global_gates,
+            pool_orderings,
+            pool_decision_gates,
+            pool_rewrite_chains,
+            plane_gates,
+            plane_rewrites,
+            hook_env,
+            hook_registry,
+            requested_signals,
+            any_content_hook,
+            global_hooks,
+            base_hook_names,
+            groups_registry,
+            base_group_names,
+            identity_providers,
+            export_defs,
+            admin,
+            admin_chain,
+            admin_modules,
+            public_url,
+            oauth_as,
+            demotion_record,
+            amendments,
+            planes,
+            plane_slots,
+            plane_sections,
+            auth_scope_caps,
+            role_bindings,
+            config_path,
+            providers_path,
+            overlay_path,
+            config_version,
+            max_keys_per_principal,
+            max_auto_provisioned_groups,
+            governance,
+            secret_resolver,
+            cost,
+            plugins_dir,
+            plugins_cfg,
+            plugin_admission,
+            self_key_ttl_secs,
+            mint_policy,
+            request_id_counter,
+            plugin_routes,
+            boot_route_paths,
+            planes_awaiting_restart,
+        } = parts;
+        Self {
+            tslots,
+            fallback_runtime_key,
+            serve_tables,
+            root_rules,
+            config_projection,
+            config_tables,
+            store,
+            limits,
+            session_store,
+            incremental_scan,
+            plane_pools,
+            auth,
+            rewrite_hooks,
+            tap_hooks,
+            tap_hooks_candidate,
+            tap_hooks_routing,
+            tap_hooks_response,
+            global_gates,
+            pool_orderings,
+            pool_decision_gates,
+            pool_rewrite_chains,
+            plane_gates,
+            plane_rewrites,
+            hook_env,
+            hook_registry,
+            requested_signals,
+            any_content_hook,
+            export_projections,
+            global_hooks,
+            base_hook_names,
+            groups_registry,
+            base_group_names,
+            identity_providers,
+            export_defs,
+            mutation_limiter,
+            admin,
+            admin_chain,
+            admin_modules,
+            login_methods,
+            public_url,
+            oauth_as,
+            demotion_record,
+            amendments,
+            planes,
+            plane_slots,
+            plane_sections,
+            auth_scope_caps,
+            role_bindings,
+            config_path,
+            providers_path,
+            overlay_path,
+            config_version,
+            max_keys_per_principal,
+            max_auto_provisioned_groups,
+            governance,
+            secret_resolver,
+            cost,
+            plugins_dir,
+            plugins_cfg,
+            plugin_admission,
+            self_key_ttl_secs,
+            mint_policy,
+            request_id_counter,
+            plugin_routes,
+            boot_route_paths,
+            planes_awaiting_restart,
+        }
+    }
+
+    /// Assemble fixture-supplied public state with inert private bookkeeping.
+    /// No root, registry, Store, observer, or plugin is consulted or installed.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn from_test_parts(parts: AppParts) -> Self {
+        Self::assemble(
+            parts,
+            Arc::new(crate::telemetry::AppSlots::default()),
+            crate::export::projection::ProjectionUnion::default(),
+            Arc::new(crate::ratelimit::MutationLimiter::new()),
+            Arc::new(crate::auth::login::LoginMethods::empty()),
+        )
+    }
+
     /// Bank an unpublished fixture App's explicit bounded label projections. The external
     /// testkit owns the fixture routing data; slot construction and representation stay private.
     #[cfg(any(test, feature = "test-support"))]
