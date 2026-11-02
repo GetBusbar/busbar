@@ -11,12 +11,6 @@ use crate::config::{
 #[cfg(test)]
 use crate::config::DEFAULT_REQUEST_BODY_MAX_BYTES;
 
-#[cfg(test)]
-pub(crate) use busbar_kernel::config::limits::InstallGuard;
-
-#[cfg(test)]
-pub(crate) use busbar_kernel::config::limits::LIMITS_TEST_LOCK;
-
 fn get() -> Option<LimitsResolved> {
     busbar_kernel::config::limits::installed()
 }
