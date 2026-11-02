@@ -1549,11 +1549,9 @@ pub fn close<K: Kind>(p: &Plugin<K>) -> Called {
 pub fn ready_step<K: Kind>(rec: &mut Recorder<'_>, _s: &Subject, p: &Plugin<K>, d: &Dispatcher) {
     let pinned = u64::from(p.has_ready());
     rec.line("ready", pinned, || {
-        format!(
-            "has_ready={} {:?}",
-            p.has_ready(),
-            p.ready(d, READY_DEADLINE)
-        )
+        let answer = p.ready(d, READY_DEADLINE);
+        assert!(answer.is_ok(), "the honest door must become ready: {answer:?}");
+        format!("has_ready={} {answer:?}", p.has_ready())
     });
 }
 
@@ -2794,3 +2792,7 @@ mod declared_tests;
 #[cfg(all(test, loader_self_tests))]
 #[path = "../tests/conformance_newer_schema_tests.rs"]
 mod newer_schema_tests;
+
+#[cfg(all(test, loader_self_tests))]
+#[path = "../tests/conformance_ready_result_tests.rs"]
+mod ready_result_tests;

@@ -185,7 +185,9 @@ fn the_real_host_reaches_an_immediate_reply_with_independent_declared_and_caller
             services: std::ptr::null(),
             io: std::ptr::null(),
         };
-        let host = Host::of(&tables);
+        // SAFETY: this registry-backed context and static connector table remain valid; the SDK
+        // copies the slot table and retains no pointer into this local HostTables value.
+        let host = unsafe { Host::from_raw(&tables) };
         let mut conn = host.connector(Ticket {
             slot: 7,
             generation: 3,

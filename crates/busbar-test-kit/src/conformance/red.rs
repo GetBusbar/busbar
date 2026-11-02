@@ -419,11 +419,10 @@ fn establish<K: Kind>(p: &Plugin<K>, need: u32, target: &str) -> (Outcome, u64, 
     };
     let mut o = out();
     let f = CONN_SLOTS.establish.expect("the host offers ESTABLISH");
-    let raw = f(
-        p.inner.ctx(),
-        std::ptr::from_ref(&i).cast::<c_void>(),
-        &mut o,
-    );
+    // SAFETY: the local input, exclusive output, nested buffers and strings live through this crossing.
+    let raw = unsafe {
+        f(p.inner.ctx(), std::ptr::from_ref(&i).cast::<c_void>(), &mut o)
+    };
     answered(raw, &o)
 }
 
@@ -442,11 +441,14 @@ fn io<K: Kind>(p: &Plugin<K>, stream: u64, write: bool) -> (Outcome, u64, String
         len: buf.len(),
     };
     let mut o = out();
-    let raw = f.expect("the host offers READ and WRITE")(
-        p.inner.ctx(),
-        std::ptr::from_ref(&i).cast::<c_void>(),
-        &mut o,
-    );
+    // SAFETY: the local input, exclusive output, nested buffers and strings live through this crossing.
+    let raw = unsafe {
+        f.expect("the host offers READ and WRITE")(
+            p.inner.ctx(),
+            std::ptr::from_ref(&i).cast::<c_void>(),
+            &mut o,
+        )
+    };
     answered(raw, &o)
 }
 
@@ -457,11 +459,14 @@ fn close_stream<K: Kind>(p: &Plugin<K>, stream: u64) -> (Outcome, u64, String) {
         stream,
     };
     let mut o = out();
-    let raw = CONN_SLOTS.close.expect("the host offers CLOSE")(
-        p.inner.ctx(),
-        std::ptr::from_ref(&i).cast::<c_void>(),
-        &mut o,
-    );
+    // SAFETY: the local input, exclusive output, nested buffers and strings live through this crossing.
+    let raw = unsafe {
+        CONN_SLOTS.close.expect("the host offers CLOSE")(
+            p.inner.ctx(),
+            std::ptr::from_ref(&i).cast::<c_void>(),
+            &mut o,
+        )
+    };
     answered(raw, &o)
 }
 

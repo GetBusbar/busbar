@@ -91,6 +91,16 @@ pub fn anchors() -> &'static str {
     &ca().ca_pem
 }
 
+/// The real leaf public-key pin served by [`far_end`] and [`far_end_on`].
+///
+/// # Panics
+/// The suite's generated leaf certificate has no readable subject-public-key info.
+#[must_use]
+pub fn peer_key_pin() -> String {
+    busbar_core_connector::tls::client::peer_key_pin(&ca().leaf_der)
+        .expect("the suite's leaf certificate contains subject-public-key info")
+}
+
 /// THE HOST CONNECTOR over `doors` (what [`conformance_host!`](crate::conformance_host)'s `host`
 /// answers for the suite's `host:`, a `conformance::Host`): one per leg.
 ///

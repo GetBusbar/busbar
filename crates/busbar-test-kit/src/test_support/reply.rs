@@ -10,7 +10,8 @@
 //! ```ignore
 //! use busbar_test_kit::test_support::reply::call;
 //!
-//! let resolved = call(table.resolve.unwrap(), instance, &input, out);
+//! // SAFETY: the test owns the instance and all memory named by this raw frame.
+//! let resolved = unsafe { call(table.resolve.unwrap(), instance, &input, out) };
 //! assert_eq!(resolved.owned.material(), b"s3cret");
 //! release(instance, resolved.out.head.lease); // the copy is already taken
 //! ```
@@ -78,7 +79,7 @@ pub trait Reply: AbiOut + sealed::Take {
 /// written: `head.lease`, `instance`, `status_code`, ...), `head.error` copied, and the owned copies
 /// of the `out`'s own fields.
 #[derive(Debug)]
-pub struct Called<O: Reply> {
+pub struct Called<'h, O: Reply> {
     /// What the op answered.
     pub outcome: Outcome,
     /// The `out`, every reviewed pointer cleared.
@@ -92,14 +93,14 @@ pub struct Called<O: Reply> {
     pub envelope: EnvelopeCopy,
     /// The instance an `open` through [`call_in`] or [`call_hosted_in`] answered READY with,
     /// until [`Called::take_instance`] takes it.
-    instance: Option<Instance<'static>>,
+    instance: Option<Instance<'h>>,
 }
 
-impl<O: Reply> Called<O> {
+impl<'h, O: Reply> Called<'h, O> {
     /// The instance this call's `open` answered READY with: `Some` once, for an `open` through
     /// [`call_in`] or [`call_hosted_in`] that answered READY with a non-NULL instance, `None` for
     /// every other call and every later take.
-    pub fn take_instance(&mut self) -> Option<Instance<'static>> {
+    pub fn take_instance(&mut self) -> Option<Instance<'h>> {
         self.instance.take()
     }
 }
@@ -110,10 +111,9 @@ impl<O: Reply> Called<O> {
 /// most once. It names the door it was opened on, and [`close_in`] takes it by value: no slot is
 /// entered on a forged pointer, another door's instance, or one already closed.
 ///
-/// `'h` is what its `open` was lent (status row 194). #1471 ties an instance [`call_hosted_in`]
-/// opens to its [`FakeHost`](super::fake::FakeHost) (`Instance<'h>`); here [`Called`] carries no
-/// lifetime, so every instance is `Instance<'static>`, and a test drops it before its host, as it
-/// must on #1471.
+/// `'h` is what its `open` was lent. An instance opened over a fake host cannot outlive that host
+/// while [`Called`] preserves that host borrow until extraction. Other input bytes follow the
+/// mechanism contract: the plugin copies them before the crossing returns.
 #[derive(Debug)]
 pub struct Instance<'h> {
     ptr: *mut c_void,
@@ -129,7 +129,17 @@ pub struct Instance<'h> {
 ///
 /// The `out` breaks its kind's answer validator, or a reviewed field is NULL with a count,
 /// misaligned, over its bound, or (for text) not UTF-8; the message names the field.
-pub fn call<I: AbiIn, O: Reply>(op: Op, instance: *mut c_void, input: &I, out: O) -> Called<O> {
+///
+/// # Safety
+/// `op` must accept these exact frame types; `instance` and every input/output pointer must be
+/// valid for its access. Any memory an opened instance retains must outlive that instance. Prefer
+/// [`call_in`], whose input and instance proofs enforce those obligations for safe callers.
+pub unsafe fn call<I: AbiIn, O: Reply>(
+    op: Op,
+    instance: *mut c_void,
+    input: &I,
+    out: O,
+) -> Called<'static, O> {
     run(op, instance, *input, out)
 }
 
@@ -139,12 +149,16 @@ pub fn call<I: AbiIn, O: Reply>(op: Op, instance: *mut c_void, input: &I, out: O
 /// # Panics
 ///
 /// As [`call`].
-pub fn call_hosted<I: AbiIn, O: Reply>(
+///
+/// # Safety
+/// As [`call`]. In particular the raw instance belongs to this op and cannot be used after close.
+/// The host borrow alone does not prove arbitrary pointers inside `I`; prefer [`call_hosted_in`].
+pub unsafe fn call_hosted<'h, I: AbiIn, O: Reply>(
     op: Op,
     instance: *mut c_void,
-    input: &super::fake::LentIn<'_, I>,
+    input: &super::fake::LentIn<'h, I>,
     out: O,
-) -> Called<O> {
+) -> Called<'h, O> {
     run(op, instance, input.input, out)
 }
 
@@ -158,12 +172,12 @@ pub fn call_hosted<I: AbiIn, O: Reply>(
 ///
 /// As [`call`], or the instance is missing, present where none is taken, another door's, or `op`
 /// is `close` ([`close_in`]).
-pub fn call_in<I: AbiIn, O: Reply>(
+pub fn call_in<'h, I: AbiIn, O: Reply>(
     op: super::ViewOp,
-    instance: Option<&Instance<'_>>,
-    input: &TestIn<'_, I>,
+    instance: Option<&Instance<'h>>,
+    input: &TestIn<'h, I>,
     out: O,
-) -> Called<O> {
+) -> Called<'h, O> {
     input.check();
     op.check_in::<I>();
     let (raw, door, index) = op.parts();
@@ -185,12 +199,36 @@ pub fn call_in<I: AbiIn, O: Reply>(
 /// # Panics
 ///
 /// As [`call_in`].
+///
+/// A hosted instance cannot be promoted past the host loan:
+///
+/// ```compile_fail
+/// use busbar_test_kit::test_support::{ViewOp, fake::LentIn};
+/// use busbar_test_kit::test_support::reply::{call_hosted_in, Instance, Reply};
+/// use busbar_contract::abi::sdk::door::AbiIn;
+/// fn escape<'h, I: AbiIn, O: Reply>(op: ViewOp, input: &LentIn<'h, I>, out: O)
+///     -> Option<Instance<'static>> {
+///     call_hosted_in(op, None, input, out).take_instance()
+/// }
+/// ```
+///
+/// Keeping the same loan is accepted:
+///
+/// ```no_run
+/// use busbar_test_kit::test_support::{ViewOp, fake::LentIn};
+/// use busbar_test_kit::test_support::reply::{call_hosted_in, Instance, Reply};
+/// use busbar_contract::abi::sdk::door::AbiIn;
+/// fn opened<'h, I: AbiIn, O: Reply>(op: ViewOp, input: &LentIn<'h, I>, out: O)
+///     -> Option<Instance<'h>> {
+///     call_hosted_in(op, None, input, out).take_instance()
+/// }
+/// ```
 pub fn call_hosted_in<'h, I: AbiIn, O: Reply>(
     op: super::ViewOp,
     instance: Option<&Instance<'h>>,
     input: &super::fake::LentIn<'h, I>,
     out: O,
-) -> Called<O> {
+) -> Called<'h, O> {
     op.check_in::<I>();
     let (raw, door, index) = op.parts();
     let at = on(op, instance);
@@ -214,7 +252,7 @@ pub fn close_in<'h, I: AbiIn, O: Reply>(
     instance: Instance<'h>,
     input: &TestIn<'h, I>,
     out: O,
-) -> Called<O> {
+) -> Called<'h, O> {
     input.check();
     op.check_in::<I>();
     let (raw, door, index) = op.parts();
@@ -257,29 +295,33 @@ fn on(op: super::ViewOp, instance: Option<&Instance<'_>>) -> *mut c_void {
 }
 
 /// [`call`]'s body, over the caller's `in`, copied.
-fn run<I: AbiIn, O: Reply>(op: Op, instance: *mut c_void, input: I, out: O) -> Called<O> {
+fn run<'h, I: AbiIn, O: Reply>(op: Op, instance: *mut c_void, input: I, out: O) -> Called<'h, O> {
     run_op(op, None, instance, input, out)
 }
 
 /// The crossing: `op` entered over private copies of the `in` and `out`, the reply copied, and
 /// for an `open` (`opens` its door) that answered READY, its instance kept as an [`Instance`].
-fn run_op<I: AbiIn, O: Reply>(
+fn run_op<'h, I: AbiIn, O: Reply>(
     op: Op,
     opens: Option<&'static busbar_contract::abi::mechanism::door::Door>,
     instance: *mut c_void,
     mut input: I,
     mut out: O,
-) -> Called<O> {
+) -> Called<'h, O> {
     out.clear(Token(()));
     out.head().size = size_of::<O>() as u32;
     // SAFETY: `I: AbiIn` is `#[repr(C)]` and leads with an `InHead` (its unsafe contract), so the
     // first bytes of this private copy are an `InHead`.
     unsafe { (*ptr::addr_of_mut!(input).cast::<InHead>()).size = size_of::<I>() as u32 };
-    let raw = op(
-        instance,
-        ptr::from_ref(&input).cast(),
-        ptr::from_mut(&mut out).cast(),
-    );
+    // SAFETY: proof-taking wrappers check the door, slot, instance and all input loans. Raw
+    // compatibility wrappers require their caller to establish the same exact frame guarantees.
+    let raw = unsafe {
+        op(
+            instance,
+            ptr::from_ref(&input).cast(),
+            ptr::from_mut(&mut out).cast(),
+        )
+    };
     let outcome = raw.outcome();
     let error = optional_text(out.head().error, "head.error");
     let envelope = envelope(&out.head().envelope);

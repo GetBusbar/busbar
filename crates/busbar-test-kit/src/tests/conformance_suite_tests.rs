@@ -1941,9 +1941,21 @@ mod canary_tests {
 
     #[test]
     fn the_credentials_are_what_the_inputs_name() {
-        let inputs = serde_json::json!({"credentials": ["a", "", 3, "b"]});
+        let inputs = serde_json::json!({"credentials": ["a", "", "b"]});
         assert_eq!(credentials(&inputs), vec![b"a".to_vec(), b"b".to_vec()]);
         assert!(credentials(&serde_json::json!({})).is_empty());
+    }
+
+    #[test]
+    #[should_panic(expected = "credentials entries must be strings")]
+    fn a_non_string_credential_is_rejected() {
+        credentials(&serde_json::json!({"credentials": ["a", 3, "b"]}));
+    }
+
+    #[test]
+    #[should_panic(expected = "credentials must be an array")]
+    fn credentials_must_be_an_array() {
+        credentials(&serde_json::json!({"credentials": "a"}));
     }
 
     #[test]
@@ -1956,6 +1968,8 @@ mod canary_tests {
             assert!(!at.contains("CANARY"));
         }
         assert!(spellings(PW).contains(&b"CANARY-pg-7c1e%2F9%2B".to_vec()));
+        assert!(spellings(PW).contains(&b"CANARY-pg-7c1e%2f9%2b".to_vec()));
+        assert!(spellings(PW).contains(&hex::encode_upper(PW).into_bytes()));
     }
 
     /// RED (kind-secret K8): a SECRET subject whose inputs name no `credentials` fails the
