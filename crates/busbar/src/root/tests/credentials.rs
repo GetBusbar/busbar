@@ -1,25 +1,18 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use busbar_kernel_testkit::test_support::governance::GovStateFixtures;
 use std::sync::Arc;
 
 use busbar_contract::abi::host::service::{SECRET_LIVE, SECRET_NOT_LIVE};
 use busbar_contract::services::{CredentialRead, HostServices, Ran, Stored};
 use busbar_kernel::governance::{GovState, NewKeySpec};
 use busbar_kernel::host_services::{KernelServices, NOT_READABLE, NO_CREDENTIAL_SOURCE};
-use busbar_kernel_testkit::test_support::TestApp;
 
 use super::AppCredentials;
 
 fn signed_kind() -> String {
-    const FROZEN: &str =
-        include_str!("../../../../busbar-kernel-testkit/tests/fixtures/frozen_customer_text.yaml");
-    FROZEN
-        .lines()
-        .find_map(|l| l.strip_prefix("signed_credential_kind:"))
-        .map(|v| v.trim().to_string())
-        .expect("the frozen fixture names the signed credential kind")
+    const FROZEN_SIGNED_CREDENTIAL_KIND: &str = "sigv4";
+    FROZEN_SIGNED_CREDENTIAL_KIND.to_string()
 }
 
 fn gov_with_key(name: &str) -> (Arc<GovState>, String, String) {
@@ -28,10 +21,72 @@ fn gov_with_key(name: &str) -> (Arc<GovState>, String, String) {
         name: name.to_string(),
         ..Default::default()
     };
+    gov.set_signing_key(Some(
+        busbar_kernel::governance::signing::TokenSigner::from_secret_bytes(
+            &[9u8; 32],
+            busbar_kernel::governance::signing::DEFAULT_KID,
+        ),
+    ));
+    gov.set_at_rest_keys(Some(busbar_kernel::governance::at_rest::AtRestKeys::new(
+        &[3u8; 32], None,
+    )));
+    let shape = busbar_contract::auth_calls::IssuedShape {
+        id_prefix: "AKIA".into(),
+        id_len: 20,
+        id_alphabet: "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789".into(),
+        secret_len: 40,
+        secret_alphabet: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/".into(),
+    };
     let (_key, _bearer, id, secret) = gov
-        .create_key_with_aws(spec, busbar_kernel::store::now())
+        .mint_signed_with_credential(
+            spec,
+            4_000_000_000,
+            busbar_kernel::store::now(),
+            &signed_kind(),
+            &shape,
+        )
         .unwrap();
+    let secret = secret.expose(&busbar_kernel::seal::lend()).clone();
     (gov, id, secret)
+}
+
+fn app_with_governance(governance: Arc<GovState>) -> Arc<busbar_kernel::state::App> {
+    crate::dist_root_install::install();
+    let module = busbar_kernel::preflight::root_rows()
+        .stores
+        .first()
+        .expect("the distribution links its actual store")
+        .0;
+    let settings: serde_json::Value = serde_json::from_str(
+        &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
+    )
+    .unwrap();
+    let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
+        "providers": {}, "models": {}, "auth": {"chain": [], "admin_auth": []},
+        "store": {"module": module, "settings": settings},
+        "advanced": {"allow_destinations": ["127.0.0.1"]}
+    }))
+    .unwrap();
+    let config = busbar_kernel::config::resolve(&deploy, &Default::default()).unwrap();
+    let rules = Arc::new(crate::root::door_steps::Rules::default())
+        as Arc<dyn busbar_kernel::appbuild::RootRules>;
+    let (mut app, rotate, limits) = busbar_kernel::build_app_from_config(
+        config,
+        Default::default(),
+        None,
+        Default::default(),
+        Default::default(),
+        (None, None),
+        None,
+        &rules,
+    )
+    .expect("the production root builds the credential generation");
+    limits.keep().unwrap();
+    if let Some(rotate) = rotate {
+        rotate();
+    }
+    app.governance = Some(governance);
+    Arc::new(app)
 }
 
 #[test]
@@ -39,16 +94,16 @@ fn the_credential_read_follows_the_app_swap() {
     let (first, old_id, old_secret) = gov_with_key("first");
     let (second, new_id, new_secret) = gov_with_key("second");
     let kind = signed_kind();
-    let handle = Arc::new(busbar_kernel::state::AppHandle::new(
-        TestApp::new().governance(first).build(),
-    ));
+    let handle = Arc::new(busbar_kernel::state::AppHandle::new(app_with_governance(
+        first,
+    )));
     let creds = AppCredentials::new(Arc::clone(&handle));
     let (s, live) = creds.read(&kind, &old_id);
     assert_eq!(
         (s.expose(&busbar_kernel::seal::lend()).as_str(), live),
         (old_secret.as_str(), true)
     );
-    handle.swap(TestApp::new().governance(second).build());
+    handle.swap(app_with_governance(second));
     let (s, live) = creds.read(&kind, &new_id);
     assert_eq!(
         (s.expose(&busbar_kernel::seal::lend()).as_str(), live),
@@ -106,9 +161,9 @@ fn a_late_source_refuses_until_its_handle_is_set() {
     };
     assert_eq!(before, Stored::refused(NOT_READABLE), "not installed yet");
     assert!(!late.is_set());
-    let handle = Arc::new(busbar_kernel::state::AppHandle::new(
-        TestApp::new().governance(gov).build(),
-    ));
+    let handle = Arc::new(busbar_kernel::state::AppHandle::new(app_with_governance(
+        gov,
+    )));
     late.set(Arc::clone(&handle));
     assert!(late.is_set());
     let Ran::Now(after) = s.records_secret(&kind, &id, Box::new(|_| {})) else {
