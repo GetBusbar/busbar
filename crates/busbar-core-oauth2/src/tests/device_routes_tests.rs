@@ -428,3 +428,95 @@ fn build_owner(identity: crate::config::AsIdentity) -> Result<crate::plane::AsPl
         ))),
     )
 }
+
+#[tokio::test]
+async fn confidential_secret_device_tokens_retain_their_records_and_revoke_the_whole_grant() {
+    use oauth_as::server::TokenRequest;
+    let identity = crate::config::AsIdentity::from_cfg(&crate::config::OauthAsCfg {
+        issuer: "https://as.example".into(),
+        default_grant: vec!["read".into()],
+        ..Default::default()
+    })
+    .unwrap();
+    let plane = build_owner(identity).unwrap();
+    let server = plane.server();
+    let scope = ScopeSet::from_tokens(["read"]).unwrap();
+    server
+        .register_client(Client {
+            client_id: ClientId::new(CLIENT),
+            auth: ClientAuth::ConfidentialSecretHash {
+                hash: SecretHash::sha256(SECRET),
+            },
+            grant_types: vec![GrantType::DeviceCode, GrantType::RefreshToken],
+            redirect_uris: Vec::new(),
+            allowed_scopes: scope.clone(),
+            default_scopes: scope.clone(),
+            name: Some("Operator provisioned device".into()),
+            registration: None,
+        })
+        .await
+        .unwrap();
+    let grant = server
+        .device_authorization(&ClientId::new(CLIENT), Some(SECRET), Some(&scope))
+        .await
+        .unwrap();
+    server
+        .approve_device(&grant.user_code, "busbar-operator")
+        .await
+        .unwrap();
+    let tokens = server
+        .token(TokenRequest::DeviceCode {
+            client_id: ClientId::new(CLIENT),
+            client_secret: Some(SECRET.into()),
+            device_code: grant.device_code,
+        })
+        .await
+        .unwrap();
+    let access = tokens.access_token;
+    let refresh = tokens.refresh_token.unwrap();
+    assert!(server.store().get_token(&access).await.unwrap().is_some());
+    assert!(server
+        .store()
+        .get_refresh_token(&refresh)
+        .await
+        .unwrap()
+        .is_some());
+    assert!(server
+        .revoke(&ClientId::new(CLIENT), Some("wrong"), &refresh, None)
+        .await
+        .is_err());
+    assert!(server
+        .store()
+        .get_refresh_token(&refresh)
+        .await
+        .unwrap()
+        .is_some());
+    server
+        .revoke(&ClientId::new(CLIENT), Some(SECRET), &refresh, None)
+        .await
+        .unwrap();
+    assert!(server
+        .store()
+        .get_refresh_token(&refresh)
+        .await
+        .unwrap()
+        .is_none());
+    assert!(
+        server.store().get_token(&access).await.unwrap().is_none(),
+        "refresh revocation cascades to the grant's access token"
+    );
+    let retry = server
+        .token(TokenRequest::RefreshToken {
+            client_id: ClientId::new(CLIENT),
+            client_secret: Some(SECRET.into()),
+            refresh_token: refresh,
+            scope: None,
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(retry.error, oauth_as::ErrorCode::InvalidGrant);
+    server
+        .revoke(&ClientId::new(CLIENT), Some(SECRET), "unknown-token", None)
+        .await
+        .unwrap();
+}
