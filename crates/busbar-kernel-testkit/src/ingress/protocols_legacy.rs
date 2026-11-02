@@ -8,6 +8,21 @@
 
 pub use busbar_contract::protocol::ProtocolDecl;
 
+/// Install the kit's implementation behind the kernel's feature-scoped fixture responses.
+/// Repeated registrations change this module's registry, never the function table.
+fn install_kernel_hooks() {
+    busbar_kernel::ingress::protocols::install_test_hooks(
+        busbar_kernel::ingress::protocols::ProtocolTestHooks {
+            residual_dialect_for_path,
+            residual_default_dialect,
+            vendor_auth_failure_message,
+            quota_exceeded_status,
+            auth_failure_status_and_kind,
+            error_parts,
+        },
+    );
+}
+
 /// The declarations plus the aggregates folded from them. Built once; every field is derived from
 /// the declarations and from nothing else.
 pub struct Registry {
@@ -157,6 +172,7 @@ impl busbar_contract::codec::CodecHost for CodecHostServices {
 /// - if called twice: two composition roots is a wiring bug, not a merge to attempt.
 /// - if called after the registry was first read.
 pub fn install_protocols(decls: Vec<&'static ProtocolDecl>) {
+    install_kernel_hooks();
     assert!(
         INSTALLED.set(decls).is_ok(),
         "install_protocols called twice: there is one composition root, and it registers once"
@@ -193,6 +209,7 @@ pub fn merged_boot_decls(
 
 /// The process registry. One acquire-load once set.
 pub fn registry() -> &'static Registry {
+    install_kernel_hooks();
     use std::sync::atomic::Ordering;
     let ptr = REGISTRY.load(Ordering::Acquire);
     if !ptr.is_null() {
@@ -221,6 +238,7 @@ pub fn registry() -> &'static Registry {
 /// registration set through it.
 #[doc(hidden)]
 pub fn publish_protocols(registered: &[&'static ProtocolDecl]) {
+    install_kernel_hooks();
     let mut all: Vec<&'static ProtocolDecl> = INSTALLED.get().cloned().unwrap_or_default();
     all.extend_from_slice(registered);
     let fresh: *mut Registry =
@@ -294,9 +312,38 @@ pub fn vendor_auth_failure_message(proto: &str) -> &'static str {
         .unwrap_or("authentication failed")
 }
 
-/// The test registration's former path, which the pinned plane repos' root tests still name; it
-/// goes when they are re-pinned onto [`crate::test_support::protocols`].
-#[cfg(any(test, feature = "test-support"))]
+/// The fixture registry's declared quota status, or the shipped neutral default.
+pub fn quota_exceeded_status(proto: &str) -> u16 {
+    decl_for(proto).map_or(429, |decl| decl.quota_exceeded_status)
+}
+
+/// The fixture registry's declared authentication refusal, or the shipped neutral default.
+pub fn auth_failure_status_and_kind(proto: &str) -> (u16, &'static str) {
+    decl_for(proto).map_or(
+        (401, busbar_contract::protocol::KIND_AUTHENTICATION),
+        |decl| decl.auth_failure_status_and_kind,
+    )
+}
+
+/// Render the fixture codec's bytes while keeping all executable codec calls in this kit.
+pub fn error_parts(
+    proto: &str,
+    status: u16,
+    kind: &str,
+    message: &str,
+) -> (serde_json::Value, Vec<(String, Vec<u8>)>) {
+    if let Some(dialect) = decl_for(proto).and_then(|decl| decl.dialect()) {
+        let envelope = dialect.write_error(CODEC_HOST, status, kind, message);
+        let fields = dialect.error_response_fields(CODEC_HOST, kind, &envelope);
+        return (envelope, fields);
+    }
+    (
+        serde_json::json!({ "error": { "message": message, "type": kind } }),
+        Vec::new(),
+    )
+}
+
+/// Register fixture protocols into this kit's own process registry.
 pub use crate::test_support::protocols::register_test_protocols;
 
 #[cfg(test)]

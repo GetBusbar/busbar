@@ -183,7 +183,7 @@ impl PlaneBootCtx for BootCtx {
     }
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(test)]
 impl BootCtx {
     /// A ctx carrying no phase context, for the boot-hook FOLD tests (R2-boot): a hook that only
     /// returns `Err` — or a `None`-hook plane — reads nothing off it.
@@ -1045,7 +1045,7 @@ plane_behaviour! {
 
 /// The test registration's former path, which the pinned plane repos' root tests still name; it
 /// goes when they are re-pinned onto [`crate::test_support::planes`].
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(test)]
 pub use crate::test_support::planes::{register_test_plane, TestRegistryIsolation};
 
 #[cfg(test)]

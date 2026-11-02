@@ -336,14 +336,15 @@ pub fn root_rows() -> RootInstall {
     unsafe { *ptr }
 }
 
-/// The install record before any is installed: none in a shipped build; a test build, which has no
-/// root, reads its stand-in rows until it publishes its own.
+/// The install record before any is installed. Only the kernel's private unit-test binary has
+/// implicit stand-ins; an external test kit publishes its install record through the same seam as
+/// a composition root.
 fn unset() -> RootInstall {
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(test)]
     {
         crate::test_support::root::STAND_IN
     }
-    #[cfg(not(any(test, feature = "test-support")))]
+    #[cfg(not(test))]
     {
         RootInstall::default()
     }

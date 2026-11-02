@@ -73,3 +73,15 @@ impl Drop for TestRegistryIsolation {
         publish_planes(&reg);
     }
 }
+
+/// An empty phase context for boot-hook folds that read no app, store or listener state.
+/// Built from the same public fields a composition root supplies to a real hook context.
+#[must_use]
+pub fn empty_boot_context() -> crate::plane_driver::registry::BootCtx {
+    crate::plane_driver::registry::BootCtx {
+        store: None,
+        app: None,
+        handle: None,
+        card_issuer: None,
+    }
+}
