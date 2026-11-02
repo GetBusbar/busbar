@@ -22,6 +22,9 @@ use crate::Connector;
 #[path = "program_callback_tests.rs"]
 mod callback_tests;
 
+#[path = "program_guard_tests.rs"]
+mod guard_tests;
+
 const OWNER: InstanceId = InstanceId(1);
 const NEED: NeedId = NeedId(1);
 

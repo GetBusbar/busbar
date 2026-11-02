@@ -35,7 +35,8 @@ use std::task::{Context, Poll, Wake, Waker};
 
 use base64::Engine as _;
 use busbar_contract::conn::{
-    ConnError, Piece, PieceKind, Program, PROGRAM_GENERATION_FIELD, PROGRAM_IDENTITY_FIELD,
+    ConnError, Piece, PieceKind, Program, PROGRAM_EXPECT_GENERATION_FIELD,
+    PROGRAM_EXPECT_INSTANCE_FIELD, PROGRAM_GENERATION_FIELD, PROGRAM_IDENTITY_FIELD,
     PROGRAM_INSTANCE_FIELD,
 };
 use busbar_contract::ids::StreamId;
@@ -256,6 +257,56 @@ pub(crate) struct Member {
 /// The next member's supervision key: process-wide, from `1`.
 static NEXT_SUPERVISION_KEY: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Expected {
+    pub instance: u64,
+    pub generation: u64,
+}
+
+pub(crate) fn is_expected_field(name: &str) -> bool {
+    name.trim()
+        .eq_ignore_ascii_case(PROGRAM_EXPECT_INSTANCE_FIELD)
+        || name
+            .trim()
+            .eq_ignore_ascii_case(PROGRAM_EXPECT_GENERATION_FIELD)
+}
+
+impl Expected {
+    pub(crate) fn of(fields: &[(&str, &[u8])]) -> Result<Option<Self>, ConnError> {
+        let (mut instance, mut generation) = (None, None);
+        for (name, value) in fields {
+            let slot = if name.eq_ignore_ascii_case(PROGRAM_EXPECT_INSTANCE_FIELD) {
+                &mut instance
+            } else if name.eq_ignore_ascii_case(PROGRAM_EXPECT_GENERATION_FIELD) {
+                &mut generation
+            } else {
+                return Err(ConnError::Refused);
+            };
+            if slot.is_some()
+                || value.is_empty()
+                || value[0] == b'0'
+                || !value.iter().all(u8::is_ascii_digit)
+            {
+                return Err(ConnError::Refused);
+            }
+            *slot = Some(
+                std::str::from_utf8(value)
+                    .map_err(|_| ConnError::Refused)?
+                    .parse::<u64>()
+                    .map_err(|_| ConnError::Refused)?,
+            );
+        }
+        match (instance, generation) {
+            (None, None) => Ok(None),
+            (Some(instance), Some(generation)) => Ok(Some(Self {
+                instance,
+                generation,
+            })),
+            _ => Err(ConnError::Refused),
+        }
+    }
+}
+
 fn next_supervision_key(counter: &std::sync::atomic::AtomicU64) -> Result<u64, ConnError> {
     counter
         .fetch_update(
@@ -471,7 +522,7 @@ impl Member {
     /// exited is ended first), refused for a retired member, and refused when the carrier refuses
     /// the spawn (its supervisor holding the program down is the carrier's verdict, not this
     /// host's). `first` (when not empty) is the lease's first message, written whole.
-    pub(crate) fn lease(&self, first: &[u8]) -> Result<u64, ConnError> {
+    pub(crate) fn lease(&self, first: &[u8], expected: Option<Expected>) -> Result<u64, ConnError> {
         let waker = Arc::new(self.fan_waker());
         let mut st = self.lock();
         loop {
@@ -499,6 +550,16 @@ impl Member {
         });
         if let Some(generation) = exited {
             st.ended(generation, None);
+        }
+        if let Some(expected) = expected {
+            if expected.instance != self.supervision_key
+                || !st
+                    .live
+                    .as_ref()
+                    .is_some_and(|live| live.generation == expected.generation)
+            {
+                return Err(ConnError::Refused);
+            }
         }
         if st.live.is_none() {
             let dial = Dial {

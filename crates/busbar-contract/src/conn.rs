@@ -711,6 +711,16 @@ pub const PROGRAM_INSTANCE_FIELD: &str = "program-instance";
 /// only in the host-generated first HEAD after an actual same-ticket host spawn.
 pub const PROGRAM_IDENTITY_FIELD: &str = "program-identity";
 
+/// Host-only open constraint: the member incarnation previously observed in its first HEAD.
+/// Supply this with [`PROGRAM_EXPECT_GENERATION_FIELD`] as canonical nonzero decimal values.
+/// A mismatch refuses before any opening body is sent and never spawns a replacement. These
+/// fields only narrow an already admitted member-program open; they authenticate nothing new.
+pub const PROGRAM_EXPECT_INSTANCE_FIELD: &str = "program-expect-instance";
+
+/// Host-only generation constraint paired with [`PROGRAM_EXPECT_INSTANCE_FIELD`]. Both fields
+/// are consumed by the connector, never forwarded. They are refused on non-member-program opens.
+pub const PROGRAM_EXPECT_GENERATION_FIELD: &str = "program-expect-generation";
+
 /// The registration key a member's program environment is read from ([`Program::from_settings`]).
 pub const PROGRAM_ENV_KEY: &str = "env";
 

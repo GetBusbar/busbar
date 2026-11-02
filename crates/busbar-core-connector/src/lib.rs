@@ -3207,6 +3207,14 @@ impl Connector {
             .get(&(caller, need))
             .cloned()
             .ok_or(ConnError::Refused)?;
+        if members.is_none()
+            && desc
+                .fields
+                .iter()
+                .any(|(name, _)| program::is_expected_field(name))
+        {
+            return Err(ConnError::Refused);
+        }
         // A MEMBER-PROGRAM NEED leases the long-lived program of the member the target names (a
         // member its config does not name is refused); the open's body is the lease's first
         // message. No address is judged: no network is dialled.
@@ -3214,14 +3222,12 @@ impl Connector {
             if require_secure {
                 return Err(ConnError::AuthRefused);
             }
-            if !desc.fields.is_empty() {
-                return Err(ConnError::Refused);
-            }
+            let expected = program::Expected::of(desc.fields)?;
             let member = members
                 .get(program::member_of(desc.target))
                 .cloned()
                 .ok_or(ConnError::Refused)?;
-            let lease = member.lease(&desc.body)?;
+            let lease = member.lease(&desc.body, expected)?;
             let mut held = Held::over(None, None, None).bounded(desc.timeout_ms);
             held.lease = Some((member, lease));
             // A refused insert drops the held lease, which closes it.
