@@ -12,8 +12,7 @@ use busbar_contract::abi::sdk::door::abi_str;
 use busbar_contract::abi::store::{OpId, Ops};
 use std::sync::{Arc, Mutex, OnceLock};
 
-#[path = "actual_store.rs"]
-mod actual_store;
+use crate::actual_store;
 type OpenSeen = (Vec<u8>, Vec<Vec<u8>>);
 static SEEN: Mutex<Vec<OpenSeen>> = Mutex::new(Vec::new());
 

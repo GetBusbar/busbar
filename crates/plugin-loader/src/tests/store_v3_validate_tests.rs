@@ -13,8 +13,7 @@ use std::sync::{
     Arc, Mutex, OnceLock,
 };
 
-#[path = "actual_store.rs"]
-mod actual_store;
+use crate::actual_store;
 
 const REFUSAL: &str = "invalid picky plugin config: `db_path` must be a string, got 5";
 static OPENS: AtomicU32 = AtomicU32::new(0);
