@@ -930,13 +930,6 @@ async fn reset_before_any_head_releases_the_old_app_but_body_end_keeps_its_loan(
     conn.tasks.abort_all();
 }
 
-fn found(door: Arc<H1Accept>) -> Option<DataFramer> {
-    let door: Arc<dyn FramerDoor> = door;
-    data_framer(Arc::new(move |scheme: &str| {
-        (scheme == DATA_SCHEME).then(|| Arc::clone(&door))
-    }))
-}
-
 fn actual_transport_on(
     door: busbar_contract::abi::mechanism::door::DoorFn,
     dispatcher: Arc<crate::root::loader::dispatch::Dispatcher>,
