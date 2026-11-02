@@ -2914,6 +2914,7 @@ pub(crate) mod tool_door {
             };
 
             let tables = busbar_kernel::plane_driver::serve::ServeTables::default();
+            let app = busbar_kernel_testkit::test_support::TestApp::new();
             let mut served = compose_planes(
                 &doors,
                 &dispatcher,
@@ -2937,8 +2938,7 @@ pub(crate) mod tool_door {
             let audience = composed.snapshot.audience.clone();
             served.post = Some(Arc::clone(&post));
             let app = configure(
-                busbar_kernel_testkit::test_support::TestApp::new()
-                    .keys_chain()
+                app.keys_chain()
                     .governance(Arc::clone(&gov))
                     .serve_tables(tables.clone())
                     .cost(CostModel::flat(1)),
