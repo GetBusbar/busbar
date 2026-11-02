@@ -267,11 +267,24 @@ async fn an_unread_body_is_refused_at_the_existing_limit_without_refusing_its_si
             done,
         },
     ));
+    let (done, trailers) = tokio::sync::oneshot::channel();
+    conn.pending.push_back((
+        3,
+        super::Op::Trailers {
+            fields: b"final-status: 0\r\n".to_vec(),
+            done,
+        },
+    ));
+    conn.apply_front();
     conn.apply_front();
     conn.apply_front();
     assert!(
         !said.await.unwrap_or(false),
         "a late success cannot follow the size refusal"
+    );
+    assert!(
+        !trailers.await.unwrap_or(false),
+        "late successful trailers cannot follow the size refusal"
     );
     conn.piece(custody_piece(5, b"sibling".to_vec(), false, true));
     let mut answer = Vec::new();
