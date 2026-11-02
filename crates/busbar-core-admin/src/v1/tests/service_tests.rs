@@ -3414,19 +3414,38 @@ fn the_store_catalog_heads_with_the_linked_store_rows() {
 #[test]
 fn every_admin_trust_resolution_warns_about_a_malformed_floor() {
     use busbar_kernel::diagnostics::CONFIG_ANTIDOWNGRADE_FLOOR_INVALID;
-    use tracing_subscriber::layer::SubscriberExt as _;
+    #[derive(Clone)]
+    struct Captured(Arc<std::sync::Mutex<Vec<u8>>>);
+    impl std::io::Write for Captured {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
     let mut cfg = busbar_kernel::config::PluginsCfg::default();
     cfg.min_versions.insert("p".into(), "v2".into());
-    let app = crate::new_test_app().plugins_cfg(cfg).build();
-    let cap = busbar_kernel_testkit::test_support::warn_capture::WarnCapture::default();
-    let subscriber = tracing_subscriber::registry().with(cap.clone());
+    let captured = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let writer = Captured(captured.clone());
+    let subscriber = tracing_subscriber::fmt()
+        .without_time()
+        .with_ansi(false)
+        .with_writer(move || writer.clone())
+        .finish();
     tracing::subscriber::with_default(subscriber, || {
-        super::operations::admission(&app).expect("an admission is installed");
+        assert_eq!(
+            super::operations::resolve_admission(&cfg, None)
+                .err()
+                .as_deref(),
+            Some("no plugin trust policy is installed (the composition root's)")
+        );
     });
+    let messages = String::from_utf8(captured.lock().unwrap().clone()).unwrap();
     assert!(
-        cap.contains(&CONFIG_ANTIDOWNGRADE_FLOOR_INVALID.banner().to_string()),
-        "{:?}",
-        cap.messages()
+        messages.contains(&CONFIG_ANTIDOWNGRADE_FLOOR_INVALID.banner().to_string()),
+        "{messages}"
     );
 }
 

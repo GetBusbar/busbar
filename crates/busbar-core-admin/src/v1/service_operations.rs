@@ -6,8 +6,15 @@ use busbar_kernel::admission::{Judged, PluginAdmission, Refusal, Stated};
 use busbar_kernel::config::groups::LimitMetric;
 
 pub(crate) fn admission(app: &App) -> Result<&'static dyn PluginAdmission, String> {
-    app.plugins_cfg.warn_invalid_floors();
-    app.plugin_admission
+    resolve_admission(&app.plugins_cfg, app.plugin_admission)
+}
+
+pub(super) fn resolve_admission(
+    cfg: &busbar_kernel::config::PluginsCfg,
+    installed: Option<&'static dyn PluginAdmission>,
+) -> Result<&'static dyn PluginAdmission, String> {
+    cfg.warn_invalid_floors();
+    installed
         .ok_or_else(|| "no plugin trust policy is installed (the composition root's)".to_string())
 }
 
