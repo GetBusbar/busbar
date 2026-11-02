@@ -1,5 +1,8 @@
+use http_body::{Body, Frame};
+use std::pin::Pin;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::task::{Context, Poll};
 use std::time::Duration;
 
 use axum::http::{Request, StatusCode, Version};
@@ -70,10 +73,59 @@ fn data_router(calls: &Arc<AtomicUsize>) -> axum::Router {
     )
 }
 
+struct OpenBody {
+    pieces: tokio::sync::mpsc::UnboundedReceiver<Bytes>,
+    polled: Arc<AtomicUsize>,
+    moved: Arc<tokio::sync::Notify>,
+    ended: bool,
+}
+
+impl Body for OpenBody {
+    type Data = Bytes;
+    type Error = std::convert::Infallible;
+
+    fn poll_frame(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<Frame<Bytes>, Self::Error>>> {
+        match self.pieces.poll_recv(cx) {
+            Poll::Ready(Some(bytes)) => {
+                self.polled.fetch_add(bytes.len(), Ordering::SeqCst);
+                self.moved.notify_one();
+                Poll::Ready(Some(Ok(Frame::data(bytes))))
+            }
+            Poll::Ready(None) => {
+                self.ended = true;
+                Poll::Ready(None)
+            }
+            Poll::Pending => Poll::Pending,
+        }
+    }
+
+    fn is_end_stream(&self) -> bool {
+        self.ended
+    }
+}
+
+fn open_body() -> (OpenBody, tokio::sync::mpsc::UnboundedSender<Bytes>) {
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    (
+        OpenBody {
+            pieces: rx,
+            polled: Arc::default(),
+            moved: Arc::default(),
+            ended: false,
+        },
+        tx,
+    )
+}
+
+type Client = hyper::client::conn::http2::SendRequest<OpenBody>;
+
 async fn client(
     router: axum::Router,
 ) -> (
-    h2::client::SendRequest<Bytes>,
+    Client,
     tokio::task::JoinHandle<()>,
     tokio::task::JoinHandle<()>,
 ) {
@@ -85,35 +137,54 @@ async fn client(
             .unwrap();
     });
     let io = tokio::net::TcpStream::connect(addr).await.unwrap();
-    let (sender, connection) = h2::client::handshake(io).await.unwrap();
+    let (sender, connection) = hyper::client::conn::http2::handshake(
+        hyper_util::rt::TokioExecutor::new(),
+        hyper_util::rt::TokioIo::new(io),
+    )
+    .await
+    .unwrap();
     let driver = tokio::spawn(async move {
         let _ = connection.await;
     });
     (sender, server, driver)
 }
 
-fn get() -> Request<()> {
+fn get(body: OpenBody) -> Request<OpenBody> {
     Request::builder()
         .uri(format!("http://localhost{PATH}"))
         .version(Version::HTTP_2)
-        .body(())
+        .body(body)
         .unwrap()
 }
 
-async fn send_past_one_receive_window(body: &mut h2::SendStream<Bytes>) {
-    // One additional byte needs receive credit from the server polling the first body's data.
-    let mut bytes = Bytes::from(vec![b'x'; 1024 * 1024 + 1]);
-    while !bytes.is_empty() {
-        body.reserve_capacity(bytes.len());
-        let available =
-            tokio::time::timeout(BOUND, std::future::poll_fn(|cx| body.poll_capacity(cx)))
-                .await
-                .expect("the first body is being consumed")
-                .expect("the stream remains open")
-                .unwrap();
-        let n = available.min(bytes.len());
-        body.send_data(bytes.split_to(n), false).unwrap();
+fn send(
+    mut client: Client,
+    body: OpenBody,
+) -> tokio::task::JoinHandle<Result<hyper::Response<hyper::body::Incoming>, hyper::Error>> {
+    tokio::spawn(async move { client.send_request(get(body)).await })
+}
+
+async fn send_past_one_receive_window(
+    tx: &tokio::sync::mpsc::UnboundedSender<Bytes>,
+    polled: &AtomicUsize,
+    moved: &tokio::sync::Notify,
+) {
+    // This exceeds the locked server's 1 MiB window and the client's 1 MiB send buffer.
+    // Polling every frame therefore requires server receive credit, not just a queued request.
+    const TOTAL: usize = 2 * 1024 * 1024 + 1;
+    let mut remaining = TOTAL;
+    while remaining != 0 {
+        let n = remaining.min(16 * 1024);
+        tx.send(Bytes::from(vec![b'x'; n])).unwrap();
+        remaining -= n;
     }
+    tokio::time::timeout(BOUND, async {
+        while polled.load(Ordering::SeqCst) < TOTAL {
+            moved.notified().await;
+        }
+    })
+    .await
+    .expect("the server is consuming the first open body");
 }
 
 #[tokio::test]
@@ -129,12 +200,13 @@ async fn an_unauthorized_admin_h2_get_is_refused_without_reading_its_open_body()
         false,
         super::deferred_dispatch_layer,
     );
-    let (mut client, server, driver) = client(router).await;
-    client = client.ready().await.unwrap();
-    let (response, _open_body) = client.send_request(get(), false).unwrap();
+    let (client, server, driver) = client(router).await;
+    let (body, _open_body) = open_body();
+    let response = send(client, body);
     let response = tokio::time::timeout(BOUND, response)
         .await
         .expect("admin auth answers before an unauthenticated body ends")
+        .unwrap()
         .unwrap();
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     assert_eq!(calls.load(Ordering::SeqCst), 0);
@@ -145,35 +217,40 @@ async fn an_unauthorized_admin_h2_get_is_refused_without_reading_its_open_body()
 #[tokio::test]
 async fn a_deferred_h2_get_holds_the_existing_data_permit_until_its_body_finishes() {
     let calls = Arc::new(AtomicUsize::new(0));
-    let (mut client, server, driver) = client(data_router(&calls)).await;
-    client = client.ready().await.unwrap();
-    let (first_response, mut first_body) = client.send_request(get(), false).unwrap();
-    send_past_one_receive_window(&mut first_body).await;
+    let (client, server, driver) = client(data_router(&calls)).await;
+    let (body, first_body) = open_body();
+    let (polled, moved) = (body.polled.clone(), body.moved.clone());
+    let first_response = send(client.clone(), body);
+    send_past_one_receive_window(&first_body, &polled, &moved).await;
     assert_eq!(calls.load(Ordering::SeqCst), 0, "no early handler dispatch");
-    client = client.ready().await.unwrap();
-    let (second_response, _second_open_body) = client.send_request(get(), false).unwrap();
+    let (body, _second_open_body) = open_body();
+    let second_response = send(client.clone(), body);
     let second = tokio::time::timeout(BOUND, second_response)
         .await
         .expect("the over-cap request is shed before buffering its body")
+        .unwrap()
         .unwrap();
     assert_eq!(second.status(), StatusCode::SERVICE_UNAVAILABLE);
     assert_eq!(second.headers()[axum::http::header::RETRY_AFTER], "1");
     assert_eq!(calls.load(Ordering::SeqCst), 0);
-    first_body.send_data(Bytes::new(), true).unwrap();
+    drop(first_body);
     assert_eq!(
         tokio::time::timeout(BOUND, first_response)
             .await
+            .unwrap()
             .unwrap()
             .unwrap()
             .status(),
         StatusCode::OK
     );
     assert_eq!(calls.load(Ordering::SeqCst), 1);
-    client = client.ready().await.unwrap();
-    let (next_response, _) = client.send_request(get(), true).unwrap();
+    let (body, end) = open_body();
+    drop(end);
+    let next_response = send(client.clone(), body);
     assert_eq!(
         tokio::time::timeout(BOUND, next_response)
             .await
+            .unwrap()
             .unwrap()
             .unwrap()
             .status(),
@@ -191,17 +268,18 @@ async fn a_deferred_h2_get_holds_the_existing_data_permit_until_its_body_finishe
 #[tokio::test]
 async fn cancelling_a_deferred_h2_body_releases_the_data_permit_without_dispatch() {
     let calls = Arc::new(AtomicUsize::new(0));
-    let (mut client, server, driver) = client(data_router(&calls)).await;
-    client = client.ready().await.unwrap();
-    let (_first_response, mut first_body) = client.send_request(get(), false).unwrap();
-    send_past_one_receive_window(&mut first_body).await;
+    let (client, server, driver) = client(data_router(&calls)).await;
+    let (body, _first_body) = open_body();
+    let (polled, moved) = (body.polled.clone(), body.moved.clone());
+    let first_response = send(client.clone(), body);
+    send_past_one_receive_window(&_first_body, &polled, &moved).await;
     assert_eq!(calls.load(Ordering::SeqCst), 0);
-    first_body.send_reset(h2::Reason::CANCEL);
+    first_response.abort();
     let response = tokio::time::timeout(BOUND, async {
         loop {
-            client = client.ready().await.unwrap();
-            let (response, _) = client.send_request(get(), true).unwrap();
-            let response = response.await.unwrap();
+            let (body, end) = open_body();
+            drop(end);
+            let response = send(client.clone(), body).await.unwrap().unwrap();
             if response.status() != StatusCode::SERVICE_UNAVAILABLE {
                 break response;
             }
