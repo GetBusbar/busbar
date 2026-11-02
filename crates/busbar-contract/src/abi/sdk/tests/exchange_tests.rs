@@ -732,10 +732,7 @@ fn op_bounded(
     });
     let h = host();
     let parked = Parked::default();
-    let op = Op {
-        on: &parked,
-        host: Some(&h),
-    };
+    let op = Op::over(&parked, Some(&h));
     let built = std::cell::Cell::new(0_u32);
     let mut entries = 0;
     let answered = loop {
