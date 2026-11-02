@@ -50,3 +50,34 @@ fn actual_mcp_function_macro_and_loaded_rows_preserve_the_same_door_and_statemen
     assert_eq!(entry(&linked), entry(&linked_macro));
     assert_eq!(entry(&linked), entry(&linked_loaded));
 }
+
+#[test]
+fn actual_dropped_mcp_bytes_enter_the_production_staging_path_once() {
+    use crate::dispatch::{
+        load_dropped_bytes, Bind, ConnTable, DispatchConfig, Dispatcher, NoSink,
+    };
+    use std::sync::Arc;
+    let bytes = std::fs::read(crate::actual_mcp::cdylib()).expect("read the actual MCP image");
+    let stated = rendering_of(crate::actual_mcp::door).expect("actual MCP statement");
+    let dispatcher = Dispatcher::new(DispatchConfig::default());
+    let before = crate::stage::STAGED_HERE.with(std::cell::Cell::get);
+    let plugin = load_dropped_bytes::<crate::dispatch::kinds::plane::Plane>(
+        &bytes,
+        "actual-mcp-staged",
+        &stated,
+        Bind {
+            instance: Arc::from("actual-mcp-staged"),
+            max_inflight_cap: 8,
+            sink: Arc::new(NoSink),
+            dispatcher: dispatcher.adopter(),
+            conns: ConnTable::Probe,
+        },
+    )
+    .expect("actual MCP bytes load through production staging");
+    let staged = crate::stage::STAGED_HERE.with(std::cell::Cell::get) - before;
+    assert_eq!(
+        staged, 1,
+        "the actual dropped image must stage once rather than load its build path"
+    );
+    drop(plugin);
+}
