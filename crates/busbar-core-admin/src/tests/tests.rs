@@ -11244,18 +11244,24 @@ async fn rotate_under_a_pool_ceiling(
         .unwrap()
         .unwrap()
         .generation_hash;
-    let resp = super::rotate_key(
-        busbar_kernel::state::CurrentApp(app),
-        axum::Extension(busbar_kernel::auth::AuthPrincipal(Some(principal))),
-        axum::extract::Path(key.id.clone()),
-        axum::http::HeaderMap::new(),
-        axum::Extension(std::sync::Arc::new(super::KeyReplayCache::new())),
-    )
-    .await;
+    // Drive the real JSON route, including record_declared_error. Supplying the already judged
+    // principal isolates this handler's ceiling/taxonomy contract from credential verification.
+    use crate::transport::AdminTransport;
+    let router = crate::v1::json::JsonV1
+        .router()
+        .layer(axum::Extension(busbar_kernel::auth::AuthPrincipal(Some(
+            principal,
+        ))))
+        .with_state(Arc::new(busbar_kernel::state::AppHandle::new(app)));
+    let (addr, server, client) = spin_up(router).await;
+    let resp = client
+        .post(format!("http://{addr}/keys/{}/rotate", key.id))
+        .send()
+        .await
+        .unwrap();
     let status = resp.status().as_u16();
-    use http_body_util::BodyExt;
-    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
-    let body = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
+    let body = resp.json().await.unwrap_or(serde_json::Value::Null);
+    server.abort();
     let after = gov
         .store()
         .get_key(&key.id)
