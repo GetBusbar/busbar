@@ -487,15 +487,15 @@ jobs:
               echo "VALKEY_URL=redis://127.0.0.1:6379/0" >> "$GITHUB_ENV" ;;
             *) echo "no native $SERVICE on macOS; the macOS test command excludes its live cases" ;;
           esac
-          echo "BUSBAR_GOLDEN_DIR=$GITHUB_WORKSPACE/busbar/testing/shadow-oracle/golden" >> "$GITHUB_ENV"
-          if [ "$CHECKOUT" = true ]; then
-            {
-              echo "BUSBAR_CHECKOUT=$GITHUB_WORKSPACE/busbar"
-              echo "BUSBAR_TARGET_DIR=$CARGO_TARGET_DIR"
+          {
+            echo "BUSBAR_GOLDEN_DIR=$GITHUB_WORKSPACE/busbar/testing/shadow-oracle/golden"
+            echo "BUSBAR_CHECKOUT=$GITHUB_WORKSPACE/busbar"
+            echo "BUSBAR_TARGET_DIR=$CARGO_TARGET_DIR"
+            if [ "$CHECKOUT" = true ]; then
               echo "CARGO_PROFILE_RELEASE_LTO=off"
               echo "CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16"
-            } >> "$GITHUB_ENV"
-          fi
+            fi
+          } >> "$GITHUB_ENV"
       - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
