@@ -60,7 +60,7 @@ impl Head {
             || !hex(&self.hash, 64)
             || self.signature.is_some() != self.key_id.is_some()
             || self.signature.as_ref().is_some_and(|s| !hex(s, 128))
-            || self.key_id.as_ref().is_some_and(|s| s.is_empty())
+            || self.key_id.as_ref().is_some_and(|s| !hex(s, 16))
         {
             return Err("invalid persisted audit head".into());
         }
@@ -71,9 +71,15 @@ impl Head {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Checkpoint {
+    #[serde(rename = "v")]
     version: u8,
+    #[serde(rename = "t")]
     tip: Head,
-    last_sample: Head,
+    #[serde(rename = "s")]
+    last_sample_seq: u64,
+    #[serde(rename = "w")]
+    last_sample_wall: u64,
+    #[serde(rename = "n")]
     samples: u64,
 }
 
@@ -90,7 +96,12 @@ fn sample_key(node: u64, seq: u64) -> Vec<u8> {
 }
 
 fn encode<T: Serialize>(value: &T) -> Result<Vec<u8>, String> {
-    serde_json::to_vec(value).map_err(|e| format!("audit head cannot be encoded: {e}"))
+    let bytes =
+        serde_json::to_vec(value).map_err(|e| format!("audit head cannot be encoded: {e}"))?;
+    if bytes.len() > busbar_contract::MAX_RECORD_BYTES {
+        return Err("audit head exceeds the Store record bound".into());
+    }
+    Ok(bytes)
 }
 
 fn checkpoint(calls: &dyn StoreCalls, node: u64) -> Result<Option<(Checkpoint, Vec<u8>)>, String> {
@@ -102,12 +113,12 @@ fn checkpoint(calls: &dyn StoreCalls, node: u64) -> Result<Option<(Checkpoint, V
     let checkpoint: Checkpoint = serde_json::from_slice(raw.as_slice())
         .map_err(|_| "the persisted audit checkpoint cannot be decoded")?;
     checkpoint.tip.validate()?;
-    checkpoint.last_sample.validate()?;
     if checkpoint.version != 1
         || checkpoint.samples == 0
-        || checkpoint.last_sample.seq > checkpoint.tip.seq
-        || checkpoint.last_sample.seq == checkpoint.tip.seq
-            && checkpoint.last_sample != checkpoint.tip
+        || checkpoint.last_sample_seq == 0
+        || checkpoint.last_sample_seq > checkpoint.tip.seq
+        || checkpoint.last_sample_seq == checkpoint.tip.seq
+            && checkpoint.last_sample_wall != checkpoint.tip.wall
     {
         return Err("invalid persisted audit checkpoint".into());
     }
@@ -160,7 +171,10 @@ pub(super) fn load(calls: &dyn StoreCalls, node: u64) -> Result<Option<HeadHisto
         return Ok(None);
     };
     let samples = samples(calls, node)?;
-    if samples.len() as u64 != checkpoint.samples || samples.last() != Some(&checkpoint.last_sample)
+    if samples.len() as u64 != checkpoint.samples
+        || samples.last().is_none_or(|head| {
+            head.seq != checkpoint.last_sample_seq || head.wall != checkpoint.last_sample_wall
+        })
     {
         return Err("persisted audit checkpoint is missing a sample".into());
     }
@@ -238,10 +252,14 @@ pub(super) fn initialize_fenced(
         let checkpoint = Checkpoint {
             version: 1,
             tip: tip.clone().into(),
-            last_sample: expected
+            last_sample_seq: expected
                 .last()
                 .expect("a nonempty history has a sample")
-                .clone(),
+                .seq,
+            last_sample_wall: expected
+                .last()
+                .expect("a nonempty history has a sample")
+                .wall,
             samples: expected.len() as u64,
         };
         backfill_put(calls, node, lease, tip_key(node), encode(&checkpoint)?)?;
@@ -341,7 +359,11 @@ pub(super) fn prepare(calls: &dyn StoreCalls, record: &Record) -> Result<Write, 
             if old.tip.seq.checked_add(1) != Some(head.seq) || old.tip.hash != audit.prev_hash {
                 return Err("audit checkpoint predecessor changed".into());
             }
-            (Some(raw), Some(old.last_sample), old.samples)
+            (
+                Some(raw),
+                Some((old.last_sample_seq, old.last_sample_wall)),
+                old.samples,
+            )
         }
         None if head.seq == 1 && audit.prev_hash.is_empty() => {
             if !wait_for(calls.record_scan(SCHEMA, &sample_prefix(record.node), 1))
@@ -356,14 +378,19 @@ pub(super) fn prepare(calls: &dyn StoreCalls, record: &Record) -> Result<Write, 
     };
     let sample = last_sample
         .as_ref()
-        .is_none_or(|last| head.wall.saturating_sub(last.wall) >= HEAD_SAMPLE_SECONDS);
+        .is_none_or(|last| head.wall.saturating_sub(last.1) >= HEAD_SAMPLE_SECONDS);
     let next = Checkpoint {
         version: 1,
         tip: head.clone(),
-        last_sample: if sample {
-            head
+        last_sample_seq: if sample {
+            head.seq
         } else {
-            last_sample.expect("an existing sample")
+            last_sample.expect("an existing sample").0
+        },
+        last_sample_wall: if sample {
+            head.wall
+        } else {
+            last_sample.expect("an existing sample").1
         },
         samples: count
             .checked_add(u64::from(sample))
@@ -371,10 +398,10 @@ pub(super) fn prepare(calls: &dyn StoreCalls, record: &Record) -> Result<Write, 
     };
     let sample_previous = if sample {
         let raw =
-            wait_for(calls.record_get(SCHEMA, &sample_key(record.node, next.last_sample.seq)))
+            wait_for(calls.record_get(SCHEMA, &sample_key(record.node, next.last_sample_seq)))
                 .map_err(|e| e.to_string())?;
         let raw = raw.map(|v| v.as_slice().to_vec());
-        let expected = encode(&next.last_sample)?;
+        let expected = encode(&next.tip)?;
         if raw.as_ref().is_some_and(|value| value != &expected) {
             return Err("an immutable audit sample already has different bytes".into());
         }
@@ -427,7 +454,7 @@ impl Advance {
             if self.sample {
                 predicates.push(Predicate {
                     schema: SCHEMA.into(),
-                    key: sample_key(self.node, self.next.last_sample.seq),
+                    key: sample_key(self.node, self.next.last_sample_seq),
                     expected: self
                         .sample_previous
                         .clone()
@@ -435,8 +462,8 @@ impl Advance {
                 });
                 mutations.push(Mutation::Put {
                     schema: SCHEMA.into(),
-                    key: sample_key(self.node, self.next.last_sample.seq),
-                    value: encode(&self.next.last_sample)?,
+                    key: sample_key(self.node, self.next.last_sample_seq),
+                    value: encode(&self.next.tip)?,
                 });
             }
             let request = super::conditional::candidate(predicates, mutations);
@@ -456,7 +483,7 @@ impl Advance {
                         let sample =
                             wait_for(calls.record_get(
                                 SCHEMA,
-                                &sample_key(self.node, self.next.last_sample.seq),
+                                &sample_key(self.node, self.next.last_sample_seq),
                             ))
                             .map_err(|e| e.to_string())?
                             .map(|v| v.as_slice().to_vec());

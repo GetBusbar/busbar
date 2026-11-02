@@ -68,9 +68,15 @@ fn raw(record: &JournalRecord) -> Record {
 }
 
 fn final_part(record: &JournalRecord) -> (Vec<u8>, Vec<u8>) {
-    let key = super::super::store_chain::part_key(record.node, record.node_seq, 0).to_vec();
-    let mut value = 1u16.to_be_bytes().to_vec();
-    value.extend_from_slice(&record.encode());
+    let encoded = record.encode();
+    let chunks: Vec<_> = encoded
+        .chunks(super::super::store_chain::PART_BYTES)
+        .collect();
+    let count = u16::try_from(chunks.len()).expect("the fixture fits the real part count");
+    let key = super::super::store_chain::part_key(record.node, record.node_seq, count - 1).to_vec();
+    let mut value = count.to_be_bytes().to_vec();
+    value.extend_from_slice(chunks.last().unwrap());
+    assert!(value.len() <= busbar_contract::MAX_RECORD_BYTES);
     (key, value)
 }
 
@@ -288,16 +294,8 @@ fn malformed_existing_checkpoint_refuses_instead_of_rebuilding_from_source() {
     let mut sealed = Sealed::new();
     sealed.audit(START);
     initialize(&slots, NODE, &sealed.records).unwrap();
-    let rows = wait_for(slots.record_scan(SCHEMA, &NODE.to_be_bytes(), 32)).unwrap();
-    let key = rows
-        .iter()
-        .find_map(|(key, value)| {
-            serde_json::from_slice::<serde_json::Value>(value.as_slice())
-                .ok()
-                .filter(|value| value.get("tip").is_some())
-                .map(|_| key.clone())
-        })
-        .expect("the committed checkpoint carries its tip");
+    let key = tip_key(NODE);
+    assert!(wait_for(slots.record_get(SCHEMA, &key)).unwrap().is_some());
     slots.corrupt(SCHEMA, &key);
     assert!(load(&slots, NODE).is_err());
     assert!(
@@ -326,4 +324,77 @@ fn samples_beyond_one_store_page_restore_every_anchor_including_genesis() {
         load(&slots, NODE + 1).unwrap().is_none(),
         "another node cannot acquire these anchors"
     );
+}
+
+/// Exercise the lane's actual multipart writer. The head checkpoint must accompany the final part
+/// of this complete record, and an already committed record must not be cleared on replay.
+#[test]
+fn actual_multipart_write_reads_back_whole_and_replay_preserves_every_part() {
+    let slots = RecordSlots::new();
+    let mut sealed = Sealed::new();
+    let record = sealed.audit(START);
+    let raw = raw(&record);
+    let parts = raw
+        .body
+        .len()
+        .div_ceil(super::super::store_chain::PART_BYTES);
+    assert!(
+        parts > 1,
+        "the signed fixture must exercise the real multipart boundary"
+    );
+    let lease = HeldLease::default();
+    super::super::store_chain::put_record(&slots, &lease, &raw).unwrap();
+
+    let kept = super::super::store_chain::read_chain(&slots, NODE).unwrap();
+    assert_eq!(kept, vec![raw.clone()]);
+    assert_eq!(busbar_kernel_wal::decode_run(&kept).unwrap(), vec![record]);
+    assert_eq!(
+        slots.rows_under(super::super::store_chain::JOURNAL_SCHEMA),
+        parts
+    );
+    assert_eq!(
+        load(&slots, NODE).unwrap().unwrap().anchors(),
+        sealed.audit.heads().anchors()
+    );
+
+    let puts = slots.puts();
+    super::super::store_chain::put_record(&slots, &lease, &raw).unwrap();
+    assert_eq!(
+        slots.puts(),
+        puts,
+        "checkpointed replay must not rewrite or clear a part"
+    );
+    assert_eq!(
+        super::super::store_chain::read_chain(&slots, NODE).unwrap(),
+        kept
+    );
+}
+
+/// Every scalar may need all twenty decimal digits. Keep a genuinely signed head at that width
+/// inside the real Store slot; duplicating the complete sampled head overflowed this boundary.
+#[test]
+fn maximum_width_signed_checkpoint_fits_one_real_store_record() {
+    let slots = RecordSlots::new();
+    let signer = AuditSigningKey::from_seed(&[7; 32]);
+    let hash = "f".repeat(64);
+    let tip = Head {
+        seq: u64::MAX - 1,
+        signature: Some(signer.sign_digest(&hash)),
+        key_id: Some(signer.key_id().to_string()),
+        hash,
+        wall: u64::MAX - 1,
+    };
+    tip.validate().unwrap();
+    let expected = Checkpoint {
+        version: 1,
+        last_sample_seq: tip.seq,
+        last_sample_wall: tip.wall,
+        tip,
+        samples: u64::MAX - 1,
+    };
+    let encoded = encode(&expected).expect("max-width signed checkpoint must fit the Store bound");
+    assert!(encoded.len() <= busbar_contract::MAX_RECORD_BYTES);
+    let value = busbar_contract::kinds::RecordBytes::new(encoded).unwrap();
+    wait_for(slots.record_put(SCHEMA, &tip_key(NODE), &value)).unwrap();
+    assert_eq!(checkpoint(&slots, NODE).unwrap().unwrap().0, expected);
 }

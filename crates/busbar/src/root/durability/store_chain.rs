@@ -155,7 +155,11 @@ fn fenced_mutation(
     }
 }
 
-fn put_record(calls: &dyn StoreCalls, lease: &HeldLease, record: &Record) -> Result<(), String> {
+pub(super) fn put_record(
+    calls: &dyn StoreCalls,
+    lease: &HeldLease,
+    record: &Record,
+) -> Result<(), String> {
     let mut audit = match super::audit_heads::prepare(calls, record)? {
         super::audit_heads::Write::Ordinary => None,
         // Its final part and checkpoint committed together. Never clear an acknowledged record.
