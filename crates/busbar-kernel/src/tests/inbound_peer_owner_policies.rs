@@ -155,3 +155,81 @@ fn a_full_peer_collection_refuses_new_connections_without_evicting_a_held_identi
         "an existing connection remains usable at capacity"
     );
 }
+
+#[test]
+fn peer_calls_present_neither_unit_nor_request_nor_body() {
+    assert!(peer_payload_empty(UnitRef::NONE, &Head::default(), None));
+    assert!(!peer_payload_empty(
+        UnitRef { id: 9, mac: 9 },
+        &Head::default(),
+        None
+    ));
+    assert!(!peer_payload_empty(
+        UnitRef::NONE,
+        &Head {
+            method: "POST".to_string(),
+            target: "/v1/messages".to_string(),
+            ..Default::default()
+        },
+        None
+    ));
+    assert!(!peer_payload_empty(
+        UnitRef::NONE,
+        &Head::default(),
+        Some(&[])
+    ));
+    assert!(!peer_payload_empty(
+        UnitRef::NONE,
+        &Head::default(),
+        Some(b"body")
+    ));
+}
+
+#[test]
+fn peer_answers_return_flow_alone_and_never_name_a_request_unit_or_strips() {
+    let strips = [Strip::field("authorization".to_string())];
+    for fixed in [
+        None,
+        Some(Fixed::Admitted(0)),
+        Some(Fixed::Denied),
+        Some(Fixed::Overloaded),
+    ] {
+        let answer = inbound_answer(fixed, UnitRef::NONE, true, &strips);
+        assert_eq!(
+            answer.flow,
+            if matches!(fixed, Some(Fixed::Denied | Fixed::Overloaded)) {
+                FLOW_STOP
+            } else {
+                FLOW_CONTINUE
+            }
+        );
+        assert_eq!(answer.unit, UnitRef::NONE);
+        assert!(answer.strips.is_empty());
+    }
+    let unit = UnitRef { id: 17, mac: 19 };
+    let request = inbound_answer(Some(Fixed::Admitted(1)), unit, false, &strips);
+    assert_eq!(request.unit, unit);
+    assert_eq!(request.strips, strips);
+    assert_eq!(request.flow, FLOW_CONTINUE);
+}
+
+#[test]
+fn mixed_peer_metadata_requires_each_declared_request_point_and_peer_only_never_repeats() {
+    use busbar_contract::abi::auth::{POINT_HEAD, POINT_HEAD_BODY, POINT_PEER};
+    for request_point in [POINT_HEAD, POINT_HEAD_BODY] {
+        let points = AuthPoints(POINT_PEER | request_point);
+        assert!(points.has(AuthPoint::Peer));
+        assert!(points.has(AuthPoint::from_bit(request_point).unwrap()));
+        assert!(!points.has(
+            AuthPoint::from_bit(if request_point == POINT_HEAD {
+                POINT_HEAD_BODY
+            } else {
+                POINT_HEAD
+            })
+            .unwrap()
+        ));
+    }
+    assert!(AuthPoints::PEER.has(AuthPoint::Peer));
+    assert!(!AuthPoints::PEER.has(AuthPoint::Head));
+    assert!(!AuthPoints::PEER.has(AuthPoint::HeadBody));
+}
