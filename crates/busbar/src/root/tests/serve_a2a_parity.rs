@@ -233,6 +233,16 @@ fn bind_plane(origin: Origin, instance: &str, dispatcher: &Dispatcher) -> Plugin
     }
 }
 
+struct RawA2aUnits(Arc<busbar_kernel::host_units::UnitRecords>);
+
+impl Drop for RawA2aUnits {
+    fn drop(&mut self) {
+        for unit in [7, 9, 11] {
+            self.0.ended(unit);
+        }
+    }
+}
+
 struct PieceBytes {
     bytes: Vec<u8>,
     reply: Vec<u8>,
@@ -761,6 +771,10 @@ async fn actual_a2a_relay_keeps_whole_narrow_short_and_lifecycle_both_ways() {
         .mint_signed(
             busbar_kernel::governance::NewKeySpec {
                 name: "a2a-parity".into(),
+                plane_scopes: Some(vec![busbar_contract::records::ScopeRef {
+                    kind: "agent".into(),
+                    value: "vendor".into(),
+                }]),
                 ..Default::default()
             },
             4_000_000_000,
@@ -768,6 +782,15 @@ async fn actual_a2a_relay_keeps_whole_narrow_short_and_lifecycle_both_ways() {
         )
         .unwrap();
     gov.hydrate_budgets(&app.cost, 0).unwrap();
+    let verified = gov
+        .verify_token(
+            token.expose(&busbar_kernel::seal::lend()),
+            busbar_kernel::store::now(),
+            None,
+        )
+        .expect("the actual Store-backed token verifies");
+    assert!(verified.scope_allowed("agent", "vendor"));
+    assert!(!verified.scope_allowed("agent", "other"));
     let bearer = format!("Bearer {}", token.expose(&busbar_kernel::seal::lend()));
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -902,8 +925,12 @@ async fn actual_a2a_relay_keeps_whole_narrow_short_and_lifecycle_both_ways() {
             &[],
         )
         .unwrap();
-        let (data, admin, _) =
+        let (data, admin, handle) =
             busbar_kernel::build_split_routers_serving(app.clone(), routes, 1 << 20, 0, false);
+        let kernel = services
+            .kernel()
+            .expect("the actual production host is installed");
+        assert!(kernel.attach_standing(busbar_kernel::plane_driver::live_standing(handle)));
         let (status, preview) = http_bytes(
             &admin,
             "/api/v1/admin/agents/vendor/connect",
@@ -954,11 +981,37 @@ async fn actual_a2a_relay_keeps_whole_narrow_short_and_lifecycle_both_ways() {
             "the actual root keeps the fee unit exactly once"
         );
 
-        // This second real instance uses the production host's already admitted registration and
-        // genuine durable operator approval. The lifecycle and piece buffers themselves cross the
-        // same public loader APIs production uses; no HostServices implementation is substituted.
+        // This is raw ABI/host-services qualification, separate from the governed HTTP
+        // admission and paid billing above. The public owner seam holds the real verified key's
+        // exact agent:vendor grant for these original raw unit ids. The opaque caller_ref bytes
+        // below are original protocol input, never the source of authority.
         let raw = bind_plane(origin, &instance, &dispatcher);
+        let units = RawA2aUnits(kernel.units().clone());
+        let caller = busbar_contract::services::Caller {
+            instance: Arc::from(instance.as_str()),
+            plugin: Arc::from(raw.name()),
+            kind: busbar_contract::abi::mechanism::KindCode::Plane,
+        };
+        for unit in [7, 9, 11] {
+            assert!(
+                units.0.get(unit).is_none(),
+                "the raw fixture must never overwrite a live unit"
+            );
+            units.0.admitted(
+                unit,
+                busbar_kernel::host_units::UnitRecord {
+                    principal: Some(verified.clone()),
+                    depth: 0,
+                },
+            );
+            assert!(kernel.entitled(&caller, Some(unit), "agent:vendor"));
+            assert!(!kernel.entitled(&caller, Some(unit), "agent:other"));
+        }
         raw_relay_and_lifecycle(&raw, &dispatcher, &entry);
+        drop(units);
+        for unit in [7, 9, 11] {
+            assert!(kernel.units().get(unit).is_none());
+        }
         tables.withdraw(&instance);
     }
     peer.abort();
