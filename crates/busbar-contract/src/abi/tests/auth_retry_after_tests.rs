@@ -73,6 +73,97 @@ fn an_http_date_is_seconds_from_now() {
     );
 }
 
+#[test]
+fn rfc850_years_follow_the_supplied_clock() {
+    // 2026-01-01 and 2070-01-01 UTC, independently stated Unix witnesses. The latter
+    // must stay in the future rather than being read as 1970 by a fixed year pivot.
+    const JAN_2026: u64 = 1_767_225_600;
+    const JAN_2070: u64 = 3_155_760_000;
+    assert_eq!(
+        retry_after_secs(b"Wednesday, 01-Jan-70 00:00:00 GMT", JAN_2026),
+        Some(JAN_2070 - JAN_2026)
+    );
+    // The same two-digit year follows century rollover, even several centuries later.
+    for (now, date) in [
+        (4_070_908_800, &b"Friday, 01-Jan-00 00:00:00 GMT"[..]), // 2099-01-01 UTC
+        (13_537_929_600, &b"Saturday, 01-Jan-00 00:00:00 GMT"[..]), // 2399-01-01 UTC
+        (253_370_764_800, &b"Saturday, 01-Jan-00 00:00:00 GMT"[..]), // 9999-01-01 UTC
+    ] {
+        assert_eq!(retry_after_secs(date, now), Some(31_536_000));
+    }
+}
+
+#[test]
+fn rfc850_fifty_year_boundary_includes_month_day_and_time() {
+    // 2026-11-01 12:34:56 and 2076-11-01 12:34:56 UTC. This span includes
+    // thirteen leap days; a fixed number of 365-day years is not the boundary.
+    const NOV_2026: u64 = 1_793_536_496;
+    const NOV_2076: u64 = 3_371_459_696;
+    assert_eq!(
+        retry_after_secs(b"Sunday, 01-Nov-76 12:34:56 GMT", NOV_2026),
+        Some(NOV_2076 - NOV_2026)
+    );
+    for date in [
+        &b"Sunday, 01-Nov-76 12:34:57 GMT"[..],
+        b"Monday, 02-Nov-76 12:34:56 GMT",
+        b"Tuesday, 01-Dec-76 12:34:56 GMT",
+    ] {
+        assert_eq!(retry_after_secs(date, NOV_2026), Some(0));
+    }
+}
+
+#[test]
+fn rfc850_leap_days_are_validated_in_the_resolved_century() {
+    for now in [
+        951_696_000,    // 2000-02-28 UTC
+        13_574_476_800, // 2400-02-28 UTC
+    ] {
+        assert_eq!(
+            retry_after_secs(b"Tuesday, 29-Feb-00 00:00:00 GMT", now),
+            Some(86_400)
+        );
+    }
+    assert_eq!(
+        retry_after_secs(b"Monday, 29-Feb-00 00:00:00 GMT", 4_070_908_800),
+        None, // 2099-01-01 resolves the year to 2100, which has no leap day.
+    );
+    // The full 50-year boundary selects 2000 before date validation on February 28,
+    // but selects the invalid February 29, 2100 after the clock moves to March 1.
+    assert_eq!(
+        retry_after_secs(b"Tuesday, 29-Feb-00 00:00:00 GMT", 2_529_619_200),
+        Some(0), // 2050-02-28 UTC
+    );
+    assert_eq!(
+        retry_after_secs(b"Monday, 29-Feb-00 00:00:00 GMT", 2_529_705_600),
+        None, // 2050-03-01 UTC
+    );
+}
+
+#[test]
+fn retry_after_handles_the_largest_supplied_clock() {
+    // u64::MAX is 584554051223-11-09 07:00:15 UTC. January 1 in year ...200 is
+    // past; January 1 in year ...250 is 9550 days minus 07:00:15 ahead. That future
+    // date's absolute Unix timestamp exceeds u64, but its requested delay fits.
+    assert_eq!(
+        retry_after_secs(b"Saturday, 01-Jan-00 00:00:00 GMT", u64::MAX),
+        Some(0)
+    );
+    assert_eq!(
+        retry_after_secs(b"Saturday, 01-Jan-50 00:00:00 GMT", u64::MAX),
+        Some(825_094_785)
+    );
+    for date in [
+        &b"Fri, 31 Dec 9999 23:59:59 GMT"[..],
+        b"Sun Nov  6 08:51:37 1994",
+    ] {
+        assert_eq!(retry_after_secs(date, u64::MAX), Some(0));
+    }
+    assert_eq!(
+        retry_after_secs(b"99999999999999999999999", u64::MAX),
+        Some(u64::MAX)
+    );
+}
+
 /// Anything that is neither delta-seconds nor an HTTP-date is no delay at all.
 #[test]
 fn junk_is_none() {
