@@ -176,11 +176,12 @@ async fn actual_inbound_keys_preserve_resolution_revocation_rotation_and_carrier
         )
         .expect("the host listener installs");
     let handle = inbound.specs(7, 3).unwrap()[0].auth;
-    let head = |fields: Vec<(String, Vec<u8>)>| Head {
-        method: "POST".into(),
-        target: "/v1/messages".into(),
-        fields,
-        ..Head::default()
+    let head = |fields: Vec<(String, Vec<u8>)>| {
+        let mut head = Head::default();
+        head.method = "POST".into();
+        head.target = "/v1/messages".into();
+        head.fields = fields;
+        head
     };
     let bearer = |token: &str| {
         head(vec![(

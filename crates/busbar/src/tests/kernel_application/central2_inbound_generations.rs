@@ -181,15 +181,13 @@ async fn actual_inbound_generation_keeps_only_original_request_authority() {
         )
         .unwrap();
     let token = token.expose(&busbar_kernel::seal::lend()).clone();
-    let original = Head {
-        method: "POST".into(),
-        target: "/v1/messages".into(),
-        fields: vec![(
-            "authorization".into(),
-            format!("Bearer {token}").into_bytes(),
-        )],
-        ..Head::default()
-    };
+    let mut original = Head::default();
+    original.method = "POST".into();
+    original.target = "/v1/messages".into();
+    original.fields = vec![(
+        "authorization".into(),
+        format!("Bearer {token}").into_bytes(),
+    )];
     let call = |unit| Call {
         owner: 7,
         generation: 3,
