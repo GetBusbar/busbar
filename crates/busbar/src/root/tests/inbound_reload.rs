@@ -1,79 +1,138 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use std::future::Future;
-use std::pin::Pin;
 use std::sync::{Arc, Mutex};
-use std::task::{Context, Poll};
 
+#[path = "../../../../../dist/default/tests/common/mod.rs"]
+mod common;
+use crate::root::doors::{bind_on, Dispatched};
+use crate::root::inbound;
+use crate::root::listener::framed::{self as listener_framed, FramerFor, DATA_SCHEME};
+use crate::root::loader::dispatch::auth_handle::{
+    AuthCallAnswer, AuthCallAsk, AuthDone, AuthHandleHost, AuthRan, HandInAsk, RefusalBytes,
+    RefuseAsk, StreamPolicy, UnitSecret,
+};
+use crate::root::loader::dispatch::{DispatchConfig, Dispatcher};
 use busbar_contract::abi::auth::{AuthPoints, POINT_HEAD};
+use busbar_contract::abi::host::service::UnitRef;
 use busbar_contract::abi::transport::route::{METHOD_POST, PATH_CONTAINS};
 use busbar_contract::abi::transport::{CLOSE_NORMAL, SIDE_ACCEPT};
-use busbar_contract::auth_calls::{
-    AuthCalls, Verified, VerifiedIdentity, VerifyAnswer, VerifyRequest, Verifying,
-};
 use busbar_contract::transport::TransportSettings;
 use busbar_core_connector::framer::{Established, FramerDoor, Framing};
 use busbar_kernel::guest::{Claimant, GuestList, Line, LineAuth, Route};
 
-use crate::root::doors::{bind_on, Dispatched};
-use crate::root::inbound;
-use crate::root::listener::framed::{self as listener_framed, FramerFor, DATA_SCHEME};
-use crate::root::loader::dispatch::{DispatchConfig, Dispatcher};
-
 struct Provider {
     name: &'static str,
-    units: Mutex<Vec<u64>>,
+    units: Arc<Mutex<Vec<u64>>>,
 }
-
-struct Answered(Option<VerifyAnswer>);
-impl Future for Answered {
-    type Output = VerifyAnswer;
-    fn poll(mut self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Self::Output> {
-        Poll::Ready(self.0.take().expect("one verification result"))
-    }
-}
-impl Verifying for Answered {
-    fn settled(&mut self) -> Option<VerifyAnswer> {
-        self.0.take()
-    }
-}
-impl AuthCalls for Provider {
-    fn name(&self) -> &str {
-        self.name
-    }
-    fn facts(&self) -> u32 {
-        0
-    }
-    fn inbound_points(&self) -> AuthPoints {
-        AuthPoints(POINT_HEAD)
-    }
-    fn verify_now(&self, _: &VerifyRequest) -> Option<VerifyAnswer> {
-        None
-    }
-    fn verify(&self, request: VerifyRequest) -> Box<dyn Verifying> {
-        self.units.lock().unwrap().push(request.unit);
-        Box::new(Answered(Some(VerifyAnswer::from(Verified::Identity(
-            VerifiedIdentity {
-                subject: self.name.into(),
-                ..VerifiedIdentity::default()
-            },
-        )))))
-    }
-    fn refresh(&self) -> Result<u64, String> {
-        Ok(0)
-    }
-}
-
-fn provider(name: &'static str) -> Arc<Provider> {
+fn provider(name: &'static str, units: &Arc<Mutex<Vec<u64>>>) -> Arc<Provider> {
     Arc::new(Provider {
         name,
-        units: Mutex::new(Vec::new()),
+        units: units.clone(),
     })
 }
 
+// Observe the actual adapter's answers; authority, asynchronous completion, and
+// every framing lifetime operation stay with the production adapter.
+struct ObserveActual {
+    actual: inbound::LoaderSide,
+    units: Arc<Mutex<Vec<u64>>>,
+}
+fn record(units: &Mutex<Vec<u64>>, answer: &Result<AuthCallAnswer, &'static str>) {
+    if let Ok(answer) = answer {
+        units.lock().unwrap().push(answer.unit.unit);
+    }
+}
+impl AuthHandleHost for ObserveActual {
+    fn unit_secret(&self, owner: u64, unit: u64) -> Option<UnitSecret> {
+        self.actual.unit_secret(owner, unit)
+    }
+    fn auth_call(&self, ask: AuthCallAsk, done: AuthDone) -> AuthRan {
+        let units = self.units.clone();
+        let ran = self.actual.auth_call(
+            ask,
+            Box::new(move |answer| {
+                record(&units, &answer);
+                done(answer);
+            }),
+        );
+        if let AuthRan::Now(answer) = &ran {
+            record(&self.units, answer);
+        }
+        ran
+    }
+    fn hand_in(&self, ask: HandInAsk) -> Result<(u32, UnitRef), &'static str> {
+        self.actual.hand_in(ask)
+    }
+    fn hand_in_with_deadline(
+        &self,
+        ask: HandInAsk,
+        deadline: Option<std::time::Duration>,
+    ) -> Result<(u32, UnitRef), &'static str> {
+        self.actual.hand_in_with_deadline(ask, deadline)
+    }
+    fn refuse(&self, ask: RefuseAsk) -> Result<RefusalBytes, &'static str> {
+        self.actual.refuse(ask)
+    }
+    fn framing_started(
+        &self,
+        owner: u64,
+        listener: u64,
+        framing: u64,
+    ) -> Result<Option<StreamPolicy>, &'static str> {
+        self.actual.framing_started(owner, listener, framing)
+    }
+    fn requires_scope(&self) -> bool {
+        self.actual.requires_scope()
+    }
+    fn stream_open(
+        &self,
+        owner: u64,
+        listener: u64,
+        framing: u64,
+        stream: u64,
+    ) -> Result<StreamPolicy, &'static str> {
+        self.actual.stream_open(owner, listener, framing, stream)
+    }
+    fn stream_ended(&self, owner: u64, framing: u64, stream: u64) {
+        self.actual.stream_ended(owner, framing, stream)
+    }
+    fn framing_ready(&self, owner: u64, framing: u64) {
+        self.actual.framing_ready(owner, framing)
+    }
+    fn framing_detached(&self, owner: u64, framing: u64) -> Result<(), &'static str> {
+        self.actual.framing_detached(owner, framing)
+    }
+    fn framing_adopting(
+        &self,
+        source: busbar_contract::framing_scope::AdoptionSource,
+        owner: u64,
+        framing: u64,
+    ) -> Result<busbar_contract::framing_scope::SessionTransfer, &'static str> {
+        self.actual.framing_adopting(source, owner, framing)
+    }
+    fn framing_adopted(&self, owner: u64, framing: u64, conn: u64) -> Result<(), &'static str> {
+        self.actual.framing_adopted(owner, framing, conn)
+    }
+    fn framing_ended(&self, framing: u64) {
+        self.actual.framing_ended(framing)
+    }
+}
+
+async fn settle(framing: &mut Framing) {
+    tokio::time::timeout(std::time::Duration::from_secs(20), async {
+        while framing.parked() {
+            std::future::poll_fn(|cx| framing.poll_parked(cx))
+                .await
+                .expect("the actual pending OIDC admission completes");
+        }
+    })
+    .await
+    .expect("the actual OIDC admission is bounded");
+}
+
 fn app(provider: &Arc<Provider>) -> Arc<busbar_kernel::state::App> {
-    let calls: Arc<dyn AuthCalls> = provider.clone();
+    crate::dist_root_install::install();
     crate::root::linked::register_stores(&crate::LINKED);
     let store = crate::root::real_store::store();
     let settings: serde_json::Value = serde_json::from_str(
@@ -106,12 +165,42 @@ fn app(provider: &Arc<Provider>) -> Arc<busbar_kernel::state::App> {
         false,
     )
     .expect("the production builder owns the supplied actual Store");
-    // Only the host policy value varies between these Apps. The HTTP product
-    // and listener still drive the actual admission and reload boundaries.
-    app.auth = Arc::new(busbar_kernel::auth::AuthMiddleware::from_calls_for_test(
-        vec![(provider.name.into(), calls)],
-        &[],
-    ));
+    let artifact =
+        common::plugins::token_verifier_cdylib_path().expect("the actual OIDC product is required");
+    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&artifact)
+        .unwrap()
+        .unwrap();
+    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
+        .unwrap()
+        .name;
+    let directory = common::plugins::scratch(provider.name);
+    common::credentials::install_auth_plugin(&directory, &module, provider.name, true);
+    let plugins = busbar_kernel::config::PluginsCfg {
+        enabled: true,
+        dir: directory.to_string_lossy().into_owned(),
+        ..Default::default()
+    };
+    let registry = busbar_kernel::plugins_preflight(
+        None,
+        None,
+        &Default::default(),
+        &Default::default(),
+        &plugins,
+        &Default::default(),
+    )
+    .expect("the signed actual OIDC plugin is admitted");
+    let mut auth = busbar_kernel::config::AuthCfg::default_none();
+    let mut entry = busbar_kernel::config::AuthChainEntry::bare(provider.name);
+    entry.settings = common::credentials::settings(provider.name);
+    auth.chain.push(entry);
+    app.auth = Arc::new(
+        busbar_kernel::auth::AuthMiddleware::new(
+            &auth,
+            &registry,
+            &busbar_kernel::config::secret::SecretResolver::builtins_only(),
+        )
+        .expect("the actual configured OIDC chain constructs"),
+    );
     Arc::new(app)
 }
 
@@ -144,7 +233,9 @@ fn identities(provider: &Provider) -> Vec<Option<String>> {
         .lock()
         .unwrap()
         .iter()
-        .map(|unit| inbound::host().admitted(*unit).map(|a| a.identity.subject))
+        .filter_map(|unit| inbound::host().admitted(*unit))
+        .filter(|admitted| admitted.provider == provider.name)
+        .map(|admitted| Some(admitted.identity.subject))
         .collect()
 }
 
@@ -169,11 +260,42 @@ pub(super) fn request(stream: u32, path: &str, preface: bool) -> Vec<u8> {
     bytes
 }
 
+fn authenticated_request(stream: u32, path: &str, preface: bool, provider: &Provider) -> Vec<u8> {
+    let mut bytes = request(stream, path, preface);
+    let offset = if preface { 33 } else { 0 };
+    let token = format!(
+        "Bearer {}",
+        common::credentials::token_for(provider.name, &[], provider.name)
+    );
+    // Literal never-indexed authorization, static-table name index 23.
+    bytes.extend_from_slice(&[0x1f, 8]);
+    let mut len = token.len();
+    if len < 127 {
+        bytes.push(len as u8);
+    } else {
+        bytes.push(127);
+        len -= 127;
+        while len >= 128 {
+            bytes.push((len as u8 & 127) | 128);
+            len >>= 7;
+        }
+        bytes.push(len as u8);
+    }
+    bytes.extend_from_slice(token.as_bytes());
+    let len = (bytes.len() - offset - 9) as u32;
+    bytes[offset..offset + 3].copy_from_slice(&len.to_be_bytes()[1..]);
+    bytes
+}
+
 #[tokio::test]
 async fn a_live_listener_reloads_new_requests_and_pins_the_old_requests_app() {
     let _publishing = crate::root::PUBLISHING.lock().await;
     let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
-    assert!(inbound::install(&dispatcher));
+    let units = Arc::new(Mutex::new(Vec::new()));
+    assert!(dispatcher.install_auth_handle(Arc::new(ObserveActual {
+        actual: inbound::LoaderSide(inbound::host().clone()),
+        units: units.clone()
+    })));
     let plugin = crate::root::test_plugins::linked_transport(
         busbar_transport_http::door::door,
         bind_on(&dispatcher),
@@ -185,7 +307,7 @@ async fn a_live_listener_reloads_new_requests_and_pins_the_old_requests_app() {
     let resolver: FramerFor =
         Arc::new(move |scheme| (scheme == DATA_SCHEME).then(|| Arc::clone(&door)));
     let listener = listener_framed::data_framer(resolver).expect("a real nonzero transport owner");
-    let before = provider("before-reload");
+    let before = provider("before-reload", &units);
     let old_app = app(&before);
     let old_app_weak = Arc::downgrade(&old_app);
     stage(&before);
@@ -203,16 +325,24 @@ async fn a_live_listener_reloads_new_requests_and_pins_the_old_requests_app() {
         listener.guests(),
     )
     .expect("the production listener's list begins a connection");
-    let first = framing.ingest(&request(1, "/tickets/first", true), false);
+    let first = framing.ingest(
+        &authenticated_request(1, "/tickets/first", true, &before),
+        false,
+    );
+    settle(&mut framing).await;
     let before_reload = identities(&before);
 
-    let after = provider("after-reload");
+    let after = provider("after-reload", &units);
     let new_app = app(&after);
     stage(&after);
     for _ in 0..3 {
         assert!(inbound::publish(&new_app).is_some());
     }
-    let second = framing.ingest(&request(3, "/tickets/next", false), false);
+    let second = framing.ingest(
+        &authenticated_request(3, "/tickets/next", false, &after),
+        false,
+    );
+    settle(&mut framing).await;
     let after_reload = identities(&after);
     let retained_identity = identities(&before);
     let retained_app = old_app_weak.upgrade().is_some();
@@ -244,7 +374,11 @@ async fn a_live_listener_reloads_new_requests_and_pins_the_old_requests_app() {
 async fn a_need_listener_uses_its_selected_policy_across_reload_without_changing_the_data_list() {
     let _publishing = crate::root::PUBLISHING.lock().await;
     let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
-    assert!(inbound::install(&dispatcher));
+    let units = Arc::new(Mutex::new(Vec::new()));
+    assert!(dispatcher.install_auth_handle(Arc::new(ObserveActual {
+        actual: inbound::LoaderSide(inbound::host().clone()),
+        units: units.clone()
+    })));
     let plugin = crate::root::test_plugins::linked_transport(
         busbar_transport_http::door::door,
         bind_on(&dispatcher),
@@ -267,7 +401,7 @@ async fn a_need_listener_uses_its_selected_policy_across_reload_without_changing
         }),
     )
     .unwrap();
-    let before = provider("need-before");
+    let before = provider("need-before", &units);
     let old_app = app(&before);
     let old = Arc::downgrade(&old_app);
     stage_at(&before, "/data-only/");
@@ -286,19 +420,27 @@ async fn a_need_listener_uses_its_selected_policy_across_reload_without_changing
     )
     .unwrap();
     framing
-        .ingest(&request(1, "/tickets/first", true), false)
+        .ingest(
+            &authenticated_request(1, "/tickets/first", true, &before),
+            false,
+        )
         .unwrap();
+    settle(&mut framing).await;
     let first = identities(&before);
     assert_eq!(first, vec![Some(before.name.into())]);
-    let after = provider("need-after");
+    let after = provider("need-after", &units);
     stage_at(&after, "/data-only/");
     let next = app(&after);
     for _ in 0..3 {
         inbound::publish(&next).unwrap();
     }
     framing
-        .ingest(&request(3, "/tickets/next", false), false)
+        .ingest(
+            &authenticated_request(3, "/tickets/next", false, &after),
+            false,
+        )
         .unwrap();
+    settle(&mut framing).await;
     assert_eq!(identities(&after), vec![Some(after.name.into())]);
     assert_eq!(identities(&before), first);
     assert!(old.upgrade().is_some());
@@ -314,7 +456,10 @@ async fn a_need_listener_uses_its_selected_policy_across_reload_without_changing
     )
     .unwrap();
     let yielded = ordinary
-        .ingest(&request(1, "/tickets/data-miss", true), false)
+        .ingest(
+            &authenticated_request(1, "/tickets/data-miss", true, &after),
+            false,
+        )
         .unwrap();
     assert!(
         yielded.pieces.is_empty(),

@@ -53,7 +53,7 @@ fn refused(r: &kin::RefusedUnit) {
     );
 }
 
-struct LoaderSide(Arc<Inbound>);
+pub(in crate::root) struct LoaderSide(pub(in crate::root) Arc<Inbound>);
 
 fn head_of(h: HeadCopy) -> kin::Head {
     kin::Head {
