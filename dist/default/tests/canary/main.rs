@@ -12,7 +12,7 @@ mod blackbox;
 mod canary;
 mod recorder;
 
-use self::canary::{Canary, Expect, Sink};
+use canary::{Canary, Expect, Sink};
 
 pub const EXPECT: &[(&str, Expect)] = &[
     ("provider-key-env-ref", Expect::Clean),

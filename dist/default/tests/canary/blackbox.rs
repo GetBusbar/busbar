@@ -10,8 +10,8 @@ use std::time::{Duration, Instant};
 
 use base64::Engine as _;
 
-use super::canary::{Canary, Sink};
-use super::common;
+use crate::canary::{Canary, Sink};
+use crate::common;
 
 pub fn scratch(tag: &str) -> PathBuf {
     let d = std::env::temp_dir().join(format!(

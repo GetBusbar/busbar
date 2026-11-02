@@ -12,8 +12,8 @@ use busbar_kernel::auth::AuthMiddleware;
 use busbar_kernel::config::{AuthCfg, AuthChainEntry};
 use busbar_plugin_loader::{LinkedPlugin, PluginRegistry};
 
-use super::canary::{Canary, Sink};
-use super::{common, recorder};
+use crate::canary::{Canary, Sink};
+use crate::{common, recorder};
 
 struct Doors {
     webhook_signature: (String, DoorFn),
@@ -184,7 +184,7 @@ pub fn run(c: &AbiCanaries) -> (Vec<Sink>, Vec<String>) {
 
     static RUNS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
     let run = RUNS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let dir = super::blackbox::scratch("abi");
+    let dir = crate::blackbox::scratch("abi");
 
     let secret_file = dir.join("signing-secret");
     std::fs::write(&secret_file, &c.secret_ref_file.value).expect("the secret file");
