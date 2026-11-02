@@ -5,6 +5,10 @@ use super::{FramedFacts, StreamFacts};
 use busbar_contract::conn::DeclaredConns;
 use std::sync::Arc;
 
+#[path = "https_timeout_tests.rs"]
+#[allow(unsafe_code)] // Restates the loader's real test door; every service uses its real context.
+mod https_timeout_tests;
+
 /// `stand_in.json` reads, and states a transport for each double.
 #[test]
 fn the_stand_in_facts_read_from_data() {
