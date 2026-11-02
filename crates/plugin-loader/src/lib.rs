@@ -417,3 +417,8 @@ mod ordinary_plane_registry;
 #[allow(unsafe_code)]
 #[path = "tests/ordinary_plane_lending.rs"]
 mod ordinary_plane_lending;
+
+#[cfg(test)]
+#[allow(unsafe_code)]
+#[path = "tests/ordinary_suite_dispatch_tests.rs"]
+mod ordinary_suite_dispatch_tests;
