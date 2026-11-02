@@ -85,7 +85,9 @@ fn deployment(pool: &str) -> Arc<App> {
     if let Some(rotate) = rotate {
         rotate();
     }
-    kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
+    let retention = std::time::Duration::from_secs(3600);
+    kernel::snapshot::configure(Some(retention));
+    kernel::snapshot::init_with(retention);
     Arc::new(app)
 }
 
@@ -101,17 +103,28 @@ fn caller(pools: &[&str]) -> PlaneRequestCtx {
 }
 
 fn request_terminals(proto: &str, pool: Option<&str>) -> u64 {
-    let protocol = format!("ingress_protocol=\"{proto}\"");
-    let pool = pool.map(|pool| format!("pool=\"{pool}\""));
-    kernel::snapshot::render()
-        .lines()
-        .filter(|line| line.starts_with(kernel::snapshot::REQUESTS_TOTAL))
-        .filter(|line| line.contains(&protocol))
-        .filter(|line| pool.as_ref().is_none_or(|pool| line.contains(pool)))
-        .map(|line| {
-            line.split_whitespace()
-                .last()
-                .expect("the metric value")
+    let snapshot = kernel::snapshot::snapshot().expect("the real metrics recorder is installed");
+    snapshot
+        .iter()
+        .flat_map(|family| family.samples.iter())
+        .filter(|sample| sample.name == kernel::snapshot::REQUESTS_TOTAL)
+        .filter(|sample| {
+            sample
+                .labels
+                .iter()
+                .any(|(name, value)| name == "ingress_protocol" && value == proto)
+        })
+        .filter(|sample| {
+            pool.is_none_or(|pool| {
+                sample
+                    .labels
+                    .iter()
+                    .any(|(name, value)| name == "pool" && value == pool)
+            })
+        })
+        .map(|sample| {
+            sample
+                .value
                 .parse::<f64>()
                 .expect("the request terminal counter is numeric")
         })
