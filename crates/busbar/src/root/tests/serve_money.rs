@@ -23,6 +23,9 @@ use super::{compose_planes, compose_served, data_routes, door_routes};
 use crate::root::loader::dispatch::{DispatchConfig, Dispatcher};
 use crate::root::plane_node::{Node, NodeEndPost};
 
+#[path = "serve_datagram_open.rs"]
+mod datagram_opening_tests;
+
 /// A governed composition of the test plane: a signing book with one minted key, the plane's
 /// section one entry `m`, its data routes on a data router built with them, over a node of its own.
 pub(super) struct Governed {
@@ -1292,6 +1295,108 @@ async fn an_executed_nested_unit_with_an_oversized_reply_fails_instead_of_refusi
     assert_eq!(status, axum::http::StatusCode::OK.as_u16());
     assert_eq!(body, format!("nest-refused:{}", super::NEST_UNSERVED));
     assert_eq!(g.requests(), 3, "an unserved claim starts no child");
+}
+
+/// Declaring a whole reply must not make the nested ingress buffer it before the nesting cap
+/// applies. The real child produces bounded windows and exposes its byte counter independently.
+#[tokio::test]
+async fn a_nested_declared_length_reply_stops_its_producer_at_the_existing_bound() {
+    let _one = PUBLISHING.lock().await;
+    let g = governed("nested-declared-length-bound", true);
+    let declared = super::NEST_REPLY_MAX * 4;
+    let (status, body) = g
+        .post(
+            &format!("/call/nest:/call/local-repeat-whole:{declared}"),
+            true,
+        )
+        .await;
+    assert_eq!(status, axum::http::StatusCode::OK.as_u16());
+    assert_eq!(body, format!("nest-failed:{}", super::NEST_UNREAD));
+    // Dropping the bounded reply drops its real producer. The ordinary lost-task sweep seals
+    // its final record and closes its money; no test aborts or substitutes the child's task.
+    tokio::time::timeout(super::OPEN_HEAD_WAIT, async {
+        loop {
+            g.post.node().sweep(g.post.node().arrived());
+            if g.post.open_units() == 0
+                && g.money.open_units() == 0
+                && g.book.lock().expect("unpoisoned").audit_records.len() == 2
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("the actual child retires");
+    assert_eq!(g.requests(), 2, "the parent and one child admission");
+    let (status, produced) = g.post("/call/local-produced", true).await;
+    assert_eq!(status, axum::http::StatusCode::OK.as_u16());
+    let produced: usize = produced
+        .parse()
+        .expect("the fixture's produced-byte counter");
+    // One channel slot, the window that crosses the cap, and a crossing already in flight.
+    const RETAINED_WINDOWS: usize = 3;
+    assert!(produced > super::NEST_REPLY_MAX);
+    assert!(
+        produced <= super::NEST_REPLY_MAX + RETAINED_WINDOWS * super::BufferCaps::default().reply,
+        "the producer ran beyond the bounded ingress windows: {produced}"
+    );
+    assert!(
+        produced < declared,
+        "the whole reply was never precollected"
+    );
+    let (_, stable) = g.post("/call/local-produced", true).await;
+    assert_eq!(
+        stable.parse::<usize>().expect("counter"),
+        produced,
+        "the child stopped producing"
+    );
+}
+
+#[tokio::test]
+async fn in_bound_nested_whole_and_streamed_replies_keep_their_bytes_and_head_fields() {
+    use busbar_kernel::plane_driver::CallerEnd as _;
+    const PAYLOAD: &[u8] = b"the child's complete body";
+    const FIELD_NAME: &str = "x-child-fixture";
+    const FIELD_VALUE: &[u8] = b"  same bytes  ";
+    for whole in [true, false] {
+        let (caller, reply) = super::IngressCaller::new();
+        let unit = async move {
+            let mut fields = vec![(FIELD_NAME.as_bytes().to_vec(), FIELD_VALUE.to_vec())];
+            if whole {
+                fields.push((
+                    axum::http::header::CONTENT_LENGTH
+                        .as_str()
+                        .as_bytes()
+                        .to_vec(),
+                    PAYLOAD.len().to_string().into_bytes(),
+                ));
+            }
+            caller.head(u32::from(axum::http::StatusCode::OK.as_u16()), fields);
+            assert!(caller.write(PAYLOAD).await);
+            None
+        };
+        let response = reply.answer_nested(Box::pin(unit)).await;
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        assert_eq!(
+            response
+                .headers()
+                .get(FIELD_NAME)
+                .expect("child field")
+                .as_bytes(),
+            FIELD_VALUE
+        );
+        assert!(
+            !response
+                .headers()
+                .contains_key(axum::http::header::CONTENT_LENGTH),
+            "whole nested replies retain their previous unlengthened head"
+        );
+        let body = axum::body::to_bytes(response.into_body(), super::NEST_REPLY_MAX)
+            .await
+            .expect("in-bound child reply");
+        assert_eq!(body.as_ref(), PAYLOAD);
+    }
 }
 
 /// The unitless catalog crosses the same credential boundary as an ordinary arrival. Echoing

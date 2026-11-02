@@ -435,9 +435,17 @@ const SHORT_REPLY: usize = 1 << 20;
 
 /// A local reply emitted in bounded pieces, of the byte length its target suffix names.
 const LOCAL_REPEAT: &[u8] = b"/call/local-repeat:";
+/// The same producer declaring Content-Length, and its observable byte counter.
+const LOCAL_REPEAT_WHOLE: &[u8] = b"/call/local-repeat-whole:";
+const LOCAL_PRODUCED: &[u8] = b"/call/local-produced";
+const CONTENT_LENGTH: &[u8] = b"content-length";
 
 /// HTTP's successful response status, used by the head echo and repeated local reply controls.
 const HTTP_OK: u32 = 200;
+
+/// Datagram-opening controls: wait without stating a head, or state one and keep the session.
+const DATAGRAM_HEAD_PENDING: &[u8] = b"/open?head=pending";
+const DATAGRAM_HEAD_READY: &[u8] = b"/open?head=ready";
 
 /// THE DOOR: the `DoorFn` a compiled-in row holds.
 pub extern "C" fn door() -> &'static Door {
@@ -479,6 +487,7 @@ struct Inst {
     /// The unit each ticket serves, for `cancel`.
     tickets: Mutex<HashMap<Ticket, u64>>,
     stats: [AtomicU64; STATS],
+    produced: AtomicU64,
     /// The envelope `drive` answers: valid until the next op on the driver ticket.
     drive_metric: Box<Mutex<MetricEntry>>,
     /// The host's connection slots (NULL without a table).
@@ -710,6 +719,7 @@ extern "C" fn open(_: *mut c_void, input: *const c_void, out: *mut c_void) -> Ra
             heads: Mutex::new(HashMap::new()),
             tickets: Mutex::new(HashMap::new()),
             stats: Default::default(),
+            produced: AtomicU64::new(0),
             conns: host.conns,
             tick_every_ms: AtomicU64::new(0),
             tick_read: AtomicBool::new(false),
@@ -933,12 +943,15 @@ extern "C" fn arrive(instance: *mut c_void, input: *const c_void, out: *mut c_vo
             }
             // UNITS THE PLANE ANSWERS ITSELF (`ROUTE_LOCAL`), stating no expected units: counted as an
             // admitted call (`ROUTE_COUNTED`), or not; and one stating expected units.
-            t if t == b"/call/local-counted" || t.starts_with(LOCAL_REPEAT) => {
+            t if t == b"/call/local-counted"
+                || t.starts_with(LOCAL_REPEAT)
+                || t.starts_with(LOCAL_REPEAT_WHOLE) =>
+            {
                 o.route = ROUTE_LOCAL;
                 o.route_flags = ROUTE_COUNTED;
                 vec![]
             }
-            b"/call/local-quiet" => {
+            t if t == b"/call/local-quiet" || t == LOCAL_PRODUCED => {
                 o.route = ROUTE_LOCAL;
                 vec![]
             }
@@ -971,7 +984,11 @@ extern "C" fn arrive(instance: *mut c_void, input: *const c_void, out: *mut c_vo
                 o.refusal_status = 404;
                 return say(out, Outcome::Refused);
             }
-            t if t == b"/open" || t.starts_with(b"/framed") => {
+            t if t == b"/open"
+                || t == DATAGRAM_HEAD_PENDING
+                || t == DATAGRAM_HEAD_READY
+                || t.starts_with(b"/framed") =>
+            {
                 // The open claims route directly over the section's `m`.
                 o.route = ROUTE_DIRECT;
                 o.pool = AbiStr {
@@ -1069,7 +1086,14 @@ extern "C" fn on_piece(
                 return say(out, Outcome::Pending);
             }
         }
-        if let Some(length) = head.strip_prefix(LOCAL_REPEAT) {
+        if let Some((length, whole)) = head
+            .strip_prefix(LOCAL_REPEAT)
+            .map(|length| (length, false))
+            .or_else(|| {
+                head.strip_prefix(LOCAL_REPEAT_WHOLE)
+                    .map(|length| (length, true))
+            })
+        {
             // The body of this local unit is a repeated fixture byte. Re-calls emit only the
             // remainder, so a host buffering limit can fail after real child admission/output.
             let Ok(length) = std::str::from_utf8(length)
@@ -1081,8 +1105,17 @@ extern "C" fn on_piece(
             let n = usize::try_from(length.saturating_sub(u.emitted))
                 .unwrap_or(usize::MAX)
                 .min(i.reply_cap);
+            if whole && u.emitted == 0 {
+                let mut at = 0;
+                let name = put(i, &mut at, CONTENT_LENGTH);
+                let value = put(i, &mut at, length.to_string().as_bytes());
+                *i.fields_buf = OutField { name, value };
+                o.fields_written = 1;
+                o.arena_written = at as u64;
+            }
             std::ptr::write_bytes(i.reply_buf, b'x', n);
             u.emitted += n as u64;
+            me.produced.fetch_add(n as u64, Ordering::SeqCst);
             o.reply_status = HTTP_OK;
             o.emitted = n as u64;
             o.more = u32::from(u.emitted < length);
@@ -1175,6 +1208,15 @@ extern "C" fn on_piece(
                     // A LOCAL ANSWER: the plane answers the caller itself (an echo of the body),
                     // with nothing for the far end.
                     o.reply_status = 200;
+                    if head.as_slice() == LOCAL_PRODUCED {
+                        emit(
+                            i,
+                            o,
+                            me.produced.load(Ordering::SeqCst).to_string().as_bytes(),
+                        );
+                        o.flags = EMIT_DONE;
+                        return say(out, Outcome::Ready);
+                    }
                     let n = u.body.len().min(i.reply_cap);
                     std::ptr::copy_nonoverlapping(u.body.as_ptr(), i.reply_buf, n);
                     o.emitted = n as u64;
@@ -1560,6 +1602,14 @@ unsafe fn session_piece(
     t: Ticket,
     out: *mut c_void,
 ) -> RawOutcome {
+    if i.from == FROM_CALLER && i.flags & PIECE_LAST == 0 {
+        let heads = me.heads.lock().unwrap();
+        match heads.get(&i.unit).map(Vec::as_slice) {
+            Some(DATAGRAM_HEAD_PENDING) => return say(out, Outcome::Ready),
+            Some(DATAGRAM_HEAD_READY) => o.reply_status = HTTP_OK,
+            _ => {}
+        }
+    }
     {
         let mut seen = me.session_tickets.lock().unwrap();
         let tickets = seen.entry(i.stream).or_default();

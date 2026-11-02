@@ -4599,26 +4599,10 @@ impl DataRoutes {
             head,
             joining,
         } = opened;
-        let joining = Arc::new(Mutex::new(Some(joining)));
-        // The admitted unit, so an open whose plane never states its head can end its session.
-        let admitted_unit: Arc<Mutex<Option<u64>>> = Arc::default();
-        let admitted = {
-            let joining = Arc::clone(&joining);
-            let admitted_unit = Arc::clone(&admitted_unit);
-            Box::new(move |unit: u64| {
-                let j = joining
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .take();
-                let joined = j.map_or(Err("admitted twice".to_owned()), |j| j.admit(unit));
-                if joined.is_ok() {
-                    *admitted_unit
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(unit);
-                }
-                joined
-            }) as Box<dyn FnOnce(u64) -> Result<(), String> + Send>
-        };
+        // Publish cancellation custody before the session can run, including an admission that
+        // crosses the connector while this opener is dropped.
+        let mut opening = DatagramOpening::new(joining);
+        let admitted = opening.admission();
         let ended = Box::new(|unit: u64| crate::root::connector::the().unpair(unit))
             as Box<dyn FnOnce(u64) + Send>;
         let (verdict, said) = oneshot::channel();
@@ -4641,33 +4625,25 @@ impl DataRoutes {
                 // A plane that states none within the open's bound is the open's failure: its
                 // session ends, and the caller is refused, never answered without the plane.
                 match serve_datagram::plane_head(head, OPEN_HEAD_WAIT).await {
-                    Some((status, fields)) => stated((status, fields), description.into_body()),
-                    None => {
-                        let unit = *admitted_unit
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner);
-                        if let Some(unit) = unit {
-                            crate::root::connector::the().unpair(unit);
-                        }
-                        stated(
-                            (refusal_status(ReasonCode::PlanePanic), Vec::new()),
-                            Body::empty(),
-                        )
+                    Some((status, fields)) => {
+                        let response = stated((status, fields), description.into_body());
+                        opening.transfer();
+                        response
                     }
+                    None => stated(
+                        (refusal_status(ReasonCode::PlanePanic), Vec::new()),
+                        Body::empty(),
+                    ),
                 }
             }
             Ok(Err(Some(rendered))) => stated(
                 (rendered.status, rendered.fields),
                 Body::from(rendered.body),
             ),
-            Ok(Err(None)) | Err(_) => {
-                // Never admitted: the association that never joined goes with its opening.
-                drop(joining);
-                stated(
-                    (refusal_status(ReasonCode::PlanePanic), Vec::new()),
-                    Body::empty(),
-                )
-            }
+            Ok(Err(None)) | Err(_) => stated(
+                (refusal_status(ReasonCode::PlanePanic), Vec::new()),
+                Body::empty(),
+            ),
         }
     }
 
@@ -4929,7 +4905,7 @@ impl DataRoutes {
                 )
                 .await
         };
-        let response = reply.answer(Box::pin(unit)).await;
+        let response = reply.answer_nested(Box::pin(unit)).await;
         let (parts, body) = response.into_parts();
         let Ok(body) = axum::body::to_bytes(body, NEST_REPLY_MAX).await else {
             return NestReply::Failed(NEST_UNREAD);
@@ -5373,6 +5349,102 @@ struct Attach {
 /// What runs once a session's unit is admitted (handed the unit), before the session runs.
 type OnAdmitted = Box<dyn FnOnce(u64) -> Result<(), String> + Send>;
 
+/// The datagram open owns its association until a descriptive response is ready. Its admission
+/// callback shares the abandonment fact, so a late join cannot publish an orphaned session.
+struct DatagramOpening {
+    state: Arc<Mutex<DatagramOpeningState>>,
+    transferred: bool,
+}
+
+struct DatagramOpeningState {
+    joining: Option<serve_datagram::Joining>,
+    unit: Option<u64>,
+    abandoned: bool,
+}
+
+const DATAGRAM_OPEN_ABANDONED: &str = "the datagram opening was abandoned";
+const DATAGRAM_ALREADY_ADMITTED: &str = "the datagram opening was admitted twice";
+
+impl DatagramOpening {
+    fn new(joining: serve_datagram::Joining) -> Self {
+        Self {
+            state: Arc::new(Mutex::new(DatagramOpeningState {
+                joining: Some(joining),
+                unit: None,
+                abandoned: false,
+            })),
+            transferred: false,
+        }
+    }
+
+    fn admission(&self) -> OnAdmitted {
+        let state = Arc::clone(&self.state);
+        Box::new(move |unit| Self::admit_with(&state, unit, |joining| joining.admit(unit)))
+    }
+
+    fn admit_with(
+        state: &Mutex<DatagramOpeningState>,
+        unit: u64,
+        join: impl FnOnce(serve_datagram::Joining) -> Result<(), String>,
+    ) -> Result<(), String> {
+        let joining = {
+            let mut state = state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if state.abandoned {
+                return Err(DATAGRAM_OPEN_ABANDONED.to_owned());
+            }
+            state
+                .joining
+                .take()
+                .ok_or_else(|| DATAGRAM_ALREADY_ADMITTED.to_owned())?
+        };
+        // Joining and retirement cross plugin/connector code: neither holds our state mutex.
+        join(joining)?;
+        let abandoned = {
+            let mut state = state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if state.abandoned {
+                true
+            } else {
+                state.unit = Some(unit);
+                false
+            }
+        };
+        if abandoned {
+            crate::root::connector::the().unpair(unit);
+            Err(DATAGRAM_OPEN_ABANDONED.to_owned())
+        } else {
+            Ok(())
+        }
+    }
+
+    fn transfer(&mut self) {
+        self.transferred = true;
+    }
+}
+
+impl Drop for DatagramOpening {
+    fn drop(&mut self) {
+        if self.transferred {
+            return;
+        }
+        let (joining, unit) = {
+            let mut state = self
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            state.abandoned = true;
+            (state.joining.take(), state.unit.take())
+        };
+        drop(joining);
+        if let Some(unit) = unit {
+            crate::root::connector::the().unpair(unit);
+        }
+    }
+}
+
 /// The admitted carrier closes on normal completion and when shutdown aborts a stalled future.
 struct CarrierEnd {
     unit: u64,
@@ -5560,6 +5632,14 @@ pub struct IngressReply {
     trailers: Option<oneshot::Receiver<axum::http::HeaderMap>>,
 }
 
+/// Ordinary whole replies retain their buffering; nested replies are collected only by the
+/// existing nesting bound, while their producer is still running.
+#[derive(Clone, Copy)]
+enum WholeReplies {
+    Collect,
+    Stream,
+}
+
 impl IngressCaller {
     /// A caller side and the reply it feeds.
     #[must_use]
@@ -5672,7 +5752,15 @@ impl IngressReply {
     /// path). A unit that ends with no head answers what it rendered (a refusal or failure before
     /// any byte), or the driver's plane-fault status when it rendered nothing.
     pub async fn answer(self, unit: DrivenUnit) -> Response {
-        self.answer_with(unit, |rendered| match rendered {
+        self.answer_collecting(unit, WholeReplies::Collect).await
+    }
+
+    async fn answer_nested(self, unit: DrivenUnit) -> Response {
+        self.answer_collecting(unit, WholeReplies::Stream).await
+    }
+
+    async fn answer_collecting(self, unit: DrivenUnit, whole: WholeReplies) -> Response {
+        self.answer_with_collection(unit, whole, |rendered| match rendered {
             Some(r) => stated((r.status, r.fields), Body::from(r.body)),
             None => stated(
                 (refusal_status(ReasonCode::PlanePanic), Vec::new()),
@@ -5686,7 +5774,17 @@ impl IngressReply {
     /// it rendered (a framed stream's framer closes it, ARCHITECT 4l).
     pub async fn answer_with(
         self,
+        unit: DrivenUnit,
+        unrendered: impl FnOnce(Option<Rendered>) -> Response,
+    ) -> Response {
+        self.answer_with_collection(unit, WholeReplies::Collect, unrendered)
+            .await
+    }
+
+    async fn answer_with_collection(
+        self,
         mut unit: DrivenUnit,
+        whole: WholeReplies,
         unrendered: impl FnOnce(Option<Rendered>) -> Response,
     ) -> Response {
         let IngressReply {
@@ -5704,7 +5802,7 @@ impl IngressReply {
             // rendered in full) is collected to its end and sent under the length of what was
             // written, as the previous release sent a buffered answer; any other answer goes out
             // piece by piece as the unit writes it.
-            Ok(Some(h)) if whole_answer(&h.1) => {
+            Ok(Some(h)) if matches!(whole, WholeReplies::Collect) && whole_answer(&h.1) => {
                 let whole = collect(body, unit).await;
                 return stated(unlengthed(h), Body::from(whole));
             }
@@ -5713,6 +5811,9 @@ impl IngressReply {
             // A stream already closed before its first body byte goes out whole instead, the unit
             // run to its end.
             Ok(Some(h)) => {
+                // A whole nested reply keeps its previous head semantics: its stated length is
+                // removed as before, while buffering waits for the nesting bound below.
+                let h = if whole_answer(&h.1) { unlengthed(h) } else { h };
                 if let Some(block) = closed_before_body(&body, trailers.as_mut()) {
                     let _ = unit.await;
                     return closed_whole(h, block);
@@ -5724,7 +5825,7 @@ impl IngressReply {
             Err(rendered) => match head.try_recv() {
                 // The unit ended in the poll that stated its head: a whole answer is every piece it
                 // wrote, sent under its length.
-                Ok(h) if whole_answer(&h.1) => {
+                Ok(h) if matches!(whole, WholeReplies::Collect) && whole_answer(&h.1) => {
                     let mut body = body;
                     let mut whole = Whole::default();
                     while let Ok(bytes) = body.try_recv() {
@@ -5733,6 +5834,7 @@ impl IngressReply {
                     return stated(unlengthed(h), Body::from(whole.into_bytes()));
                 }
                 Ok(h) => {
+                    let h = if whole_answer(&h.1) { unlengthed(h) } else { h };
                     if let Some(block) = closed_before_body(&body, trailers.as_mut()) {
                         return closed_whole(h, block);
                     }
