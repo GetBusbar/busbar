@@ -49,6 +49,14 @@ pub trait RecoverySink: Send + Sync {
         Ok(Vec::new())
     }
 
+    /// Verify a child's immutable origin against the parent's currently selected
+    /// predecessor chain without granting ownership of that parent.
+    fn verify_origin(&self, _event: &RecoveryEvent) -> Result<(), RecoveryError> {
+        Err(RecoveryError::Unavailable(
+            "recovery Store cannot verify external child origin".into(),
+        ))
+    }
+
     /// Select a fully journaled, audited ownership handover in one exact head CAS.
     /// The returned selected predecessor chain is the only authority to resume effects.
     fn adopt_verdict(
@@ -573,6 +581,18 @@ impl super::GovState {
         entries.remove(&operation_id);
     }
 
+    pub(super) fn verify_external_recovery_origin(
+        &self,
+        event: &RecoveryEvent,
+    ) -> super::RecordStoreResult<()> {
+        self.recovery_book
+            .sink
+            .get()
+            .ok_or_else(|| super::RecordStoreError("recovery Store is not attached".into()))?
+            .verify_origin(event)
+            .map_err(|error| super::RecordStoreError(error.to_string()))
+    }
+
     pub(super) fn recovery_driver(
         &self,
         operation_id: [u8; 16],
@@ -657,9 +677,9 @@ pub(super) struct RecoveryChild {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct RecoveryOrigin {
-    pub(super) operation_id: [u8; 16],
-    pub(super) event_fingerprint: [u8; 32],
+pub struct RecoveryOrigin {
+    pub operation_id: [u8; 16],
+    pub event_fingerprint: [u8; 32],
 }
 
 #[cfg(test)]

@@ -152,46 +152,22 @@ impl GovState {
     }
 
     pub(super) fn validate_recovery_origin(&self, event: &RecoveryEvent) -> RecordStoreResult<()> {
-        let links: Links = decode(&event.payload)?;
-        let Some(origin) = links.origin else {
-            return Ok(());
-        };
-        let parent = self
-            .recovery_ancestor(origin.operation_id, origin.event_fingerprint)
-            .ok_or_else(|| invalid("child origin is not in a selected predecessor chain"))?;
-        let parent_links: Links = decode(&parent.payload)?;
-        let descriptor = parent_links
-            .handoffs
-            .iter()
-            .find(|child| child.operation_id == event.operation_id)
-            .ok_or_else(|| invalid("selected parent does not authorize this child"))?;
-        if descriptor.kind != event.kind
-            || descriptor.body_fingerprint != event.body_fingerprint
-            || descriptor.first_sent_at_ms != event.first_sent_at_ms
-        {
-            return Err(invalid("child identity differs from selected parent"));
-        }
-        // Later child checkpoints legitimately change raw custody. Compare the
-        // original Intent against the exact parent template, never the latest tip.
+        let origin = event.origin_reference().map_err(invalid)?;
         let initial = self
             .recovery_initial_event(event.operation_id)
             .unwrap_or_else(|| event.clone());
-        let mut actual: serde_json::Value = decode(&initial.payload)?;
-        actual
-            .as_object_mut()
-            .ok_or_else(|| invalid("child payload is not an object"))?
-            .remove("origin");
-        let mut expected: serde_json::Value = decode(&descriptor.payload)?;
-        expected
-            .as_object_mut()
-            .ok_or_else(|| invalid("child template is not an object"))?
-            .remove("origin");
-        if actual != expected {
-            return Err(invalid(
-                "child raw body differs from selected parent template",
-            ));
+        if initial.origin_reference().map_err(invalid)? != origin {
+            return Err(invalid("child origin changed after its original Intent"));
         }
-        Ok(())
+        let Some(origin) = origin else {
+            return Ok(());
+        };
+        if let Some(parent) = self.recovery_ancestor(origin.operation_id, origin.event_fingerprint)
+        {
+            parent.authorizes_child(&initial).map_err(invalid)
+        } else {
+            self.verify_external_recovery_origin(&initial)
+        }
     }
 
     /// Select missing child Intents only after their exact parent checkpoint is
@@ -821,6 +797,73 @@ impl GovState {
                     RecoveryKind::Correction => {}
                 }
             }
+        }
+        Ok(())
+    }
+}
+
+impl RecoveryEvent {
+    /// Read typed origin identity without interpreting custody counts or granting ownership.
+    pub fn origin_reference(&self) -> Result<Option<RecoveryOrigin>, RecoveryError> {
+        serde_json::from_slice::<Links>(&self.payload)
+            .map(|links| links.origin)
+            .map_err(|error| {
+                RecoveryError::Invalid(format!("invalid recovery origin payload: {error}"))
+            })
+    }
+
+    /// Pure matching only: the caller must prove this exact parent checkpoint is
+    /// in its current selected predecessor chain before using the authorization.
+    pub fn authorizes_child(&self, child_genesis: &RecoveryEvent) -> Result<(), RecoveryError> {
+        let invalid = |reason: &str| RecoveryError::Invalid(reason.into());
+        child_genesis.follows(None)?;
+        let origin = child_genesis
+            .origin_reference()?
+            .ok_or_else(|| invalid("child Intent has no origin"))?;
+        if origin.operation_id != self.operation_id
+            || origin.event_fingerprint != self.fingerprint()?
+            || child_genesis.operation_id == self.operation_id
+        {
+            return Err(invalid("child origin differs from exact parent checkpoint"));
+        }
+        let links: Links = serde_json::from_slice(&self.payload)
+            .map_err(|error| invalid(&format!("invalid parent handoff: {error}")))?;
+        let mut descriptors = links
+            .handoffs
+            .iter()
+            .filter(|child| child.operation_id == child_genesis.operation_id);
+        let descriptor = descriptors
+            .next()
+            .ok_or_else(|| invalid("parent does not authorize child"))?;
+        if descriptors.next().is_some() {
+            return Err(invalid("parent repeats child descriptor"));
+        }
+        if descriptor.kind != child_genesis.kind
+            || descriptor.body_fingerprint != child_genesis.body_fingerprint
+            || descriptor.first_sent_at_ms != child_genesis.first_sent_at_ms
+        {
+            return Err(invalid("child identity differs from exact parent template"));
+        }
+        let mut actual: serde_json::Value = serde_json::from_slice(&child_genesis.payload)
+            .map_err(|error| invalid(&format!("invalid child payload: {error}")))?;
+        actual
+            .as_object_mut()
+            .ok_or_else(|| invalid("child payload is not an object"))?
+            .remove("origin");
+        let mut expected: serde_json::Value = serde_json::from_slice(&descriptor.payload)
+            .map_err(|error| invalid(&format!("invalid child template: {error}")))?;
+        let expected_object = expected
+            .as_object_mut()
+            .ok_or_else(|| invalid("child template is not an object"))?;
+        if expected_object
+            .get("origin")
+            .is_some_and(|origin| !origin.is_null())
+        {
+            return Err(invalid("child template already contains an origin"));
+        }
+        expected_object.remove("origin");
+        if actual != expected {
+            return Err(invalid("child raw body differs from exact parent template"));
         }
         Ok(())
     }
