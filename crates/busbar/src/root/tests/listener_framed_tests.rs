@@ -1958,58 +1958,32 @@ async fn a_final_body_emit_remains_alive_through_graceful_drain() {
 #[tokio::test]
 async fn a_parked_stream_does_not_hold_an_independent_stream_behind_its_body() {
     let _publishing = anonymous_policy().await;
-    use std::pin::Pin;
-    use std::task::{Context, Poll};
-
-    struct FirstBody {
-        bytes: Option<bytes::Bytes>,
-        produced: Option<tokio::sync::oneshot::Sender<()>>,
-    }
-
-    impl http_body::Body for FirstBody {
-        type Data = bytes::Bytes;
-        type Error = std::convert::Infallible;
-
-        fn poll_frame(
-            self: Pin<&mut Self>,
-            _: &mut Context<'_>,
-        ) -> Poll<Option<Result<http_body::Frame<Self::Data>, Self::Error>>> {
-            let this = self.get_mut();
-            if let Some(produced) = this.produced.take() {
-                let _ = produced.send(());
-            }
-            Poll::Ready(
-                this.bytes
-                    .take()
-                    .map(|bytes| Ok(http_body::Frame::data(bytes))),
-            )
-        }
-    }
-
-    let door = Arc::new(busbar_test_kit::root_door_fixtures::pending_mux_accept::Mux::default());
-    let entry: Arc<dyn FramerDoor> = door.clone();
-    let framer = data_framer(Arc::new(move |scheme: &str| {
-        (scheme == DATA_SCHEME).then(|| Arc::clone(&entry))
+    let observed = ObservedDoor::new(actual_transport(busbar_transport_http::door::door));
+    let door: Arc<dyn FramerDoor> = observed.clone();
+    let framer = data_framer(Arc::new(move |scheme| {
+        (scheme == DATA_SCHEME).then(|| door.clone())
     }))
-    .expect("the multiplexing accepting fixture is found");
-    let (mut client, server) = tokio::io::duplex(4096);
-    let (stop, stopped) = tokio::sync::watch::channel(false);
-    let (produced, first_body) = tokio::sync::oneshot::channel();
-    let produced = Arc::new(std::sync::Mutex::new(Some(produced)));
+    .unwrap();
+    let (release, held) = tokio::sync::oneshot::channel();
+    let held = Arc::new(std::sync::Mutex::new(Some(held)));
     let router = Router::new()
         .route(
             "/first",
             axum::routing::get(move || {
-                let produced = produced.lock().unwrap().take();
+                let held = held.lock().unwrap().take().unwrap();
                 async move {
-                    axum::response::Response::new(axum::body::Body::new(FirstBody {
-                        bytes: Some(bytes::Bytes::from_static(b"first")),
-                        produced,
-                    }))
+                    axum::response::Response::new(axum::body::Body::from_stream(
+                        futures::stream::once(async move {
+                            held.await.unwrap();
+                            Ok::<_, std::io::Error>(bytes::Bytes::from_static(b"first"))
+                        }),
+                    ))
                 }
             }),
         )
         .route("/second", axum::routing::get(|| async { "second" }));
+    let (client, server) = tokio::io::duplex(64 * 1024);
+    let (stop, stopped) = tokio::sync::watch::channel(false);
     let served = tokio::spawn(super::serve(
         server,
         framer,
@@ -2018,81 +1992,93 @@ async fn a_parked_stream_does_not_hold_an_independent_stream_behind_its_body() {
         Duration::from_secs(30),
         stopped,
     ));
-    client.write_all(b"1").await.unwrap();
-    tokio::time::timeout(Duration::from_secs(10), door.wait_for_head())
-        .await
-        .expect("stream one's response head parks");
-    tokio::time::timeout(Duration::from_secs(10), first_body)
-        .await
-        .expect("the first body is produced")
+    let (mut sender, connection) = h2::client::handshake(client).await.unwrap();
+    let connection = tokio::spawn(async move { connection.await });
+    sender = sender.ready().await.unwrap();
+    let (first, _) = sender
+        .send_request(
+            axum::http::Request::builder()
+                .uri("http://localhost/first")
+                .body(())
+                .unwrap(),
+            true,
+        )
         .unwrap();
-
-    client.write_all(b"3").await.unwrap();
-    let independent = tokio::time::timeout(Duration::from_secs(10), door.wait_for_second()).await;
-    let before_release = door.emitted();
-    door.release();
-    drop(client);
+    let first = tokio::time::timeout(Duration::from_secs(10), first)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(first.status(), axum::http::StatusCode::OK);
+    let mut first = first.into_body();
+    assert!(
+        tokio::time::timeout(Duration::from_millis(20), first.data())
+            .await
+            .is_err(),
+        "the first stream's actual body producer is still held"
+    );
+    sender = sender.ready().await.unwrap();
+    let (second, _) = sender
+        .send_request(
+            axum::http::Request::builder()
+                .uri("http://localhost/second")
+                .body(())
+                .unwrap(),
+            true,
+        )
+        .unwrap();
+    let second = tokio::time::timeout(Duration::from_secs(10), second)
+        .await
+        .expect("the real HTTP/2 sibling is independent of the held first body")
+        .unwrap();
+    assert_eq!(second.status(), axum::http::StatusCode::OK);
+    let mut second = second.into_body();
+    let mut independent = Vec::new();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while let Some(chunk) = second.data().await {
+            let chunk = chunk.unwrap();
+            independent.extend_from_slice(&chunk);
+            second.flow_control().release_capacity(chunk.len()).unwrap();
+        }
+    })
+    .await
+    .expect("the sibling body completes before the first is released");
+    assert_eq!(independent, b"second");
+    release.send(()).unwrap();
+    let mut first_body = Vec::new();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while let Some(chunk) = first.data().await {
+            let chunk = chunk.unwrap();
+            first_body.extend_from_slice(&chunk);
+            first.flow_control().release_capacity(chunk.len()).unwrap();
+        }
+    })
+    .await
+    .expect("the released first stream completes once");
+    assert_eq!(first_body, b"first");
+    assert_eq!(
+        observed.count(|call| matches!(call, ObservedCall::Emit { status: 200, .. })),
+        2,
+        "each actual stream emits one response head"
+    );
+    drop(sender);
+    connection.abort();
     stop.send(true).unwrap();
     tokio::time::timeout(Duration::from_secs(10), served)
         .await
-        .expect("both streams drain after release")
-        .expect("the serving task joins");
-    assert!(
-        independent.is_ok(),
-        "a parked stream held its independent sibling behind its body"
-    );
-    assert!(
-        before_release.iter().all(|emit| emit.stream == 3),
-        "stream one stays parked"
-    );
-    assert_eq!(
-        before_release
-            .iter()
-            .filter(|emit| emit.status == 0)
-            .flat_map(|emit| emit.bytes.iter().copied())
-            .collect::<Vec<_>>(),
-        b"second",
-    );
-    let all = door.emitted();
-    let first: Vec<_> = all.iter().filter(|emit| emit.stream == 1).collect();
-    assert_eq!(first.iter().filter(|emit| emit.status != 0).count(), 1);
-    assert_eq!(
-        first
-            .iter()
-            .filter(|emit| emit.status == 0)
-            .flat_map(|emit| emit.bytes.iter().copied())
-            .collect::<Vec<_>>(),
-        b"first"
-    );
-    assert_eq!(
-        first
-            .iter()
-            .filter(|emit| emit.status == 0 && emit.end)
-            .count(),
-        1
-    );
+        .unwrap()
+        .unwrap();
 }
 
 #[tokio::test]
+#[cfg(feature = "transport-ws")]
 async fn a_session_waits_for_its_parked_message_before_emitting_the_next() {
-    let _publishing = anonymous_policy().await;
     use busbar_kernel::plane_routes::{FramedSession, SessionOut, SessionPipe};
-
-    let door =
-        Arc::new(busbar_test_kit::root_door_fixtures::pending_mux_accept::Mux::with_session());
-    let entry: Arc<dyn FramerDoor> = door.clone();
-    let framer = data_framer(Arc::new(move |scheme: &str| {
-        matches!(scheme, DATA_SCHEME | "ws").then(|| Arc::clone(&entry))
-    }))
-    .expect("the accepting and session claims are found");
+    let (_publishing, framer, _http, ws) = actual_session_framer().await;
     let router = Router::new().route(
         "/first",
         axum::routing::get(
             |axum::Extension(session): axum::Extension<FramedSession>| async move {
-                assert!(
-                    session.admit().await,
-                    "the session adoption is explicitly committed"
-                );
+                assert!(session.admit().await);
                 let (from_caller, _incoming) = tokio::sync::mpsc::channel(1);
                 let (outgoing, to_caller) = tokio::sync::mpsc::channel(2);
                 outgoing
@@ -2116,9 +2102,9 @@ async fn a_session_waits_for_its_parked_message_before_emitting_the_next() {
             },
         ),
     );
-    let (mut client, server) = tokio::io::duplex(4096);
+    let (mut client, server) = tokio::io::duplex(1);
     let (stop, stopped) = tokio::sync::watch::channel(false);
-    let served = tokio::spawn(super::serve(
+    let mut served = tokio::spawn(super::serve(
         server,
         framer,
         router,
@@ -2126,41 +2112,72 @@ async fn a_session_waits_for_its_parked_message_before_emitting_the_next() {
         Duration::from_secs(30),
         stopped,
     ));
-    client.write_all(b"1").await.unwrap();
-    tokio::time::timeout(Duration::from_secs(10), door.wait_for_head())
-        .await
-        .expect("the first session message parks");
-    let ended_before_release = served.is_finished();
-    let before_release = door.emitted();
-    door.release();
+    client.write_all(SESSION_REQUEST).await.unwrap();
+    let mut head = Vec::new();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while !head.ends_with(b"\r\n\r\n") {
+            let mut byte = [0; 1];
+            assert_eq!(client.read(&mut byte).await.unwrap(), 1);
+            head.push(byte[0]);
+            assert!(head.len() < 16 * 1024);
+        }
+        while ws.count(|call| {
+            matches!(
+                call,
+                ObservedCall::Emit {
+                    status: 0,
+                    len: 5,
+                    ..
+                }
+            )
+        }) == 0
+        {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("the actual WS message reaches the blocked one-byte pipe");
+    assert!(head.starts_with(b"HTTP/1.1 101"), "{head:?}");
+    assert!(
+        tokio::time::timeout(Duration::from_millis(20), &mut served)
+            .await
+            .is_err(),
+        "wire pressure keeps the queued session alive after its producer closes"
+    );
+    let mut frames = Vec::new();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        for (opcode, expected) in [(1_u8, b"first".as_slice()), (2_u8, b"second".as_slice())] {
+            let mut header = [0; 2];
+            client.read_exact(&mut header).await.unwrap();
+            assert_eq!(
+                header[0],
+                0x80 | opcode,
+                "the actual WS message keeps its frame kind"
+            );
+            assert_eq!(
+                header[1] as usize,
+                expected.len(),
+                "server frames are complete and unmasked"
+            );
+            let mut payload = vec![0; expected.len()];
+            client.read_exact(&mut payload).await.unwrap();
+            assert_eq!(payload, expected);
+            frames.push(payload);
+        }
+    })
+    .await
+    .expect("both messages arrive once and in order after reading resumes");
+    assert_eq!(frames, [b"first".to_vec(), b"second".to_vec()]);
+    assert_eq!(
+        ws.count(|call| matches!(call, ObservedCall::Emit { status: 101, .. })),
+        1,
+        "the actual session handshake commits once"
+    );
     let _ = stop.send(true);
     tokio::time::timeout(Duration::from_secs(10), served)
         .await
-        .expect("the session drains after its parked message resumes")
-        .expect("the serving task joins");
-    assert!(
-        !ended_before_release,
-        "a pending session message must keep the connection alive"
-    );
-    assert!(
-        before_release.is_empty(),
-        "no session message completes before its gate"
-    );
-    assert_eq!(
-        door.committed_heads(),
-        1,
-        "one accepted head commits the session"
-    );
-    let emitted = door.emitted();
-    assert_eq!(
-        emitted
-            .iter()
-            .map(|value| value.bytes.as_slice())
-            .collect::<Vec<_>>(),
-        [b"first".as_slice(), b"second".as_slice()],
-        "both messages complete once and in order despite the already-closed sender"
-    );
-    assert!(emitted.iter().all(|value| value.stream == 1 && value.end));
+        .unwrap()
+        .unwrap();
 }
 
 fn staged_mux_framer(
