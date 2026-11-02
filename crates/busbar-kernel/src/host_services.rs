@@ -208,6 +208,8 @@ pub enum NestReply {
     },
     /// Nothing serves the claim, or the child could not be run; REFUSED with this reason.
     Unserved(&'static str),
+    /// The child already ran, but its reply could not be read; FAILED with this reason.
+    Failed(&'static str),
 }
 
 /// Where a nested unit's reply goes, once.
@@ -327,6 +329,31 @@ impl Drop for Owed {
     }
 }
 
+/// A sighting owns its key through the queued Store effect. Retire that owner before answering,
+/// including from an unrun or unwinding job, so a later callback may immediately retry the key.
+struct TrustSightOwed {
+    permit: Option<crate::trust::book::DecisionPermit>,
+    later: Option<Later>,
+}
+
+impl TrustSightOwed {
+    fn answer(mut self, answer: Stored) {
+        drop(self.permit.take());
+        if let Some(later) = self.later.take() {
+            later(answer);
+        }
+    }
+}
+
+impl Drop for TrustSightOwed {
+    fn drop(&mut self) {
+        drop(self.permit.take());
+        if let Some(later) = self.later.take() {
+            later(failed(POOL_REFUSED));
+        }
+    }
+}
+
 /// A flush the pool has not run yet. Dropped unrun (the pool refused it) it abandons the flush, so
 /// the next write starts another.
 struct Unrun(Option<Arc<WriteBehind>>);
@@ -387,6 +414,7 @@ fn nested_answer(reply: NestReply) -> Stored {
             body,
         } => (status, fields, body),
         NestReply::Unserved(why) => return Stored::refused(why),
+        NestReply::Failed(why) => return failed(why),
     };
     let mut s = Stored::ready(u64::from(status));
     let len = body.len();
@@ -1146,8 +1174,7 @@ impl KernelServices {
             Some((counterparty, r.recorded_at.saturating_mul(1000)))
         });
         self.trust
-            .admit(&key, facts.trust.iter().cloned(), replayed);
-        self.trust.admit_decided(instance, &decided);
+            .admit_with_decisions(&key, facts.trust.iter().cloned(), replayed, &decided);
         instances.insert(key, Arc::new(facts));
         Ok(())
     }
@@ -1178,6 +1205,7 @@ impl KernelServices {
     ///
     /// [`TrustRefused::NoSuchKey`] for a key no admitted instance has,
     /// [`TrustRefused::NothingSighted`] for an approval with nothing to approve at,
+    /// [`TrustRefused::Stale`] when another local mutation owns the key or its declaration changed,
     /// [`TrustRefused::Unverified`] for an approval at a sighting that failed its verification, and
     /// [`TrustRefused::Store`] (the store's words) when the decision could not be kept.
     pub fn trust_rule(&self, key: &str, ruling: Ruling) -> Result<KeyRow, TrustRefused> {
@@ -1222,6 +1250,10 @@ impl KernelServices {
         // KEPT BEFORE IT IS TAKEN: the decision is judged against the book, kept durably, and only
         // then takes effect, so a decision the store refused is not in force in this process
         // either (THE DESIGN §11.12 l.1617-1619, the trust record is durable; Q128 p5#2).
+        let permit = self
+            .trust
+            .begin_decision(instance, counterparty, item)
+            .map_err(refused)?;
         let fact = self
             .trust
             .rule(instance, counterparty, item, ruling, expected)
@@ -1231,7 +1263,7 @@ impl KernelServices {
                 .keep_decision(&fact, (self.wall_ms)() / 1000)
                 .map_err(TrustRefused::Store)?;
         }
-        let row = self.trust.apply(&fact).map_err(refused)?;
+        let row = permit.apply(&fact).map_err(refused)?;
         let clears = fact.item.is_none() && ruling == Ruling::Approve;
         if let Some(d) = self.demotions.get().filter(|_| clears) {
             let cleared = |server: &str| {
@@ -1733,14 +1765,9 @@ impl KernelServices {
         let (record, trust) = (Arc::clone(&d.record), Arc::clone(&self.trust));
         pool.run(Box::new(move || {
             let _resync = resync;
+            let snapshot = trust.decision_snapshot();
             match record.decisions() {
-                Ok(rows) => {
-                    let instances: std::collections::BTreeSet<&str> =
-                        rows.iter().map(|r| r.instance.as_str()).collect();
-                    for instance in instances {
-                        trust.admit_decided(instance, &rows);
-                    }
-                }
+                Ok(rows) => trust.resync_decided(&snapshot, &rows),
                 Err(why) => crate::diagnostics::diag_warn!(
                     crate::diagnostics::REVOCATION_RESYNC_FAILED,
                     error = %why,
@@ -1921,7 +1948,8 @@ pub enum TrustRefused {
     NothingSighted,
     /// The counterparty declares no authenticity root: nothing at it can be approved.
     Rootless,
-    /// The fingerprint the caller approves is not the key's current sighting.
+    /// The fingerprint the caller approves is not the key's current sighting, or another local
+    /// mutation currently owns its durable decision key.
     Stale,
     /// The key's current sighting failed its verification
     /// ([`crate::trust::book::UNVERIFIED_SIGHTING`]): nothing verified to approve.
@@ -2220,6 +2248,23 @@ impl HostServices for KernelServices {
             (Some(d), Some(pool)) => Some((d, pool)),
             (None, _) => None,
         };
+        // The queued demotion/clear and an operator's approval must own the same key through
+        // their final Store effect. An abandoned job retires its owner without undoing the
+        // sighting's intentional fail-soft RAM quarantine.
+        let permit = match self
+            .trust
+            .begin_sighting(&caller.instance, counterparty, None)
+        {
+            Ok(permit) => permit,
+            Err(Undecided::NoSuchKey) => {
+                return Ran::Now(Stored::refused(if self.facts(caller).is_some() {
+                    NOT_A_COUNTERPARTY
+                } else {
+                    NOT_ADMITTED
+                }));
+            }
+            Err(_) => return Ran::Now(Stored::refused(DECISION_UNKEPT)),
+        };
         let (sight, effect) =
             match self
                 .trust
@@ -2240,7 +2285,11 @@ impl HostServices for KernelServices {
         let key = demotion_key(&caller.instance, counterparty);
         // The default instance also clears the unprefixed row it was replayed from.
         let unprefixed = (caller.instance == d.default_instance).then(|| counterparty.to_string());
-        submit(pool, later, move || {
+        let owed = TrustSightOwed {
+            permit: Some(permit),
+            later: Some(later),
+        };
+        pool.run(Box::new(move || {
             let settle = |server: &str, state| {
                 crate::trust::demotion::settle(&record, server, state);
             };
@@ -2252,8 +2301,9 @@ impl HostServices for KernelServices {
                     settle(&cp, crate::trust::TrustState::Approved);
                 }
             }
-            answer
-        })
+            owed.answer(answer);
+        }));
+        Ran::Later
     }
 
     fn entitlement_check(&self, caller: &Caller, unit: Option<u64>, target: &str) -> Stored {
@@ -2462,11 +2512,30 @@ impl HostServices for KernelServices {
         item: &str,
         digest: &str,
     ) -> Stored {
+        // An item demotion and an operator ruling upsert the SAME durable key. Claim it before
+        // observing drift, so a reentrant/racing ruling cannot reverse their Store/RAM order.
+        let mut permit = match self
+            .trust
+            .begin_sighting(&caller.instance, counterparty, Some(item))
+        {
+            Ok(permit) => permit,
+            Err(Undecided::NoSuchKey) => {
+                return Stored::refused(if self.facts(caller).is_some() {
+                    NOT_A_COUNTERPARTY
+                } else {
+                    NOT_ADMITTED
+                });
+            }
+            Err(_) => return Stored::refused(DECISION_UNKEPT),
+        };
         match self
             .trust
             .sight_item_kept(&caller.instance, counterparty, item, digest)
         {
             Ok((sight, demotion)) => {
+                if demotion.is_some() {
+                    permit.demoted();
+                }
                 // The item's drift demotion is kept with the operator's decisions, so a restart
                 // never lets a reverted item serve without a person's approval.
                 if let (Some(fact), Some(d)) = (demotion, self.demotions.get()) {

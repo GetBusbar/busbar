@@ -2239,10 +2239,18 @@ struct Probe {
     kernel: OnceLock<std::sync::Weak<KernelServices>>,
     lock_free_at_read: Mutex<Vec<bool>>,
     decision_read: OnceLock<Arc<DecisionRead>>,
+    decision_write: OnceLock<Arc<DecisionWrite>>,
+    demotion_write: OnceLock<Arc<DecisionWrite>>,
+    record_store: OnceLock<Arc<MemoryStore>>,
 }
 
 type DecisionRead =
     dyn Fn() -> busbar_contract::records::RecordStoreResult<Vec<Vec<u8>>> + Send + Sync;
+type DecisionWrite = dyn Fn(
+        busbar_contract::records::PlaneRecordRef<'_>,
+    ) -> busbar_contract::records::RecordStoreResult<()>
+    + Send
+    + Sync;
 
 impl crate::store::plane_view::PlaneStore for Probe {
     fn upsert_plane_record(
@@ -2254,6 +2262,19 @@ impl crate::store::plane_view::PlaneStore for Probe {
             && self.refuse_decisions.load(Ordering::SeqCst)
         {
             return Err("the store is down".into());
+        }
+        if kind == crate::store::plane_view::KIND_TRUST_DECISION {
+            if let Some(write) = self.decision_write.get() {
+                return write(record);
+            }
+        }
+        if kind == crate::store::plane_view::KIND_DEMOTION {
+            if let Some(write) = self.demotion_write.get() {
+                return write(record);
+            }
+        }
+        if let Some(store) = self.record_store.get() {
+            return RecordStore::upsert_plane_record(&**store, record);
         }
         Ok(())
     }
@@ -2273,7 +2294,7 @@ impl crate::store::plane_view::PlaneStore for Probe {
     fn list_plane_records(
         &self,
         kind: &str,
-        _selector: &busbar_contract::records::PlaneSelector,
+        selector: &busbar_contract::records::PlaneSelector,
     ) -> busbar_contract::records::RecordStoreResult<Vec<Vec<u8>>> {
         if kind == crate::store::plane_view::KIND_TRUST_DECISION {
             if let Some(k) = self.kernel.get().and_then(std::sync::Weak::upgrade) {
@@ -2283,6 +2304,9 @@ impl crate::store::plane_view::PlaneStore for Probe {
             if let Some(read) = self.decision_read.get() {
                 return read();
             }
+        }
+        if let Some(store) = self.record_store.get() {
+            return RecordStore::list_plane_records(&**store, kind, selector);
         }
         Ok(Vec::new())
     }
@@ -2302,9 +2326,12 @@ impl crate::store::plane_view::PlaneStore for Probe {
     }
     fn delete_plane_record(
         &self,
-        _kind: &str,
-        _id: &str,
+        kind: &str,
+        id: &str,
     ) -> busbar_contract::records::RecordStoreResult<()> {
+        if let Some(store) = self.record_store.get() {
+            return RecordStore::delete_plane_record(&**store, kind, id);
+        }
         Ok(())
     }
     fn redeem_plane_token(
@@ -2571,6 +2598,9 @@ fn a_trust_decision_made_through_another_node_takes_effect_within_one_window() {
 
 #[path = "trust_resync_tests.rs"]
 mod trust_resync_tests;
+
+#[path = "trust_ordering_tests.rs"]
+mod trust_ordering_tests;
 
 /// A store that is down: every plane-record call fails.
 struct DownStore;

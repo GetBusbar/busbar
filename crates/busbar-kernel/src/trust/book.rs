@@ -85,6 +85,9 @@ pub enum Unjudged {
 /// One counterparty's state.
 #[derive(Debug, Clone, Default)]
 struct Subject {
+    /// Identity of the local mutation boundary. Snapshots keep the old allocation alive, so a
+    /// completed mutation cannot wrap a counter or reuse an identity underneath a fleet read.
+    decision_epoch: Arc<()>,
     /// The catalogue hash sightings are judged against: the declared fingerprint, or the one the
     /// operator approved.
     pinned: Option<String>,
@@ -308,7 +311,8 @@ pub enum Undecided {
     NothingSighted,
     /// The counterparty declares no authenticity root: nothing at it can be approved.
     Rootless,
-    /// The fingerprint the caller approves is not the key's current sighting.
+    /// The fingerprint the caller approves is not the key's current sighting, or another local
+    /// mutation currently owns its durable decision key.
     Stale,
     /// The key's current sighting is a document that failed its verification
     /// ([`UNVERIFIED_SIGHTING`]): there is nothing verified to approve.
@@ -351,7 +355,54 @@ fn declared_pin(entry: &TrustEntry) -> Option<String> {
 struct Book {
     entries: BTreeMap<String, TrustEntry>,
     subjects: BTreeMap<String, Subject>,
+    /// Only live owners occupy this set; a removed declaration leaves no permanent tombstone.
+    deciding: std::collections::BTreeSet<(String, Option<String>)>,
 }
+
+/// One local mutation of a durable decision key. This is ownership, never a held host mutex:
+/// Store callbacks may re-enter and other keys may progress. Every exit retires the owner.
+pub(crate) struct DecisionPermit {
+    trust: TrustBook,
+    instance: String,
+    key: (String, Option<String>),
+    invalidate_on_drop: bool,
+}
+
+impl DecisionPermit {
+    /// An item sighting acquired only ownership; a resulting durable demotion also needs a
+    /// completion boundary, including when the Store refuses or unwinds.
+    pub(crate) fn demoted(&mut self) {
+        self.invalidate_on_drop = true;
+    }
+
+    pub(crate) fn apply(&self, fact: &RulingRow) -> Result<KeyRow, Undecided> {
+        if fact.instance != self.instance
+            || fact.counterparty != self.key.0
+            || fact.item != self.key.1
+        {
+            return Err(Undecided::Stale);
+        }
+        self.trust.apply_owned(fact)
+    }
+}
+
+impl Drop for DecisionPermit {
+    fn drop(&mut self) {
+        let mut map = self.trust.lock();
+        if let Some(book) = map.get_mut(self.instance.as_str()) {
+            book.deciding.remove(&self.key);
+            if self.invalidate_on_drop {
+                if let Some(s) = book.subjects.get_mut(&self.key.0) {
+                    s.decision_epoch = Arc::new(());
+                }
+            }
+        }
+    }
+}
+
+/// Local generations captured before crossing the Store read. At most the admitted subjects are
+/// retained, and dropping the read drops every old generation it captured.
+pub(crate) struct DecisionSnapshot(HashMap<Arc<str>, BTreeMap<String, Arc<()>>>);
 
 impl Book {
     /// `name`'s entry and state; a declared counterparty never sighted reads as declared.
@@ -375,15 +426,141 @@ impl Book {
     }
 }
 
+/// Replay only onto the declaration the row was made under, without crossing a Store boundary.
+fn replay_decision(book: &mut Book, row: &RulingRow) {
+    if book
+        .deciding
+        .contains(&(row.counterparty.clone(), row.item.clone()))
+    {
+        return;
+    }
+    let Some((entry, s)) = book.subject_mut(&row.counterparty) else {
+        return;
+    };
+    if row.declared != entry.pin || (row.approved.is_some() && entry.rootless()) {
+        return;
+    }
+    // An approval kept at the placeholder of a failed verification approves nothing.
+    if row.approved.as_deref() == Some(UNVERIFIED_SIGHTING) {
+        return;
+    }
+    match (&row.item, &row.approved) {
+        (Some(item), _) if row.demoted => {
+            s.demoted.insert(item.clone());
+        }
+        (Some(item), at) => {
+            s.granted.insert(item.clone(), at.clone());
+            s.demoted.remove(item);
+        }
+        (None, Some(at)) => {
+            s.pinned = Some(at.clone());
+            s.pending = false;
+            s.revoked = false;
+        }
+        (None, None) => s.revoked = true,
+    }
+}
+
 /// THE TRUST STATE of every admitted instance.
 #[derive(Debug, Default)]
 pub struct TrustBook {
-    inner: Mutex<HashMap<Arc<str>, Book>>,
+    inner: Arc<Mutex<HashMap<Arc<str>, Book>>>,
 }
 
 impl TrustBook {
     fn lock(&self) -> MutexGuard<'_, HashMap<Arc<str>, Book>> {
         self.inner.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Refuse overlapping writers of exactly this durable key, before any mutation or Store call.
+    /// The existing stale-decision refusal asks the caller to retry after the current owner.
+    pub(crate) fn begin_decision(
+        &self,
+        instance: &str,
+        counterparty: &str,
+        item: Option<&str>,
+    ) -> Result<DecisionPermit, Undecided> {
+        self.begin_mutation(instance, counterparty, item, true)
+    }
+
+    /// Ordinary observations do not invalidate a fleet snapshot; only a resulting demotion does.
+    pub(crate) fn begin_sighting(
+        &self,
+        instance: &str,
+        counterparty: &str,
+        item: Option<&str>,
+    ) -> Result<DecisionPermit, Undecided> {
+        self.begin_mutation(instance, counterparty, item, false)
+    }
+
+    fn begin_mutation(
+        &self,
+        instance: &str,
+        counterparty: &str,
+        item: Option<&str>,
+        invalidate_on_drop: bool,
+    ) -> Result<DecisionPermit, Undecided> {
+        let mut map = self.lock();
+        let book = map.get_mut(instance).ok_or(Undecided::NoSuchKey)?;
+        if !book.entries.contains_key(counterparty) {
+            return Err(Undecided::NoSuchKey);
+        }
+        let key = (counterparty.to_string(), item.map(str::to_string));
+        if !book.deciding.insert(key.clone()) {
+            return Err(Undecided::Stale);
+        }
+        if invalidate_on_drop {
+            if let Some((_, s)) = book.subject_mut(counterparty) {
+                s.decision_epoch = Arc::new(());
+            }
+        }
+        Ok(DecisionPermit {
+            trust: TrustBook {
+                inner: Arc::clone(&self.inner),
+            },
+            instance: instance.to_string(),
+            key,
+            invalidate_on_drop,
+        })
+    }
+
+    pub(crate) fn decision_snapshot(&self) -> DecisionSnapshot {
+        DecisionSnapshot(
+            self.lock()
+                .iter()
+                .map(|(instance, book)| {
+                    (
+                        Arc::clone(instance),
+                        book.subjects
+                            .iter()
+                            .map(|(name, s)| (name.clone(), Arc::clone(&s.decision_epoch)))
+                            .collect(),
+                    )
+                })
+                .collect(),
+        )
+    }
+
+    /// Check and replay under the same guard: an old read cannot stand over a newer completed
+    /// local decision. A read spanning a failed/unknown write is also retried next window.
+    pub(crate) fn resync_decided(&self, snapshot: &DecisionSnapshot, rows: &[RulingRow]) {
+        let mut map = self.lock();
+        for row in rows {
+            let Some(book) = map.get_mut(row.instance.as_str()) else {
+                continue;
+            };
+            let epoch = snapshot
+                .0
+                .get(row.instance.as_str())
+                .and_then(|subjects| subjects.get(&row.counterparty));
+            let unchanged = book
+                .subjects
+                .get(&row.counterparty)
+                .is_some_and(|s| epoch.is_some_and(|epoch| Arc::ptr_eq(epoch, &s.decision_epoch)));
+            if unchanged {
+                replay_decision(book, row);
+            }
+        }
     }
 
     /// Admit (or re-admit) `instance` with its parsed trust entries. `demoted` are the durable
@@ -398,6 +575,17 @@ impl TrustBook {
         entries: impl IntoIterator<Item = (String, TrustEntry)>,
         demoted: impl IntoIterator<Item = (&'a str, u64)>,
     ) {
+        self.admit_with_decisions(instance, entries, demoted, &[]);
+    }
+
+    /// Install the declaration and its first-admission replay atomically with local decisions.
+    pub(crate) fn admit_with_decisions<'a>(
+        &self,
+        instance: &Arc<str>,
+        entries: impl IntoIterator<Item = (String, TrustEntry)>,
+        demoted: impl IntoIterator<Item = (&'a str, u64)>,
+        decided: &[RulingRow],
+    ) {
         let entries: BTreeMap<String, TrustEntry> = entries.into_iter().collect();
         let mut map = self.lock();
         let old = map.remove(instance).unwrap_or_default();
@@ -408,6 +596,7 @@ impl TrustBook {
                 .get(name)
                 .filter(|_| old.entries.get(name).map(|e| &e.pin) == Some(&entry.pin));
             let mut s = kept.cloned().unwrap_or_else(|| Subject::declared(entry));
+            s.decision_epoch = Arc::new(());
             if entry.rootless() {
                 s.unroot();
             }
@@ -420,7 +609,15 @@ impl TrustBook {
                     Some(s.ledger.last_drift_ms.map_or(at_ms, |d| d.max(at_ms)));
             }
         }
-        map.insert(Arc::clone(instance), Book { entries, subjects });
+        let mut book = Book {
+            entries,
+            subjects,
+            deciding: old.deciding,
+        };
+        for row in decided.iter().filter(|r| r.instance == instance.as_ref()) {
+            replay_decision(&mut book, row);
+        }
+        map.insert(Arc::clone(instance), book);
     }
 
     /// Judge `hash`, reported for `counterparty` of `instance`, at `now_ms` on the kernel's clock.
@@ -544,8 +741,8 @@ impl TrustBook {
     /// for an approval with nothing ever sighted (or declared) to approve at;
     /// [`Undecided::Rootless`] for an approval at a counterparty with no authenticity root; and
     /// [`Undecided::Stale`] for an approval whose `expected` fingerprint is not the current
-    /// sighting; and [`Undecided::Unverified`] for an approval at a sighting that failed its
-    /// verification ([`UNVERIFIED_SIGHTING`]).
+    /// sighting or whose key another local mutation owns; and [`Undecided::Unverified`] for an
+    /// approval at a sighting that failed its verification ([`UNVERIFIED_SIGHTING`]).
     pub fn decide(
         &self,
         instance: &str,
@@ -554,8 +751,9 @@ impl TrustBook {
         decision: Ruling,
         expected: Option<&str>,
     ) -> Result<(KeyRow, RulingRow), Undecided> {
+        let permit = self.begin_decision(instance, counterparty, item)?;
         let fact = self.rule(instance, counterparty, item, decision, expected)?;
-        let row = self.apply(&fact)?;
+        let row = permit.apply(&fact)?;
         Ok((row, fact))
     }
 
@@ -646,9 +844,15 @@ impl TrustBook {
     ///
     /// [`Undecided::NoSuchKey`] when the instance or counterparty left the book since the ruling;
     /// [`Undecided::Stale`] when its declaration changed since (the kept fact then replays over
-    /// nothing either); [`Undecided::Rootless`] for an approval at a counterparty with no
-    /// authenticity root.
+    /// nothing either) or another local mutation owns its key; [`Undecided::Rootless`] for an
+    /// approval at a counterparty with no authenticity root.
     pub fn apply(&self, fact: &RulingRow) -> Result<KeyRow, Undecided> {
+        let permit =
+            self.begin_decision(&fact.instance, &fact.counterparty, fact.item.as_deref())?;
+        permit.apply(fact)
+    }
+
+    fn apply_owned(&self, fact: &RulingRow) -> Result<KeyRow, Undecided> {
         let mut map = self.lock();
         let book = map
             .get_mut(fact.instance.as_str())
@@ -705,30 +909,9 @@ impl TrustBook {
             return;
         };
         for row in rows.into_iter().filter(|r| r.instance == instance) {
-            let Some((entry, s)) = book.subject_mut(&row.counterparty) else {
-                continue;
-            };
-            if row.declared != entry.pin || (row.approved.is_some() && entry.rootless()) {
-                continue;
-            }
-            // An approval kept at the placeholder of a failed verification approves nothing.
-            if row.approved.as_deref() == Some(UNVERIFIED_SIGHTING) {
-                continue;
-            }
-            match (&row.item, &row.approved) {
-                (Some(item), _) if row.demoted => {
-                    s.demoted.insert(item.clone());
-                }
-                (Some(item), at) => {
-                    s.granted.insert(item.clone(), at.clone());
-                    s.demoted.remove(item);
-                }
-                (None, Some(at)) => {
-                    s.pinned = Some(at.clone());
-                    s.pending = false;
-                    s.revoked = false;
-                }
-                (None, None) => s.revoked = true,
+            replay_decision(book, row);
+            if let Some(s) = book.subjects.get_mut(&row.counterparty) {
+                s.decision_epoch = Arc::new(());
             }
         }
     }
@@ -805,6 +988,7 @@ impl TrustBook {
             .filter(|at| *at != digest && !s.demoted.contains(item))
             .map(str::to_string);
         let demotion = moved.map(|at| {
+            s.decision_epoch = Arc::new(());
             s.demoted.insert(item.to_string());
             RulingRow {
                 instance: instance.to_string(),
