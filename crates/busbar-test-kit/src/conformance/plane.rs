@@ -1777,6 +1777,16 @@ fn reported(v: &Value, what: &str) -> String {
     format!("units={units:?}")
 }
 
+fn release_none_contract(answer: &str) {
+    assert!(
+        matches!(
+            answer,
+            "Ready lease=false " | "Refused lease=false release: no such lease"
+        ),
+        "release none: {answer}"
+    );
+}
+
 fn contract(fold: &Fold, k: &Value) {
     let at = |label: &str| answer(fold, label);
     let str_of = |v: &Value, what: &str| String::from_utf8(text(v, what)).expect("UTF-8 input");
@@ -1809,7 +1819,6 @@ fn contract(fold: &Fold, k: &Value) {
         "arrive claimed",
         "refusal",
         "drive",
-        "release none",
         "tick",
         "cancel",
         "refresh",
@@ -1818,6 +1827,7 @@ fn contract(fold: &Fold, k: &Value) {
     ] {
         assert!(at(label).starts_with("Ready "), "{label}: {}", at(label));
     }
+    release_none_contract(at("release none"));
     for (i, _) in k["bad_settings"]
         .as_array()
         .expect("conformance.json: bad_settings must be an array")
@@ -2176,6 +2186,10 @@ mod host_tests;
 #[cfg(test)]
 #[path = "../tests/conformance_plane_settings_tests.rs"]
 mod settings_tests;
+
+#[cfg(test)]
+#[path = "../tests/conformance_plane_release_tests.rs"]
+mod release_tests;
 
 #[cfg(all(test, loader_self_tests))]
 #[path = "../tests/conformance_plane_lending_tests.rs"]

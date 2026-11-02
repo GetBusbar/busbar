@@ -377,12 +377,16 @@ fn validate_tick_drive_cancel_and_release_answer_the_defaults_and_the_planes_can
     assert_eq!(co.cancel.disposition, CANCEL_ABORTED);
     let mut ri: ReleaseIn = zeroed();
     ri.head = in_head::<ReleaseIn>(slot::RELEASE);
-    ri.lease = 3;
-    let mut ro = out_head::<OutHead>();
-    assert_eq!(
-        call(table().head.release, inst, &ri, &mut ro),
-        Outcome::Ready
-    );
+    for lease in [0, 3] {
+        ri.lease = lease;
+        let mut ro = out_head::<OutHead>();
+        assert_eq!(
+            call(table().head.release, inst, &ri, &mut ro),
+            Outcome::Ready
+        );
+        assert_eq!(ro.lease, 0);
+        assert!(ro.error.is_absent());
+    }
     assert_eq!(close(inst), Outcome::Ready);
 }
 
