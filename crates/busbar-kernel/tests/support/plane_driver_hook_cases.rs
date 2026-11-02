@@ -528,12 +528,36 @@ async fn a_gate_first_rewrite_the_plane_does_not_apply_is_refused_under_every_on
 
 const NOT_APPLICABLE_WARN: &str = "rewrite not applicable to this request; forwarded unmodified";
 
-fn capture_warnings() -> (
-    busbar_kernel_testkit::test_support::warn_capture::WarnCapture,
-    tracing::subscriber::DefaultGuard,
-) {
+#[derive(Clone, Default)]
+struct Warnings(Arc<Mutex<Vec<String>>>);
+
+impl Warnings {
+    fn messages(&self) -> Vec<String> {
+        self.0.lock().expect("warning capture lock").clone()
+    }
+}
+
+impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for Warnings {
+    fn on_event(&self, event: &tracing::Event<'_>, _: tracing_subscriber::layer::Context<'_, S>) {
+        if *event.metadata().level() != tracing::Level::WARN {
+            return;
+        }
+        struct Fields(String);
+        impl tracing::field::Visit for Fields {
+            fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+                use std::fmt::Write;
+                write!(&mut self.0, "{}={value:?} ", field.name()).expect("append warning fields");
+            }
+        }
+        let mut fields = Fields(String::new());
+        event.record(&mut fields);
+        self.0.lock().expect("warning capture lock").push(fields.0);
+    }
+}
+
+fn capture_warnings() -> (Warnings, tracing::subscriber::DefaultGuard) {
     use tracing_subscriber::layer::SubscriberExt as _;
-    let cap = busbar_kernel_testkit::test_support::warn_capture::WarnCapture::default();
+    let cap = Warnings::default();
     let guard = tracing::subscriber::set_default(tracing_subscriber::registry().with(cap.clone()));
     (cap, guard)
 }
