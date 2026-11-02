@@ -451,7 +451,11 @@ impl super::GovState {
         for event in self.selected_recovery_events() {
             self.drive_recovery_children(&event)?;
         }
-        self.resume_raw_recovery()
+        self.resume_raw_recovery()?;
+        for event in self.selected_recovery_events() {
+            self.forget_confirmed_recovery(event.operation_id);
+        }
+        Ok(())
     }
 
     pub fn recovery(&self) -> RecoveryAdmin<'_> {
@@ -501,6 +505,48 @@ impl super::GovState {
             self.keep_recovery_event(&event)?;
         }
         Ok(())
+    }
+
+    /// Local successful roots need no live administrative custody after their
+    /// flight is retired. Their immutable Store journals remain untouched.
+    pub(super) fn forget_confirmed_recovery(&self, operation_id: [u8; 16]) {
+        let mut entries = self
+            .recovery_book
+            .entries
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let Some(entry) = entries.get(&operation_id) else {
+            return;
+        };
+        let Some(event) = entry.selected.as_ref() else {
+            return;
+        };
+        if event.kind == RecoveryKind::Correction
+            || event.state != RecoveryState::Settled
+            || entry.pending.is_some()
+            || entry.history.values().any(|event| {
+                !matches!(
+                    event.state,
+                    RecoveryState::Intent | RecoveryState::Applied | RecoveryState::Settled
+                )
+            })
+        {
+            return;
+        }
+        let Ok(payload) = serde_json::from_slice::<serde_json::Value>(&event.payload) else {
+            return;
+        };
+        if payload
+            .get("origin")
+            .is_some_and(|origin| !origin.is_null())
+            || !payload
+                .get("handoffs")
+                .and_then(serde_json::Value::as_array)
+                .is_some_and(Vec::is_empty)
+        {
+            return;
+        }
+        entries.remove(&operation_id);
     }
 
     pub(super) fn recovery_driver(
@@ -1052,5 +1098,72 @@ mod tests {
         ));
         assert_eq!(gov.recovery_event(intent.operation_id), Some(selected));
         assert_eq!(sink.selected.lock().unwrap().len(), count);
+    }
+    #[test]
+    fn retiring_a_successful_root_releases_ram_without_deleting_its_store_chain() {
+        use super::super::{GovState, MemoryStore, RecordStore};
+        let store = Arc::new(MemoryStore::new());
+        let sink = Arc::new(Journal::default());
+        let gov = GovState::new(store.clone(), None).unwrap();
+        gov.attach_recovery_sink(sink.clone()).unwrap();
+        let intent = raw_intent(&gov, 7);
+        gov.drive_raw_recovery(intent.operation_id).unwrap();
+        let journal_len = sink.selected.lock().unwrap().len();
+        assert_eq!(journal_len, 3);
+        gov.forget_confirmed_recovery(intent.operation_id);
+        assert!(gov.recovery_event(intent.operation_id).is_none());
+        assert_eq!(sink.selected.lock().unwrap().len(), journal_len);
+        drop(gov);
+        let restarted = GovState::new(store.clone(), None).unwrap();
+        restarted.attach_recovery_sink(sink.clone()).unwrap();
+        assert!(restarted.recovery_event(intent.operation_id).is_none());
+        assert_eq!(store.get_usage("recovery-bucket", 0).unwrap().requests, 7);
+        assert_eq!(sink.selected.lock().unwrap().len(), journal_len);
+    }
+
+    #[test]
+    fn retiring_live_or_unknown_custody_cannot_discard_its_authority() {
+        use super::super::{GovState, MemoryStore};
+        let sink = Arc::new(Journal::default());
+        let original = GovState::new(Arc::new(MemoryStore::new()), None).unwrap();
+        original.attach_recovery_sink(sink.clone()).unwrap();
+        let intent = raw_intent(&original, 7);
+        original.forget_confirmed_recovery(intent.operation_id);
+        assert_eq!(
+            original.recovery_event(intent.operation_id),
+            Some(intent.clone())
+        );
+        drop(original);
+        let gov = GovState::new(Arc::new(MemoryStore::new()), None).unwrap();
+        gov.attach_recovery_sink(sink).unwrap();
+        gov.forget_confirmed_recovery(intent.operation_id);
+        assert_eq!(
+            gov.recovery_event(intent.operation_id).unwrap().state,
+            RecoveryState::LandedUnknown
+        );
+        let unknown = gov.recovery_event(intent.operation_id).unwrap();
+        gov.resolve_raw_recovery(&RecoveryResolution {
+            operation_id: intent.operation_id,
+            body_fingerprint: intent.body_fingerprint,
+            expected_revision: unknown.revision,
+            verdict: RecoveryVerdict::NotLanded,
+            sender_quiesced: true,
+            backend_quiesced: true,
+            actor: "operator".into(),
+            reason: "original never reached backend".into(),
+        })
+        .unwrap();
+        gov.forget_confirmed_recovery(intent.operation_id);
+        assert_eq!(
+            gov.recovery_event(intent.operation_id).unwrap().state,
+            RecoveryState::Settled
+        );
+        gov.validate_recovery_origin(
+            &gov.selected_recovery_events()
+                .into_iter()
+                .find(|event| event.operation_id != intent.operation_id)
+                .unwrap(),
+        )
+        .unwrap();
     }
 }

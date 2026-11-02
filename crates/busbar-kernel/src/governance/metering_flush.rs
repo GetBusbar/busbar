@@ -178,6 +178,7 @@ impl GovState {
                                 .unwrap_or_else(|p| p.into_inner())
                                 .pop_front();
                             flushed += usize::from(state == recovery::RecoveryState::Settled);
+                            self.forget_confirmed_recovery(op.id.0);
                             continue;
                         }
                     }

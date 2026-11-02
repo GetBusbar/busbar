@@ -672,7 +672,10 @@ impl GovState {
             let mut debt = flight.debt.lock().unwrap_or_else(|p| p.into_inner());
             debt.plain = ExactUsageDelta::default();
             debt.dated = ExactUsageDelta::default();
-            confirmed = usize::from(durable.child.is_some());
+            confirmed = usize::from(durable.child.as_ref().is_some_and(|child| {
+                self.recovery_event(child.operation_id)
+                    .is_some_and(|event| event.state == recovery::RecoveryState::Settled)
+            }));
         }
         loop {
             let chunk = {
@@ -721,6 +724,13 @@ impl GovState {
                     }
                     drop(flights);
                     drop(cells);
+                    if let Some(child) = flight
+                        .durable
+                        .as_ref()
+                        .and_then(|durable| durable.child.as_ref())
+                    {
+                        self.forget_confirmed_recovery(child.operation_id);
+                    }
                     return (confirmed, None);
                 }
                 if debt.chunk.is_none() {
