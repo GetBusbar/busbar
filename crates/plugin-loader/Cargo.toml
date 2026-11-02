@@ -111,14 +111,14 @@ jsonschema = { workspace = true, optional = true }
 [dev-dependencies]
 base64 = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "io-util"] }
-busbar-stub-export = { path = "stubs/export/logic" }
-busbar-stub-export-plugin = { path = "stubs/export/plugin", features = ["dropped-in"] }
-busbar-stub-export-carried = { path = "stubs/export-carried/logic" }
-busbar-stub-export-carried-plugin = { path = "stubs/export-carried/plugin", features = ["dropped-in"] }
-busbar-stub-export-scrape = { path = "stubs/export-scrape/logic" }
-busbar-stub-export-scrape-plugin = { path = "stubs/export-scrape/plugin" }
-busbar-stub-export-trace = { path = "stubs/export-trace/logic" }
-busbar-stub-export-trace-plugin = { path = "stubs/export-trace/plugin" }
+busbar-export-file = { git = "https://git.getbusbar.dev/GetBusbar/busbar-export-file", rev = "30122e9b9a28ddbfcff99013bd45a4c41cd55a03" }
+busbar-export-file-plugin = { git = "https://git.getbusbar.dev/GetBusbar/busbar-export-file", rev = "30122e9b9a28ddbfcff99013bd45a4c41cd55a03", features = ["dropped-in"] }
+busbar-export-webhook = { git = "https://git.getbusbar.dev/GetBusbar/busbar-export-webhook", rev = "7910df0ff03141729bb0fdfecfa6b883b906aa86" }
+busbar-export-webhook-plugin = { git = "https://git.getbusbar.dev/GetBusbar/busbar-export-webhook", rev = "7910df0ff03141729bb0fdfecfa6b883b906aa86", features = ["dropped-in"] }
+busbar-export-prometheus = { git = "https://git.getbusbar.dev/GetBusbar/busbar-export-prometheus", rev = "0a29868e09cd67b08aa8808e6080501ac48d051a" }
+busbar-export-prometheus-plugin = { git = "https://git.getbusbar.dev/GetBusbar/busbar-export-prometheus", rev = "0a29868e09cd67b08aa8808e6080501ac48d051a", features = ["dropped-in"] }
+busbar-export-otlp = { git = "https://git.getbusbar.dev/GetBusbar/busbar-export-otlp", rev = "4138201b7e5874400ea705ce9d656b5c09e1cdf4" }
+busbar-export-otlp-plugin = { git = "https://git.getbusbar.dev/GetBusbar/busbar-export-otlp", rev = "4138201b7e5874400ea705ce9d656b5c09e1cdf4", features = ["dropped-in"] }
 busbar-stub-store = { path = "stubs/store/logic" }
 busbar-secret-env = { git = "https://git.getbusbar.dev/GetBusbar/busbar-secret-env", rev = "80e13fcd3ac788f20d74abc46a231abed69c981c" }
 busbar-secret-env-plugin = { git = "https://git.getbusbar.dev/GetBusbar/busbar-secret-env", rev = "80e13fcd3ac788f20d74abc46a231abed69c981c" }
@@ -139,10 +139,10 @@ store = "busbar-stub-store"
 auth-verify = "busbar-stub-auth-verify"
 secret = "busbar-secret-env"
 transport = "busbar-stub-transport"
-export = "busbar-stub-export"
-export-carried = "busbar-stub-export-carried"
-export-scrape = "busbar-stub-export-scrape"
-export-trace = "busbar-stub-export-trace"
+export = "busbar-export-file"
+export-carried = "busbar-export-webhook"
+export-scrape = "busbar-export-prometheus"
+export-trace = "busbar-export-otlp"
 
 [target.'cfg(windows)'.dev-dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Networking_WinSock"] }
