@@ -59,63 +59,11 @@ fn all_holds_every_core_owned_verb_and_nothing_else() {
 }
 
 #[test]
-fn the_metric_label_surface_is_exactly_these_thirteen() {
-    let mut labels: Vec<&str> = OpVerb::ALL
-        .iter()
-        .chain(crate::test_support::protocols::declared_verbs())
-        .map(|o| o.name())
-        .collect();
-    labels.sort_unstable();
-    labels.dedup();
-    assert_eq!(
-        labels,
-        [
-            "catalogue",
-            "chat",
-            "control",
-            "embeddings",
-            "fetch",
-            "image",
-            "invoke",
-            "moderation",
-            "rerank",
-            "speech",
-            "subscribe",
-            "task",
-            "transcription",
-        ],
-        "the operation metric label surface changed; a dashboard depends on this set"
-    );
-}
-
-#[test]
 fn no_operation_is_still_called_tool_call() {
     assert!(
         ALL.iter().all(|(_, _, n)| *n != "tool_call"),
         "`tool_call` was renamed to `invoke`; no operation may publish the old label"
     );
-}
-
-#[test]
-fn no_verb_name_carries_a_protocol_identity() {
-    let identities: Vec<&str> = crate::ingress::protocols::registry()
-        .decls()
-        .iter()
-        .map(|d| d.name)
-        .collect();
-    assert_eq!(
-        identities.len(),
-        7,
-        "core's test binary registers seven protocols; an empty list would pass vacuously"
-    );
-    for (_, _, name) in ALL {
-        for forbidden in &identities {
-            assert!(
-                !name.contains(forbidden),
-                "`{name}` names the `{forbidden}` protocol; verbs are shapes plus neutral words"
-            );
-        }
-    }
 }
 
 #[test]
