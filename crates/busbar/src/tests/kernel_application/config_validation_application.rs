@@ -3103,11 +3103,13 @@ fn present_tools_section() -> Box<dyn busbar_kernel::config::plane_sections::Pla
     let written: serde_yaml::Value =
         serde_yaml::from_str("a-tool-server:\n  url: \"https://tools.example.com/rpc\"\n")
             .expect("yaml");
-    let section = busbar_kernel::config::plane_sections::DeclaredSections::parse(key, written)
-        .expect("a one-registration tools section must parse")
-        .0
-        .remove(key)
-        .expect("the section is carried");
+    let deploy = config::deploy_from_deserializer(serde_json::json!({
+        "providers": {}, "models": {}, "auth": { "chain": [], "admin_auth": [] },
+        (key): written,
+    }))
+    .expect("a one-registration tools section must parse through the product grammar");
+    let mut cfg = config::resolve(&deploy, &HashMap::new()).expect("the tools deployment resolves");
+    let section = cfg.plane_defs.remove(key).expect("the section is carried");
     assert!(
         section.is_present(),
         "the fixture must be a section the operator wrote content for"

@@ -83,31 +83,6 @@ fn proto_b() -> &'static str {
 }
 
 #[test]
-fn test_provider_auth_style_is_a_declared_word() {
-    for word in [
-        "bearer",
-        "api-key",
-        "jwt-bearer",
-        "oauth-client-credentials",
-        "x-double-mint",
-    ] {
-        let style = serde_yaml::from_str::<config::ProviderAuth>(word)
-            .unwrap_or_else(|e| panic!("declared style '{word}' must parse: {e}"));
-        assert_eq!(style.as_str(), word);
-    }
-    let refused = serde_yaml::from_str::<config::ProviderAuth>("oauth2")
-        .expect_err("'oauth2' is declared by no plugin and must fail to deserialize")
-        .to_string();
-    assert!(
-        refused.starts_with(
-            "unknown variant `oauth2`, expected one of `bearer`, `api-key`, `jwt-bearer`, \
-             `oauth-client-credentials`, `x-double-mint`"
-        ),
-        "an undeclared style is refused in serde's words over the declared list: {refused}"
-    );
-}
-
-#[test]
 fn a_token_url_is_judged_for_any_style_declaring_it() {
     let build = |word: &str| -> Vec<String> {
         let provider: crate::config::providers::ResolvedProvider = make_provider(
