@@ -220,6 +220,9 @@ impl GovState {
                 }
                 continue;
             }
+            if self.observed_child_receipt(parent, &child)?.is_some() {
+                continue;
+            }
             let mut payload: serde_json::Value = decode(&child.payload)?;
             payload
                 .as_object_mut()
@@ -255,6 +258,10 @@ impl GovState {
     }
 
     pub(super) fn restore_raw_recovery(&self, event: &RecoveryEvent) -> RecordStoreResult<()> {
+        Self::validate_raw_recovery(event)
+    }
+
+    fn validate_raw_recovery(event: &RecoveryEvent) -> RecordStoreResult<()> {
         match event.kind {
             RecoveryKind::Usage => {
                 let custody: UsageCustody = decode(&event.payload)?;
@@ -394,9 +401,17 @@ impl GovState {
     }
 
     fn expired_raw_payload(&self, event: &RecoveryEvent) -> RecordStoreResult<Vec<u8>> {
-        let age_unknown = self
-            .recovery_retention_expired(event.operation_id)
-            .is_none();
+        Self::quarantined_raw_payload(
+            event,
+            self.recovery_retention_expired(event.operation_id)
+                .is_none(),
+        )
+    }
+
+    fn quarantined_raw_payload(
+        event: &RecoveryEvent,
+        age_unknown: bool,
+    ) -> RecordStoreResult<Vec<u8>> {
         if event.kind == RecoveryKind::Metering {
             let mut custody: MeteringCustody = decode(&event.payload)?;
             custody.age_unknown = age_unknown;
@@ -450,6 +465,60 @@ impl GovState {
             }
             RecoveryKind::Metering => Ok(event.payload.clone()),
             RecoveryKind::Correction => Err(invalid("incorrect applied raw kind")),
+        }
+    }
+
+    fn raw_verdict_payload(
+        event: &RecoveryEvent,
+        verdict: RawVerdict,
+    ) -> Result<Vec<u8>, RecoveryError> {
+        let map = |error: RecordStoreError| RecoveryError::Unavailable(error.to_string());
+        match event.kind {
+            RecoveryKind::Usage => {
+                let mut custody: UsageCustody = decode(&event.payload).map_err(map)?;
+                if verdict.landed {
+                    custody.plain.subtract(&custody.chunk_plain);
+                    custody.dated.subtract(&custody.chunk_dated);
+                }
+                custody.plain.merge(&custody.absorbed_plain);
+                custody.dated.merge(&custody.absorbed_dated);
+                let child = Self::usage_recovery_child(
+                    &custody.bucket,
+                    custody.window,
+                    custody.plain.clone(),
+                    custody.dated.clone(),
+                )
+                .map_err(map)?;
+                custody.handoffs.extend(child);
+                custody.plain = ExactUsageDelta::default();
+                custody.dated = ExactUsageDelta::default();
+                custody.absorbed_plain = ExactUsageDelta::default();
+                custody.absorbed_dated = ExactUsageDelta::default();
+                custody.verdict = Some(verdict);
+                encode(&custody).map_err(map)?
+            }
+            RecoveryKind::Metering => {
+                let mut custody: MeteringCustody = decode(&event.payload).map_err(map)?;
+                if !verdict.landed {
+                    let child_custody = MeteringCustody {
+                        age_unknown: false,
+                        origin: None,
+                        handoffs: Vec::new(),
+                        verdict: None,
+                        delta: custody.delta.clone(),
+                    };
+                    custody.handoffs.push(RecoveryChild {
+                        operation_id: crate::door::op_id().0,
+                        kind: RecoveryKind::Metering,
+                        body_fingerprint: event.body_fingerprint,
+                        first_sent_at_ms: Some(crate::store::now_ms()),
+                        payload: encode(&child_custody).map_err(map)?,
+                    });
+                }
+                custody.verdict = Some(verdict);
+                encode(&custody).map_err(map)?
+            }
+            _ => unreachable!(),
         }
     }
 
@@ -515,53 +584,7 @@ impl GovState {
         } else {
             RecoveryState::VerdictNotLanded
         };
-        let payload = match event.kind {
-            RecoveryKind::Usage => {
-                let mut custody: UsageCustody = decode(&event.payload).map_err(map)?;
-                if verdict.landed {
-                    custody.plain.subtract(&custody.chunk_plain);
-                    custody.dated.subtract(&custody.chunk_dated);
-                }
-                custody.plain.merge(&custody.absorbed_plain);
-                custody.dated.merge(&custody.absorbed_dated);
-                let child = Self::usage_recovery_child(
-                    &custody.bucket,
-                    custody.window,
-                    custody.plain.clone(),
-                    custody.dated.clone(),
-                )
-                .map_err(map)?;
-                custody.handoffs.extend(child);
-                custody.plain = ExactUsageDelta::default();
-                custody.dated = ExactUsageDelta::default();
-                custody.absorbed_plain = ExactUsageDelta::default();
-                custody.absorbed_dated = ExactUsageDelta::default();
-                custody.verdict = Some(verdict);
-                encode(&custody).map_err(map)?
-            }
-            RecoveryKind::Metering => {
-                let mut custody: MeteringCustody = decode(&event.payload).map_err(map)?;
-                if !verdict.landed {
-                    let child_custody = MeteringCustody {
-                        age_unknown: false,
-                        origin: None,
-                        handoffs: Vec::new(),
-                        verdict: None,
-                        delta: custody.delta.clone(),
-                    };
-                    custody.handoffs.push(RecoveryChild {
-                        operation_id: crate::door::op_id().0,
-                        kind: RecoveryKind::Metering,
-                        body_fingerprint: event.body_fingerprint,
-                        first_sent_at_ms: Some(crate::store::now_ms()),
-                        payload: encode(&child_custody).map_err(map)?,
-                    });
-                }
-                custody.verdict = Some(verdict);
-                encode(&custody).map_err(map)?
-            }
-            _ => unreachable!(),
-        };
+        let payload = Self::raw_verdict_payload(&event, verdict)?;
         let candidate = self.new_recovery_event(
             event.operation_id,
             event.kind,
@@ -749,10 +772,14 @@ impl GovState {
             }
             let links: Links = decode(&event.payload)?;
             for descriptor in links.handoffs {
-                let Some(child) = self.recovery_event(descriptor.operation_id) else {
+                let child = if let Some(child) = self.recovery_event(descriptor.operation_id) {
+                    self.validate_recovery_origin(&child)?;
+                    child
+                } else if let Some(receipt) = self.observed_child_receipt(&event, &descriptor)? {
+                    receipt
+                } else {
                     return Ok(false);
                 };
-                self.validate_recovery_origin(&child)?;
                 if child.state != RecoveryState::Settled {
                     return Ok(false);
                 }
@@ -767,38 +794,94 @@ impl GovState {
     /// Resume this parent's raw descendants only. Correction Intents retain
     /// their own CostModel validation and are never sent by the raw driver.
     pub(super) fn resume_recovery_children(&self, parent: &RecoveryEvent) -> RecordStoreResult<()> {
-        let mut queue = std::collections::VecDeque::from([parent.operation_id]);
+        let mut queue = std::collections::VecDeque::from([(parent.clone(), true)]);
         let mut seen = std::collections::BTreeSet::new();
-        while let Some(operation_id) = queue.pop_front() {
-            let event = self
-                .recovery_event(operation_id)
-                .ok_or_else(|| invalid("selected recovery parent disappeared"))?;
+        while let Some((snapshot, owned)) = queue.pop_front() {
+            let event = if owned {
+                self.recovery_event(snapshot.operation_id)
+                    .ok_or_else(|| invalid("selected recovery parent disappeared"))?
+            } else {
+                snapshot
+            };
             if !seen.insert((event.operation_id, event.revision)) {
                 continue;
             }
-            self.drive_recovery_children(&event)?;
-            let current = self
-                .recovery_event(operation_id)
-                .ok_or_else(|| invalid("selected recovery parent disappeared"))?;
+            if owned {
+                self.drive_recovery_children(&event)?;
+            }
+            let current = if owned {
+                self.recovery_event(event.operation_id)
+                    .ok_or_else(|| invalid("selected recovery parent disappeared"))?
+            } else {
+                event
+            };
             let links: Links = decode(&current.payload)?;
             for descriptor in links.handoffs {
-                let child = self
-                    .recovery_event(descriptor.operation_id)
-                    .ok_or_else(|| invalid("authorized recovery child is not selected"))?;
+                let Some(child) = self.recovery_event(descriptor.operation_id) else {
+                    if let Some(receipt) = self.observed_child_receipt(&current, &descriptor)? {
+                        queue.push_back((receipt, false));
+                        continue;
+                    }
+                    return Err(invalid(
+                        "unresolved foreign child requires an explicit audited adoption",
+                    ));
+                };
                 self.validate_recovery_origin(&child)?;
                 match child.kind {
                     RecoveryKind::Usage | RecoveryKind::Metering => {
                         self.drive_raw_recovery(child.operation_id)?;
-                        queue.push_back(child.operation_id);
+                        let refreshed = self
+                            .recovery_event(child.operation_id)
+                            .ok_or_else(|| invalid("selected recovery child disappeared"))?;
+                        queue.push_back((refreshed, true));
                     }
                     RecoveryKind::Correction if child.state == RecoveryState::Settled => {
-                        queue.push_back(child.operation_id);
+                        queue.push_back((child, true))
                     }
                     RecoveryKind::Correction => {}
                 }
             }
         }
         Ok(())
+    }
+
+    fn observed_child_receipt(
+        &self,
+        parent: &RecoveryEvent,
+        descriptor: &RecoveryChild,
+    ) -> RecordStoreResult<Option<RecoveryEvent>> {
+        let Some(receipt) = self
+            .foreign_recovery_receipt(descriptor.operation_id)
+            .map_err(invalid)?
+        else {
+            return Ok(None);
+        };
+        if receipt.kind != descriptor.kind
+            || receipt.body_fingerprint != descriptor.body_fingerprint
+            || receipt.first_sent_at_ms != descriptor.first_sent_at_ms
+        {
+            return Err(invalid(
+                "foreign settled receipt differs from authorized child identity",
+            ));
+        }
+        let origin = receipt
+            .origin_reference()
+            .map_err(invalid)?
+            .ok_or_else(|| invalid("foreign settled child has no origin"))?;
+        if origin.operation_id != parent.operation_id {
+            return Err(invalid("foreign settled child belongs to another parent"));
+        }
+        if let Some(checkpoint) =
+            self.recovery_ancestor(origin.operation_id, origin.event_fingerprint)
+        {
+            let links: Links = decode(&checkpoint.payload)?;
+            if !links.handoffs.iter().any(|original| original == descriptor) {
+                return Err(invalid(
+                    "foreign settled receipt template differs from retained parent authorization",
+                ));
+            }
+        }
+        Ok(Some(receipt))
     }
 }
 
@@ -866,5 +949,71 @@ impl RecoveryEvent {
             return Err(invalid("child raw body differs from exact parent template"));
         }
         Ok(())
+    }
+}
+
+impl GovState {
+    pub(super) fn stage_foreign_raw_verdict(
+        event: &RecoveryEvent,
+        resolution: &RecoveryResolution,
+    ) -> Result<Vec<RecoveryEvent>, RecoveryError> {
+        resolution.validate_quiescence()?;
+        if event.operation_id != resolution.operation_id
+            || event.body_fingerprint != resolution.body_fingerprint
+            || event.revision != resolution.expected_revision
+        {
+            return Err(RecoveryError::Conflict(
+                "foreign recovery identity or revision differs".into(),
+            ));
+        }
+        Self::validate_raw_recovery(event)
+            .map_err(|error| RecoveryError::Invalid(error.to_string()))?;
+        let landed = resolution.verdict == RecoveryVerdict::Landed;
+        match event.state {
+            RecoveryState::Settled => return Ok(Vec::new()),
+            RecoveryState::Applied if landed => {
+                return Ok(vec![event.checkpoint(event.state, event.payload.clone())?])
+            }
+            RecoveryState::VerdictLanded | RecoveryState::VerdictNotLanded => {
+                if (event.state == RecoveryState::VerdictLanded) != landed {
+                    return Err(RecoveryError::Conflict(
+                        "foreign recovery already has the opposite verdict".into(),
+                    ));
+                }
+                return Ok(vec![event.checkpoint(event.state, event.payload.clone())?]);
+            }
+            RecoveryState::Intent | RecoveryState::LandedUnknown => {}
+            _ => {
+                return Err(RecoveryError::Conflict(
+                    "foreign raw state does not accept this verdict".into(),
+                ))
+            }
+        }
+        let mut transitions = Vec::new();
+        let unknown = if event.state == RecoveryState::Intent {
+            let payload = Self::quarantined_raw_payload(event, true)
+                .map_err(|error| RecoveryError::Invalid(error.to_string()))?;
+            let unknown = event.checkpoint(RecoveryState::LandedUnknown, payload)?;
+            transitions.push(unknown.clone());
+            unknown
+        } else {
+            event.clone()
+        };
+        let verdict = RawVerdict {
+            landed,
+            expected_revision: resolution.expected_revision,
+            sender_quiesced: resolution.sender_quiesced,
+            backend_quiesced: resolution.backend_quiesced,
+            actor: resolution.actor.clone(),
+            reason: resolution.reason.clone(),
+        };
+        let payload = Self::raw_verdict_payload(&unknown, verdict)?;
+        let state = if landed {
+            RecoveryState::VerdictLanded
+        } else {
+            RecoveryState::VerdictNotLanded
+        };
+        transitions.push(unknown.checkpoint(state, payload)?);
+        Ok(transitions)
     }
 }

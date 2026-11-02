@@ -151,6 +151,25 @@ impl RecoveryEvent {
         Ok(digest.finalize().into())
     }
 
+    pub(super) fn checkpoint(
+        &self,
+        state: RecoveryState,
+        payload: Vec<u8>,
+    ) -> Result<Self, RecoveryError> {
+        let next = Self {
+            revision: self
+                .revision
+                .checked_add(1)
+                .ok_or_else(|| RecoveryError::Invalid("recovery revision exhausted".into()))?,
+            previous_event: Some(self.fingerprint()?),
+            state,
+            payload,
+            ..self.clone()
+        };
+        next.follows(Some(self))?;
+        Ok(next)
+    }
+
     pub fn follows(&self, previous: Option<&Self>) -> Result<(), RecoveryError> {
         let invalid = || RecoveryError::Invalid("invalid recovery transition chain".into());
         let Some(previous) = previous else {
@@ -195,6 +214,7 @@ pub(super) struct RecoveryBook {
     sink: std::sync::OnceLock<std::sync::Arc<dyn RecoverySink>>,
     entries: std::sync::Mutex<std::collections::BTreeMap<[u8; 16], RecoveryEntry>>,
     attaching: super::BudgetFlushRunner,
+    observed_receipts: std::sync::Mutex<std::collections::BTreeMap<[u8; 16], RecoveryInspection>>,
 }
 
 #[derive(Default)]
@@ -206,6 +226,15 @@ struct RecoveryEntry {
     resolution_runner: std::sync::Arc<super::BudgetFlushRunner>,
     driver: std::sync::Arc<super::BudgetFlushRunner>,
     sent_clock: Option<std::time::Instant>,
+    adoption: Option<RecoveryAdoption>,
+}
+
+#[derive(Clone)]
+struct RecoveryAdoption {
+    inspection: RecoveryInspection,
+    resolution: RecoveryResolution,
+    transitions: Vec<RecoveryEvent>,
+    imported: bool,
 }
 
 impl RecoveryBook {
@@ -398,13 +427,85 @@ impl RecoveryAdmin<'_> {
             .entries
             .lock()
             .unwrap_or_else(|p| p.into_inner())
-            .get(&resolution.operation_id)
-            .ok_or_else(|| RecoveryError::Invalid("recovery operation does not exist".into()))?
+            .entry(resolution.operation_id)
+            .or_default()
             .resolution_runner
             .clone();
         let _running = runner
             .enter(false)
             .map_err(|reason| RecoveryError::Conflict(reason.into()))?;
+        let cached = governance
+            .recovery_book
+            .entries
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(&resolution.operation_id)
+            .and_then(|entry| entry.adoption.clone());
+        if let Some(cached) = cached
+            .as_ref()
+            .filter(|cached| cached.resolution == resolution)
+        {
+            if cached.imported {
+                let current = governance
+                    .recovery_event(resolution.operation_id)
+                    .ok_or_else(|| {
+                        RecoveryError::Unavailable("adopted recovery selection disappeared".into())
+                    })?;
+                governance
+                    .keep_recovery_event(&current)
+                    .map_err(|error| RecoveryError::Unavailable(error.to_string()))?;
+                return self.resume_adopted(cost, resolution.operation_id);
+            }
+            return self.adopt_foreign(cost, resolution, cached.clone());
+        }
+        if cached.as_ref().is_some_and(|cached| !cached.imported) {
+            return Err(RecoveryError::Conflict(
+                "an immutable foreign adoption still awaits confirmation".into(),
+            ));
+        }
+        let inspections = governance.inspect_foreign_recovery()?;
+        if let Some(inspection) = inspections
+            .into_iter()
+            .find(|inspection| inspection.event.operation_id == resolution.operation_id)
+        {
+            let event = &inspection.event;
+            if event.body_fingerprint != resolution.body_fingerprint
+                || event.revision != resolution.expected_revision
+            {
+                return Err(RecoveryError::Conflict(
+                    "foreign recovery identity or revision differs".into(),
+                ));
+            }
+            if event.state == RecoveryState::Settled {
+                let mut item = RecoveryItem::from_event(event);
+                item.owner_node = Some(inspection.owner_node);
+                item.can_resolve = false;
+                return Ok(item);
+            }
+            let transitions = match event.kind {
+                RecoveryKind::Correction => {
+                    super::GovState::stage_foreign_correction_verdict(event, &resolution)?
+                }
+                RecoveryKind::Usage | RecoveryKind::Metering => {
+                    super::GovState::stage_foreign_raw_verdict(event, &resolution)?
+                }
+            };
+            let adoption = RecoveryAdoption {
+                inspection,
+                resolution: resolution.clone(),
+                transitions,
+                imported: false,
+            };
+            governance
+                .recovery_book
+                .entries
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .entry(resolution.operation_id)
+                .or_default()
+                .adoption = Some(adoption.clone());
+            return self.adopt_foreign(cost, resolution, adoption);
+        }
         let selected = governance
             .recovery_event(resolution.operation_id)
             .ok_or_else(|| RecoveryError::Invalid("recovery operation is not selected".into()))?;
@@ -434,6 +535,103 @@ impl RecoveryAdmin<'_> {
         Ok(RecoveryItem::from_event(&event))
     }
 
+    fn adopt_foreign(
+        &self,
+        cost: &crate::cost::CostModel,
+        resolution: RecoveryResolution,
+        adoption: RecoveryAdoption,
+    ) -> Result<RecoveryItem, RecoveryError> {
+        let governance = self.governance;
+        let driver = governance
+            .recovery_driver(resolution.operation_id)
+            .map_err(|error| RecoveryError::Unavailable(error.to_string()))?;
+        let running = driver
+            .enter(false)
+            .map_err(|reason| RecoveryError::Conflict(reason.into()))?;
+        let correction_guard = if adoption.inspection.event.kind == RecoveryKind::Correction {
+            governance.hold_foreign_correction_recovery(resolution.operation_id)?
+        } else {
+            None
+        };
+        let sink =
+            governance.recovery_book.sink.get().ok_or_else(|| {
+                RecoveryError::Unavailable("recovery Store is not attached".into())
+            })?;
+        let events = match sink.adopt_verdict(&resolution, &adoption.transitions) {
+            Ok(events) => events,
+            Err(error) => {
+                // Conflict is a definitive refusal of this exact prior head;
+                // an ambiguous Store error retains the immutable candidate.
+                if matches!(error, RecoveryError::Conflict(_)) {
+                    let mut entries = governance
+                        .recovery_book
+                        .entries
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner());
+                    if let Some(entry) = entries.get_mut(&resolution.operation_id) {
+                        if entry.adoption.as_ref().is_some_and(|pending| {
+                            !pending.imported && pending.resolution == resolution
+                        }) {
+                            entry.adoption = None;
+                        }
+                    }
+                }
+                return Err(error);
+            }
+        };
+        governance.import_adopted_recovery(&adoption, events)?;
+        let selected = governance
+            .recovery_event(resolution.operation_id)
+            .ok_or_else(|| {
+                RecoveryError::Unavailable("adopted recovery selection disappeared".into())
+            })?;
+        governance
+            .validate_recovery_origin(&selected)
+            .map_err(|error| RecoveryError::Invalid(error.to_string()))?;
+        match selected.kind {
+            RecoveryKind::Correction => governance.restore_correction_recovery(&selected),
+            RecoveryKind::Usage | RecoveryKind::Metering => {
+                governance.restore_raw_recovery(&selected)
+            }
+        }
+        .map_err(|error| RecoveryError::Invalid(error.to_string()))?;
+        drop(correction_guard);
+        drop(running);
+        self.resume_adopted(cost, resolution.operation_id)
+    }
+
+    fn resume_adopted(
+        &self,
+        cost: &crate::cost::CostModel,
+        operation_id: [u8; 16],
+    ) -> Result<RecoveryItem, RecoveryError> {
+        let governance = self.governance;
+        let event = governance.recovery_event(operation_id).ok_or_else(|| {
+            RecoveryError::Unavailable("adopted recovery selection disappeared".into())
+        })?;
+        match event.kind {
+            RecoveryKind::Correction => governance.resume_adopted_correction(cost, operation_id)?,
+            RecoveryKind::Usage | RecoveryKind::Metering => {
+                governance
+                    .drive_raw_recovery(operation_id)
+                    .map_err(|error| RecoveryError::Unavailable(error.to_string()))?;
+                let current = governance.recovery_event(operation_id).ok_or_else(|| {
+                    RecoveryError::Unavailable("adopted recovery selection disappeared".into())
+                })?;
+                governance
+                    .resume_recovery_children(&current)
+                    .map_err(|error| RecoveryError::Unavailable(error.to_string()))?;
+            }
+        }
+        governance
+            .recovery_event(operation_id)
+            .as_ref()
+            .map(RecoveryItem::from_event)
+            .ok_or_else(|| {
+                RecoveryError::Unavailable("adopted recovery selection disappeared".into())
+            })
+    }
+
     pub fn list(
         &self,
         after: Option<[u8; 16]>,
@@ -449,18 +647,27 @@ impl RecoveryAdmin<'_> {
                 "recovery Store is not attached".into(),
             ));
         }
-        Ok(self
+        let mut items: std::collections::BTreeMap<_, _> = self
             .governance
-            .recovery_book
-            .entries
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .iter()
-            .filter(|(id, _)| after.is_none_or(|after| **id > after))
-            .filter_map(|(_, entry)| entry.selected.as_ref())
+            .selected_recovery_events()
+            .into_iter()
             .filter(|event| event.state != RecoveryState::Settled)
+            .map(|event| (event.operation_id, RecoveryItem::from_event(&event)))
+            .collect();
+        for inspection in self.governance.inspect_foreign_recovery()? {
+            if inspection.event.state == RecoveryState::Settled {
+                continue;
+            }
+            let mut item = RecoveryItem::from_event(&inspection.event);
+            item.owner_node = Some(inspection.owner_node);
+            item.can_resolve = false;
+            items.insert(item.operation_id, item);
+        }
+        Ok(items
+            .into_iter()
+            .filter(|(id, _)| after.is_none_or(|after| *id > after))
             .take(limit)
-            .map(RecoveryItem::from_event)
+            .map(|(_, item)| item)
             .collect())
     }
 }
@@ -591,6 +798,92 @@ impl super::GovState {
             .ok_or_else(|| super::RecordStoreError("recovery Store is not attached".into()))?
             .verify_origin(event)
             .map_err(|error| super::RecordStoreError(error.to_string()))
+    }
+
+    pub(super) fn inspect_foreign_recovery(
+        &self,
+    ) -> Result<Vec<RecoveryInspection>, RecoveryError> {
+        self.recovery_book
+            .sink
+            .get()
+            .ok_or_else(|| RecoveryError::Unavailable("recovery Store is not attached".into()))?
+            .inspect_foreign()
+    }
+
+    fn import_adopted_recovery(
+        &self,
+        adoption: &RecoveryAdoption,
+        events: Vec<RecoveryEvent>,
+    ) -> Result<(), RecoveryError> {
+        let operation_id = adoption.resolution.operation_id;
+        let mut selected = None;
+        let mut history = std::collections::BTreeMap::new();
+        for event in events {
+            if event.operation_id != operation_id {
+                return Err(RecoveryError::Invalid(
+                    "adoption returned another operation's writable history".into(),
+                ));
+            }
+            event.follows(selected.as_ref())?;
+            history.insert(event.fingerprint()?, event.clone());
+            selected = Some(event);
+        }
+        if selected.as_ref() != adoption.transitions.last() {
+            return Err(RecoveryError::Invalid(
+                "adoption returned a different selected transition".into(),
+            ));
+        }
+        let mut entries = self
+            .recovery_book
+            .entries
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let entry = entries.entry(operation_id).or_default();
+        entry.selected = selected;
+        entry.history = history;
+        entry.pending = None;
+        entry.sent_clock = None;
+        let mut confirmed = adoption.clone();
+        confirmed.imported = true;
+        entry.adoption = Some(confirmed);
+        Ok(())
+    }
+
+    pub(super) fn foreign_recovery_receipt(
+        &self,
+        operation_id: [u8; 16],
+    ) -> Result<Option<RecoveryEvent>, RecoveryError> {
+        if let Some(receipt) = self
+            .recovery_book
+            .observed_receipts
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(&operation_id)
+        {
+            return Ok(Some(receipt.event.clone()));
+        }
+        let Some(receipt) = self
+            .inspect_foreign_recovery()?
+            .into_iter()
+            .find(|receipt| {
+                receipt.event.operation_id == operation_id
+                    && receipt.event.state == RecoveryState::Settled
+            })
+        else {
+            return Ok(None);
+        };
+        self.recovery_book
+            .sink
+            .get()
+            .expect("inspection requires sink")
+            .verify_origin(&receipt.event)?;
+        let event = receipt.event.clone();
+        self.recovery_book
+            .observed_receipts
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(operation_id, receipt);
+        Ok(Some(event))
     }
 
     pub(super) fn recovery_driver(
