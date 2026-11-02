@@ -141,7 +141,7 @@ impl ServiceStore {
                     return Err(());
                 }
             }
-            // A later observation cannot erase an unapplied commit in this epoch.
+
             let commit_owed = matches!(request, Exchange::Commit(_))
                 || h.conditionals
                     .get(&(caller, h.epoch))

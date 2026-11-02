@@ -232,7 +232,7 @@ fn each_twin_carries_the_fixture_scheme_of_its_dialect() {
     }
 }
 
-// SIGN-auth-kind.md owner-signed row 4 and SIGN-sigv4-open.md's empty-component addendum.
+
 fn signed_refusal(key: &str) -> Option<&'static str> {
     match key {
         "AKID" | "not-a-valid-key" => {
@@ -885,7 +885,7 @@ fn lines(binding: &StyleBinding, key: &str) -> Vec<String> {
     lines_in(binding, key, UpstreamCreds::Own)
 }
 
-// SIGN-auth-kind.md owner-signed row 4; SIGN-ga-session.md APPLY: sigv4.
+
 #[test]
 fn an_unsendable_session_token_is_refused_with_the_signers_own_reason() {
     let signing = named_binding("bedrock", "static-twin-signing");
@@ -1010,7 +1010,7 @@ async fn a_callers_unpresentable_credential_fails_its_request() {
                 .to_string()
         ]
     );
-    // SIGN-ga-session.md APPLY: sigv4: fail this request, never answer READY unsigned.
+
     use busbar_contract::abi::auth::AuthPoint;
     use busbar_contract::auth_calls::{Fields, FieldsRequest};
     let signing = named_binding("bedrock", "static-twin-signing");

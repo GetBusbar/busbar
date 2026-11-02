@@ -218,7 +218,7 @@ pub(super) fn sinks() -> impl Iterator<Item = &'static PluginSink> {
     SINKS.get().into_iter().flatten()
 }
 
-/// Whether the stored definition differs from this process's boot-opened instance or projection.
+
 pub fn requires_restart(name: &str, def: Option<&crate::config::ExportDefCfg>) -> bool {
     let boot = sinks()
         .find(|sink| sink.name == name)
