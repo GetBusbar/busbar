@@ -492,6 +492,21 @@ pub fn planes_awaiting_restart_added(installed: &App, previous: &App) -> Vec<Str
 }
 
 impl App {
+    /// Bank an unpublished fixture App's explicit bounded label projections. The external
+    /// testkit owns the fixture routing data; slot construction and representation stay private.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn set_test_telemetry<'a>(
+        &mut self,
+        pools: &[(&'a str, Vec<usize>)],
+        by_model: &[(&'a str, usize)],
+        lane_model: impl Fn(usize) -> Option<&'a str>,
+        plane: &'static str,
+    ) {
+        self.tslots = Arc::new(crate::telemetry::AppSlots::build(
+            pools, by_model, lane_model, plane,
+        ));
+    }
+
     /// THE ADMIN CACHE FLUSH: every data-chain position and every external admin module (or only
     /// the one `module` names) refreshed, so each auth plugin drops the verified credentials it
     /// caches inside itself; the sum of the entries they report (THE DESIGN 11.11 R3). The
