@@ -290,4 +290,13 @@ impl StoreCalls for Calls {
     ) -> StoreCall<'a, bool> {
         unused()
     }
+    fn plane_token_live<'a>(
+        &'a self,
+        _: &'a str,
+        _: &'a str,
+        _: u64,
+        _: u64,
+    ) -> StoreCall<'a, bool> {
+        unused()
+    }
 }
