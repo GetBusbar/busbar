@@ -69,7 +69,6 @@ test-harness = []
 
 [dev-dependencies]
 # External fixtures used by this source when the distribution runs its unit tests.
-busbar-kernel-testkit = { path = "../busbar-kernel-testkit" }
 
 [lints.rust]
 # The default distribution's build script sets a `linked_section_<section>` cfg per linked plane door;

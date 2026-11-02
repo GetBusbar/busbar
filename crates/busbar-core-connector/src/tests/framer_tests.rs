@@ -97,9 +97,9 @@ mod wire_tests;
 fn sdk_sink_keeps_deferred_final_reason_with_its_first_piece_after_an_interim() {
     use std::collections::VecDeque;
 
+    use busbar_contract::abi::sdk::test_support::sink;
     use busbar_contract::abi::sdk::transport::sink::{HeadWords, Owed, Piece};
     use busbar_contract::abi::sdk::HostBuf;
-    use busbar_test_kit::test_support::sink;
 
     struct OwedHeads(VecDeque<Piece<Vec<u8>>>);
     impl Owed<Vec<u8>> for OwedHeads {

@@ -153,7 +153,7 @@ fn resumed_correction_does_not_treat_a_different_exact_entry_as_the_original_int
 
 #[test]
 fn correction_acceptance_durably_captures_unflushed_raw_counts_and_fee_epochs() {
-    let store = Arc::new(MemoryStore::new());
+    let store = crate::real_store::store();
     let gov = GovState::new(store.clone(), None).unwrap();
     let key = key("vk_correction_capture", None);
     store.put_key(&key).unwrap();
@@ -201,7 +201,7 @@ fn correction_acceptance_durably_captures_unflushed_raw_counts_and_fee_epochs() 
 #[test]
 fn correction_captures_u64_local_facts_without_signed_saturation() {
     const ABOVE_SIGNED_COUNT: u64 = i64::MAX as u64 + 17;
-    let store = Arc::new(MemoryStore::new());
+    let store = crate::real_store::store();
     let gov = GovState::new(store.clone(), None).unwrap();
     let key = key("vk_correction_unsigned_capture", None);
     store.put_key(&key).unwrap();
@@ -229,7 +229,7 @@ fn correction_captures_u64_local_facts_without_signed_saturation() {
 fn rolled_large_raw_debt_survives_legacy_flush_and_is_captured_by_correction() {
     const LARGE_INPUT: u64 = i64::MAX as u64 + INITIAL_INPUT;
     const GROUP_BUCKET: &str = "group:g@minute";
-    let store = Arc::new(MemoryStore::new());
+    let store = crate::real_store::store();
     let gov = GovState::new(store.clone(), None).unwrap();
     let key = key("vk_correction_large_roll", Some("g"));
     store.put_key(&key).unwrap();
@@ -399,7 +399,7 @@ fn correction_excludes_a_same_window_inflight_flush_without_changing_raw_facts()
 #[test]
 fn a_future_usage_epoch_refuses_both_signs_without_changing_recorded_facts() {
     for change in [-1, 1] {
-        let store = Arc::new(MemoryStore::new());
+        let store = crate::real_store::store();
         let gov = GovState::new(store.clone(), None).unwrap();
         let key = key("vk_correction_future", None);
         store.put_key(&key).unwrap();

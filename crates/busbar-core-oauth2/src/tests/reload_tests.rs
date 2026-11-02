@@ -1,35 +1,36 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use std::collections::HashMap;
+use std::any::Any;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use oauth_as::store::Storage as _;
 
 use crate::plane::AsPlane;
-use crate::testkit::oauth_as_plane;
-
-fn cfg() -> busbar_kernel::config::RootCfg {
-    crate::testkit::install_test_seam();
-    let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
-        "providers": {},
-        "models": {},
-        "store": { "module": busbar_kernel::config::migrated_store_module() },
-        "oauth_as": { "issuer": "https://as.example.com" },
-    }))
-    .expect("a deploy config carrying `oauth_as:` parses");
-    busbar_kernel::config::resolve(&deploy, &HashMap::new()).expect("the config resolves")
-}
 
 fn generation(
     rt: &tokio::runtime::Runtime,
-    prior: Option<&busbar_kernel::state::App>,
-) -> (busbar_kernel::state::App, Arc<AsPlane>) {
+    prior: Option<&Arc<dyn Any + Send + Sync>>,
+) -> (Arc<dyn Any + Send + Sync>, Arc<AsPlane>) {
     let _on = rt.enter();
-    let app = busbar_kernel_testkit::app::build_once(cfg(), prior).expect("the generation builds");
-    let plane = oauth_as_plane(&app).expect("`oauth_as:` is configured");
-    (app, plane)
+    let block = serde_yaml::to_value(crate::config::OauthAsCfg {
+        issuer: "https://as.example.com".into(),
+        ..Default::default()
+    })
+    .expect("the owner config serializes");
+    let carried = crate::plane::seam_build::<crate::NoConnections>(
+        &block,
+        Vec::new(),
+        Vec::new(),
+        prior,
+        Some(crate::testkit::store_calls()),
+    )
+    .expect("the owner's real generation builds");
+    let plane = Arc::clone(&carried)
+        .downcast::<AsPlane>()
+        .unwrap_or_else(|_| panic!("the owner seam returns its AsPlane"));
+    (carried, plane)
 }
 
 fn client(id: &str) -> oauth_as::client::Client {
@@ -47,7 +48,7 @@ fn client(id: &str) -> oauth_as::client::Client {
 
 #[test]
 fn a_reload_carries_the_servers_records_sessions_and_key() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let rt = tokio::runtime::Runtime::new().expect("a runtime");
     let until = SystemTime::now() + Duration::from_secs(300);
 

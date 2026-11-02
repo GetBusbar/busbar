@@ -2,8 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use super::*;
-use crate::test_support::store_double::MemoryStore;
-use busbar_contract::abi::sdk::store::{Op, Step, StoreSlots};
 use busbar_contract::records::{RecordStore, UsageDelta};
 
 fn cells() -> [(&'static str, u64, UsageDelta); 1] {
@@ -18,11 +16,12 @@ fn cells() -> [(&'static str, u64, UsageDelta); 1] {
     )]
 }
 
-fn write(store: &MemoryStore, op: busbar_contract::abi::store::OpId, why: &str) {
-    match StoreSlots::add_usage_batch(store, &mut Op::detached(), op, &cells()) {
-        Step::Ready(r) => r.expect(why),
-        Step::Pending { .. } => panic!("{why}: the memory store never pends"),
-    }
+fn write(
+    store: &busbar_plugin_loader::store_v3::LoadedStore,
+    op: busbar_contract::abi::store::OpId,
+    why: &str,
+) {
+    RecordStore::add_usage_batch_deduped(store, op, &cells()).expect(why);
 }
 
 #[test]
@@ -44,13 +43,13 @@ fn the_process_mint_is_one_counter() {
 
 #[test]
 fn a_new_boots_write_is_not_deduped_against_an_earlier_boots() {
-    let store = MemoryStore::new();
+    let store = crate::real_store::store();
     let previous = OpIds::boot(boot_node());
     write(&store, previous.mint(), "the earlier boot's write");
     let restarted = OpIds::boot(boot_node());
     write(&store, restarted.mint(), "the new boot's write");
     assert_eq!(
-        RecordStore::get_usage(&store, "k", 60)
+        RecordStore::get_usage(&*store, "k", 60)
             .expect("usage")
             .requests,
         2,
@@ -60,11 +59,11 @@ fn a_new_boots_write_is_not_deduped_against_an_earlier_boots() {
 
 #[test]
 fn a_restarted_counter_under_one_node_half_is_answered_as_a_replay() {
-    let store = MemoryStore::new();
+    let store = crate::real_store::store();
     write(&store, OpIds::boot(7).mint(), "the earlier boot's write");
     write(&store, OpIds::boot(7).mint(), "answered as the replay");
     assert_eq!(
-        RecordStore::get_usage(&store, "k", 60)
+        RecordStore::get_usage(&*store, "k", 60)
             .expect("usage")
             .requests,
         1,

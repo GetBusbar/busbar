@@ -187,7 +187,7 @@ fn spawn_liveness_probe() -> (
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn slow_store_read_does_not_stall_the_executor() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let delay = Duration::from_millis(400);
     let store = Arc::new(SlowStore::new(delay));
     let probe_store = store.clone();
@@ -230,7 +230,7 @@ async fn slow_store_read_does_not_stall_the_executor() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn cap_is_read_from_the_post_lock_snapshot() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let store = Arc::new(MemoryStore::new());
     let mut app = crate::new_test_app()
         .governance(gov(store))
@@ -284,7 +284,7 @@ async fn cap_is_read_from_the_post_lock_snapshot() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn concurrent_mints_never_bind_a_deleted_group() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
 
     {
         let g = gov(Arc::new(MemoryStore::new()));
@@ -366,7 +366,7 @@ async fn concurrent_mints_never_bind_a_deleted_group() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn concurrent_rebinds_never_bind_a_deleted_group() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let store = Arc::new(MemoryStore::new());
     let g = gov(store);
     let app = crate::new_test_app()
@@ -427,7 +427,7 @@ async fn concurrent_rebinds_never_bind_a_deleted_group() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn plugin_install_is_serialized_by_the_mutation_domain() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let dir = std::env::temp_dir().join(format!(
         "busbar-txn-plugins-{}-{:?}",
         std::process::id(),
@@ -778,7 +778,7 @@ async fn register_secret_hook(handle: Arc<AppHandle>) -> (StatusCode, String) {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn slow_secret_plugin_does_not_stall_the_executor() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let delay = Duration::from_millis(400);
     let app = crate::new_test_app()
         .hook_env(parking_secret_hook_env(delay))

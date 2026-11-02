@@ -76,7 +76,7 @@ fn appending_assigns_the_next_seq_and_rewrites_nothing() {
     );
     assert_eq!(history.entries()[0].author(), &Author::Opening);
 
-    let at_zero = history.snapshot(HistorySeq(0));
+    let at_zero = history.snapshot(history.entries()[0].key());
     assert_eq!(
         price(&at_zero, &posting_at("m", 100, &[(INPUT, 1_000)]))
             .expect("entry zero is open-ended")
@@ -102,9 +102,9 @@ fn a_snapshot_answers_the_same_way_forever() {
     let history = overlapping_history();
     let posting = posting_at("m", 120, &[(INPUT, 1_000)]);
 
-    let at_one = history.snapshot(HistorySeq(1));
-    let at_two = history.snapshot(HistorySeq(2));
-    assert_eq!(at_one.seq(), Some(HistorySeq(1)));
+    let at_one = history.snapshot(history.entries()[1].key());
+    let at_two = history.snapshot(history.entries()[2].key());
+    assert_eq!(at_one.seq(), Some(history.entries()[1].key()));
     assert_eq!(
         at_one.entries().len(),
         2,
@@ -115,11 +115,11 @@ fn a_snapshot_answers_the_same_way_forever() {
     let newer = price(&at_two, &posting).expect("covered");
     assert_eq!(
         (older.card_seq, older.pre_tier_nanos),
-        (HistorySeq(1), 2_000_000)
+        (history.entries()[1].key(), 2_000_000)
     );
     assert_eq!(
         (newer.card_seq, newer.pre_tier_nanos),
-        (HistorySeq(2), 3_000_000)
+        (history.entries()[2].key(), 3_000_000)
     );
 
     assert_eq!(price(&at_one, &posting).expect("covered"), older);
@@ -182,7 +182,7 @@ fn the_fail_closed_posture_refuses_an_unpriced_lane_without_a_second_arithmetic(
     assert_eq!(
         price_fail_closed(&view, &posting),
         Err(Unpriceable::LaneUnpriced {
-            card_seq: HistorySeq(0),
+            card_seq: history.entries()[0].key(),
             lane: "mystery".to_string(),
         })
     );

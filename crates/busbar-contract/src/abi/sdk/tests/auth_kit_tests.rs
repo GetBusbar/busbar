@@ -8,9 +8,7 @@ use crate::abi::auth::{check_complete_login, slot, CompleteLoginIn, Ops};
 use crate::abi::mechanism::lifecycle::{slot as life, OpenIn, OpenOut};
 use crate::abi::sdk::door::statement;
 use crate::abi::sdk::life::{Held, Life, Refreshed, Refusal};
-use crate::abi::sdk::test_support::reply;
-use crate::abi::sdk::test_support::test_in::TestIn;
-use crate::abi::sdk::test_support::{zeroed, DoorView};
+use crate::abi::sdk::test_support::zeroed;
 use crate::abi::sdk::{Instance, Safe, SafeSlot};
 
 #[derive(serde::Deserialize, Debug)]
@@ -160,28 +158,64 @@ fn login_on(
     cap: usize,
     groups: usize,
 ) -> (Outcome, IdentifyOut, Vec<u8>, Vec<Span>) {
-    let view = DoorView::of(door);
-    let open = view.op::<Ops>(|t| &t.head.open).expect("open");
-    let complete = view
-        .op::<Ops>(|t| &t.complete_login)
-        .expect("complete_login");
-    let mut opened = reply::call_in(
-        open,
-        None,
-        &TestIn::<OpenIn>::new().set(|i| &i.head.op, life::OPEN),
-        zeroed::<OpenOut>(),
-    );
-    let instance = opened.take_instance().expect("an instance");
+    let descriptor = (door.door_fn())();
+    // SAFETY: the actual macro door above declares this auth Ops table, live for the process.
+    let table = unsafe { &*descriptor.ops().cast::<Ops>() };
+    let mut input: OpenIn = zeroed();
+    input.head.size = std::mem::size_of::<OpenIn>() as u32;
+    input.head.op = life::OPEN;
+    let mut opened: OpenOut = zeroed();
+    opened.head.size = std::mem::size_of::<OpenOut>() as u32;
+    // SAFETY: these complete typed frames are exclusive for the synchronous OPEN of this door.
+    let outcome = unsafe {
+        table.head.open.expect("open")(
+            std::ptr::null_mut(),
+            std::ptr::from_ref(&input).cast(),
+            std::ptr::from_mut(&mut opened).cast(),
+        )
+    }
+    .outcome();
+    assert_eq!(outcome, Outcome::Ready);
+    assert!(!opened.instance.is_null(), "an instance");
     let mut bytes = vec![0u8; cap];
     let mut spans = vec![Span { offset: 0, len: 0 }; groups];
-    let c = {
-        let input = TestIn::<CompleteLoginIn>::new()
-            .set(|i| &i.head.op, slot::COMPLETE_LOGIN)
-            .buffer(|i| &i.out_buf.buf, |i| &i.out_buf.buf_cap, &mut bytes)
-            .buffer(|i| &i.out_buf.groups, |i| &i.out_buf.groups_cap, &mut spans);
-        reply::call_in(complete, Some(&instance), &input, zeroed::<IdentifyOut>())
-    };
-    (c.outcome, c.out, bytes, spans)
+    let mut input: CompleteLoginIn = zeroed();
+    input.head.size = std::mem::size_of::<CompleteLoginIn>() as u32;
+    input.head.op = slot::COMPLETE_LOGIN;
+    input.out_buf.buf = bytes.as_mut_ptr();
+    input.out_buf.buf_cap = bytes.len();
+    input.out_buf.groups = spans.as_mut_ptr();
+    input.out_buf.groups_cap = spans.len() as u32;
+    let mut output: IdentifyOut = zeroed();
+    output.head.size = std::mem::size_of::<IdentifyOut>() as u32;
+    // SAFETY: OPEN's actual instance belongs to this table. Both initialized output slices and
+    // the exact typed input/output frames remain live and exclusively borrowed for this call.
+    let outcome = unsafe {
+        table.complete_login.expect("complete_login")(
+            opened.instance,
+            std::ptr::from_ref(&input).cast(),
+            std::ptr::from_mut(&mut output).cast(),
+        )
+    }
+    .outcome();
+    let mut close: crate::abi::mechanism::call::InHead = zeroed();
+    close.size = std::mem::size_of_val(&close) as u32;
+    close.op = life::CLOSE;
+    let mut closed: crate::abi::mechanism::call::OutHead = zeroed();
+    closed.size = std::mem::size_of_val(&closed) as u32;
+    // SAFETY: consume this OPEN's sole live instance after the identity buffers are filled.
+    assert_eq!(
+        unsafe {
+            table.head.close.expect("close")(
+                opened.instance,
+                std::ptr::from_ref(&close).cast(),
+                std::ptr::from_mut(&mut closed).cast(),
+            )
+        }
+        .outcome(),
+        Outcome::Ready
+    );
+    (outcome, output, bytes, spans)
 }
 
 /// The principal crosses as the identity: subject, name, its roles as groups and its TTL, every

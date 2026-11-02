@@ -1053,24 +1053,6 @@ impl GovState {
             .clone()
     }
 
-    #[cfg(test)]
-    pub fn create_key(
-        &self,
-        spec: NewKeySpec,
-        now: u64,
-    ) -> RecordStoreResult<(VirtualKey, String)> {
-        crate::test_support::governance::create_key(self, spec, now)
-    }
-
-    #[cfg(test)]
-    pub fn create_key_with_aws(
-        &self,
-        spec: NewKeySpec,
-        now: u64,
-    ) -> RecordStoreResult<(VirtualKey, String, String, String)> {
-        crate::test_support::governance::create_key_with_aws(self, spec, now)
-    }
-
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn ensure_id_free_for_hash(&self, id: &str, hash: &str) -> RecordStoreResult<()> {
         if let Some(existing) = self.store.get_key(id)? {

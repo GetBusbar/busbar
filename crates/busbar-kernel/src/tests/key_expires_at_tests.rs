@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use crate::governance::signing::{TokenSigner, DEFAULT_KID};
-use crate::governance::{GovState, MemoryStore, NewKeySpec, RecordStore};
+use crate::governance::{GovState, NewKeySpec, RecordStore};
 use std::sync::Arc;
 
 const NOW: u64 = 1_700_000_000;
@@ -11,8 +11,11 @@ const TOKEN_EXP: u64 = NOW + 3_600;
 
 const ROW_EXPIRED_AT: u64 = NOW - 30 * 86_400;
 
-fn gov_and_store() -> (Arc<GovState>, Arc<MemoryStore>) {
-    let store = Arc::new(MemoryStore::new());
+fn gov_and_store() -> (
+    Arc<GovState>,
+    Arc<busbar_plugin_loader::store_v3::LoadedStore>,
+) {
+    let store = crate::real_store::store();
     let signer = TokenSigner::from_secret_bytes(&[5u8; 32], DEFAULT_KID);
     let gov = Arc::new(
         GovState::new_with_signer(store.clone(), Some("admintok".into()), Some(signer))
@@ -23,7 +26,7 @@ fn gov_and_store() -> (Arc<GovState>, Arc<MemoryStore>) {
 
 fn mint_then_expire_the_row(
     gov: &GovState,
-    store: &MemoryStore,
+    store: &busbar_plugin_loader::store_v3::LoadedStore,
     pools: Option<Vec<&str>>,
     mint_now: u64,
     token_exp: u64,

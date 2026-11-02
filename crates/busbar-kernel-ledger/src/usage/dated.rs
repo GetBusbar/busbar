@@ -6,7 +6,7 @@
 use std::collections::BTreeMap;
 
 use crate::cost::{
-    nanos_of_exact, whole, Author, History, HistorySeq, HistoryView, Money, MoneyError, RateCard,
+    nanos_of_exact, whole, Author, EntryKey, History, HistoryView, Money, MoneyError, RateCard,
     RawRateEra, Tally, STANDARD_TIER_BP,
 };
 
@@ -138,18 +138,18 @@ fn price_dated_at<'r>(
         d.view
             .entry_at(d.now_ms)
             .filter(|entry| !matches!(entry.author(), Author::Amend { .. }))
-            .map(|entry| entry.seq())
+            .map(|entry| entry.key())
     });
-    let resolve = |era: RawRateEra| -> Result<(HistorySeq, &RateCard), MoneyError> {
+    let resolve = |era: RawRateEra| -> Result<(Option<EntryKey>, &RateCard), MoneyError> {
         let Some(view) = view.as_ref() else {
-            return Ok((HistorySeq::OPENING, live));
+            return Ok((None, live));
         };
         let at = window_start_ms.max(era.effective_from);
         let (seq, card) = view
             .card_for_raw_era(era, at)
             .ok_or(MoneyError::NoCardInForce { at })?;
         Ok((
-            seq,
+            Some(seq),
             if legacy_live_card && Some(seq) == in_force {
                 live
             } else {
@@ -158,13 +158,19 @@ fn price_dated_at<'r>(
         ))
     };
 
-    let mut tallies: Vec<(HistorySeq, Tally<'_>)> = Vec::new();
+    let mut tallies: Vec<(Option<EntryKey>, Tally<'_>)> = Vec::new();
     let mut tally_for = |era: RawRateEra| -> Result<usize, MoneyError> {
         let (seq, card) = resolve(era)?;
         Ok(match tallies.iter().position(|(s, _)| *s == seq) {
             Some(i) => i,
             None => {
-                tallies.push((seq, Tally::at_card_seq(seq, card)));
+                tallies.push((
+                    seq,
+                    match seq {
+                        Some(key) => Tally::at_card_seq(key, card),
+                        None => Tally::at_card(card),
+                    },
+                ));
                 tallies.len() - 1
             }
         })

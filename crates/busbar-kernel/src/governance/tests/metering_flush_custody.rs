@@ -13,7 +13,7 @@ enum Reply {
 }
 
 struct UncertainStore {
-    inner: MemoryStore,
+    inner: Arc<busbar_plugin_loader::store_v3::LoadedStore>,
     replies: Mutex<VecDeque<Reply>>,
     calls: Mutex<Vec<(OpId, Vec<MeteringDelta>)>>,
     legacy_calls: AtomicUsize,
@@ -24,7 +24,7 @@ struct UncertainStore {
 impl UncertainStore {
     fn new(replies: impl IntoIterator<Item = Reply>) -> Self {
         Self {
-            inner: MemoryStore::new(),
+            inner: crate::real_store::store(),
             replies: Mutex::new(replies.into_iter().collect()),
             calls: Mutex::new(Vec::new()),
             legacy_calls: AtomicUsize::new(0),

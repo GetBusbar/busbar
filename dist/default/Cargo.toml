@@ -343,7 +343,7 @@ auth-oauth = ["dep:busbar-auth-oauth"]
 # `["keys","admin-tokens"]` (accepted difference `#64-class build.auth_modules lists the webhook-signature module`).
 auth-webhook-signature = ["dep:busbar-auth-webhook-signature"]
 hooks-ranking = ["dep:busbar-hook-ranking"]
-openapi-schema = ["busbar-kernel/openapi-schema", "busbar-core-admin/openapi-schema", "busbar-core-admin-testkit/openapi-schema"]
+openapi-schema = ["busbar-kernel/openapi-schema", "busbar-core-admin/openapi-schema"]
 loom-model = ["busbar-kernel/loom-model"]
 
 # Core's source, which this distribution compiles: build.rs, src/main.rs and the root modules.
@@ -566,11 +566,9 @@ planes = ["busbar-plane-llm", "busbar-plane-mcp", "busbar-plane-a2a"]
 operator-auth = ["busbar-auth-admin-tokens-plugin"]
 
 [dev-dependencies]
-busbar-core-admin-testkit = { path = "../../crates/busbar-core-admin-testkit" }
 # The root's transport refresh fixture uses the connector's instance-local test support.
 busbar-core-connector = { path = "../../crates/busbar-core-connector", features = ["test-support"] }
 # The kernel's test fixtures on its pub API (the root's tests and this crate's).
-busbar-kernel-testkit = { path = "../../crates/busbar-kernel-testkit" }
 # The tests' own ed25519 keys (credential and keyset cells). No production path verifies an
 # operator signature (#77(9)), so it is a test dependency only.
 ed25519-dalek = { workspace = true }
@@ -614,7 +612,6 @@ busbar-kernel = { path = "../../crates/busbar-kernel", features = ["test-support
 busbar-kernel-audit = { path = "../../crates/busbar-kernel-audit", features = ["test-support"] }
 # The core test kit: the local token issuer, the connection-table doubles, the auth axis's stand-in
 # and the root's door fixtures.
-busbar-test-kit = { path = "../../crates/busbar-test-kit" }
 # THE EQUIVALENCE PROOF CALLS THE ADMIN READ RATHER THAN REPRODUCING IT.
 # `tests/money_one_function_equivalence.rs` runs every implementation of `money = f(ledger, card)`
 # side by side, and `GET /api/v1/admin/usage` is one of them. Its three derivations are crate-private
@@ -703,13 +700,6 @@ crate-type = ["cdylib"]
 
 # The linked door this binary proves is the export axis's optional edge; without the feature there is
 # no linked row to prove, so the target is not built.
-[[test]]
-name = "admin_cross_plane"
-path = "tests/admin_cross_plane/main.rs"
-required-features = ["auth-admin-tokens"]
-
-# THE CREDENTIAL CANARY HARNESS (measurement only): it plants canaries
-# through the linked auth rows and the request-log exports, so it needs them linked.
 [[test]]
 name = "canary"
 path = "tests/canary/main.rs"

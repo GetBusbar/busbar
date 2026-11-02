@@ -10,7 +10,6 @@ pub mod otlp;
 pub mod pinned_planes;
 #[path = "../../../../crates/busbar/src/root/tests/test_plugins.rs"]
 pub mod plugins;
-pub mod root_install;
 pub mod upstream;
 
 use std::path::{Path, PathBuf};

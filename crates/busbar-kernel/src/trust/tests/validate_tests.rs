@@ -181,11 +181,8 @@ fn an_ungoverned_standing_permission_needs_no_reresolution() {
 
 fn a_registry() -> std::sync::Arc<crate::governance::GovState> {
     std::sync::Arc::new(
-        crate::governance::GovState::new(
-            std::sync::Arc::new(crate::governance::MemoryStore::new()),
-            None,
-        )
-        .expect("a memory-backed registry constructs"),
+        crate::governance::GovState::new(crate::real_store::store(), None)
+            .expect("a memory-backed registry constructs"),
     )
 }
 

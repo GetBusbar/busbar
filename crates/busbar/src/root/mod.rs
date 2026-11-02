@@ -79,3 +79,7 @@ mod linked_door_root;
 #[cfg(test)]
 #[path = "tests/plane_registry.rs"]
 pub(crate) mod test_plane_registry;
+
+#[cfg(test)]
+#[path = "tests/real_store.rs"]
+pub(crate) mod real_store;

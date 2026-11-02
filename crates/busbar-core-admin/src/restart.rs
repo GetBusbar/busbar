@@ -96,21 +96,7 @@ pub fn begin_drain() {
 
 const SUPERVISOR_MARKERS: [&str; 2] = ["INVOCATION_ID", "KUBERNETES_SERVICE_HOST"];
 
-#[cfg(any(test, feature = "test-support"))]
-thread_local! {
-    static FORCE_UNSUPERVISED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-}
-
-#[cfg(any(test, feature = "test-support"))]
-pub fn swap_forced_unsupervised(forced: bool) -> bool {
-    FORCE_UNSUPERVISED.with(|value| value.replace(forced))
-}
-
 pub(crate) fn supervisor_detected() -> bool {
-    #[cfg(any(test, feature = "test-support"))]
-    if FORCE_UNSUPERVISED.with(std::cell::Cell::get) {
-        return false;
-    }
     supervisor_detected_in(|k| std::env::var_os(k).is_some())
 }
 

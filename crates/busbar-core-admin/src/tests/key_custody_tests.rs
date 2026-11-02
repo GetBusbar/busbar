@@ -173,7 +173,7 @@ impl RecordStore for Store {
 }
 
 fn app(store: Arc<Store>) -> Arc<AppHandle> {
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let signer = busbar_kernel::governance::signing::TokenSigner::from_secret_bytes(
         &[7; 32],
         busbar_kernel::governance::signing::DEFAULT_KID,

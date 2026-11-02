@@ -5,11 +5,8 @@
 
 use crate::cost::rate::RateCard;
 
-/// An entry's own number: dense, monotone, assigned on append.
+/// A local dense position; ordered peer insertion can move it. Identity is [`EntryKey`].
 ///
-/// THIS IS THE CARD IDENTITY, and it is the only one. It replaces the free-text version name the
-/// card used to carry and the bare `u64` the journal, the migration marker and the opening balance
-/// each spelled separately — one number, meaning one thing, readable by all of them.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct HistorySeq(pub u64);
 
@@ -258,7 +255,7 @@ pub struct CardEntry {
 }
 
 impl CardEntry {
-    /// This entry's number. Assigned on append and never changed.
+    /// This entry's current local position, not its fleet identity.
     pub fn seq(&self) -> HistorySeq {
         self.seq
     }
@@ -366,7 +363,12 @@ impl History {
         self.entries.last().map(CardEntry::seq)
     }
 
-    /// Every entry, in `seq` order.
+    /// The highest entry key, or `None` for an empty history.
+    pub fn head_key(&self) -> Option<EntryKey> {
+        self.entries.last().map(CardEntry::key)
+    }
+
+    /// Every entry, in key order.
     pub fn entries(&self) -> &[CardEntry] {
         &self.entries
     }
@@ -381,9 +383,9 @@ impl History {
         self.entries.is_empty()
     }
 
-    /// **THE REPRODUCIBILITY PRIMITIVE.** Everything with `seq <= at`.
-    pub fn snapshot(&self, at: HistorySeq) -> HistoryView<'_> {
-        let count = self.entries.partition_point(|e| e.seq <= at);
+    /// The history through this entry key, including later arrivals below the same boundary.
+    pub fn snapshot(&self, at: EntryKey) -> HistoryView<'_> {
+        let count = self.entries.partition_point(|e| e.key <= at);
         HistoryView {
             entries: &self.entries[..count],
             at: Some(at),
@@ -394,7 +396,7 @@ impl History {
     pub fn current(&self) -> HistoryView<'_> {
         HistoryView {
             entries: &self.entries,
-            at: self.head(),
+            at: self.head_key(),
         }
     }
 
@@ -495,7 +497,7 @@ impl History {
     }
 }
 
-/// The history as one snapshot saw it: the entries with `seq <= at`, borrowed.
+/// A borrowed history prefix ending at an entry-key boundary.
 ///
 /// A view is a borrowed slice and a number. It reads no clock and owns nothing, so a lookup through
 /// it allocates nothing and an auditor holding the postings and the history re-derives every invoice
@@ -503,18 +505,18 @@ impl History {
 #[derive(Clone, Copy, Debug)]
 pub struct HistoryView<'a> {
     entries: &'a [CardEntry],
-    at: Option<HistorySeq>,
+    at: Option<EntryKey>,
 }
 
 impl HistoryView<'_> {
     /// Resolve counts served by one exact entry, then apply deliberate later amendments at their
-    pub fn card_for_entry_era(&self, id: EntryId, wall_at: u64) -> Option<(HistorySeq, &RateCard)> {
+    pub fn card_for_entry_era(&self, id: EntryId, wall_at: u64) -> Option<(EntryKey, &RateCard)> {
         let original = self.entries.iter().find(|entry| entry.id() == id)?;
         Some(self.card_after_amendments(original, wall_at))
     }
 
     /// Resolve a historical timestamp era. Zero retains its undated wall lookup; a nonzero era
-    pub fn card_for_config_era(&self, era: u64, wall_at: u64) -> Option<(HistorySeq, &RateCard)> {
+    pub fn card_for_config_era(&self, era: u64, wall_at: u64) -> Option<(EntryKey, &RateCard)> {
         if era == 0 {
             return self.card_at(wall_at);
         }
@@ -530,11 +532,7 @@ impl HistoryView<'_> {
     }
 
     /// Resolve raw provenance without losing the distinction between a known opening and legacy
-    pub fn card_for_raw_era(
-        &self,
-        era: RawRateEra,
-        wall_at: u64,
-    ) -> Option<(HistorySeq, &RateCard)> {
+    pub fn card_for_raw_era(&self, era: RawRateEra, wall_at: u64) -> Option<(EntryKey, &RateCard)> {
         match era.entry_id {
             Some(id) => {
                 let original = self.entries.iter().find(|entry| entry.id() == id)?;
@@ -551,7 +549,7 @@ impl HistoryView<'_> {
         &'v self,
         original: &'v CardEntry,
         wall_at: u64,
-    ) -> (HistorySeq, &'v RateCard) {
+    ) -> (EntryKey, &'v RateCard) {
         let entry = self
             .entries
             .iter()
@@ -562,16 +560,16 @@ impl HistoryView<'_> {
                     && entry.prices(wall_at)
             })
             .unwrap_or(original);
-        (entry.seq, &entry.card)
+        (entry.key, &entry.card)
     }
 
     /// **THE RESOLUTION RULE.** Among the entries this snapshot can see whose interval covers `t`,
-    pub fn card_at(&self, t: u64) -> Option<(HistorySeq, &RateCard)> {
+    pub fn card_at(&self, t: u64) -> Option<(EntryKey, &RateCard)> {
         self.entries
             .iter()
             .rev()
             .find(|e| e.prices(t))
-            .map(|e| (e.seq, &e.card))
+            .map(|e| (e.key, &e.card))
     }
 
     /// The entry this view resolved to at `t`, whole.
@@ -613,8 +611,8 @@ impl HistoryView<'_> {
         cuts(until).then_some(until)
     }
 
-    /// The snapshot this view is: the seq it was taken at, or `None` for the current view of a
-    pub fn seq(&self) -> Option<HistorySeq> {
+    /// The entry-key boundary of this view, or `None` for an empty current history.
+    pub fn seq(&self) -> Option<EntryKey> {
         self.at
     }
 

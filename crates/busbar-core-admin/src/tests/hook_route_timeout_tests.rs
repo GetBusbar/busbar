@@ -217,7 +217,7 @@ async fn policy_observation(app: &busbar_kernel::state::App) -> String {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn timeout_only_admin_put_refreshes_both_hook_doors_and_policy_atomically() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let axis = Arc::new(Axis::default());
     let rules = Arc::new(Rules::default());
     let env = HookEnv::with_axis(

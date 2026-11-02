@@ -199,20 +199,9 @@ pub mod telemetry;
 
 pub mod timing;
 
-#[cfg(test)]
-#[path = "../../busbar-kernel-testkit/src/app.rs"]
-mod app;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_hooks;
 
-#[cfg(test)]
-#[allow(dead_code, unused_imports)]
-#[path = "../../busbar-kernel-testkit/src/test_support/mod.rs"]
-mod test_support;
-#[cfg(test)]
-#[allow(dead_code)]
-#[path = "../../busbar-kernel-testkit/src/testkit.rs"]
-mod testkit;
 pub mod topology;
 
 pub use busbar_contract::transport::transport;
@@ -295,3 +284,7 @@ pub fn base_data_core_lines(
 pub fn boot_route_paths_of(app: &state::App) -> Vec<String> {
     app.boot_route_paths.iter().cloned().collect()
 }
+
+#[cfg(test)]
+#[path = "tests/real_store.rs"]
+pub(crate) mod real_store;

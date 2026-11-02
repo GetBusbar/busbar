@@ -30,9 +30,6 @@ pub const WINDOW_HOUR: &str = "hour";
 
 const VK_ID_PREFIX: &str = "vk_";
 
-#[cfg(test)]
-const SK_SECRET_PREFIX: &str = crate::test_support::governance::SK_SECRET_PREFIX;
-
 pub const BINDING_MARKER_PREFIX: &str = "binding:";
 
 pub const SELF_KEY_GROUP_PREFIX: &str = "user:";
@@ -1065,11 +1062,6 @@ pub use busbar_contract::records::PlaneRequestCtx;
 
 pub type GovCtx = busbar_contract::records::PlaneRequestCtx;
 
-#[cfg(test)]
-fn generate_secret() -> Result<String, getrandom::Error> {
-    crate::test_support::governance::generate_secret()
-}
-
 fn draw(alphabet: &str, n: usize) -> Result<String, getrandom::Error> {
     let symbols = alphabet.as_bytes();
     if symbols.is_empty() {
@@ -1390,9 +1382,6 @@ impl<T> IntoStoreResult<T> for Result<T, getrandom::Error> {
         self.map_err(|e| RecordStoreError(format!("OS CSPRNG (getrandom) unavailable: {e}")))
     }
 }
-
-#[cfg(test)]
-pub use crate::test_support::store_double::MemoryStore;
 
 pub fn spawn_budget_flusher(
     gov: std::sync::Arc<GovState>,

@@ -14,7 +14,6 @@ use busbar_kernel::governance::signing::{TokenSigner, DEFAULT_KID};
 use busbar_kernel::governance::{GovState, NewKeySpec};
 use busbar_kernel::hooks::ResolvedPolicy;
 use busbar_kernel::plane_driver::{EndPost, PlaneMoney};
-use busbar_kernel_testkit::test_support::store_double::MemoryStore;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use super::planes_tests::{composed_services, PUBLISHING};
@@ -870,7 +869,7 @@ pub(crate) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
 
     let signer = TokenSigner::from_secret_bytes(&[7u8; 32], DEFAULT_KID);
     let gov = Arc::new(
-        GovState::new_with_signer(Arc::new(MemoryStore::new()), None, Some(signer))
+        GovState::new_with_signer(crate::root::real_store::records(), None, Some(signer))
             .expect("governance"),
     );
     let configured = opts.group.map(|(name, limits)| {

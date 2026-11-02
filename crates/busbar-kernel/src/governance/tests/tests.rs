@@ -1,3 +1,13 @@
+static ISSUED_SHAPE: std::sync::LazyLock<busbar_contract::auth_calls::IssuedShape> =
+    std::sync::LazyLock::new(|| busbar_contract::auth_calls::IssuedShape {
+        id_prefix: "AKIA".to_string(),
+        id_len: 20,
+        id_alphabet: "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789".to_string(),
+        secret_len: 40,
+        secret_alphabet: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+            .to_string(),
+    });
+
 #[test]
 fn synthesize_principal_key_union_semantics() {
     use crate::config::RoleBindingCfg;
@@ -222,17 +232,22 @@ fn tt(n: u64) -> std::collections::BTreeMap<String, u64> {
     m
 }
 
-fn ledger_tokens(store: &MemoryStore, bucket: &str, window: u64) -> u64 {
+fn ledger_tokens(
+    store: &busbar_plugin_loader::store_v3::LoadedStore,
+    bucket: &str,
+    window: u64,
+) -> u64 {
     store.get_usage(bucket, window).unwrap().total_tokens()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_concurrent_govstate_admission_respects_cap() {
-    let store = Arc::new(MemoryStore::new());
+    let store = crate::real_store::store();
     let gov = Arc::new(GovState::new(store.clone(), None).unwrap());
     let cost = Arc::new(group_cost(1, &[("team", 5, "total", None)]));
-    let (key, _s) = gov
-        .create_key(
+    let (key, _s) = {
+        gov.set_signing_key(Some(self_serve_signer()));
+        gov.mint_signed(
             NewKeySpec {
                 name: "k".to_string(),
                 allowed_pools: None,
@@ -240,9 +255,11 @@ async fn test_concurrent_govstate_admission_respects_cap() {
                 labels: std::collections::BTreeMap::new(),
                 ..Default::default()
             },
+            4_000_000_000,
             1_700_000_000,
         )
-        .unwrap();
+    }
+    .unwrap();
     let at = 1_700_000_000u64;
     let mut handles = Vec::new();
     for _ in 0..20 {
@@ -287,11 +304,12 @@ async fn test_concurrent_govstate_admission_respects_cap() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_charge_refund_readmit_cycle() {
-    let store = Arc::new(MemoryStore::new());
+    let store = crate::real_store::store();
     let gov = Arc::new(GovState::new(store.clone(), None).unwrap());
     let cost = group_cost(1, &[("solo", 1, "total", None)]);
-    let (key, _s) = gov
-        .create_key(
+    let (key, _s) = {
+        gov.set_signing_key(Some(self_serve_signer()));
+        gov.mint_signed(
             NewKeySpec {
                 name: "k".to_string(),
                 allowed_pools: None,
@@ -299,9 +317,11 @@ async fn test_charge_refund_readmit_cycle() {
                 labels: std::collections::BTreeMap::new(),
                 ..Default::default()
             },
+            4_000_000_000,
             1_700_000_000,
         )
-        .unwrap();
+    }
+    .unwrap();
     let at = 1_700_000_000u64;
 
     let first = (gov.try_admit(&cost, &key, "", at))
@@ -334,11 +354,12 @@ async fn test_charge_refund_readmit_cycle() {
 
 #[tokio::test]
 async fn test_try_admit_rejects_at_group_cap() {
-    let store = Arc::new(MemoryStore::new());
+    let store = crate::real_store::store();
     let gov = GovState::new(store, None).unwrap();
     let cost = group_cost(1, &[("g", 2, "total", None)]);
-    let (key, _s) = gov
-        .create_key(
+    let (key, _s) = {
+        gov.set_signing_key(Some(self_serve_signer()));
+        gov.mint_signed(
             NewKeySpec {
                 name: "k".to_string(),
                 allowed_pools: None,
@@ -346,9 +367,11 @@ async fn test_try_admit_rejects_at_group_cap() {
                 labels: std::collections::BTreeMap::new(),
                 ..Default::default()
             },
+            4_000_000_000,
             1_700_000_000,
         )
-        .unwrap();
+    }
+    .unwrap();
     let at = 1_700_000_000u64;
     assert!(
         gov.try_admit(&cost, &key, "", at).is_ok(),
@@ -374,7 +397,7 @@ async fn test_try_admit_rejects_at_group_cap() {
 
 #[test]
 fn test_metering_accumulates_split_per_key_model_and_bucket() {
-    let s = MemoryStore::new();
+    let s = crate::real_store::store();
     let day = metering_bucket(1_700_000_123);
     assert_eq!(day % METERING_BUCKET_SECS, 0);
     let d = |model: &str, input: u64, output: u64| MeteringDelta {
@@ -425,7 +448,7 @@ fn test_metering_accumulates_split_per_key_model_and_bucket() {
 
 #[test]
 fn test_record_metering_from_ir_usage_and_flat() {
-    let store = Arc::new(MemoryStore::new());
+    let store = crate::real_store::store();
     let gov = GovState::new(store, None).unwrap();
     let now = 1_700_000_500;
     let usage = busbar_contract::billing::TokenUsage {
@@ -493,10 +516,14 @@ fn test_virtualkey_debug_redacts_key_hash() {
 
 #[test]
 fn test_create_key_with_aws_issues_and_resolves_credential() {
-    let store = Arc::new(MemoryStore::new());
+    let store = crate::real_store::store();
     let gov = GovState::new(store, None).unwrap();
-    let (key, _bearer, akid, secret) = gov
-        .create_key_with_aws(
+    let (key, _bearer, akid, secret) = {
+        gov.set_signing_key(Some(self_serve_signer()));
+        gov.set_at_rest_keys(Some(crate::governance::at_rest::AtRestKeys::new(
+            &[3u8; 32], None,
+        )));
+        gov.mint_signed_with_credential(
             NewKeySpec {
                 name: "vendor-a-key".to_string(),
                 allowed_pools: Some(vec!["prod".to_string()]),
@@ -504,9 +531,21 @@ fn test_create_key_with_aws_issues_and_resolves_credential() {
                 labels: std::collections::BTreeMap::new(),
                 ..Default::default()
             },
+            4_000_000_000,
             1_700_000_000,
+            &signed_kind(),
+            &ISSUED_SHAPE,
         )
-        .unwrap();
+        .map(|(key, bearer, public_id, secret)| {
+            (
+                key,
+                bearer,
+                public_id,
+                secret.expose(&crate::seal::lend()).clone(),
+            )
+        })
+    }
+    .unwrap();
 
     assert!(akid.starts_with("AKIA"), "akid shape: {akid}");
     assert_eq!(akid.len(), 20);
@@ -516,7 +555,13 @@ fn test_create_key_with_aws_issues_and_resolves_credential() {
         .lookup_credential(&crate::governance::tests::signed_kind(), &akid)
         .expect("akid resolves");
     assert_eq!(resolved_key.id, key.id);
-    assert_eq!(cred.secret, format!("v1:plain:{secret}"));
+    let (opened, live) = gov.credential_secret(&signed_kind(), &akid, 1_700_000_000);
+    assert_eq!(opened.expose(&crate::seal::lend()), &secret);
+    assert!(live);
+    assert!(
+        !cred.secret.contains(&secret),
+        "the durable credential is encrypted"
+    );
     assert!(resolved_key.enabled);
 
     assert!(gov
@@ -526,18 +571,7 @@ fn test_create_key_with_aws_issues_and_resolves_credential() {
 
 #[test]
 fn test_credential_generators_contract() {
-    let s = generate_secret().expect("OS entropy available");
-    assert!(s.starts_with(SK_SECRET_PREFIX), "bearer prefix: {s}");
-    let hex_part = &s[SK_SECRET_PREFIX.len()..];
-    assert_eq!(hex_part.len(), 64, "32 random bytes -> 64 hex chars");
-    assert!(
-        hex_part
-            .bytes()
-            .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()),
-        "bearer body is lowercase hex: {hex_part}"
-    );
-
-    let (_, shape) = crate::test_support::issued::double();
+    let (_, shape) = (signed_kind(), ISSUED_SHAPE.clone());
     let (akid, sak) = issue_credential(&shape).expect("OS entropy available");
     assert_eq!(akid.len(), 20);
     assert!(akid.starts_with("AKIA"), "akid prefix: {akid}");
@@ -553,7 +587,6 @@ fn test_credential_generators_contract() {
         "the secret is over the stated alphabet: {sak}"
     );
 
-    assert_ne!(generate_secret().unwrap(), s, "secrets must not repeat");
     assert_ne!(
         issue_credential(&shape).unwrap().0,
         akid,
@@ -563,11 +596,15 @@ fn test_credential_generators_contract() {
 
 #[test]
 fn test_aws_credential_persists_across_reload() {
-    let store: Arc<dyn RecordStore> = Arc::new(MemoryStore::new());
+    let store: Arc<dyn RecordStore> = crate::real_store::store();
     let akid = {
         let gov = GovState::new(store.clone(), None).unwrap();
-        let (_k, _b, akid, _s) = gov
-            .create_key_with_aws(
+        let (_k, _b, akid, _s) = {
+            gov.set_signing_key(Some(self_serve_signer()));
+            gov.set_at_rest_keys(Some(crate::governance::at_rest::AtRestKeys::new(
+                &[3u8; 32], None,
+            )));
+            gov.mint_signed_with_credential(
                 NewKeySpec {
                     name: "k".to_string(),
                     allowed_pools: None,
@@ -575,9 +612,21 @@ fn test_aws_credential_persists_across_reload() {
                     labels: std::collections::BTreeMap::new(),
                     ..Default::default()
                 },
+                4_000_000_000,
                 0,
+                &signed_kind(),
+                &ISSUED_SHAPE,
             )
-            .unwrap();
+            .map(|(key, bearer, public_id, secret)| {
+                (
+                    key,
+                    bearer,
+                    public_id,
+                    secret.expose(&crate::seal::lend()).clone(),
+                )
+            })
+        }
+        .unwrap();
         akid
     };
     let gov2 = GovState::new(store, None).unwrap();
@@ -589,10 +638,14 @@ fn test_aws_credential_persists_across_reload() {
 
 #[test]
 fn test_delete_key_removes_aws_credential() {
-    let store = Arc::new(MemoryStore::new());
+    let store = crate::real_store::store();
     let gov = GovState::new(store, None).unwrap();
-    let (key, _b, akid, _s) = gov
-        .create_key_with_aws(
+    let (key, _b, akid, _s) = {
+        gov.set_signing_key(Some(self_serve_signer()));
+        gov.set_at_rest_keys(Some(crate::governance::at_rest::AtRestKeys::new(
+            &[3u8; 32], None,
+        )));
+        gov.mint_signed_with_credential(
             NewKeySpec {
                 name: "k".to_string(),
                 allowed_pools: None,
@@ -600,9 +653,21 @@ fn test_delete_key_removes_aws_credential() {
                 labels: std::collections::BTreeMap::new(),
                 ..Default::default()
             },
+            4_000_000_000,
             0,
+            &signed_kind(),
+            &ISSUED_SHAPE,
         )
-        .unwrap();
+        .map(|(key, bearer, public_id, secret)| {
+            (
+                key,
+                bearer,
+                public_id,
+                secret.expose(&crate::seal::lend()).clone(),
+            )
+        })
+    }
+    .unwrap();
     assert!(gov.lookup_credential(&signed_kind(), &akid).is_some());
     gov.delete_key(&key.id).unwrap();
     assert!(
@@ -615,7 +680,7 @@ fn test_delete_key_removes_aws_credential() {
 
 #[test]
 fn test_refresh_updates_both_indices_atomically() {
-    let store = Arc::new(MemoryStore::new());
+    let store = crate::real_store::store();
     let signer = crate::governance::signing::TokenSigner::from_secret_bytes(
         &[7u8; 32],
         crate::governance::signing::DEFAULT_KID,
@@ -635,8 +700,8 @@ fn test_refresh_updates_both_indices_atomically() {
             },
             2_000_000_000,
             1_700_000_000,
-            &crate::test_support::issued::double().0,
-            &crate::test_support::issued::double().1,
+            &signed_kind(),
+            &ISSUED_SHAPE,
         )
         .unwrap();
 
@@ -694,19 +759,36 @@ fn test_aws_credential_debug_redacts_secret() {
 
 #[test]
 fn test_generated_aws_credentials_are_distinct() {
-    let store = Arc::new(MemoryStore::new());
+    let store = crate::real_store::store();
     let gov = GovState::new(store, None).unwrap();
     let mk = |gov: &GovState, n: &str| {
-        gov.create_key_with_aws(
-            NewKeySpec {
-                name: n.to_string(),
-                allowed_pools: None,
-                group: None,
-                labels: std::collections::BTreeMap::new(),
-                ..Default::default()
-            },
-            0,
-        )
+        {
+            gov.set_signing_key(Some(self_serve_signer()));
+            gov.set_at_rest_keys(Some(crate::governance::at_rest::AtRestKeys::new(
+                &[3u8; 32], None,
+            )));
+            gov.mint_signed_with_credential(
+                NewKeySpec {
+                    name: n.to_string(),
+                    allowed_pools: None,
+                    group: None,
+                    labels: std::collections::BTreeMap::new(),
+                    ..Default::default()
+                },
+                4_000_000_000,
+                0,
+                &signed_kind(),
+                &ISSUED_SHAPE,
+            )
+            .map(|(key, bearer, public_id, secret)| {
+                (
+                    key,
+                    bearer,
+                    public_id,
+                    secret.expose(&crate::seal::lend()).clone(),
+                )
+            })
+        }
         .unwrap()
     };
     let (_k1, _b1, akid1, s1) = mk(&gov, "a");
@@ -717,7 +799,7 @@ fn test_generated_aws_credentials_are_distinct() {
 
 #[test]
 fn test_govstate_lookup_pool_allowed_refresh() {
-    let store = Arc::new(MemoryStore::new());
+    let store = crate::real_store::store();
     let mut k = sample_key("k1", "binding:k1:gen1");
     k.allowed_scopes = Some(vec![ScopeRef::pool("prod")]);
     store.put_key(&k).unwrap();
@@ -804,7 +886,7 @@ fn test_budget_window_periods() {
 
 #[test]
 fn test_derived_spend_enforces_cap_from_request_ledger() {
-    let store = Arc::new(MemoryStore::new());
+    let store = crate::real_store::store();
     let mut k = sample_key("k1", "h1");
     k.group = Some("team".to_string());
     store.put_key(&k).unwrap();
@@ -845,7 +927,7 @@ fn test_derived_spend_enforces_cap_from_request_ledger() {
 
 #[test]
 fn test_two_node_flush_is_additive_no_lost_update() {
-    let store = Arc::new(MemoryStore::new());
+    let store = crate::real_store::store();
     let k = sample_key("k_fleet", "h_fleet");
     store.put_key(&k).unwrap();
 
@@ -894,7 +976,7 @@ fn test_two_node_flush_is_additive_no_lost_update() {
 
 #[test]
 fn test_additive_flush_carries_refund_deltas() {
-    let store = Arc::new(MemoryStore::new());
+    let store = crate::real_store::store();
     let k = sample_key("k_refund", "h_refund");
     store.put_key(&k).unwrap();
     let gov = GovState::new(store.clone(), None).unwrap();
@@ -933,7 +1015,7 @@ fn test_metering_accumulator_is_bounded_and_lossless_under_sustained_store_outag
     crate::snapshot::init();
 
     struct MeteringDownStore {
-        inner: MemoryStore,
+        inner: Arc<busbar_plugin_loader::store_v3::LoadedStore>,
     }
     impl busbar_contract::records::RecordStore for MeteringDownStore {
         fn put_key(
@@ -992,7 +1074,7 @@ fn test_metering_accumulator_is_bounded_and_lossless_under_sustained_store_outag
     }
 
     let store = Arc::new(MeteringDownStore {
-        inner: MemoryStore::new(),
+        inner: crate::real_store::store(),
     });
     let gov = GovState::new(store, None).unwrap();
     let now = 1_700_000_000;
@@ -1075,7 +1157,7 @@ fn test_metering_accumulator_is_bounded_and_lossless_under_sustained_store_outag
 
 #[test]
 fn test_sharded_metering_accrual_is_exactly_once_under_concurrency() {
-    let store = Arc::new(MemoryStore::new());
+    let store = crate::real_store::store();
     let gov = Arc::new(GovState::new(store.clone(), None).unwrap());
 
     let now = busbar_kernel::store::now();
@@ -1134,7 +1216,7 @@ fn test_sharded_metering_accrual_is_exactly_once_under_concurrency() {
 
 #[test]
 fn test_sharded_metering_no_loss_with_a_concurrent_flusher() {
-    let store = Arc::new(MemoryStore::new());
+    let store = crate::real_store::store();
     let gov = Arc::new(GovState::new(store.clone(), None).unwrap());
 
     let now = busbar_kernel::store::now();
@@ -1194,7 +1276,7 @@ fn test_sharded_metering_no_loss_with_a_concurrent_flusher() {
 #[test]
 fn test_failed_flush_retries_the_unacked_delta() {
     struct FlakyStore {
-        inner: MemoryStore,
+        inner: Arc<busbar_plugin_loader::store_v3::LoadedStore>,
         healthy: std::sync::atomic::AtomicBool,
     }
     impl busbar_contract::records::RecordStore for FlakyStore {
@@ -1276,7 +1358,7 @@ fn test_failed_flush_retries_the_unacked_delta() {
         }
     }
     let store = Arc::new(FlakyStore {
-        inner: MemoryStore::new(),
+        inner: crate::real_store::store(),
         healthy: std::sync::atomic::AtomicBool::new(false),
     });
     let k = sample_key("k_flaky", "h_flaky");
@@ -1299,7 +1381,7 @@ fn test_failed_flush_retries_the_unacked_delta() {
 
 #[test]
 fn test_record_usage_derives_spend_and_reprices_on_read() {
-    let store = Arc::new(MemoryStore::new());
+    let store = crate::real_store::store();
     let gov = GovState::new(store.clone(), None).unwrap();
     let k = {
         let k = sample_key("k1", "h1");
@@ -1329,7 +1411,7 @@ fn test_record_usage_derives_spend_and_reprices_on_read() {
 
 #[test]
 fn test_sub_cent_precision_via_ledger_no_carry() {
-    let store = Arc::new(MemoryStore::new());
+    let store = crate::real_store::store();
     let gov = GovState::new(store.clone(), None).unwrap();
     let k = {
         let k = sample_key("k1", "h1");
@@ -1357,7 +1439,7 @@ fn test_sub_cent_precision_via_ledger_no_carry() {
 
 #[test]
 fn test_ledger_windows_are_isolated_across_days() {
-    let store = Arc::new(MemoryStore::new());
+    let store = crate::real_store::store();
     let gov = GovState::new(store.clone(), None).unwrap();
     let k = {
         let mut k = sample_key("k1", "h1");
@@ -1392,7 +1474,7 @@ fn test_ledger_windows_are_isolated_across_days() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_record_usage_write_behind_under_runtime() {
-    let store = Arc::new(MemoryStore::new());
+    let store = crate::real_store::store();
     let gov = GovState::new(store.clone(), None).unwrap();
     let k = {
         let k = sample_key("k1", "h1");
@@ -1426,7 +1508,7 @@ async fn test_record_usage_write_behind_under_runtime() {
 #[test]
 fn test_rate_headroom_reports_fraction_remaining() {
     use crate::config::groups::{LimitCfg, LimitMetric, LimitWindow};
-    let store = Arc::new(MemoryStore::new());
+    let store = crate::real_store::store();
     let gov = GovState::new(store, None).unwrap();
     let now = 1_700_000_040;
 
@@ -1519,7 +1601,7 @@ fn test_rate_headroom_reports_fraction_remaining() {
 
 #[test]
 fn test_budget_sweep_is_window_agnostic_across_cotenants() {
-    let store = Arc::new(MemoryStore::new());
+    let store = crate::real_store::store();
     let gov = GovState::new(store, None).unwrap();
     let now = 1_700_000_040u64;
 
@@ -1594,7 +1676,7 @@ fn test_budget_sweep_is_window_agnostic_across_cotenants() {
 
 #[test]
 fn test_budget_sweep_staleness_boundary_is_exact() {
-    let store = Arc::new(MemoryStore::new());
+    let store = crate::real_store::store();
     let gov = GovState::new(store, None).unwrap();
     let now = 1_700_000_040u64;
     let max_window = 31 * SECS_PER_DAY;
@@ -1672,7 +1754,7 @@ fn test_budget_sweep_staleness_boundary_is_exact() {
 #[test]
 fn test_budget_sweep_cadence_post_increment_no_off_by_one() {
     const N: u32 = crate::config::DEFAULT_RATE_SWEEP_INTERVAL;
-    let store = Arc::new(MemoryStore::new());
+    let store = crate::real_store::store();
     let gov = GovState::new(store, None).unwrap();
     let k = sample_key("k1", "h1");
     let now = 1_700_000_040u64;
@@ -1737,7 +1819,7 @@ fn test_budget_sweep_cadence_post_increment_no_off_by_one() {
 
 #[tokio::test]
 async fn test_admission_charge_write_behind_under_runtime() {
-    let store = Arc::new(MemoryStore::new());
+    let store = crate::real_store::store();
     let mut k = sample_key("k1", "h1");
     k.group = Some("team".to_string());
     let gov = GovState::new(store.clone(), None).unwrap();
@@ -1766,7 +1848,7 @@ async fn test_admission_charge_write_behind_under_runtime() {
 
 #[test]
 fn test_negative_fee_and_rate_clamp_to_zero() {
-    let store = Arc::new(MemoryStore::new());
+    let store = crate::real_store::store();
     let mut k = sample_key("k1", "h1");
     k.group = Some("team".to_string());
     store.put_key(&k).unwrap();
@@ -1807,7 +1889,7 @@ fn test_negative_fee_and_rate_clamp_to_zero() {
 
 #[test]
 fn test_create_key_minted_id_is_free_so_mint_succeeds() {
-    let store = Arc::new(MemoryStore::new());
+    let store = crate::real_store::store();
     let gov = GovState::new(store.clone(), None).unwrap();
     let spec = NewKeySpec {
         name: "first".to_string(),
@@ -1816,7 +1898,11 @@ fn test_create_key_minted_id_is_free_so_mint_succeeds() {
         labels: std::collections::BTreeMap::new(),
         ..Default::default()
     };
-    let (key, _secret) = gov.create_key(spec, 1_700_000_000).unwrap();
+    let (key, _secret) = {
+        gov.set_signing_key(Some(self_serve_signer()));
+        gov.mint_signed(spec, 4_000_000_000, 1_700_000_000)
+    }
+    .unwrap();
     assert!(key.id.starts_with("vk_"));
 
     assert_eq!(gov.lookup_by_sub(&key.id).unwrap().id, key.id);
@@ -1824,10 +1910,11 @@ fn test_create_key_minted_id_is_free_so_mint_succeeds() {
 
 #[test]
 fn test_update_key_toggles_enabled_and_rebinds_group_in_place() {
-    let store = Arc::new(MemoryStore::new());
+    let store = crate::real_store::store();
     let gov = GovState::new(store.clone(), None).unwrap();
-    let (key, _secret) = gov
-        .create_key(
+    let (key, _secret) = {
+        gov.set_signing_key(Some(self_serve_signer()));
+        gov.mint_signed(
             NewKeySpec {
                 name: "k".to_string(),
                 allowed_pools: None,
@@ -1835,9 +1922,11 @@ fn test_update_key_toggles_enabled_and_rebinds_group_in_place() {
                 labels: std::collections::BTreeMap::new(),
                 ..Default::default()
             },
+            4_000_000_000,
             1_700_000_000,
         )
-        .unwrap();
+    }
+    .unwrap();
     assert!(key.enabled, "new key starts enabled");
     let hash = key.generation_hash.clone();
 
@@ -1879,7 +1968,7 @@ fn test_update_key_toggles_enabled_and_rebinds_group_in_place() {
 
 #[test]
 fn test_ensure_id_free_for_hash_guards_silent_overwrite() {
-    let store = Arc::new(MemoryStore::new());
+    let store = crate::real_store::store();
     let gov = GovState::new(store.clone(), None).unwrap();
 
     gov.ensure_id_free_for_hash("vk_freshid", "HASH_A")
@@ -1909,7 +1998,7 @@ fn test_ensure_id_free_for_hash_guards_silent_overwrite() {
 
 #[test]
 fn test_poisoned_budget_lock_recovers_not_panics() {
-    let store = Arc::new(MemoryStore::new());
+    let store = crate::real_store::store();
     let gov = Arc::new(GovState::new(store, None).unwrap());
     let cost = group_cost(1, &[("g", 2, "total", None)]);
     let mut k = sample_key("k1", "h1");
@@ -1942,7 +2031,7 @@ fn test_poisoned_budget_lock_recovers_not_panics() {
 
 #[test]
 fn test_poisoned_by_hash_lock_recovers_not_panics() {
-    let store = Arc::new(MemoryStore::new());
+    let store = crate::real_store::store();
     let k = sample_key("k1", "binding:k1:gen1");
     store.put_key(&k).unwrap();
     let gov = Arc::new(GovState::new(store, None).unwrap());
@@ -1961,7 +2050,7 @@ fn test_poisoned_by_hash_lock_recovers_not_panics() {
 }
 
 struct RecordingBarrierStore {
-    inner: MemoryStore,
+    inner: Arc<busbar_plugin_loader::store_v3::LoadedStore>,
     block_first: std::sync::atomic::AtomicBool,
     entered: std::sync::mpsc::SyncSender<()>,
     release: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
@@ -2024,7 +2113,7 @@ async fn test_write_behind_flush_serializes_and_counts_exactly_once() {
     let (entered_tx, entered_rx) = std::sync::mpsc::sync_channel::<()>(1);
     let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
     let store = Arc::new(RecordingBarrierStore {
-        inner: MemoryStore::new(),
+        inner: crate::real_store::store(),
         block_first: std::sync::atomic::AtomicBool::new(true),
         entered: entered_tx,
         release: std::sync::Mutex::new(release_rx),
@@ -2070,7 +2159,7 @@ async fn test_write_behind_flush_serializes_and_counts_exactly_once() {
 }
 
 struct BlockingDenylistStore {
-    inner: MemoryStore,
+    inner: Arc<busbar_plugin_loader::store_v3::LoadedStore>,
     entered: std::sync::mpsc::SyncSender<()>,
     release: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
 }
@@ -2116,7 +2205,7 @@ impl RecordStore for BlockingDenylistStore {
 }
 
 struct WedgeStore {
-    inner: MemoryStore,
+    inner: Arc<busbar_plugin_loader::store_v3::LoadedStore>,
     fail_list: std::sync::atomic::AtomicBool,
     fail_denylist: std::sync::atomic::AtomicBool,
     reenter: std::sync::Mutex<Option<Box<dyn FnOnce() -> bool + Send>>>,
@@ -2136,7 +2225,7 @@ impl WedgeStore {
         let (entered, entered_rx) = std::sync::mpsc::sync_channel(1);
         let (release_tx, release) = std::sync::mpsc::channel();
         let store = Arc::new(WedgeStore {
-            inner: MemoryStore::new(),
+            inner: crate::real_store::store(),
             fail_list: std::sync::atomic::AtomicBool::new(false),
             fail_denylist: std::sync::atomic::AtomicBool::new(false),
             reenter: std::sync::Mutex::new(None),
@@ -2277,15 +2366,18 @@ fn a_revoke_is_not_held_behind_a_reload_parked_in_the_store_and_the_reload_does_
     let gov = Arc::new(
         GovState::new_with_signer(store.clone(), None, Some(self_serve_signer())).unwrap(),
     );
-    let (key, _) = gov
-        .create_key(
+    let (key, _) = {
+        gov.set_signing_key(Some(self_serve_signer()));
+        gov.mint_signed(
             NewKeySpec {
                 name: "k".to_string(),
                 ..Default::default()
             },
+            4_000_000_000,
             0,
         )
-        .unwrap();
+    }
+    .unwrap();
     assert!(gov.lookup_by_sub(&key.id).unwrap().enabled);
     store
         .wedge_list
@@ -2318,22 +2410,25 @@ fn a_reload_is_not_held_behind_a_revoke_parked_in_the_store() {
     let (entered_tx, entered) = std::sync::mpsc::sync_channel::<()>(1);
     let (release, release_rx) = std::sync::mpsc::channel::<()>();
     let store = Arc::new(BlockingDenylistStore {
-        inner: MemoryStore::new(),
+        inner: crate::real_store::store(),
         entered: entered_tx,
         release: std::sync::Mutex::new(release_rx),
     });
     let gov = Arc::new(
         GovState::new_with_signer(store.clone(), None, Some(self_serve_signer())).unwrap(),
     );
-    let (key, _) = gov
-        .create_key(
+    let (key, _) = {
+        gov.set_signing_key(Some(self_serve_signer()));
+        gov.mint_signed(
             NewKeySpec {
                 name: "k".to_string(),
                 ..Default::default()
             },
+            4_000_000_000,
             0,
         )
-        .unwrap();
+    }
+    .unwrap();
     let (done_tx, done) = std::sync::mpsc::channel();
     std::thread::scope(|s| {
         let parked = s.spawn(|| gov.revoke(&key.id, "test"));
@@ -2359,7 +2454,7 @@ fn a_reload_is_not_held_behind_a_revoke_parked_in_the_store() {
 
 #[test]
 fn test_chain_enforcement_rejects_naming_the_blocking_group() {
-    let store = Arc::new(MemoryStore::new());
+    let store = crate::real_store::store();
     let gov = GovState::new(store.clone(), None).unwrap();
     let cost = group_cost(
         10,
@@ -2438,7 +2533,7 @@ fn test_chain_enforcement_rejects_naming_the_blocking_group() {
 
 #[test]
 fn test_group_token_spend_blocks_chain_admission() {
-    let store = Arc::new(MemoryStore::new());
+    let store = crate::real_store::store();
     let gov = GovState::new(store.clone(), None).unwrap();
 
     let cost = card_and_group_cost("gpt-5", 100.0, &[("team", 100, "total", None)]);
@@ -2466,7 +2561,7 @@ fn test_group_token_spend_blocks_chain_admission() {
 
 #[test]
 fn test_boundary_straddle_charge_never_rewinds_the_live_cell() {
-    let store = Arc::new(MemoryStore::new());
+    let store = crate::real_store::store();
     let gov = GovState::new(store, None).unwrap();
 
     let cost = card_and_group_cost("m", 100.0, &[("g", 150, "day", None)]);
@@ -2512,7 +2607,7 @@ fn test_boundary_straddle_charge_never_rewinds_the_live_cell() {
 
 #[test]
 fn test_new_window_admission_rolls_the_stale_cell_fresh() {
-    let store = Arc::new(MemoryStore::new());
+    let store = crate::real_store::store();
     let gov = GovState::new(store, None).unwrap();
     let cost = card_and_group_cost("m", 100.0, &[("g", 150, "day", None)]);
     let mut k = sample_key("vk_roll", "h_r");
@@ -2546,7 +2641,7 @@ fn test_new_window_admission_rolls_the_stale_cell_fresh() {
 
 #[test]
 fn test_missing_group_fails_closed() {
-    let store = Arc::new(MemoryStore::new());
+    let store = crate::real_store::store();
     let gov = GovState::new(store.clone(), None).unwrap();
     let cost = flat_cost(1);
     let mut k = sample_key("vk_g", "h_g");
@@ -2567,7 +2662,7 @@ fn test_missing_group_fails_closed() {
 
 #[test]
 fn test_hydrate_budgets_restores_group_buckets() {
-    let store: Arc<dyn RecordStore> = Arc::new(MemoryStore::new());
+    let store: Arc<dyn RecordStore> = crate::real_store::store();
     let card = || card_and_group_cost("m", 100.0, &[("team", 25, "total", None)]);
     let mut k = sample_key("vk_h", "h_h");
     k.group = Some("team".to_string());
@@ -2602,7 +2697,7 @@ fn test_hydrate_budgets_propagates_store_error() {
     use busbar_contract::records::{RecordStoreError, RecordStoreResult, UsageLedger, VirtualKey};
 
     struct FailGetUsage {
-        inner: MemoryStore,
+        inner: Arc<busbar_plugin_loader::store_v3::LoadedStore>,
     }
     impl RecordStore for FailGetUsage {
         fn put_key(&self, k: &VirtualKey) -> RecordStoreResult<()> {
@@ -2637,7 +2732,7 @@ fn test_hydrate_budgets_propagates_store_error() {
         }
     }
 
-    let inner = MemoryStore::new();
+    let inner = crate::real_store::store();
     let k = sample_key("vk_m9", "m9_h");
     inner.put_key(&k).unwrap();
     let store: Arc<dyn RecordStore> = Arc::new(FailGetUsage { inner });
@@ -2670,7 +2765,7 @@ fn hydrate_budgets_never_writes_a_read_only_store_boots_like_a_writable_one() {
     use busbar_contract::records::{MeteringDelta, RecordStoreResult, UsageLedger, VirtualKey};
 
     struct ReadOnlyStore {
-        inner: Arc<MemoryStore>,
+        inner: Arc<busbar_plugin_loader::store_v3::LoadedStore>,
     }
     impl RecordStore for ReadOnlyStore {
         fn put_key(&self, _key: &VirtualKey) -> RecordStoreResult<()> {
@@ -2703,7 +2798,7 @@ fn hydrate_budgets_never_writes_a_read_only_store_boots_like_a_writable_one() {
     }
 
     let card = || card_and_group_cost("m", 100.0, &[("team", 25, "total", None)]);
-    let mem = Arc::new(MemoryStore::new());
+    let mem = crate::real_store::store();
     let mut k = sample_key("vk_ro", "ro_h");
     k.group = Some("team".to_string());
     let writable: Arc<dyn RecordStore> = mem.clone();
@@ -2735,7 +2830,7 @@ fn hydrate_budgets_never_writes_a_read_only_store_boots_like_a_writable_one() {
 
 #[test]
 fn test_hydrate_budgets_trusts_billable_requests_even_when_it_looks_like_a_refunded_window() {
-    let store: Arc<dyn RecordStore> = Arc::new(MemoryStore::new());
+    let store: Arc<dyn RecordStore> = crate::real_store::store();
     let k = sample_key("vk_refunded", "refunded_h");
     store.put_key(&k).unwrap();
 
@@ -2765,7 +2860,7 @@ fn test_hydrate_budgets_trusts_billable_requests_even_when_it_looks_like_a_refun
          on every restart)"
     );
 
-    let store2: Arc<dyn RecordStore> = Arc::new(MemoryStore::new());
+    let store2: Arc<dyn RecordStore> = crate::real_store::store();
     let k2 = sample_key("vk_split", "split_h");
     store2.put_key(&k2).unwrap();
     store2
@@ -2795,7 +2890,7 @@ fn test_hydrate_budgets_trusts_billable_requests_even_when_it_looks_like_a_refun
 
 #[test]
 fn test_budget_state_projects_the_whole_chain() {
-    let store = Arc::new(MemoryStore::new());
+    let store = crate::real_store::store();
     let gov = GovState::new(store.clone(), None).unwrap();
     let cost = group_cost(
         10,
@@ -2841,12 +2936,13 @@ fn test_budget_state_projects_the_whole_chain() {
 }
 
 mod signed_token {
+    use super::{signed_kind, ISSUED_SHAPE};
     use crate::governance::signing::{TokenSigner, DEFAULT_KID};
-    use crate::governance::{GovState, MemoryStore, NewKeySpec, ScopeRef};
+    use crate::governance::{GovState, NewKeySpec, ScopeRef};
     use std::sync::Arc;
 
     fn gov() -> Arc<GovState> {
-        let store = Arc::new(MemoryStore::new());
+        let store = crate::real_store::store();
         let signer = TokenSigner::from_secret_bytes(&[9u8; 32], DEFAULT_KID);
         let g =
             GovState::new_with_signer(store, Some("admintok".into()), Some(signer)).expect("gov");
@@ -3001,7 +3097,7 @@ mod signed_token {
 
     #[test]
     fn revocation_survives_restart() {
-        let store = Arc::new(MemoryStore::new());
+        let store = crate::real_store::store();
         let signer = TokenSigner::from_secret_bytes(&[9u8; 32], DEFAULT_KID);
         let g = Arc::new(
             GovState::new_with_signer(store.clone(), Some("t".into()), Some(signer)).unwrap(),
@@ -3024,7 +3120,7 @@ mod signed_token {
 
     #[test]
     fn token_verifies_across_shared_key_and_fails_after_rotation() {
-        let store_a = Arc::new(MemoryStore::new());
+        let store_a = crate::real_store::store();
         let key_a = TokenSigner::from_secret_bytes(&[1u8; 32], DEFAULT_KID);
         let node_a = Arc::new(
             GovState::new_with_signer(store_a.clone(), Some("t".into()), Some(key_a)).unwrap(),
@@ -3033,7 +3129,7 @@ mod signed_token {
             .mint_signed(spec("bob", None, None), 5_000, 1_000)
             .expect("mint");
 
-        let store_b = Arc::new(MemoryStore::new());
+        let store_b = crate::real_store::store();
         {
             use busbar_contract::records::RecordStore;
             store_b.put_key(&binding).unwrap();
@@ -3069,8 +3165,8 @@ mod signed_token {
                 spec("bob", None, None),
                 2_000,
                 1_000,
-                &crate::test_support::issued::double().0,
-                &crate::test_support::issued::double().1,
+                &signed_kind(),
+                &ISSUED_SHAPE,
             )
             .expect("mint+aws");
         assert!(token.expose(&crate::seal::lend()).starts_with("bbk_"));
@@ -3091,8 +3187,8 @@ mod signed_token {
                 spec("bob", None, None),
                 2_000,
                 1_000,
-                &crate::test_support::issued::double().0,
-                &crate::test_support::issued::double().1,
+                &signed_kind(),
+                &ISSUED_SHAPE,
             )
             .expect("mint+aws");
         let token = minted.1.expose(&crate::seal::lend()).clone();
@@ -3127,7 +3223,7 @@ mod signed_token {
 
     #[test]
     fn mint_without_signer_fails_closed() {
-        let store = Arc::new(MemoryStore::new());
+        let store = crate::real_store::store();
         let g = Arc::new(GovState::new(store, Some("t".into())).unwrap());
         assert!(!g.signing_enabled());
         let err = g
@@ -3165,7 +3261,7 @@ mod signed_token {
     #[test]
     fn peer_revoke_written_to_the_store_is_honoured_within_the_window() {
         use crate::governance::{RecordStore, REVOCATION_SYNC_TTL_SECS};
-        let store = Arc::new(MemoryStore::new());
+        let store = crate::real_store::store();
         let signer = TokenSigner::from_secret_bytes(&[9u8; 32], DEFAULT_KID);
         let g = Arc::new(
             GovState::new_with_signer(store.clone(), Some("t".into()), Some(signer)).unwrap(),
@@ -3243,7 +3339,7 @@ mod signed_token {
 
 #[test]
 fn delete_key_drops_its_budget_cell() {
-    let store = Arc::new(MemoryStore::new());
+    let store = crate::real_store::store();
     let gov = GovState::new(store, None).unwrap();
     let cost = flat_cost(7);
     let key = sample_key("vk_doomed", "hs-doomed");
@@ -3265,7 +3361,7 @@ fn delete_key_drops_its_budget_cell() {
 
 #[test]
 fn test_budget_sweep_evicts_idle_attribution_cells_but_never_group_caps() {
-    let store = Arc::new(MemoryStore::new());
+    let store = crate::real_store::store();
     let gov = GovState::new(store, None).unwrap();
     let now = 1_700_000_040u64;
     let idle_for = 40 * SECS_PER_DAY;
@@ -3355,7 +3451,7 @@ fn test_budget_sweep_evicts_idle_attribution_cells_but_never_group_caps() {
 
 #[test]
 fn test_hydrated_cells_survive_the_first_sweep() {
-    let store = Arc::new(MemoryStore::new());
+    let store = crate::real_store::store();
     let restored = sample_key("restored", "hr");
     store.put_key(&restored).unwrap();
     store
@@ -3404,7 +3500,7 @@ mod metering_fanout {
     use std::sync::atomic::{AtomicI64, AtomicUsize};
 
     struct CountingStore {
-        inner: MemoryStore,
+        inner: Arc<busbar_plugin_loader::store_v3::LoadedStore>,
 
         in_flight: AtomicUsize,
         high_water: AtomicUsize,
@@ -3416,7 +3512,7 @@ mod metering_fanout {
     impl CountingStore {
         fn new(fail_n_times: i64) -> Self {
             Self {
-                inner: MemoryStore::new(),
+                inner: crate::real_store::store(),
                 in_flight: AtomicUsize::new(0),
                 high_water: AtomicUsize::new(0),
                 total_calls: AtomicUsize::new(0),
@@ -3545,7 +3641,7 @@ mod metering_fanout {
 
     #[test]
     fn flush_metering_skips_a_genuinely_all_zero_entry() {
-        let store = Arc::new(MemoryStore::new());
+        let store = crate::real_store::store();
         let gov = GovState::new(store, None).unwrap();
         let now = 1_700_300_000u64;
         let key = (
@@ -3598,14 +3694,14 @@ mod metering_fanout {
 }
 
 struct FailDeleteStore {
-    inner: MemoryStore,
+    inner: Arc<busbar_plugin_loader::store_v3::LoadedStore>,
     fail_next_delete: std::sync::atomic::AtomicBool,
 }
 
 impl FailDeleteStore {
     fn new() -> Self {
         Self {
-            inner: MemoryStore::new(),
+            inner: crate::real_store::store(),
             fail_next_delete: std::sync::atomic::AtomicBool::new(false),
         }
     }
@@ -3716,7 +3812,7 @@ fn refresh_self_rolls_back_the_new_binding_when_the_old_tombstone_fails() {
 
 #[test]
 fn self_serve_key_records_idp_subject_and_user_bound_mode() {
-    let store = Arc::new(MemoryStore::new());
+    let store = crate::real_store::store();
     let gov = GovState::new_with_signer(store, None, Some(self_serve_signer())).unwrap();
     let sub = "oidc:carol";
     let now = 1_700_000_000u64;
@@ -3744,7 +3840,7 @@ fn self_serve_key_records_idp_subject_and_user_bound_mode() {
 
 #[test]
 fn refresh_self_tombstones_the_old_binding_on_success() {
-    let store = Arc::new(MemoryStore::new());
+    let store = crate::real_store::store();
     let gov = GovState::new_with_signer(store, None, Some(self_serve_signer())).unwrap();
     let sub = "oidc:bob";
     let now = 1_700_000_000u64;
@@ -3941,7 +4037,7 @@ fn self_subject_and_admin_key_callbacks_cannot_form_a_claim_cycle() {
 
 #[test]
 fn self_scope_update_preserves_a_newer_durable_generation() {
-    let store = Arc::new(MemoryStore::new());
+    let store = crate::real_store::store();
     let first = GovState::new_with_signer(store.clone(), None, Some(self_serve_signer())).unwrap();
     let now = 1_700_000_000;
     let (old, old_token) = first
@@ -4034,7 +4130,28 @@ fn deletion_eviction_cannot_be_reversed_by_an_older_reload() {
 fn partial_revoke_immediately_retires_the_durable_credential() {
     let (store, _, _) = WedgeStore::new();
     let gov = GovState::new_with_signer(store.clone(), None, Some(self_serve_signer())).unwrap();
-    let (key, _, public_id, _) = gov.create_key_with_aws(NewKeySpec::default(), 1).unwrap();
+    let (key, _, public_id, _) = {
+        gov.set_signing_key(Some(self_serve_signer()));
+        gov.set_at_rest_keys(Some(crate::governance::at_rest::AtRestKeys::new(
+            &[3u8; 32], None,
+        )));
+        gov.mint_signed_with_credential(
+            NewKeySpec::default(),
+            4_000_000_000,
+            1,
+            &signed_kind(),
+            &ISSUED_SHAPE,
+        )
+        .map(|(key, bearer, public_id, secret)| {
+            (
+                key,
+                bearer,
+                public_id,
+                secret.expose(&crate::seal::lend()).clone(),
+            )
+        })
+    }
+    .unwrap();
     assert!(gov.lookup_credential(&signed_kind(), &public_id).is_some());
     store.fail_denylist.store(true, Ordering::SeqCst);
     assert!(gov.revoke(&key.id, "test").is_err());
@@ -4053,14 +4170,14 @@ fn partial_revoke_immediately_retires_the_durable_credential() {
 }
 
 struct FailListKeysAfterDeleteStore {
-    inner: MemoryStore,
+    inner: Arc<busbar_plugin_loader::store_v3::LoadedStore>,
     fail_next_list_keys: std::sync::atomic::AtomicBool,
 }
 
 impl FailListKeysAfterDeleteStore {
     fn new() -> Self {
         Self {
-            inner: MemoryStore::new(),
+            inner: crate::real_store::store(),
             fail_next_list_keys: std::sync::atomic::AtomicBool::new(false),
         }
     }
@@ -4131,7 +4248,7 @@ fn refresh_self_evicts_old_binding_from_cache_when_post_delete_refresh_fails() {
 
 #[tokio::test]
 async fn mint_self_offloaded_issues_and_refreshes_through_the_blocking_pool() {
-    let store = Arc::new(MemoryStore::new());
+    let store = crate::real_store::store();
     let gov = Arc::new(GovState::new_with_signer(store, None, Some(self_serve_signer())).unwrap());
     let sub = "oidc:offloaded";
     let now = 1_700_000_000u64;
@@ -4176,7 +4293,7 @@ async fn mint_self_offloaded_issues_and_refreshes_through_the_blocking_pool() {
 }
 
 struct PanicOnPutKeyStore {
-    inner: MemoryStore,
+    inner: Arc<busbar_plugin_loader::store_v3::LoadedStore>,
 }
 
 impl RecordStore for PanicOnPutKeyStore {
@@ -4209,7 +4326,7 @@ impl RecordStore for PanicOnPutKeyStore {
 #[tokio::test]
 async fn mint_self_offloaded_maps_a_join_panic_to_a_store_error() {
     let store = Arc::new(PanicOnPutKeyStore {
-        inner: MemoryStore::new(),
+        inner: crate::real_store::store(),
     });
     let gov = Arc::new(GovState::new_with_signer(store, None, Some(self_serve_signer())).unwrap());
     let sub = "oidc:panics";
@@ -4236,7 +4353,7 @@ async fn mint_self_offloaded_maps_a_join_panic_to_a_store_error() {
 }
 
 struct RefreshBlipStore {
-    inner: MemoryStore,
+    inner: Arc<busbar_plugin_loader::store_v3::LoadedStore>,
     fail_list: std::sync::atomic::AtomicBool,
     fail_put: std::sync::atomic::AtomicBool,
 }
@@ -4244,7 +4361,7 @@ struct RefreshBlipStore {
 impl RefreshBlipStore {
     fn new() -> Self {
         Self {
-            inner: MemoryStore::new(),
+            inner: crate::real_store::store(),
             fail_list: std::sync::atomic::AtomicBool::new(false),
             fail_put: std::sync::atomic::AtomicBool::new(false),
         }
@@ -4331,7 +4448,7 @@ fn signed_mints_report_committed_ids_without_returning_secrets_after_refresh_fai
             ..Default::default()
         };
         let error = if issued {
-            let (kind, shape) = crate::test_support::issued::double();
+            let (kind, shape) = (signed_kind(), ISSUED_SHAPE.clone());
             gov.mint_signed_with_credential(spec, 2_000, 1_000, &kind, &shape)
                 .unwrap_err()
                 .to_string()
@@ -4399,7 +4516,7 @@ fn signed_mints_do_not_claim_applied_when_the_write_fails() {
             ..Default::default()
         };
         let error = if issued {
-            let (kind, shape) = crate::test_support::issued::double();
+            let (kind, shape) = (signed_kind(), ISSUED_SHAPE.clone());
             gov.mint_signed_with_credential(spec, 2_000, 1_000, &kind, &shape)
                 .unwrap_err()
                 .to_string()
@@ -4417,8 +4534,9 @@ fn signed_mints_do_not_claim_applied_when_the_write_fails() {
 fn delete_key_with_a_failing_refresh_still_stops_the_credential_and_says_so() {
     let store = Arc::new(RefreshBlipStore::new());
     let gov = GovState::new(store.clone(), None).unwrap();
-    let (key, _secret) = gov
-        .create_key(
+    let (key, _secret) = {
+        gov.set_signing_key(Some(self_serve_signer()));
+        gov.mint_signed(
             NewKeySpec {
                 name: "doomed".to_string(),
                 allowed_pools: None,
@@ -4426,9 +4544,11 @@ fn delete_key_with_a_failing_refresh_still_stops_the_credential_and_says_so() {
                 labels: std::collections::BTreeMap::new(),
                 ..Default::default()
             },
+            4_000_000_000,
             1_700_000_000,
         )
-        .unwrap();
+    }
+    .unwrap();
     assert!(
         gov.lookup_by_sub(&key.id).is_some(),
         "the key resolves before revocation"
@@ -4508,7 +4628,7 @@ fn rotate_key_with_a_failing_refresh_kills_the_old_credential_and_says_so() {
 
 #[test]
 fn test_budget_sweep_only_exempts_group_cells_that_still_enforce_a_cap() {
-    let store = Arc::new(MemoryStore::new());
+    let store = crate::real_store::store();
     let gov = GovState::new(store, None).unwrap();
     let now = 1_700_000_040u64;
     let max_window = 31 * SECS_PER_DAY;
@@ -4583,7 +4703,7 @@ fn test_budget_sweep_only_exempts_group_cells_that_still_enforce_a_cap() {
 
 #[test]
 fn test_reclaim_group_cells_drops_every_window_and_scope_of_that_group() {
-    let store = Arc::new(MemoryStore::new());
+    let store = crate::real_store::store();
     let gov = GovState::new(store, None).unwrap();
     let now = 1_700_000_040u64;
     let cell = BudgetCell {
@@ -4647,7 +4767,7 @@ fn test_reclaim_group_cells_drops_every_window_and_scope_of_that_group() {
 #[test]
 fn test_reclaim_group_cells_drops_the_per_group_concurrent_gauge() {
     use crate::config::groups::{LimitCfg, LimitMetric};
-    let store = Arc::new(MemoryStore::new());
+    let store = crate::real_store::store();
     let gov = GovState::new(store, None).unwrap();
     let now = 1_700_000_040u64;
 
@@ -4717,7 +4837,7 @@ fn test_reclaim_group_cells_drops_the_per_group_concurrent_gauge() {
 
 #[test]
 fn test_sweep_exemption_survives_a_group_name_containing_the_id_delimiters() {
-    let store = Arc::new(MemoryStore::new());
+    let store = crate::real_store::store();
     let gov = GovState::new(store, None).unwrap();
     let now = 1_700_000_040u64;
     let max_window = 31 * SECS_PER_DAY;
@@ -4785,7 +4905,7 @@ fn test_sweep_exemption_survives_a_group_name_containing_the_id_delimiters() {
 
 #[test]
 fn test_reclaim_group_cells_never_takes_a_longer_name_that_shares_the_at_prefix() {
-    let store = Arc::new(MemoryStore::new());
+    let store = crate::real_store::store();
     let gov = GovState::new(store, None).unwrap();
     let now = 1_700_000_040u64;
     let cell = BudgetCell {
@@ -4844,7 +4964,7 @@ fn test_reclaim_group_cells_never_takes_a_longer_name_that_shares_the_at_prefix(
 
 #[test]
 fn an_admin_deletion_of_a_self_serve_key_survives_the_next_login() {
-    let store = Arc::new(MemoryStore::new());
+    let store = crate::real_store::store();
     let gov = GovState::new_with_signer(store, None, Some(self_serve_signer())).unwrap();
     let sub = "oidc:carol";
     let now = 1_700_000_000u64;
@@ -4887,12 +5007,9 @@ fn an_admin_deletion_of_a_self_serve_key_survives_the_next_login() {
 
 #[test]
 fn an_admin_rotation_of_a_self_serve_key_survives_the_next_refresh() {
-    let gov = GovState::new_with_signer(
-        Arc::new(MemoryStore::new()),
-        None,
-        Some(self_serve_signer()),
-    )
-    .unwrap();
+    let gov =
+        GovState::new_with_signer(crate::real_store::store(), None, Some(self_serve_signer()))
+            .unwrap();
 
     gov.hold_self_mint_state();
     let sub = "oidc:alice";
@@ -4975,7 +5092,7 @@ fn a_rolled_back_refresh_can_still_be_retried() {
 
 #[test]
 fn a_long_refresh_history_does_not_lock_a_subject_out_after_a_deletion() {
-    let store = Arc::new(MemoryStore::new());
+    let store = crate::real_store::store();
     let gov = GovState::new_with_signer(store, None, Some(self_serve_signer())).unwrap();
     let sub = "oidc:erin";
     let now = 1_700_000_000u64;
@@ -5015,7 +5132,7 @@ fn a_long_refresh_history_does_not_lock_a_subject_out_after_a_deletion() {
 
 #[test]
 fn an_admin_rotate_then_a_pools_change_does_not_fork_the_binding() {
-    let store = Arc::new(MemoryStore::new());
+    let store = crate::real_store::store();
     let gov = GovState::new_with_signer(store, None, Some(self_serve_signer())).unwrap();
     let sub = "oidc:zed";
     let now = 1_700_000_000u64;
@@ -5073,7 +5190,7 @@ fn an_admin_rotate_then_a_pools_change_does_not_fork_the_binding() {
 }
 
 struct MeteringFailStore {
-    inner: MemoryStore,
+    inner: Arc<busbar_plugin_loader::store_v3::LoadedStore>,
 }
 
 impl RecordStore for MeteringFailStore {
@@ -5137,7 +5254,7 @@ fn flush_metering_failure_warns_once_per_tick_not_per_key() {
     use tracing_subscriber::layer::SubscriberExt as _;
 
     let store: Arc<dyn RecordStore> = Arc::new(MeteringFailStore {
-        inner: MemoryStore::new(),
+        inner: crate::real_store::store(),
     });
     let gov = GovState::new(store, None).unwrap();
     let now = 1_700_000_500;
@@ -5173,7 +5290,7 @@ fn flush_metering_failure_warns_once_per_tick_not_per_key() {
 
 #[test]
 fn proof_manual_revoke_kills_a_minted_key() {
-    let store = Arc::new(MemoryStore::new());
+    let store = crate::real_store::store();
     let gov = GovState::new_with_signer(store, None, Some(self_serve_signer())).unwrap();
     let sub = "oidc:dave";
     let now = 1_700_000_000u64;
@@ -5197,7 +5314,7 @@ fn proof_manual_revoke_kills_a_minted_key() {
 
 #[test]
 fn proof_manual_revoke_is_authoritative_across_the_fleet() {
-    let store = Arc::new(MemoryStore::new());
+    let store = crate::real_store::store();
     let node_a = GovState::new_with_signer(store.clone(), None, Some(self_serve_signer())).unwrap();
     let sub = "oidc:erin";
     let now = 1_700_000_000u64;
@@ -5223,7 +5340,7 @@ fn proof_manual_revoke_is_authoritative_across_the_fleet() {
 
 #[test]
 fn proof_one_session_mints_a_personal_key_plus_n_independent_app_tokens() {
-    let store = Arc::new(MemoryStore::new());
+    let store = crate::real_store::store();
     let gov = GovState::new_with_signer(store, None, Some(self_serve_signer())).unwrap();
     let admin = "oidc:matthew";
     let now = 1_700_000_000u64;
@@ -5310,7 +5427,7 @@ fn proof_one_session_mints_a_personal_key_plus_n_independent_app_tokens() {
 
 #[test]
 fn proof_time_bound_expiry_is_enforced_locally() {
-    let store = Arc::new(MemoryStore::new());
+    let store = crate::real_store::store();
 
     let gov = GovState::new_with_signer(store, None, Some(self_serve_signer())).unwrap();
     let now = 1_700_000_000u64;
@@ -5362,12 +5479,8 @@ fn proof_minted_key_verifies_locally_and_never_calls_the_idp() {
     };
 
     let new_gov = || {
-        GovState::new_with_signer(
-            Arc::new(MemoryStore::new()),
-            None,
-            Some(self_serve_signer()),
-        )
-        .unwrap()
+        GovState::new_with_signer(crate::real_store::store(), None, Some(self_serve_signer()))
+            .unwrap()
     };
 
     let gov = new_gov();
@@ -5477,7 +5590,7 @@ fn proof_minted_admission_is_store_state_config_signing_is_not() {
     let now = 1_700_000_000u64;
     let exp = now + 30 * 86_400;
 
-    let store_s = Arc::new(MemoryStore::new());
+    let store_s = crate::real_store::store();
     let gov_s = GovState::new_with_signer(store_s, None, Some(self_serve_signer())).unwrap();
     let (binding, token) = gov_s
         .mint_signed(
@@ -5501,7 +5614,7 @@ fn proof_minted_admission_is_store_state_config_signing_is_not() {
 
     drop(gov_s);
 
-    let fresh_store = Arc::new(MemoryStore::new());
+    let fresh_store = crate::real_store::store();
     let gov_fresh =
         GovState::new_with_signer(fresh_store, None, Some(self_serve_signer())).unwrap();
 
@@ -5539,7 +5652,7 @@ fn the_metering_accrual_reads_the_millisecond_clock_not_the_lifted_second() {
     };
     let clock = || T0 + 700;
 
-    let gov = GovState::new(Arc::new(MemoryStore::new()), None).unwrap();
+    let gov = GovState::new(crate::real_store::store(), None).unwrap();
     let add = MeterCounts {
         requests: 1,
         ..MeterCounts::default()
@@ -5581,8 +5694,12 @@ fn plane_pool(plane: &str, pool: &str) -> String {
     format!("{plane}{PLANE_LANE_SEP}{pool}")
 }
 
-fn team_gov() -> (Arc<MemoryStore>, GovState, VirtualKey) {
-    let store = Arc::new(MemoryStore::new());
+fn team_gov() -> (
+    Arc<busbar_plugin_loader::store_v3::LoadedStore>,
+    GovState,
+    VirtualKey,
+) {
+    let store = crate::real_store::store();
     let mut k = sample_key("k1", "h1");
     k.group = Some("team".to_string());
     store.put_key(&k).unwrap();
@@ -5939,16 +6056,19 @@ fn a_role_bound_standing_follows_the_live_bindings_and_lapses_when_the_binding_g
 #[test]
 fn a_registry_key_standing_is_unchanged_by_the_bindings_resolver() {
     use crate::trust::validate::{GovResolve, Lapsed, Refusal, Snapshot, Standing};
-    let gov = GovState::new(Arc::new(MemoryStore::new()), None).expect("registry");
-    let (key, _secret) = gov
-        .create_key(
+    let gov = GovState::new(crate::real_store::store(), None).expect("registry");
+    let (key, _secret) = {
+        gov.set_signing_key(Some(self_serve_signer()));
+        gov.mint_signed(
             NewKeySpec {
                 name: "streamer".to_string(),
                 ..Default::default()
             },
+            4_000_000_000,
             1_700_000_000,
         )
-        .expect("mint");
+    }
+    .expect("mint");
     let rb = bound_table(crate::config::RoleBindingCfg::default());
     let standing = Standing::opened(
         Some(&key),
@@ -5988,18 +6108,34 @@ fn signed_kind() -> String {
 
 #[test]
 fn the_credential_read_answers_a_secret_for_any_id_and_live_only_for_a_live_credential() {
-    let store = Arc::new(MemoryStore::new());
+    let store = crate::real_store::store();
     let gov = GovState::new(store, None).unwrap();
     let now = busbar_kernel::store::now();
-    let (key, _bearer, akid, secret) = gov
-        .create_key_with_aws(
+    let (key, _bearer, akid, secret) = {
+        gov.set_signing_key(Some(self_serve_signer()));
+        gov.set_at_rest_keys(Some(crate::governance::at_rest::AtRestKeys::new(
+            &[3u8; 32], None,
+        )));
+        gov.mint_signed_with_credential(
             NewKeySpec {
                 name: "read".to_string(),
                 ..Default::default()
             },
+            4_000_000_000,
             now,
+            &signed_kind(),
+            &ISSUED_SHAPE,
         )
-        .unwrap();
+        .map(|(key, bearer, public_id, secret)| {
+            (
+                key,
+                bearer,
+                public_id,
+                secret.expose(&crate::seal::lend()).clone(),
+            )
+        })
+    }
+    .unwrap();
     let (got, live) = gov.credential_secret(&signed_kind(), &akid, now);
     assert_eq!(
         (got.expose(&crate::seal::lend()).as_str(), live),
@@ -6020,18 +6156,34 @@ fn the_credential_read_answers_a_secret_for_any_id_and_live_only_for_a_live_cred
 
 #[test]
 fn the_credential_read_does_the_same_work_for_a_known_and_an_unknown_id() {
-    let store = Arc::new(MemoryStore::new());
+    let store = crate::real_store::store();
     let gov = GovState::new(store, None).unwrap();
     let now = busbar_kernel::store::now();
-    let (_key, _bearer, akid, _secret) = gov
-        .create_key_with_aws(
+    let (_key, _bearer, akid, _secret) = {
+        gov.set_signing_key(Some(self_serve_signer()));
+        gov.set_at_rest_keys(Some(crate::governance::at_rest::AtRestKeys::new(
+            &[3u8; 32], None,
+        )));
+        gov.mint_signed_with_credential(
             NewKeySpec {
                 name: "work".to_string(),
                 ..Default::default()
             },
+            4_000_000_000,
             now,
+            &signed_kind(),
+            &ISSUED_SHAPE,
         )
-        .unwrap();
+        .map(|(key, bearer, public_id, secret)| {
+            (
+                key,
+                bearer,
+                public_id,
+                secret.expose(&crate::seal::lend()).clone(),
+            )
+        })
+    }
+    .unwrap();
     let kind = signed_kind();
 
     let window = REVOCATION_SYNC_TTL_SECS;
@@ -6085,17 +6237,9 @@ fn a_virtual_keys_generation_is_compared_in_constant_time() {
 
 #[tokio::test]
 async fn a_usage_window_past_the_horizon_is_purged_from_the_durable_store() {
-    use busbar_contract::store_calls::StoreDoor;
-    let opened = crate::test_support::store_axis_stand_in()
-        .open(
-            StoreDoor::Linked(crate::test_support::store_double::door),
-            crate::test_support::store_double::NAME,
-            b"{}",
-        )
-        .expect("the store double opens through its door");
-    let records = opened.records.clone();
-    let gov = GovState::new(opened.records, None).expect("gov");
-    assert!(gov.attach_store_calls(opened.calls.expect("a door-opened store has its calls")));
+    let records = crate::real_store::store();
+    let gov = GovState::new(records.clone(), None).expect("gov");
+    assert!(gov.attach_store_calls(records.clone()));
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .expect("after the epoch")

@@ -1950,7 +1950,7 @@ fn signing_gov() -> Arc<crate::governance::GovState> {
     );
     let gov = Arc::new(
         crate::governance::GovState::new_with_signer(
-            Arc::new(crate::governance::MemoryStore::new()),
+            crate::real_store::store(),
             Some("admintok".to_string()),
             Some(signer),
         )

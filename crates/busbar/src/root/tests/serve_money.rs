@@ -10,7 +10,6 @@ use busbar_kernel::governance::signing::{TokenSigner, DEFAULT_KID};
 use busbar_kernel::governance::{GovState, NewKeySpec};
 use busbar_kernel::plane_driver::{EndPost, PlaneMoney};
 use busbar_kernel::state::App;
-use busbar_kernel_testkit::test_support::store_double::MemoryStore;
 
 use super::planes_tests::{bound, composed_services, PUBLISHING};
 use super::{compose_planes, compose_served, data_routes, door_routes};
@@ -156,7 +155,7 @@ fn governed_full(
     let plane = bound(instance, &dispatcher);
     let signer = TokenSigner::from_secret_bytes(&[9u8; 32], DEFAULT_KID);
     let gov = Arc::new(
-        GovState::new_with_signer(Arc::new(MemoryStore::new()), None, Some(signer))
+        GovState::new_with_signer(crate::root::real_store::records(), None, Some(signer))
             .expect("governance"),
     );
     let groups: BTreeMap<String, busbar_kernel::config::GroupCfg> = budget
@@ -666,12 +665,21 @@ async fn node_boot_hooks_arm() {
     applied.per_request_fee = 3;
     let _applied =
         busbar_kernel_testkit::app::build_once(applied, Some(&app)).expect("the apply builds");
-    let pinned = crate::root::kernel::ROOT_CARD
-        .pin()
-        .expect("the card holder has entries")
-        .seq()
-        .get();
-    assert_ne!(pinned, 0, "the apply appended no entry to the card history");
+    let (pinned, pinned_ordinal) = {
+        let history = crate::root::kernel::ROOT_CARD
+            .pin()
+            .expect("the card holder has entries");
+        let view = history.view();
+        let entry = view
+            .entries()
+            .last()
+            .expect("the pinned history has an entry");
+        (entry.key().0, entry.seq().get())
+    };
+    assert_ne!(
+        pinned_ordinal, 0,
+        "the apply appended no entry to the card history"
+    );
 
     let _one = PUBLISHING.lock().await;
     let g = governed_over(
@@ -716,7 +724,8 @@ async fn node_boot_hooks_arm() {
         .last()
         .expect("the door unit's audit record is on the book");
     assert_eq!(
-        record.usage.rate_card_version, pinned,
+        record.usage.rate_card_version,
+        Some(pinned),
         "the door unit was not pinned to the card in force at its door"
     );
 }
@@ -734,7 +743,7 @@ async fn the_boot_composition_serves_a_dropped_in_door_plane_in_every_build() {
     let plane = bound(instance, &dispatcher);
     let signer = TokenSigner::from_secret_bytes(&[9u8; 32], DEFAULT_KID);
     let gov = Arc::new(
-        GovState::new_with_signer(Arc::new(MemoryStore::new()), None, Some(signer))
+        GovState::new_with_signer(crate::root::real_store::records(), None, Some(signer))
             .expect("governance"),
     );
     let cost = CostModel::flat(1);

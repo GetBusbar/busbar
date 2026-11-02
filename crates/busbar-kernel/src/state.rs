@@ -788,8 +788,7 @@ impl App {
     }
 
     pub fn next_request_id(&self) -> u64 {
-        self.request_id_counter
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        request_id::next(&self.request_id_counter)
     }
 
     pub fn plane_slot(&self, key: &str) -> Option<&Arc<dyn std::any::Any + Send + Sync>> {
@@ -912,15 +911,10 @@ impl busbar_kernel::plane_driver::slots::ContainerGateSink for App {
     }
 }
 
+mod request_id;
+
 pub fn seed_request_id_counter() -> u64 {
-    let mut buf = [0u8; 8];
-    match getrandom::fill(&mut buf) {
-        Ok(()) => u64::from_le_bytes(buf),
-        Err(_) => std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos() as u64)
-            .unwrap_or(0),
-    }
+    request_id::seed()
 }
 
 pub struct AppHandle {

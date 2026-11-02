@@ -9,8 +9,8 @@ use crate::config::groups::{AdmissionMode, LimitMetric};
 
 pub use busbar_kernel_ledger::cost::{
     budget_remaining, plane_fee_lane, price_ledger, sum_spend, Author, CardEntryDraft, EntryId,
-    History, HistorySeq, HistoryView, LedgerEntry, MeteredRow, MoneyError, PlaneFees, RateCard,
-    RawRateEra, TierRates, PER_SESSION,
+    EntryKey, History, HistorySeq, HistoryView, LedgerEntry, MeteredRow, MoneyError, PlaneFees,
+    RateCard, RawRateEra, TierRates, PER_SESSION,
 };
 
 pub const GROUP_BUCKET_PREFIX: &str = "group:";

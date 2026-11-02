@@ -111,7 +111,7 @@ fn correction_only_hydration_registers_its_group_for_reclamation() {
     const GROUP: &str = "correction-only";
     const MODEL: &str = "m";
     const REQUEST_CAP: u64 = 1;
-    let store = Arc::new(MemoryStore::new());
+    let store = crate::real_store::store();
     let gov = GovState::new(store.clone(), None).unwrap();
     let cm = model(&[(
         GROUP,
@@ -158,7 +158,7 @@ fn correction_registers_a_second_owner_of_a_shared_legacy_bucket() {
     const ORIGINAL_POOL: &str = "p@total";
     const MODEL: &str = "m";
     const REQUEST_CAP: u64 = 1;
-    let store = Arc::new(MemoryStore::new());
+    let store = crate::real_store::store();
     let gov = GovState::new(store.clone(), None).unwrap();
     let original = model(&[(
         ORIGINAL_GROUP,
@@ -218,7 +218,7 @@ fn correction_registers_a_second_owner_of_a_shared_legacy_bucket() {
 
 #[test]
 fn reclaiming_a_short_group_name_preserves_a_live_delimiter_named_groups_cap() {
-    let store = Arc::new(MemoryStore::new());
+    let store = crate::real_store::store();
     let gov = GovState::new(store, None).unwrap();
     let name = "team@day#pool:p";
     let cm = model(&[(

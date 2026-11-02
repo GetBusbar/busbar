@@ -174,7 +174,7 @@ fn with_no_durable_sink_a_demotion_is_recorded_nowhere() {
 fn the_memory_store_keeps_demotions_only_for_the_life_of_the_process() {
     let d = DemotionRecord::new();
     d.set_sink(crate::store::plane_view::PlaneStoreView::narrow(
-        std::sync::Arc::new(crate::governance::MemoryStore::new()),
+        crate::real_store::store(),
     ));
     d.record("fs", "quarantined", 100);
     assert_eq!(
@@ -185,7 +185,7 @@ fn the_memory_store_keeps_demotions_only_for_the_life_of_the_process() {
 
     let restarted = DemotionRecord::new();
     restarted.set_sink(crate::store::plane_view::PlaneStoreView::narrow(
-        std::sync::Arc::new(crate::governance::MemoryStore::new()),
+        crate::real_store::store(),
     ));
     assert!(
         restarted.list().is_empty(),

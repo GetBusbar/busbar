@@ -1070,30 +1070,31 @@ impl AdminService {
 
     fn validated_snapshot(
         history: Option<&busbar_kernel::cost::History>,
-        seq: u64,
-    ) -> Result<busbar_kernel::cost::HistorySeq, AdminError> {
-        let head = history
-            .and_then(busbar_kernel::cost::History::head)
+        key: busbar_kernel::cost::EntryKey,
+    ) -> Result<busbar_kernel::cost::EntryKey, AdminError> {
+        let history = history
+            .filter(|history| !history.is_empty())
             .ok_or_else(|| {
                 AdminError::Validation(
                     "as_of names a rate-card history snapshot; this node has resolved no \
-                     rate-card history to snapshot"
+                 rate-card history to snapshot"
                         .into(),
                 )
             })?;
-        if seq > head.get() {
+        if history.entry(&key).is_none() {
             return Err(AdminError::Validation(format!(
-                "as_of {seq} is above the rate-card history head ({head}); a snapshot that does \
-                 not exist is refused, never answered at the head"
+                "as_of {} does not name a known rate-card history entry; an unknown snapshot \
+                 is refused, never interpreted as a list position",
+                key.hex()
             )));
         }
-        Ok(busbar_kernel::cost::HistorySeq(seq))
+        Ok(key)
     }
 
     pub(crate) async fn get_usage(
         &self,
         window: Option<u64>,
-        as_of: Option<u64>,
+        as_of: Option<busbar_kernel::cost::EntryKey>,
     ) -> Result<UsageView, AdminError> {
         let now = busbar_kernel::store::now();
         let current = busbar_kernel::governance::metering_bucket(now);
@@ -1121,7 +1122,7 @@ impl AdminService {
 
         let snapshot = match as_of {
             None => None,
-            Some(seq) => Some(Self::validated_snapshot(history.as_deref(), seq)?),
+            Some(key) => Some(Self::validated_snapshot(history.as_deref(), key)?),
         };
         let empty = || UsageView {
             window,
@@ -1186,7 +1187,7 @@ impl AdminService {
             None => h.current(),
         });
 
-        let mut priced_by: Option<u64> = None;
+        let mut priced_by: Option<busbar_kernel::cost::EntryKey> = None;
 
         if let Err(why) = fold_adjustments(&mut rows, &adjustments) {
             diag_error!(
@@ -1227,7 +1228,7 @@ impl AdminService {
             let classes: &std::collections::BTreeMap<String, u64> = &r.usage_units;
             let row_spend = match resolved {
                 Some((card_seq, card)) => {
-                    priced_by = priced_by.max(Some(card_seq.get()));
+                    priced_by = priced_by.max(Some(card_seq));
                     derive_spend_micros_row_classes_at_entry(
                         card_seq, card, &cost, &lane, &row_view, classes,
                     )
@@ -1362,7 +1363,7 @@ impl AdminService {
             window,
             as_of: now,
             currency: (),
-            rate_card_version: priced_by,
+            rate_card_version: priced_by.map(|key| key.hex()),
             total,
             by_model,
             by_key,

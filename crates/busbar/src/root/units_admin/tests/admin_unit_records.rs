@@ -135,13 +135,8 @@ async fn the_live_record_sink_writes_through_the_store_calls() {
     assert_eq!(back, Some(b"{\"v\":1}".to_vec()));
 
     let bare = std::sync::Arc::new(
-        busbar_kernel::governance::GovState::new(
-            std::sync::Arc::new(
-                busbar_kernel_testkit::test_support::store_double::MemoryStore::new(),
-            ),
-            None,
-        )
-        .expect("governance"),
+        busbar_kernel::governance::GovState::new(crate::root::real_store::records(), None)
+            .expect("governance"),
     );
     let app = busbar_kernel_testkit::test_support::TestApp::new()
         .governance(bare)

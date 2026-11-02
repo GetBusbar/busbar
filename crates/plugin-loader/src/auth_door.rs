@@ -7,6 +7,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 use std::time::Duration;
+use zeroize::Zeroizing;
 
 use busbar_contract::abi::auth::{
     slot, AuthPoint, IdentifyOut, IdentityBuf, IdentityOut, NamedValue, RequestFacts, StripName,
@@ -96,12 +97,12 @@ struct Held {
     point: u32,
     conn: u64,
     unit: u64,
-    peer: Option<Vec<u8>>,
-    body: Option<Vec<u8>>,
-    method: String,
-    authority: String,
-    path: String,
-    query: Option<String>,
+    peer: Zeroizing<Option<Vec<u8>>>,
+    body: Zeroizing<Option<Vec<u8>>>,
+    method: Zeroizing<String>,
+    authority: Zeroizing<String>,
+    path: Zeroizing<String>,
+    query: Zeroizing<Option<String>>,
     timestamp: u64,
 
     strip: *mut StripName,
@@ -180,12 +181,12 @@ impl Held {
             point: req.point.bit(),
             conn: req.conn,
             unit: req.unit,
-            peer: req.peer.clone(),
-            body: req.body.clone(),
-            method: req.method.clone(),
-            authority: req.authority.clone(),
-            path: req.path.clone(),
-            query: req.query.clone(),
+            peer: Zeroizing::new(req.peer.clone()),
+            body: Zeroizing::new(req.body.clone()),
+            method: Zeroizing::new(req.method.clone()),
+            authority: Zeroizing::new(req.authority.clone()),
+            path: Zeroizing::new(req.path.clone()),
+            query: Zeroizing::new(req.query.clone()),
             timestamp: req.timestamp,
             strip,
             strip_cap,

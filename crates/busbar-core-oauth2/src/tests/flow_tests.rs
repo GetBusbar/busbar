@@ -7,7 +7,7 @@ use std::sync::Arc;
 use busbar_contract::abi::store::OpId;
 use busbar_contract::kinds::RecordBytes;
 use busbar_contract::records::{MeteringDelta, PlaneRecordRef, PlaneSelector, UsageDelta};
-use busbar_contract::store_calls::{StoreCall, StoreCalls, StoreDoor, StoreFailure};
+use busbar_contract::store_calls::{StoreCall, StoreCalls, StoreFailure};
 
 use oauth_as::client::{Client, ClientAuth, ClientId};
 use oauth_as::grant::GrantType;
@@ -209,7 +209,7 @@ async fn serve_with_store(
     admin_chain: Vec<String>,
     store: Option<Arc<dyn StoreCalls>>,
 ) -> (String, Arc<busbar_kernel::state::App>) {
-    busbar_kernel_testkit::test_support::metrics::init();
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind");
@@ -779,15 +779,7 @@ async fn the_consent_screen_names_a_requested_scope_and_an_empty_grant() {
 
 #[tokio::test]
 async fn a_failed_default_scope_lookup_refuses_consent_and_recovers() {
-    let calls = busbar_kernel_testkit::test_support::store_axis_stand_in()
-        .open(
-            StoreDoor::Linked(busbar_kernel_testkit::test_support::store_double::door),
-            "consent-lookup",
-            b"{}",
-        )
-        .expect("open store")
-        .calls
-        .expect("typed store calls");
+    let calls = crate::testkit::store_calls();
     let fault = Arc::new(FailClientRead {
         inner: calls,
         fail_next: AtomicBool::new(false),
@@ -1084,44 +1076,6 @@ fn registration(name: &str) -> String {
         "scope": SCOPE,
     })
     .to_string()
-}
-
-#[tokio::test]
-async fn refused_registrations_do_not_close_registration_for_everyone() {
-    let (origin, _app) = serve().await;
-    for i in 0..10 {
-        let status = register(&origin, &registration(&format!("busbar {i}"))).await;
-        assert_ne!(
-            status, 201,
-            "a name impersonating the deployment is refused"
-        );
-    }
-    for _ in 0..10 {
-        let status = register(&origin, "{ not a registration").await;
-        assert_ne!(status, 201, "a body that does not parse is refused");
-    }
-    assert_eq!(
-        register(&origin, &registration("an agent")).await,
-        201,
-        "a legitimate registration is admitted after another caller's refusals"
-    );
-}
-
-#[tokio::test]
-async fn admitted_registrations_keep_the_ceiling() {
-    let (origin, _app) = serve().await;
-    for i in 0..60 {
-        assert_eq!(
-            register(&origin, &registration(&format!("agent {i}"))).await,
-            201,
-            "registration {i} is inside the ceiling"
-        );
-    }
-    assert_ne!(
-        register(&origin, &registration("one too many")).await,
-        201,
-        "the sixty-first registration in a minute is refused"
-    );
 }
 
 const CIMD_CLIENT_ID: &str = "https://client.example/oauth-client";

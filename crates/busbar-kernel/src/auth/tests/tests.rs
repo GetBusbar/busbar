@@ -599,6 +599,32 @@ fn collect_strings(v: &serde_json::Value, out: &mut Vec<String>) {
 }
 
 #[test]
+fn a_door_refusal_retains_its_exact_query_in_a_wiping_target() {
+    use std::sync::Arc;
+
+    fn wiped_when_dropped<T: zeroize::ZeroizeOnDrop>(_: &T) {}
+
+    let seen = Arc::new(std::sync::Mutex::new(None));
+    let observed = Arc::clone(&seen);
+    let target = "/v1/responses?token=query-canary";
+    let door: RefusalDoor = (
+        Arc::new(move |reason, target| {
+            assert_eq!(reason, busbar_contract::caps::ReasonCode::Unauthenticated);
+            *observed.lock().unwrap() = Some(target.to_owned());
+            Response::builder()
+                .status(StatusCode::UNAUTHORIZED)
+                .body(Body::empty())
+                .unwrap()
+        }),
+        zeroize::Zeroizing::new(target.to_owned()),
+    );
+    wiped_when_dropped(&door.1);
+    let response = unauthorized_response(&residual_app(), "/v1/responses", Some(&door));
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(seen.lock().unwrap().as_deref(), Some(target));
+}
+
+#[test]
 fn test_unauthorized_body_carries_no_busbar_vocabulary() {
     const FORBIDDEN: &[&str] = &[
         "virtual key",
@@ -983,7 +1009,7 @@ async fn a_slow_admin_door_does_not_stall_healthz() {
 #[tokio::test]
 async fn test_audience_bound_token_is_rejected_on_the_data_plane() {
     use crate::governance::signing::{TokenSigner, TokenVerifier, DEFAULT_KID};
-    use crate::governance::{GovState, MemoryStore};
+    use crate::governance::GovState;
     use crate::test_support::{LaneSpec, MockServer, MockServerState, TestApp};
     use serde_json::json;
     use std::sync::Arc;
@@ -993,7 +1019,7 @@ async fn test_audience_bound_token_is_rejected_on_the_data_plane() {
     let state = Arc::new(MockServerState::new());
     let server = MockServer::new(state).await;
 
-    let store = Arc::new(MemoryStore::new());
+    let store = crate::real_store::store();
     let signer = TokenSigner::from_secret_bytes(&[7u8; 32], DEFAULT_KID);
     let gov = Arc::new(
         GovState::new_with_signer(store, Some("admintok".to_string()), Some(signer)).unwrap(),
@@ -1095,7 +1121,7 @@ async fn test_audience_bound_token_is_rejected_on_the_data_plane() {
 
 #[tokio::test]
 async fn test_governance_rejects_empty_token_even_if_empty_secret_key_exists() {
-    use crate::governance::{GovState, MemoryStore, RecordStore, ScopeRef, VirtualKey};
+    use crate::governance::{GovState, RecordStore, ScopeRef, VirtualKey};
     use crate::test_support::{LaneSpec, MockServer, MockServerState, TestApp};
     use serde_json::json;
     use std::sync::Arc;
@@ -1105,7 +1131,7 @@ async fn test_governance_rejects_empty_token_even_if_empty_secret_key_exists() {
     let state = Arc::new(MockServerState::new());
     let server = MockServer::new(state).await;
 
-    let store = Arc::new(MemoryStore::new());
+    let store = crate::real_store::store();
 
     store
         .put_key(&VirtualKey {
@@ -1221,7 +1247,7 @@ fn test_caller_token_debug_redacts_value() {
 
 #[tokio::test]
 async fn test_governance_active_with_admin_token_rejects_missing_vkey() {
-    use crate::governance::{GovState, MemoryStore};
+    use crate::governance::GovState;
     use crate::test_support::{LaneSpec, MockServer, MockServerState, TestApp};
     use serde_json::json;
     use std::sync::Arc;
@@ -1231,7 +1257,7 @@ async fn test_governance_active_with_admin_token_rejects_missing_vkey() {
     let state = Arc::new(MockServerState::new());
     let server = MockServer::new(state).await;
 
-    let store = Arc::new(MemoryStore::new());
+    let store = crate::real_store::store();
     let gov = Arc::new(GovState::new(store, Some("admintok".to_string())).unwrap());
 
     let app = TestApp::new()
@@ -1360,8 +1386,8 @@ async fn dp_serve(
 }
 
 fn dp_gov_with_key() -> (std::sync::Arc<crate::governance::GovState>, String) {
-    use crate::governance::{GovState, MemoryStore, NewKeySpec};
-    let store = std::sync::Arc::new(MemoryStore::new());
+    use crate::governance::{GovState, NewKeySpec};
+    let store = crate::real_store::store();
     let signer = crate::governance::signing::TokenSigner::from_secret_bytes(
         &[7u8; 32],
         crate::governance::signing::DEFAULT_KID,
@@ -1435,9 +1461,9 @@ async fn test_1_5_2_keys_chain_disabled_vkey_rejected() {
 
 #[test]
 fn test_1_5_2_keys_arm_resolves_the_vkey() {
-    use crate::governance::{GovState, MemoryStore, NewKeySpec};
+    use crate::governance::{GovState, NewKeySpec};
     crate::snapshot::init();
-    let store = std::sync::Arc::new(MemoryStore::new());
+    let store = crate::real_store::store();
     let signer = crate::governance::signing::TokenSigner::from_secret_bytes(
         &[9u8; 32],
         crate::governance::signing::DEFAULT_KID,
@@ -2345,11 +2371,7 @@ fn replay_gov() -> std::sync::Arc<crate::governance::GovState> {
 #[tokio::test]
 async fn a_replay_claim_with_no_store_calls_to_redeem_in_is_refused() {
     use busbar_contract::auth_calls::{Replay, VerifiedIdentity};
-    let bare = crate::governance::GovState::new(
-        std::sync::Arc::new(crate::governance::MemoryStore::new()),
-        None,
-    )
-    .expect("gov");
+    let bare = crate::governance::GovState::new(crate::real_store::store(), None).expect("gov");
     let now = busbar_kernel::store::now();
     let asks = VerifiedIdentity {
         subject: "subject".into(),
@@ -2828,7 +2850,7 @@ async fn door_bearer(
 }
 
 fn door_gov(admin_token: Option<&str>) -> std::sync::Arc<crate::governance::GovState> {
-    let store = std::sync::Arc::new(crate::governance::MemoryStore::new());
+    let store = crate::real_store::store();
     let signer = crate::governance::signing::TokenSigner::from_secret_bytes(
         &[7u8; 32],
         crate::governance::signing::DEFAULT_KID,
@@ -3024,11 +3046,7 @@ async fn test_governance_revoked_signed_token_key_rejected() {
 #[tokio::test]
 async fn test_governance_inert_without_admin_token_static_token_admitted() {
     let gov = std::sync::Arc::new(
-        crate::governance::GovState::new(
-            std::sync::Arc::new(crate::governance::MemoryStore::new()),
-            None,
-        )
-        .unwrap(),
+        crate::governance::GovState::new(crate::real_store::store(), None).unwrap(),
     );
     assert!(
         gov.admin_token_hash().is_none(),
@@ -3069,11 +3087,7 @@ async fn test_governance_inert_without_admin_token_static_token_admitted() {
 #[tokio::test]
 async fn test_governance_inert_without_admin_token_open_relay_admits() {
     let gov = std::sync::Arc::new(
-        crate::governance::GovState::new(
-            std::sync::Arc::new(crate::governance::MemoryStore::new()),
-            None,
-        )
-        .unwrap(),
+        crate::governance::GovState::new(crate::real_store::store(), None).unwrap(),
     );
     let app = door_app()
         .upstream_creds(crate::auth::UpstreamCreds::Own)
@@ -3123,7 +3137,7 @@ async fn test_governance_active_with_admin_token_enforces_minted_key() {
 async fn test_inert_governance_persisted_key_is_not_enforced_static_chain_wins() {
     use crate::governance::RecordStore as _;
     let persisted_secret = "sk-vk-persisted-from-prior-run";
-    let store = std::sync::Arc::new(crate::governance::MemoryStore::new());
+    let store = crate::real_store::store();
     store
         .put_key(&crate::governance::VirtualKey {
             id: "kold".to_string(),

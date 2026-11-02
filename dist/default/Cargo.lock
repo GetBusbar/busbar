@@ -151,7 +151,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "31b698c5f9a010f6573133b09e0de5408834d0c82f8d7475a89fc1867a71cd90"
 dependencies = [
  "axum-core",
- "base64 0.22.1",
  "bytes",
  "form_urlencoded",
  "futures-util",
@@ -170,10 +169,8 @@ dependencies = [
  "serde_json",
  "serde_path_to_error",
  "serde_urlencoded",
- "sha1",
  "sync_wrapper",
  "tokio",
- "tokio-tungstenite",
  "tower",
  "tower-layer",
  "tower-service",
@@ -416,16 +413,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "busbar-core-admin-testkit"
-version = "1.6.0"
-dependencies = [
- "busbar-core-admin",
- "busbar-kernel",
- "schemars",
- "serde_json",
-]
-
-[[package]]
 name = "busbar-core-connector"
 version = "1.6.0"
 dependencies = [
@@ -493,7 +480,6 @@ dependencies = [
  "busbar-auth-webhook-signature",
  "busbar-contract",
  "busbar-core-admin",
- "busbar-core-admin-testkit",
  "busbar-core-connector",
  "busbar-core-oauth2",
  "busbar-export-file",
@@ -511,7 +497,6 @@ dependencies = [
  "busbar-kernel-identity",
  "busbar-kernel-ledger",
  "busbar-kernel-seams",
- "busbar-kernel-testkit",
  "busbar-kernel-wal",
  "busbar-plane-a2a",
  "busbar-plane-decisions",
@@ -522,7 +507,6 @@ dependencies = [
  "busbar-secret-env",
  "busbar-secret-file",
  "busbar-store-memory",
- "busbar-test-kit",
  "busbar-transport-grpc",
  "busbar-transport-http",
  "busbar-transport-stdio",
@@ -752,35 +736,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "busbar-kernel-testkit"
-version = "1.6.0"
-dependencies = [
- "axum",
- "busbar-contract",
- "busbar-kernel",
- "busbar-kernel-egress",
- "busbar-kernel-identity",
- "bytes",
- "crc32fast",
- "futures",
- "getrandom 0.3.4",
- "hex",
- "http",
- "http-body-util",
- "indexmap",
- "metrics",
- "serde",
- "serde_json",
- "serde_yaml_ng",
- "sha2",
- "tokio",
- "tower",
- "tracing",
- "tracing-subscriber",
- "zeroize",
-]
-
-[[package]]
 name = "busbar-kernel-wal"
 version = "1.6.0"
 dependencies = [
@@ -916,26 +871,6 @@ source = "git+https://git.getbusbar.dev/GetBusbar/busbar-store-memory?rev=22fd86
 dependencies = [
  "busbar-contract",
  "serde_json",
- "zeroize",
-]
-
-[[package]]
-name = "busbar-test-kit"
-version = "1.6.0"
-dependencies = [
- "base64 0.22.1",
- "busbar-contract",
- "busbar-core-connector",
- "busbar-kernel",
- "busbar-plugin-loader",
- "hex",
- "libc",
- "ring",
- "serde",
- "serde_json",
- "tokio",
- "tracing",
- "windows-sys 0.61.2",
  "zeroize",
 ]
 
@@ -3626,18 +3561,6 @@ checksum = "b0c85f2c3ef0b1cd58b36682f4b17aaa995f0e5db534d85692b4903abce21f67"
 dependencies = [
  "rustls",
  "tokio",
-]
-
-[[package]]
-name = "tokio-tungstenite"
-version = "0.29.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8f72a05e828585856dacd553fba484c242c46e391fb0e58917c942ee9202915c"
-dependencies = [
- "futures-util",
- "log",
- "tokio",
- "tungstenite",
 ]
 
 [[package]]

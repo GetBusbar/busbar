@@ -8,7 +8,6 @@ use busbar_contract::records::{
 };
 use busbar_kernel::cost::CostModel;
 use busbar_kernel::governance::metering_bucket;
-use busbar_kernel_testkit::test_support::store_double::MemoryStore;
 use busbar_kernel_wal::{Entry, Record, RecordClass};
 
 use super::*;
@@ -176,7 +175,7 @@ enum FlushOutcome {
 }
 
 struct FlushStore {
-    inner: MemoryStore,
+    inner: Arc<dyn RecordStore>,
     budget: Option<Arc<FlushGate>>,
     metering: Option<Arc<FlushGate>>,
     outcome: FlushOutcome,
@@ -185,7 +184,7 @@ struct FlushStore {
 impl FlushStore {
     fn new(outcome: FlushOutcome) -> Self {
         Self {
-            inner: MemoryStore::new(),
+            inner: crate::root::real_store::records(),
             budget: None,
             metering: None,
             outcome,

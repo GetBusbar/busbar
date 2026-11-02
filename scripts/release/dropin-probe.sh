@@ -1,29 +1,37 @@
 #!/usr/bin/env bash
-# dropin-probe.sh <target-triple> <out.tar.gz> - the stub plugin the `dropin_loads` and
-# `image_dropin_loads` contract rows boot the shipped binary on (W17).
-#
-# It is the in-tree stub store (crates/plugin-loader/stubs/store), its DROPPED-IN door (feature
-# `dropped-in`, exporting `busbar_plugin_door`), built for <target-triple> with the same rules as
-# every plugin cdylib (on Linux inside the glibc baseline: run it through scripts/release/in-baseline.sh;
-# on Windows +crt-static from .cargo/config.toml), and packed UNSIGNED under a name no linked store
-# answers to. Unsigned on purpose: the row tests the loader (dlopen, door, open), and trust has its
-# own rows; the probe config sets plugins.trust.allow_unsigned for it alone.
-#
-# The verifier configures `store.module: dropin-probe`. A configured store that cannot load refuses
-# boot, so a binary that boots and answers /healthz has dlopened this library.
+# dropin-probe.sh <target-triple> <out.tar.gz> builds the actual pinned memory store for the
+# shipped-binary drop-in load checks. The probe remains unsigned and uses its own alias so the
+# loader trust checks stay separate from the library/open proof.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 TRIPLE="${1:?usage: dropin-probe.sh <target-triple> <out.tar.gz>}"
 OUT="${2:?usage: dropin-probe.sh <target-triple> <out.tar.gz>}"
 
-cargo build --release --locked -p busbar-stub-store-plugin --features dropped-in \
-  --target "$TRIPLE" --target-dir target/dropin-probe
+ROOT="$PWD"
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/busbar-memory-probe.XXXXXX")"
+trap 'rm -rf "$WORK"' EXIT
+MEMORY_REV="$(python3 - <<'PY_PIN'
+import pathlib, re, tomllib
+manifest = tomllib.loads(pathlib.Path("dist/default/Cargo.toml").read_text())
+source = manifest["workspace"]["dependencies"]["busbar-store-memory"]
+assert source["git"].removesuffix(".git") == "https://git.getbusbar.dev/GetBusbar/busbar-store-memory"
+assert re.fullmatch("[0-9a-f]{40}", source["rev"])
+print(source["rev"])
+PY_PIN
+)"
+git -C "$WORK" init --quiet
+git -C "$WORK" remote add origin https://git.getbusbar.dev/GetBusbar/busbar-store-memory
+git -C "$WORK" fetch --quiet --depth 1 --no-tags origin "$MEMORY_REV"
+git -C "$WORK" -c advice.detachedHead=false checkout --quiet FETCH_HEAD
+[ "$(git -C "$WORK" rev-parse HEAD)" = "$MEMORY_REV" ]
+cargo build --release --locked --manifest-path "$WORK/Cargo.toml" \
+  -p busbar-store-memory-plugin --lib --target "$TRIPLE" --target-dir "$ROOT/target/dropin-probe"
 case "$TRIPLE" in
-  *-windows-*) LIB="target/dropin-probe/$TRIPLE/release/busbar_stub_store_plugin.dll" ;;
-  *-apple-*)   LIB="target/dropin-probe/$TRIPLE/release/libbusbar_stub_store_plugin.dylib" ;;
-  *)           LIB="target/dropin-probe/$TRIPLE/release/libbusbar_stub_store_plugin.so" ;;
+  *-windows-*) LIB="$ROOT/target/dropin-probe/$TRIPLE/release/busbar_store_memory_plugin.dll" ;;
+  *-apple-*)   LIB="$ROOT/target/dropin-probe/$TRIPLE/release/libbusbar_store_memory_plugin.dylib" ;;
+  *)           LIB="$ROOT/target/dropin-probe/$TRIPLE/release/libbusbar_store_memory_plugin.so" ;;
 esac
-[ -f "$LIB" ] || { echo "dropin-probe.sh: the build produced no cdylib at $LIB" >&2; exit 1; }
+[ -f "$LIB" ] || { echo "dropin-probe.sh: the build produced no actual memory cdylib at $LIB" >&2; exit 1; }
 
 # The packer runs on the build host (it reads the library's own Statement), so it is built for the
 # host, not for $TRIPLE.
