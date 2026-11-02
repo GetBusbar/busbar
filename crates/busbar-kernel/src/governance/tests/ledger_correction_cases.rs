@@ -43,22 +43,24 @@ fn delta() -> BTreeMap<String, i64> {
 }
 
 fn metered_entry(store: &dyn RecordStore, key: &VirtualKey, era: RawRateEra, now: u64) {
-    store.add_metering(&MeteringDelta {
-        key_id: key.id.clone(),
-        bucket: super::super::metering_bucket(now),
-        model: MODEL.into(),
-        provider: String::new(),
-        tokens_input: INITIAL_INPUT,
-        tokens_output: 0,
-        tokens_cache_read: 0,
-        tokens_cache_write: 0,
-        requests: 1,
-        billable_requests: 1,
-        key_group_at_use: String::new(),
-        pricing_version: era.entry_id.unwrap().metering_version(),
-        priced_from_ms: era.effective_from,
-        usage_units: Default::default(),
-    }).unwrap();
+    store
+        .add_metering(&MeteringDelta {
+            key_id: key.id.clone(),
+            bucket: super::super::metering_bucket(now),
+            model: MODEL.into(),
+            provider: String::new(),
+            tokens_input: INITIAL_INPUT,
+            tokens_output: 0,
+            tokens_cache_read: 0,
+            tokens_cache_write: 0,
+            requests: 1,
+            billable_requests: 1,
+            key_group_at_use: String::new(),
+            pricing_version: era.entry_id.unwrap().metering_version(),
+            priced_from_ms: era.effective_from,
+            usage_units: Default::default(),
+        })
+        .unwrap();
 }
 
 #[test]
@@ -71,18 +73,35 @@ fn exact_entry_correction_cannot_take_counts_from_a_same_timestamp_sibling() {
     let now = crate::store::now();
     let first = RawRateEra::entry(0, EntryId([3; 12]));
     let second = RawRateEra::entry(0, EntryId([4; 12]));
-    gov.record_usage_served_in_era(&cm, &key, "", MODEL, None, &toks(INITIAL_INPUT, 0), now, first);
+    gov.record_usage_served_in_era(
+        &cm,
+        &key,
+        "",
+        MODEL,
+        None,
+        &toks(INITIAL_INPUT, 0),
+        now,
+        first,
+    );
     metered_entry(store.as_ref(), &key, first, now);
     metered_entry(store.as_ref(), &key, second, now);
     let delta = delta();
     let mut adj = correction(&key, &delta, now);
     adj.entry_era = 0;
     adj.entry_id = second.entry_id;
-    assert!(matches!(gov.adjust_usage(&cm, &adj).unwrap(), Err(super::super::AdjustRefused::Unplaced { .. })),
-        "matching timestamp and metering do not give the sibling ownership of raw counts");
+    assert!(
+        matches!(
+            gov.adjust_usage(&cm, &adj).unwrap(),
+            Err(super::super::AdjustRefused::Unplaced { .. })
+        ),
+        "matching timestamp and metering do not give the sibling ownership of raw counts"
+    );
     adj.entry_id = first.entry_id;
     gov.adjust_usage(&cm, &adj).unwrap().unwrap();
-    assert_eq!(input(&store.get_usage(&key.id, 0).unwrap()), CORRECTED_INPUT);
+    assert_eq!(
+        input(&store.get_usage(&key.id, 0).unwrap()),
+        CORRECTED_INPUT
+    );
 }
 
 #[test]
@@ -95,19 +114,38 @@ fn resumed_correction_does_not_treat_a_different_exact_entry_as_the_original_int
     let now = crate::store::now();
     let first = RawRateEra::entry(0, EntryId([5; 12]));
     let second = RawRateEra::entry(0, EntryId([6; 12]));
-    gov.record_usage_served_in_era(&cm, &key, "", MODEL, None, &toks(INITIAL_INPUT, 0), now, first);
+    gov.record_usage_served_in_era(
+        &cm,
+        &key,
+        "",
+        MODEL,
+        None,
+        &toks(INITIAL_INPUT, 0),
+        now,
+        first,
+    );
     metered_entry(store.as_ref(), &key, first, now);
     metered_entry(store.as_ref(), &key, second, now);
-    store.lose_correction_reply.store(true, std::sync::atomic::Ordering::SeqCst);
+    store
+        .lose_correction_reply
+        .store(true, std::sync::atomic::Ordering::SeqCst);
     let delta = delta();
     let mut adj = correction(&key, &delta, now);
     adj.entry_era = 0;
     adj.entry_id = first.entry_id;
     assert!(gov.adjust_usage(&cm, &adj).is_err());
     adj.entry_id = second.entry_id;
-    assert!(matches!(gov.adjust_usage(&cm, &adj).unwrap(), Err(super::super::AdjustRefused::Unplaced { .. })),
-        "receipt for the first exact entry does not accept a second entry's intent");
-    assert_eq!(input(&store.get_usage(&key.id, 0).unwrap()), CORRECTED_INPUT);
+    assert!(
+        matches!(
+            gov.adjust_usage(&cm, &adj).unwrap(),
+            Err(super::super::AdjustRefused::Unplaced { .. })
+        ),
+        "receipt for the first exact entry does not accept a second entry's intent"
+    );
+    assert_eq!(
+        input(&store.get_usage(&key.id, 0).unwrap()),
+        CORRECTED_INPUT
+    );
 }
 
 #[test]
@@ -449,10 +487,19 @@ fn conditional_conflict_revalidates_shared_rows_and_preserves_common_refund_and_
     gov.flush_budgets();
     assert_eq!(
         minute_row(store.as_ref(), GROUP_BUCKET, now),
-        (1 + FOREIGN_REQUESTS as u64, 0, CORRECTED_INPUT + CONCURRENT_INPUT, 0)
+        (
+            1 + FOREIGN_REQUESTS as u64,
+            0,
+            CORRECTED_INPUT + CONCURRENT_INPUT,
+            0
+        )
     );
     let calls = store.correction_calls.lock().unwrap();
-    assert_eq!(calls.len(), 2, "a changed conditional basis is rebuilt once");
+    assert_eq!(
+        calls.len(),
+        2,
+        "a changed conditional basis is rebuilt once"
+    );
     assert_ne!(calls[0].op_id, calls[1].op_id);
     let group_row = |request: &busbar_contract::records::correction::Request| {
         request
@@ -463,7 +510,10 @@ fn conditional_conflict_revalidates_shared_rows_and_preserves_common_refund_and_
             .clone()
     };
     assert_eq!(group_row(&calls[0]).expected.requests, 0);
-    assert_eq!(group_row(&calls[1]).expected.requests, FOREIGN_REQUESTS as u64);
+    assert_eq!(
+        group_row(&calls[1]).expected.requests,
+        FOREIGN_REQUESTS as u64
+    );
     assert_eq!(
         group_row(&calls[1]).replacement.requests,
         1 + FOREIGN_REQUESTS as u64
@@ -482,7 +532,9 @@ fn correction_common_positives_keep_same_timestamp_fee_refunds_in_both_raw_branc
         before.fee_eras.charge(old);
         before.accrue_raw(MODEL, old, &toks(INITIAL_INPUT, 0));
         let mut accepted = before.clone();
-        accepted.models[0].cur.insert(busbar_contract::records::UNIT_INPUT.into(), CORRECTED_INPUT);
+        accepted.models[0]
+            .cur
+            .insert(busbar_contract::records::UNIT_INPUT.into(), CORRECTED_INPUT);
         accepted.models[0].flushed = accepted.models[0].cur.clone();
         accepted.models[0].flushed_era = accepted.models[0].cur.clone();
         accepted.flushed_requests = 1;
@@ -503,26 +555,54 @@ fn correction_common_positives_keep_same_timestamp_fee_refunds_in_both_raw_branc
             before.roll(60);
         }
         let (positive, dated) = GovState::take_correction_positives(&mut before, 0)
-            .unwrap().unwrap();
+            .unwrap()
+            .unwrap();
         assert_eq!((positive.requests, positive.billable_requests), (1, 1));
         let units = |debt: &ExactUsageDelta, model: &str, unit: &str| {
-            debt.models.iter().find(|row| row.model == model)
-                .and_then(|row| row.usage_units.get(unit)).copied().unwrap_or(0)
+            debt.models
+                .iter()
+                .find(|row| row.model == model)
+                .and_then(|row| row.usage_units.get(unit))
+                .copied()
+                .unwrap_or(0)
         };
-        assert_eq!(units(&positive, MODEL, busbar_contract::records::UNIT_INPUT), i128::from(CONCURRENT_INPUT));
-        assert_eq!(units(&dated, &era_model(new, MODEL), busbar_contract::records::UNIT_INPUT), i128::from(CONCURRENT_INPUT));
+        assert_eq!(
+            units(&positive, MODEL, busbar_contract::records::UNIT_INPUT),
+            i128::from(CONCURRENT_INPUT)
+        );
+        assert_eq!(
+            units(
+                &dated,
+                &era_model(new, MODEL),
+                busbar_contract::records::UNIT_INPUT
+            ),
+            i128::from(CONCURRENT_INPUT)
+        );
         assert_eq!(units(&dated, &era_tag(new), ERA_FEE_UNIT), 1);
         assert_eq!(units(&dated, &era_tag(old), ERA_FEE_UNIT), 0);
         let branch = &before.correction.as_ref().unwrap().accepted;
         let debt = if roll {
-            branch.rolled_eras.iter().find(|(window, _)| *window == 0).unwrap().1.clone()
+            branch
+                .rolled_eras
+                .iter()
+                .find(|(window, _)| *window == 0)
+                .unwrap()
+                .1
+                .clone()
         } else {
             ExactUsageDelta::of(branch, true)
         };
-        assert_eq!(units(&debt, &era_tag(old), ERA_FEE_UNIT), -1,
-            "the original fee refund remains dependent on the unknown correction");
+        assert_eq!(
+            units(&debt, &era_tag(old), ERA_FEE_UNIT),
+            -1,
+            "the original fee refund remains dependent on the unknown correction"
+        );
         let (again, dated_again) = GovState::take_correction_positives(&mut before, 0)
-            .unwrap().unwrap();
-        assert!(again.is_zero() && dated_again.is_zero(), "positive custody transferred only once");
+            .unwrap()
+            .unwrap();
+        assert!(
+            again.is_zero() && dated_again.is_zero(),
+            "positive custody transferred only once"
+        );
     }
 }

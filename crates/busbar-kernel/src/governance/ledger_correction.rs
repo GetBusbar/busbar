@@ -2,12 +2,12 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use super::*;
-use busbar_contract::records::correction::{self, Decision, Request, UsageAddress, UsageChange};
-use busbar_contract::records::{ModelTokens, UsageLedger};
 use crate::governance::recovery::{
     RecoveryChild, RecoveryError, RecoveryEvent, RecoveryKind, RecoveryOrigin, RecoveryResolution,
     RecoveryState, RecoveryVerdict,
 };
+use busbar_contract::records::correction::{self, Decision, Request, UsageAddress, UsageChange};
+use busbar_contract::records::{ModelTokens, UsageLedger};
 
 #[path = "ledger_correction_recovery.rs"]
 mod recovery;
@@ -61,8 +61,7 @@ impl PendingCorrection {
     fn receipt_retention_expired(&self, now: u64) -> bool {
         now < self.sent_at
             || now - self.sent_at >= busbar_contract::abi::store::OP_ID_RETENTION_SECS
-            || self.started.elapsed().as_secs()
-                >= busbar_contract::abi::store::OP_ID_RETENTION_SECS
+            || self.started.elapsed().as_secs() >= busbar_contract::abi::store::OP_ID_RETENTION_SECS
     }
 
     pub(super) fn unresolved_day(&self) -> Option<u64> {
@@ -96,9 +95,17 @@ impl GovState {
         bucket: &str,
         window: u64,
     ) -> bool {
-        self.corrections.lock().unwrap_or_else(|p| p.into_inner()).values().any(|pending| {
-            pending.quarantined && pending.targets.iter().any(|(target, at)| target == bucket && *at == window)
-        })
+        self.corrections
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .values()
+            .any(|pending| {
+                pending.quarantined
+                    && pending
+                        .targets
+                        .iter()
+                        .any(|(target, at)| target == bucket && *at == window)
+            })
     }
 
     pub(in crate::governance) fn stage_quarantined_correction_negatives(
@@ -108,18 +115,37 @@ impl GovState {
         plain: &mut ExactUsageDelta,
         dated: &mut ExactUsageDelta,
     ) -> RecordStoreResult<Option<RecoveryEvent>> {
-        let pending: Vec<_> = self.corrections.lock().unwrap_or_else(|p| p.into_inner()).values()
-            .filter(|pending| pending.quarantined && pending.targets.iter().any(|(target, at)| target == bucket && *at == window))
-            .cloned().collect();
+        let pending: Vec<_> = self
+            .corrections
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .values()
+            .filter(|pending| {
+                pending.quarantined
+                    && pending
+                        .targets
+                        .iter()
+                        .any(|(target, at)| target == bucket && *at == window)
+            })
+            .cloned()
+            .collect();
         for pending in pending {
-            let mut retained = pending.recovery_event.lock().unwrap_or_else(|p| p.into_inner());
-            let selected = self.recovery_event(pending.request.op_id.0)
+            let mut retained = pending
+                .recovery_event
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            let selected = self
+                .recovery_event(pending.request.op_id.0)
                 .ok_or_else(|| unresolved("quarantined correction has no selected parent"))?;
             if retained.as_ref() != Some(&selected) {
-                return Err(unresolved("quarantined correction checkpoint is not yet selected"));
+                return Err(unresolved(
+                    "quarantined correction checkpoint is not yet selected",
+                ));
             }
             let mut custody = recovery::Custody::decode(&selected.payload)?;
-            let Some((remaining_plain, remaining_dated)) = custody.absorb_negatives(bucket, window, plain, dated)? else {
+            let Some((remaining_plain, remaining_dated)) =
+                custody.absorb_negatives(bucket, window, plain, dated)?
+            else {
                 continue;
             };
             let state = if selected.state == RecoveryState::Intent {
@@ -128,8 +154,15 @@ impl GovState {
             } else {
                 selected.state
             };
-            let event = self.new_recovery_event(selected.operation_id, selected.kind,
-                selected.body_fingerprint, state, selected.first_sent_at_ms, custody.encode()?)
+            let event = self
+                .new_recovery_event(
+                    selected.operation_id,
+                    selected.kind,
+                    selected.body_fingerprint,
+                    state,
+                    selected.first_sent_at_ms,
+                    custody.encode()?,
+                )
                 .map_err(|error| unresolved(&error.to_string()))?;
             *retained = Some(event.clone());
             *plain = remaining_plain;
@@ -145,13 +178,23 @@ impl GovState {
     ) -> RecordStoreResult<()> {
         let custody = recovery::Custody::decode(&event.payload)?;
         custody.validate_event(event)?;
-        if let Some(existing) = self.corrections.lock().unwrap_or_else(|p| p.into_inner())
-            .values().find(|pending| pending.request.op_id.0 == event.operation_id).cloned()
+        if let Some(existing) = self
+            .corrections
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .values()
+            .find(|pending| pending.request.op_id.0 == event.operation_id)
+            .cloned()
         {
             if existing.request.fingerprint() != event.body_fingerprint {
-                return Err(unresolved("restored correction conflicts with its live operation"));
+                return Err(unresolved(
+                    "restored correction conflicts with its live operation",
+                ));
             }
-            *existing.recovery_event.lock().unwrap_or_else(|p| p.into_inner()) = Some(event.clone());
+            *existing
+                .recovery_event
+                .lock()
+                .unwrap_or_else(|p| p.into_inner()) = Some(event.clone());
             return Ok(());
         }
         if custody.is_terminal() {
@@ -161,7 +204,9 @@ impl GovState {
         let pending = custody.restore(self, event)?;
         let mut corrections = self.corrections.lock().unwrap_or_else(|p| p.into_inner());
         if corrections.contains_key(&pending.request.key_id) {
-            return Err(unresolved("multiple unresolved corrections name the same key"));
+            return Err(unresolved(
+                "multiple unresolved corrections name the same key",
+            ));
         }
         corrections.insert(pending.request.key_id.clone(), pending);
         Ok(())
@@ -174,16 +219,30 @@ impl GovState {
     ) -> Result<(), RecoveryError> {
         self.confirm_pending_recovery(resolution.operation_id)
             .map_err(|error| RecoveryError::Unavailable(error.to_string()))?;
-        let selected = self.recovery_event(resolution.operation_id)
+        let selected = self
+            .recovery_event(resolution.operation_id)
             .ok_or_else(|| RecoveryError::Invalid("correction is not selected".into()))?;
-        let pending = self.corrections.lock().unwrap_or_else(|p| p.into_inner())
-            .values().find(|pending| pending.request.op_id.0 == resolution.operation_id).cloned()
+        let pending = self
+            .corrections
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .values()
+            .find(|pending| pending.request.op_id.0 == resolution.operation_id)
+            .cloned()
             .ok_or_else(|| RecoveryError::Invalid("correction custody is not present".into()))?;
         if selected.body_fingerprint != resolution.body_fingerprint {
-            return Err(RecoveryError::Conflict("correction fingerprint differs".into()));
+            return Err(RecoveryError::Conflict(
+                "correction fingerprint differs".into(),
+            ));
         }
-        if pending.running.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() {
-            return Err(RecoveryError::Conflict("original correction sender is still running".into()));
+        if pending
+            .running
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_err()
+        {
+            return Err(RecoveryError::Conflict(
+                "original correction sender is still running".into(),
+            ));
         }
         let _running = Deciding(pending.running.clone());
         let state = match resolution.verdict {
@@ -192,19 +251,33 @@ impl GovState {
         };
         if selected.state == RecoveryState::LandedUnknown {
             if selected.revision != resolution.expected_revision {
-                return Err(RecoveryError::Conflict("correction revision differs".into()));
+                return Err(RecoveryError::Conflict(
+                    "correction revision differs".into(),
+                ));
             }
             let mut custody = recovery::Custody::decode(&selected.payload)
                 .map_err(|error| RecoveryError::Invalid(error.to_string()))?;
             custody.record_verdict(resolution);
-            let event = self.new_recovery_event(selected.operation_id, selected.kind,
-                selected.body_fingerprint, state, selected.first_sent_at_ms,
-                custody.encode().map_err(|error| RecoveryError::Invalid(error.to_string()))?)?;
-            *pending.recovery_event.lock().unwrap_or_else(|p| p.into_inner()) = Some(event.clone());
+            let event = self.new_recovery_event(
+                selected.operation_id,
+                selected.kind,
+                selected.body_fingerprint,
+                state,
+                selected.first_sent_at_ms,
+                custody
+                    .encode()
+                    .map_err(|error| RecoveryError::Invalid(error.to_string()))?,
+            )?;
+            *pending
+                .recovery_event
+                .lock()
+                .unwrap_or_else(|p| p.into_inner()) = Some(event.clone());
             self.keep_recovery_event(&event)
                 .map_err(|error| RecoveryError::Unavailable(error.to_string()))?;
         } else if selected.state != state {
-            return Err(RecoveryError::Conflict("correction has a different definitive outcome".into()));
+            return Err(RecoveryError::Conflict(
+                "correction has a different definitive outcome".into(),
+            ));
         }
         Err(RecoveryError::Unavailable(
             "audited verdict retained; conditional successor and residual handoff are not yet complete".into(),
@@ -220,28 +293,43 @@ impl GovState {
         window: u64,
         child: RecoveryChild,
     ) -> RecordStoreResult<RecoveryEvent> {
-        let branch = cell.correction.as_ref()
+        let branch = cell
+            .correction
+            .as_ref()
             .filter(|branch| branch.window == window)
             .ok_or_else(|| unresolved("correction handoff has no reserved target"))?;
-        let pending = self.corrections.lock().unwrap_or_else(|p| p.into_inner())
-            .values().find(|pending| pending.request.op_id == branch.op_id).cloned()
+        let pending = self
+            .corrections
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .values()
+            .find(|pending| pending.request.op_id == branch.op_id)
+            .cloned()
             .ok_or_else(|| unresolved("correction handoff has no operation owner"))?;
-        let mut retained = pending.recovery_event.lock().unwrap_or_else(|p| p.into_inner());
-        let selected = self.recovery_event(branch.op_id.0)
+        let mut retained = pending
+            .recovery_event
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let selected = self
+            .recovery_event(branch.op_id.0)
             .ok_or_else(|| unresolved("correction handoff has no selected parent"))?;
         if retained.as_ref() != Some(&selected) || selected.state == RecoveryState::Settled {
-            return Err(unresolved("correction parent checkpoint is not yet selected"));
+            return Err(unresolved(
+                "correction parent checkpoint is not yet selected",
+            ));
         }
         let mut custody = recovery::Custody::decode(&selected.payload)?;
         custody.replace_target(bucket, cell, window, child)?;
-        let event = self.new_recovery_event(
-            selected.operation_id,
-            selected.kind,
-            selected.body_fingerprint,
-            selected.state,
-            selected.first_sent_at_ms,
-            custody.encode()?,
-        ).map_err(|error| unresolved(&error.to_string()))?;
+        let event = self
+            .new_recovery_event(
+                selected.operation_id,
+                selected.kind,
+                selected.body_fingerprint,
+                selected.state,
+                selected.first_sent_at_ms,
+                custody.encode()?,
+            )
+            .map_err(|error| unresolved(&error.to_string()))?;
         *retained = Some(event.clone());
         Ok(event)
     }
@@ -306,7 +394,8 @@ impl GovState {
         let _running = Deciding(pending.running.clone());
         if let Some(decision) = *pending.settled.lock().unwrap_or_else(|p| p.into_inner()) {
             if decision == Decision::ConditionConflict && self.recovery_enabled() {
-                let event = self.recovery_event(pending.request.op_id.0)
+                let event = self
+                    .recovery_event(pending.request.op_id.0)
                     .ok_or_else(|| unresolved("settled correction parent is missing"))?;
                 self.drive_recovery_children(&event)?;
                 self.resume_raw_recovery()?;
@@ -318,35 +407,55 @@ impl GovState {
         }
         if pending.quarantined {
             self.confirm_pending_recovery(pending.request.op_id.0)?;
-            let selected = self.recovery_event(pending.request.op_id.0)
+            let selected = self
+                .recovery_event(pending.request.op_id.0)
                 .ok_or_else(|| unresolved("quarantined correction has no selected event"))?;
             if selected.state == RecoveryState::Intent {
                 let mut custody = recovery::Custody::decode(&selected.payload)?;
                 custody.mark_age_unknown();
-                let event = self.new_recovery_event(selected.operation_id, selected.kind,
-                    selected.body_fingerprint, RecoveryState::LandedUnknown,
-                    selected.first_sent_at_ms, custody.encode()?)
+                let event = self
+                    .new_recovery_event(
+                        selected.operation_id,
+                        selected.kind,
+                        selected.body_fingerprint,
+                        RecoveryState::LandedUnknown,
+                        selected.first_sent_at_ms,
+                        custody.encode()?,
+                    )
                     .map_err(|error| unresolved(&error.to_string()))?;
-                *pending.recovery_event.lock().unwrap_or_else(|p| p.into_inner()) = Some(event.clone());
+                *pending
+                    .recovery_event
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner()) = Some(event.clone());
                 self.keep_recovery_event(&event)?;
             }
             return Err(unresolved("historical correction is quarantined pending an audited verdict and fresh revalidation"));
         }
         let receipt = *pending.receipt.lock().unwrap_or_else(|p| p.into_inner());
         if let Some(decision) = receipt {
-            let terminal = pending.recovery_event.lock().unwrap_or_else(|p| p.into_inner())
-                .as_ref().is_some_and(|event| event.state == RecoveryState::Settled);
+            let terminal = pending
+                .recovery_event
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .as_ref()
+                .is_some_and(|event| event.state == RecoveryState::Settled);
             if !terminal {
                 self.keep_correction_decision(pending, decision)?;
             }
             self.settle_usage_correction(pending, decision)?;
             return Ok(decision);
         }
-        let current_state = pending.recovery_event.lock().unwrap_or_else(|p| p.into_inner())
-            .as_ref().map(|event| event.state);
+        let current_state = pending
+            .recovery_event
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .as_ref()
+            .map(|event| event.state);
         if current_state == Some(RecoveryState::LandedUnknown) {
             self.keep_correction_recovery(pending, RecoveryState::LandedUnknown)?;
-            return Err(unresolved("landed-unknown operation requires an audited verdict"));
+            return Err(unresolved(
+                "landed-unknown operation requires an audited verdict",
+            ));
         }
         self.keep_correction_recovery(pending, RecoveryState::Intent)?;
         let age = if self.recovery_enabled() {
@@ -381,10 +490,13 @@ impl GovState {
         pending: &PendingCorrection,
         decision: Decision,
     ) -> RecordStoreResult<()> {
-        self.keep_correction_recovery(pending, match decision {
-            Decision::Applied => RecoveryState::Applied,
-            Decision::ConditionConflict => RecoveryState::ConditionConflict,
-        })
+        self.keep_correction_recovery(
+            pending,
+            match decision {
+                Decision::Applied => RecoveryState::Applied,
+                Decision::ConditionConflict => RecoveryState::ConditionConflict,
+            },
+        )
     }
 
     fn keep_correction_recovery(
@@ -396,28 +508,40 @@ impl GovState {
             return Ok(());
         }
         loop {
-            let previous = pending.recovery_event.lock().unwrap_or_else(|p| p.into_inner()).clone();
+            let previous = pending
+                .recovery_event
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .clone();
             if let Some(event) = previous.as_ref() {
                 // Confirm an immutable candidate before allocating its successor. The mutex is
                 // released during I/O so a handoff cannot block a shard on this Store call.
                 self.keep_recovery_event(event)?;
             }
             let payload = recovery::Custody::capture(self, pending)?.encode()?;
-            let mut retained = pending.recovery_event.lock().unwrap_or_else(|p| p.into_inner());
+            let mut retained = pending
+                .recovery_event
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
             if *retained != previous {
                 continue;
             }
-            if previous.as_ref().is_some_and(|event| event.state == state && event.payload == payload) {
+            if previous
+                .as_ref()
+                .is_some_and(|event| event.state == state && event.payload == payload)
+            {
                 return Ok(());
             }
-            let event = self.new_recovery_event(
-                pending.request.op_id.0,
-                RecoveryKind::Correction,
-                pending.request.fingerprint(),
-                state,
-                Some(pending.sent_at.saturating_mul(1_000)),
-                payload,
-            ).map_err(|error| unresolved(&error.to_string()))?;
+            let event = self
+                .new_recovery_event(
+                    pending.request.op_id.0,
+                    RecoveryKind::Correction,
+                    pending.request.fingerprint(),
+                    state,
+                    Some(pending.sent_at.saturating_mul(1_000)),
+                    payload,
+                )
+                .map_err(|error| unresolved(&error.to_string()))?;
             *retained = Some(event.clone());
             drop(retained);
             return self.keep_recovery_event(&event);
@@ -436,10 +560,14 @@ impl GovState {
         } else {
             None
         };
-        let cuts: BTreeMap<_, _> = terminal.as_ref()
+        let cuts: BTreeMap<_, _> = terminal
+            .as_ref()
             .map(|event| recovery::Custody::decode(&event.payload)?.selected_cuts())
-            .transpose()?.unwrap_or_default().into_iter()
-            .map(|(bucket, window, cell)| ((bucket, window), cell)).collect();
+            .transpose()?
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(bucket, window, cell)| ((bucket, window), cell))
+            .collect();
         let mut order: Vec<_> = pending
             .targets
             .iter()
@@ -480,10 +608,7 @@ impl GovState {
             let index = order
                 .binary_search(&self.budget.shard_index(bucket))
                 .expect("target shard held");
-            let cell = guards[index]
-                .1
-                .get(bucket)
-                .expect("checked target cell");
+            let cell = guards[index].1.get(bucket).expect("checked target cell");
             let branch = cell.correction.as_ref().expect("checked reservation");
             let mut chosen = if decision == Decision::Applied {
                 branch.accepted.clone()
@@ -498,7 +623,9 @@ impl GovState {
             selected.push((bucket.clone(), chosen));
         }
         for (bucket, chosen) in selected {
-            let index = order.binary_search(&self.budget.shard_index(&bucket)).expect("target shard held");
+            let index = order
+                .binary_search(&self.budget.shard_index(&bucket))
+                .expect("target shard held");
             guards[index].1.insert(bucket, chosen);
         }
         drop(guards);
@@ -521,23 +648,39 @@ impl GovState {
         decision: Decision,
     ) -> RecordStoreResult<RecoveryEvent> {
         loop {
-            let previous = pending.recovery_event.lock().unwrap_or_else(|p| p.into_inner()).clone()
+            let previous = pending
+                .recovery_event
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .clone()
                 .ok_or_else(|| unresolved("correction settlement has no immutable predecessor"))?;
             self.keep_recovery_event(&previous)?;
             if previous.state == RecoveryState::Settled {
                 if !recovery::Custody::decode(&previous.payload)?.is_terminal() {
-                    return Err(unresolved("settled correction still owns untransferred raw debt"));
+                    return Err(unresolved(
+                        "settled correction still owns untransferred raw debt",
+                    ));
                 }
                 return Ok(previous);
             }
             let custody = recovery::Custody::stage_settlement(self, pending, decision)?;
-            let mut retained = pending.recovery_event.lock().unwrap_or_else(|p| p.into_inner());
+            let mut retained = pending
+                .recovery_event
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
             if retained.as_ref() != Some(&previous) {
                 continue;
             }
-            let event = self.new_recovery_event(previous.operation_id, previous.kind,
-                previous.body_fingerprint, RecoveryState::Settled, previous.first_sent_at_ms,
-                custody.encode()?).map_err(|error| unresolved(&error.to_string()))?;
+            let event = self
+                .new_recovery_event(
+                    previous.operation_id,
+                    previous.kind,
+                    previous.body_fingerprint,
+                    RecoveryState::Settled,
+                    previous.first_sent_at_ms,
+                    custody.encode()?,
+                )
+                .map_err(|error| unresolved(&error.to_string()))?;
             *retained = Some(event.clone());
             drop(retained);
             self.keep_recovery_event(&event)?;
@@ -850,7 +993,10 @@ fn unique_metered_era(adj: &Adjustment<'_>, rows: &[MeteringRow]) -> RecordStore
             effective_from: row.priced_from_ms,
             entry_id: id,
         };
-        if adj.entry_id.is_some_and(|expected| Some(expected) != era.entry_id) {
+        if adj
+            .entry_id
+            .is_some_and(|expected| Some(expected) != era.entry_id)
+        {
             continue;
         }
         if captured.is_some_and(|previous| previous != era) {
