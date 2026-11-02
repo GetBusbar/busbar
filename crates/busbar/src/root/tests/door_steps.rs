@@ -2541,8 +2541,8 @@ pub(crate) mod tool_door {
             instance: &'static str,
             tools: serde_yaml::Value,
             configure: &dyn Fn(
-                busbar_kernel::test_support::TestApp,
-            ) -> busbar_kernel::test_support::TestApp,
+                busbar_kernel_testkit::test_support::TestApp,
+            ) -> busbar_kernel_testkit::test_support::TestApp,
         ) -> Rig {
             self.try_rig(instance, tools, configure)
                 .unwrap_or_else(|e| panic!("the TLS door composes: {e}"))
@@ -2553,8 +2553,8 @@ pub(crate) mod tool_door {
             instance: &'static str,
             tools: serde_yaml::Value,
             configure: &dyn Fn(
-                busbar_kernel::test_support::TestApp,
-            ) -> busbar_kernel::test_support::TestApp,
+                busbar_kernel_testkit::test_support::TestApp,
+            ) -> busbar_kernel_testkit::test_support::TestApp,
         ) -> Result<Rig, String> {
             self.try_rig_with_footing(instance, tools, None, self.footing(), configure)
         }
@@ -2565,8 +2565,8 @@ pub(crate) mod tool_door {
             tools: serde_yaml::Value,
             footing: Footing<'_>,
             configure: &dyn Fn(
-                busbar_kernel::test_support::TestApp,
-            ) -> busbar_kernel::test_support::TestApp,
+                busbar_kernel_testkit::test_support::TestApp,
+            ) -> busbar_kernel_testkit::test_support::TestApp,
         ) -> Rig {
             self.try_rig_with_footing(instance, tools, None, footing, configure)
                 .unwrap_or_else(|e| panic!("the TLS door composes: {e}"))
@@ -2578,8 +2578,8 @@ pub(crate) mod tool_door {
             tools: serde_yaml::Value,
             allowed_pools: Option<Vec<String>>,
             configure: &dyn Fn(
-                busbar_kernel::test_support::TestApp,
-            ) -> busbar_kernel::test_support::TestApp,
+                busbar_kernel_testkit::test_support::TestApp,
+            ) -> busbar_kernel_testkit::test_support::TestApp,
         ) -> Rig {
             self.try_rig_with_footing(instance, tools, allowed_pools, self.footing(), configure)
                 .unwrap_or_else(|e| panic!("the granted TLS door composes: {e}"))
@@ -2592,8 +2592,8 @@ pub(crate) mod tool_door {
             allowed_pools: Option<Vec<String>>,
             mut footing: Footing<'_>,
             configure: &dyn Fn(
-                busbar_kernel::test_support::TestApp,
-            ) -> busbar_kernel::test_support::TestApp,
+                busbar_kernel_testkit::test_support::TestApp,
+            ) -> busbar_kernel_testkit::test_support::TestApp,
         ) -> Result<Rig, String> {
             if footing.tls.is_none() {
                 footing.tls = Some(Arc::clone(&self.tls));

@@ -122,6 +122,7 @@ fn custody_conn(
     .unwrap();
     let (client, server) = tokio::io::duplex(1024);
     let (tx, ops) = tokio::sync::mpsc::unbounded_channel();
+    let (admission_tx, admissions) = tokio::sync::mpsc::unbounded_channel();
     (
         client,
         super::Conn {
@@ -141,6 +142,10 @@ fn custody_conn(
             ops,
             tx,
             pending: Default::default(),
+            admission_tx,
+            admissions,
+            staged: None,
+            prewire: false,
             full: Default::default(),
             deadline: None,
             session: None,
@@ -623,6 +628,7 @@ async fn a_failed_refusal_ends_the_connection_and_a_rendered_refusal_keeps_it_li
             .unwrap();
             let (_client, server) = tokio::io::duplex(1024);
             let (tx, ops) = tokio::sync::mpsc::unbounded_channel();
+            let (admission_tx, admissions) = tokio::sync::mpsc::unbounded_channel();
             let mut conn = super::Conn {
                 io: crate::root::listener::Lingering(Some(server)),
                 framing: Some(framing),
@@ -640,6 +646,10 @@ async fn a_failed_refusal_ends_the_connection_and_a_rendered_refusal_keeps_it_li
                 ops,
                 tx,
                 pending: Default::default(),
+                admission_tx,
+                admissions,
+                staged: None,
+                prewire: false,
                 full: Default::default(),
                 deadline: None,
                 session: None,
@@ -776,6 +786,7 @@ async fn reset_before_any_head_releases_the_old_app_but_body_end_keeps_its_loan(
 
     let (_client, server) = tokio::io::duplex(1024);
     let (tx, ops) = tokio::sync::mpsc::unbounded_channel();
+    let (admission_tx, admissions) = tokio::sync::mpsc::unbounded_channel();
     let mut conn = super::Conn {
         io: crate::root::listener::Lingering(Some(server)),
         framing: Some(framing),
@@ -793,6 +804,10 @@ async fn reset_before_any_head_releases_the_old_app_but_body_end_keeps_its_loan(
         ops,
         tx,
         pending: Default::default(),
+        admission_tx,
+        admissions,
+        staged: None,
+        prewire: false,
         full: Default::default(),
         deadline: None,
         session: None,
