@@ -1774,7 +1774,7 @@ fn a_carrier_bind_failure_identifies_the_need_without_printing_its_failure_text(
     let cap = crate::warn_capture::WarnCapture::default();
     tracing::subscriber::with_default(cap.clone(), || {
         worker().block_on(async {
-            let view = View::of(vec![Entry {
+            let view = Transports::new(vec![Entry {
                 door: Arc::new(FailingBindCarrier {
                     inner: TestDoor::identity("bytes"),
                     fail: std::sync::atomic::AtomicBool::new(true),
@@ -4103,7 +4103,7 @@ fn a_pinned_carrier_need_uses_the_same_authority_as_its_dial() {
             busbar_contract::abi::transport::ROLE_CARRIER
         );
         assert!(crate::framer::locate(door.as_ref(), &far).is_err());
-        let view = View::of(vec![Entry {
+        let view = Transports::new(vec![Entry {
             door,
             alpn: Vec::new(),
         }])
