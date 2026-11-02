@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use super::*;
-use busbar_kernel::config::{migrated_store_module, HookCfg, HookKind, PromptAccess, UserAccess};
+use busbar_kernel::config::{HookCfg, HookKind, PromptAccess, UserAccess};
 
 #[path = "bootstrap_rollback.rs"]
 mod bootstrap_rollback;
@@ -270,29 +270,8 @@ impl PluginAdmission for DirAdmission {
     }
 }
 
-fn app_with(
-    dir: std::path::PathBuf,
-    cfg: busbar_kernel::config::PluginsCfg,
-) -> std::sync::Arc<busbar_kernel::state::App> {
-    crate::new_test_app()
-        .plugins_dir(dir)
-        .plugins_cfg(cfg)
-        .plugin_admission(&DIR_ADMISSION)
-        .build()
-}
-
-fn svc_with(dir: std::path::PathBuf, cfg: busbar_kernel::config::PluginsCfg) -> AdminService {
-    AdminService::new(app_with(dir, cfg))
-}
-
 fn strict_posture() -> busbar_kernel::config::PluginsCfg {
     busbar_kernel::config::PluginsCfg::default()
-}
-
-fn unsigned_ok_posture() -> busbar_kernel::config::PluginsCfg {
-    let mut cfg = busbar_kernel::config::PluginsCfg::default();
-    cfg.trust.allow_unsigned = true;
-    cfg
 }
 
 #[test]
@@ -2044,66 +2023,6 @@ fn every_admin_trust_resolution_warns_about_a_malformed_floor() {
         messages.contains(&CONFIG_ANTIDOWNGRADE_FLOOR_INVALID.banner().to_string()),
         "{messages}"
     );
-}
-
-struct RefusingAdmission;
-
-impl busbar_kernel::admission::PluginAdmission for RefusingAdmission {
-    fn is_tarball(&self, file: &str) -> bool {
-        file.ends_with(".tar.gz")
-    }
-    fn max_tarball_bytes(&self) -> u64 {
-        1024
-    }
-    fn restart_default(&self, _kind: &str) -> bool {
-        true
-    }
-    fn policy_resolves(&self, _cfg: &busbar_kernel::config::PluginsCfg) -> Result<(), String> {
-        Err("the root's refusal".into())
-    }
-    fn inventory(
-        &self,
-        _dir: &std::path::Path,
-        _cfg: &busbar_kernel::config::PluginsCfg,
-    ) -> Result<Vec<busbar_kernel::admission::Inventoried>, String> {
-        Err("the root's refusal".into())
-    }
-    fn admit_upload(
-        &self,
-        _dir: &std::path::Path,
-        _file: &str,
-        _tarball: &[u8],
-        _cfg: &busbar_kernel::config::PluginsCfg,
-    ) -> Result<busbar_kernel::admission::Admitted, busbar_kernel::admission::Refusal> {
-        Err(busbar_kernel::admission::Refusal::Validation(
-            "the root's refusal".into(),
-        ))
-    }
-    fn inspect(
-        &self,
-        _tarball: &[u8],
-        _cfg: &busbar_kernel::config::PluginsCfg,
-    ) -> Result<
-        (
-            busbar_kernel::admission::Stated,
-            busbar_kernel::admission::Judged,
-        ),
-        busbar_kernel::admission::Refusal,
-    > {
-        Err(busbar_kernel::admission::Refusal::Validation(
-            "the root's refusal".into(),
-        ))
-    }
-    fn rollback_target(
-        &self,
-        _file: &str,
-        _bytes: &[u8],
-        _cfg: &busbar_kernel::config::PluginsCfg,
-    ) -> Result<busbar_kernel::admission::Stated, busbar_kernel::admission::Refusal> {
-        Err(busbar_kernel::admission::Refusal::Validation(
-            "the root's refusal".into(),
-        ))
-    }
 }
 
 #[test]
