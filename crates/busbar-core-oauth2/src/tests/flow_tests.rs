@@ -1139,3 +1139,82 @@ async fn an_unencodable_login_redirect_fails_closed_rather_than_proceeding() {
          resource owner had answered: got {status} {body}"
     );
 }
+
+#[tokio::test]
+async fn issued_code_tokens_retain_their_live_private_records_for_each_default_scope() {
+    let block = serde_yaml::to_value(OauthAsCfg {
+        issuer: "https://as.example.com".into(),
+        default_grant: vec!["read".into(), "write".into()],
+        ..Default::default()
+    })
+    .unwrap();
+    let opaque = crate::plane::seam_build::<crate::NoConnections>(
+        &block,
+        Vec::new(),
+        Vec::new(),
+        None,
+        Some(crate::testkit::store_calls()),
+    )
+    .expect("the actual owner seam builds over the supplied Store product");
+    let plane = opaque
+        .downcast::<crate::plane::AsPlane>()
+        .unwrap_or_else(|_| panic!("the owner seam returns its own plane"));
+    for (index, default) in ["read", "read write", ""].into_iter().enumerate() {
+        let client_id = format!("owner-record-{index}");
+        let scope = ScopeSet::parse(default).expect("scope");
+        plane
+            .server()
+            .register_client(Client {
+                client_id: ClientId::new(&client_id),
+                auth: ClientAuth::Public,
+                grant_types: vec![GrantType::AuthorizationCode, GrantType::RefreshToken],
+                redirect_uris: vec![REDIRECT_URI.into()],
+                allowed_scopes: scope.clone(),
+                default_scopes: scope,
+                name: None,
+                registration: None,
+            })
+            .await
+            .expect("the real owner storage registers the client");
+        let request = oauth_as::authorization::AuthorizationRequest::from_pairs([
+            ("response_type", "code"),
+            ("client_id", client_id.as_str()),
+            ("redirect_uri", REDIRECT_URI),
+            ("code_challenge", CHALLENGE),
+            ("code_challenge_method", "S256"),
+        ]);
+        let validated = plane
+            .server()
+            .validate_authorization_request(&request)
+            .await
+            .expect("request validates");
+        let code = plane
+            .server()
+            .issue_authorization_code(oauth_as::server::UserApproval::granted(
+                &validated,
+                "busbar-operator",
+            ))
+            .await
+            .expect("the approved owner request mints a code");
+        let token = plane
+            .server()
+            .token(oauth_as::server::TokenRequest::AuthorizationCode {
+                client_id: ClientId::new(&client_id),
+                client_secret: None,
+                code: code.code,
+                redirect_uri: Some(REDIRECT_URI.into()),
+                code_verifier: Some(VERIFIER.into()),
+            })
+            .await
+            .expect("the approved code exchanges");
+        let record = plane
+            .server()
+            .introspect(&token.access_token)
+            .await
+            .expect("introspection must not fail")
+            .expect("the freshly minted token must be live");
+        assert_eq!(record.client_id.as_str(), client_id);
+        assert_eq!(record.subject.as_deref(), Some("busbar-operator"));
+        assert_eq!(record.scope.to_string(), default);
+    }
+}
