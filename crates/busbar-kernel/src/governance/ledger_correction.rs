@@ -305,6 +305,15 @@ impl GovState {
         }
         let _running = Deciding(pending.running.clone());
         if let Some(decision) = *pending.settled.lock().unwrap_or_else(|p| p.into_inner()) {
+            if decision == Decision::ConditionConflict && self.recovery_enabled() {
+                let event = self.recovery_event(pending.request.op_id.0)
+                    .ok_or_else(|| unresolved("settled correction parent is missing"))?;
+                self.drive_recovery_children(&event)?;
+                self.resume_raw_recovery()?;
+                if !self.recovery_children_settled(&event)? {
+                    return Err(unresolved("raw predecessor counts are not yet recorded"));
+                }
+            }
             return Ok(decision);
         }
         if pending.quarantined {
@@ -325,7 +334,11 @@ impl GovState {
         }
         let receipt = *pending.receipt.lock().unwrap_or_else(|p| p.into_inner());
         if let Some(decision) = receipt {
-            self.keep_correction_decision(pending, decision)?;
+            let terminal = pending.recovery_event.lock().unwrap_or_else(|p| p.into_inner())
+                .as_ref().is_some_and(|event| event.state == RecoveryState::Settled);
+            if !terminal {
+                self.keep_correction_decision(pending, decision)?;
+            }
             self.settle_usage_correction(pending, decision)?;
             return Ok(decision);
         }
@@ -418,6 +431,15 @@ impl GovState {
         pending: &PendingCorrection,
         decision: Decision,
     ) -> RecordStoreResult<()> {
+        let terminal = if self.recovery_enabled() {
+            Some(self.keep_correction_settlement(pending, decision)?)
+        } else {
+            None
+        };
+        let cuts: BTreeMap<_, _> = terminal.as_ref()
+            .map(|event| recovery::Custody::decode(&event.payload)?.selected_cuts())
+            .transpose()?.unwrap_or_default().into_iter()
+            .map(|(bucket, window, cell)| ((bucket, window), cell)).collect();
         let mut order: Vec<_> = pending
             .targets
             .iter()
@@ -453,22 +475,74 @@ impl GovState {
                 return Err(unresolved("reserved raw cell custody missing"));
             }
         }
-        for (bucket, _) in &pending.targets {
+        let mut selected = Vec::new();
+        for (bucket, window) in &pending.targets {
             let index = order
                 .binary_search(&self.budget.shard_index(bucket))
                 .expect("target shard held");
             let cell = guards[index]
                 .1
-                .get_mut(bucket)
+                .get(bucket)
                 .expect("checked target cell");
-            let branch = cell.correction.take().expect("checked reservation");
-            if decision == Decision::Applied {
-                *cell = branch.accepted;
+            let branch = cell.correction.as_ref().expect("checked reservation");
+            let mut chosen = if decision == Decision::Applied {
+                branch.accepted.clone()
+            } else {
+                let mut chosen = cell.clone();
+                chosen.correction = None;
+                chosen
+            };
+            if let Some(cut) = cuts.get(&(bucket.clone(), *window)) {
+                recovery::apply_selected_cut(&mut chosen, cut, *window)?;
             }
+            selected.push((bucket.clone(), chosen));
+        }
+        for (bucket, chosen) in selected {
+            let index = order.binary_search(&self.budget.shard_index(&bucket)).expect("target shard held");
+            guards[index].1.insert(bucket, chosen);
         }
         drop(guards);
         *pending.settled.lock().unwrap_or_else(|p| p.into_inner()) = Some(decision);
+        if let Some(terminal) = terminal {
+            self.drive_recovery_children(&terminal)?;
+            if decision == Decision::ConditionConflict {
+                self.resume_raw_recovery()?;
+                if !self.recovery_children_settled(&terminal)? {
+                    return Err(unresolved("raw predecessor counts are not yet recorded"));
+                }
+            }
+        }
         Ok(())
+    }
+
+    fn keep_correction_settlement(
+        &self,
+        pending: &PendingCorrection,
+        decision: Decision,
+    ) -> RecordStoreResult<RecoveryEvent> {
+        loop {
+            let previous = pending.recovery_event.lock().unwrap_or_else(|p| p.into_inner()).clone()
+                .ok_or_else(|| unresolved("correction settlement has no immutable predecessor"))?;
+            self.keep_recovery_event(&previous)?;
+            if previous.state == RecoveryState::Settled {
+                if !recovery::Custody::decode(&previous.payload)?.is_terminal() {
+                    return Err(unresolved("settled correction still owns untransferred raw debt"));
+                }
+                return Ok(previous);
+            }
+            let custody = recovery::Custody::stage_settlement(self, pending, decision)?;
+            let mut retained = pending.recovery_event.lock().unwrap_or_else(|p| p.into_inner());
+            if retained.as_ref() != Some(&previous) {
+                continue;
+            }
+            let event = self.new_recovery_event(previous.operation_id, previous.kind,
+                previous.body_fingerprint, RecoveryState::Settled, previous.first_sent_at_ms,
+                custody.encode()?).map_err(|error| unresolved(&error.to_string()))?;
+            *retained = Some(event.clone());
+            drop(retained);
+            self.keep_recovery_event(&event)?;
+            return Ok(event);
+        }
     }
 
     pub(in crate::governance::state) fn retry_usage_corrections(&self) -> Vec<String> {

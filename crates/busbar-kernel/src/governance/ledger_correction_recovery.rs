@@ -19,13 +19,6 @@ fn change_unit(debt: &mut ExactUsageDelta, model: &str, unit: &str, change: i128
     }
 }
 
-fn unit(debt: &ExactUsageDelta, model: &str, unit: &str) -> i128 {
-    debt.models.iter().find(|row| row.model == model)
-        .and_then(|row| row.usage_units.get(unit)).copied().unwrap_or(0)
-}
-
-/// Allocate a negative dated segment together with its plain counterpart. Aggregate plain
-/// counters may have netted a positive in another era and therefore need not be negative yet.
 fn absorb_with_capacity(
     plain: &mut ExactUsageDelta,
     dated: &mut ExactUsageDelta,
@@ -34,79 +27,13 @@ fn absorb_with_capacity(
     held_plain: &ExactUsageDelta,
     held_dated: &ExactUsageDelta,
 ) -> RecordStoreResult<(ExactUsageDelta, ExactUsageDelta)> {
-    let mut available_plain = plain_capacity.clone();
-    available_plain.merge(held_plain);
-    let mut available_dated = dated_capacity.clone();
-    available_dated.merge(held_dated);
-    let mut legacy = plain.clone();
-    let mut legacy_capacity = available_plain.clone();
-    for row in &dated.models {
-        let (tag, model) = row.model.split_once(ERA_MODEL_SEP)
-            .map_or((row.model.as_str(), None), |(tag, model)| (tag, Some(model)));
-        parse_era_tag(tag)?.filter(|era| *era != RawRateEra::legacy(0))
-            .ok_or_else(|| unresolved("dependent negative has no exact raw era"))?;
-        for (name, count) in &row.usage_units {
-            if let Some(model) = model {
-                change_unit(&mut legacy, model, name, -*count);
-            } else if name == ERA_FEE_UNIT {
-                legacy.billable_requests -= count;
-            } else {
-                return Err(unresolved("dependent fee contains an unknown raw unit"));
-            }
-        }
-    }
-    for row in &available_dated.models {
-        let (_, model) = row.model.split_once(ERA_MODEL_SEP)
-            .map_or((row.model.as_str(), None), |(tag, model)| (tag, Some(model)));
-        for (name, count) in &row.usage_units {
-            if let Some(model) = model {
-                change_unit(&mut legacy_capacity, model, name, -(*count).max(0));
-            } else if name == ERA_FEE_UNIT {
-                legacy_capacity.billable_requests -= (*count).max(0);
-            }
-        }
-    }
-    let mut absorbed_plain = ExactUsageDelta::default();
-    let mut absorbed_dated = ExactUsageDelta::default();
-    let requests = (-plain.requests.min(0)).min(available_plain.requests.max(0));
-    plain.requests += requests;
-    absorbed_plain.requests = -requests;
-    let dated_source = dated.clone();
-    for row in &dated_source.models {
-        let (_, model) = row.model.split_once(ERA_MODEL_SEP)
-            .map_or((row.model.as_str(), None), |(tag, model)| (tag, Some(model)));
-        for (name, count) in &row.usage_units {
-            if *count >= 0 { continue; }
-            let capacity = model.map_or(available_plain.billable_requests, |model| unit(&available_plain, model, name));
-            let amount = (-*count).min(capacity.max(0)).min(unit(&available_dated, &row.model, name).max(0));
-            if amount == 0 { continue; }
-            change_unit(dated, &row.model, name, amount);
-            change_unit(&mut absorbed_dated, &row.model, name, -amount);
-            change_unit(&mut available_dated, &row.model, name, -amount);
-            if let Some(model) = model {
-                change_unit(plain, model, name, amount);
-                change_unit(&mut absorbed_plain, model, name, -amount);
-                change_unit(&mut available_plain, model, name, -amount);
-            } else {
-                plain.billable_requests += amount;
-                absorbed_plain.billable_requests -= amount;
-                available_plain.billable_requests -= amount;
-            }
-        }
-    }
-    let fee = (-legacy.billable_requests.min(0))
-        .min(legacy_capacity.billable_requests.max(0)).min(available_plain.billable_requests.max(0));
-    plain.billable_requests += fee;
-    absorbed_plain.billable_requests -= fee;
-    for row in &legacy.models {
-        for (name, count) in &row.usage_units {
-            let amount = (-(*count).min(0)).min(unit(&legacy_capacity, &row.model, name).max(0))
-                .min(unit(&available_plain, &row.model, name).max(0));
-            change_unit(plain, &row.model, name, amount);
-            change_unit(&mut absorbed_plain, &row.model, name, -amount);
-        }
-    }
-    Ok((absorbed_plain, absorbed_dated))
+    use crate::governance::exact_debt::SegmentedUsage;
+    let mut capacity = SegmentedUsage::of(plain_capacity, dated_capacity)?.positive();
+    capacity.merge(&SegmentedUsage::of(held_plain, held_dated)?);
+    let mut remaining = SegmentedUsage::of(plain, dated)?;
+    let taken = remaining.take_negatives(Some(&capacity.positive()));
+    (*plain, *dated) = remaining.deltas();
+    Ok(taken.deltas())
 }
 
 fn negate(mut debt: ExactUsageDelta) -> ExactUsageDelta {
@@ -137,47 +64,7 @@ fn positive_rolled(
     plain: &ExactUsageDelta,
     dated: &ExactUsageDelta,
 ) -> RecordStoreResult<(ExactUsageDelta, ExactUsageDelta)> {
-    if dated.requests != 0 || dated.billable_requests != 0 {
-        return Err(unresolved("dated common debt has aggregate counters"));
-    }
-    let mut legacy = plain.clone();
-    let mut positive = ExactUsageDelta {
-        requests: plain.requests.max(0),
-        ..Default::default()
-    };
-    let mut positive_dated = ExactUsageDelta::default();
-    for row in &dated.models {
-        let (tag, model) = row.model.split_once(ERA_MODEL_SEP)
-            .map_or((row.model.as_str(), None), |(tag, model)| (tag, Some(model)));
-        let era = parse_era_tag(tag)?
-            .filter(|era| *era != RawRateEra::legacy(0))
-            .ok_or_else(|| unresolved("common debt has no exact raw era"))?;
-        for (unit, count) in &row.usage_units {
-            if let Some(model) = model {
-                change_unit(&mut legacy, model, unit, -*count);
-                if *count > 0 {
-                    change_unit(&mut positive, model, unit, *count);
-                    change_unit(&mut positive_dated, &era_model(era, model), unit, *count);
-                }
-            } else {
-                if unit != ERA_FEE_UNIT {
-                    return Err(unresolved("common fee debt contains an unknown raw unit"));
-                }
-                legacy.billable_requests -= count;
-                if *count > 0 {
-                    positive.billable_requests += count;
-                    change_unit(&mut positive_dated, &era_tag(era), unit, *count);
-                }
-            }
-        }
-    }
-    positive.billable_requests += legacy.billable_requests.max(0);
-    for row in legacy.models {
-        for (unit, count) in row.usage_units {
-            change_unit(&mut positive, &row.model, &unit, count.max(0));
-        }
-    }
-    Ok((positive, positive_dated))
+    Ok(crate::governance::exact_debt::SegmentedUsage::of(plain, dated)?.positive().deltas())
 }
 
 pub(super) fn take_positives(
@@ -789,15 +676,23 @@ impl Custody {
                 row.address.bucket_id == bucket && row.address.window_start == window
             }).ok_or_else(|| unresolved("quarantined target has no original raw row"))?;
             let mut capacity = ExactUsageDelta {
-                requests: (i128::from(row.replacement.requests) - i128::from(row.expected.requests)).max(0),
-                billable_requests: (i128::from(row.replacement.billable_requests) - i128::from(row.expected.billable_requests)).max(0),
+                requests: i128::from(row.replacement.requests) - i128::from(row.expected.requests),
+                billable_requests: i128::from(row.replacement.billable_requests) - i128::from(row.expected.billable_requests),
                 ..Default::default()
             };
             for model in &row.replacement.models {
                 let before = row.expected.models.iter().find(|before| before.model == model.model);
                 for (unit, count) in &model.usage_units {
                     let previous = before.and_then(|before| before.usage_units.get(unit)).copied().unwrap_or(0);
-                    change_unit(&mut capacity, &model.model, unit, (i128::from(*count) - i128::from(previous)).max(0));
+                    change_unit(&mut capacity, &model.model, unit, i128::from(*count) - i128::from(previous));
+                }
+            }
+            for model in &row.expected.models {
+                let after = row.replacement.models.iter().find(|after| after.model == model.model);
+                for (unit, count) in &model.usage_units {
+                    if after.is_none_or(|after| !after.usage_units.contains_key(unit)) {
+                        change_unit(&mut capacity, &model.model, unit, -i128::from(*count));
+                    }
                 }
             }
             Ok(capacity)
