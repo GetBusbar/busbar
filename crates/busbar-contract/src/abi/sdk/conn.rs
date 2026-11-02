@@ -244,6 +244,15 @@ snapshot_table!(
 );
 
 impl Host {
+    /// No wake, connector, services or I/O: the exact empty host, with no raw pointers to prove.
+    pub const NONE: Self = Self {
+        ctx: HostCtx::NONE,
+        wake: None,
+        conns: None,
+        services: None,
+        io: None,
+    };
+
     /// A host that only wakes tickets through a safe callback and an opaque scalar context.
     /// No connector, service or I/O table is offered. This needs no raw-pointer proof.
     #[must_use]

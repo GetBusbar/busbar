@@ -470,6 +470,12 @@ fn a_safe_wake_only_host_preserves_the_opaque_context_and_absent_tables() {
     extern "C" fn wake(ctx: HostCtx, _: Ticket) {
         WOKEN.store(ctx.handle, std::sync::atomic::Ordering::SeqCst);
     }
+    let empty = Host::NONE;
+    assert!(!empty.lends_connector());
+    assert!(empty.services().is_none());
+    assert!(!empty.io(TICKET).armed());
+    empty.wake(TICKET);
+    assert_eq!(WOKEN.load(std::sync::atomic::Ordering::SeqCst), 0);
     let host = Host::wake_only(HostCtx { handle: 73 }, wake);
     assert!(!host.lends_connector());
     assert!(host.services().is_none());
