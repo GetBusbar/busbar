@@ -10,7 +10,7 @@
 //! judgement is MANIFEST-ONLY: nothing here loads a plugin.
 //!
 //! [`DURABLE`] is the loader's one durable-write primitive (`root::loader::durable`) as the kernel's
-//! [`DurableFs`] seam: the overlay, the `plugins.fetch` directory and the admin plugin verbs write
+//! [`DurableFs`] seam: the `plugins.fetch` directory and the admin plugin verbs write
 //! through it.
 
 use std::path::Path;
@@ -286,8 +286,16 @@ mod store_overlay_management {
     use busbar_kernel::test_support::TestOverlayStore;
     #[test]
     fn legacy_overlay_file_is_untouched_and_store_remains_writable() {
-        let dir = tempfile::tempdir().unwrap();
-        let legacy = dir.path().join("overlay.json");
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "busbar-overlay-input-{}-{stamp}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let legacy = dir.join("overlay.json");
         let original = b"operator-owned legacy input";
         std::fs::write(&legacy, original).unwrap();
         let cfg = ConfigMgmtCfg {
@@ -297,7 +305,7 @@ mod store_overlay_management {
             })),
         };
         assert!(
-            resolve_backend_with_env(&cfg, &dir.path().join("config.yaml"), None, true)
+            resolve_backend_with_env(&cfg, &dir.join("config.yaml"), None, true)
                 .unwrap()
                 .enabled
         );
@@ -305,6 +313,7 @@ mod store_overlay_management {
         persist_root(Some(&store.backend()), &RootSettings::default()).unwrap();
         assert!(store.read_bytes().is_some());
         assert_eq!(std::fs::read(&legacy).unwrap(), original);
-        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

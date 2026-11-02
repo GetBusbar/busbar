@@ -232,6 +232,72 @@ fn the_nodes_own_ports_are_read_off_its_listen_addresses() {
     );
 }
 
+#[test]
+fn recovered_listener_ports_replace_the_base_ports_for_immediate_judgements() {
+    let j = process_judge(&["127.0.0.1", "::1"], vec![]);
+    let class = EGRESS_LOOPBACK_ALLOWED;
+    j.own_ports_applied(&own_ports(&["0.0.0.0:19080", "[::1]:19081"]));
+    assert!(now(&j, &format!("127.0.0.1:{OWN}"), class).is_ok());
+    for destination in ["127.0.0.1:19080", "[::1]:19081"] {
+        assert_eq!(now(&j, destination, class), Err(DEST_INTERNAL));
+    }
+}
+
+#[derive(Default)]
+struct HeldResolution(std::sync::Mutex<Option<crate::guard::Resolved>>);
+
+impl Resolve for HeldResolution {
+    fn resolve(&self, _: &str, done: crate::guard::Resolved) {
+        assert!(self.0.lock().unwrap().replace(done).is_none());
+    }
+}
+
+#[test]
+fn a_resolution_already_pending_uses_recovered_ports_and_calls_back_without_the_lock() {
+    for (port, refused) in [(OWN, false), (19080, true), (19081, true)] {
+        let resolver = Arc::new(HeldResolution::default());
+        let destinations = Destinations {
+            allow: vec!["localhost".into()],
+            ..Destinations::default()
+        };
+        let j = judge(
+            Arc::new(GuardJudge::new(
+                Guard::from_config(&destinations).unwrap(),
+                resolver.clone(),
+            )),
+            &[OWN],
+        );
+        let (tx, rx) = std::sync::mpsc::channel();
+        let reentrant = Arc::clone(&j);
+        assert_eq!(
+            j.judge_dial_all(
+                &format!("localhost:{port}"),
+                EGRESS_LOOPBACK_ALLOWED,
+                false,
+                Box::new(move |answer, also| {
+                    reentrant.own_ports_applied(&[19080, 19081]);
+                    tx.send((answer, also)).unwrap();
+                }),
+            ),
+            None
+        );
+        j.own_ports_applied(&[19080, 19081]);
+        let done = resolver.0.lock().unwrap().take().unwrap();
+        done(Ok(vec![
+            "127.0.0.1".parse().unwrap(),
+            "::1".parse().unwrap(),
+        ]));
+        let (answer, also) = rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        if refused {
+            assert_eq!(answer, Err(DEST_INTERNAL));
+            assert!(also.is_empty(), "alternate loopback pins are protected too");
+        } else {
+            assert_eq!(answer, Ok(SocketAddr::from(([127, 0, 0, 1], OWN))));
+            assert_eq!(also, vec![format!("[::1]:{OWN}").parse().unwrap()]);
+        }
+    }
+}
+
 /// A resolver recording every name it is asked, answering from a fixed table off the caller's
 /// thread.
 #[derive(Default)]

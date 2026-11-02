@@ -1025,6 +1025,7 @@ impl AdminService {
                        serves it: nothing was written",
             });
         }
+        self.validate_bootstrap_candidate("install", &file, manifest, tarball, admission)?;
 
         // ── 5. atomic publish via the crate's ONE durable-write choke point ──
         // Directory provisioning goes through the primitive too: `std::fs::create_dir_all` leaves the
@@ -1222,11 +1223,90 @@ impl AdminService {
         let manifest = admission
             .rollback_target(&file, &bytes, &self.app.plugins_cfg)
             .map_err(refused)?;
+        self.validate_bootstrap_candidate("rollback", &file, &manifest, &bytes, admission)?;
 
         // Merge: this plugin's pin becomes the target version; other plugins' prior pins are preserved.
         let mut pins = prior_pins.clone();
         pins.insert(manifest.name.clone(), manifest.version.clone());
         Ok((manifest, pins))
+    }
+
+    /// A dependency needed to open the overlay cannot use its own unread pin to lower bootstrap
+    /// trust. Reuse the ordinary admission under the operator's existing base policy, before any
+    /// pin is persisted. An explicit safe rollback of any other plugin keeps its existing path.
+    fn validate_bootstrap_candidate(
+        &self,
+        operation: &str,
+        file: &str,
+        manifest: &Stated,
+        bytes: &[u8],
+        admission: &dyn PluginAdmission,
+    ) -> Result<(), AdminError> {
+        let Some(config_path) = self.app.config_path.as_deref() else {
+            return Ok(());
+        };
+        let loaded = busbar_kernel::load_config_from_disk_judged(
+            config_path,
+            self.app.providers_path.as_deref(),
+            false,
+            busbar_kernel::config::EnvSubst::Strict,
+            &*self.app.root_rules,
+        )
+        .map_err(|error| {
+            AdminError::Validation(format!(
+                "cannot validate the operator's Store overlay bootstrap policy: {error}"
+            ))
+        })?;
+        let cfg =
+            busbar_kernel::config::resolve(&loaded.deploy, &loaded.defs).map_err(|errors| {
+                AdminError::Validation(format!(
+                    "cannot validate the operator's Store overlay bootstrap policy: {}",
+                    errors.join("; ")
+                ))
+            })?;
+        let build = busbar_kernel::preflight::root_rows()
+            .registry_build
+            .ok_or_else(|| {
+                AdminError::Validation(
+                    "no root installed the Store overlay bootstrap registry".into(),
+                )
+            })?;
+        let data_dir = busbar_kernel::preflight::fleet_data_dir();
+        let rows = build(
+            busbar_kernel::preflight::RegistryIn {
+                linked: busbar_kernel::preflight::linked_rows(),
+                plugins: Some(&loaded.deploy.plugins),
+                data_dir: data_dir.as_deref(),
+            },
+            &mut |_| {},
+        )
+        .map_err(|error| {
+            AdminError::Validation(format!(
+                "cannot validate the operator's Store overlay bootstrap registry: {error}"
+            ))
+        })?;
+        let dependencies = busbar_kernel::appbuild::bootstrap_dependency_names(&cfg, rows.as_ref());
+        if dependencies.contains(&manifest.name) || dependencies.contains(&manifest.alias) {
+            let (_, verdict) = admission
+                .inspect(bytes, &loaded.deploy.plugins)
+                .map_err(refused)?;
+            let refused_reason = match verdict {
+                Judged::Rejected { reason } => Some(reason),
+                // A rollback names the exact installed artifact the base registry judged. An
+                // upload can repair that file with different bytes, so its old verdict cannot
+                // reject the replacement candidate.
+                _ if operation == "rollback" => rows
+                    .skipped()
+                    .into_iter()
+                    .find(|row| row.file == file && row.name == manifest.name)
+                    .map(|row| row.reason),
+                _ => None,
+            };
+            if let Some(reason) = refused_reason {
+                return Err(AdminError::Conflict(format!("plugin {operation} would make Store overlay bootstrap dependency '{}' unavailable under the operator's base trust policy: {reason}. Keep an admitted bootstrap version, or deliberately change the base config.yaml Store/trust/floor configuration and reload or restart before this change; an unread Store-owned version pin cannot authorize opening that same Store", manifest.name)));
+            }
+        }
+        Ok(())
     }
 
     /// `GET /api/v1/admin/config` — the EFFECTIVE running config, composed from the same redacted reads as

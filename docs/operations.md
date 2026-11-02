@@ -67,7 +67,9 @@ config:
 - The operator's base `store:` is the overlay anchor for the deployment. Boot validates the base
   inputs, initializes its connector with base transport settings, opens that Store and recovers the
   complete overlay before opening effective hooks, planes or exporters. The recovered destination
-  and security settings apply before those effective plugins open. An unavailable, incomplete,
+  and security policy, framer settings, pool settings and listener self-dial protection are finalized
+  before those effective plugins open. Existing anchor connections retain custody throughout.
+  An unavailable, incomplete,
   corrupt or newer Store overlay refuses recovery; `--safe-mode` explicitly quarantines it and
   starts from base inputs without deleting Store records. `--validate` reads operator inputs only
   and never opens or probes a Store.
@@ -85,6 +87,11 @@ config:
   explicit successful reload before this process can mutate config again; ordinary diagnostic reads
   cannot refresh that authority. A failed rebuild leaves the old generation serving and quarantined
   from further mutations when its Store head has changed.
+- The anchor Store and secret modules needed to open it must satisfy the operator's base trust
+  policy before their Store-owned version pins can be read. A plugin rollback that would make one
+  of those bootstrap dependencies unavailable is refused before persisting its pin. Keep an
+  admitted bootstrap version or deliberately change the base Store/trust/floor configuration first.
+  Other plugin pins are recovered before the complete application's plugin validation.
 
 **Worker threads and scaling.** Busbar's request path is CPU-bound (parse, translate, serialize), so
 throughput scales with data-plane workers. Since 1.6.0, `advanced.worker_threads` is the **data-plane

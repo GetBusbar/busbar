@@ -6,6 +6,8 @@
 use super::*;
 use busbar_kernel::config::{migrated_store_module, HookCfg, HookKind, PromptAccess, UserAccess};
 
+#[path = "bootstrap_rollback.rs"]
+mod bootstrap_rollback;
 #[path = "usage_adjustment_range.rs"]
 mod usage_adjustment_range;
 
@@ -286,6 +288,12 @@ fn fake_tarball_with(
 }
 
 impl DirAdmission {
+    fn rollback_only(bytes: &[u8]) -> bool {
+        bytes
+            .strip_prefix(FAKE_HEAD)
+            .and_then(|json| serde_json::from_slice::<serde_json::Value>(json).ok())
+            .is_some_and(|value| value["trust"].as_str() == Some("rollback-only"))
+    }
     /// What `bytes` state and the verdict on them.
     fn read(bytes: &[u8]) -> Result<(Stated, Judged), String> {
         let json = bytes
@@ -308,6 +316,9 @@ impl DirAdmission {
                 publisher: stated.publisher.clone(),
             },
             Some("allowed") => Judged::Allowed,
+            Some("rollback-only") => Judged::Rejected {
+                reason: "operator bootstrap floor rejects this test target".into(),
+            },
             _ => Judged::Rejected {
                 reason: "unsigned plugin (set plugins.trust.allow_unsigned)".to_string(),
             },
@@ -398,10 +409,17 @@ impl PluginAdmission for DirAdmission {
         _dir: &std::path::Path,
         _file: &str,
         tarball: &[u8],
-        _cfg: &busbar_kernel::config::PluginsCfg,
+        cfg: &busbar_kernel::config::PluginsCfg,
     ) -> Result<Admitted, Refusal> {
-        let (stated, judged) = Self::read(tarball)
+        let (stated, mut judged) = Self::read(tarball)
             .map_err(|e| Refusal::Validation(format!("invalid plugin tarball: {e}")))?;
+        if Self::rollback_only(tarball)
+            && cfg.min_versions.get(&stated.name) == Some(&stated.version)
+        {
+            judged = Judged::Trusted {
+                publisher: stated.publisher.clone(),
+            };
+        }
         if let Judged::Rejected { reason } = judged {
             return Err(Refusal::Conflict(format!(
                 "plugin rejected by the trust policy: {reason}"
@@ -417,9 +435,18 @@ impl PluginAdmission for DirAdmission {
     fn inspect(
         &self,
         tarball: &[u8],
-        _cfg: &busbar_kernel::config::PluginsCfg,
+        cfg: &busbar_kernel::config::PluginsCfg,
     ) -> Result<(Stated, Judged), Refusal> {
-        Self::read(tarball).map_err(|e| Refusal::Validation(format!("invalid plugin tarball: {e}")))
+        let (stated, mut judged) = Self::read(tarball)
+            .map_err(|e| Refusal::Validation(format!("invalid plugin tarball: {e}")))?;
+        if Self::rollback_only(tarball)
+            && cfg.min_versions.get(&stated.name) == Some(&stated.version)
+        {
+            judged = Judged::Trusted {
+                publisher: stated.publisher.clone(),
+            };
+        }
+        Ok((stated, judged))
     }
 
     fn rollback_target(
@@ -430,6 +457,7 @@ impl PluginAdmission for DirAdmission {
     ) -> Result<Stated, Refusal> {
         match Self::read(bytes) {
             Ok((stated, Judged::Trusted { .. } | Judged::Allowed)) => Ok(stated),
+            Ok((stated, _)) if Self::rollback_only(bytes) => Ok(stated),
             Ok((stated, Judged::Rejected { reason })) => Err(Refusal::Conflict(format!(
                 "rollback target `{file}` is not loadable under the trust policy even with the \
                  floor lowered to its own version {}: {reason}",
