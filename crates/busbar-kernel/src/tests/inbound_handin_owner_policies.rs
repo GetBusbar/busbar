@@ -76,73 +76,33 @@ fn handin_names_exactly_the_declared_line_and_the_lists_matched_method_and_path(
 fn an_auth_line_needs_a_fixed_identity_and_a_none_line_needs_no_auth_verdict() {
     let list = guests();
     let h = handin(head("/v1/messages", &[], None));
-    let line = &list.lines()[0];
-    for fixed in [None, Some(Fixed::Denied), Some(Fixed::Overloaded)] {
-        assert!(!handin_state_admits(
-            line,
-            &h,
-            0,
-            3,
-            false,
-            None,
-            &[],
-            fixed
+    assert!(matches!(list.lines()[0].auth, LineAuth::Chain(..)));
+    let providers = ["actual-auth".to_owned()];
+    for answer in [None, Some(Judged::Denied), Some(Judged::Overloaded)] {
+        assert!(!matches!(
+            fixed_answer_at(&[answer], &providers, &HashSet::new(), false),
+            Some(Fixed::Admitted(_))
         ));
     }
-    assert!(handin_state_admits(
-        line,
-        &h,
-        0,
-        3,
-        false,
-        None,
-        &[],
+    assert!(matches!(
+        fixed_answer_at(
+            &[Some(Judged::Identity)],
+            &providers,
+            &HashSet::new(),
+            false
+        ),
         Some(Fixed::Admitted(0))
     ));
-    assert!(!handin_state_admits(
-        line,
-        &h,
-        1,
-        3,
-        false,
-        None,
-        &[],
-        Some(Fixed::Admitted(0))
-    ));
-    assert!(!handin_state_admits(
-        line,
-        &h,
-        0,
-        4,
-        false,
-        None,
-        &[],
-        Some(Fixed::Admitted(0))
-    ));
-    assert!(!handin_state_admits(
-        line,
-        &h,
-        0,
-        3,
-        true,
-        None,
-        &[],
-        Some(Fixed::Admitted(0))
-    ));
+    assert!(handin_state_matches(0, 3, false, None, &[], &h));
+    assert!(!handin_state_matches(1, 3, false, None, &[], &h));
+    assert!(!handin_state_matches(0, 4, false, None, &[], &h));
+    assert!(!handin_state_matches(0, 3, true, None, &[], &h));
     let mut open = handin(head("/healthz", &[], None));
     open.head.method = "GET".into();
     open.line = 1;
     assert!(matched_handin_line(&list, Some(1), 1, &open.head).is_some());
-    assert!(handin_state_admits(
-        &list.lines()[1],
-        &open,
-        1,
-        3,
-        false,
-        None,
-        &[],
-        None
-    ));
+    assert!(matches!(list.lines()[1].auth, LineAuth::None));
+    assert!(handin_state_matches(1, 3, false, None, &[], &open));
 }
 
 #[test]
@@ -158,26 +118,11 @@ fn declared_credentials_must_be_absent_and_query_names_remain_case_sensitive() {
         ),
     ] {
         assert_eq!(still_present(&strips, &h), present);
-        let list = guests();
-        assert_eq!(
-            handin_state_admits(
-                &list.lines()[0],
-                &handin(h),
-                0,
-                3,
-                false,
-                None,
-                &strips,
-                Some(Fixed::Admitted(0))
-            ),
-            !present
-        );
     }
 }
 
 #[test]
 fn handin_preserves_the_original_sanitized_request_bytes() {
-    let list = guests();
     let original = head(
         "/v1/messages",
         &[("authorization", "credential"), ("x-safe", "kept")],
@@ -185,26 +130,23 @@ fn handin_preserves_the_original_sanitized_request_bytes() {
     );
     let strips = [Strip::field("authorization"), Strip::query("key")];
     let sanitized = original.stripped(&strips).unwrap();
-    assert!(handin_state_admits(
-        &list.lines()[0],
-        &handin(sanitized.clone()),
+    assert!(handin_state_matches(
         0,
         3,
         false,
         Some(&original),
         &strips,
-        Some(Fixed::Admitted(0))
+        &handin(sanitized.clone())
     ));
+    assert!(!still_present(&strips, &sanitized));
     let mut changed = sanitized;
     changed.fields[0].1 = b"changed".to_vec();
-    assert!(!handin_state_admits(
-        &list.lines()[0],
-        &handin(changed),
+    assert!(!handin_state_matches(
         0,
         3,
         false,
         Some(&original),
         &strips,
-        Some(Fixed::Admitted(0))
+        &handin(changed)
     ));
 }
