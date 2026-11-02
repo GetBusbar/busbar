@@ -18,19 +18,17 @@
 //!   [`DIAG_OPID_CONFLICT`](crate::abi::store::DIAG_OPID_CONFLICT).
 //!
 //! ERROR TEXT. A FAILED or REFUSED answer's `error` points at text the instance keeps in a
-//! bounded ring of the last [`TEXT_RING`] texts; the host copies it when the op returns.
+//! reply owned by that ticket; another ticket never evicts it. The host copies it as the op returns.
 //!
-//! NO ALLOCATION ON THE REQUEST PATH (THE DESIGN, the memory ABI: "Zero allocation on the READY path"):
-//! the door's own work on a request-path slot touches no heap. Rows are written straight from
-//! the store's answer into the host's buffers; a refusal is a fixed text, or one rendered into a
-//! fixed buffer; a store's failure text is moved into the ring, never copied; and the ring is
-//! sized once, at `open`.
+//! REQUEST-PATH RESULTS (THE DESIGN, the memory ABI's host-buffer rule):
+//! rows are written straight from the store's answer into the host's buffers. Returned text is
+//! boxed in its reply so even an inline rendered refusal cannot move while the host reads it.
+//! Reply-table capacities are reused as host ticket slots are recycled.
 
 use std::any::Any;
-use std::collections::VecDeque;
+use std::cell::RefCell;
 use std::fmt::Write as _;
 use std::marker::PhantomData;
-use std::sync::Mutex;
 
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -45,6 +43,7 @@ use crate::abi::mechanism::ticket::Ticket;
 use crate::abi::sdk::conn::Host;
 use crate::abi::sdk::door::abi_str;
 use crate::abi::sdk::life::{Held, Life, Opening, Refreshed, Refusal};
+use crate::abi::sdk::out::{Replies, ReplyKey};
 use crate::abi::sdk::{HostBuf, Instance, Lent, Out, SafeSlot};
 use crate::abi::store::{
     AddUsageBatchIn, AppendPlaneRecordIn, BlobIn, CountOut, GetPlaneRecordIn, HostBytesOut,
@@ -62,7 +61,7 @@ use crate::records::{
     UsageDelta, UsageLedger, VirtualKey,
 };
 
-/// How many error texts one instance keeps alive for the host to copy.
+/// The former FIFO size, retained for source compatibility; it is no longer an eviction policy.
 pub const TEXT_RING: usize = 4096;
 
 /// The diagnostic ids a store's Statement declares, in `Diag::id_idx` order.
@@ -200,7 +199,7 @@ impl Text {
 /// DESIGN, the one kind-neutral SDK lifecycle: "a kind's local copy is deleted when it is ported").
 pub struct Served<B> {
     store: B,
-    texts: Mutex<VecDeque<Text>>,
+    texts: Replies<Vec<Box<Text>>>,
     /// The read buffers this instance's wire ops reuse.
     reads: super::wire::ReadBufs,
 }
@@ -215,8 +214,7 @@ impl<B: StoreSlots> Served<B> {
     fn new(store: B) -> Self {
         Self {
             store,
-            // Sized here, once: keeping a text never grows the ring.
-            texts: Mutex::new(VecDeque::with_capacity(TEXT_RING)),
+            texts: Replies::default(),
             reads: super::wire::ReadBufs::default(),
         }
     }
@@ -225,35 +223,36 @@ impl<B: StoreSlots> Served<B> {
     pub fn store(&self) -> &B {
         &self.store
     }
-
-    /// Keep `text` alive in the ring, cut to [`MAX_TEXT`] on a
-    /// character boundary, and answer it as an [`AbiStr`]. Allocates nothing: an owned text is
-    /// moved in, and the ring never grows past the capacity it was opened with.
-    fn text(&self, text: Text) -> AbiStr {
-        let text = match text {
-            Text::Owned(mut t) => {
-                let mut end = t.len().min(MAX_TEXT);
-                while !t.is_char_boundary(end) {
-                    end -= 1;
-                }
-                t.truncate(end);
-                Text::Owned(t)
-            }
-            rendered @ Text::Rendered(_) => rendered,
-        };
-        let mut ring = self.texts.lock().unwrap_or_else(|p| p.into_inner());
-        if ring.len() == TEXT_RING {
-            ring.pop_front();
-        }
-        ring.push_back(text);
-        // A rendered text lives in the ring's own slot, which stays put until it is overwritten.
-        let kept = ring.back().map_or("", Text::as_str);
-        AbiStr {
-            ptr: kept.as_ptr(),
-            len: kept.len(),
-        }
-    }
 }
+
+/// Keep `text` in this crossing's owned reply, cut to [`MAX_TEXT`] on a character boundary.
+fn reply_text(text: Text, held: &RefCell<Vec<Box<Text>>>) -> AbiStr {
+    let text = match text {
+        Text::Owned(mut t) => {
+            let mut end = t.len().min(MAX_TEXT);
+            while !t.is_char_boundary(end) {
+                end -= 1;
+            }
+            t.truncate(end);
+            Text::Owned(t)
+        }
+        rendered @ Text::Rendered(_) => rendered,
+    };
+    // Box even an inline rendered text: growing this answer's list must not move bytes
+    // already named in its output.
+    let text = Box::new(text);
+    let kept = text.as_str();
+    let named = AbiStr {
+        ptr: kept.as_ptr(),
+        len: kept.len(),
+    };
+    held.borrow_mut().push(text);
+    named
+}
+
+#[cfg(test)]
+#[path = "../tests/store_reply_retention_tests.rs"]
+mod reply_tests;
 
 /// THE STORE'S LIFECYCLE is the SDK's one ([`Life`]): `validate` is the store's own parse, a
 /// `refresh` is refused naming the restart (a store holds its settings for its lifetime; a reload
@@ -334,23 +333,36 @@ pub const REFRESH_REFUSAL: &str =
     "a store applies changed settings only when it is opened anew: restart busbar (or reload the \
      store) to apply them";
 
-/// What a store slot reads its instance through: the backend, the store's error-text ring and the
+/// What a store slot reads its instance through: the backend, its ticket's owned error texts and the
 /// SDK's one lease table, all held by the instance's [`Held`].
 struct Door<'a, B> {
     store: &'a B,
     held: &'a Held<Served<B>>,
+    reply: ReplyKey,
+    texts: RefCell<Vec<Box<Text>>>,
 }
 
 impl<'a, B: StoreSlots> Door<'a, B> {
-    fn of(held: &'a Held<Served<B>>) -> Self {
+    fn of(held: &'a Held<Served<B>>, ticket: Ticket) -> Self {
+        let reply = ReplyKey::of(ticket);
+        // This is the next crossing for this ticket (or actual unticketed thread). A recycled
+        // host slot has no live operation or unconsumed answer from its preceding generation.
+        let mut texts = held.life().texts.take(reply).unwrap_or_default();
+        texts.clear();
         Self {
             store: &held.life().store,
             held,
+            reply,
+            texts: RefCell::new(texts),
         }
     }
 
     fn text(&self, text: Text) -> AbiStr {
-        self.held.life().text(text)
+        reply_text(text, &self.texts)
+    }
+
+    fn keep_reply(&self) {
+        self.held.life().texts.insert(self.reply, self.texts.take());
     }
 
     fn record_transaction_supported(&self) -> bool {
@@ -443,7 +455,7 @@ fn op_finish<B: StoreSlots>(
     answer
 }
 
-/// FAILED with the store's own text, moved into the ring.
+/// FAILED with the store's own text, moved into this ticket's reply.
 fn failed<B: StoreSlots>(s: &Door<'_, B>, out: &mut impl Head, text: String) -> Outcome {
     out.head().error = s.text(Text::Owned(text));
     Outcome::Failed
@@ -726,13 +738,15 @@ macro_rules! slot {
                 let Some(mut cx) = op_enter(&instance, held) else {
                     return Outcome::Fault;
                 };
-                let $s = &Door::of(held);
+                let $s = &Door::of(held, instance.ticket());
                 let answer = {
                     let $o: &mut $out = out.raw();
                     let $cx: &mut Op<'_> = &mut cx;
                     (|| -> Outcome { $body })()
                 };
-                op_finish(&instance, cx, answer, Head::head(out.raw()))
+                let answer = op_finish(&instance, cx, answer, Head::head(out.raw()));
+                $s.keep_reply();
+                answer
             }
         }
     };

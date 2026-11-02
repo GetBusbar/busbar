@@ -233,6 +233,10 @@ fn a_failure_names_its_text_where_its_instance_keeps_it() {
     let mut o: CancelOut = zeroed();
     let answered =
         Out::kept(&mut o, &kept, &reporting, holders()).fail(Refusal::failed(String::from("no")));
+    kept.keep(
+        ReplyKey::of(Ticket::NONE),
+        reporting.take().expect("owned reply"),
+    );
     assert_eq!(answered, Outcome::Failed);
     assert_eq!(read(o.head.error), b"no");
     assert_eq!(kept.held(), (1, 0), "the instance holds the text");
@@ -245,29 +249,102 @@ fn a_failure_names_its_text_where_its_instance_keeps_it() {
 }
 
 #[test]
-fn the_instance_keeps_a_bounded_ring_of_texts_each_readable_while_held() {
+fn unrelated_tickets_cannot_evict_owned_texts_and_one_reply_keeps_all_of_its_texts() {
     let kept = Kept::default();
+    let first_key = ReplyKey::of(Ticket {
+        slot: 1,
+        generation: 1,
+    });
+    let other_key = ReplyKey::of(Ticket {
+        slot: 2,
+        generation: 1,
+    });
     let reporting: Reporting = std::cell::Cell::new(None);
     let mut first: CancelOut = zeroed();
     let _ = Out::kept(&mut first, &kept, &reporting, holders())
         .fail(Refusal::failed(String::from("first")));
-    for i in 0..KEPT_RING - 1 {
+    kept.keep(first_key, reporting.take().expect("first reply"));
+    for i in 0..=KEPT_RING {
+        let reporting = std::cell::Cell::new(kept.begin(other_key));
         let mut o: CancelOut = zeroed();
         let _ =
             Out::kept(&mut o, &kept, &reporting, holders()).fail(Refusal::failed(format!("n{i}")));
+        kept.keep(other_key, reporting.take().expect("other reply"));
     }
+    // Inspect current owners, never a saved pointer that a broken implementation freed.
     assert_eq!(
-        read(first.head.error),
-        b"first",
-        "held until the ring wraps"
+        kept.replies.with(first_key, |r| r.owned[0].to_string()),
+        Some("first".into())
     );
-    let mut o: CancelOut = zeroed();
-    let _ =
-        Out::kept(&mut o, &kept, &reporting, holders()).fail(Refusal::failed(String::from("wrap")));
     assert_eq!(
         kept.held().0,
-        KEPT_RING,
-        "the ring never grows past its bound"
+        2,
+        "storage follows live host slots, not completed calls"
+    );
+    let reporting = std::cell::Cell::new(kept.begin(first_key));
+    let mut o: CancelOut = zeroed();
+    let mut out = Out::kept(&mut o, &kept, &reporting, holders());
+    out.reason(String::from("one"));
+    out.reason(String::from("two"));
+    kept.keep(first_key, reporting.take().unwrap());
+    assert_eq!(
+        kept.replies.with(first_key, |r| r
+            .owned
+            .iter()
+            .map(|s| s.to_string())
+            .collect::<Vec<_>>()),
+        Some(vec!["one".into(), "two".into()])
+    );
+    let recycled = ReplyKey::of(Ticket {
+        slot: 1,
+        generation: 2,
+    });
+    let _retired = kept.begin(recycled);
+    assert!(
+        kept.replies.with(first_key, |_| ()).is_none(),
+        "a recycled slot never aliases the old generation"
+    );
+}
+
+#[test]
+fn retired_reply_owners_are_dropped_after_the_table_unlocks() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    struct Probe {
+        table: Weak<Replies<Probe>>,
+        outside: Arc<AtomicBool>,
+    }
+    impl Drop for Probe {
+        fn drop(&mut self) {
+            if let Some(table) = self.table.upgrade() {
+                self.outside
+                    .store(table.0.try_lock().is_ok(), Ordering::SeqCst);
+            }
+        }
+    }
+    let table: Arc<Replies<Probe>> = Arc::new(Replies::default());
+    let outside = Arc::new(AtomicBool::new(false));
+    let key = ReplyKey::of(Ticket {
+        slot: 1,
+        generation: 1,
+    });
+    for _ in 0..2 {
+        table.insert(
+            key,
+            Probe {
+                table: Arc::downgrade(&table),
+                outside: Arc::clone(&outside),
+            },
+        );
+    }
+    assert!(
+        outside.load(Ordering::SeqCst),
+        "a destructor can re-enter the reply table"
+    );
+    outside.store(false, Ordering::SeqCst);
+    drop(table.take(key));
+    assert!(
+        outside.load(Ordering::SeqCst),
+        "detached replies also drop after unlocking"
     );
 }
 
@@ -325,8 +402,11 @@ fn a_body_reports_metrics_and_declared_diagnostics_in_its_envelope() {
     let env = o.head.envelope;
     assert_eq!((env.metrics_len, env.diags_len), (2, 1));
     // The call returns: its envelope goes to the instance, which keeps it.
-    kept.keep(reporting.take().expect("the call reported"));
-    // SAFETY: the instance's envelope, kept until KEPT_RING newer ones.
+    kept.keep(
+        ReplyKey::of(Ticket::NONE),
+        reporting.take().expect("the call reported"),
+    );
+    // SAFETY: the instance still owns this reply; this fixture has not begun its next crossing.
     let (m, d) = unsafe { (std::slice::from_raw_parts(env.metrics, 2), &*env.diags) };
     assert_eq!(
         (m[0].family_idx, m[0].kind, m[0].value),

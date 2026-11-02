@@ -989,6 +989,12 @@ mod door {
     /// expands for a plugin's own image.
     struct TestCapture;
     impl busbar_contract::abi::sdk::capture::CaptureHome for TestCapture {
+        fn retention() -> &'static busbar_contract::abi::sdk::capture::CaptureRetention {
+            static RETENTION: std::sync::OnceLock<
+                busbar_contract::abi::sdk::capture::CaptureRetention,
+            > = std::sync::OnceLock::new();
+            RETENTION.get_or_init(Default::default)
+        }
         fn with<R>(f: impl FnOnce(&mut busbar_contract::abi::sdk::capture::CaptureSlot) -> R) -> R {
             thread_local! {
                 static SLOT: std::cell::RefCell<busbar_contract::abi::sdk::capture::CaptureSlot> =
