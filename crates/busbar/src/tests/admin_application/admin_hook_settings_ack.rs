@@ -80,7 +80,8 @@ async fn test_admin_v1_hook_settings_patch_commit_on_ack_and_schema() {
         busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
     );
     manifest.statement = Some(hex::encode(statement));
-    let directory = plugins::scratch("test_admin_v1_hook_settings_patch_commit_on_ack_and_schema-actual-store");
+    let directory =
+        plugins::scratch("test_admin_v1_hook_settings_patch_commit_on_ack_and_schema-actual-store");
     let archive = plugins::signed(
         &crate::dist_root_install::release_key(),
         manifest,
@@ -213,7 +214,10 @@ async fn test_admin_v1_hook_settings_patch_commit_on_ack_and_schema() {
     let patched = admin(client.patch(format!(
         "http://{addr}/api/v1/admin/hooks/cfg-hook/settings"
     )))
-    .body(serde_json::json!({"settings": {"url": "http://127.0.0.1:1/", "timeout_ms": 40}}).to_string())
+    .body(
+        serde_json::json!({"settings": {"url": "http://127.0.0.1:1/", "timeout_ms": 40}})
+            .to_string(),
+    )
     .send()
     .await
     .unwrap();
