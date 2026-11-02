@@ -132,7 +132,7 @@ fn reply_extensions(out: &FieldsOut) -> &[u8] {
 fn outbound_lend_keeps_secure_requirement_and_all_request_facts() {
     let (auth, request, handle) = fixture();
     let plugin = &*auth.plugin;
-    let mut lend = Lend::new(request.clone(), 4096, 16);
+    let mut lend = Lend::new(super::copy(&request), 4096, 16);
     let mut expected_extensions = extensions::encode(&[(EXT_SEALED_FIELDS, SEALED_FIELDS_V1)]);
     expected_extensions.extend_from_slice(&request.extensions.clone());
     assert_eq!(lend.request.extensions, expected_extensions);
@@ -182,7 +182,7 @@ fn outbound_lend_without_valid_custody_refuses_before_any_credential_write() {
     let (auth, request, handle) = fixture();
     let plugin = &*auth.plugin;
     for version in [None, Some(&b"1"[..]), Some(&[0][..]), Some(&[1, 0][..])] {
-        let mut lend = Lend::new(request.clone(), 4096, 16);
+        let mut lend = Lend::new(super::copy(&request), 4096, 16);
 
         lend.request.extensions =
             version.map_or_else(Vec::new, |v| extensions::encode(&[(EXT_SEALED_FIELDS, v)]));
