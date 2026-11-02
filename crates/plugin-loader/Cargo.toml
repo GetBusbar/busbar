@@ -18,6 +18,11 @@ name = "busbar-plugin-pack"
 path = "src/pack.rs"
 required-features = ["pack"]
 
+[[test]]
+name = "c_abi"
+path = "tests/c_abi.rs"
+test = false
+
 [[example]]
 name = "dispatch_test_plugin"
 path = "tests/fixtures/dispatch_test_plugin.rs"
