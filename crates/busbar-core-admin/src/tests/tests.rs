@@ -19,11 +19,6 @@ mod price_activation_tests;
 #[path = "config_boundary_tests.rs"]
 mod config_boundary_tests;
 
-const OAS_OPERATION_STATUSES: &str =
-    include_str!("../../tests/fixtures/openapi_operation_statuses_key.txt").trim_ascii();
-
-const LOCKED_CONFIG_MUTATION_MESSAGE: &str = "config mutation refused: this busbar has no writable Store-backed config overlay; edit config.yaml and reload a locked deployment";
-
 fn gov_with_signer(
     store: Arc<dyn busbar_kernel::governance::RecordStore>,
     admin_token: Option<String>,
@@ -94,138 +89,8 @@ async fn serve_with_gov(gov: Arc<GovState>) -> (std::net::SocketAddr, tokio::tas
     (addr, handle)
 }
 
-struct CachingDoor(std::sync::atomic::AtomicUsize);
-
-const FLUSHED: u64 = 3;
-
-struct Passed;
-
-impl std::future::Future for Passed {
-    type Output = busbar_contract::auth_calls::VerifyAnswer;
-    fn poll(
-        self: std::pin::Pin<&mut Self>,
-        _: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Self::Output> {
-        std::task::Poll::Ready(busbar_contract::auth_calls::Verified::Pass.into())
-    }
-}
-
-impl busbar_contract::auth_calls::Verifying for Passed {
-    fn settled(&mut self) -> Option<busbar_contract::auth_calls::VerifyAnswer> {
-        Some(busbar_contract::auth_calls::Verified::Pass.into())
-    }
-}
-
-impl busbar_contract::auth_calls::AuthCalls for CachingDoor {
-    fn name(&self) -> &str {
-        "caching-door"
-    }
-    fn facts(&self) -> u32 {
-        0
-    }
-    fn verify_now(
-        &self,
-        _: &busbar_contract::auth_calls::VerifyRequest,
-    ) -> Option<busbar_contract::auth_calls::VerifyAnswer> {
-        Some(busbar_contract::auth_calls::Verified::Pass.into())
-    }
-    fn verify(
-        &self,
-        _: busbar_contract::auth_calls::VerifyRequest,
-    ) -> Box<dyn busbar_contract::auth_calls::Verifying> {
-        Box::new(Passed)
-    }
-    fn refresh(&self) -> Result<u64, String> {
-        self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        Ok(FLUSHED)
-    }
-}
-
-#[tokio::test]
-async fn test_admin_v1_credential_cache_and_flush_endpoint() {
-    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
-    let store = Arc::new(MemoryStore::new());
-    let gov = gov_with_signer(store, Some("admintok".to_string()));
-    let door = Arc::new(CachingDoor(std::sync::atomic::AtomicUsize::new(0)));
-
-    let operator = busbar_kernel::config::operator_provider();
-    let mut app = crate::new_test_app()
-        .governance(gov)
-        .admin_door("ext-idp", door.clone())
-        .build();
-    {
-        let inner = Arc::get_mut(&mut app).expect("sole owner");
-        inner.admin_chain = vec![
-            "test-scope-module".to_string(),
-            "ext-idp".to_string(),
-            operator.to_string(),
-        ];
-        let mut table = std::collections::BTreeMap::new();
-        table.insert(
-            "viewers".to_string(),
-            busbar_kernel::config::RoleBindingCfg {
-                admin_scope: Some("read-only".to_string()),
-                ..Default::default()
-            },
-        );
-        inner
-            .role_bindings
-            .insert("test-scope-module".to_string(), table);
-    }
-    let router = crate::build_router(app);
-    let (addr, handle, client) = spin_up(router).await;
-    let flush = |token: &'static str, body: Option<serde_json::Value>| {
-        let mut r = client
-            .post(format!("http://{addr}/api/v1/admin/auth/cache/flush"))
-            .header("x-admin-token", token);
-        if let Some(body) = body {
-            r = r
-                .header("content-type", "application/json")
-                .body(body.to_string());
-        }
-        r.send()
-    };
-
-    let r = flush("grp:viewers", None).await.unwrap();
-    assert_eq!(r.status().as_u16(), 403, "flush is a full-scope mutation");
-    assert_eq!(door.0.load(std::sync::atomic::Ordering::SeqCst), 0);
-
-    let r = flush("admintok", Some(serde_json::json!({"module": "ext-idp"})))
-        .await
-        .unwrap();
-    assert_eq!(r.status().as_u16(), 200);
-    let body: serde_json::Value = r.json().await.unwrap();
-    assert_eq!(
-        body["flushed"], FLUSHED,
-        "what the plugin reported dropping"
-    );
-    assert_eq!(door.0.load(std::sync::atomic::Ordering::SeqCst), 1);
-
-    let r = flush("admintok", Some(serde_json::json!({"module": operator})))
-        .await
-        .unwrap();
-    let body: serde_json::Value = r.json().await.unwrap();
-    assert_eq!(body["flushed"], 0);
-    assert_eq!(door.0.load(std::sync::atomic::Ordering::SeqCst), 1);
-
-    let r = flush("admintok", None).await.unwrap();
-    assert_eq!(r.status().as_u16(), 200);
-    let body: serde_json::Value = r.json().await.unwrap();
-    assert_eq!(body["flushed"], FLUSHED);
-    assert_eq!(door.0.load(std::sync::atomic::Ordering::SeqCst), 2);
-
-    let r = client
-        .post(format!("http://{addr}/api/v1/admin/auth/cache/flush"))
-        .header("x-admin-token", "admintok")
-        .header("content-type", "application/json")
-        .body("{\"module\": 7}")
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(r.status().as_u16(), 400);
-
-    handle.abort();
-}
+// Credential cache HTTP controls now run against the real OIDC product in
+// busbar/src/tests/admin_application/admin_credential_cache.rs.
 
 fn write_reset_fixture(tag: &str) -> (std::path::PathBuf, std::path::PathBuf, std::path::PathBuf) {
     let dir = std::env::temp_dir().join(format!(
