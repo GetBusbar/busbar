@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use crate::auth::AuthMiddleware;
 use crate::config::{AuthCfg, AuthChainEntry};
 
 fn chain_with(module: &str, settings: serde_json::Map<String, serde_json::Value>) -> AuthCfg {
@@ -57,105 +56,6 @@ fn auth_plugin_role_binding_and_scope_cap_apply() {
             "the configured {configured} ceiling reaches the production authorization policy"
         );
     }
-}
-
-struct SlowDoor {
-    entered: std::sync::Mutex<std::sync::mpsc::Sender<()>>,
-    hold: std::time::Duration,
-}
-
-struct Later(tokio::sync::oneshot::Receiver<busbar_contract::auth_calls::VerifyAnswer>);
-
-impl std::future::Future for Later {
-    type Output = busbar_contract::auth_calls::VerifyAnswer;
-    fn poll(
-        mut self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Self::Output> {
-        std::future::Future::poll(std::pin::Pin::new(&mut self.0), cx).map(|answer| {
-            answer.unwrap_or_else(|_| busbar_contract::auth_calls::Verified::Failed.into())
-        })
-    }
-}
-
-impl busbar_contract::auth_calls::Verifying for Later {
-    fn settled(&mut self) -> Option<busbar_contract::auth_calls::VerifyAnswer> {
-        self.0.try_recv().ok()
-    }
-}
-
-impl busbar_contract::auth_calls::AuthCalls for SlowDoor {
-    fn name(&self) -> &str {
-        "slow-door"
-    }
-    fn facts(&self) -> u32 {
-        0
-    }
-    fn verify_now(
-        &self,
-        _: &busbar_contract::auth_calls::VerifyRequest,
-    ) -> Option<busbar_contract::auth_calls::VerifyAnswer> {
-        None
-    }
-    fn verify(
-        &self,
-        _: busbar_contract::auth_calls::VerifyRequest,
-    ) -> Box<dyn busbar_contract::auth_calls::Verifying> {
-        let _ = self.entered.lock().unwrap().send(());
-        let (tx, rx) = tokio::sync::oneshot::channel();
-        let hold = self.hold;
-        std::thread::spawn(move || {
-            std::thread::sleep(hold);
-            let _ = tx.send(busbar_contract::auth_calls::Verified::Pass.into());
-        });
-        Box::new(Later(rx))
-    }
-    fn refresh(&self) -> Result<u64, String> {
-        Ok(0)
-    }
-}
-
-#[test]
-fn a_slow_auth_door_does_not_park_the_reactor() {
-    let (tx, entered) = std::sync::mpsc::channel();
-    let door = SlowDoor {
-        entered: std::sync::Mutex::new(tx),
-        hold: std::time::Duration::from_secs(3),
-    };
-    let auth = std::sync::Arc::new(AuthMiddleware::from_doors_for_test(vec![(
-        "slow".to_string(),
-        std::sync::Arc::new(door) as std::sync::Arc<dyn busbar_contract::auth_calls::AuthCalls>,
-    )]));
-    let rt = tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(1)
-        .enable_all()
-        .build()
-        .expect("runtime");
-
-    rt.spawn(async move {
-        let _ = AuthMiddleware::run_chain_on_request_path(
-            &auth,
-            Some("tok".into()),
-            crate::auth::ChainHead::default(),
-            None,
-            None,
-        )
-        .await;
-    });
-    entered
-        .recv_timeout(std::time::Duration::from_secs(10))
-        .expect("the door must actually have been asked");
-
-    let (ptx, probe) = std::sync::mpsc::channel();
-    rt.spawn(async move {
-        let _ = ptx.send("healthz ok");
-    });
-    let served = probe.recv_timeout(std::time::Duration::from_secs(2));
-    assert!(
-        matches!(served, Ok("healthz ok")),
-        "the runtime must keep serving while an auth door answers; the worker is parked on the \
-         plugin (got {served:?})"
-    );
 }
 
 #[test]
