@@ -1293,11 +1293,8 @@ fn a_composed_dial_keeps_all_begin_batches_before_and_after_its_description() {
             (3, b"channel".to_vec(), 0),
         ]));
         let sink = Arc::new(Sink::default());
-        let pairing = super::Pairing::with_memory_limit(
-            sink.clone(),
-            p("127.0.0.1:3478"),
-            Some(usize::MAX),
-        );
+        let pairing =
+            super::Pairing::with_memory_limit(sink.clone(), p("127.0.0.1:3478"), Some(usize::MAX));
         pairing.sort(
             super::Leg::Caller,
             vec![got(10, b"kind: audio\r\n", true)],
@@ -1360,11 +1357,8 @@ fn closing_a_composed_dial_retires_unread_begin_output_before_the_exchange_answe
             (3, b"unread".to_vec(), 0),
         ]));
         let sink = Arc::new(Sink::default());
-        let pairing = super::Pairing::with_memory_limit(
-            sink.clone(),
-            p("127.0.0.1:3478"),
-            Some(usize::MAX),
-        );
+        let pairing =
+            super::Pairing::with_memory_limit(sink.clone(), p("127.0.0.1:3478"), Some(usize::MAX));
         c.pair(7, Arc::clone(&pairing)).unwrap();
         let conn = open_unit(&c, 7).unwrap();
         assert!(pairing.memory_account().used() > 0);
