@@ -6,15 +6,26 @@
 use super::super::{HookInstance, State, QUARANTINE_FIRST, QUARANTINE_MAX};
 use super::*;
 use crate::dispatch::kinds::hook::Hook;
-use crate::dispatch::{ConnTable, NoSink, Plugin};
+use crate::dispatch::{Budgets, ConnTable, NoSink, Plugin};
 use busbar_contract::abi::mechanism::call::Outcome;
 use busbar_contract::hook_calls::HookCalls;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
 
-fn panicking_instance() -> (HookInstance, Arc<AtomicUsize>) {
-    let axis = rows(hook_door_plugin::panicking::door, "hook_door", Way::Linked);
-    let candidate = axis.find(PANICKING_NAME).unwrap().clone();
+fn watchdog_faulting_instance() -> (HookInstance, Arc<AtomicUsize>) {
+    // A real slow serving crossing breaches the host watchdog. An SDK-caught panic merely
+    // returns FAULT and does not, by itself, meet the dispatcher's quarantine policy.
+    let dispatcher = Arc::new(Dispatcher::new(DispatchConfig {
+        budgets: Budgets {
+            call: Duration::from_millis(10),
+            ..Budgets::default()
+        },
+        watchdog_period: Duration::from_millis(1),
+        ..DispatchConfig::default()
+    }));
+    let axis = HookRows::new(&[hook_door_plugin::conforming::door], None, dispatcher)
+        .expect("the existing slow-capable conforming door binds");
+    let candidate = axis.find(NAME).unwrap().clone();
     let dispatcher = Arc::clone(&axis.dispatcher);
     let binds = Arc::new(AtomicUsize::new(0));
     let bind = {
@@ -32,12 +43,12 @@ fn panicking_instance() -> (HookInstance, Arc<AtomicUsize>) {
         }
     };
     let instance = HookInstance::open(
-        bind().expect("the existing panicking door binds"),
+        bind().expect("the existing conforming door binds"),
         dispatcher,
-        br#"{"reject_over_messages":3}"#,
+        br#"{"reject_over_messages":3,"sleep_ms":2000}"#,
         bind,
     )
-    .expect("the existing panicking door opens; DECIDE is its real fault");
+    .expect("the existing conforming door opens; the serving watchdog causes its fault");
     (instance, binds)
 }
 
@@ -69,7 +80,7 @@ fn fault_current(instance: &HookInstance, plugin: &Plugin<Hook>) {
 
 #[tokio::test]
 async fn repeated_first_serving_faults_keep_growing_the_recovery_window_to_its_cap() {
-    let (instance, binds) = panicking_instance();
+    let (instance, binds) = watchdog_faulting_instance();
     for (attempt, expected) in [
         QUARANTINE_FIRST,
         Duration::from_secs(2),
@@ -85,7 +96,7 @@ async fn repeated_first_serving_faults_keep_growing_the_recovery_window_to_its_c
         let answer = instance.decide(frame(2), BUDGET).await;
         assert!(
             matches!(&answer, Answered::Broken(why) if why.contains("FAULT")),
-            "the real panicking DECIDE must fail, attempt {attempt}: {answer:?}"
+            "the real watchdog-breaching DECIDE must fault, attempt {attempt}: {answer:?}"
         );
         assert!(instance.quarantined());
         assert_eq!(
