@@ -1134,6 +1134,126 @@ mod recovery_record_tests {
         );
         assert_eq!(slots.puts(), before);
     }
+
+    #[test]
+    fn streamed_journal_pages_preserve_actual_seals_and_exact_record_addresses() {
+        use std::sync::atomic::AtomicUsize;
+        let slots = RecordSlots::new();
+        let taken =
+            super::super::take_node(slots.calls().as_ref(), "stream-journal-pages").unwrap();
+        let lane = JournalLane::start(slots.calls(), "stream-journal-test").unwrap();
+        lane.hold_lease(taken.lease.unwrap());
+        lane.bind_recovery_identity("stream-journal-pages", taken.id)
+            .unwrap();
+        let mut book = super::super::build_on_store(
+            &super::super::DurabilityConfig { data_dir: None },
+            taken.id,
+            lane.clone(),
+            None,
+        )
+        .unwrap();
+        let entries: Vec<_> = (0u64..300)
+            .map(|index| {
+                busbar_kernel_wal::Entry::new(
+                    RecordClass::Transaction,
+                    index.to_be_bytes().to_vec(),
+                )
+            })
+            .collect();
+        let token = busbar_kernel::teller::Kernel::new().durability_token();
+        let sealed = book
+            .journal
+            .append(&token, busbar_contract::caps::StepName::Meter, &entries)
+            .unwrap()
+            .sealed;
+        lane.wait_acked(taken.id, sealed.last().unwrap().node_seq, ACK_DEADLINE)
+            .unwrap();
+        let scans = Arc::new(AtomicUsize::new(0));
+        let observed = Arc::clone(&scans);
+        slots.on_scan(move || {
+            observed.fetch_add(1, Ordering::Relaxed);
+        });
+        verify_stored_chain(slots.calls().as_ref(), taken.id).unwrap();
+        assert!(
+            scans.load(Ordering::Relaxed) > 1,
+            "more than one bounded page must be consumed"
+        );
+        let expected = &sealed[149];
+        assert_eq!(
+            read_record_exact(slots.calls().as_ref(), taken.id, expected.node_seq).unwrap(),
+            *expected
+        );
+        slots.corrupt(JOURNAL_SCHEMA, &part_key(taken.id, expected.node_seq, 0));
+        assert!(verify_stored_chain(slots.calls().as_ref(), taken.id).is_err());
+    }
+
+    #[test]
+    fn streamed_journal_crosses_only_the_existing_quarantine_bridge_authority() {
+        let slots = RecordSlots::new();
+        let taken =
+            super::super::take_node(slots.calls().as_ref(), "stream-journal-bridge").unwrap();
+        let lane = JournalLane::start(slots.calls(), "stream-bridge-test").unwrap();
+        lane.hold_lease(taken.lease.unwrap());
+        lane.bind_recovery_identity("stream-journal-bridge", taken.id)
+            .unwrap();
+        let mut book = super::super::build_on_store(
+            &super::super::DurabilityConfig { data_dir: None },
+            taken.id,
+            lane.clone(),
+            None,
+        )
+        .unwrap();
+        let start = book.journal.next_seq();
+        let note = busbar_kernel_wal::Quarantine {
+            segment: 0,
+            segment_file: None,
+            offset: 0,
+            damage_at: 0,
+            bytes: 1,
+            why: None,
+            identities: vec![(taken.id, start + 1)],
+            unverified: Vec::new(),
+            damaged: Vec::new(),
+            at_unix_ms: 0,
+            kept: busbar_kernel_wal::QuarantineKept::Memory,
+            before: Some((taken.id, start)),
+            after: Some((taken.id, start + 2)),
+        };
+        let entries = [
+            busbar_kernel_wal::Entry::new(RecordClass::Transaction, b"before".to_vec()),
+            busbar_kernel_wal::Entry::new(RecordClass::Transaction, b"quarantined".to_vec()),
+            busbar_kernel_wal::Entry::new(RecordClass::Transaction, b"after".to_vec()),
+            busbar_kernel_wal::Entry::new(RecordClass::ChainBreak, note.body()),
+        ];
+        let token = busbar_kernel::teller::Kernel::new().durability_token();
+        let sealed = book
+            .journal
+            .append(&token, busbar_contract::caps::StepName::Meter, &entries)
+            .unwrap()
+            .sealed;
+        lane.wait_acked(taken.id, sealed.last().unwrap().node_seq, ACK_DEADLINE)
+            .unwrap();
+        let remove = |sequence| {
+            let key = part_key(taken.id, sequence, 0);
+            let request = super::super::conditional::candidate(
+                lane.recovery_predicates(taken.id).unwrap(),
+                vec![Mutation::DeleteRange {
+                    schema: JOURNAL_SCHEMA.into(),
+                    prefix: key[..16].to_vec(),
+                    exact_key_length: 18,
+                }],
+            );
+            wait_for(slots.calls().record_transaction(&request)).unwrap();
+        };
+        remove(start + 1);
+        let decoded =
+            busbar_kernel_wal::decode_run(&read_chain(slots.calls().as_ref(), taken.id).unwrap())
+                .unwrap();
+        busbar_kernel_wal::verify_journal(&decoded).unwrap();
+        verify_stored_chain(slots.calls().as_ref(), taken.id).unwrap();
+        remove(start + 3);
+        assert!(verify_stored_chain(slots.calls().as_ref(), taken.id).is_err());
+    }
 }
 
 #[cfg(test)]

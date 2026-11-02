@@ -2113,4 +2113,130 @@ mod tests {
             .unwrap()
             .is_none());
     }
+
+    #[test]
+    fn streaming_summary_proves_long_history_and_exact_selected_checkpoints() {
+        let slots = RecordSlots::new();
+        let book = opened(&slots, "stream-summary");
+        let sink = usage_recovery_sink(&book);
+        let initial = intent();
+        sink.persist(&initial).unwrap();
+        let mut current = initial.clone();
+        let mut middle = None;
+        for step in 0..24 {
+            let mut next = transition(&current, RecoveryState::LandedUnknown);
+            next.payload = serde_json::to_vec(&serde_json::json!({"checkpoint": step})).unwrap();
+            sink.persist(&next).unwrap();
+            if step == 11 {
+                middle = Some(next.clone());
+            }
+            current = next;
+        }
+        assert_eq!(
+            sink.replay_selections().unwrap(),
+            vec![RecoverySelection {
+                initial: initial.clone(),
+                selected: current.clone(),
+            }]
+        );
+        sink.verify_checkpoint(&initial).unwrap();
+        sink.verify_checkpoint(middle.as_ref().unwrap()).unwrap();
+        sink.verify_checkpoint(&current).unwrap();
+        assert_eq!(sink.replay().unwrap().len(), 25);
+    }
+
+    #[test]
+    fn streaming_summary_rejects_a_selected_gap_and_a_durable_unselected_fork() {
+        let slots = RecordSlots::new();
+        let book = opened(&slots, "stream-membership");
+        let sink = usage_recovery_sink(&book);
+        let initial = intent();
+        sink.persist(&initial).unwrap();
+        let initial_head = head(slots.calls().as_ref(), &initial.operation_id)
+            .unwrap()
+            .unwrap()
+            .0;
+        let selected = transition(&initial, RecoveryState::LandedUnknown);
+        sink.persist(&selected).unwrap();
+        let lane = book.lock().unwrap().lane().unwrap().clone();
+        let adapter = StoreRecovery {
+            book: Arc::clone(&book),
+            token: busbar_kernel::teller::Kernel::new().durability_token(),
+            state: Mutex::new(DriverState::default()),
+        };
+        let fork = transition(&initial, RecoveryState::Applied);
+        let abandoned = adapter
+            .append_candidate(
+                &lane,
+                initial_head.node,
+                Candidate {
+                    event: fork.clone(),
+                    previous_head: Some(initial_head),
+                    adoption: None,
+                },
+            )
+            .unwrap();
+        lane.wait_acked(abandoned.head.node, abandoned.head.sequence, ACK_DEADLINE)
+            .unwrap();
+        lane.confirm_recovery_record(&abandoned.record).unwrap();
+        assert!(sink.verify_checkpoint(&fork).is_err());
+        let (current_head, raw) = head(slots.calls().as_ref(), &selected.operation_id)
+            .unwrap()
+            .unwrap();
+        let mut skipped = transition(&selected, RecoveryState::LandedUnknown);
+        skipped.revision += 1;
+        let bad = adapter
+            .append_candidate(
+                &lane,
+                current_head.node,
+                Candidate {
+                    event: skipped,
+                    previous_head: Some(current_head),
+                    adoption: None,
+                },
+            )
+            .unwrap();
+        lane.wait_acked(bad.head.node, bad.head.sequence, ACK_DEADLINE)
+            .unwrap();
+        let select = super::super::conditional::candidate(
+            vec![Predicate {
+                schema: HEAD_SCHEMA.into(),
+                key: selected.operation_id.to_vec(),
+                expected: Expected::Bytes(raw),
+            }],
+            vec![Mutation::Put {
+                schema: HEAD_SCHEMA.into(),
+                key: selected.operation_id.to_vec(),
+                value: serde_json::to_vec(&bad.head).unwrap(),
+            }],
+        );
+        wait_for(slots.calls().record_transaction(&select)).unwrap();
+        assert!(matches!(
+            sink.replay_selections(),
+            Err(RecoveryError::Invalid(_))
+        ));
+    }
+
+    #[test]
+    fn streaming_handover_summary_retains_verified_foreign_ancestry_authority() {
+        let slots = RecordSlots::new();
+        let old = opened(&slots, "stream-adopt-old");
+        let new = opened(&slots, "stream-adopt-new");
+        let old_sink = usage_recovery_sink(&old);
+        let sink = usage_recovery_sink(&new);
+        let initial = intent();
+        let unknown = transition(&initial, RecoveryState::LandedUnknown);
+        old_sink.persist(&initial).unwrap();
+        old_sink.persist(&unknown).unwrap();
+        retire(&old);
+        let request = attestation(&unknown, RecoveryVerdict::NotLanded);
+        let transitions = handover_events(&unknown, RecoveryVerdict::NotLanded);
+        let summary = sink
+            .adopt_verdict_selection(&request, &transitions)
+            .unwrap();
+        assert_eq!(summary.initial, initial);
+        assert_eq!(&summary.selected, transitions.last().unwrap());
+        sink.verify_checkpoint(&unknown).unwrap();
+        assert_eq!(sink.replay_selections().unwrap(), vec![summary]);
+    }
 }
