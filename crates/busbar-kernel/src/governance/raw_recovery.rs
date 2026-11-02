@@ -753,7 +753,14 @@ impl GovState {
         flight: &DurableUsageFlight,
     ) -> RecordStoreResult<()> {
         if let Some(parent) = &flight.prerequisite {
-            self.keep_recovery_event(parent)?;
+            if self.recovery_event(parent.operation_id).as_ref() == Some(parent) {
+                self.keep_recovery_event(parent)?;
+            } else {
+                // Another real driver may already have confirmed this exact
+                // candidate and advanced the owner. Never rewind its head: prove
+                // CURRENT ownership plus exact selected ancestry before sending.
+                self.confirm_owned_recovery_checkpoint(parent)?;
+            }
         }
         let Some(child) = &flight.child else {
             return Ok(());

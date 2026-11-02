@@ -66,6 +66,22 @@ pub trait RecoverySink: Send + Sync {
         }
     }
 
+    /// Confirm exact selected ancestry AND current ownership by this sink. The
+    /// compatibility replay contract is owned-only; production streams both
+    /// ancestry and current head/node fences without granting authority by age.
+    fn confirm_owned_checkpoint(&self, event: &RecoveryEvent) -> Result<(), RecoveryError> {
+        let events = self.replay()?;
+        let present = events.iter().any(|selected| selected == event);
+        summarize_recovery_chains(events)?;
+        if present {
+            Ok(())
+        } else {
+            Err(RecoveryError::Conflict(
+                "recovery checkpoint is not in currently owned selected ancestry".into(),
+            ))
+        }
+    }
+
     /// Adopt through the same full ancestry proof, retaining only its verified
     /// initial and selected events at the caller. Production adapters stream it.
     fn adopt_verdict_selection(
@@ -1110,6 +1126,18 @@ impl super::GovState {
             .expect("inspection requires sink")
             .verify_origin(&receipt.event)?;
         Ok(Some(receipt.event))
+    }
+
+    pub(super) fn confirm_owned_recovery_checkpoint(
+        &self,
+        event: &RecoveryEvent,
+    ) -> super::RecordStoreResult<()> {
+        self.recovery_book
+            .sink
+            .get()
+            .ok_or_else(|| super::RecordStoreError("recovery Store is not attached".into()))?
+            .confirm_owned_checkpoint(event)
+            .map_err(|error| super::RecordStoreError(error.to_string()))
     }
 
     pub(super) fn verify_recovery_checkpoint(
