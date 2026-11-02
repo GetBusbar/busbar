@@ -285,3 +285,40 @@ fn correction_excludes_a_same_window_inflight_flush_without_changing_raw_facts()
         CORRECTED_INPUT
     );
 }
+
+#[test]
+fn a_future_usage_epoch_refuses_both_signs_without_changing_recorded_facts() {
+    for change in [-1, 1] {
+        let store = Arc::new(MemoryStore::new());
+        let gov = GovState::new(store.clone(), None).unwrap();
+        let key = key("vk_correction_future", None);
+        store.put_key(&key).unwrap();
+        let cm = model(&[]);
+        let now = crate::store::now();
+        let future = crate::store::now_ms() + 60_000;
+        gov.record_usage(&cm, &key, "", MODEL, &toks(INITIAL_INPUT, 0), now);
+        metered(&gov, &key.id, MODEL, INITIAL_INPUT, future / 1_000);
+        gov.flush_budgets();
+        let day = super::super::metering_bucket(future / 1_000);
+        let facts = || {
+            (
+                store.get_usage(&key.id, 0).unwrap(),
+                store.get_usage(&super::super::era_bucket(&key.id), 0).unwrap(),
+                store.get_usage(super::super::ADJUST_UP_BUCKET, day).unwrap(),
+                store.get_usage(super::super::ADJUST_DOWN_BUCKET, day).unwrap(),
+                store.list_metering(day).unwrap(),
+                gov.usage_adjustments(day).unwrap(),
+                gov.usage_for(&cm, &key.id, now).unwrap(),
+            )
+        };
+        let before = facts();
+        let delta = BTreeMap::from([(busbar_contract::records::UNIT_INPUT.into(), change)]);
+        let adj = super::super::Adjustment {
+            card_epoch_ms: future,
+            ..correction(&key, &delta, now)
+        };
+        let result = gov.adjust_usage(&cm, &adj).unwrap();
+        assert!(result.is_err(), "a future epoch must be refused: {result:?}");
+        assert_eq!(facts(), before, "no ledger or metering fact may change");
+    }
+}
