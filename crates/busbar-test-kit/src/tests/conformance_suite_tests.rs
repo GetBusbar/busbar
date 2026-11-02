@@ -1951,13 +1951,13 @@ mod canary_tests {
     #[test]
     #[should_panic(expected = "credentials entries must be strings")]
     fn a_non_string_credential_is_rejected() {
-        credentials(&serde_json::json!({"credentials": ["a", 3, "b"]}));
+        let _ = credentials(&serde_json::json!({"credentials": ["a", 3, "b"]}));
     }
 
     #[test]
     #[should_panic(expected = "credentials must be an array")]
     fn credentials_must_be_an_array() {
-        credentials(&serde_json::json!({"credentials": "a"}));
+        let _ = credentials(&serde_json::json!({"credentials": "a"}));
     }
 
     #[test]
