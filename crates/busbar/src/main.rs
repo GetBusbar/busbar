@@ -692,6 +692,7 @@ async fn run(
             None,
             &(Arc::clone(&root_rules) as Arc<dyn busbar_kernel::appbuild::RootRules>),
             boot_store,
+            true,
         )
         .unwrap_or_else(|e| die(e));
 
@@ -830,7 +831,8 @@ async fn run(
 
     let tls_secret_resolver = app.secret_resolver.clone();
 
-    let book = (cfg!(feature = "root-admin")
+    let book = (app.governance.is_some()
+        || cfg!(feature = "root-admin")
         || ROOT_UNITS.iter().any(|u| u.opens_book)
         || !served.planes.is_empty())
     .then(|| root::boot::book(&app, &store_module).unwrap_or_else(|e| die(e)));

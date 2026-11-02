@@ -717,6 +717,7 @@ pub fn build_app_from_config(
         prior,
         rules,
         None,
+        false,
     )
 }
 
@@ -731,6 +732,7 @@ pub fn build_app_from_config_with_store(
     prior: Option<&state::App>,
     rules: &Arc<dyn RootRules>,
     boot_store: Option<busbar_contract::store_calls::OpenedStore>,
+    recover_usage_before_hydration: bool,
 ) -> Result<(state::App, Option<GovCredentialRotation>, InstalledLimits), String> {
     let configured_card = config::card::CardFields::of_root(&cfg);
 
@@ -1189,11 +1191,13 @@ pub fn build_app_from_config_with_store(
                     rewrap_at_rest(&gs);
                 }
 
-                if let Err(e) = gs.hydrate_budgets(&cost, busbar_kernel::store::now()) {
-                    return Err(format!(
-                        "governance boot: budget hydration failed ({e}); refusing to start with an \
-                         unenforced (reset) ledger. Fix the durable store and restart."
-                    ));
+                if !recover_usage_before_hydration {
+                    if let Err(e) = gs.hydrate_budgets(&cost, busbar_kernel::store::now()) {
+                        return Err(format!(
+                            "governance boot: budget hydration failed ({e}); refusing to start with an \
+                             unenforced (reset) ledger. Fix the durable store and restart."
+                        ));
+                    }
                 }
 
                 let keys = gs.all_keys().map_err(|e| {

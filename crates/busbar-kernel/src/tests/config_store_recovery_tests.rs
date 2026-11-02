@@ -153,6 +153,7 @@ fn base_store_bootstrap_and_effective_build_share_the_same_opened_store() {
         None,
         &rules,
         Some(opened),
+        false,
     )
     .unwrap();
     assert!(std::sync::Arc::ptr_eq(
