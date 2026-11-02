@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Real linked HTTP -> WS composition, rather than a simulated framer's upgrade result.
-
 use super::*;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -136,8 +134,7 @@ async fn exchange(framer: DataFramer, router: Router, request: &[u8], body: &[u8
     .await
     .expect("real transport answers without hanging");
     let _ = stop.send(true);
-    // Keep the peer readable until transport retirement, so a duplicate handshake or late
-    // Finish output cannot escape the wire assertions below. Bound both time and allocation.
+
     let remaining = (16 * 1024 - wire.len() + 1) as u64;
     tokio::time::timeout(
         Duration::from_secs(10),
