@@ -45,7 +45,14 @@ pub(crate) fn boot_resolved_secret_refs(cfg: &RootCfg) -> Vec<(String, &crate::c
 }
 
 pub(crate) fn secret_module(registry: &dyn PluginRows, module: &str) -> Result<String, String> {
-    match registry.resolve(module) {
+    secret_module_row(module, registry.resolve(module))
+}
+
+fn secret_module_row(
+    module: &str,
+    row: Option<busbar_contract::plugin_rows::Row>,
+) -> Result<String, String> {
+    match row {
         Some(p) if p.kind == "secret" => Ok(p.key),
         Some(p) => Err(format!(
             "secrets.{module}: plugin '{}' has kind '{}', not 'secret'; only a kind: secret plugin \
@@ -497,3 +504,7 @@ pub(crate) enum SecretBearing {
 #[cfg(test)]
 #[path = "tests/secret_ref_coverage.rs"]
 mod secret_ref_coverage;
+
+#[cfg(test)]
+#[path = "tests/central2_secret_module_tests.rs"]
+mod central2_secret_module_tests;

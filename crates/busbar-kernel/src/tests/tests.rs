@@ -1347,63 +1347,6 @@ fn one_validator_refuses_in_one_order() {
 }
 
 #[test]
-fn secrets_block_rejects_unknown_module() {
-    let reg = crate::test_support::rows::empty();
-    let err = secret_module(reg.as_ref(), "typo-vault").unwrap_err();
-    assert!(
-        err.contains("no loadable") && err.contains("typo-vault"),
-        "unknown module named in the error: {err}"
-    );
-}
-
-#[test]
-fn secrets_block_canonicalizes_alias_and_name_to_the_same_key() {
-    let (dir, reg) = secret_registry("secrets-canon");
-
-    assert_eq!(
-        secret_module(reg.as_ref(), "vault").unwrap(),
-        "acme-secret-vault"
-    );
-    assert_eq!(
-        secret_module(reg.as_ref(), "acme-secret-vault").unwrap(),
-        "acme-secret-vault"
-    );
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
-#[test]
-fn secrets_block_rejects_non_secret_kind() {
-    let dir = tmp_plugin_dir("secrets-wrong-kind");
-    let mut cfg = plugins_cfg(&dir, true);
-    cfg.trust.allow_unsigned = true;
-
-    crate::test_support::rows::drop_in(
-        &dir,
-        vec![dropped(
-            "acme-store-x",
-            "x",
-            busbar_contract::abi::mechanism::kind::STORE,
-        )],
-        Vec::new(),
-    );
-    let reg = crate::plugins_preflight(
-        None,
-        None,
-        &Default::default(),
-        &Default::default(),
-        &cfg,
-        &Default::default(),
-    )
-    .unwrap();
-    let err = secret_module(reg.as_ref(), "x").unwrap_err();
-    assert!(
-        err.contains("not 'secret'"),
-        "wrong-kind rejection names the mismatch: {err}"
-    );
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
-#[test]
 fn secret_ref_plugin_backed_module_passes_when_plugin_present() {
     crate::test_support::register_neutral_test_plane();
     let (dir, reg) = secret_registry("secretref-vault-ok");
