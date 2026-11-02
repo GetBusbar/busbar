@@ -440,6 +440,9 @@ fn pending_export_batch_keeps_its_target_and_credentials_after_same_instance_ref
             "auth_header":{"name":"x-generation","value":"credential-B"},"delivery_timeout_secs":600});
         let sink =
             Arc::new(ExportInstance::open(plugin, d.clone(), old.to_string().as_bytes()).unwrap());
+        // The root authority remains alive for member authentication. Give the retiring batch
+        // its own accepted generation so its final ticket still exercises reentrant cleanup.
+        assert_eq!(refresh(sink.plugin(), &old, 2), Outcome::Ready);
         let first = d.inline_ticket().unwrap();
         let mut old_batch = batch(b"{\"n\":1}\n{\"n\":2}\n", 1);
         assert_eq!(
@@ -450,7 +453,7 @@ fn pending_export_batch_keeps_its_target_and_credentials_after_same_instance_ref
         );
         assert_eq!(far.stalled(), 1);
         assert_eq!(far.carried().len(), 1);
-        assert_eq!(refresh(sink.plugin(), &new, 2), Outcome::Ready);
+        assert_eq!(refresh(sink.plugin(), &new, 3), Outcome::Ready);
 
         let fresh = d.inline_ticket().unwrap();
         let mut fresh_batch = batch(b"{\"n\":3}\n", 2);
@@ -534,7 +537,7 @@ fn pending_export_batch_keeps_its_target_and_credentials_after_same_instance_ref
         assert_eq!(reentered.load(Ordering::SeqCst), 1);
 
         let rejected = serde_json::json!({"url":"https://collector-c.example/rejected","bogus":1});
-        assert_ne!(refresh(sink.plugin(), &rejected, 3), Outcome::Ready);
+        assert_ne!(refresh(sink.plugin(), &rejected, 4), Outcome::Ready);
         let fresh = d.inline_ticket().unwrap();
         let mut after_refusal = batch(b"{\"n\":4}\n", 3);
         let initial = sink.plugin().call_inline(
