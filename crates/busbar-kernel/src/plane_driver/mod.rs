@@ -176,6 +176,7 @@ pub struct PlaneDriver {
     config: DriverConfig,
     money: Arc<dyn MoneySeam>,
     buried: Mutex<Vec<cancel::Buried>>,
+    cleanup_sweep: Mutex<()>,
 
     owed: Mutex<Vec<close::Owed>>,
     reload: watch::Sender<bool>,
@@ -321,6 +322,7 @@ impl PlaneDriver {
             config,
             money,
             buried: Mutex::new(Vec::new()),
+            cleanup_sweep: Mutex::new(()),
             owed: Mutex::new(Vec::new()),
             reload: watch::channel(false).0,
             records: None,

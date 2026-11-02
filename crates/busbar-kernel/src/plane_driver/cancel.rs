@@ -123,10 +123,9 @@ pub(crate) type CancelFuture = std::pin::Pin<
 
 pub(crate) fn poll_cancel(
     future: &mut CancelFuture,
+    cx: &mut std::task::Context<'_>,
 ) -> std::task::Poll<Option<busbar_contract::plane_calls::Cancelled>> {
-    future
-        .as_mut()
-        .poll(&mut std::task::Context::from_waker(std::task::Waker::noop()))
+    future.as_mut().poll(cx)
 }
 
 pub(crate) struct Buried {
@@ -150,6 +149,15 @@ pub(crate) struct Buried {
 
 impl PlaneDriver {
     pub fn sweep(&self) {
+        self.sweep_with_context(&mut std::task::Context::from_waker(std::task::Waker::noop()));
+    }
+
+    pub(crate) fn sweep_with_context(&self, cx: &mut std::task::Context<'_>) -> bool {
+        let _sweep = match self.cleanup_sweep.try_lock() {
+            Ok(guard) => guard,
+            Err(std::sync::TryLockError::Poisoned(error)) => error.into_inner(),
+            Err(std::sync::TryLockError::WouldBlock) => return false,
+        };
         let buried = std::mem::take(&mut *self.lock_buried());
         let mut unsettled = Vec::new();
         for mut unit in buried {
@@ -200,7 +208,7 @@ impl PlaneDriver {
                             .store(true, std::sync::atomic::Ordering::Release);
                         unit.closing = Some(self.cancel_unit(unit.ticket, key));
                     }
-                    match unit.closing.as_mut().map(poll_cancel) {
+                    match unit.closing.as_mut().map(|future| poll_cancel(future, cx)) {
                         Some(std::task::Poll::Pending) => {
                             unsettled.push(unit);
                             continue;
@@ -229,7 +237,8 @@ impl PlaneDriver {
         }
         self.lock_buried().extend(unsettled);
 
-        self.close_owed();
+        self.close_owed(cx);
+        self.buried() == 0 && self.owed_closes() == 0
     }
 
     pub fn buried(&self) -> usize {

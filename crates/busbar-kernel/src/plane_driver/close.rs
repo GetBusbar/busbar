@@ -37,7 +37,7 @@ pub(crate) struct Owed {
 }
 
 impl PlaneDriver {
-    pub(crate) fn close_owed(&self) {
+    pub(crate) fn close_owed(&self, cx: &mut std::task::Context<'_>) {
         let count = self.lock_owed().len();
         for _ in 0..count {
             let Some(owed) = self.lock_owed().pop() else {
@@ -58,7 +58,7 @@ impl PlaneDriver {
             if owed.cancel.is_none() {
                 owed.cancel = Some(self.cancel_unit(owed.ticket.expect("owned ticket"), owed.unit));
             }
-            let cancelled = match poll_cancel(owed.cancel.as_mut().expect("queued cancel")) {
+            let cancelled = match poll_cancel(owed.cancel.as_mut().expect("queued cancel"), cx) {
                 std::task::Poll::Pending => {
                     let owed = paying.owed.take().expect("pending debt");
                     self.lock_owed().insert(0, owed);

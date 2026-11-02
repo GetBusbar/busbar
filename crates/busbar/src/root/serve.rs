@@ -139,11 +139,11 @@ pub fn attach(
 pub const RECORD_DRAIN: std::time::Duration =
     std::time::Duration::from_secs(5 * busbar_kernel::host_records::FLUSH_INTERVAL.as_secs());
 
-pub async fn drain_records(late: &LateServices) -> bool {
+pub async fn drain_records(late: &LateServices, deadline: std::time::Duration) -> bool {
     let Some(kernel) = late.kernel() else {
         return true;
     };
-    tokio::task::spawn_blocking(move || kernel.drain(RECORD_DRAIN))
+    tokio::task::spawn_blocking(move || kernel.drain(deadline))
         .await
         .unwrap_or(false)
 }
@@ -1486,6 +1486,7 @@ pub(crate) fn compose_planes_over(
             kernel.units(),
         )?;
         let driver = Arc::new(driver);
+        kernel.register_plane_cleanup(Arc::downgrade(&driver));
         let probe_schedule = Arc::new(busbar_kernel::probe::ProbeSchedule::new(
             egress
                 .and_then(|e| e.reach.models)

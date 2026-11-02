@@ -31,6 +31,14 @@ pub async fn tail(
     late: &LateServices,
     journal: Option<&Arc<Mutex<Durability>>>,
 ) {
+    let cleanup_started = std::time::Instant::now();
+    if let Some(kernel) = late.kernel() {
+        if !kernel.drain_plane_cleanup(RECORD_DRAIN).await {
+            tracing::warn!("plane cancellations were still pending at shutdown");
+        }
+    }
+    let record_remaining = RECORD_DRAIN.saturating_sub(cleanup_started.elapsed());
+
     if let Some(gov) = governance {
         let budgets = gov.clone();
         let dispatch = tracing::dispatcher::get_default(Clone::clone);
@@ -62,7 +70,7 @@ pub async fn tail(
         }
     }
 
-    if !drain_records(late).await {
+    if !drain_records(late, record_remaining).await {
         tracing::warn!("plane record writes were still queued at shutdown");
     }
 

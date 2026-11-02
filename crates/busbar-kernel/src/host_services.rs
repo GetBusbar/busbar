@@ -1434,7 +1434,7 @@ impl KernelServices {
             .push(driver);
     }
 
-    fn cleanup_planes(&self, _cx: &mut std::task::Context<'_>) -> bool {
+    fn cleanup_planes(&self, cx: &mut std::task::Context<'_>) -> bool {
         let drivers = {
             let mut registered = self.plane_cleanup.lock().unwrap_or_else(|e| e.into_inner());
             registered.retain(|driver| driver.strong_count() != 0);
@@ -1445,8 +1445,7 @@ impl KernelServices {
         };
         let mut idle = true;
         for driver in drivers {
-            driver.sweep();
-            idle &= driver.buried() == 0 && driver.owed_closes() == 0;
+            idle &= driver.sweep_with_context(cx);
         }
         idle
     }
@@ -1478,6 +1477,7 @@ impl KernelServices {
         loop {
             tokio::select! {
                 _ = at.tick() => {
+                    std::future::poll_fn(|cx| std::task::Poll::Ready(self.cleanup_planes(cx))).await;
                     self.flush_tick();
                     self.verify_tick();
                     self.trust_resync_tick();
