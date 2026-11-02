@@ -2,6 +2,74 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use std::net::SocketAddr;
+use std::sync::Arc;
+
+#[path = "../../../crates/busbar/src/root/tests/test_plugins.rs"]
+mod plugins;
+
+fn app() -> Arc<busbar_kernel::state::App> {
+    crate::dist_root_install::install();
+    let library_path = std::path::PathBuf::from(
+        std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
+            .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual built store"),
+    );
+    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
+        .expect("the actual store statement reads")
+        .expect("the actual store exports its statement");
+    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
+        .expect("the actual store statement is valid")
+        .name;
+    let mut manifest = plugins::manifest(
+        "store",
+        &module,
+        busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
+    );
+    manifest.statement = Some(hex::encode(statement));
+    let library = std::fs::read(library_path).expect("the actual store library reads");
+    let directory = plugins::scratch("installed-door-route");
+    let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
+    std::fs::write(directory.join("store.tar.gz"), archive)
+        .expect("stage the actual store archive");
+    let settings: serde_json::Value = serde_json::from_str(
+        &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
+    )
+    .expect("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS is JSON");
+    assert!(
+        settings.is_object(),
+        "the actual store settings are an object"
+    );
+    let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
+        "providers": {},
+        "models": {},
+        "auth": { "chain": [], "admin_auth": [] },
+        "store": { "module": module, "settings": settings },
+        "advanced": { "allow_destinations": ["127.0.0.1"] },
+    }))
+    .expect("the product deployment parses");
+    let config = busbar_kernel::config::resolve(&deploy, &Default::default())
+        .expect("the product deployment resolves");
+    let plugin_config = busbar_kernel::config::PluginsCfg {
+        enabled: true,
+        dir: directory.to_string_lossy().into_owned(),
+        ..Default::default()
+    };
+    let rules = Arc::new(crate::root::door_steps::Rules::default())
+        as Arc<dyn busbar_kernel::appbuild::RootRules>;
+    let (app, rotate, limits) = busbar_kernel::build_app_from_config(
+        config,
+        plugin_config,
+        None,
+        Default::default(),
+        Default::default(),
+        (None, None),
+        None,
+        &rules,
+    )
+    .expect("the actual product builds the door deployment");
+    drop(limits);
+    drop(rotate);
+    Arc::new(app)
+}
 
 const LEDGER_PATHS: &[&str] = &[
     "/api/v1/admin/ledger/totals",
@@ -43,12 +111,9 @@ async fn ask(addr: SocketAddr, path: &str) -> Answer {
 
 #[tokio::test]
 async fn the_legacy_admin_surface_has_never_heard_of_a_ledger_path() {
-    busbar_kernel_testkit::test_support::metrics::init();
     busbar_core_admin::install();
 
-    let app = busbar_kernel_testkit::test_support::TestApp::new()
-        .admin_chain(vec![])
-        .build();
+    let app = app();
     let (_data, admin, _handle) =
         busbar_kernel::build_split_routers_with_limits(app, 1 << 20, 0, false);
 
@@ -83,11 +148,8 @@ async fn the_legacy_admin_surface_has_never_heard_of_a_ledger_path() {
 
 #[tokio::test]
 async fn the_served_document_describes_the_ledger_views_as_the_loops() {
-    busbar_kernel_testkit::test_support::metrics::init();
     busbar_core_admin::install();
-    let app = busbar_kernel_testkit::test_support::TestApp::new()
-        .admin_chain(vec![])
-        .build();
+    let app = app();
     let (_data, admin, _handle) =
         busbar_kernel::build_split_routers_with_limits(app, 1 << 20, 0, false);
 
