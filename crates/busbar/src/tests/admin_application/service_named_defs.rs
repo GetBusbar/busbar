@@ -17,6 +17,7 @@ mod plugins;
 struct OverlayReads {
     actual: Arc<dyn StoreCalls>,
     fail: AtomicBool,
+    started: AtomicBool,
     barrier: std::sync::Mutex<Option<Arc<std::sync::Barrier>>>,
     entered: tokio::sync::Notify,
 }
@@ -74,6 +75,7 @@ impl StoreCalls for OverlayReads {
             }
             let barrier = self.barrier.lock().unwrap().take();
             if let Some(barrier) = barrier {
+                self.started.store(true, Ordering::SeqCst);
                 self.entered.notify_one();
                 barrier.wait();
             }
@@ -288,6 +290,7 @@ async fn list_named_defs_reads_the_overlay_off_the_async_worker() {
     let faults = Arc::new(OverlayReads {
         actual: calls,
         fail: AtomicBool::new(false),
+        started: AtomicBool::new(false),
         barrier: std::sync::Mutex::new(None),
         entered: tokio::sync::Notify::new(),
     });
@@ -297,12 +300,15 @@ async fn list_named_defs_reads_the_overlay_off_the_async_worker() {
     let barrier = Arc::new(std::sync::Barrier::new(2));
     *faults.barrier.lock().unwrap() = Some(barrier.clone());
     let (done, finished) = std::sync::mpsc::channel::<()>();
+    let watching = faults.clone();
     let watchdog = std::thread::spawn(move || {
         let free = finished
             .recv_timeout(std::time::Duration::from_secs(5))
             .is_ok();
-        barrier.wait();
-        free
+        if watching.started.load(Ordering::SeqCst) {
+            barrier.wait();
+        }
+        free && watching.started.load(Ordering::SeqCst)
     });
     let waiting = faults.clone();
     let sibling = tokio::spawn(async move {
@@ -419,6 +425,7 @@ async fn get_named_def_reads_the_overlay_off_the_async_worker() {
     let faults = Arc::new(OverlayReads {
         actual: calls,
         fail: AtomicBool::new(false),
+        started: AtomicBool::new(false),
         barrier: std::sync::Mutex::new(None),
         entered: tokio::sync::Notify::new(),
     });
@@ -428,12 +435,15 @@ async fn get_named_def_reads_the_overlay_off_the_async_worker() {
     let barrier = Arc::new(std::sync::Barrier::new(2));
     *faults.barrier.lock().unwrap() = Some(barrier.clone());
     let (done, finished) = std::sync::mpsc::channel::<()>();
+    let watching = faults.clone();
     let watchdog = std::thread::spawn(move || {
         let free = finished
             .recv_timeout(std::time::Duration::from_secs(5))
             .is_ok();
-        barrier.wait();
-        free
+        if watching.started.load(Ordering::SeqCst) {
+            barrier.wait();
+        }
+        free && watching.started.load(Ordering::SeqCst)
     });
     let waiting = faults.clone();
     let sibling = tokio::spawn(async move {
@@ -550,6 +560,7 @@ async fn named_defs_still_flag_an_unparseable_overlay_entry() {
     let faults = Arc::new(OverlayReads {
         actual: calls,
         fail: AtomicBool::new(false),
+        started: AtomicBool::new(false),
         barrier: std::sync::Mutex::new(None),
         entered: tokio::sync::Notify::new(),
     });
@@ -685,6 +696,7 @@ async fn named_defs_propagate_store_overlay_read_failures() {
     let faults = Arc::new(OverlayReads {
         actual: calls,
         fail: AtomicBool::new(false),
+        started: AtomicBool::new(false),
         barrier: std::sync::Mutex::new(None),
         entered: tokio::sync::Notify::new(),
     });
