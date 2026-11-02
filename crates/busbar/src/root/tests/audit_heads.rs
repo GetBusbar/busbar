@@ -11,7 +11,7 @@ use busbar_contract::caps::{DurableWrite, StepName};
 use busbar_contract::store_calls::{StoreCalls, StoreFailure};
 use busbar_kernel_audit::{Audit as _, AuditChain, AuditSigningKey};
 use busbar_kernel_wal::{Entry, Journal, JournalRecord, NullShipper, Record, RecordClass};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 const NODE: u64 = 7;
@@ -25,11 +25,15 @@ struct Sealed {
 
 impl Sealed {
     fn new() -> Self {
+        Self::for_node(NODE)
+    }
+
+    fn for_node(node: u64) -> Self {
         Self {
             audit: AuditChain::new()
-                .sealing_as(NODE)
+                .sealing_as(node)
                 .signing_with(AuditSigningKey::from_seed(&[7; 32])),
-            journal: Journal::memory_buffered_to(NODE, Box::new(NullShipper::new()), || START),
+            journal: Journal::memory_buffered_to(node, Box::new(NullShipper::new()), || START),
             records: Vec::new(),
         }
     }
@@ -397,4 +401,84 @@ fn maximum_width_signed_checkpoint_fits_one_real_store_record() {
     let value = busbar_contract::kinds::RecordBytes::new(encoded).unwrap();
     wait_for(slots.record_put(SCHEMA, &tip_key(NODE), &value)).unwrap();
     assert_eq!(checkpoint(&slots, NODE).unwrap().unwrap().0, expected);
+}
+
+/// A real successor takes the expired host lease after the old writer read its predicate but
+/// before the Store decides the final-part/head transaction. Neither output may escape the fence.
+#[test]
+fn host_lease_takeover_between_predicate_and_final_transaction_blocks_the_old_head() {
+    use super::super::store_identity::{lease_row, set_lease_expiry, take_node, NODE_SCHEMA};
+
+    const HOST: &str = "audit-head-final-transaction-takeover";
+    let slots = RecordSlots::new();
+    let taken = take_node(&slots, HOST).expect("the real identity seam takes the initial lease");
+    let node = taken.id;
+    let old_holder = lease_row(&slots, HOST).unwrap().0;
+    let lease = HeldLease::default();
+    lease.hold(taken.lease.expect("the first boot holds its host name"));
+    let mut sealed = Sealed::for_node(node);
+    let record = sealed.audit(START);
+    let advance = advance(&slots, &record);
+    let (key, value) = final_part(&record);
+
+    let raced = Arc::new(AtomicBool::new(false));
+    let race = raced.clone();
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let transactions = attempts.clone();
+    let other = slots.clone();
+    slots.on_transaction(move |request| {
+        if request
+            .mutations
+            .iter()
+            .any(|mutation| matches!(mutation, Mutation::Put { schema, .. } if schema == SCHEMA))
+        {
+            transactions.fetch_add(1, Ordering::SeqCst);
+            if !race.swap(true, Ordering::SeqCst) {
+                assert!(
+                    request
+                        .predicates
+                        .iter()
+                        .any(|predicate| predicate.schema == NODE_SCHEMA),
+                    "the final-part/head request must carry the lease it just observed"
+                );
+                // This callback runs outside the fixture's locks. Its nested real lease take is
+                // guarded above and mutates only the identity schema, so it cannot recurse here.
+                set_lease_expiry(&other, HOST, 1);
+                let successor =
+                    take_node(&other, HOST).expect("a successor takes the expired lease");
+                assert_eq!(
+                    successor.id, node,
+                    "the host resumes its stable journal identity"
+                );
+                assert!(successor.lease.is_some());
+                assert_ne!(lease_row(&other, HOST).unwrap().0, old_holder);
+            }
+        }
+        None
+    });
+
+    assert!(advance.commit(&slots, &lease, key.clone(), value).is_err());
+    assert!(
+        raced.load(Ordering::SeqCst),
+        "the lease really changed inside the crossing"
+    );
+    assert_eq!(
+        attempts.load(Ordering::SeqCst),
+        1,
+        "the conflicted writer must detect its lost lease before submitting another head"
+    );
+    assert!(lease.lost());
+    assert_eq!(
+        slots.rows_under(SCHEMA),
+        0,
+        "no tip or sample was published"
+    );
+    assert!(load(&slots, node).unwrap().is_none());
+    assert!(
+        wait_for(slots.record_get(super::super::store_chain::JOURNAL_SCHEMA, &key))
+            .unwrap()
+            .is_none(),
+        "the final journal part must share the rejected head transaction"
+    );
+    assert_ne!(lease_row(&slots, HOST).unwrap().0, old_holder);
 }
