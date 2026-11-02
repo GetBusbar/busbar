@@ -4,43 +4,35 @@
 //! WHAT THE AUTHORIZATION SERVER HOLDS, KEPT IN THE DEPLOYMENT'S STORE, so every node behind one
 //! store serves one server (THE DESIGN §1: "Multi-node is the design ... Nodes share one store").
 //!
-//! The server's records live as kernel-owned plane-record kinds under one fixed kernel label
-//! ([`LABEL`]), written through the store's existing plane-record verbs and its one atomic step,
-//! the single-use token redemption (`redeem_plane_token`). No store ABI is added:
+//! Versioned cells and the signing key use the store's negotiated conditional-record operation.
+//! The comparison, mutation and applied receipt commit together. Client cancellation never
+//! authorizes a late unconditional overwrite. Other records retain their plane-record verbs.
 //!
 //! * **One record per client, versioned.** Everything a client holds — its registration, the
 //!   revocation barriers recorded against it, its codes, tokens, refresh tokens, pushed requests,
 //!   device grants and consents — is one [`Bucket`]. A write is a COMPARE-AND-SWAP on the bucket's
-//!   version: read version `v`, redeem the claim `(bucket, v + 1)`, and only the redeemer writes
-//!   `v + 1`. Every other writer of that version loses the redemption and reads again. So the
+//!   exact stored bytes: read version `v`, compare those bytes and write `v + 1` atomically.
+//!   Every condition loser reads again. So the
 //!   library's atomic steps (`take_*`, the compare-and-swaps, a client deletion and its cascade)
 //!   are one bucket swap each, and hold across nodes exactly as `MemoryStorage`'s mutex holds them
 //!   inside one process.
-//! * **The claim is a lease, and the write is fenced by it.** A version claim lapses
-//!   ([`VERSION_CLAIM_SECS`]) so that a writer that died never blocks its bucket for good. So a
-//!   writer issues its write only while [`WRITE_BUDGET`] has not passed since the READ its write is
-//!   computed from, and otherwise writes nothing and answers an error. A store call is cancelled at
-//!   its deadline (THE DESIGN Appendix A.4, the `call` class), so every write lands within
-//!   [`STORE_CALL_SECS`] of being issued; with clocks within [`CLOCK_SKEW_SECS`] of each other, a
-//!   write lands before any other node can see its claim lapse, and a writer that read a version
-//!   cannot claim the next one after an earlier claimant of it could still write. That is the
-//!   fence's whole assumption: the store honours its call deadline, and nodes' clocks agree within
-//!   the skew.
-//! * **A version is claimed once, for good.** The claim on version `v + 1` names the cell's EPOCH
-//!   ([`version_token`]): a random value the writer that CREATES a cell (the write of version 1)
-//!   picks, and every version after carries on. A retired cell's epoch dies with it, so its claims,
-//!   the retirement's own on the version after its last included, can never stand in the way of the
-//!   cell made again under the same id. The creating write's claim names no epoch (no writer knows
-//!   one yet, and every creator must race on one token); it is free whenever a cell is absent,
-//!   because a cell is retired only once its last write, and so its own creation, is older than any
-//!   claim can stand.
-//! * **`take_*` = read + claim the spend.** A take is a swap that removes the record: exactly one
+//! * **Unknown outcomes retain the exact candidate.** Before submission, the operation id,
+//!   predicates and mutations are retained in [`Shared`], independently of its caller's future.
+//!   The next access replays that candidate; only a definitive condition conflict replans.
+//!   This in-process retention is not a durable journal: restart can lose the candidate, but its
+//!   backend comparison still prevents it overwriting newer state, however late it decides.
+//! * **Legacy state is imported once.** A raw authoritative record wins over a legacy plane row.
+//!   Its first import compares raw absence. Retirement keeps a unique credential-free tombstone
+//!   in that same record, so neither a late legacy write nor an old creation candidate resurrects
+//!   retired state. New nodes ignore subsequent legacy writes. Running old binaries still use
+//!   their old storage semantics; this does not make mixed-version writers honor new authority.
+//! * **`take_*` = compare and remove.** A take is a swap that removes the record: exactly one
 //!   taker wins the version, every other sees the record gone.
 //! * **Deletion and revocation are tombstones while they bar anything.** A bucket keeps its
 //!   barriers until they lapse. A cell holding nothing (an empty bucket, a lapsed family barrier, a
-//!   released user code) is RETIRED by the sweep: deleted under a won version claim, and only once
-//!   its last write is older than every claim of its versions can be ([`RETIRE_AFTER_SECS`]). A
-//!   writer that finds it gone creates it again, under a new epoch.
+//!   released user code) is RETIRED by the sweep after [`RETIRE_AFTER_SECS`], under an exact
+//!   comparison, leaving only its unique authority tombstone. A writer creates a fresh epoch by
+//!   comparing that tombstone.
 //! * **A self-registered client that holds nothing is reclaimed.** RFC 7591 registration takes no
 //!   credential, so a registered client whose bucket has held no record (code, token, refresh
 //!   token, pushed request, device grant, consent) for [`crate::policy::REGISTERED_CLIENT_IDLE`] is
@@ -48,24 +40,20 @@
 //!   store, and is never reclaimed.
 //! * **Lookups by a credential** (an access token, a refresh token, a code, a pushed handle, a
 //!   device code, a consent id or a family) go through index records naming the client, one per
-//!   credential; the index is written before the bucket, so a record the bucket holds is always
-//!   reachable. The sweep deletes an index row whose credential its client no longer holds, once
-//!   the row is older than any write in flight can be ([`INDEX_GRACE_SECS`]). A subject's index is
+//!   credential; required indexes are also written atomically with every bucket mutation, so a
+//!   record the bucket holds is always reachable. The sweep retires an index row whose credential
+//!   its client no longer holds after [`INDEX_GRACE_SECS`], comparing that bucket atomically.
+//!   A subject's index is
 //!   one cell naming every client it consented to, each with when it was indexed: the sweep drops a
 //!   client whose bucket no longer holds a consent of that subject once its entry is past the same
-//!   grace, under the cell's version claim, and retires the cell once it names no client.
+//!   grace, under the cell's exact comparison, and retires the cell once it names no client.
 //! * **The token-family barrier** is the one barrier that names no client: it is its own record,
-//!   written before the family's cascade, and a token or refresh write checks it AFTER its own
-//!   write and undoes itself when it finds one. Either the writer sees the barrier, or the
-//!   cascade (which lists the family's index after recording the barrier) sees the record.
+//!   committed atomically with its client's token cascade. Guarded token/refresh writes and
+//!   rotations compare the barrier's exact bytes; a delayed candidate cannot bypass it.
 //!
-//! What a crash between a won version claim and its write costs: that bucket refuses writes until
-//! the claim lapses ([`VERSION_CLAIM_SECS`], two minutes); nothing is lost, and the fence above
-//! keeps a late writer from double-spending.
-//!
-//! Where each record sits: every record (a bucket, a cell, a subject's index, a session, a stake,
-//! the key, a credential's index row) is a point-read record at sequence 0 with no parent, where
-//! every store reads `get_plane_record` back from. A store deletes a record by its identity, which
+//! Cells, indexes and the key live in raw record schemas with a fixed private label. Legacy
+//! plane rows and auxiliary sessions/stakes live at sequence 0 with no parent, where every store
+//! reads `get_plane_record` back from. A store deletes a plane record by its identity, which
 //! for a parented record is its parent, so no record here hangs off one: each is reclaimed alone.
 //! The sweep deletes lapsed sessions and staked answers.
 //!
@@ -76,7 +64,7 @@
 //! signing key ride the same records ([`Shared`]).
 //!
 //! THE MINTED SIGNING KEY is kept as THE DESIGN rules the deployment keyset is kept: "sealed in the
-//! store", which is to say minted once for the deployment, under the store's minting claim, and
+//! store", which is to say minted once for the deployment, under an atomic absent comparison, and
 //! kept in the store for every node to read back (the keyset itself is kept the same way, as its
 //! seed, in the store's record slots). Whoever reads the store reads it, as they read the
 //! deployment keyset and every live token the buckets hold. An operator who wants the key outside
@@ -84,9 +72,12 @@
 //! the build says so at `warn` when it signs with the kept key.
 
 use std::collections::BTreeMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use busbar_contract::abi::sdk::store::conditional::{
+    Decision, Expected, Mutation, Predicate, Request,
+};
 use busbar_contract::records::{PlaneDisposition, PlaneRecordRef, PlaneSelector};
 use busbar_contract::store_calls::{StoreCalls, StoreFailure};
 use oauth_as::authorization::{AuthorizationCodeRecord, AuthorizationCodeState};
@@ -104,52 +95,50 @@ use serde::{Deserialize, Serialize};
 /// plane can name or reach these records.
 pub(crate) const LABEL: &str = "\u{1}oauth_as\u{1}";
 
-/// How long a won version claim stands: past it, a bucket whose winner never wrote is writable
-/// again.
+/// The previous version-claim lifetime, retained as the retirement grace for existing cells.
 pub(crate) const VERSION_CLAIM_SECS: u64 = 120;
 
-/// The longest a store call runs before the host cancels it (THE DESIGN Appendix A.4: a `call`
-/// class op is cancelled at its deadline; the store loader's deadline is 30 s).
-pub(crate) const STORE_CALL_SECS: u64 = 30;
-
-/// How far apart two nodes' clocks may be: a claim's lapse is judged by the clock of the node that
-/// asks.
+/// The previous clock-skew allowance, retained only as part of retirement grace.
 pub(crate) const CLOCK_SKEW_SECS: u64 = 30;
 
-/// How long after the READ a write is computed from it may still be issued under the claim it won.
-/// A write issued later is not issued at all. Twice this, plus a store call and the skew, stays
-/// inside a version claim, so no write lands under a claim another node can see as lapsed, and no
-/// writer claims a version after its earlier claimant could still write it.
-pub(crate) const WRITE_BUDGET: Duration = Duration::from_secs(20);
-
-const _: () = assert!(
-    2 * WRITE_BUDGET.as_secs() + STORE_CALL_SECS + CLOCK_SKEW_SECS < VERSION_CLAIM_SECS
-        && WRITE_BUDGET.as_secs() + STORE_CALL_SECS + CLOCK_SKEW_SECS < MINT_CLAIM_SECS
-);
-
-/// How old a cell's last write must be before the sweep retires it: past every claim on its
-/// versions, on any node's clock.
+/// How old a cell's last write must be before the sweep retires its payload.
 pub(crate) const RETIRE_AFTER_SECS: u64 = VERSION_CLAIM_SECS + CLOCK_SKEW_SECS;
 
-/// How old an index row must be before the sweep may delete it for a credential its client does
-/// not hold: past any write in flight (the index is written before its bucket).
+/// How old an unused index row must be before the sweep may retire it. Correctness rests on
+/// atomic comparisons and index restoration in bucket commits, not a bound on in-flight time.
 pub(crate) const INDEX_GRACE_SECS: u64 = 600;
 
 /// How many times one write reads again after losing a version to another writer.
 const SWAP_ATTEMPTS: u32 = 64;
 
-/// The period a signing-key minting claim is for (the deployment keyset's discipline).
-pub(crate) const MINT_CLAIM_SECS: u64 = 120;
-
-/// How long a build that lost the minting claim waits for the winner's key before it refuses.
-#[cfg(not(test))]
-pub(crate) const MINT_WAIT: Duration = Duration::from_secs(10);
-#[cfg(test)]
-pub(crate) const MINT_WAIT: Duration = Duration::from_millis(400);
-
 /// The record kind `kind` of the authorization server.
 fn kind(name: &str) -> String {
     format!("{LABEL}{name}")
+}
+
+fn atomic_kind(name: &str) -> bool {
+    matches!(name, "bucket" | "family" | "uc" | "key") || name.starts_with("ix.")
+}
+
+fn atomic_schema(name: &str) -> String {
+    format!("{}.atomic.v1", kind(name))
+}
+
+/// Live bytes remain exact legacy bytes, preserving the existing per-record size bound. Retired
+/// records start with `-`, which neither a JSON cell/index nor a standard-base64 key can start
+/// with, followed by a fresh nonce. The nonce prevents ABA across create/retire cycles.
+fn live_body(body: &[u8]) -> Vec<u8> {
+    body.to_vec()
+}
+
+fn authority_body(value: &[u8]) -> Result<Option<&[u8]>, StorageError> {
+    match value.split_first() {
+        Some((b'-', nonce)) if nonce.len() == 32 => Ok(None),
+        Some((b'-', _)) | None => Err(StorageError::new(
+            "oauth_as store: invalid authoritative record",
+        )),
+        _ => Ok(Some(value)),
+    }
 }
 
 /// A record id for `value`: its SHA-256, hex. Credentials never appear as store keys.
@@ -179,18 +168,6 @@ fn nonce() -> Result<String, StorageError> {
     Ok(hex(&bytes))
 }
 
-/// The claim on version `next` of the cell `id` whose epoch is `epoch`. The creating write
-/// (`next == 1`) and a cell written before epochs were kept (`epoch` empty) claim `{id}@{next}`;
-/// every other version names its epoch, so no claim of a retired cell names a version of the cell
-/// made again in its place.
-fn version_token(id: &str, epoch: &str, next: u64) -> String {
-    if next == 1 || epoch.is_empty() {
-        format!("{id}@{next}")
-    } else {
-        format!("{id}@{epoch}.{next}")
-    }
-}
-
 fn now_secs() -> u64 {
     secs_of(SystemTime::now())
 }
@@ -216,19 +193,6 @@ fn encode<T: Serialize>(what: &str, value: &T) -> Result<Vec<u8>, StorageError> 
 
 fn decode<T: DeserializeOwned>(what: &str, body: &[u8]) -> Result<T, StorageError> {
     serde_json::from_slice(body).map_err(|e| decode_failed(what, e))
-}
-
-/// The fence: a write computed from a read at `read_at` may be issued only within [`WRITE_BUDGET`].
-fn within_budget(what: &str, read_at: tokio::time::Instant) -> Result<(), StorageError> {
-    if read_at.elapsed() > WRITE_BUDGET {
-        return Err(StorageError::new(format!(
-            "oauth_as store: {what}: the claim was won {} s after the read it rests on, past the \
-             {} s a write may follow it; nothing was written",
-            read_at.elapsed().as_secs(),
-            WRITE_BUDGET.as_secs()
-        )));
-    }
-    Ok(())
 }
 
 /// A device grant's user code, normalized, and its device code: what its user-code cell holds.
@@ -354,7 +318,7 @@ struct Cell<T> {
     /// The cell's own id, so the sweep can name it again.
     #[serde(default)]
     id: String,
-    /// The cell's epoch, picked by the write that created it ([`version_token`]).
+    /// The cell's epoch, picked by the write that created it.
     #[serde(default)]
     e: String,
 }
@@ -365,7 +329,7 @@ enum Swap<R> {
     Write(R),
     /// Answer `R` without writing.
     Keep(R),
-    /// The cell now holds nothing: delete it once its last write is older than
+    /// The cell now holds nothing: retire its payload once its last write is older than
     /// [`RETIRE_AFTER_SECS`]; until then write it when `changed`, else keep it. Answer `R`.
     Retire(R, bool),
 }
@@ -384,14 +348,355 @@ impl<R> Swap<R> {
 /// THE STORE THE AUTHORIZATION SERVER SHARES with every node on the deployment's store.
 pub(crate) struct Shared {
     calls: Arc<dyn StoreCalls>,
+    /// Registered before the first submission and removed only on a definitive decision. A
+    /// dropped caller does not drop this retained candidate. It is deliberately in process:
+    /// atomic predicates protect against late backend decisions even after process restart.
+    pending: Mutex<Vec<Arc<Request>>>,
 }
 
 impl Shared {
     pub(crate) fn new(calls: Arc<dyn StoreCalls>) -> Self {
-        Self { calls }
+        Self {
+            calls,
+            pending: Mutex::new(Vec::new()),
+        }
+    }
+
+    /// A configured store must provide the negotiated atomic primitive; there is no emulation
+    /// with claims or unconditional writes. The plane also checks this before publishing a build.
+    pub(crate) fn require_atomic(calls: &dyn StoreCalls) -> Result<(), String> {
+        if calls.supports_record_transaction() {
+            Ok(())
+        } else {
+            Err("oauth_as requires a store with atomic conditional-record transactions".into())
+        }
+    }
+
+    async fn submit(&self, request: Arc<Request>) -> Result<Decision, StorageError> {
+        Self::require_atomic(self.calls.as_ref()).map_err(StorageError::new)?;
+        request
+            .encode()
+            .map_err(|e| StorageError::new(format!("oauth_as store: {e}")))?;
+        {
+            let mut pending = self.pending.lock().unwrap_or_else(|p| p.into_inner());
+            if !pending.iter().any(|r| r.op_id == request.op_id) {
+                pending.push(Arc::clone(&request));
+            }
+        }
+        let decision = self
+            .calls
+            .record_transaction(&request)
+            .await
+            .map_err(|f| failed("conditional record", f))?;
+        self.pending
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .retain(|r| r.op_id != request.op_id);
+        Ok(decision)
+    }
+
+    async fn settle(&self, schema: &str, key: Option<&[u8]>) -> Result<(), StorageError> {
+        Self::require_atomic(self.calls.as_ref()).map_err(StorageError::new)?;
+        let pending: Vec<_> =
+            self.pending
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .iter()
+                .filter(|r| {
+                    r.predicates.iter().any(|p| {
+                        p.schema == schema && key.is_none_or(|key| p.key.as_slice() == key)
+                    }) || r.mutations.iter().any(|m| {
+                        let (s, k) = m.address();
+                        s == schema && key.is_none_or(|key| k == key)
+                    })
+                })
+                .cloned()
+                .collect();
+        for request in pending {
+            self.submit(request).await?;
+        }
+        Ok(())
+    }
+
+    fn candidate(
+        schema: &str,
+        id: &str,
+        expected: Option<Vec<u8>>,
+        value: Vec<u8>,
+    ) -> Arc<Request> {
+        Arc::new(Request {
+            version: busbar_contract::abi::sdk::store::conditional::VERSION,
+            op_id: busbar_kernel::door::op_id(),
+            predicates: vec![Predicate {
+                schema: schema.to_string(),
+                key: id.as_bytes().to_vec(),
+                expected: expected.map_or(Expected::Absent, Expected::Bytes),
+            }],
+            mutations: vec![Mutation::Put {
+                schema: schema.to_string(),
+                key: id.as_bytes().to_vec(),
+                value,
+            }],
+        })
+    }
+
+    /// Reachability is part of the bucket commit. A prewritten index alone is insufficient: a
+    /// sweep may reclaim it while an accepted backend mutation remains pending indefinitely.
+    async fn bucket_indexes(
+        &self,
+        request: &mut Request,
+        bucket: &Bucket,
+    ) -> Result<(), StorageError> {
+        let mut indexes = BTreeMap::new();
+        for (ix, keys) in [
+            ("tok", bucket.tokens.keys().collect::<Vec<_>>()),
+            ("rt", bucket.refresh.keys().collect()),
+            ("code", bucket.codes.keys().collect()),
+            ("par", bucket.pushed.keys().collect()),
+            ("dev", bucket.devices.keys().collect()),
+            ("cons", bucket.consents.keys().collect()),
+        ] {
+            for key in keys {
+                indexes.insert((ix, digest(key)), ());
+            }
+        }
+        for family in bucket
+            .tokens
+            .values()
+            .filter_map(|t| t.family_id.as_deref())
+            .chain(bucket.refresh.values().map(|r| r.family_id.as_str()))
+        {
+            indexes.insert(("fam", digest(family)), ());
+        }
+        for ((ix, id), ()) in indexes {
+            let row = IndexRow {
+                client: bucket.id.clone(),
+                key: id.clone(),
+                at: now_secs(),
+            };
+            request.mutations.push(Mutation::Put {
+                schema: atomic_schema(&format!("ix.{ix}")),
+                key: id.into_bytes(),
+                value: live_body(&encode("index", &row)?),
+            });
+        }
+        let mut subjects = BTreeMap::new();
+        for consent in bucket.consents.values() {
+            subjects.insert(digest(&consent.subject), ());
+        }
+        for (id, ()) in subjects {
+            let raw = self.authority(SUBJECT_INDEX, &id).await?;
+            let cell: Option<Cell<SubjectIndex>> = raw
+                .as_deref()
+                .map(authority_body)
+                .transpose()?
+                .flatten()
+                .map(|body| decode(SUBJECT_INDEX, body))
+                .transpose()?;
+            let mut cell = cell.unwrap_or(Cell {
+                v: 0,
+                b: SubjectIndex::default(),
+                at: 0,
+                id: id.clone(),
+                e: nonce()?,
+            });
+            cell.v = cell.v.checked_add(1).ok_or_else(|| {
+                StorageError::new("oauth_as store: subject index version exhausted")
+            })?;
+            cell.at = now_secs();
+            cell.id.clone_from(&id);
+            let now = now_secs();
+            if cell
+                .b
+                .clients
+                .get(&bucket.id)
+                .is_none_or(|i| now.saturating_sub(i.at) > INDEX_GRACE_SECS / 2)
+            {
+                cell.b
+                    .clients
+                    .insert(bucket.id.clone(), Indexed { at: now });
+            }
+            let schema = atomic_schema(SUBJECT_INDEX);
+            request.predicates.push(Predicate {
+                schema: schema.clone(),
+                key: id.as_bytes().to_vec(),
+                expected: raw.map_or(Expected::Absent, Expected::Bytes),
+            });
+            request.mutations.push(Mutation::Put {
+                schema,
+                key: id.into_bytes(),
+                value: live_body(&encode(SUBJECT_INDEX, &cell)?),
+            });
+        }
+        let mut codes = BTreeMap::new();
+        for grant in bucket.devices.values() {
+            let (code, owner) = user_code(grant);
+            codes.insert(digest(&code), owner);
+        }
+        let previous: Option<Cell<Bucket>> = request
+            .predicates
+            .iter()
+            .find(|p| p.schema == atomic_schema("bucket"))
+            .and_then(|p| match &p.expected {
+                Expected::Bytes(body) => Some(body.as_slice()),
+                Expected::Absent => None,
+            })
+            .map(authority_body)
+            .transpose()?
+            .flatten()
+            .map(|body| decode("bucket", body))
+            .transpose()?;
+        let mut released = BTreeMap::new();
+        if let Some(previous) = previous {
+            for grant in previous.b.devices.values() {
+                let (code, owner) = user_code(grant);
+                let id = digest(&code);
+                if !codes.contains_key(&id) {
+                    released.insert(id, owner);
+                }
+            }
+        }
+        for (id, owner) in released {
+            let raw = self.authority("uc", &id).await?;
+            let cell: Option<Cell<Option<String>>> = raw
+                .as_deref()
+                .map(authority_body)
+                .transpose()?
+                .flatten()
+                .map(|body| decode("uc", body))
+                .transpose()?;
+            let Some(mut cell) = cell else {
+                continue;
+            };
+            if cell.b.as_deref() != Some(owner.as_str()) {
+                continue;
+            }
+            let value = if now_secs().saturating_sub(cell.at) > RETIRE_AFTER_SECS {
+                format!("-{}", nonce()?).into_bytes()
+            } else {
+                cell.v = cell.v.checked_add(1).ok_or_else(|| {
+                    StorageError::new("oauth_as store: user-code index version exhausted")
+                })?;
+                cell.b = None;
+                cell.at = now_secs();
+                cell.id.clone_from(&id);
+                live_body(&encode("uc", &cell)?)
+            };
+            let schema = atomic_schema("uc");
+            request.predicates.push(Predicate {
+                schema: schema.clone(),
+                key: id.as_bytes().to_vec(),
+                expected: raw.map_or(Expected::Absent, Expected::Bytes),
+            });
+            request.mutations.push(Mutation::Put {
+                schema,
+                key: id.into_bytes(),
+                value,
+            });
+        }
+        for (id, owner) in codes {
+            let raw = self.authority("uc", &id).await?;
+            let cell: Option<Cell<Option<String>>> = raw
+                .as_deref()
+                .map(authority_body)
+                .transpose()?
+                .flatten()
+                .map(|body| decode("uc", body))
+                .transpose()?;
+            let mut cell = cell.unwrap_or(Cell {
+                v: 0,
+                b: None,
+                at: 0,
+                id: id.clone(),
+                e: nonce()?,
+            });
+            if cell.b.as_deref().is_some_and(|held| held != owner) {
+                return Err(StorageError::new(
+                    "user code is already indexed for a different device_code",
+                ));
+            }
+            cell.v = cell.v.checked_add(1).ok_or_else(|| {
+                StorageError::new("oauth_as store: user-code index version exhausted")
+            })?;
+            cell.at = now_secs();
+            cell.id.clone_from(&id);
+            cell.b = Some(owner);
+            let schema = atomic_schema("uc");
+            request.predicates.push(Predicate {
+                schema: schema.clone(),
+                key: id.as_bytes().to_vec(),
+                expected: raw.map_or(Expected::Absent, Expected::Bytes),
+            });
+            request.mutations.push(Mutation::Put {
+                schema,
+                key: id.into_bytes(),
+                value: live_body(&encode("uc", &cell)?),
+            });
+        }
+        Ok(())
+    }
+
+    /// Read raw authority, importing a legacy row once under an absent comparison. Never fall
+    /// back after raw retirement: legacy writes can finish arbitrarily late.
+    async fn authority(&self, name: &str, id: &str) -> Result<Option<Vec<u8>>, StorageError> {
+        let schema = atomic_schema(name);
+        self.settle(&schema, Some(id.as_bytes())).await?;
+        for _ in 0..SWAP_ATTEMPTS {
+            if let Some(value) = self
+                .calls
+                .record_get(&schema, id.as_bytes())
+                .await
+                .map_err(|f| failed(name, f))?
+            {
+                authority_body(value.as_slice())?;
+                if name == "key" {
+                    self.cleanup_legacy(name, id).await;
+                }
+                return Ok(Some(value.as_slice().to_vec()));
+            }
+            let Some(legacy) = self
+                .calls
+                .get_plane_record(&kind(name), id)
+                .await
+                .map_err(|f| failed(name, f))?
+            else {
+                return Ok(None);
+            };
+            let value = live_body(&legacy);
+            match self
+                .submit(Self::candidate(&schema, id, None, value.clone()))
+                .await?
+            {
+                Decision::Applied => {
+                    self.cleanup_legacy(name, id).await;
+                    return Ok(Some(value));
+                }
+                Decision::ConditionConflict => continue,
+            }
+        }
+        Err(StorageError::new(
+            "oauth_as store: legacy import repeatedly conflicted",
+        ))
+    }
+
+    /// Raw authority is already durable before removing its superseded legacy copy. Cleanup
+    /// failure never falls back or rolls authority back; a subsequent listing retries it.
+    async fn cleanup_legacy(&self, name: &str, id: &str) {
+        if let Err(f) = self.calls.delete_plane_record(&kind(name), id).await {
+            tracing::warn!(error = %failed(name, f), "oauth_as: a superseded legacy row was not reclaimed");
+        }
     }
 
     async fn get_body(&self, kind_name: &str, id: &str) -> Result<Option<Vec<u8>>, StorageError> {
+        Self::require_atomic(self.calls.as_ref()).map_err(StorageError::new)?;
+        if atomic_kind(kind_name) {
+            return self
+                .authority(kind_name, id)
+                .await?
+                .map(|v| authority_body(&v).map(|b| b.map(<[u8]>::to_vec)))
+                .transpose()
+                .map(Option::flatten);
+        }
         self.calls
             .get_plane_record(&kind(kind_name), id)
             .await
@@ -412,6 +717,12 @@ impl Shared {
     /// Point-read records live at sequence 0 with no parent: that is where every store reads
     /// `get_plane_record` back from.
     async fn put_body(&self, kind_name: &str, id: &str, body: &[u8]) -> Result<(), StorageError> {
+        Self::require_atomic(self.calls.as_ref()).map_err(StorageError::new)?;
+        if atomic_kind(kind_name) {
+            return Err(StorageError::new(
+                "oauth_as store: authoritative records require an exact candidate",
+            ));
+        }
         let k = kind(kind_name);
         self.calls
             .upsert_plane_record(PlaneRecordRef {
@@ -439,11 +750,65 @@ impl Shared {
 
     /// Every record of `kind_name` that decodes as a `T`.
     async fn list<T: DeserializeOwned>(&self, kind_name: &str) -> Result<Vec<T>, StorageError> {
-        let rows = self
+        Self::require_atomic(self.calls.as_ref()).map_err(StorageError::new)?;
+        let mut rows = self
             .calls
             .list_plane_records(&kind(kind_name), &PlaneSelector::All)
             .await
             .map_err(|f| failed(kind_name, f))?;
+        if atomic_kind(kind_name) {
+            let schema = atomic_schema(kind_name);
+            self.settle(&schema, None).await?;
+            let raw: BTreeMap<_, _> = self
+                .calls
+                .record_scan(&schema, b"", u32::MAX)
+                .await
+                .map_err(|f| failed(kind_name, f))?
+                .into_iter()
+                .collect();
+            // Every current cell stores its id. Older buckets/family barriers also store the
+            // identifying value inside their payload; rows older than that remain point-readable
+            // and retain the previous sweep's behavior for unidentifiable legacy bodies.
+            let mut superseded = Vec::new();
+            rows.retain(|body| {
+                let Ok(value) = serde_json::from_slice::<serde_json::Value>(body) else {
+                    return true;
+                };
+                let id = value
+                    .get("id")
+                    .or_else(|| value.get("key"))
+                    .and_then(|v| v.as_str())
+                    .filter(|id| !id.is_empty())
+                    .map(str::to_string)
+                    .or_else(|| {
+                        value
+                            .get("b")
+                            .and_then(|b| b.get("id"))
+                            .and_then(|v| v.as_str())
+                            .map(|id| {
+                                if kind_name == "bucket" {
+                                    digest(id)
+                                } else {
+                                    id.to_string()
+                                }
+                            })
+                    });
+                if let Some(id) = id.filter(|id| raw.contains_key(id.as_bytes())) {
+                    superseded.push(id);
+                    false
+                } else {
+                    true
+                }
+            });
+            for id in superseded {
+                self.cleanup_legacy(kind_name, &id).await;
+            }
+            for value in raw.values() {
+                if let Some(body) = authority_body(value.as_slice())? {
+                    rows.push(body.to_vec());
+                }
+            }
+        }
         Ok(rows
             .iter()
             .filter_map(|body| serde_json::from_slice(body).ok())
@@ -451,6 +816,12 @@ impl Shared {
     }
 
     async fn delete(&self, kind_name: &str, id: &str) -> Result<(), StorageError> {
+        Self::require_atomic(self.calls.as_ref()).map_err(StorageError::new)?;
+        if atomic_kind(kind_name) {
+            return Err(StorageError::new(
+                "oauth_as store: authoritative records retire through CAS",
+            ));
+        }
         self.calls
             .delete_plane_record(&kind(kind_name), id)
             .await
@@ -465,6 +836,7 @@ impl Shared {
         token: &str,
         expires_at: u64,
     ) -> Result<bool, StorageError> {
+        Self::require_atomic(self.calls.as_ref()).map_err(StorageError::new)?;
         let now = now_secs();
         self.calls
             .redeem_plane_token(&kind(kind_name), token, expires_at, now)
@@ -485,22 +857,69 @@ impl Shared {
     }
 
     /// COMPARE-AND-SET the store cell `(kind_name, id)`, never an `AppHandle`: `f` reads the current
-    /// value and when that version was written (Unix seconds), and says what to write; the write
-    /// lands only under the version this call redeemed, and a lost version reads again.
+    /// value and when that version was written (Unix seconds), and says what to write. The store
+    /// compares its exact bytes with the mutation, and a condition conflict reads again.
     async fn cas_cell<T, R>(
         &self,
         kind_name: &str,
         id: &str,
-        mut f: impl FnMut(&mut T, u64) -> Result<Swap<R>, StorageError>,
+        f: impl FnMut(&mut T, u64) -> Result<Swap<R>, StorageError>,
     ) -> Result<R, StorageError>
     where
         T: Serialize + DeserializeOwned + Default,
     {
+        self.cas_cell_guarded(kind_name, id, None, f)
+            .await?
+            .ok_or_else(|| StorageError::new("oauth_as store: unexpected family guard"))
+    }
+
+    async fn cas_cell_guarded<T, R>(
+        &self,
+        kind_name: &str,
+        id: &str,
+        family: Option<&str>,
+        mut f: impl FnMut(&mut T, u64) -> Result<Swap<R>, StorageError>,
+    ) -> Result<Option<R>, StorageError>
+    where
+        T: Serialize + DeserializeOwned + Default,
+    {
+        let schema = atomic_schema(kind_name);
         for attempt in 0..SWAP_ATTEMPTS {
-            let read_at = tokio::time::Instant::now();
-            let (v, at, epoch, mut value) = self.read_cell::<T>(kind_name, id).await?;
+            let family_guard = if let Some(family) = family {
+                let family_id = digest(family);
+                let raw = self.authority("family", &family_id).await?;
+                let cell: Option<Cell<FamilyBar>> = raw
+                    .as_deref()
+                    .map(authority_body)
+                    .transpose()?
+                    .flatten()
+                    .map(|body| decode("family", body))
+                    .transpose()?;
+                if cell.is_some_and(|c| c.b.times.is_some()) {
+                    return Ok(None);
+                }
+                Some(Predicate {
+                    schema: atomic_schema("family"),
+                    key: family_id.into_bytes(),
+                    expected: raw.map_or(Expected::Absent, Expected::Bytes),
+                })
+            } else {
+                None
+            };
+            let raw = self.authority(kind_name, id).await?;
+            let cell: Option<Cell<T>> = raw
+                .as_deref()
+                .map(authority_body)
+                .transpose()?
+                .flatten()
+                .map(|body| decode(kind_name, body))
+                .transpose()?;
+            let (v, at, epoch, mut value) = match cell {
+                Some(c) => (c.v, c.at, c.e, c.b),
+                None => (0, 0, String::new(), T::default()),
+            };
             let (answer, retire) = match f(&mut value, at)? {
-                Swap::Keep(r) => return Ok(r),
+                Swap::Keep(r) => return Ok(Some(r)),
                 Swap::Write(r) => (r, false),
                 Swap::Retire(r, changed) => {
                     if v != 0 && now_secs().saturating_sub(at) > RETIRE_AFTER_SECS {
@@ -508,30 +927,18 @@ impl Shared {
                     } else if changed && v != 0 {
                         (r, false)
                     } else {
-                        return Ok(r);
+                        return Ok(Some(r));
                     }
                 }
             };
-            let next = v + 1;
+            let next = v
+                .checked_add(1)
+                .ok_or_else(|| StorageError::new("oauth_as store: cell version exhausted"))?;
             // A cell made now gets an epoch of its own; every version after carries it on.
             let epoch = if v == 0 { nonce()? } else { epoch };
-            let token = version_token(id, &epoch, next);
-            if self
-                .claim(
-                    &format!("{kind_name}.v"),
-                    &token,
-                    now_secs() + VERSION_CLAIM_SECS,
-                )
-                .await?
-            {
-                within_budget(kind_name, read_at)?;
-                if retire {
-                    // Retired under the won claim: a writer that read this version loses it and
-                    // reads the cell gone, and creates it again under a new epoch, which no claim
-                    // of this one names.
-                    self.delete(kind_name, id).await?;
-                    return Ok(answer);
-                }
+            let body = if retire {
+                format!("-{}", nonce()?).into_bytes()
+            } else {
                 let cell = Cell {
                     v: next,
                     b: &value,
@@ -539,9 +946,21 @@ impl Shared {
                     id: id.to_string(),
                     e: epoch,
                 };
-                // The version rides in the cell itself.
-                self.put(kind_name, id, &cell).await?;
-                return Ok(answer);
+                live_body(&encode(kind_name, &cell)?)
+            };
+            let mut candidate = Self::candidate(&schema, id, raw, body);
+            let request = Arc::make_mut(&mut candidate);
+            if let Some(guard) = family_guard {
+                request.predicates.push(guard);
+            }
+            if kind_name == "bucket" {
+                let body = encode(kind_name, &value)?;
+                let bucket = decode::<Bucket>(kind_name, &body)?;
+                self.bucket_indexes(request, &bucket).await?;
+            }
+            match self.submit(candidate).await? {
+                Decision::Applied => return Ok(Some(answer)),
+                Decision::ConditionConflict => {}
             }
             // Another writer holds this version: read again, after a short, growing pause.
             tokio::time::sleep(Duration::from_millis(u64::from(attempt.min(20)))).await;
@@ -571,6 +990,24 @@ impl Shared {
         .await
     }
 
+    async fn update_guarded<R>(
+        &self,
+        client_id: &str,
+        family: Option<&str>,
+        mut f: impl FnMut(&mut Bucket, u64) -> Result<Swap<R>, StorageError>,
+    ) -> Result<Option<R>, StorageError> {
+        self.cas_cell_guarded(
+            "bucket",
+            &digest(client_id),
+            family,
+            |b: &mut Bucket, at| {
+                b.id = client_id.to_string();
+                f(b, at)
+            },
+        )
+        .await
+    }
+
     /// Index the credential (or family) `key` of kind `ix` to the one client it was minted for.
     async fn index(&self, ix: &str, key: &str, client_id: &str) -> Result<(), StorageError> {
         let id = digest(key);
@@ -579,7 +1016,22 @@ impl Shared {
             key: id.clone(),
             at: now_secs(),
         };
-        self.put(&format!("ix.{ix}"), &id, &row).await
+        let name = format!("ix.{ix}");
+        for _ in 0..SWAP_ATTEMPTS {
+            let raw = self.authority(&name, &id).await?;
+            let candidate = Self::candidate(
+                &atomic_schema(&name),
+                &id,
+                raw,
+                live_body(&encode(&name, &row)?),
+            );
+            if self.submit(candidate).await? == Decision::Applied {
+                return Ok(());
+            }
+        }
+        Err(StorageError::new(
+            "oauth_as store: index repeatedly conflicted",
+        ))
     }
 
     /// The one client the index `ix` names for `key`.
@@ -651,6 +1103,118 @@ impl Shared {
         Ok(bar.times.is_some())
     }
 
+    /// Barrier and cascade are one candidate. A caller disappearing after the barrier's decision
+    /// must not strand existing live credentials behind a partially completed revocation.
+    async fn revoke_family(
+        &self,
+        family_id: &str,
+        window: RevocationWindow,
+    ) -> Result<u64, StorageError> {
+        let id = digest(family_id);
+        for attempt in 0..SWAP_ATTEMPTS {
+            let raw = self.authority("family", &id).await?;
+            let cell: Option<Cell<FamilyBar>> = raw
+                .as_deref()
+                .map(authority_body)
+                .transpose()?
+                .flatten()
+                .map(|body| decode("family", body))
+                .transpose()?;
+            let mut cell = cell.unwrap_or(Cell {
+                v: 0,
+                b: FamilyBar::default(),
+                at: 0,
+                id: id.clone(),
+                e: nonce()?,
+            });
+            cell.v = cell
+                .v
+                .checked_add(1)
+                .ok_or_else(|| StorageError::new("oauth_as store: family version exhausted"))?;
+            cell.at = now_secs();
+            cell.id.clone_from(&id);
+            cell.b.id.clone_from(&id);
+            Times::merge(&mut cell.b.times, window);
+            let mut request = Self::candidate(
+                &atomic_schema("family"),
+                &id,
+                raw,
+                live_body(&encode("family", &cell)?),
+            );
+            let request_body = Arc::make_mut(&mut request);
+            // Comparing the index also covers an absent owner: a newly committed bucket installs
+            // its family index in the same batch, so a concurrent first issuance forces a retry.
+            let index = self.authority("ix.fam", &id).await?;
+            let owner: Option<IndexRow> = index
+                .as_deref()
+                .map(authority_body)
+                .transpose()?
+                .flatten()
+                .map(|body| decode("ix.fam", body))
+                .transpose()?;
+            request_body.predicates.push(Predicate {
+                schema: atomic_schema("ix.fam"),
+                key: id.as_bytes().to_vec(),
+                expected: index.map_or(Expected::Absent, Expected::Bytes),
+            });
+            let mut removed = 0;
+            if let Some(owner) = owner {
+                let bucket_id = digest(&owner.client);
+                let bucket_raw = self.authority("bucket", &bucket_id).await?;
+                let bucket: Option<Cell<Bucket>> = bucket_raw
+                    .as_deref()
+                    .map(authority_body)
+                    .transpose()?
+                    .flatten()
+                    .map(|body| decode("bucket", body))
+                    .transpose()?;
+                if let Some(mut bucket) = bucket {
+                    bucket.b.id.clone_from(&owner.client);
+                    let before = bucket.b.tokens.len() + bucket.b.refresh.len();
+                    bucket
+                        .b
+                        .tokens
+                        .retain(|_, t| t.family_id.as_deref() != Some(family_id));
+                    bucket.b.refresh.retain(|_, r| r.family_id != family_id);
+                    removed = (before - bucket.b.tokens.len() - bucket.b.refresh.len()) as u64;
+                    request_body.predicates.push(Predicate {
+                        schema: atomic_schema("bucket"),
+                        key: bucket_id.as_bytes().to_vec(),
+                        expected: bucket_raw.map_or(Expected::Absent, Expected::Bytes),
+                    });
+                    if removed != 0 {
+                        bucket.v = bucket.v.checked_add(1).ok_or_else(|| {
+                            StorageError::new("oauth_as store: bucket version exhausted")
+                        })?;
+                        bucket.at = now_secs();
+                        bucket.id.clone_from(&bucket_id);
+                        request_body.mutations.push(Mutation::Put {
+                            schema: atomic_schema("bucket"),
+                            key: bucket_id.into_bytes(),
+                            value: live_body(&encode("bucket", &bucket)?),
+                        });
+                        self.bucket_indexes(request_body, &bucket.b).await?;
+                    }
+                } else {
+                    request_body.predicates.push(Predicate {
+                        schema: atomic_schema("bucket"),
+                        key: bucket_id.into_bytes(),
+                        expected: bucket_raw.map_or(Expected::Absent, Expected::Bytes),
+                    });
+                }
+            }
+            match self.submit(request).await? {
+                Decision::Applied => return Ok(removed),
+                Decision::ConditionConflict => {
+                    tokio::time::sleep(Duration::from_millis(u64::from(attempt.min(20)))).await
+                }
+            }
+        }
+        Err(StorageError::new(
+            "oauth_as store: family revocation repeatedly conflicted",
+        ))
+    }
+
     async fn hold_user_code(
         &self,
         normalized: &str,
@@ -669,29 +1233,6 @@ impl Shared {
             }
         })
         .await
-    }
-
-    async fn release_user_code(
-        &self,
-        normalized: &str,
-        device_code: &str,
-    ) -> Result<(), StorageError> {
-        self.cas_cell::<Option<String>, ()>("uc", &digest(normalized), |held, _| {
-            if held.as_deref() == Some(device_code) {
-                *held = None;
-                Ok(Swap::Retire((), true))
-            } else {
-                Ok(Swap::Keep(()))
-            }
-        })
-        .await
-    }
-
-    async fn release_all(&self, freed: Vec<(String, String)>) -> Result<(), StorageError> {
-        for (uc, dc) in freed {
-            self.release_user_code(&uc, &dc).await?;
-        }
-        Ok(())
     }
 
     async fn user_code_owner(&self, normalized: &str) -> Result<Option<String>, StorageError> {
@@ -812,8 +1353,8 @@ impl Shared {
     }
 
     /// THE DEPLOYMENT'S AUTHORIZATION-SERVER SIGNING KEY (PKCS#8 DER): the one the store keeps, or
-    /// `mint()`'s, kept now by the build that wins this period's minting claim. A build that lost
-    /// the claim takes the winner's and never signs with a key of its own. Kept as THE DESIGN rules
+    /// `mint()`'s, kept by one atomic absent comparison. A loser takes the winner's key.
+    /// Kept as THE DESIGN rules
     /// the deployment keyset is kept, sealed in the store: once for the deployment, in a record kind
     /// no plane can name ([`LABEL`]), read by every node on the store (see the module docs for who
     /// else reads it, and how an operator keeps the key out of the store).
@@ -825,45 +1366,26 @@ impl Shared {
         if let Some(held) = read().await? {
             return Ok(held);
         }
-        // ONE minting claim, standing for one period: two builds can never both hold it, and a
-        // winner that died before keeping its key frees it when the period ends. The key is
-        // written under the claim's fence ([`within_budget`]), measured from before the claim, so
-        // a winner never keeps a key after another node can see its claim lapse.
-        let claimed_at = tokio::time::Instant::now();
-        let won = self
-            .claim("mint", "signing", now_secs() + MINT_CLAIM_SECS)
-            .await
-            .map_err(|e| e.0)?;
-        if !won {
-            let deadline = std::time::Instant::now() + MINT_WAIT;
-            loop {
-                if let Some(held) = read().await? {
-                    return Ok(held);
-                }
-                if std::time::Instant::now() >= deadline {
-                    return Err(format!(
-                        "another node holds the store's claim to mint the authorization server's \
-                         signing key and has not kept it; refusing rather than signing with a \
-                         second key (the claim is free again within {MINT_CLAIM_SECS} s)"
-                    ));
-                }
-                std::thread::sleep(Duration::from_millis(20));
-            }
-        }
-        // A build that won after a slow earlier winner's claim lapsed finds that one's key.
-        if let Some(held) = read().await? {
-            return Ok(held);
-        }
         let der = mint()?;
         use base64::Engine as _;
         let body = base64::engine::general_purpose::STANDARD.encode(&der);
-        within_budget("key", claimed_at).map_err(|e| e.0)?;
-        self.put_body("key", "signing", body.as_bytes())
+        // Keep the candidate intact across unknown answers. A comparison loser reads the kept
+        // key; current-row readback never substitutes for an unknown transaction decision.
+        match self
+            .submit(Self::candidate(
+                &atomic_schema("key"),
+                "signing",
+                None,
+                live_body(body.as_bytes()),
+            ))
             .await
-            .map_err(|e| e.0)?;
-        read()
-            .await?
-            .ok_or_else(|| "the store did not keep the signing key".to_string())
+            .map_err(|e| e.0)?
+        {
+            Decision::Applied => Ok(der),
+            Decision::ConditionConflict => read()
+                .await?
+                .ok_or_else(|| "the store did not keep the signing key".to_string()),
+        }
     }
 }
 
@@ -923,6 +1445,24 @@ struct IndexRow {
     at: u64,
 }
 
+fn bucket_holds(b: &Bucket, ix: &str, key: &str) -> bool {
+    let is = |value: &str| digest(value) == key;
+    match ix {
+        "tok" => b.tokens.keys().any(|k| is(k)),
+        "rt" => b.refresh.keys().any(|k| is(k)),
+        "code" => b.codes.keys().any(|k| is(k)),
+        "par" => b.pushed.keys().any(|k| is(k)),
+        "dev" => b.devices.keys().any(|k| is(k)),
+        "cons" => b.consents.keys().any(|k| is(k)),
+        _ => {
+            b.tokens
+                .values()
+                .any(|t| t.family_id.as_deref().is_some_and(is))
+                || b.refresh.values().any(|r| is(&r.family_id))
+        }
+    }
+}
+
 /// A token family's barrier, named by its family's digest so the sweep can find it again.
 #[derive(Default, Serialize, Deserialize)]
 #[serde(default)]
@@ -954,7 +1494,8 @@ impl SharedStorage {
     }
 
     /// Write a token or refresh token into its client's bucket (`insert`) unless a barrier stands;
-    /// then the family barrier, read after the write, undoes it (`remove`).
+    /// compare the family barrier atomically too. A barrier landing after the commit also triggers
+    /// the existing immediate cleanup (`remove`) while its cascade proceeds.
     async fn put_guarded(
         &self,
         g: Guarded<'_>,
@@ -967,14 +1508,15 @@ impl SharedStorage {
         }
         s.index(g.ix, g.key, g.client).await?;
         let applied = s
-            .update(g.client, |b, _| {
+            .update_guarded(g.client, g.family, |b, _| {
                 if b.barred(g.subject, g.established) {
                     return Ok(Swap::Keep(false));
                 }
                 insert(b);
                 Ok(Swap::Write(true))
             })
-            .await?;
+            .await?
+            .unwrap_or(false);
         if !applied {
             return Ok(WriteOutcome::RefusedRevoked);
         }
@@ -1035,13 +1577,11 @@ impl Storage for SharedStorage {
                  identity a barrier can be recorded for",
             ));
         }
-        let mut freed = Vec::new();
         let existed = self
             .shared
             .update(client_id.as_str(), |b, _| {
                 let existed = b.client.take().is_some();
                 Times::merge(&mut b.client_barrier, window);
-                freed = b.devices.values().map(user_code).collect();
                 b.tokens.clear();
                 b.refresh.clear();
                 b.codes.clear();
@@ -1051,7 +1591,6 @@ impl Storage for SharedStorage {
                 Ok(Swap::Write(existed))
             })
             .await?;
-        self.shared.release_all(freed).await?;
         Ok(existed)
     }
 
@@ -1061,18 +1600,11 @@ impl Storage for SharedStorage {
         s.hold_user_code(&normalized, &grant.device_code).await?;
         let client = grant.client_id.as_str().to_string();
         s.index("dev", &grant.device_code, &client).await?;
-        let mut previous = None;
         s.update(&client, |b, _| {
-            previous = b
-                .devices
-                .insert(grant.device_code.clone(), grant.clone())
-                .map(|p| normalize_user_code(&p.user_code));
+            b.devices.insert(grant.device_code.clone(), grant.clone());
             Ok(Swap::Write(()))
         })
         .await?;
-        if let Some(old) = previous.filter(|old| *old != normalized) {
-            s.release_user_code(&old, &grant.device_code).await?;
-        }
         Ok(())
     }
 
@@ -1099,16 +1631,9 @@ impl Storage for SharedStorage {
         &self,
         device_code: &str,
     ) -> Result<Option<DeviceGrant>, StorageError> {
-        let taken = self
-            .shared
+        self.shared
             .take("dev", device_code, |b| b.devices.remove(device_code))
-            .await?;
-        if let Some(g) = &taken {
-            self.shared
-                .release_user_code(&normalize_user_code(&g.user_code), device_code)
-                .await?;
-        }
-        Ok(taken)
+            .await
     }
 
     async fn compare_and_swap_device_grant(
@@ -1137,25 +1662,16 @@ impl Storage for SharedStorage {
                 ));
             }
         }
-        let mut previous = None;
         let swapped = s
             .update(&client, |b, _| {
                 if !is_expected(b) {
                     return Ok(Swap::Keep(false));
                 }
-                previous = b
-                    .devices
-                    .insert(updated.device_code.clone(), updated.clone())
-                    .map(|p| normalize_user_code(&p.user_code));
+                b.devices
+                    .insert(updated.device_code.clone(), updated.clone());
                 Ok(Swap::Write(true))
             })
             .await?;
-        if swapped {
-            s.hold_user_code(&normalized, &updated.device_code).await?;
-            if let Some(old) = previous.filter(|old| *old != normalized) {
-                s.release_user_code(&old, &updated.device_code).await?;
-            }
-        }
         Ok(swapped)
     }
 
@@ -1324,7 +1840,7 @@ impl Storage for SharedStorage {
             s.index("fam", &n.family_id, &client).await?;
         }
         let rotated = s
-            .update(&client, |b, _| {
+            .update_guarded(&client, Some(&expected.family_id), |b, _| {
                 if b.refresh.get(&expected.refresh_token) != Some(expected)
                     || b.barred(expected.subject.as_deref(), expected.grant_established_at)
                 {
@@ -1337,7 +1853,8 @@ impl Storage for SharedStorage {
                 }
                 Ok(Swap::Write(true))
             })
-            .await?;
+            .await?
+            .unwrap_or(false);
         if rotated && s.family_barred(Some(&expected.family_id)).await? {
             // A family revocation landed between the check and the write: its cascade may have
             // listed the family before this write; take back what this rotation issued.
@@ -1374,28 +1891,7 @@ impl Storage for SharedStorage {
                  identity a barrier can be recorded for",
             ));
         }
-        let s = &self.shared;
-        // The barrier first, then the cascade over every client the family's index names.
-        let id = digest(family_id);
-        s.cas_cell::<FamilyBar, ()>("family", &id, |bar, _| {
-            bar.id.clone_from(&id);
-            Times::merge(&mut bar.times, window);
-            Ok(Swap::Write(()))
-        })
-        .await?;
-        // A family is minted for one client: its index names that one.
-        let Some(client) = s.client_of("fam", family_id).await? else {
-            return Ok(0);
-        };
-        s.update(&client, |b, _| {
-            let before = b.tokens.len() + b.refresh.len();
-            b.tokens
-                .retain(|_, t| t.family_id.as_deref() != Some(family_id));
-            b.refresh.retain(|_, r| r.family_id != family_id);
-            let gone = (before - (b.tokens.len() + b.refresh.len())) as u64;
-            Ok(Swap::when(gone != 0, gone))
-        })
-        .await
+        self.shared.revoke_family(family_id, window).await
     }
 
     async fn put_consent(&self, record: ConsentRecord) -> Result<(), StorageError> {
@@ -1494,7 +1990,6 @@ impl Storage for SharedStorage {
         let Some(client) = self.shared.client_of("cons", consent_id).await? else {
             return Ok(0);
         };
-        let mut freed = Vec::new();
         let removed = self
             .shared
             .update(&client, |b, _| {
@@ -1526,19 +2021,14 @@ impl Storage for SharedStorage {
                     .retain(|_, r| !of_grant(&r.client_id, r.subject.as_deref()));
                 b.codes
                     .retain(|_, c| !of_grant(&c.client_id, Some(c.subject.as_str())));
-                freed = Vec::new();
                 b.devices.retain(|_, d| {
                     let gone = d.client_id == cid
                         && matches!(&d.state, DeviceGrantState::Approved { subject: s } if *s == subject);
-                    if gone {
-                        freed.push(user_code(d));
-                    }
                     !gone
                 });
                 Ok(Swap::Write((before - b.records()) as u64))
             })
             .await?;
-        self.shared.release_all(freed).await?;
         Ok(removed)
     }
 
@@ -1569,7 +2059,7 @@ impl Storage for SharedStorage {
             // Judged first on the body the listing already read: a client with nothing to reclaim
             // is not read again. Every node sweeps every client each minute, so a second read of
             // each would be a store read per client per node per minute, to change nothing.
-            let acts = match sweep_bucket(&mut cell.b, cell.at, now, &mut Vec::new()) {
+            let acts = match sweep_bucket(&mut cell.b, cell.at, now) {
                 Swap::Keep(_) => false,
                 Swap::Write(_) => true,
                 Swap::Retire(_, changed) => {
@@ -1579,22 +2069,16 @@ impl Storage for SharedStorage {
             if !acts {
                 continue;
             }
-            let mut freed = Vec::new();
             // One bucket that will not swap (a held version, a store fault) is skipped and said,
             // never the end of the sweep: the next tick tries it again.
             let swept = s
-                .update(&cell.b.id, |b, at| Ok(sweep_bucket(b, at, now, &mut freed)))
+                .update(&cell.b.id, |b, at| Ok(sweep_bucket(b, at, now)))
                 .await;
             match swept {
                 Ok(n) => removed += n,
                 Err(e) => {
                     tracing::warn!(error = %e, "oauth_as: a client's records were not swept this tick; the next tick tries them again");
                     continue;
-                }
-            }
-            for (uc, dc) in freed {
-                if let Err(e) = s.release_user_code(&uc, &dc).await {
-                    tracing::warn!(error = %e, "oauth_as: a lapsed device grant's user code was not released this tick");
                 }
             }
         }
@@ -1634,27 +2118,15 @@ impl Storage for SharedStorage {
 }
 
 /// Reclaim what has lapsed by `now` in one client's records, whose current version was written at
-/// `at`, noting each lapsed device grant's user code in `freed`: the sweep's one change to a
-/// bucket, judged on the listed body and then made under the version the swap reads.
-fn sweep_bucket(
-    b: &mut Bucket,
-    at: u64,
-    now: SystemTime,
-    freed: &mut Vec<(String, String)>,
-) -> Swap<u64> {
+/// `at`: the sweep's one change to a bucket, judged on the listed body and then made under the
+/// version the swap reads. Its user-code releases commit in the same conditional transaction.
+fn sweep_bucket(b: &mut Bucket, at: u64, now: SystemTime) -> Swap<u64> {
     fn lapse<V>(map: &mut BTreeMap<String, V>, mut live: impl FnMut(&V) -> bool) -> u64 {
         let before = map.len();
         map.retain(|_, v| live(v));
         (before - map.len()) as u64
     }
-    freed.clear();
-    let mut n = lapse(&mut b.devices, |g| {
-        let keep = now < g.expires_at;
-        if !keep {
-            freed.push(user_code(g));
-        }
-        keep
-    });
+    let mut n = lapse(&mut b.devices, |g| now < g.expires_at);
     n += lapse(&mut b.codes, |c| now < c.expires_at);
     n += lapse(&mut b.pushed, |p| now < p.expires_at);
     n += lapse(&mut b.tokens, |t| now < t.expires_at);
@@ -1730,22 +2202,14 @@ impl Shared {
         Ok(())
     }
 
-    /// Delete every credential index row whose client no longer holds the credential, once the row
-    /// is older than [`INDEX_GRACE_SECS`] (its bucket write may still be in flight before that).
+    /// Retire unused credential indexes after [`INDEX_GRACE_SECS`], comparing both the exact index
+    /// and bucket snapshots. A delayed bucket commit restores its required indexes atomically.
     async fn sweep_indexes(&self) -> Result<(), StorageError> {
         let mut buckets: BTreeMap<String, Option<Bucket>> = BTreeMap::new();
         let now_s = now_secs();
         for ix in ["tok", "rt", "code", "par", "dev", "cons", "fam"] {
-            let k = kind(&format!("ix.{ix}"));
-            let rows = self
-                .calls
-                .list_plane_records(&k, &PlaneSelector::All)
-                .await
-                .map_err(|f| failed(ix, f))?;
-            for body in rows {
-                let Ok(row) = serde_json::from_slice::<IndexRow>(&body) else {
-                    continue;
-                };
+            let name = format!("ix.{ix}");
+            for row in self.list::<IndexRow>(&name).await? {
                 if row.key.is_empty() || now_s.saturating_sub(row.at) <= INDEX_GRACE_SECS {
                     continue;
                 }
@@ -1760,24 +2224,52 @@ impl Shared {
                 let Some(b) = &buckets[&row.client] else {
                     continue;
                 };
-                let is = |key: &str| digest(key) == row.key;
-                let held = match ix {
-                    "tok" => b.tokens.keys().any(|k| is(k)),
-                    "rt" => b.refresh.keys().any(|k| is(k)),
-                    "code" => b.codes.keys().any(|k| is(k)),
-                    "par" => b.pushed.keys().any(|k| is(k)),
-                    "dev" => b.devices.keys().any(|k| is(k)),
-                    "cons" => b.consents.keys().any(|k| is(k)),
-                    _ => {
-                        b.tokens
-                            .values()
-                            .any(|t| t.family_id.as_deref().is_some_and(is))
-                            || b.refresh.values().any(|r| is(&r.family_id))
-                    }
-                };
+                let held = bucket_holds(b, ix, &row.key);
                 if !held {
-                    if let Err(f) = self.calls.delete_plane_record(&k, &row.key).await {
-                        tracing::warn!(error = %failed(ix, f), "oauth_as: an index row was not reclaimed this tick");
+                    let retired = async {
+                        let raw = self.authority(&name, &row.key).await?;
+                        let Some(body) = raw.as_deref().map(authority_body).transpose()?.flatten()
+                        else {
+                            return Ok::<_, StorageError>(());
+                        };
+                        let current: IndexRow = decode(&name, body)?;
+                        // A bucket commit refreshed this index after the sweep listed it.
+                        if current.at != row.at || current.client != row.client {
+                            return Ok(());
+                        }
+                        let bucket_id = digest(&row.client);
+                        let bucket = self.authority("bucket", &bucket_id).await?;
+                        // Rejudge against the exact snapshot guarded by the deletion. The cached
+                        // bucket is only an initial filter; a newer bucket must keep its index.
+                        let current_bucket: Option<Cell<Bucket>> = bucket
+                            .as_deref()
+                            .map(authority_body)
+                            .transpose()?
+                            .flatten()
+                            .map(|body| decode("bucket", body))
+                            .transpose()?;
+                        let held = current_bucket
+                            .as_ref()
+                            .is_some_and(|c| bucket_holds(&c.b, ix, &row.key));
+                        if held {
+                            return Ok(());
+                        }
+                        let mut request = Self::candidate(
+                            &atomic_schema(&name),
+                            &row.key,
+                            raw,
+                            format!("-{}", nonce()?).into_bytes(),
+                        );
+                        Arc::make_mut(&mut request).predicates.push(Predicate {
+                            schema: atomic_schema("bucket"),
+                            key: bucket_id.into_bytes(),
+                            expected: bucket.map_or(Expected::Absent, Expected::Bytes),
+                        });
+                        self.submit(request).await.map(drop)
+                    }
+                    .await;
+                    if let Err(e) = retired {
+                        tracing::warn!(error = %e, "oauth_as: an index row was not reclaimed this tick");
                     }
                 }
             }
@@ -1786,11 +2278,14 @@ impl Shared {
     }
 
     /// Drop from every subject's index each client that no longer holds a consent of that subject,
-    /// once its entry is older than [`INDEX_GRACE_SECS`] (its consent's bucket write may still be in
-    /// flight before that); a subject whose index names no client is retired. A client whose
+    /// once its entry is older than [`INDEX_GRACE_SECS`]; bucket commits also refresh their subject
+    /// entries atomically. A subject whose index names no client is retired. A client whose
     /// records will not read is kept, and one entry indexed again meanwhile is kept.
     async fn sweep_subjects(&self) -> Result<(), StorageError> {
-        let now_s = now_secs();
+        self.sweep_subjects_at(now_secs()).await
+    }
+
+    async fn sweep_subjects_at(&self, now_s: u64) -> Result<(), StorageError> {
         let mut buckets: BTreeMap<String, Option<Bucket>> = BTreeMap::new();
         for cell in self.list::<Cell<SubjectIndex>>(SUBJECT_INDEX).await? {
             if cell.id.is_empty() {
@@ -1817,21 +2312,97 @@ impl Shared {
             if gone.is_empty() && !cell.b.clients.is_empty() {
                 continue;
             }
-            let swept = self.cas_cell::<SubjectIndex, ()>(SUBJECT_INDEX, &cell.id, |ix, _| {
-                let before = ix.clients.len();
-                ix.clients.retain(|c, i| gone.get(c) != Some(&*i));
-                let changed = ix.clients.len() != before;
-                Ok(if ix.clients.is_empty() {
-                    Swap::Retire((), changed)
-                } else {
-                    Swap::when(changed, ())
-                })
-            });
+            let swept = self.sweep_subject(&cell.id, &gone);
             if let Err(e) = swept.await {
                 tracing::warn!(error = %e, "oauth_as: a subject's index was not swept this tick");
             }
         }
         Ok(())
+    }
+
+    async fn sweep_subject(
+        &self,
+        id: &str,
+        gone: &BTreeMap<String, Indexed>,
+    ) -> Result<(), StorageError> {
+        for attempt in 0..SWAP_ATTEMPTS {
+            let raw = self.authority(SUBJECT_INDEX, id).await?;
+            let cell: Option<Cell<SubjectIndex>> = raw
+                .as_deref()
+                .map(authority_body)
+                .transpose()?
+                .flatten()
+                .map(|body| decode(SUBJECT_INDEX, body))
+                .transpose()?;
+            let Some(mut cell) = cell else {
+                return Ok(());
+            };
+            let mut guards = Vec::new();
+            let mut changed = false;
+            for (client, indexed) in gone {
+                if cell.b.clients.get(client) != Some(indexed) {
+                    continue;
+                }
+                let bucket_id = digest(client);
+                let snapshot = match self.authority("bucket", &bucket_id).await {
+                    Ok(raw) => raw,
+                    Err(e) => {
+                        tracing::warn!(error = %e, "oauth_as: a client's subject entry could not be rejudged");
+                        continue;
+                    }
+                };
+                let bucket: Option<Cell<Bucket>> = match snapshot
+                    .as_deref()
+                    .map(authority_body)
+                    .transpose()?
+                    .flatten()
+                    .map(|body| decode("bucket", body))
+                    .transpose()
+                {
+                    Ok(bucket) => bucket,
+                    Err(e) => {
+                        tracing::warn!(error = %e, "oauth_as: a client's subject entry could not be rejudged");
+                        continue;
+                    }
+                };
+                if bucket.is_some_and(|b| b.b.consents.values().any(|c| digest(&c.subject) == id)) {
+                    continue;
+                }
+                cell.b.clients.remove(client);
+                changed = true;
+                guards.push(Predicate {
+                    schema: atomic_schema("bucket"),
+                    key: bucket_id.into_bytes(),
+                    expected: snapshot.map_or(Expected::Absent, Expected::Bytes),
+                });
+            }
+            let retired =
+                cell.b.clients.is_empty() && now_secs().saturating_sub(cell.at) > RETIRE_AFTER_SECS;
+            if !changed && !retired {
+                return Ok(());
+            }
+            let value = if retired {
+                format!("-{}", nonce()?).into_bytes()
+            } else {
+                cell.v = cell.v.checked_add(1).ok_or_else(|| {
+                    StorageError::new("oauth_as store: subject index version exhausted")
+                })?;
+                cell.at = now_secs();
+                cell.id = id.to_string();
+                live_body(&encode(SUBJECT_INDEX, &cell)?)
+            };
+            let mut request = Self::candidate(&atomic_schema(SUBJECT_INDEX), id, raw, value);
+            Arc::make_mut(&mut request).predicates.extend(guards);
+            match self.submit(request).await? {
+                Decision::Applied => return Ok(()),
+                Decision::ConditionConflict => {
+                    tokio::time::sleep(Duration::from_millis(u64::from(attempt.min(20)))).await
+                }
+            }
+        }
+        Err(StorageError::new(
+            "oauth_as store: subject sweep repeatedly conflicted",
+        ))
     }
 
     /// Delete every row of `kind_name` whose `until` (read by `of`, with the row's own id) has
@@ -1861,3 +2432,8 @@ impl Shared {
 #[cfg(test)]
 #[path = "tests/shared_tests.rs"]
 mod shared_tests;
+
+#[cfg(test)]
+pub(crate) fn test_store_calls() -> Arc<dyn StoreCalls> {
+    shared_tests::test_store_calls()
+}

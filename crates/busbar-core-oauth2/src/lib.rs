@@ -69,6 +69,9 @@ pub mod testkit;
 #[path = "tests/config_tests.rs"]
 mod config_tests;
 #[cfg(test)]
+#[path = "tests/device_routes_tests.rs"]
+mod device_routes_tests;
+#[cfg(test)]
 #[path = "tests/fapi2_tests.rs"]
 mod fapi2_tests;
 #[cfg(test)]

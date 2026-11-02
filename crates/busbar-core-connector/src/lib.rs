@@ -611,10 +611,13 @@ impl<'h> Reading<'h> {
     /// Take the rest for one read: what a short buffer left, and whether the end was answered.
     /// `None` while another read has it, `waker` woken once it is back.
     fn begin(rest: &'h Mutex<Rest>, waker: &Waker) -> Option<(Self, Option<Left>)> {
+        // A RawWaker clone may call back into this connector. Own it before taking Rest, and
+        // declare it first so an unused clone is also released after the guard.
+        let incoming = waker.clone();
         let mut r = rest.lock().expect("rest");
         if r.reading {
             if !r.missed.iter().any(|w| w.will_wake(waker)) {
-                r.missed.push(waker.clone());
+                r.missed.push(incoming);
             }
             return None;
         }
@@ -3686,6 +3689,15 @@ impl PollConns for Connector {
 #[cfg(test)]
 #[path = "tests/connector_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "tests/callback_waker.rs"]
+#[allow(unsafe_code)]
+mod callback_waker;
+
+#[cfg(test)]
+#[path = "tests/rest_callback_tests.rs"]
+mod rest_callback_tests;
 
 #[cfg(test)]
 #[path = "tests/settled_dial_error_tests.rs"]

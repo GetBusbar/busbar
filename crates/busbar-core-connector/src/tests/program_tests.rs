@@ -19,6 +19,9 @@ use crate::registry::{Entry, Transports};
 use crate::support::{worker, Knobs, TestDoor};
 use crate::Connector;
 
+#[path = "program_callback_tests.rs"]
+mod callback_tests;
+
 const OWNER: InstanceId = InstanceId(1);
 const NEED: NeedId = NeedId(1);
 

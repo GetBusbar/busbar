@@ -149,7 +149,7 @@ impl Sessions {
     }
 
     /// The operator behind this session, if it is still live.
-    fn subject(&self, id: &str) -> Option<String> {
+    pub(crate) fn subject(&self, id: &str) -> Option<String> {
         let inner = self.inner.lock().unwrap_or_else(|p| p.into_inner());
         inner
             .live
@@ -187,7 +187,7 @@ impl Sessions {
 
     /// SPEND an answer: `Some(approve)` at most once per [`Sessions::stake`], which is the whole
     /// reason this is not a `contains`.
-    fn spend(&self, id: &str, key: &str) -> Option<bool> {
+    pub(crate) fn spend(&self, id: &str, key: &str) -> Option<bool> {
         let mut inner = self.inner.lock().unwrap_or_else(|p| p.into_inner());
         let pending = inner.staked.get_mut(id)?;
         let i = pending.iter().position(|(k, _)| k == key)?;

@@ -19,6 +19,8 @@
 //! | authorize | `None` | A browser endpoint. The resource owner is authenticated by the consent screen, and by nothing before it. |
 //! | par (FAPI 2.0 posture only) | `None` | RFC 9126: the client authenticates in the body (`private_key_jwt`), which `oauth-as` performs, exactly as at the token endpoint. |
 //! | token, register | `None` | These carry OAuth's OWN client authentication in the request, which `oauth-as` performs. busbar's data-plane bar knows nothing about a `client_secret_post` body and would refuse every conforming client. |
+//! | device_authorization, revoke | `None` | OAuth client authentication and registered grant permissions are checked by `oauth-as`. Public registration cannot enable the device grant. |
+//! | device | `Admin` | The operator enters the device code and explicitly approves or denies the named client and scopes, protected by Origin and a single-use session-bound CSRF token. |
 //! | consent | `Admin` | The one route here that busbar authenticates itself, through the EXISTING admin chain. See [`super::consent`] on why the operator is the resource owner on this plane. |
 //!
 //! `RouteAuth::None` on four of them is not an absence of authentication; it is authentication that
@@ -94,6 +96,30 @@ pub(crate) fn mount(router: CoreRouter, plane: Option<&super::plane::AsPlane>) -
             forward,
         )
         .route(
+            id.device_authorization_path().to_string(),
+            RouteMethod::Post,
+            RouteAuth::None,
+            forward,
+        )
+        .route(
+            id.revocation_path().to_string(),
+            RouteMethod::Post,
+            RouteAuth::None,
+            forward,
+        )
+        .route(
+            id.verification_path().to_string(),
+            RouteMethod::Get,
+            RouteAuth::Admin,
+            device_verification,
+        )
+        .route(
+            id.verification_path().to_string(),
+            RouteMethod::Post,
+            RouteAuth::Admin,
+            device_verification,
+        )
+        .route(
             id.consent_path().to_string(),
             RouteMethod::Get,
             RouteAuth::Admin,
@@ -147,6 +173,119 @@ async fn forward(
 fn into_axum(response: oauth_as::http::Response) -> Response {
     response
         .map(|body| axum::body::Body::from(body.into_bytes()))
+        .into_response()
+}
+
+/// The browser half of RFC 8628 is authenticated by the existing admin chain. The library owns
+/// the code-entry/confirmation pages and the actual approve/deny transition; this adapter supplies
+/// the session-bound single-use CSRF state its published API requires.
+async fn device_verification(
+    busbar_kernel::state::CurrentApp(app): busbar_kernel::state::CurrentApp,
+    request: axum::extract::Request,
+) -> Response {
+    let Some(plane) = as_plane(&app) else {
+        return not_found();
+    };
+    let (request, consumed) = if request.method() == axum::http::Method::POST {
+        let (parts, body) = request.into_parts();
+        let bytes = match axum::body::to_bytes(body, oauth_as::http::MAX_BODY_BYTES).await {
+            Ok(bytes) => bytes,
+            Err(_) => return axum::http::StatusCode::PAYLOAD_TOO_LARGE.into_response(),
+        };
+        let session = device_session_id(&parts.headers);
+        let csrf = form_urlencoded_pairs(&String::from_utf8_lossy(&bytes))
+            .into_iter()
+            .find(|(key, _)| key == "csrf_token")
+            .map(|(_, value)| value);
+        let consumed = match (session, csrf) {
+            (Some(session), Some(csrf)) if !csrf.is_empty() => {
+                match plane
+                    .consume_device_form(&session, &csrf, ADMIN_SUBJECT)
+                    .await
+                {
+                    Ok(true) => Some(csrf),
+                    Ok(false) => None,
+                    Err(error) => {
+                        tracing::warn!(%error, "oauth_as: the device form could not be consumed");
+                        return device_store_unavailable();
+                    }
+                }
+            }
+            _ => None,
+        };
+        (
+            axum::extract::Request::from_parts(parts, axum::body::Body::from(bytes)),
+            consumed,
+        )
+    } else {
+        (request, None)
+    };
+    // Every form gets fresh independent secrets. Persist them before emitting either the cookie
+    // or the form; a failed/Pending Store cannot turn into an unprotected approval.
+    let (Some(session), Some(csrf)) = (new_session_id(), new_session_id()) else {
+        return no_entropy();
+    };
+    if let Err(error) = plane
+        .issue_device_form(&session, &csrf, ADMIN_SUBJECT)
+        .await
+    {
+        tracing::warn!(%error, "oauth_as: the device form could not be kept");
+        return device_store_unavailable();
+    }
+    let cookie = device_session_cookie(plane.identity(), &session);
+    let Ok(cookie) = axum::http::HeaderValue::from_str(&cookie) else {
+        return not_representable();
+    };
+    let mut response = into_axum(
+        plane
+            .handle_device(request, ADMIN_SUBJECT, csrf, consumed)
+            .await,
+    );
+    response
+        .headers_mut()
+        .append(axum::http::header::SET_COOKIE, cookie);
+    response.headers_mut().insert(
+        axum::http::header::CACHE_CONTROL,
+        axum::http::HeaderValue::from_static("no-store"),
+    );
+    response
+}
+
+const DEVICE_SESSION_COOKIE: &str = "busbar_as_device";
+
+fn device_session_id(headers: &axum::http::HeaderMap) -> Option<String> {
+    for raw in headers.get_all(axum::http::header::COOKIE) {
+        let raw = raw.to_str().ok()?;
+        if let Some((_, value)) = raw
+            .split(';')
+            .filter_map(|pair| pair.split_once('='))
+            .find(|(name, _)| name.trim() == DEVICE_SESSION_COOKIE)
+        {
+            return Some(value.trim().to_string());
+        }
+    }
+    None
+}
+
+fn device_session_cookie(identity: &crate::config::AsIdentity, id: &str) -> String {
+    let secure = if identity.issuer().starts_with("https://") {
+        "; Secure"
+    } else {
+        ""
+    };
+    format!(
+        "{DEVICE_SESSION_COOKIE}={id}; Path={}; HttpOnly{secure}; SameSite=Lax; Max-Age={}",
+        identity.verification_path(),
+        super::consent::SESSION_TTL.as_secs(),
+    )
+}
+
+fn device_store_unavailable() -> Response {
+    (
+        axum::http::StatusCode::SERVICE_UNAVAILABLE,
+        [(axum::http::header::CACHE_CONTROL, "no-store")],
+        axum::response::Html(PAGE_NO_SESSION),
+    )
         .into_response()
 }
 
