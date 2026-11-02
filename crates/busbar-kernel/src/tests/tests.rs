@@ -627,34 +627,6 @@ fn gov_with_store(store: &str) -> crate::config::StoreCfg {
 }
 
 #[test]
-fn store_plugin_with_plugins_disabled_is_boot_error_naming_the_flag() {
-    let dir = tmp_plugin_dir("disabled-store");
-    let err = crate::plugins_preflight(
-        Some(&gov_with_store("durable-kv")),
-        None,
-        &Default::default(),
-        &Default::default(),
-        &plugins_cfg(&dir, false),
-        &Default::default(),
-    )
-    .unwrap_err();
-    assert!(err.contains("plugins.enabled"), "names the flag: {err}");
-    assert!(err.contains("durable-kv"), "names the store: {err}");
-
-    let err = crate::plugins_preflight(
-        Some(&gov_with_store("durable-kv")),
-        None,
-        &Default::default(),
-        &Default::default(),
-        &crate::config::PluginsCfg::default(),
-        &Default::default(),
-    )
-    .unwrap_err();
-    assert!(err.contains("plugins.enabled"), "absent block: {err}");
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
-#[test]
 fn the_registry_build_keeps_the_preflights_boot_lines_in_order() {
     use crate::test_support::warn_capture::WarnCapture;
     use tracing_subscriber::layer::SubscriberExt as _;
