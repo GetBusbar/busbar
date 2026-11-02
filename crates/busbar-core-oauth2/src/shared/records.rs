@@ -3,7 +3,7 @@
 //! a missing or corrupt old generation rechecks its root before retrying or refusing.
 use std::sync::Arc;
 
-use busbar_contract::abi::sdk::store::conditional::{Expected, Mutation, Request};
+use busbar_contract::abi::sdk::store::conditional::{Expected, Mutation, Predicate, Request};
 use busbar_contract::bounded::MAX_RECORD_BYTES;
 use oauth_as::store::StorageError;
 
@@ -90,24 +90,17 @@ pub(super) fn parts_schema(schema: &str) -> String {
 }
 
 /// Translate only after logical planning (notably the previous bucket's user-code release).
-/// Physical replays contain no oversized values and pass through byte-for-byte unchanged.
-pub(super) fn physical(request: Arc<Request>) -> Result<Arc<Request>, StorageError> {
-    if !request
-        .predicates
-        .iter()
-        .any(|p| matches!(&p.expected, Expected::Bytes(b) if b.len() > MAX_RECORD_BYTES))
-        && !request
-            .mutations
-            .iter()
-            .any(|m| matches!(m, Mutation::Put { value, .. } if value.len() > MAX_RECORD_BYTES))
-    {
-        return Ok(request);
-    }
+/// `observed` rows are cleanup metadata, NEVER additional logical preconditions. Retained physical
+/// requests bypass this function entirely when replayed.
+pub(super) fn physical(
+    request: Arc<Request>,
+    observed: &[Predicate],
+) -> Result<Arc<Request>, StorageError> {
     let mut physical = (*request).clone();
     let mut chunks = Vec::new();
     for mutation in &mut physical.mutations {
-        if let Mutation::Put { schema, key, value } = mutation {
-            if value.len() > MAX_RECORD_BYTES {
+        let (schema, key) = match mutation {
+            Mutation::Put { schema, key, value } if value.len() > MAX_RECORD_BYTES => {
                 let descriptor = Descriptor::of(value)?;
                 for (part, bytes) in value.chunks(MAX_RECORD_BYTES).enumerate() {
                     chunks.push(Mutation::Put {
@@ -117,33 +110,55 @@ pub(super) fn physical(request: Arc<Request>) -> Result<Arc<Request>, StorageErr
                     });
                 }
                 *value = descriptor.encode();
+                continue;
             }
+            Mutation::Put { schema, key, .. } | Mutation::Delete { schema, key } => (schema, key),
+            Mutation::DeleteRange { .. } => continue,
+        };
+        // An inline root publishes no chunks. Delete every old/unobserved generation atomically,
+        // including generations orphaned by overlapping blind large-index publications.
+        let mut prefix = key.clone();
+        prefix.push(0);
+        chunks.push(Mutation::DeleteRange {
+            schema: parts_schema(schema),
+            exact_key_length: (prefix.len() + 32 + 8) as u64,
+            prefix,
+        });
+    }
+    for old in request.predicates.iter().chain(observed) {
+        let Expected::Bytes(bytes) = &old.expected else {
+            continue;
+        };
+        let descriptor = if bytes.len() > MAX_RECORD_BYTES {
+            Some(Descriptor::of(bytes)?)
+        } else {
+            Descriptor::decode(bytes)?
+        };
+        let Some(descriptor) = descriptor else {
+            continue;
+        };
+        let header = descriptor.encode();
+        // Inline replacement's whole-prefix cleanup already covers this generation. A large
+        // replacement owns all its new chunks at commit, so deleting a DIFFERENT observed old
+        // generation needs no extra condition and can never delete its newly published data.
+        if physical.mutations.iter().any(|m| {
+            matches!(m,
+            Mutation::Put { schema, key, value }
+                if schema == &old.schema && key == &old.key
+                    && Descriptor::decode(value).ok().flatten().is_some() && value != &header)
+        }) {
+            let prefix = descriptor.prefix(&old.key);
+            chunks.push(Mutation::DeleteRange {
+                schema: parts_schema(&old.schema),
+                exact_key_length: (prefix.len() + 8) as u64,
+                prefix,
+            });
         }
     }
     for predicate in &mut physical.predicates {
         if let Expected::Bytes(bytes) = &mut predicate.expected {
             if bytes.len() > MAX_RECORD_BYTES {
-                let descriptor = Descriptor::of(bytes)?;
-                let header = descriptor.encode();
-                // A guard alone never deletes anything. Only replacing/removing this root
-                // retires its old generation, atomically with the replacement's publication.
-                if physical.mutations.iter().any(|m| match m {
-                    Mutation::Put { schema, key, value } => {
-                        schema == &predicate.schema && key == &predicate.key && value != &header
-                    }
-                    Mutation::Delete { schema, key } => {
-                        schema == &predicate.schema && key == &predicate.key
-                    }
-                    Mutation::DeleteRange { .. } => false,
-                }) {
-                    let prefix = descriptor.prefix(&predicate.key);
-                    chunks.push(Mutation::DeleteRange {
-                        schema: parts_schema(&predicate.schema),
-                        exact_key_length: (prefix.len() + 8) as u64,
-                        prefix,
-                    });
-                }
-                *bytes = header;
+                *bytes = Descriptor::of(bytes)?.encode();
             }
         }
     }
@@ -156,19 +171,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn physical_replay_is_exact_and_same_content_keeps_its_generation() {
+    fn same_content_keeps_its_generation_without_overlapping_cleanup() {
         let bytes = vec![b'x'; MAX_RECORD_BYTES + 1];
         let schema = "cell.atomic.v1";
         let logical = crate::shared::Shared::candidate(schema, "id", Some(bytes.clone()), bytes);
-        let physical = physical(logical).unwrap();
+        let physical = physical(logical, &[]).unwrap();
         physical.encode().unwrap();
         assert!(!physical
             .mutations
             .iter()
             .any(|m| matches!(m, Mutation::DeleteRange { .. })));
-        let replay = super::physical(physical.clone()).unwrap();
-        assert!(Arc::ptr_eq(&replay, &physical));
-        assert_eq!(replay.encode().unwrap(), physical.encode().unwrap());
+        assert!(physical
+            .mutations
+            .iter()
+            .all(|m| !matches!(m, Mutation::Put { value, .. } if value.len() > MAX_RECORD_BYTES)));
     }
 
     #[test]
@@ -179,7 +195,7 @@ mod tests {
             None,
             vec![b'x'; MAX_CELL_BYTES + 1],
         );
-        assert!(physical(oversized).is_err());
+        assert!(physical(oversized, &[]).is_err());
         // Chunk-address and record framing overhead counts against the same existing ABI bound.
         let maximal = crate::shared::Shared::candidate(
             "cell.atomic.v1",
@@ -187,6 +203,6 @@ mod tests {
             None,
             vec![b'x'; MAX_CELL_BYTES],
         );
-        assert!(physical(maximal).unwrap().encode().is_err());
+        assert!(physical(maximal, &[]).unwrap().encode().is_err());
     }
 }

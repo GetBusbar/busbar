@@ -250,7 +250,7 @@ impl OneStore {
                 Some(body),
                 serde_json::to_vec(&value).unwrap(),
             );
-            let physical = crate::shared::records::physical(candidate).unwrap();
+            let physical = crate::shared::records::physical(candidate, &[]).unwrap();
             physical.validate().unwrap();
             apply_mutations(&mut state.rows, &physical.mutations);
         }
@@ -1680,14 +1680,26 @@ async fn a_late_cancelled_write_cannot_bypass_the_family_barrier() {
 
 #[tokio::test]
 async fn a_late_bucket_commit_restores_indexes_reclaimed_while_it_was_pending() {
+    late_bucket_commit_restores_indexes("atomic-client").await;
+}
+
+#[tokio::test]
+async fn a_late_bucket_commit_restores_chunked_indexes_for_a_long_client_id() {
+    late_bucket_commit_restores_indexes(&format!("https://client.example/{}", "c".repeat(900)))
+        .await;
+}
+
+async fn late_bucket_commit_restores_indexes(client_id: &str) {
     let store = OneStore::default();
     let a = Arc::new(SharedStorage::new(Arc::new(Shared::new(store.calls()))));
     let b = SharedStorage::new(Arc::new(Shared::new(store.calls())));
-    a.put_client(client("atomic-client")).await.unwrap();
+    a.put_client(client(client_id)).await.unwrap();
     let (release, accepted, decided) = store.delay_decision("bucket", false);
+    let mut grant = refresh("indexed-refresh");
+    grant.client_id = oauth_as::client::ClientId::new(client_id);
     let mut writer = {
         let a = a.clone();
-        tokio::spawn(async move { a.put_refresh_token(refresh("indexed-refresh")).await })
+        tokio::spawn(async move { a.put_refresh_token(grant).await })
     };
     tokio::select! {
         _ = accepted.notified() => {},
@@ -2123,6 +2135,16 @@ async fn replacing_a_blind_large_index_reclaims_its_exact_old_generation() {
         .rows
         .keys()
         .any(|(s, _)| s == &crate::shared::records::parts_schema(&schema)));
+    // A concurrent blind publication can leave an unobserved generation. Inline replacement
+    // retires every generation, not just the one a preparatory read happened to observe.
+    let mut orphan_key = crate::shared::digest("large-index").into_bytes();
+    orphan_key.push(0);
+    orphan_key.extend_from_slice(&[9; 32]);
+    orphan_key.extend_from_slice(&0u64.to_le_bytes());
+    store.atomic.lock().unwrap().rows.insert(
+        (crate::shared::records::parts_schema(&schema), orphan_key),
+        b"unobserved old generation".to_vec(),
+    );
     let mut blind = Shared::candidate(&schema, "unrelated-guard", None, b"guard".to_vec());
     Arc::make_mut(&mut blind).mutations = vec![Mutation::Put {
         schema: schema.clone(),
@@ -2159,7 +2181,7 @@ async fn replacing_a_blind_large_index_reclaims_its_exact_old_generation() {
     assert!(
         last.predicates
             .iter()
-            .any(|p| p.schema == schema && matches!(&p.expected, Expected::Bytes(_))),
-        "blind index replacement compares its observed descriptor"
+            .all(|p| p.key != crate::shared::digest("large-index").as_bytes()),
+        "blind index replacement preserves its original logical predicates"
     );
 }

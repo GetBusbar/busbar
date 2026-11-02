@@ -376,37 +376,35 @@ impl Shared {
 
     async fn submit(&self, request: Arc<Request>) -> Result<Decision, StorageError> {
         Self::require_atomic(self.calls.as_ref()).map_err(StorageError::new)?;
-        let mut request = request;
-        // Blind index publication also compares its observed root. This lets replacement reclaim
-        // precisely the old chunk generation, without deleting a concurrent writer's chunks.
+        // Only large blind puts need old-generation cleanup metadata. Inline publication deletes
+        // the entire private parts prefix. Neither case adds an index CAS condition: a delayed
+        // accepted bucket must still restore its indexes after the orphan sweep retired them.
         let mut observed = Vec::new();
         for mutation in &request.mutations {
             if let Mutation::Put { schema, key, value } = mutation {
-                if schema.ends_with(".atomic.v1")
+                if value.len() > busbar_contract::bounded::MAX_RECORD_BYTES
                     && !request
                         .predicates
                         .iter()
                         .any(|p| p.schema == *schema && p.key == *key)
                 {
-                    let previous = self.read_record(schema, key).await?;
-                    if value.len() > busbar_contract::bounded::MAX_RECORD_BYTES
-                        || previous
-                            .as_ref()
-                            .is_some_and(|b| b.len() > busbar_contract::bounded::MAX_RECORD_BYTES)
-                    {
+                    let previous = self
+                        .calls
+                        .record_get(schema, key)
+                        .await
+                        .map_err(|f| failed("record cleanup root", f))?;
+                    if let Some(previous) = previous {
                         observed.push(Predicate {
                             schema: schema.clone(),
                             key: key.clone(),
-                            expected: previous.map_or(Expected::Absent, Expected::Bytes),
+                            expected: Expected::Bytes(previous.as_slice().to_vec()),
                         });
                     }
                 }
             }
         }
-        if !observed.is_empty() {
-            Arc::make_mut(&mut request).predicates.extend(observed);
-        }
-        self.submit_physical(records::physical(request)?).await
+        self.submit_physical(records::physical(request, &observed)?)
+            .await
     }
 
     /// Retain and replay exactly this validated wire candidate, never plan its chunks again.
