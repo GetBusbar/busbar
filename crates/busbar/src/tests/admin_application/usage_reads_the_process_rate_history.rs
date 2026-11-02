@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use busbar_contract::records::{MeteringDelta, RecordStore};
+use busbar_contract::records::MeteringDelta;
 use busbar_kernel::cost::{RateCard, TierRates};
 use busbar_kernel::governance::METERING_BUCKET_SECS;
 

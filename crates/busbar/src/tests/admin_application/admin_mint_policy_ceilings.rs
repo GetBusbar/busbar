@@ -440,7 +440,7 @@ async fn proof_role_mint_ceiling_bounds_a_delegated_admin() {
         document["auth"]["role_bindings"] = serde_json::json!({
             "test-scope-module": { "app-admin": { "admin_scope": "full" } },
         });
-        document["auth"]["policy"] = serde_json::json!({"mint_ceilings":{"app-admin":{"max_ttl":"1h","allowed_pools":["pool-ok"]}}});
+        document["auth"]["policy"] = serde_json::json!({"mint_ceilings":{"app-admin":{"max_ttl":format!("{ROLE_TTL}s"),"allowed_pools":["pool-ok"]}}});
         let deploy = busbar_kernel::config::deploy_from_deserializer(document)
             .expect("the actual admin deployment parses");
         let config = busbar_kernel::config::resolve(&deploy, &Default::default())
