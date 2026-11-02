@@ -92,6 +92,14 @@ impl Registry {
         self.array_stream_shim_keys
     }
 
+    pub fn residual_dialect_for_path(&self, path: &str) -> Option<&'static str> {
+        self.decls()
+            .iter()
+            .filter_map(|d| d.residual_claims.and_then(|c| c(path)).map(|s| (s, d.name)))
+            .min_by(|a, b| a.0.cmp(&b.0))
+            .map(|(_, name)| name)
+    }
+
     pub fn codec_protocols(&self) -> &'static [&'static str] {
         self.codec_protocols
     }
@@ -226,12 +234,7 @@ pub fn detect_protocol(path: &str, headers: &http::HeaderMap) -> Option<&'static
 }
 
 pub fn residual_dialect_for_path(path: &str) -> Option<&'static str> {
-    registry()
-        .decls()
-        .iter()
-        .filter_map(|d| d.residual_claims.and_then(|c| c(path)).map(|s| (s, d.name)))
-        .min_by(|a, b| a.0.cmp(&b.0))
-        .map(|(_, name)| name)
+    registry().residual_dialect_for_path(path)
 }
 
 pub fn residual_default_dialect() -> Option<&'static str> {

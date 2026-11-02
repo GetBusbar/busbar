@@ -277,27 +277,15 @@ fn test_residual_dialect_colon_model_id_is_openai_not_gemini() {
 #[test]
 fn test_residual_dialect_names_none_rather_than_defaulting_to_openai() {
     let registry = builtins();
-    let residual = |path: &str| {
-        registry
-            .decls()
-            .iter()
-            .filter_map(|decl| {
-                decl.residual_claims
-                    .and_then(|claim| claim(path))
-                    .map(|strength| (strength, decl.name))
-            })
-            .min_by_key(|(strength, _)| *strength)
-            .map(|(_, name)| name)
-    };
     let live = &FIXTURE["residual_live"];
     assert_eq!(
-        residual(live[0].as_str().expect("path")),
+        registry.residual_dialect_for_path(live[0].as_str().expect("path")),
         live[1].as_str(),
         "the residual fold must be live, or the `None` assertions below prove nothing"
     );
     for path in strs(&FIXTURE["residual_none"]) {
         assert_eq!(
-            residual(path),
+            registry.residual_dialect_for_path(path),
             None,
             "`{path}` names no dialect — the classifier must say so, not name a default"
         );

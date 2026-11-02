@@ -959,6 +959,9 @@ async fn a_callers_unpresentable_credential_fails_its_request() {
         path: b"/model/m/converse".to_vec(),
         timestamp: 1_756_000_000,
         caller_credential: Some(busbar_contract::redacted::Secret::new(credential.to_vec())),
+        query: None,
+        headers: Vec::new(),
+        extensions: Vec::new(),
         ..Default::default()
     };
     for (credential, ready) in [
