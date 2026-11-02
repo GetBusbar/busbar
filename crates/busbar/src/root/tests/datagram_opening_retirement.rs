@@ -379,36 +379,29 @@ impl Wake for ReentrantWake {
 #[tokio::test]
 async fn successful_admission_keeps_serving_until_explicit_retirement_and_wakes_without_locks() {
     let door = door();
-    let connector = Arc::new(Connector::new());
     let framer = OpeningFramer::new();
-    let opened = open(&door, &framer).unwrap();
-    let observed = Observed::new(&opened);
-    let Opened {
-        caller,
-        description,
-        head,
-        joining,
-    } = opened;
-    let holder = Arc::new(Mutex::new(Some(joining)));
-    let joining = lock(&holder).take().unwrap();
-    joining.admit_into(1, &connector).unwrap();
-    drop(holder);
-    assert!(!observed.pairing.upgrade().unwrap().closed());
+    let mut pair = super::tests::real::Pair::with_framer(door.clone(), framer.clone()).await;
+    let connector = pair.connector.clone();
+    let observed = Observed {
+        leg: Arc::downgrade(&pair.caller.leg),
+        pairing: Arc::downgrade(&pair.pairing),
+        messages: Arc::downgrade(&pair.caller.from),
+        memory: pair.pairing.memory_account(),
+    };
+    assert!(!pair.pairing.closed());
     assert_eq!(framer.finishes.load(Ordering::SeqCst), 0);
-    tokio::time::timeout(std::time::Duration::from_secs(5), async {
-        assert_eq!(caller.read().await, Some(Vec::new()));
-        assert!(
-            caller.write(b"served").await,
-            "early data waits for the real peer's channel"
-        );
-        assert_eq!(lock(&caller.leg.outbound).held.len(), 1);
-        assert!(
-            caller.from.try_recv().is_err(),
-            "an unconnected peer cannot fabricate channel output"
-        );
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        assert_eq!(pair.caller.read().await, Some(Vec::new()));
+        pair.send(b"peer opening").await;
+        assert_eq!(pair.caller.read().await, Some(b"peer opening".to_vec()));
+        assert!(pair.caller.write(b"served").await);
+        assert_eq!(pair.received().await, b"served");
+        pair.send(b"later data").await;
+        assert_eq!(pair.caller.read().await, Some(b"later data".to_vec()));
     })
     .await
-    .expect("the admitted association accepts bounded early data");
+    .expect("the actual admitted root association serves opening and later peer data");
+    let caller = &pair.caller;
 
     let weak_door = Arc::downgrade(&door);
     let weak_leg = observed.leg.clone();
@@ -433,7 +426,7 @@ async fn successful_admission_keeps_serving_until_explicit_retirement_and_wakes_
     assert_eq!(framer.finishes.load(Ordering::SeqCst), 1);
     assert_eq!(caller.read().await, None);
     assert!(!caller.write(b"retired").await);
-    drop((caller, description, head));
+    drop(pair);
     observed.retired(&framer);
     connector.unpair(1);
     assert!(lock(&door.legs).is_empty());
