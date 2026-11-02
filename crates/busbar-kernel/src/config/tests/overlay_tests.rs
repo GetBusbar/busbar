@@ -420,25 +420,6 @@ fn hook_and_group_tombstones_reconcile_readds_and_prune_nonbase_names() {
 }
 
 #[test]
-fn corrupt_overlay_refuses_reads_and_all_mutations_without_clobbering() {
-    let fixture = TestOverlayStore::new();
-    fixture.seed_bytes(b"invalid JSON");
-    let backend = fixture.backend();
-    assert!(backend.read_required().is_err());
-    assert!(persist_root(Some(&backend), &sample_root()).is_err());
-    assert!(persist_groups(
-        Some(&backend),
-        &BTreeMap::new(),
-        None,
-        None,
-        &HashSet::new()
-    )
-    .is_err());
-    assert!(clear_section(Some(&backend), OverlaySection::Root).is_err());
-    assert_eq!(fixture.read_bytes().unwrap(), b"invalid JSON");
-}
-
-#[test]
 fn refused_write_never_exposes_uncommitted_generation_and_replays_original_before_new_edit() {
     let fixture = TestOverlayStore::new();
     let backend = fixture.backend();
@@ -721,13 +702,4 @@ fn required_store_read_failure_is_not_mistaken_for_absence() {
     calls.fail.store(true, Ordering::SeqCst);
     assert!(backend.read_required().is_err());
     assert!(persist_root(Some(&backend), &sample_root()).is_err());
-}
-
-#[test]
-fn legacy_hook_spelling_is_migrated_from_store_bytes() {
-    let fixture = TestOverlayStore::new();
-    fixture
-        .seed_bytes(br#"{"hooks":{"legacy":{"kind":"gate","plugin":"test-hook","at":"request"}}}"#);
-    let doc = fixture.backend().read_required().unwrap().unwrap();
-    assert_eq!(doc.hooks["legacy"].plugin, "test-hook");
 }

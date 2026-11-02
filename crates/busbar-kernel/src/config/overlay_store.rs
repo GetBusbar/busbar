@@ -764,3 +764,7 @@ mod tests {
 #[cfg(test)]
 #[path = "tests/version_gate_tests.rs"]
 mod version_gate_tests;
+
+#[cfg(test)]
+#[path = "tests/overlay_bytes_tests.rs"]
+mod overlay_bytes_tests;
