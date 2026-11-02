@@ -519,5 +519,101 @@ async fn actual_inbound_foreign_binding_and_session_custody() {
         inbound.framing_ended(destination_leg);
         drop(receipt);
     }
+    // Actual credential stripping never authorizes deletion of framing fields,
+    // including duplicate fields named by Connection. The original opaque signed
+    // verifier claim is narrower here: key authentication is real, no fake signer.
+    inbound.framing_started(7, 71, 61, 3).unwrap();
+    inbound.grant_stream(7, 61, 1, 3).unwrap();
+    let mut framed = original.clone();
+    framed.fields.extend([
+        ("connection".into(), b"close, x-signed".to_vec()),
+        ("content-length".into(), b"3".to_vec()),
+        ("x-signed".into(), b"first".to_vec()),
+        ("x-signed".into(), b"second".to_vec()),
+    ]);
+    framed.query = Some("x=1".into());
+    let (send, receive) = tokio::sync::oneshot::channel();
+    let result = inbound.auth_call(
+        Call {
+            owner: 7,
+            generation: 3,
+            auth,
+            unit: UnitRef::NONE,
+            point: POINT_HEAD,
+            conn: 61,
+            stream: 1,
+            framing: 61,
+            head: framed.clone(),
+            body: None,
+            deadline: None,
+        },
+        Box::new(move |r| {
+            let _ = send.send(r);
+        }),
+    );
+    let answer = match result {
+        Some(r) => r,
+        None => receive.await.unwrap(),
+    }
+    .unwrap();
+    assert_eq!(answer.flow, FLOW_CONTINUE);
+    assert!(answer
+        .strips
+        .contains(&busbar_contract::auth_calls::Strip::field("authorization")));
+    let mut framed_admitted = framed.clone();
+    framed_admitted
+        .fields
+        .retain(|(name, _)| name != "authorization");
+    for removed in ["connection", "content-length", "x-signed"] {
+        let mut changed = framed_admitted.clone();
+        changed.fields.retain(|(name, _)| name != removed);
+        assert_eq!(
+            inbound
+                .hand_in(HandIn {
+                    owner: 7,
+                    generation: 3,
+                    auth,
+                    unit: answer.unit,
+                    line: 0,
+                    conn: 61,
+                    stream: 1,
+                    framing: Some(61),
+                    head: changed
+                })
+                .unwrap()
+                .0,
+            busbar_contract::abi::host::service::FLOW_STOP,
+            "auth permits only its credential strip: {removed}"
+        );
+    }
+    assert_eq!(
+        inbound.hand_in(HandIn {
+            owner: 7,
+            generation: 3,
+            auth,
+            unit: answer.unit,
+            line: 0,
+            conn: 61,
+            stream: 1,
+            framing: Some(61),
+            head: framed_admitted.clone()
+        }),
+        Ok((FLOW_CONTINUE, answer.unit))
+    );
+    for removed in ["connection", "content-length", "x-signed"] {
+        let mut changed = framed_admitted.clone();
+        changed.fields.retain(|(name, _)| name != removed);
+        assert!(
+            inbound.claim_request(7, 61, 1, &changed).is_err(),
+            "emission cannot delete an admitted field: {removed}"
+        );
+    }
+    let receipt = inbound.claim_request(7, 61, 1, &framed_admitted).unwrap();
+    assert!(
+        inbound.claim_request(7, 61, 1, &framed_admitted).is_err(),
+        "claim remains single-use"
+    );
+    drop(receipt);
+    inbound.framing_ended(61);
     println!("{WITNESS}");
 }
