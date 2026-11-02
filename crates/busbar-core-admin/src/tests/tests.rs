@@ -95,57 +95,6 @@ async fn serve_with_gov(gov: Arc<GovState>) -> (std::net::SocketAddr, tokio::tas
 }
 
 #[tokio::test]
-async fn test_keys_surface_governance_disabled_semantics() {
-    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
-    let mut app = crate::new_test_app().build();
-    {
-        let inner = Arc::get_mut(&mut app).expect("sole owner");
-        inner.admin_chain = Vec::new();
-    }
-    let router = crate::build_router(app);
-    let (addr, handle, client) = spin_up(router).await;
-
-    let r = client
-        .get(format!("http://{addr}/api/v1/admin/keys"))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(r.status().as_u16(), 200, "collection GET is 200-empty");
-    let body: serde_json::Value = r.json().await.unwrap();
-    assert_eq!(body["items"].as_array().unwrap().len(), 0);
-    assert!(body["next_cursor"].is_null());
-
-    let r = client
-        .get(format!("http://{addr}/api/v1/admin/keys/vk_x"))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(r.status().as_u16(), 404);
-
-    let r = client
-        .post(format!("http://{addr}/api/v1/admin/keys"))
-        .json(&serde_json::json!({"name": "k"}))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(
-        r.status().as_u16(),
-        409,
-        "writes conflict with server state"
-    );
-    let body: serde_json::Value = r.json().await.unwrap();
-    assert_eq!(body["error"]["code"], "conflict");
-    assert!(
-        body["error"]["message"]
-            .as_str()
-            .unwrap()
-            .contains("governance"),
-        "actionable message: {body}"
-    );
-    handle.abort();
-}
-
-#[tokio::test]
 async fn test_admin_v1_usage_meters_by_model_and_key() {
     use busbar_kernel::governance::NewKeySpec;
     busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));

@@ -84,6 +84,10 @@ use busbar_kernel::governance::mint_policy::{MintRequest, DEFAULT_KEY_TTL_SECS};
 #[path = "tests/parse_duration_secs_tests.rs"]
 mod parse_duration_secs_tests;
 
+#[cfg(test)]
+#[path = "tests/governance_disabled_responses.rs"]
+mod governance_disabled_responses;
+
 const MAX_KEY_NAME_LEN: usize = 256;
 const MAX_KEY_ID_LEN: usize = 64;
 
