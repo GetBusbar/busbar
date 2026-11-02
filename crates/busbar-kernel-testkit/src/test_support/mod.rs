@@ -1876,6 +1876,7 @@ pub mod governance;
 pub mod hooks;
 pub mod inbound;
 pub mod migration;
+pub mod metrics;
 pub use governance::GovStateFixtures;
 /// THE HOOK DOUBLE (OWNER 2026-10-03, no test plugins): the kernel's hook port answered in
 /// process. See [`hook_double`].
@@ -1991,7 +1992,7 @@ fn hook_double_env(registry: rows::Rows, doubled: &[&str]) -> crate::hooks::Hook
 /// exact metric name (the char after the name must open the label set / value, so a name never
 /// matches a longer neighbor it happens to prefix).
 pub fn metric_sum(name: &str, labels: &[(&str, &str)]) -> f64 {
-    crate::snapshot::init();
+    crate::test_support::metrics::init();
     let frags: Vec<String> = labels.iter().map(|(k, v)| format!("{k}=\"{v}\"")).collect();
     crate::test_support::export_axis::render()
         .lines()

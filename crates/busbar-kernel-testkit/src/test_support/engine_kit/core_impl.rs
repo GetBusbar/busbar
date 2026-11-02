@@ -39,7 +39,7 @@ fn need(level: HookNeed) -> busbar_contract::plugin_rows::NeedLevel {
 
 impl EngineTestKit for CoreEngineKit {
     fn metrics_init(&self) {
-        crate::snapshot::init();
+        crate::test_support::metrics::init();
     }
 
     fn install_operator_auth_row(&self, door: crate::test_support::AuthDoor) {
