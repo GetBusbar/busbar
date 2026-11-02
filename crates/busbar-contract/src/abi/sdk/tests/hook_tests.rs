@@ -2565,3 +2565,104 @@ fn bounded_op_failures_keep_the_earlier_head_and_head_only_ops_never_read_a_body
 
 #[path = "hook_deadline_tests.rs"]
 mod whole_timeout;
+
+#[cfg(target_os = "linux")]
+#[test]
+fn status_wipes_its_owned_json_tree_and_returned_bytes_on_release_or_close() {
+    use crate::alloc_counter::{watch_initialized_payload, InitializedPayloadProbe};
+
+    const KEY: &str = "status-key-custody-canary";
+    const NESTED_KEY: &str = "nested-status-key-custody-canary";
+    const VALUE: &str =
+        "https://status-user:status-password@status.example.invalid/probe?credential=canary";
+    const WIRE: &[u8] = br#"{"status-key-custody-canary":[{"nested-status-key-custody-canary":"https://status-user:status-password@status.example.invalid/probe?credential=canary"}]}"#;
+
+    struct Canary;
+    impl Hook for Canary {
+        fn status(&self) -> serde_json::Value {
+            let key = KEY.to_owned();
+            let nested_key = NESTED_KEY.to_owned();
+            let value = VALUE.to_owned();
+            // SAFETY: these are initialized allocation bases, moved without copying into the
+            // returned tree. The actual STATUS call destroys them on this observing thread.
+            unsafe {
+                watch_initialized_payload(key.as_bytes());
+                watch_initialized_payload(nested_key.as_bytes());
+                watch_initialized_payload(value.as_bytes());
+            }
+            let mut nested = serde_json::Map::new();
+            nested.insert(nested_key, serde_json::Value::String(value));
+            let mut status = serde_json::Map::new();
+            status.insert(
+                key,
+                serde_json::Value::Array(vec![serde_json::Value::Object(nested)]),
+            );
+            serde_json::Value::Object(status)
+        }
+    }
+    struct OpenCanary;
+    impl HookOpen for OpenCanary {
+        fn open(_: &str) -> Result<Box<dyn Hook>, String> {
+            Ok(Box::new(Canary))
+        }
+    }
+
+    for release_first in [true, false] {
+        let instance = opened_with::<OpenCanary>(&zeroed());
+        // SAFETY: every registered owner remains exclusive and is destroyed on this thread
+        // before finish. The observer reads initialized prefixes at actual deallocation only.
+        let probe = unsafe { InitializedPayloadProbe::start().expect("open payload observer") };
+        let mut input: InHead = zeroed();
+        input.op = slot::STATUS;
+        let mut output: StatusOut = zeroed();
+        assert_eq!(
+            call::<Status<OpenCanary>>(instance, slot::STATUS, &input, &mut output),
+            Outcome::Ready
+        );
+        assert_ne!(output.head.lease, 0);
+        assert_eq!(output.status.fmt, BLOB_JSON);
+        assert!(!output.status.ptr.is_null());
+        assert_eq!(output.status.len, WIRE.len());
+        // SAFETY: this exact STATUS answer leases a live initialized allocation base until the
+        // same instance's RELEASE or CLOSE below. The bytes are only borrowed, never copied.
+        let bytes = unsafe { std::slice::from_raw_parts(output.status.ptr, output.status.len) };
+        assert_eq!(bytes, WIRE);
+        // SAFETY: the same lease owns this complete initialized allocation until retirement below.
+        unsafe { watch_initialized_payload(bytes) };
+        if release_first {
+            let mut release: crate::abi::mechanism::lifecycle::ReleaseIn = zeroed();
+            release.head.op = crate::abi::mechanism::lifecycle::slot::RELEASE;
+            release.lease = output.head.lease;
+            assert_eq!(
+                call::<life::Release<HookLife<OpenCanary>>>(
+                    instance,
+                    crate::abi::mechanism::lifecycle::slot::RELEASE,
+                    &release,
+                    &mut zeroed(),
+                ),
+                Outcome::Ready
+            );
+        }
+        closed::<OpenCanary>(instance);
+        let observed = probe.finish();
+        assert!(!observed.reentered);
+        assert!(
+            observed.payloads.len() >= 4,
+            "JSON keys, value and returned allocation were observed"
+        );
+        for len in [KEY.len(), NESTED_KEY.len(), VALUE.len(), WIRE.len()] {
+            assert!(observed.payloads.iter().any(|p| p.len == len));
+        }
+        for payload in observed.payloads {
+            assert!(payload.freed);
+            assert!(!payload.reallocated);
+            assert_eq!(payload.read_error, None);
+            assert!(payload.complete_read);
+            assert_eq!(payload.bytes_read, payload.len);
+            assert!(
+                payload.wiped,
+                "STATUS owner was freed without wiping its initialized bytes"
+            );
+        }
+    }
+}
