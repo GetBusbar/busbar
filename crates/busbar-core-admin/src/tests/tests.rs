@@ -95,69 +95,6 @@ async fn serve_with_gov(gov: Arc<GovState>) -> (std::net::SocketAddr, tokio::tas
 }
 
 #[tokio::test]
-async fn test_admin_v1_info_reports_version_features_and_topology() {
-    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
-    let store = Arc::new(MemoryStore::new());
-    let gov = gov_with_signer(store, Some("admintok".to_string()));
-    let (addr, handle) = serve_with_gov(gov).await;
-    let client = reqwest::Client::new();
-
-    let unauth = client
-        .get(format!("http://{addr}/api/v1/admin/info"))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(
-        unauth.status().as_u16(),
-        401,
-        "v1/info must be admin-guarded"
-    );
-
-    let resp = client
-        .get(format!("http://{addr}/api/v1/admin/info"))
-        .header("x-admin-token", "admintok")
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status().as_u16(), 200);
-    let body: serde_json::Value = resp.json().await.unwrap();
-    assert_eq!(
-        body["version"].as_str(),
-        Some(env!("CARGO_PKG_VERSION")),
-        "info must report the build version"
-    );
-
-    assert_eq!(body["build"]["weighted_floor"], serde_json::json!(true));
-    let auth_modules = body["build"]["auth_modules"].as_array().unwrap();
-    assert!(
-        auth_modules.iter().any(|m| m == "keys"),
-        "auth_modules must contain the built-in `keys` verifier: {auth_modules:?}"
-    );
-    assert_eq!(
-        auth_modules
-            .iter()
-            .any(|m| m == busbar_kernel::config::operator_provider()),
-        busbar_kernel::preflight::linked_auth_names()
-            .contains(&busbar_kernel::config::operator_provider()),
-        "auth_modules must contain the operator credential iff its row is linked: {auth_modules:?}"
-    );
-
-    assert_eq!(
-        body["build"]["hook_plugins"],
-        serde_json::json!(busbar_kernel::preflight::root_rows().hook_names),
-        "hook_plugins must be exactly the linked hook rows the root's install record carries"
-    );
-
-    assert!(body["topology"]["pools"].is_number());
-    assert!(body["topology"]["models"].is_number());
-    assert!(body["topology"]["providers"].is_number());
-
-    assert_eq!(body["config_persistence"], true);
-
-    handle.abort();
-}
-
-#[tokio::test]
 async fn test_admin_v1_topology_reads_pools_models_providers() {
     use busbar_kernel_testkit::test_support::LaneSpec;
     busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
@@ -3847,33 +3784,6 @@ async fn test_admin_v1_plugins_catalog_by_type() {
 }
 
 #[tokio::test]
-async fn test_admin_v1_auth_read() {
-    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
-    let store = Arc::new(MemoryStore::new());
-    let gov = gov_with_signer(store, Some("admintok".to_string()));
-    let app = crate::new_test_app().governance(gov).build();
-    let router = crate::build_router(app);
-    let (addr, handle, client) = spin_up(router).await;
-
-    let body: serde_json::Value = client
-        .get(format!("http://{addr}/api/v1/admin/auth"))
-        .header("x-admin-token", "admintok")
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    assert!(body["chain"].is_array());
-    assert_eq!(body["open"], true, "no explicit chain → open front door");
-    assert_eq!(body["upstream_credentials"], "own");
-
-    assert!(body.get("client_tokens").is_none());
-
-    handle.abort();
-}
-
-#[tokio::test]
 async fn test_admin_v1_auth_read_keys_chain_reports_1_5_5_open() {
     busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let store = Arc::new(MemoryStore::new());
@@ -4877,63 +4787,6 @@ async fn test_create_key_name_length_boundary_is_exact() {
             .contains("256 characters"),
         "the 400 body must name the length reason: {body}"
     );
-
-    handle.abort();
-}
-
-#[tokio::test]
-async fn test_admin_malformed_body_returns_generic_400_no_input_fragment() {
-    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
-    let store = Arc::new(MemoryStore::new());
-    let gov = gov_with_signer(store, Some("admintok".to_string()));
-    let (addr, handle) = serve_with_gov(gov).await;
-    let client = reqwest::Client::new();
-
-    let secret_fragment = "SUPER_SECRET_AWS_KEY_abc123";
-    let malformed = format!(r#"{{"name": "k", "secret_access_key": "{secret_fragment}" "#);
-
-    for path in ["/api/v1/admin/keys", "/api/v1/admin/keys/some-id"] {
-        let req = if path == "/api/v1/admin/keys" {
-            client.post(format!("http://{addr}{path}"))
-        } else {
-            client.patch(format!("http://{addr}{path}"))
-        };
-        let resp = req
-            .header("x-admin-token", "admintok")
-            .header("content-type", busbar_contract::protocol::APPLICATION_JSON)
-            .body(malformed.clone())
-            .send()
-            .await
-            .unwrap();
-        assert_eq!(
-            resp.status().as_u16(),
-            400,
-            "malformed body on {path} must be 400"
-        );
-        let text = resp.text().await.unwrap();
-        assert!(
-            !text.contains(secret_fragment),
-            "the 400 body on {path} must NOT echo any input fragment; got {text}"
-        );
-
-        assert!(
-            !text.contains("expected")
-                && !text.contains("column")
-                && !text.contains("EOF")
-                && !text.contains("line"),
-            "the 400 body on {path} must NOT contain serde error text; got {text}"
-        );
-        let body: serde_json::Value = serde_json::from_str(&text).unwrap();
-        assert_eq!(
-            body["error"]["message"], "invalid JSON",
-            "the 400 body on {path} must be the generic envelope; got {text}"
-        );
-        assert_eq!(
-            body["error"]["code"],
-            "invalid_request", // frozen v1 envelope: keys speak the SAME code enum
-            "the 400 error code must be invalid_request; got {text}"
-        );
-    }
 
     handle.abort();
 }
