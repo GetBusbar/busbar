@@ -172,13 +172,17 @@ fn wrapped(static_reply: bool) -> Door {
 }
 
 extern "C" fn retained_door() -> &'static Door {
-    static DOOR: OnceLock<Door> = OnceLock::new();
-    DOOR.get_or_init(|| wrapped(false))
+    static DOOR: OnceLock<usize> = OnceLock::new();
+    let address = *DOOR.get_or_init(|| Box::into_raw(Box::new(wrapped(false))) as usize);
+    // SAFETY: this immutable SDK descriptor and its table are leaked for the process lifetime.
+    unsafe { &*(address as *const Door) }
 }
 
 extern "C" fn static_door() -> &'static Door {
-    static DOOR: OnceLock<Door> = OnceLock::new();
-    DOOR.get_or_init(|| wrapped(true))
+    static DOOR: OnceLock<usize> = OnceLock::new();
+    let address = *DOOR.get_or_init(|| Box::into_raw(Box::new(wrapped(true))) as usize);
+    // SAFETY: this immutable SDK descriptor and its table are leaked for the process lifetime.
+    unsafe { &*(address as *const Door) }
 }
 
 fn opened(
