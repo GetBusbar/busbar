@@ -15,7 +15,7 @@ use busbar_contract::abi::mechanism::lifecycle::{OpsHead, ReleaseIn};
 use busbar_contract::abi::mechanism::ticket::CompletionHandle;
 use busbar_contract::abi::plane::{
     OnPieceIn, OnPieceOut, Ops, PlaneCancelIn, PlaneCancelOut, PlaneDriveIn, PlaneDriveOut,
-    PlaneOpenIn,
+    PlaneOpenIn, ProjectIn, ProjectOut,
 };
 use busbar_contract::abi::sdk::completion_retirement::{self as wire, Domain, Handle, Retirement};
 use busbar_contract::abi::sdk::services::Services;
@@ -295,6 +295,38 @@ extern "C" fn release(
         unsafe { actual_ops().head.release.expect("actual MCP RELEASE")(instance, input, output) }
     })
 }
+extern "C" fn project(
+    _: *mut std::ffi::c_void,
+    input: *const std::ffi::c_void,
+    output: *mut std::ffi::c_void,
+) -> RawOutcome {
+    guarded(|| {
+        // SAFETY: the loader supplies the initialized exclusive PROJECT ABI frames.
+        let (input, output) = unsafe {
+            (
+                &*input.cast::<ProjectIn>(),
+                &mut *output.cast::<ProjectOut>(),
+            )
+        };
+        let all = states().lock().unwrap();
+        let state = all
+            .get(&input.head.host.handle)
+            .expect("actual MCP OPEN captured its services");
+        let handle = CompletionHandle {
+            ticket: busbar_contract::abi::mechanism::ticket::Ticket::NONE,
+            seq: 0,
+            ..CompletionHandle::ZERO
+        };
+        if !matches!(
+            state.services.entitled(handle, "door:project-scope"),
+            Ok(true)
+        ) {
+            return RawOutcome::of(Outcome::Fault);
+        }
+        output.head.outcome = RawOutcome::of(Outcome::Ready);
+        RawOutcome::of(Outcome::Ready)
+    })
+}
 extern "C" fn pending_piece(
     _: *mut std::ffi::c_void,
     _: *const std::ffi::c_void,
@@ -393,6 +425,7 @@ extern "C" fn door() -> &'static Door {
         let ops = Box::leak(Box::new(Ops {
             head,
             on_piece: Some(pending_piece),
+            project: Some(project),
             ..ops
         }));
         // SAFETY: actual retained Statement/table except the three exact ABI boundary controls.
@@ -412,6 +445,7 @@ struct Provider {
     calls: AtomicUsize,
     defer: bool,
     waiting: Mutex<Vec<busbar_contract::services::Later>>,
+    attributed: Mutex<Vec<(String, Option<u64>, String)>>,
 }
 impl busbar_contract::services::HostServices for Provider {
     fn now(&self) -> Reading {
@@ -509,8 +543,13 @@ impl busbar_contract::services::HostServices for Provider {
     ) -> Stored {
         Stored::refused("not served by this completion-ACK boundary control")
     }
-    fn entitlement_check(&self, _caller: &Caller, _unit: Option<u64>, _target: &str) -> Stored {
-        Stored::refused("not served by this completion-ACK boundary control")
+    fn entitlement_check(&self, caller: &Caller, unit: Option<u64>, target: &str) -> Stored {
+        self.attributed.lock().unwrap().push((
+            caller.instance.to_string(),
+            unit,
+            target.to_string(),
+        ));
+        Stored::ready(busbar_contract::abi::host::service::ENTITLED)
     }
     fn session_emit(&self, _caller: &Caller, _session: u64, _bytes: &[u8]) -> Stored {
         Stored::refused("not served by this completion-ACK boundary control")
@@ -960,6 +999,66 @@ fn a_pending_driver_delivers_ids_resumes_and_retires_late_service_custody() {
     assert_eq!(plugin.inner.driven.answers(), 4);
     assert!(plugin.inner.driven.drain().is_empty());
     dispatcher.recycle(barrier);
+    drop(plugin);
+    drop(dispatcher);
+    until(|| !states().lock().unwrap().contains_key(&host));
+}
+
+#[test]
+fn project_attributes_the_actual_host_service_call_to_its_unit() {
+    use crate::dispatch::{in_head, out_head, Frame};
+    use busbar_contract::abi::hook::SignalEntry;
+    use busbar_contract::abi::mechanism::call::AbiStr;
+    use busbar_contract::abi::plane::slot;
+    let _serial = TEST_LOCK.lock().unwrap();
+    NEXT.store(Defect::Pending as u8, SeqCst);
+    let provider = Arc::<Provider>::default();
+    let dispatcher = Dispatcher::with_services(DispatchConfig::default(), provider.clone());
+    let plugin = load_linked::<Plane>(
+        &LinkedRow::of(door).unwrap(),
+        Bind {
+            instance: "the-instance".into(),
+            max_inflight_cap: 8,
+            sink: Arc::new(NoSink),
+            dispatcher: dispatcher.adopter(),
+            conns: ConnTable::Probe,
+        },
+    )
+    .unwrap();
+    open_door(&plugin, b"{}", b"{}", None).expect("actual MCP lifecycle opens");
+    let host = plugin.inner.ctx().handle;
+    for unit in [73, 0] {
+        // SAFETY: plain ABI integers and pointer/length fields admit zero initialization.
+        let (mut input, mut output, mut signals): (ProjectIn, ProjectOut, [SignalEntry; 2]) =
+            unsafe { (std::mem::zeroed(), std::mem::zeroed(), std::mem::zeroed()) };
+        let mut arena = [0_u8; 64];
+        input.head = in_head();
+        input.unit = unit;
+        input.target = AbiStr::over(b"door:project-scope");
+        input.body = Blob {
+            ptr: b"abc".as_ptr(),
+            len: 3,
+            fmt: BLOB_OCTETS,
+            flags: 0,
+        };
+        input.signals_buf = signals.as_mut_ptr();
+        input.signals_cap = signals.len();
+        input.arena_buf = arena.as_mut_ptr();
+        input.arena_cap = arena.len();
+        output.head = out_head();
+        let mut frame = Frame::new(input, output);
+        assert_eq!(
+            plugin.call(slot::PROJECT, &mut frame).outcome,
+            Outcome::Ready
+        );
+    }
+    assert_eq!(
+        *provider.attributed.lock().unwrap(),
+        vec![
+            ("the-instance".into(), Some(73), "door:project-scope".into()),
+            ("the-instance".into(), None, "door:project-scope".into())
+        ]
+    );
     drop(plugin);
     drop(dispatcher);
     until(|| !states().lock().unwrap().contains_key(&host));
