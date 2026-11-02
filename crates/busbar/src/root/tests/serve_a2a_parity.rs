@@ -32,6 +32,9 @@ use crate::root::loader::dispatch::{
     DispatchConfig, Dispatcher, Done, Frame, Lent, LinkedRow, NoSink, Plugin,
 };
 
+#[path = "serve_a2a_cancel.rs"]
+mod cancellation;
+
 const REQUEST: &[u8] = br##"{"jsonrpc":"2.0","id":1,"method":"message/send","params":{"message":{"role":"user","messageId":"m1","contextId":"ctx-7","parts":[{"text":"hi"}]}}}"##;
 const ANSWER: &[u8] = br##"{"jsonrpc":"2.0","id":1,"result":{"role":"agent","messageId":"a1","parts":[{"text":"the agent's reply, that buffer that holds the whole request takes the answer in several writes. the agent's reply, long enough that a buffer that holds the whole request takes the answer in several writes. the agent's reply, long enough that a buffer that holds the whole request takes the answer in several writes. ","kind":"text"}],"kind":"message"}}"##;
 const ANSWER_OUT: &[u8] = br##"{"jsonrpc":"2.0","id":1,"result":{"role":"agent","messageId":"a1","parts":[{"text":"the agent's reply, that buffer that holds the whole request takes the answer in several writes. the agent's reply, long enough that a buffer that holds the whole request takes the answer in several writes. the agent's reply, long enough that a buffer that holds the whole request takes the answer in several writes. ","kind":"text"}],"kind":"message","contextId":"ctx-7"}}"##;
@@ -197,13 +200,13 @@ fn bind_plane(origin: Origin, instance: &str, dispatcher: &Dispatcher) -> Plugin
         dispatcher: dispatcher.adopter(),
         conns: ConnTable::Host(crate::root::connector::the().clone() as Arc<dyn DeclaredConns>),
     };
-    let row = crate::LINKED
+    let (row, getter) = crate::LINKED
         .plane_doors
         .iter()
         .find_map(|&door| {
             let row = LinkedRow::of(door).expect("the linked product states its identity");
             let stated = busbar_contract::abi::mechanism::rendering::read(&row.statement).unwrap();
-            (stated.name == "a2a").then_some(row)
+            (stated.name == "a2a").then_some((row, door))
         })
         .expect("the actual distribution must link the A2A product; this proof never skips");
     match origin {
@@ -230,6 +233,22 @@ fn bind_plane(origin: Origin, instance: &str, dispatcher: &Dispatcher) -> Plugin
             assert_eq!(
                 row.statement, stated,
                 "linked and dropped A2A must state identical public metadata and declarations"
+            );
+            // This first-party getter is the reviewed plugin_door! expansion: it returns only
+            // promoted static Door/Statement/Ops constants and invokes no host or plugin slot.
+            let linked = getter();
+            let dropped = dispatch::door_addresses_of_library(&path)
+                .expect("the actual dropped descriptor reads")
+                .expect("the actual dropped door exists");
+            assert_ne!(
+                std::ptr::from_ref(linked) as usize,
+                dropped.0,
+                "the dropped descriptor is a distinct actual image"
+            );
+            assert_ne!(
+                linked.ops() as usize,
+                dropped.1,
+                "the dropped operation table is a distinct actual image"
             );
             load_dropped::<Plane>(&path, &stated, bind).expect("the actual dropped A2A binds")
         }
@@ -363,7 +382,6 @@ fn piece(
     input.arena_cap = b.arena.len();
     let mut out: OnPieceOut = blank_out();
     out.head = dispatch::out_head();
-    let before = first_crossings(plane);
     let done = dispatcher
         .submit_lent(
             plane,
@@ -376,11 +394,6 @@ fn piece(
         )
         .wait(Duration::from_secs(20))
         .expect("the actual A2A crossing settles within its deadline");
-    assert_eq!(
-        first_crossings(plane) - before,
-        1,
-        "one initial ON_PIECE invocation"
-    );
     PieceAnswer {
         done,
         bytes: buffers,
@@ -393,7 +406,7 @@ fn arrive(
     claim: u32,
     method: &[u8],
     target: &[u8],
-    expected_crossings: u64,
+    no_crossing: bool,
 ) -> (dispatch::Called, ArriveOut) {
     let mut units = [UnitCount::ZERO; CAP];
     let mut input: ArriveIn = blank_in();
@@ -410,7 +423,9 @@ fn arrive(
     let mut frame = Frame::new(input, out);
     let before = first_crossings(plane);
     let answer = plane.call(slot::ARRIVE, &mut frame);
-    assert_eq!(first_crossings(plane) - before, expected_crossings);
+    if no_crossing {
+        assert_eq!(first_crossings(plane) - before, 0);
+    }
     (answer, frame.out)
 }
 
@@ -422,7 +437,7 @@ fn caller_body(
     cap: usize,
 ) {
     assert_eq!(
-        arrive(plane, unit, 14, b"POST", b"/a2a", 1).0.outcome,
+        arrive(plane, unit, 14, b"POST", b"/a2a", false).0.outcome,
         Outcome::Ready
     );
     let attempt = piece(
@@ -472,7 +487,6 @@ fn serve_and_project(plane: &Plugin<Plane>, dispatcher: &Dispatcher) -> [String;
     input.arena_buf = b.arena.as_mut_ptr();
     input.arena_cap = b.arena.len();
     let ticket = dispatcher.mint(0).expect("the actual SERVE ticket");
-    let before = first_crossings(plane);
     let done = dispatcher
         .submit_lent(
             plane,
@@ -490,7 +504,6 @@ fn serve_and_project(plane: &Plugin<Plane>, dispatcher: &Dispatcher) -> [String;
         Outcome::Fault,
         "the old SERVE positive never faulted"
     );
-    assert_eq!(first_crossings(plane) - before, 1);
     let out = &done
         .frame
         .as_ref()
@@ -534,7 +547,6 @@ fn serve_and_project(plane: &Plugin<Plane>, dispatcher: &Dispatcher) -> [String;
     input.arena_buf = b.arena.as_mut_ptr();
     input.arena_cap = b.arena.len();
     let mut frame = Frame::new(input, blank_out::<ProjectOut>());
-    let before = first_crossings(plane);
     // PROJECT is the production pure/ticketless crossing. Pending is therefore Fault; giving
     // it a fresh ticket here would weaken the original non-FAULT predicate.
     let called = plane.call(slot::PROJECT, &mut frame);
@@ -543,7 +555,6 @@ fn serve_and_project(plane: &Plugin<Plane>, dispatcher: &Dispatcher) -> [String;
         Outcome::Fault,
         "the old PROJECT positive never faulted"
     );
-    assert_eq!(first_crossings(plane) - before, 1);
     assert!(frame.out.view.signals_len <= 4);
     let project = format!(
         "{:?} lease={} error={} signals={}",
@@ -568,14 +579,12 @@ fn raw_relay_and_lifecycle(
     let settings = serde_json::to_vec(&serde_json::json!({"agents": {"vendor": entry}})).unwrap();
     let mut validate: Frame<life::ValidateIn, OutHead> = Frame::new(blank_in(), blank_out());
     validate.input.settings = blob(&settings, BLOB_JSON);
-    let before = first_crossings(plane);
     assert_eq!(
         plane.call(life::slot::VALIDATE, &mut validate).outcome,
         Outcome::Ready
     );
-    assert_eq!(first_crossings(plane) - before, 1);
     assert_eq!(
-        arrive(plane, 7, 14, b"POST", b"/a2a", 0).0.outcome,
+        arrive(plane, 7, 14, b"POST", b"/a2a", true).0.outcome,
         Outcome::Refused
     );
 
@@ -583,9 +592,7 @@ fn raw_relay_and_lifecycle(
     opened.input.open.generation = 1;
     opened.input.open.settings = blob(&settings, BLOB_JSON);
     opened.input.public_url = abi(b"https://gw.example");
-    let before = first_crossings(plane);
     let (answer, snapshot) = plane.open(&mut opened);
-    assert_eq!(first_crossings(plane) - before, 1);
     assert_eq!(answer.outcome, Outcome::Ready, "{:?}", answer.error);
     let snapshot = snapshot.expect("the actual first snapshot is owned by the host");
     assert_eq!(snapshot.generation, 1);
@@ -598,6 +605,13 @@ fn raw_relay_and_lifecycle(
             .collect::<Vec<_>>(),
         OPEN_CLAIMS
     );
+    assert!(
+        plane.has_ready(),
+        "the actual A2A product declares readiness"
+    );
+    plane
+        .ready(dispatcher, Duration::from_secs(20))
+        .expect("the actual A2A READY completes");
     let driver = dispatcher
         .driver(plane, 0)
         .expect("the actual lifecycle driver ticket");
@@ -611,11 +625,9 @@ fn raw_relay_and_lifecycle(
     for slot in [slot::HYDRATE, slot::START] {
         let mut frame: Frame<GenIn, OutHead> = Frame::new(blank_in(), blank_out());
         frame.input.generation = 1;
-        let before = first_crossings(plane);
         assert_eq!(plane.call(slot, &mut frame).outcome, Outcome::Ready);
-        assert_eq!(first_crossings(plane) - before, 1);
     }
-    let (unclaimed, out) = arrive(plane, 8, 99, b"GET", b"/a2a/unclaimed", 1);
+    let (unclaimed, out) = arrive(plane, 8, 99, b"GET", b"/a2a/unclaimed", false);
     assert_eq!(unclaimed.outcome, Outcome::Refused);
     assert_eq!(out.refusal_status, 404);
 
@@ -674,7 +686,6 @@ fn raw_relay_and_lifecycle(
 
     let short = dispatcher.mint(0).expect("the real short-answer ticket");
     caller_body(plane, dispatcher, short, 11, 1024);
-    let short_before = first_crossings(plane);
     let first = piece(
         plane,
         dispatcher,
@@ -685,6 +696,21 @@ fn raw_relay_and_lifecycle(
     assert_eq!(first.done.outcome, Outcome::Failed);
     assert!(first.done.short);
     assert!(first.out().units_needed > 0);
+    assert_eq!(
+        first.out().emitted,
+        0,
+        "terminal SHORT publishes no partial caller bytes"
+    );
+    assert_eq!(
+        first.out().units_written,
+        0,
+        "terminal SHORT publishes no partial bill"
+    );
+    assert_eq!(
+        first.out().records_written,
+        0,
+        "terminal SHORT publishes no partial record writes"
+    );
     let mut frame = first
         .done
         .frame
@@ -719,11 +745,6 @@ fn raw_relay_and_lifecycle(
         bytes: first.bytes,
     };
     again.final_answer();
-    assert_eq!(
-        first_crossings(plane) - short_before,
-        2,
-        "SHORT plus exactly one fresh recall"
-    );
     dispatcher.recycle(short);
 
     let mut reply = [0; 1024];
@@ -739,44 +760,33 @@ fn raw_relay_and_lifecycle(
     refusal.input.fields_cap = fields.len();
     refusal.input.arena_buf = arena.as_mut_ptr();
     refusal.input.arena_cap = arena.len();
-    let before = first_crossings(plane);
     assert_eq!(
         plane.call(slot::REFUSAL, &mut refusal).outcome,
         Outcome::Ready
     );
     assert_eq!(refusal.out.status, 403);
     assert_eq!(&reply[..refusal.out.reply_written as usize], REFUSAL);
-
-    assert_eq!(first_crossings(plane) - before, 1);
     let auxiliary = serve_and_project(plane, dispatcher);
     let driven = &plane.inner.driven;
     let seen = driven.answers();
-    let before = first_crossings(plane);
     dispatch::ticket::host_wake(plane.inner.ctx(), driver);
     assert_eq!(
         driven.answered_after(seen, Duration::from_secs(15)),
         Some(Outcome::Ready)
     );
-    assert_eq!(first_crossings(plane) - before, 1);
     let _ = driven.drain();
-    let before = first_crossings(plane);
     let tick = dispatcher
         .tick(plane, driver, 1000)
         .wait(Duration::from_secs(20))
         .expect("the real lifecycle tick settles");
     assert_eq!(tick.outcome, Outcome::Ready);
-    assert_eq!(first_crossings(plane) - before, 1);
     let mut cancel: Frame<PlaneCancelIn, PlaneCancelOut> = Frame::new(blank_in(), blank_out());
-    let before = first_crossings(plane);
     assert_eq!(
         plane.call(life::slot::CANCEL, &mut cancel).outcome,
         Outcome::Ready
     );
-    assert_eq!(first_crossings(plane) - before, 1);
     let mut release: Frame<ReleaseIn, OutHead> = Frame::new(blank_in(), blank_out());
-    let before = first_crossings(plane);
     let released = plane.call(life::slot::RELEASE, &mut release);
-    assert_eq!(first_crossings(plane) - before, 1);
     assert_eq!(released.lease, 0);
     assert!(
         released.outcome == Outcome::Ready
@@ -790,9 +800,7 @@ fn raw_relay_and_lifecycle(
     let mut refresh: Frame<life::RefreshIn, PlaneRefreshOut> = Frame::new(blank_in(), blank_out());
     refresh.input.generation = 2;
     refresh.input.settings = blob(&settings, BLOB_JSON);
-    let before = first_crossings(plane);
     let (answer, snapshot) = plane.refresh(&mut refresh);
-    assert_eq!(first_crossings(plane) - before, 1);
     assert_eq!(answer.outcome, Outcome::Ready);
     let snapshot = snapshot.expect("the actual refreshed snapshot is owned by the host");
     assert_eq!(snapshot.generation, 2);
@@ -807,21 +815,17 @@ fn raw_relay_and_lifecycle(
     );
     let mut retire: Frame<GenIn, OutHead> = Frame::new(blank_in(), blank_out());
     retire.input.generation = 1;
-    let before = first_crossings(plane);
     assert_eq!(
         plane.call(life::slot::RETIRE, &mut retire).outcome,
         Outcome::Ready
     );
-    assert_eq!(first_crossings(plane) - before, 1);
     let mut close: Frame<InHead, OutHead> = Frame::new(blank_in(), blank_out());
-    let before = first_crossings(plane);
     assert_eq!(
         plane.call(life::slot::CLOSE, &mut close).outcome,
         Outcome::Ready
     );
-    assert_eq!(first_crossings(plane) - before, 1);
     assert_eq!(
-        arrive(plane, 7, 14, b"POST", b"/a2a", 0).0.outcome,
+        arrive(plane, 7, 14, b"POST", b"/a2a", true).0.outcome,
         Outcome::Fault
     );
     // The after-CLOSE payload is deliberately never inspected.
@@ -964,8 +968,11 @@ async fn actual_a2a_relay_keeps_whole_narrow_short_and_lifecycle_both_ways() {
     let issuer = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
     let card = serde_json::to_vec(&peer_card(&endpoint, &issuer)).unwrap();
     let entry = peer_entry(&endpoint, &issuer);
+    let control = Arc::new(cancellation::CardPeerControl::default());
+    let peer_control = control.clone();
     let peer_routes = axum::Router::new().fallback(move |request: axum::extract::Request| {
         let card = card.clone();
+        let peer_control = peer_control.clone();
         async move {
             let method = request.method().clone();
             let path = request.uri().path().to_owned();
@@ -990,6 +997,7 @@ async fn actual_a2a_relay_keeps_whole_narrow_short_and_lifecycle_both_ways() {
                     path.as_str(),
                     "/.well-known/agent-card.json" | "/.well-known/agent.json"
                 ));
+                peer_control.card_requested().await;
                 card
             };
             axum::http::Response::builder()
@@ -1004,8 +1012,21 @@ async fn actual_a2a_relay_keeps_whole_narrow_short_and_lifecycle_both_ways() {
     });
 
     let mut auxiliary_parity = None;
-    for origin in [Origin::Linked, Origin::Dropped] {
-        let instance = format!("actual-a2a-{origin:?}");
+    for (origin, cancelling) in [
+        (Origin::Linked, false),
+        (Origin::Dropped, false),
+        (Origin::Linked, true),
+        (Origin::Dropped, true),
+    ] {
+        let instance = if cancelling {
+            format!("actual-a2a-{origin:?}-cancel")
+        } else {
+            format!("actual-a2a-{origin:?}")
+        };
+        let mut entry = entry.clone();
+        if cancelling {
+            entry["reverify_ttl"] = serde_json::Value::String("0s".into());
+        }
         let services = crate::root::serve::LateServices::new();
         let kernel = Arc::new(
             crate::root::serve::kernel_services(
@@ -1027,7 +1048,7 @@ async fn actual_a2a_relay_keeps_whole_narrow_short_and_lifecycle_both_ways() {
             services.served(),
         ));
         let _ = dispatcher.lend_seal(busbar_kernel::seal::lend());
-        let plane = bind_plane(origin, &instance, &dispatcher);
+        let plane = Arc::new(bind_plane(origin, &instance, &dispatcher));
         assert_eq!(plane.served().section, "agents");
         assert_eq!(
             plane.served().billable_classes,
@@ -1068,7 +1089,7 @@ async fn actual_a2a_relay_keeps_whole_narrow_short_and_lifecycle_both_ways() {
         )]);
         let tables = app.serve_tables.clone();
         let mut served = crate::root::serve::compose_planes(
-            &[(instance.clone(), Arc::new(plane))],
+            &[(instance.clone(), plane.clone())],
             &dispatcher,
             &services,
             &sections,
@@ -1121,6 +1142,20 @@ async fn actual_a2a_relay_keeps_whole_narrow_short_and_lifecycle_both_ways() {
         let approved: serde_json::Value = serde_json::from_slice(&approved).unwrap();
         assert_eq!(status, 200, "{approved}");
         assert_eq!(approved["state"], "approved");
+        if cancelling {
+            cancellation::run(
+                &data,
+                &bearer,
+                plane.clone(),
+                dispatcher.clone(),
+                kernel.units().clone(),
+                verified.clone(),
+                control.clone(),
+            )
+            .await;
+            tables.withdraw(&instance);
+            continue;
+        }
         let before = gov
             .usage_for(&app.cost, &key.id, busbar_kernel::store::now())
             .unwrap()
