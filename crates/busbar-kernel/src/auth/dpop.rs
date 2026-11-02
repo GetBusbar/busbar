@@ -80,7 +80,15 @@ pub(crate) async fn judge(
         };
     }
 
-    if app.oauth_as.is_some()
+    bearer_constraint(app.oauth_as.is_some(), bearer, read)
+}
+
+fn bearer_constraint(
+    authorization_server_configured: bool,
+    bearer: Option<&str>,
+    read: &mut Option<Bearer>,
+) -> SenderConstraint {
+    if authorization_server_configured
         && bearer.is_some_and(|t| read.get_or_insert_with(|| Bearer::read(t)).dpop_bound())
     {
         return SenderConstraint::Refused;

@@ -18,13 +18,13 @@ use busbar_kernel::plane_driver::{
     DriverSteps, Egress, FarEnd, MemberRoute, OutboundRequest, Pick, DEFAULT_ERROR_BODY_MAX,
 };
 use busbar_kernel::teller::UnitCtx;
+use busbar_kernel::test_hooks::tokens::{grant, pass};
 use busbar_kernel_egress::ports::{
     Admit, BoxFut, Breaker, Capacity, Classified, Clock, DestinationId, Dispatched, Disposition,
     DurabilityUnavailable, Journal, Outcome, Permit, PermitHandle, Telemetry, Unavailable,
     UpstreamStatus,
 };
 use busbar_kernel_egress::{Failover, Member, OnExhausted, Pool, WeightedFloor};
-use busbar_kernel_testkit::test_support::tokens::{grant, pass};
 
 use super::DoorFar;
 use crate::root::door_steps::{door_facts, egress_pool, DoorCaller, DoorPools, DoorSteps};
@@ -255,6 +255,37 @@ impl Telemetry for Quiet {
 
 #[tokio::test]
 async fn the_planes_fault_reading_reaches_the_breaker_through_the_doors_far_end() {
+    crate::dist_root_install::install();
+    let module = crate::LINKED
+        .stores
+        .iter()
+        .find(|row| row.1)
+        .expect("the assembled product links an ephemeral store")
+        .0;
+    let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
+        "providers": {}, "models": {}, "auth": {"chain": [], "admin_auth": []},
+        "store": {"module": module, "settings": {}}
+    }))
+    .expect("the actual deployment parses");
+    let config = busbar_kernel::config::resolve(&deploy, &Default::default())
+        .expect("the actual deployment resolves");
+    let rules = Arc::new(crate::root::door_steps::Rules::default())
+        as Arc<dyn busbar_kernel::appbuild::RootRules>;
+    let (app, rotate, limits) = busbar_kernel::build_app_from_config(
+        config,
+        Default::default(),
+        None,
+        Default::default(),
+        Default::default(),
+        (None, None),
+        None,
+        &rules,
+    )
+    .expect("the actual root builds the far-end generation");
+    limits.keep().expect("the actual limits commit");
+    if let Some(rotate) = rotate {
+        rotate();
+    }
     let facts = door_facts("p", &[], &[], &[], "a", Vec::new());
     let section: serde_yaml::Value = serde_yaml::from_str("e: {}").expect("yaml");
     let pools = DoorPools::of(&section, busbar_contract::section::TOOL_CALL_SECTION_KEY)
@@ -263,7 +294,7 @@ async fn the_planes_fault_reading_reaches_the_breaker_through_the_doors_far_end(
         &facts,
         &pools,
         Arc::new(|_: &str| None),
-        busbar_kernel_testkit::test_support::TestApp::new().build(),
+        Arc::new(app),
         None,
         DoorCaller {
             principal: PrincipalId::new("vk_one"),

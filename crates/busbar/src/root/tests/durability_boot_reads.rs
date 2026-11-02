@@ -10,7 +10,7 @@ const NODE: u64 = 47;
 const NOW: u64 = 1_700_000_000;
 
 fn token() -> Grant<DurableWrite> {
-    busbar_kernel_testkit::test_support::tokens::grant::<DurableWrite>()
+    crate::root::kernel::new_kernel().durability_token()
 }
 
 fn over_store(slots: &RecordSlots) -> Durability {
@@ -105,7 +105,7 @@ fn an_audit_window_the_store_will_not_read_is_never_answered_empty() {
         durability
             .seal_unit(
                 inputs(unit),
-                busbar_kernel_testkit::test_support::tokens::pass(),
+                busbar_kernel::teller::verb_audit_pass(&crate::root::kernel::new_kernel()),
                 &token,
             )
             .expect("sealed");
@@ -134,7 +134,7 @@ fn two_records(slots: &RecordSlots) {
         first
             .seal_unit(
                 inputs(unit),
-                busbar_kernel_testkit::test_support::tokens::pass(),
+                busbar_kernel::teller::verb_audit_pass(&crate::root::kernel::new_kernel()),
                 &token,
             )
             .expect("sealed");

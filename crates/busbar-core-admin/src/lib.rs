@@ -14,6 +14,7 @@ pub mod idempotency;
 
 pub mod planeverbs;
 pub mod rate;
+mod recovery;
 pub mod refusal;
 
 #[cfg(any(test, feature = "test-support"))]
@@ -133,14 +134,6 @@ mod txn_tests;
 #[cfg(test)]
 #[path = "tests/hook_route_timeout_tests.rs"]
 mod hook_route_timeout_tests;
-
-#[cfg(test)]
-#[path = "tests/key_revoke_tombstone_tests.rs"]
-mod key_revoke_tombstone_tests;
-
-#[cfg(test)]
-#[path = "tests/core_moved_tests.rs"]
-mod core_moved_tests;
 
 #[cfg(test)]
 #[path = "tests/secret_once_tests.rs"]

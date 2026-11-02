@@ -1,0 +1,209 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
+//! Recovery OPEN and administrative READY replies do not prove a hook can serve requests.
+
+use super::super::{HookInstance, State, QUARANTINE_FIRST, QUARANTINE_MAX};
+use super::*;
+use crate::dispatch::call::Ticketed;
+use crate::dispatch::kinds::hook::Hook;
+use crate::dispatch::{now_ns, Budgets, ConnTable, Frame, NoSink, Plugin};
+use busbar_contract::abi::mechanism::call::{DeadlineClass, Outcome};
+use busbar_contract::hook_calls::HookCalls;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::Instant;
+
+fn watchdog_faulting_instance() -> (HookInstance, Arc<AtomicUsize>) {
+    // A real slow serving crossing breaches the host watchdog. An SDK-caught panic merely
+    // returns FAULT and does not, by itself, meet the dispatcher's quarantine policy.
+    let dispatcher = Arc::new(Dispatcher::new(DispatchConfig {
+        budgets: Budgets {
+            call: Duration::from_millis(10),
+            ..Budgets::default()
+        },
+        watchdog_period: Duration::from_millis(1),
+        ..DispatchConfig::default()
+    }));
+    let axis = HookRows::new(&[hook_door_plugin::conforming::door], None, dispatcher)
+        .expect("the existing slow-capable conforming door binds");
+    let candidate = axis.find(NAME).unwrap().clone();
+    let dispatcher = Arc::clone(&axis.dispatcher);
+    let binds = Arc::new(AtomicUsize::new(0));
+    let bind = {
+        let dispatcher = Arc::clone(&dispatcher);
+        let binds = Arc::clone(&binds);
+        move || {
+            binds.fetch_add(1, Ordering::SeqCst);
+            HookRows::bind(
+                &candidate,
+                &dispatcher,
+                "hooks.recovery-backoff",
+                Arc::new(NoSink),
+                ConnTable::NoNeeds,
+            )
+        }
+    };
+    let instance = HookInstance::open(
+        bind().expect("the existing conforming door binds"),
+        dispatcher,
+        br#"{"reject_over_messages":3,"sleep_ms":2000}"#,
+        bind,
+    )
+    .expect("the existing conforming door opens; the serving watchdog causes its fault");
+    (instance, binds)
+}
+
+fn window(instance: &HookInstance) -> Duration {
+    match &*instance.inner.lock() {
+        State::Quarantined { window, .. } => *window,
+        _ => panic!("the actual serving fault must leave the hook quarantined"),
+    }
+}
+
+fn make_trial_due(instance: &HookInstance) {
+    let mut state = instance.inner.lock();
+    let State::Quarantined { trial_at, .. } = &mut *state else {
+        panic!("only a quarantined hook can become due for its next trial");
+    };
+    // Advance only eligibility; never replace the window whose growth the test observes.
+    *trial_at = Instant::now();
+}
+
+fn fault_current(instance: &HookInstance, plugin: &Plugin<Hook>) {
+    crate::dispatch::plugin::quarantine(plugin.inner.wake, "HD1 controlled serving fault");
+    assert!(
+        plugin.is_faulted(),
+        "the real dispatch instance was revoked"
+    );
+    instance.inner.faulted(plugin);
+    assert!(instance.quarantined());
+}
+
+#[tokio::test]
+async fn repeated_first_serving_faults_keep_growing_the_recovery_window_to_its_cap() {
+    let (instance, binds) = watchdog_faulting_instance();
+    for (attempt, expected) in [
+        QUARANTINE_FIRST,
+        Duration::from_secs(2),
+        Duration::from_secs(4),
+        Duration::from_secs(8),
+        Duration::from_secs(16),
+        QUARANTINE_MAX,
+        QUARANTINE_MAX,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let plugin = instance.inner.live(Instant::now() + BUDGET).await.unwrap();
+        let before = plugin.inner.crossings.load(Ordering::SeqCst);
+        let request = frame(2);
+        let lent = Arc::new(request.try_lend().expect("the fresh request can be lent"));
+        // HookCalls::decide deliberately watches its caller budget. Compose the same real
+        // serving crossing with the dispatcher's default watch instead, leaving the caller's
+        // observation budget long enough to receive the watchdog's FAULT. No synthetic fault.
+        let mut call = Ticketed::mint(&instance.inner.dispatcher, 0).unwrap();
+        call.submit(
+            &*plugin,
+            busbar_contract::abi::hook::slot::DECIDE,
+            Frame::new(
+                lent.input(),
+                super::super::blank_out::<busbar_contract::abi::hook::DecideOut>(),
+            ),
+            DeadlineClass::Call,
+            now_ns().saturating_add(u64::try_from(BUDGET.as_nanos()).unwrap()),
+            Arc::clone(&lent) as crate::dispatch::Lent,
+        );
+        let done = tokio::time::timeout(BUDGET, &mut call)
+            .await
+            .expect("the actual watchdog answers before the caller's observation budget");
+        assert_eq!(done.outcome, Outcome::Fault, "attempt {attempt}");
+        assert!(
+            plugin.is_faulted(),
+            "the watchdog quarantined this real instance"
+        );
+        assert_eq!(
+            plugin.inner.crossings.load(Ordering::SeqCst),
+            before + 1,
+            "one actual DECIDE crossing entered before the watchdog fault"
+        );
+        // This is the same transition invoked by HookCalls' FAULT arm. The orphaned crossing
+        // retains its Arc loan until retirement; never call complete() on its unfinished frame.
+        instance.inner.faulted(&plugin);
+        assert!(instance.quarantined());
+        assert_eq!(
+            binds.load(Ordering::SeqCst),
+            attempt + 1,
+            "each due trial opens exactly one fresh instance"
+        );
+        assert_eq!(
+            window(&instance),
+            expected,
+            "attempt {attempt}: an OPEN followed by another serving FAULT must not reset backoff"
+        );
+        if attempt != 6 {
+            make_trial_due(&instance);
+        }
+    }
+}
+
+#[tokio::test]
+async fn administrative_ready_preserves_backoff_and_a_serving_governance_rejection_resets_it() {
+    let (instance, binds) = checkpoint_instance(Way::Linked, "valid");
+    // Retire the fixture's first instance through its existing helper, then claim an ordinary
+    // trial. The explicit prior eight-second window is setup; later windows are observed faults.
+    regenerate(&instance);
+    *instance.inner.lock() = State::Trialing;
+    let recovered = instance
+        .inner
+        .trial(Duration::from_secs(8))
+        .expect("the actual checkpoint door opens on the claimed trial");
+    assert_eq!(binds.load(Ordering::SeqCst), 2);
+
+    instance
+        .configure("checkpoint", r#"{"reject_over_messages":1}"#, 2, BUDGET)
+        .await
+        .expect("the actual CONFIGURE acknowledges the stricter checkpoint");
+    let status = instance
+        .status(BUDGET)
+        .await
+        .expect("the actual STATUS is READY");
+    let status: serde_json::Value = serde_json::from_slice(&status).unwrap();
+    assert!(status
+        .get("held")
+        .and_then(serde_json::Value::as_u64)
+        .is_some());
+    assert!(!instance.quarantined());
+    assert_eq!(
+        binds.load(Ordering::SeqCst),
+        2,
+        "administrative calls did not rebind"
+    );
+    let current = instance.inner.live(Instant::now() + BUDGET).await.unwrap();
+    assert!(Arc::ptr_eq(&current, &recovered));
+    fault_current(&instance, &current);
+    assert_eq!(
+        window(&instance),
+        Duration::from_secs(16),
+        "OPEN, CONFIGURE and STATUS cannot reset a recovered hook's next serving-fault window"
+    );
+
+    make_trial_due(&instance);
+    let serving = instance.inner.live(Instant::now() + BUDGET).await.unwrap();
+    assert_eq!(binds.load(Ordering::SeqCst), 3);
+    let answer = instance.decide(frame(2), BUDGET).await;
+    assert!(
+        matches!(&answer, Answered::Answer { outcome: Outcome::Ready, out, .. }
+            if out.reject_status == REJECT_STATUS),
+        "a valid governance rejection is a healthy serving reply: {answer:?}"
+    );
+    assert!(!instance.quarantined());
+    let current = instance.inner.live(Instant::now() + BUDGET).await.unwrap();
+    assert!(Arc::ptr_eq(&current, &serving));
+    fault_current(&instance, &current);
+    assert_eq!(
+        window(&instance),
+        QUARANTINE_FIRST,
+        "a real READY serving decision resets the next fault to the first window"
+    );
+    assert_eq!(binds.load(Ordering::SeqCst), 3);
+}

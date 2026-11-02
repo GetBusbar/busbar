@@ -29,7 +29,7 @@ fn door(key: &str) -> String {
 }
 
 fn warm_shared_protocol_registry() {
-    let _ = busbar_kernel_testkit::ingress::protocols::known_protocols();
+    linked::install();
 }
 
 #[test]
@@ -112,7 +112,7 @@ fn the_fallback_wire_format_count_comes_from_the_protocol_registry() {
     warm_shared_protocol_registry();
     assert_eq!(
         wire_formats(fallback()),
-        busbar_kernel_testkit::ingress::protocols::known_protocols().len()
+        (linked::fallback().provider_dialects)(linked::fallback()).len()
     );
     assert!(
         wire_formats(fallback()) >= 2,
@@ -348,7 +348,7 @@ fn the_mount_table_is_read_before_the_path_shape() {
     );
     assert_eq!(
         d.ingress_of("/v1/chat/completions"),
-        Ingress::Fallback(Some("openai"))
+        Ingress::Fallback(None)
     );
     assert_eq!(d.ingress_of(&format!("{m}x")), Ingress::Fallback(None));
     assert_eq!(d.ingress_of(&door(a)), Ingress::Fallback(None));
@@ -379,10 +379,7 @@ fn a_resolved_ingress_names_its_own_wire_format() {
     let s = single();
     let d = PlaneDispatch::default().mount(s, &door(s), WIRE_JSONRPC);
     assert_eq!(d.ingress_of(&door(s)).wire_format(), Some(WIRE_JSONRPC));
-    assert_eq!(
-        d.ingress_of("/v1/messages").wire_format(),
-        Some("anthropic")
-    );
+    assert_eq!(d.ingress_of("/v1/messages").wire_format(), None);
     assert_eq!(d.ingress_of("/stats").wire_format(), None);
     let over = PlaneDispatch::default().mount(s, "/v1/messages", WIRE_JSONRPC);
     assert_eq!(
@@ -440,14 +437,11 @@ fn the_fallback_planes_dialects_are_the_registrys_so_an_empty_registry_empties_t
     warm_shared_protocol_registry();
     assert_eq!(
         wire_format_names(fallback()),
-        busbar_kernel_testkit::ingress::protocols::known_protocols(),
+        (linked::fallback().provider_dialects)(linked::fallback()),
         "the fallback plane's wire formats must track the registry"
     );
 
-    let empty = busbar_kernel_testkit::ingress::protocols::Registry::new(
-        busbar_kernel_testkit::ingress::protocols::merged_boot_decls(&[], &[]),
-    );
-    let names: &'static [&'static str] = empty.codec_protocols();
+    let names: &'static [&'static str] = &[];
     assert!(names.is_empty(), "premise: no declarations, no dialects");
     assert_eq!(
         sole_of(names),

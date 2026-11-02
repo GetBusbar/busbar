@@ -4,7 +4,7 @@
 use super::*;
 use crate::root::store_double::RecordSlots;
 use busbar_contract::abi::sdk::store::conditional::{Mutation, Request};
-use busbar_contract::caps::{DurableWrite, StepName};
+use busbar_contract::caps::StepName;
 use busbar_contract::store_calls::{StoreCalls, StoreFailure};
 use busbar_kernel_audit::{Audit as _, AuditChain, AuditSigningKey};
 use busbar_kernel_wal::{Entry, Journal, JournalRecord, NullShipper, Record, RecordClass};
@@ -38,7 +38,7 @@ impl Sealed {
     fn append(&mut self, entry: Entry) -> JournalRecord {
         self.journal
             .append(
-                &busbar_kernel_testkit::test_support::tokens::grant::<DurableWrite>(),
+                &crate::root::kernel::new_kernel().durability_token(),
                 StepName::Audit,
                 &[entry],
             )
@@ -50,9 +50,10 @@ impl Sealed {
     fn audit(&mut self, wall: u64) -> JournalRecord {
         let mut inputs = super::super::audit::tests::inputs(self.audit.next_seq());
         inputs.wall = wall;
-        let record = self
-            .audit
-            .seal(inputs, &busbar_kernel_testkit::test_support::tokens::pass());
+        let record = self.audit.seal(
+            inputs,
+            &busbar_kernel::teller::verb_audit_pass(&crate::root::kernel::new_kernel()),
+        );
         self.append(super::super::audit_entry(&record).unwrap())
     }
 
@@ -481,9 +482,10 @@ fn historical_usage_class_absent_from_current_registry_keeps_its_signed_head() {
         source: busbar_kernel_audit::QuantitySource::Count,
         estimated: false,
     });
-    let audit = sealed
-        .audit
-        .seal(inputs, &busbar_kernel_testkit::test_support::tokens::pass());
+    let audit = sealed.audit.seal(
+        inputs,
+        &busbar_kernel::teller::verb_audit_pass(&crate::root::kernel::new_kernel()),
+    );
     let expected = SignedHead::of(&audit);
     assert!(expected.signature.is_some());
     let record = sealed.append(super::super::audit_entry(&audit).unwrap());

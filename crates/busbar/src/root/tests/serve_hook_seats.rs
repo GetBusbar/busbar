@@ -66,10 +66,7 @@ pub(super) fn pools_door() -> busbar_contract::abi::mechanism::door::DoorFn {
 }
 
 pub(super) fn install_door_seams() {
-    for decls in crate::LINKED.protocols {
-        busbar_kernel_testkit::test_support::protocols::register_test_protocols(decls);
-    }
-    crate::root::test_plane_registry::register();
+    crate::dist_root_install::install();
 }
 
 static CARD: std::sync::LazyLock<crate::root::kernel::RootHistory> =
@@ -505,8 +502,7 @@ pub(crate) fn full_journal_book() -> Arc<std::sync::Mutex<crate::root::durabilit
         )
         .expect("the store reads back"),
     ));
-    let token =
-        busbar_kernel_testkit::test_support::tokens::grant::<busbar_contract::caps::DurableWrite>();
+    let token = busbar_kernel::test_hooks::tokens::grant::<busbar_contract::caps::DurableWrite>();
     for _ in 0..3 {
         let _lost = book.lock().unwrap().journal.append(
             &token,
@@ -742,7 +738,6 @@ pub(crate) async fn rig(instance: &'static str, opts: RigOpts<'_>) -> DoorRig {
 
 pub(crate) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result<DoorRig, String> {
     install_door_seams();
-    busbar_kernel_testkit::test_support::metrics::init();
     let judge = crate::root::connector::guard_for(&busbar_kernel::config::Destinations {
         block_private_addresses: opts.refuse_private,
         ..Default::default()
@@ -820,6 +815,9 @@ pub(crate) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
     yaml.push_str("models:\n");
     for (i, _) in opts.members.iter().enumerate() {
         yaml.push_str(&format!("  m{i}:\n    provider: oai{i}\n"));
+        if let Some(budget) = opts.lane_budget {
+            yaml.push_str(&format!("    max_requests: {budget}\n"));
+        }
         yaml.push_str(&indented(opts.model_yaml.get(i).copied().unwrap_or(""), 4));
     }
     yaml.push_str("pools:\n  p:\n    members:\n");
@@ -849,6 +847,20 @@ pub(crate) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
     if let Some(cap) = opts.request_body_max_bytes {
         yaml.push_str(&format!("limits:\n  request_body_max_bytes: {cap}\n"));
     }
+    yaml.push_str(if opts.open_door {
+        "auth:\n  chain: []\n  admin_auth: []\n"
+    } else {
+        "auth:\n  chain: [keys]\n  admin_auth: []\n"
+    });
+    let store_module = crate::LINKED
+        .stores
+        .iter()
+        .find(|row| row.1)
+        .expect("the assembled product links an ephemeral store")
+        .0;
+    yaml.push_str(&format!(
+        "store:\n  module: {store_module}\n  settings: {{}}\n"
+    ));
     let deploy = busbar_kernel::config::deploy_from_yaml_str(&yaml).map_err(|e| e.to_string())?;
     let mut defs_yaml = String::new();
     for (i, (port, _)) in opts.members.iter().enumerate() {
@@ -966,34 +978,25 @@ pub(crate) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
         ))
     };
 
-    let mut builder = busbar_kernel_testkit::test_support::TestApp::new();
-    if !opts.open_door {
-        builder = builder.keys_chain();
+    let rules = Arc::new(crate::root::door_steps::Rules::default())
+        as Arc<dyn busbar_kernel::appbuild::RootRules>;
+    let (mut app, rotate, limits) = busbar_kernel::build_app_from_config(
+        cfg.clone(),
+        Default::default(),
+        None,
+        Default::default(),
+        Default::default(),
+        (None, None),
+        None,
+        &rules,
+    )?;
+    limits.keep()?;
+    if let Some(rotate) = rotate {
+        rotate();
     }
-    let mut builder = builder.governance(Arc::clone(&gov)).cost(cost);
-    for (i, (port, _)) in opts.members.iter().enumerate() {
-        let lane = busbar_kernel_testkit::test_support::LaneSpec::new(
-            &format!("m{i}"),
-            opts.dialect.unwrap_or(word("dialect")),
-            &format!("http://127.0.0.1:{port}"),
-        );
-        builder = builder.lane(match opts.lane_budget {
-            Some(n) => lane.budget(n),
-            None => lane,
-        });
-    }
-    let weights: Vec<(usize, u32)> = opts
-        .members
-        .iter()
-        .enumerate()
-        .take(pooled)
-        .map(|(i, (_, w))| (i, *w))
-        .collect();
-    builder = builder.pool("p", &weights);
-    for (name, members) in opts.more_pools {
-        builder = builder.pool(name, members);
-    }
-    let mut app = builder.build();
+    app.governance = Some(Arc::clone(&gov));
+    app.cost = Arc::new(cost);
+    let mut app = Arc::new(app);
     let log = Arc::new(Mutex::new(Vec::new()));
     let read: Arc<dyn Fn() -> Ledger + Send + Sync> = {
         let (gov, cost, key_id) = (Arc::clone(&gov), app.cost.clone(), key.id.clone());

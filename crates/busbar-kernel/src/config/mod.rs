@@ -2001,10 +2001,6 @@ mod tests;
 mod advanced_destinations_tests;
 
 #[cfg(test)]
-#[path = "tests/named_map_replace_tests.rs"]
-mod named_map_replace_tests;
-
-#[cfg(test)]
 #[path = "tests/config_backcompat_corpus.rs"]
 mod config_backcompat_corpus;
 

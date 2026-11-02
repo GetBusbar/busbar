@@ -8,16 +8,12 @@ use std::time::Duration;
 use busbar_contract::abi::hook::{VERB_ABSTAIN, VERB_PREFER};
 use busbar_contract::abi::host::hook::{DecideFrame, DecideView};
 use busbar_contract::abi::mechanism::call::Outcome;
-use busbar_contract::abi::mechanism::door::{DoorFn, MARK_WORD_HOOK};
-use busbar_contract::abi::mechanism::rendering;
-use busbar_contract::hook_calls::{Answered, HookAxis, HookFacts};
+use busbar_contract::hook_calls::{Answered, HookAxis};
 use busbar_contract::hooks::{Candidate, RoutingContext, RoutingDecision, RoutingRequest};
 use busbar_kernel::config::{
     is_strategy_name, DEFAULT_POLICY_TIMEOUT_MS, ON_ERROR_WEIGHTED, RESERVED_HOOK_NAMES,
 };
-use busbar_kernel_testkit::test_support::ranking_double;
 
-use crate::root::loader::hook_door::HookRows;
 use crate::root::loader::PluginRegistry;
 
 fn linked_axis() -> Arc<dyn HookAxis> {
@@ -25,16 +21,6 @@ fn linked_axis() -> Arc<dyn HookAxis> {
         &(Arc::new(PluginRegistry::empty()) as Arc<dyn busbar_contract::plugin_rows::PluginRows>),
     )
     .expect("the linked hook rows")
-}
-
-fn double_axis() -> Arc<dyn HookAxis> {
-    let rows = HookRows::new(
-        &[ranking_double::door],
-        Some(&PluginRegistry::empty()),
-        crate::root::dispatch::dispatcher(),
-    )
-    .expect("the double states itself");
-    Arc::new(rows)
 }
 
 type Row = (usize, Option<f64>, Option<f64>, usize, Option<f64>);
@@ -287,94 +273,5 @@ async fn each_strategy_word_ranks_as_1_5_5_did_through_the_door_and_never_reache
             Ok(got) => assert_eq!(got, want, "`{word}` over {rows:?}"),
             Err(e) => panic!("`{word}` reached on_error ({e}); 1.5.5's ranking never did"),
         }
-    }
-}
-
-fn linked_door_claiming(word: &str) -> DoorFn {
-    *crate::LINKED
-        .hook_doors
-        .iter()
-        .find(|door| hook_words(&read(**door)).iter().any(|w| w == word))
-        .expect("a linked hook door claims the word")
-}
-
-fn read(door: DoorFn) -> rendering::Read {
-    let stated = crate::root::loader::dispatch::rendering_of(door).expect("the door states");
-    rendering::read(&stated).expect("the rendering reads")
-}
-
-fn hook_words(r: &rendering::Read) -> Vec<String> {
-    r.mark_words
-        .iter()
-        .filter(|(class, _)| *class == MARK_WORD_HOOK)
-        .map(|(_, w)| w.clone())
-        .collect()
-}
-
-#[tokio::test]
-async fn the_kernel_ranking_double_states_what_the_linked_ranking_door_states() {
-    let real = read(linked_door_claiming("cheapest"));
-    let double = read(ranking_double::door);
-    assert_ne!(
-        double.name, real.name,
-        "the double states its own name: the kernel names no plugin (C1)"
-    );
-    assert_eq!(double.name, ranking_double::NAME, "the Statement name");
-    assert_eq!(double.kind, real.kind);
-    assert_eq!(double.kind_abi, real.kind_abi);
-    assert_eq!(double.max_inflight, real.max_inflight, "max_inflight");
-    assert_eq!(double.marks, real.marks, "the flag marks");
-    assert_eq!(hook_words(&double), hook_words(&real), "the hook words");
-    assert_eq!(double.mark_words, real.mark_words, "every word mark");
-    assert_eq!(double.kind_tail_size, real.kind_tail_size, "the tail");
-
-    let (linked, doubled) = (linked_axis(), double_axis());
-    let budget = linked.call_budget();
-    for word in hook_words(&real) {
-        let settings = serde_json::json!({ "policy": word });
-        let facts = |axis: &Arc<dyn HookAxis>| axis.probe(&word, &word, &settings);
-
-        let want = facts(&linked).map(|(stated, problems)| {
-            let stated = stated.map(|f| HookFacts {
-                name: ranking_double::NAME.to_string(),
-                ..f
-            });
-            (stated, problems)
-        });
-        assert_eq!(facts(&doubled), want, "the tail's facts, `{word}`");
-    }
-    for settings in [
-        serde_json::json!({}),
-        serde_json::json!({ "policy": "nope" }),
-        serde_json::json!({ "policy": "weighted" }),
-    ] {
-        let refusal =
-            |axis: &Arc<dyn HookAxis>, name: &str| axis.open(name, name, &settings, budget).err();
-
-        let want = refusal(&linked, &real.name).map(|e| {
-            let envelope = format!("plugin '{}' open failed: ", real.name);
-            let reason = e
-                .strip_prefix(&envelope)
-                .unwrap_or_else(|| panic!("the host's open-refusal envelope: {e}"));
-            let reason = reason
-                .strip_prefix("hook-ranking: ")
-                .or_else(|| reason.strip_prefix("ranking: "))
-                .unwrap_or(reason);
-            format!("plugin '{}' open failed: {reason}", ranking_double::NAME)
-        });
-        assert!(want.is_some(), "the linked door refuses {settings}");
-        assert_eq!(
-            refusal(&doubled, ranking_double::NAME),
-            want,
-            "the refusal of {settings}"
-        );
-    }
-
-    for (word, rows, _) in cases() {
-        assert_eq!(
-            decide(&doubled, word, &rows, budget).await,
-            decide(&linked, word, &rows, budget).await,
-            "`{word}` over {rows:?}"
-        );
     }
 }

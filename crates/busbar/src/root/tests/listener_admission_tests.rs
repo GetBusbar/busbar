@@ -28,8 +28,38 @@ impl PluginHttpDispatch for Counter {
 }
 
 fn app(auth: RouteAuth, calls: &Arc<AtomicUsize>) -> Arc<busbar_kernel::state::App> {
-    let mut app = busbar_kernel_testkit::test_support::TestApp::new().build();
-    Arc::get_mut(&mut app).unwrap().plugin_routes = Arc::new(
+    crate::dist_root_install::install();
+    crate::root::test_plane_registry::register();
+    let deploy = busbar_kernel::config::deploy_from_yaml_str(
+        "store: {module: memory}\nauth: {chain: [], admin_auth: []}\nproviders: {}\nmodels: {}\n",
+    )
+    .expect("the admission deployment parses");
+    let cfg = busbar_kernel::config::resolve(&deploy, &Default::default())
+        .expect("the admission deployment resolves");
+    let store = crate::root::real_store::store();
+    let rules: Arc<dyn busbar_kernel::appbuild::RootRules> =
+        Arc::new(crate::root::door_steps::Rules::default());
+    let (mut app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
+        cfg,
+        Default::default(),
+        None,
+        Default::default(),
+        Default::default(),
+        (None, None),
+        None,
+        &rules,
+        Some(busbar_contract::store_calls::OpenedStore {
+            records: store.clone(),
+            calls: Some(store),
+        }),
+        false,
+    )
+    .expect("the product builds the admission application");
+    limits.keep().expect("the admission limits commit");
+    if let Some(rotate) = rotate {
+        rotate();
+    }
+    app.plugin_routes = Arc::new(
         build_route_table(vec![RouteDecl {
             owner: "admission-probe".into(),
             source_instance: "admission-probe".into(),
@@ -46,7 +76,7 @@ fn app(auth: RouteAuth, calls: &Arc<AtomicUsize>) -> Arc<busbar_kernel::state::A
         }])
         .unwrap(),
     );
-    app
+    Arc::new(app)
 }
 
 fn data_router(calls: &Arc<AtomicUsize>) -> axum::Router {

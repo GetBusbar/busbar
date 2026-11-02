@@ -3,7 +3,7 @@ use busbar_contract::{WireFault, WireStatusClass};
 use busbar_kernel_egress::ports::Disposition;
 
 fn route_token() -> Pass<Route> {
-    busbar_kernel_testkit::test_support::tokens::pass()
+    Pass::mint(&busbar_kernel::seal::acquire())
 }
 
 #[test]

@@ -1,7 +1,7 @@
 use super::*;
 use metrics_exporter_prometheus::formatting as reference;
 
-fn rendered(families: &[Family]) -> String {
+fn ordered_families(families: &[Family]) -> Vec<Family> {
     let mut ordered = families.to_vec();
     ordered.sort_by(|a, b| a.kind.cmp(&b.kind).then_with(|| a.name.cmp(&b.name)));
     for family in &mut ordered {
@@ -18,7 +18,7 @@ fn rendered(families: &[Family]) -> String {
         }
         family.samples = series.into_values().flatten().collect();
     }
-    crate::test_support::export_axis::lines(&ordered)
+    ordered
 }
 
 fn workload() {
@@ -79,11 +79,19 @@ fn the_source_holds_what_1_5_5s_recorder_held() {
     let text = old.handle().render();
     let was = busbar_contract::export_calls::parse_families(&text).expect("1.5.5's text snapshots");
     let now = source.snapshot();
-    assert_eq!(rendered(&now), rendered(&was), "1.5.5 wrote:\n{text}");
+    assert_eq!(
+        ordered_families(&now),
+        ordered_families(&was),
+        "1.5.5 wrote:\n{text}"
+    );
     assert!(
-        rendered(&now).contains("quantile=\"0.999\"") && now.len() >= 6,
-        "the proof is not vacuous:\n{}",
-        rendered(&now)
+        now.iter().flat_map(|family| &family.samples).any(|sample| {
+            sample
+                .labels
+                .iter()
+                .any(|(key, value)| key == "quantile" && value == "0.999")
+        }) && now.len() >= 6,
+        "the proof is not vacuous:\n{now:?}"
     );
     let kinds: Vec<u8> = now.iter().map(|f| f.kind).collect();
     assert!(

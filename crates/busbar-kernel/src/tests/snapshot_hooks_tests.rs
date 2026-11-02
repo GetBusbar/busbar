@@ -40,7 +40,25 @@ fn counter_renders_with_hook_label_and_verbatim_name() {
         labels: labels(&[("pool", "chat")]),
         ..metric("tokens_saved_total", "counter", 42.0)
     };
-    let text = render_text(&[("compress".to_string(), vec![m])]);
+    let hooks = [("compress".to_string(), vec![m])];
+    assert_eq!(
+        families_of(&hooks),
+        vec![Family {
+            name: "tokens_saved_total".to_string(),
+            help: Some("tokens the hook saved".to_string()),
+            unit: None,
+            kind: busbar_contract::abi::export::SCRAPE_KIND_COUNTER,
+            samples: vec![Sample {
+                name: "tokens_saved_total".to_string(),
+                labels: vec![
+                    ("hook".to_string(), "compress".to_string()),
+                    ("pool".to_string(), "chat".to_string())
+                ],
+                value: "42".to_string()
+            },]
+        },]
+    );
+    let text = render_text(&hooks);
     assert!(text.contains("# TYPE tokens_saved_total counter"), "{text}");
     assert!(
         text.contains("# HELP tokens_saved_total tokens the hook saved"),
@@ -64,7 +82,54 @@ fn histogram_renders_as_summary() {
         labels: labels(&[("pool", "chat")]),
         ..metric("compress_latency_us", "histogram", 1000.0)
     };
-    let text = render_text(&[("compress".to_string(), vec![m])]);
+    let hooks = [("compress".to_string(), vec![m])];
+    assert_eq!(
+        families_of(&hooks),
+        vec![Family {
+            name: "compress_latency_us".to_string(),
+            help: None,
+            unit: None,
+            kind: busbar_contract::abi::export::SCRAPE_KIND_SUMMARY,
+            samples: vec![
+                Sample {
+                    name: "compress_latency_us".to_string(),
+                    labels: vec![
+                        ("hook".to_string(), "compress".to_string()),
+                        ("pool".to_string(), "chat".to_string()),
+                        ("quantile".to_string(), "0.5".to_string())
+                    ],
+                    value: "18".to_string()
+                },
+                Sample {
+                    name: "compress_latency_us".to_string(),
+                    labels: vec![
+                        ("hook".to_string(), "compress".to_string()),
+                        ("pool".to_string(), "chat".to_string()),
+                        ("quantile".to_string(), "0.95".to_string())
+                    ],
+                    value: "54".to_string()
+                },
+                Sample {
+                    name: "compress_latency_us".to_string(),
+                    labels: vec![
+                        ("hook".to_string(), "compress".to_string()),
+                        ("pool".to_string(), "chat".to_string()),
+                        ("quantile".to_string(), "0.99".to_string())
+                    ],
+                    value: "91".to_string()
+                },
+                Sample {
+                    name: "compress_latency_us_count".to_string(),
+                    labels: vec![
+                        ("hook".to_string(), "compress".to_string()),
+                        ("pool".to_string(), "chat".to_string())
+                    ],
+                    value: "1000".to_string()
+                },
+            ]
+        },]
+    );
+    let text = render_text(&hooks);
     assert!(
         text.contains("# TYPE compress_latency_us summary"),
         "{text}"
@@ -96,7 +161,54 @@ fn histogram_with_buckets_renders_as_native_histogram() {
         labels: labels(&[("pool", "chat")]),
         ..metric("rewriter_compression_ratio", "histogram", 7.0)
     };
-    let text = render_text(&[("compress".to_string(), vec![m])]);
+    let hooks = [("compress".to_string(), vec![m])];
+    assert_eq!(
+        families_of(&hooks),
+        vec![Family {
+            name: "rewriter_compression_ratio".to_string(),
+            help: None,
+            unit: None,
+            kind: busbar_contract::abi::export::SCRAPE_KIND_HISTOGRAM,
+            samples: vec![
+                Sample {
+                    name: "rewriter_compression_ratio_bucket".to_string(),
+                    labels: vec![
+                        ("hook".to_string(), "compress".to_string()),
+                        ("pool".to_string(), "chat".to_string()),
+                        ("le".to_string(), "0.5".to_string())
+                    ],
+                    value: "3".to_string()
+                },
+                Sample {
+                    name: "rewriter_compression_ratio_bucket".to_string(),
+                    labels: vec![
+                        ("hook".to_string(), "compress".to_string()),
+                        ("pool".to_string(), "chat".to_string()),
+                        ("le".to_string(), "1".to_string())
+                    ],
+                    value: "7".to_string()
+                },
+                Sample {
+                    name: "rewriter_compression_ratio_bucket".to_string(),
+                    labels: vec![
+                        ("hook".to_string(), "compress".to_string()),
+                        ("pool".to_string(), "chat".to_string()),
+                        ("le".to_string(), "+Inf".to_string())
+                    ],
+                    value: "7".to_string()
+                },
+                Sample {
+                    name: "rewriter_compression_ratio_count".to_string(),
+                    labels: vec![
+                        ("hook".to_string(), "compress".to_string()),
+                        ("pool".to_string(), "chat".to_string())
+                    ],
+                    value: "7".to_string()
+                },
+            ]
+        },]
+    );
+    let text = render_text(&hooks);
     assert!(
         text.contains("# TYPE rewriter_compression_ratio histogram"),
         "buckets => histogram, not summary: {text}"
@@ -124,13 +236,28 @@ fn histogram_with_buckets_renders_as_native_histogram() {
 
 #[test]
 fn busbar_prefix_is_reserved() {
-    let text = render_text(&[(
+    let hooks = [(
         "evil".to_string(),
         vec![
             metric("busbar_engine_requests_total", "counter", 9.0),
             metric("legit_total", "counter", 1.0),
         ],
-    )]);
+    )];
+    assert_eq!(
+        families_of(&hooks),
+        vec![Family {
+            name: "legit_total".to_string(),
+            help: None,
+            unit: None,
+            kind: busbar_contract::abi::export::SCRAPE_KIND_COUNTER,
+            samples: vec![Sample {
+                name: "legit_total".to_string(),
+                labels: vec![("hook".to_string(), "evil".to_string())],
+                value: "1".to_string()
+            },]
+        },]
+    );
+    let text = render_text(&hooks);
     assert!(
         !text.contains("busbar_engine_requests_total"),
         "reserved name must be dropped: {text}"
@@ -148,7 +275,29 @@ fn two_hooks_same_name_share_header_split_by_label() {
         "hook_b".to_string(),
         vec![metric("proxy_compression_ratio_by_strategy", "gauge", 0.6)],
     );
-    let text = render_text(&[a, b]);
+    let hooks = [a, b];
+    assert_eq!(
+        families_of(&hooks),
+        vec![Family {
+            name: "proxy_compression_ratio_by_strategy".to_string(),
+            help: None,
+            unit: None,
+            kind: busbar_contract::abi::export::SCRAPE_KIND_GAUGE,
+            samples: vec![
+                Sample {
+                    name: "proxy_compression_ratio_by_strategy".to_string(),
+                    labels: vec![("hook".to_string(), "hook_a".to_string())],
+                    value: "0.4".to_string()
+                },
+                Sample {
+                    name: "proxy_compression_ratio_by_strategy".to_string(),
+                    labels: vec![("hook".to_string(), "hook_b".to_string())],
+                    value: "0.6".to_string()
+                },
+            ]
+        },]
+    );
+    let text = render_text(&hooks);
 
     assert_eq!(
         text.matches("# TYPE proxy_compression_ratio_by_strategy")
@@ -170,7 +319,22 @@ fn two_hooks_same_name_share_header_split_by_label() {
 fn type_conflict_for_shared_name_is_dropped() {
     let a = ("a".to_string(), vec![metric("shared", "counter", 1.0)]);
     let b = ("b".to_string(), vec![metric("shared", "gauge", 2.0)]);
-    let text = render_text(&[a, b]);
+    let hooks = [a, b];
+    assert_eq!(
+        families_of(&hooks),
+        vec![Family {
+            name: "shared".to_string(),
+            help: None,
+            unit: None,
+            kind: busbar_contract::abi::export::SCRAPE_KIND_COUNTER,
+            samples: vec![Sample {
+                name: "shared".to_string(),
+                labels: vec![("hook".to_string(), "a".to_string())],
+                value: "1".to_string()
+            },]
+        },]
+    );
+    let text = render_text(&hooks);
     assert_eq!(
         text.matches("# TYPE shared").count(),
         1,
@@ -191,7 +355,25 @@ fn label_values_are_escaped() {
         labels: labels(&[("k", "a\"b\\c")]),
         ..metric("x_total", "counter", 1.0)
     };
-    let text = render_text(&[("h".to_string(), vec![m])]);
+    let hooks = [("h".to_string(), vec![m])];
+    assert_eq!(
+        families_of(&hooks),
+        vec![Family {
+            name: "x_total".to_string(),
+            help: None,
+            unit: None,
+            kind: busbar_contract::abi::export::SCRAPE_KIND_COUNTER,
+            samples: vec![Sample {
+                name: "x_total".to_string(),
+                labels: vec![
+                    ("hook".to_string(), "h".to_string()),
+                    ("k".to_string(), "a\\\"b\\\\c".to_string())
+                ],
+                value: "1".to_string()
+            },]
+        },]
+    );
+    let text = render_text(&hooks);
     assert!(text.contains(r#"k="a\"b\\c""#), "{text}");
 }
 
@@ -310,7 +492,63 @@ fn hook_labels_cannot_shadow_renderer_labels() {
     summ.quantiles = Some(BTreeMap::from([("0.5".to_string(), 0.25)]));
     summ.labels = shadowing;
 
-    let text = render_text(&[("compress".to_string(), vec![hist, summ])]);
+    let hooks = [("compress".to_string(), vec![hist, summ])];
+    assert_eq!(
+        families_of(&hooks),
+        vec![
+            Family {
+                name: "chars_saved_total".to_string(),
+                help: None,
+                unit: None,
+                kind: busbar_contract::abi::export::SCRAPE_KIND_HISTOGRAM,
+                samples: vec![
+                    Sample {
+                        name: "chars_saved_total_bucket".to_string(),
+                        labels: vec![
+                            ("hook".to_string(), "compress".to_string()),
+                            ("quantile".to_string(), "0.5".to_string()),
+                            ("le".to_string(), "1".to_string())
+                        ],
+                        value: "1".to_string()
+                    },
+                    Sample {
+                        name: "chars_saved_total_bucket".to_string(),
+                        labels: vec![
+                            ("hook".to_string(), "compress".to_string()),
+                            ("quantile".to_string(), "0.5".to_string()),
+                            ("le".to_string(), "+Inf".to_string())
+                        ],
+                        value: "3".to_string()
+                    },
+                    Sample {
+                        name: "chars_saved_total_count".to_string(),
+                        labels: vec![
+                            ("hook".to_string(), "compress".to_string()),
+                            ("le".to_string(), "oops".to_string()),
+                            ("quantile".to_string(), "0.5".to_string())
+                        ],
+                        value: "3".to_string()
+                    },
+                ]
+            },
+            Family {
+                name: "latency_seconds".to_string(),
+                help: None,
+                unit: None,
+                kind: busbar_contract::abi::export::SCRAPE_KIND_UNTYPED,
+                samples: vec![Sample {
+                    name: "latency_seconds".to_string(),
+                    labels: vec![
+                        ("hook".to_string(), "compress".to_string()),
+                        ("le".to_string(), "oops".to_string()),
+                        ("quantile".to_string(), "0.5".to_string())
+                    ],
+                    value: "2".to_string()
+                },]
+            },
+        ]
+    );
+    let text = render_text(&hooks);
     for line in text.lines().filter(|l| !l.starts_with('#')) {
         for name in ["hook", "le", "quantile"] {
             let n = line.matches(&format!("{{{name}=\"")).count()

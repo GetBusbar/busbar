@@ -14,6 +14,7 @@ pub(super) struct MeteringWrite {
 struct MeteringAttempt {
     id: OpId,
     replay_before: std::time::Instant,
+    first_sent_at_ms: u64,
 }
 
 impl MeteringWrite {
@@ -135,6 +136,7 @@ impl GovState {
                 let op = MeteringAttempt {
                     id: crate::door::op_id(),
                     replay_before,
+                    first_sent_at_ms: crate::store::now_ms(),
                 };
                 pending
                     .flight
@@ -145,6 +147,48 @@ impl GovState {
                     .op = Some(op);
                 op
             });
+
+            if self.recovery_enabled() {
+                let result = (|| {
+                    self.confirm_pending_recovery(op.id.0)?;
+                    if self.recovery_event(op.id.0).is_none() {
+                        let event = self.metering_recovery_intent(
+                            op.id.0,
+                            op.first_sent_at_ms,
+                            &write.delta,
+                        )?;
+                        self.keep_recovery_event(&event)?;
+                    }
+                    self.drive_raw_recovery(op.id.0)
+                })();
+                match result {
+                    Ok(()) => {
+                        let state = self
+                            .recovery_event(op.id.0)
+                            .expect("confirmed metering Intent")
+                            .state;
+                        if matches!(
+                            state,
+                            recovery::RecoveryState::Settled
+                                | recovery::RecoveryState::LandedUnknown
+                        ) {
+                            pending
+                                .flight
+                                .lock()
+                                .unwrap_or_else(|p| p.into_inner())
+                                .pop_front();
+                            flushed += usize::from(state == recovery::RecoveryState::Settled);
+                            self.forget_confirmed_recovery(op.id.0);
+                            continue;
+                        }
+                    }
+                    Err(error) => {
+                        diag_warn!(METERING_FLUSH_PARTIAL_FAILURE, key = %write.delta.key_id,
+                            error = %error, "metering operation remains in durable recovery custody");
+                    }
+                }
+                return flushed;
+            }
 
             let result = if std::time::Instant::now() >= op.replay_before {
                 Err(RecordStoreError(

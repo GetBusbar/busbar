@@ -6,9 +6,9 @@ use busbar_kernel::config::migrate_plugins::MigrateHost;
 
 use super::{Index, IndexPlugin};
 
-#[cfg(feature = "export-webhook")]
 #[test]
 fn core_calls_the_real_webhook_migration_and_applies_its_settings_and_report() {
+    crate::dist_root_install::install();
     let config = "\
 store: { module: memory }
 export:
@@ -45,9 +45,9 @@ export:
     );
 }
 
-#[cfg(feature = "plane-llm")]
 #[test]
 fn core_applies_the_real_llm_migrations_private_destination_need() {
+    crate::dist_root_install::install();
     let config = "\
 store: { module: memory }
 providers:
@@ -56,17 +56,6 @@ providers:
 models: {}
 pools: {}
 ";
-    let registration = crate::root::loader::dispatch::kinds::plane::registration(
-        crate::root::loader::dispatch::kinds::plane::linked_probe(
-            busbar_plane_llm::plane_door::door,
-            "real-migration",
-        ),
-    )
-    .expect("the real plane's statement registers");
-    let plane =
-        busbar_kernel::plane_driver::door::fold(registration).expect("the real plane folds");
-    let _registry =
-        busbar_kernel_testkit::test_support::planes::TestRegistryIsolation::seeded(&[plane]);
     let directory = super::FetchedDir::create_in(&std::env::temp_dir()).unwrap();
     let host = super::RootHost::for_document(config, &directory.0.join("config.yaml"));
     let out = migrate_config_with(config, &host).expect("the real linked plane migrates");

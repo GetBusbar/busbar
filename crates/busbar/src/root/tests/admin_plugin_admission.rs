@@ -143,21 +143,65 @@ async fn serve_admission_with_inputs(
         crate::LINKED.auths,
         crate::root::auth_bindings::operator_words(),
     );
-    busbar_kernel_testkit::test_support::install_root_auth_axis(crate::root::dispatch::auth_axis);
-    let mut app = busbar_kernel_testkit::test_support::TestApp::new()
-        .governance(gov_with_signer(Some("admintok".to_string())))
-        .admin_chain(vec![busbar_kernel::config::operator_provider().to_string()])
-        .plugins_dir(dir)
-        .plugins_cfg(cfg)
-        .plugin_admission(&ADMISSION);
+    crate::dist_root_install::install();
+    let module = busbar_kernel::preflight::root_rows()
+        .stores
+        .first()
+        .expect("the distribution links its product store")
+        .0;
+    let settings: serde_json::Value = serde_json::from_str(
+        &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
+    )
+    .expect("actual store settings are JSON");
+    let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
+        "providers": {}, "models": {},
+        "auth": {"chain": [], "admin_auth": [busbar_kernel::config::operator_provider()]},
+        "store": {"module": module, "settings": settings},
+        "advanced": {"allow_destinations": ["127.0.0.1"]}
+    }))
+    .expect("the admission deployment parses");
+    let mut resolved = busbar_kernel::config::resolve(&deploy, &Default::default()).unwrap();
+    let admin_token_file = dir.with_extension("admin-token");
+    std::fs::write(&admin_token_file, b"admintok").unwrap();
+    resolved
+        .auth
+        .as_mut()
+        .expect("configured authentication")
+        .admin_auth[0]
+        .token = Some(busbar_kernel::config::secret::SecretRef::file(
+        admin_token_file.to_string_lossy(),
+    ));
+    let rules = Arc::new(crate::root::door_steps::Rules::default())
+        as Arc<dyn busbar_kernel::appbuild::RootRules>;
+    let (mut app, rotation, limits) = busbar_kernel::build_app_from_config(
+        resolved,
+        Default::default(),
+        None,
+        Default::default(),
+        Default::default(),
+        (None, None),
+        None,
+        &rules,
+    )
+    .expect("the real product builds the admission deployment");
+    std::fs::remove_file(admin_token_file).unwrap();
+    limits.keep().unwrap();
+    if let Some(rotate) = rotation {
+        rotate();
+    }
+    app.governance = Some(gov_with_signer(Some("admintok".to_string())));
+    app.plugins_dir = dir;
+    app.plugins_cfg = cfg;
+    app.plugin_admission = Some(&ADMISSION);
     if let Some(env) = hook_env {
-        app = app.hook_env(env);
+        app.hook_env = env;
     }
     if let Some((config, providers)) = disk_paths {
-        app = app.disk_paths(config, providers);
+        app.config_path = Some(config);
+        app.providers_path = Some(providers);
     }
     let (router, _handle) = busbar_kernel::build_router_with_limits(
-        app.build(),
+        Arc::new(app),
         256 * 1024 * 1024,
         0,
         busbar_kernel::config::DEFAULT_RESPONSE_HEADERS_SERVER_TIMING,
@@ -243,7 +287,7 @@ fn file_of(row: &serde_json::Value) -> Option<String> {
 }
 
 fn linked_store_key() -> &'static str {
-    busbar_kernel_testkit::test_support::root::ensure();
+    crate::dist_root_install::install();
     busbar_kernel::preflight::root_rows()
         .stores
         .first()
@@ -298,7 +342,7 @@ fn message(body: &serde_json::Value) -> &str {
 
 #[tokio::test]
 async fn inspect_previews_a_trusted_candidate_without_installing() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    crate::dist_root_install::install();
     let dir = tmp_plugins_dir("inspect-ok");
     let mut m = test_manifest("acme-store-preview", "preview", "acme", "1.0.0");
     m.kind = "secret".into();
@@ -342,7 +386,7 @@ async fn inspect_previews_a_trusted_candidate_without_installing() {
 
 #[tokio::test]
 async fn inspect_reports_rejected_trust_rather_than_erroring() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    crate::dist_root_install::install();
     let dir = tmp_plugins_dir("inspect-rejected");
     let tarball = unsigned_tarball(
         test_manifest("acme-store-untrusted", "untrusted", "acme", "1.0.0"),
@@ -360,7 +404,7 @@ async fn inspect_reports_rejected_trust_rather_than_erroring() {
 
 #[tokio::test]
 async fn inspect_rejects_invalid_tarball() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    crate::dist_root_install::install();
     let dir = tmp_plugins_dir("inspect-garbage");
     let (addr, handle) = serve_admission(dir, unsigned_ok_posture(), None).await;
     let (status, b) = inspect(addr, b"not a tarball at all").await;
@@ -371,7 +415,7 @@ async fn inspect_rejects_invalid_tarball() {
 
 #[tokio::test]
 async fn install_rejects_invalid_tarball() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    crate::dist_root_install::install();
     let dir = tmp_plugins_dir("nontarball");
     let (addr, handle) = serve_admission(dir.clone(), unsigned_ok_posture(), None).await;
     let (status, b) = install(addr, "x.tar.gz", b"garbage, not a tarball").await;
@@ -385,7 +429,7 @@ async fn install_rejects_invalid_tarball() {
 
 #[tokio::test]
 async fn install_rejects_signed_but_malformed_manifest() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    crate::dist_root_install::install();
     let dir = tmp_plugins_dir("malformed");
     let key = SigningKey::from_bytes(&[5u8; 32]);
     let mut m = test_manifest("acme-store-x", "x", "acme", "1.0.0");
@@ -403,7 +447,7 @@ async fn install_rejects_signed_but_malformed_manifest() {
 
 #[tokio::test]
 async fn install_strict_posture_rejects_unsigned() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    crate::dist_root_install::install();
     let dir = tmp_plugins_dir("strict");
     let lib = b"\x7fELF junk that would crash if ever dlopened";
     let tarball = unsigned_tarball(test_manifest("acme-store-x", "x", "acme", "1.0.0"), lib);
@@ -477,7 +521,7 @@ fn sealed_tarball_expiring(expires: u64) -> Vec<u8> {
 
 #[tokio::test]
 async fn install_refuses_a_plugin_whose_release_seal_has_expired() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    crate::dist_root_install::install();
     let dir = tmp_plugins_dir("expired-seal");
     let tarball = sealed_tarball_expiring(1_600_000_000);
     let (addr, handle) = serve_admission(dir.clone(), strict_posture(), None).await;
@@ -493,7 +537,7 @@ async fn install_refuses_a_plugin_whose_release_seal_has_expired() {
 }
 
 fn linked_store() -> (&'static str, &'static str, String, Vec<u8>) {
-    busbar_kernel_testkit::test_support::root::ensure();
+    crate::dist_root_install::install();
     let &(key, _, _, canonical) = busbar_kernel::preflight::root_rows()
         .stores
         .first()
@@ -538,7 +582,7 @@ fn unsigned_copy(name: &str, alias: &str, version: &str) -> Vec<u8> {
 
 #[tokio::test]
 async fn install_of_a_linked_plugin_at_its_version_is_an_accepted_no_op() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    crate::dist_root_install::install();
     let dir = tmp_plugins_dir("linked-same");
     let (addr, handle) = serve_admission(dir.clone(), unsigned_ok_posture(), None).await;
     let (canonical, key, version, _) = linked_store();
@@ -561,7 +605,7 @@ async fn install_of_a_linked_plugin_at_its_version_is_an_accepted_no_op() {
 
 #[tokio::test]
 async fn install_of_a_linked_plugin_at_another_version_is_refused() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    crate::dist_root_install::install();
     let dir = tmp_plugins_dir("linked-other");
     let (addr, handle) = serve_admission(dir.clone(), unsigned_ok_posture(), None).await;
     let (canonical, key, version, _) = linked_store();
@@ -582,7 +626,7 @@ async fn install_of_a_linked_plugin_at_another_version_is_refused() {
 
 #[tokio::test]
 async fn install_of_a_linked_plugin_stating_no_version_is_refused() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    crate::dist_root_install::install();
     let dir = tmp_plugins_dir("linked-unstated");
     let (addr, handle) = serve_admission(dir.clone(), unsigned_ok_posture(), None).await;
     let (canonical, key, version, _) = linked_store();
@@ -600,7 +644,7 @@ async fn install_of_a_linked_plugin_stating_no_version_is_refused() {
 
 #[tokio::test]
 async fn install_judges_trust_before_the_one_version_rule() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    crate::dist_root_install::install();
     let dir = tmp_plugins_dir("linked-untrusted");
     let (addr, handle) = serve_admission(dir.clone(), strict_posture(), None).await;
     let (canonical, key, _, _) = linked_store();
@@ -667,7 +711,7 @@ fn rollback_is_fail_closed_on_absent_or_untrusted_target() {
 
 #[tokio::test]
 async fn catalog_does_not_dlopen_an_untrusted_plugin() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    crate::dist_root_install::install();
     let dir = tmp_plugins_dir("untrusted-catalog");
     let lib = b"\x7fELF definitely not a loadable library";
     let tarball = unsigned_tarball(
@@ -697,7 +741,7 @@ async fn catalog_does_not_dlopen_an_untrusted_plugin() {
 
 #[tokio::test]
 async fn install_signed_is_trusted() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    crate::dist_root_install::install();
     let key = SigningKey::from_bytes(&[7u8; 32]);
     let lib = b"signed lib bytes";
     let tarball = signed_tarball(
@@ -732,7 +776,7 @@ async fn install_signed_is_trusted() {
 
 #[tokio::test]
 async fn install_downgraded_version_is_rejected_by_floor() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    crate::dist_root_install::install();
     let key = SigningKey::from_bytes(&[7u8; 32]);
     let lib = b"lib bytes";
     let mut cfg = publisher_posture("acme", &key);
@@ -770,7 +814,7 @@ async fn install_downgraded_version_is_rejected_by_floor() {
 
 #[tokio::test]
 async fn install_unknown_publisher_rejected() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    crate::dist_root_install::install();
     let key = SigningKey::from_bytes(&[3u8; 32]);
     let tarball = signed_tarball(
         &key,
@@ -787,7 +831,7 @@ async fn install_unknown_publisher_rejected() {
 
 #[tokio::test]
 async fn install_alias_conflict_is_rejected() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    crate::dist_root_install::install();
     let key = SigningKey::from_bytes(&[9u8; 32]);
     let dir = tmp_plugins_dir("conflict");
     let (addr, handle) = serve_admission(dir.clone(), publisher_posture("acme", &key), None).await;
@@ -853,7 +897,7 @@ fn the_root_admission_classes_an_upload_and_writes_nothing() {
 
 #[tokio::test]
 async fn test_admin_v1_plugin_install_of_a_linked_copy_is_a_201_no_op() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    crate::dist_root_install::install();
     let (canonical, key, version, _) = linked_store();
     let tarball = unsigned_copy(canonical, key, &version);
     let file = "linked-copy.tar.gz";
@@ -896,7 +940,7 @@ async fn test_admin_v1_plugin_install_of_a_linked_copy_is_a_201_no_op() {
 
 #[tokio::test]
 async fn test_admin_v1_plugin_install_list_reload_remove() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    crate::dist_root_install::install();
     let tarball = admin_test_tarball("acme-store-junk", "junkstore");
     let file = "acme-store-junk.tar.gz";
     let dir = tmp_plugins_dir("http");
@@ -1008,7 +1052,7 @@ async fn test_admin_v1_plugin_install_list_reload_remove() {
 
 #[tokio::test]
 async fn test_admin_v1_plugins_type_secret_lists_secret_kind_only() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    crate::dist_root_install::install();
     let dir = tmp_plugins_dir("secret");
     let (addr, handle) = serve_with_plugins_dir(dir.clone()).await;
     let client = reqwest::Client::new();
@@ -1082,7 +1126,7 @@ async fn test_admin_v1_plugins_type_secret_lists_secret_kind_only() {
 
 #[tokio::test]
 async fn test_admin_v1_plugins_list_row_carries_schema_url() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    crate::dist_root_install::install();
     let dir = tmp_plugins_dir("schemaurl");
 
     let schema = serde_json::json!({
@@ -1147,7 +1191,7 @@ async fn test_admin_v1_plugins_list_row_carries_schema_url() {
 
 #[tokio::test]
 async fn test_admin_v1_plugins_list_row_carries_file_and_has_schema() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    crate::dist_root_install::install();
     let dir = tmp_plugins_dir("file-hasschema");
 
     let schema = serde_json::json!({
@@ -1272,7 +1316,7 @@ async fn test_admin_v1_plugins_list_row_carries_file_and_has_schema() {
 
 #[tokio::test]
 async fn test_admin_v1_plugins_inspect_previews_without_installing() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    crate::dist_root_install::install();
     let dir = tmp_plugins_dir("inspect");
     let (addr, handle) = serve_with_plugins_dir(dir.clone()).await;
     let client = reqwest::Client::new();
@@ -1353,7 +1397,7 @@ async fn test_admin_v1_plugins_inspect_previews_without_installing() {
 
 #[tokio::test]
 async fn test_admin_v1_plugin_schema_round_trips_from_manifest() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    crate::dist_root_install::install();
     let schema = serde_json::json!({
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
@@ -1469,7 +1513,7 @@ async fn test_admin_v1_plugin_schema_round_trips_from_manifest() {
 
 #[tokio::test]
 async fn test_admin_v1_plugin_install_same_name_different_file_is_409() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    crate::dist_root_install::install();
     let dir = tmp_plugins_dir("h2");
     let (addr, handle) = serve_with_plugins_dir(dir.clone()).await;
 
@@ -1502,7 +1546,7 @@ async fn test_admin_v1_plugin_install_same_name_different_file_is_409() {
 
 #[tokio::test]
 async fn test_admin_v1_plugin_install_corrupt_existing_tarball_blocks_publish() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    crate::dist_root_install::install();
     let dir = tmp_plugins_dir("m7");
 
     std::fs::write(
@@ -1530,7 +1574,7 @@ async fn test_admin_v1_plugin_install_corrupt_existing_tarball_blocks_publish() 
 
 #[tokio::test]
 async fn test_admin_v1_plugin_install_rejections() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    crate::dist_root_install::install();
     let dir = tmp_plugins_dir("rej");
     let (addr, handle) = serve_with_plugins_dir(dir.clone()).await;
     let client = reqwest::Client::new();
@@ -1590,7 +1634,7 @@ fn an_inspect_of_no_tarball_is_refused_as_an_invalid_plugin_tarball() {
 
 #[tokio::test]
 async fn a_bootstrap_archive_upload_and_rollback_refuse_a_changed_base_pin_before_publication() {
-    busbar_kernel_testkit::test_support::metrics::init();
+    crate::dist_root_install::install();
     let dir = tmp_plugins_dir("bootstrap-archive-mutation");
     let key = SigningKey::from_bytes(&[0x38; 32]);
     let first = signed_tarball(

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use busbar_contract::caps::{DurableWrite, StepName};
+use busbar_contract::caps::StepName;
 use busbar_contract::records::{
     MeteringDelta, MeteringRow, RecordStore, RecordStoreError, RecordStoreResult, UsageDelta,
     UsageLedger, VirtualKey, UNIT_INPUT,
@@ -82,7 +82,7 @@ async fn the_shutdown_tail_hands_the_store_what_the_journal_held_back() {
     let (book, lane) = store_book_bounded(&slots, 4);
     assert!(lane.drain(WAIT), "the boot's records reach the store");
     slots.refuse(true);
-    let token = busbar_kernel_testkit::test_support::tokens::grant::<DurableWrite>();
+    let token = crate::root::kernel::new_kernel().durability_token();
     let written = {
         let mut durability = book.lock().expect("the book");
 
@@ -131,6 +131,45 @@ const SHUTDOWN_MODEL: &str = "shutdown-model";
 const SHUTDOWN_PROVIDER: &str = "shutdown-provider";
 const INPUT_USED: u64 = 17;
 const STORE_DOWN: &str = "the shutdown test store is unavailable";
+
+#[derive(Clone, Default)]
+struct ShutdownMessages(Arc<Mutex<Vec<u8>>>);
+
+impl ShutdownMessages {
+    fn messages(&self) -> Vec<String> {
+        String::from_utf8(self.0.lock().expect("shutdown log bytes").clone())
+            .expect("shutdown logs are UTF-8")
+            .lines()
+            .map(str::to_owned)
+            .collect()
+    }
+
+    fn contains(&self, text: &str) -> bool {
+        self.messages().iter().any(|line| line.contains(text))
+    }
+}
+
+impl std::io::Write for ShutdownMessages {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0
+            .lock()
+            .expect("shutdown log bytes")
+            .extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for ShutdownMessages {
+    type Writer = Self;
+
+    fn make_writer(&'a self) -> Self::Writer {
+        self.clone()
+    }
+}
 
 /// A store write requires the single-threaded runtime to release it. The fixture watchdog only
 /// unhangs a broken inline tail; assertions inspect the write results after all gates are released.
@@ -334,13 +373,15 @@ async fn shutdown_flushes_allow_runtime_progress_and_wait_for_each_store_write()
 
 #[test]
 fn shutdown_tail_reports_terminal_budget_and_metering_store_failures() {
-    use busbar_kernel_testkit::test_support::warn_capture::WarnCapture;
-    use tracing_subscriber::layer::SubscriberExt as _;
     let store = Arc::new(FlushStore::new(FlushOutcome::Fail));
     let (gov, bucket) = accrued_governance(store.clone());
-    let captured = WarnCapture::default();
+    let captured = ShutdownMessages::default();
     tracing::subscriber::with_default(
-        tracing_subscriber::registry().with(captured.clone()),
+        tracing_subscriber::fmt()
+            .without_time()
+            .with_ansi(false)
+            .with_writer(captured.clone())
+            .finish(),
         || {
             tokio::runtime::Builder::new_current_thread()
                 .enable_all()
@@ -383,8 +424,6 @@ fn shutdown_tail_reports_terminal_budget_and_metering_store_failures() {
 
 #[test]
 fn a_panicking_budget_flush_is_logged_and_metering_and_journal_still_drain() {
-    use busbar_kernel_testkit::test_support::warn_capture::WarnCapture;
-    use tracing_subscriber::layer::SubscriberExt as _;
     let store = Arc::new(FlushStore::new(FlushOutcome::PanicBudget));
     let (gov, bucket) = accrued_governance(store.clone());
     let slots = RecordSlots::new();
@@ -393,9 +432,13 @@ fn a_panicking_budget_flush_is_logged_and_metering_and_journal_still_drain() {
     lane.shipper()
         .ship(&[queued])
         .expect("journal record queues");
-    let captured = WarnCapture::default();
+    let captured = ShutdownMessages::default();
     tracing::subscriber::with_default(
-        tracing_subscriber::registry().with(captured.clone()),
+        tracing_subscriber::fmt()
+            .without_time()
+            .with_ansi(false)
+            .with_writer(captured.clone())
+            .finish(),
         || {
             tokio::runtime::Builder::new_current_thread()
                 .enable_all()

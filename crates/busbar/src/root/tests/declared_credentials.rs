@@ -24,10 +24,7 @@ fn fixture() -> &'static serde_json::Value {
 fn fixture_boot() {
     static BOOT: std::sync::Once = std::sync::Once::new();
     BOOT.call_once(|| {
-        crate::register_diagnostics();
-        busbar_kernel::preflight::install_declared_styles(
-            crate::root::door_steps::declared_styles(),
-        );
+        crate::dist_root_install::install();
     });
 }
 
@@ -852,15 +849,68 @@ fn named_binding(dialect: &str, protocol: &str) -> StyleBinding {
 
 const SIGNING_HOST: &str = "bedrock-runtime.us-east-1.amazonaws.com";
 
-fn main_log(f: impl FnOnce()) -> Vec<String> {
+fn capture_log(max_level: tracing::Level, f: impl FnOnce()) -> Vec<String> {
     use tracing_subscriber::layer::SubscriberExt as _;
-    let cap = busbar_kernel_testkit::test_support::warn_capture::WarnCapture::capturing_debug();
-    let subscriber = tracing_subscriber::registry().with(cap.clone());
+    struct Events {
+        max_level: tracing::Level,
+        messages: Arc<std::sync::Mutex<Vec<String>>>,
+    }
+    impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for Events {
+        fn on_event(
+            &self,
+            event: &tracing::Event<'_>,
+            _: tracing_subscriber::layer::Context<'_, S>,
+        ) {
+            if *event.metadata().level() > self.max_level {
+                return;
+            }
+            #[derive(Default)]
+            struct Fields {
+                message: String,
+                fields: Vec<String>,
+            }
+            impl Fields {
+                fn record(&mut self, field: &tracing::field::Field, text: String) {
+                    if field.name() == "message" {
+                        self.message = text;
+                    } else {
+                        self.fields.push(format!("{}={text}", field.name()));
+                    }
+                }
+            }
+            impl tracing::field::Visit for Fields {
+                fn record_debug(
+                    &mut self,
+                    field: &tracing::field::Field,
+                    value: &dyn std::fmt::Debug,
+                ) {
+                    self.record(field, format!("{value:?}"));
+                }
+                fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+                    self.record(field, value.to_string());
+                }
+            }
+            let mut fields = Fields::default();
+            event.record(&mut fields);
+            self.messages.lock().unwrap().push(
+                format!("{} {}", fields.message, fields.fields.join(" "))
+                    .trim_end()
+                    .to_owned(),
+            );
+        }
+    }
+    let messages = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let subscriber = tracing_subscriber::registry().with(Events {
+        max_level,
+        messages: messages.clone(),
+    });
     tracing::subscriber::with_default(subscriber, f);
-    cap.messages()
-        .into_iter()
-        .map(|m| m.trim_end().to_string())
-        .collect()
+    let captured = messages.lock().unwrap().clone();
+    captured
+}
+
+fn main_log(f: impl FnOnce()) -> Vec<String> {
+    capture_log(tracing::Level::DEBUG, f)
 }
 
 fn lines_in(binding: &StyleBinding, key: &str, mode: UpstreamCreds) -> Vec<String> {
@@ -1095,7 +1145,6 @@ fn the_main_log_sink_writes_a_declared_diagnostic_in_its_one_five_five_shape() {
 fn a_credential_line_raised_at_warn_is_written_at_warn_under_a_live_actionable_entry() {
     use crate::root::loader::dispatch::{Diagnostic, EnvelopeSink, NoSink};
     use busbar_contract::diagnostic::Severity;
-    use tracing_subscriber::layer::SubscriberExt as _;
     let sink = crate::root::door_steps::MainLogSink(
         Arc::new(NoSink),
         busbar_kernel::diagnostics::Catalogue::NEUTRAL,
@@ -1115,9 +1164,7 @@ fn a_credential_line_raised_at_warn_is_written_at_warn_under_a_live_actionable_e
         );
         let name = format!("BUSBAR-{code:04}");
 
-        let cap = busbar_kernel_testkit::test_support::warn_capture::WarnCapture::default();
-        let subscriber = tracing_subscriber::registry().with(cap.clone());
-        tracing::subscriber::with_default(subscriber, || {
+        let messages = capture_log(tracing::Level::WARN, || {
             sink.diag(Diagnostic {
                 id: 0,
                 name: name.as_bytes(),
@@ -1126,10 +1173,7 @@ fn a_credential_line_raised_at_warn_is_written_at_warn_under_a_live_actionable_e
             });
         });
         assert_eq!(
-            cap.messages()
-                .into_iter()
-                .map(|m| m.trim_end().to_string())
-                .collect::<Vec<_>>(),
+            messages,
             vec![format!("a raised credential line diag={name}")],
             "the main log writes {name} at the warn it was raised at"
         );

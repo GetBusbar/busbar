@@ -532,6 +532,10 @@ pub struct RowFacts {
 /// [`RowFacts`] of a linked row's `door`, or the refusal: the door, its Statement or its tail is
 pub fn stated_row(door: DoorFn) -> Result<RowFacts, String> {
     let facts = busbar_plugin_loader::dispatch::kinds::transport::linked_facts(door)?;
+    checked_row(facts)
+}
+
+fn checked_row(facts: TransportFacts) -> Result<RowFacts, String> {
     let Some(&key) = facts.claims.first() else {
         return Err(format!(
             "the transport door `{}` claims no scheme: a linked row's key is its door's own claim",
@@ -550,6 +554,58 @@ pub fn stated_row(door: DoorFn) -> Result<RowFacts, String> {
         composes_over: facts.composes_over,
         session: !facts.sessions.is_empty(),
     })
+}
+
+#[cfg(test)]
+mod identity_tests {
+    use super::*;
+
+    #[test]
+    fn actual_tcp_name_fault_is_refused() {
+        use busbar_plugin_loader::dispatch::{load_dropped, rendering_of_library};
+
+        let path = std::path::PathBuf::from(
+            std::env::var_os("BUSBAR_TEST_TCP_CDYLIB")
+                .expect("BUSBAR_TEST_TCP_CDYLIB must name the actual built TCP product"),
+        );
+        let statement = rendering_of_library(&path)
+            .expect("the actual TCP image renders")
+            .expect("the actual TCP image exports a door");
+        let dispatcher = Dispatcher::new(DispatchConfig::default());
+        let plugin = load_dropped::<TransportKind>(
+            &path,
+            &statement,
+            Bind {
+                instance: Arc::from("actual-tcp-root-identity"),
+                max_inflight_cap: 64,
+                sink: Arc::new(NoSink),
+                dispatcher: dispatcher.adopter(),
+                conns: ConnTable::NoNeeds,
+            },
+        )
+        .expect("the actual TCP product loads through its ABI");
+        let actual = plugin
+            .context::<TransportFacts>()
+            .expect("the actual TCP product carries its validated facts")
+            .clone();
+        let positive = checked_row(actual.clone()).expect("the actual TCP identity is valid");
+        assert_eq!(positive.key, "tcp");
+        assert_eq!(positive.composes_over, actual.composes_over);
+        assert_eq!(positive.session, !actual.sessions.is_empty());
+        let mut faulted = actual.clone();
+        faulted.name = "tcp-misnamed";
+        let mut restored = faulted.clone();
+        restored.name = actual.name;
+        assert_eq!(
+            restored, actual,
+            "every other actual product fact is retained"
+        );
+        let refused = checked_row(faulted).expect_err("a name/own-claim mismatch is refused");
+        assert!(
+            refused.contains("`tcp-misnamed`") && refused.contains("`tcp`"),
+            "the actual identity validator names both spellings: {refused}"
+        );
+    }
 }
 
 /// [`RowFacts`] of a linked row's `door`, as the boot seal reads them.

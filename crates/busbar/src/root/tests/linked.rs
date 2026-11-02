@@ -286,11 +286,30 @@ fn a_door_rows_probe_binds_on_the_processs_one_dispatcher() {
 #[cfg(linked_axis_export_doors)]
 #[test]
 fn the_linked_scrape_sink_renders_the_recorder_snapshot_byte_identically() {
-    busbar_kernel_testkit::test_support::root::ensure();
-    let module = busbar_kernel_testkit::test_support::export_axis::scrape_module();
     let registry = PluginRegistry::empty()
         .link(linked_exports(crate::LINKED.export_doors).expect("the linked export rows"))
         .expect("the linked rows alone");
+    let probe = crate::root::loader::export_axis::ExportRows::new(
+        &registry,
+        crate::root::dispatch::dispatcher(),
+    );
+    let modules: Vec<_> = crate::LINKED
+        .export_doors
+        .iter()
+        .filter(|row| {
+            probe
+                .public_routes(row.name)
+                .iter()
+                .any(|path| path == "/metrics")
+        })
+        .map(|row| row.name)
+        .collect();
+    assert_eq!(
+        modules.len(),
+        1,
+        "one actual linked export owns the scrape route"
+    );
+    let module = modules[0];
     assert!(
         !module.is_empty(),
         "the build links the scrape sink, so the frozen scrape module word is set"

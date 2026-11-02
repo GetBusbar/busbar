@@ -12,7 +12,6 @@ use busbar_contract::abi::mechanism::call::Outcome;
 use busbar_contract::abi::sdk::door::{AbiIn, AbiOut};
 use busbar_contract::abi::sdk::life::{Held, Life, Refreshed, Refusal};
 use busbar_contract::abi::sdk::{Instance, Lent, Out, SafeSlot};
-use busbar_kernel_testkit::test_support::{rows, TestApp};
 
 const NAME: &str = "inbound-retirement-hook";
 const WAIT: Duration = Duration::from_secs(5);
@@ -67,10 +66,16 @@ mod fixture {
         hook as h,
         mechanism::call::{InHead, OutHead},
     };
+    busbar_contract::statement_extensions!(
+        EXTENSIONS: [(busbar_contract::abi::mechanism::extensions::EXT_REFERENCE_FIELDS, br#"["uncached"]"#)]
+    );
     busbar_contract::plugin_door! {
         ops: h::Ops,
         statement: busbar_contract::abi::sdk::hook::statement_with_tail(
-            busbar_contract::abi::sdk::door::statement(super::NAME, "1.6.0", 8),
+            busbar_contract::abi::mechanism::door::Statement {
+                extensions: EXTENSIONS,
+                ..busbar_contract::abi::sdk::door::statement(super::NAME, "1.6.0", 8)
+            },
             &busbar_contract::abi::sdk::hook::tail(h::CLASS_GATE, h::PROMPT_NO, h::USER_NO),
         ),
         lifecycle: life(super::Closing),
@@ -86,48 +91,46 @@ mod fixture {
     }
 }
 
-struct FixtureResolver;
-impl busbar_contract::secret::SecretResolve for FixtureResolver {
-    fn resolve(
-        &self,
-        _: &busbar_contract::secret_ref::SecretRef,
-    ) -> Result<busbar_contract::redacted::Secret<Vec<u8>>, String> {
-        Ok(busbar_contract::redacted::Secret::new(b"fixture".to_vec()))
-    }
-    fn resolve_string(
-        &self,
-        _: &busbar_contract::secret_ref::SecretRef,
-    ) -> Result<busbar_contract::redacted::Secret<String>, String> {
-        Ok(busbar_contract::redacted::Secret::new(
-            "fixture".to_string(),
-        ))
-    }
-}
-
 fn hooked_app() -> Arc<busbar_kernel::state::App> {
+    let mut app = (*app()).clone();
+    let directory = crate::root::test_plugins::scratch(&format!(
+        "inbound-close-secret-{}",
+        busbar_kernel::door::op_id().counter(),
+    ));
+    let secret = directory.join("uncached");
+    std::fs::write(&secret, b"retirement-hook-setting")
+        .expect("the actual file-backed hook reference exists");
     let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
     let axis = Arc::new(HookRows::new(&[fixture::door], None, dispatcher).unwrap());
-    let registry = rows::Rows::default()
-        .with_dropped_reference_slots(
-            rows::row(NAME, NAME, busbar_contract::abi::mechanism::kind::HOOK),
-            &["uncached"],
-        )
-        .into_rows();
-    let env = busbar_kernel::hooks::HookEnv::with_axis(registry, axis, Arc::new(FixtureResolver));
+    let registry = crate::root::loader::PluginRegistry::empty()
+        .link(vec![crate::root::loader::LinkedPlugin::door_of_kind(
+            busbar_contract::abi::mechanism::kind::HOOK,
+            NAME,
+            fixture::door,
+        )])
+        .expect("the real hook statement registers through the product loader");
+    let registry: Arc<dyn busbar_contract::plugin_rows::PluginRows> = Arc::new(registry);
+    let env = busbar_kernel::hooks::HookEnv::with_axis(
+        registry,
+        axis,
+        app.hook_env.secret_resolver.clone(),
+    );
     let cfg = serde_json::from_value(serde_json::json!({
         "kind": "gate", "module": NAME,
-        "settings": { "uncached": { "env": "INBOUND_CLOSE_UNUSED" } }
+        "settings": { "uncached": { "file": secret } }
     }))
     .unwrap();
-
-    let app = TestApp::new()
-        .hook_env(env)
-        .hook("retiring-close", cfg)
-        .global_hook("retiring-close")
-        .resolve_global_gates()
-        .build();
+    let hooks = std::collections::HashMap::from([("retiring-close".to_string(), cfg)]);
+    app.global_gates = busbar_kernel::hooks::resolve_gate_hooks(
+        &hooks,
+        &["retiring-close".to_string()],
+        &env,
+        app.config_version,
+    );
+    app.hook_env = env;
+    app.hook_registry = hooks;
     assert_eq!(app.global_gates.len(), 1);
-    app
+    Arc::new(app)
 }
 
 fn listener(app: Arc<busbar_kernel::state::App>) -> kin::Listener {
@@ -146,7 +149,7 @@ fn listener(app: Arc<busbar_kernel::state::App>) -> kin::Listener {
         app,
         door_refusals: Vec::new(),
         ids,
-        signed_ingress: busbar_kernel_testkit::test_support::inbound::signed_by_dialect(),
+        signed_ingress: Arc::new(|_, _| false),
         scope: None,
     }
 }
@@ -168,12 +171,10 @@ fn retiring_or_replacing_a_generation_closes_its_real_hook_outside_the_table_loc
         );
         inbound.install(OWNER, 1, listener(hooked_app())).unwrap();
         if !replace {
-            inbound
-                .install(OWNER, 2, listener(TestApp::new().build()))
-                .unwrap();
+            inbound.install(OWNER, 2, listener(app())).unwrap();
         }
         let generation = if replace { 1 } else { 3 };
-        let next = listener(TestApp::new().build());
+        let next = listener(app());
         let expected = next.specs();
         let release = Release;
         {

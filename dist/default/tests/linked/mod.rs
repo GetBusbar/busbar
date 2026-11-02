@@ -4,23 +4,14 @@
 #![allow(dead_code)]
 
 use busbar_kernel::plane_driver::registry::{plane_decls, PlaneDecl};
-use busbar_kernel_testkit::test_support::seam::{test_plane_seams, TestPlaneSeam};
 
 include!(concat!(env!("OUT_DIR"), "/test_linked.rs"));
 
 pub fn install() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
-        for decls in TEST_LINKED_PROTOCOLS {
-            busbar_kernel_testkit::test_support::protocols::register_test_protocols(decls);
-        }
+        busbar_kernel::plane_driver::registry::install_planes(door_rows());
     });
-    for &row in door_rows() {
-        busbar_kernel_testkit::test_support::planes::register_test_plane(row);
-    }
-    for seam in test_plane_seams() {
-        (seam.install)();
-    }
 }
 
 fn door_rows() -> &'static [&'static PlaneDecl] {
@@ -86,14 +77,6 @@ pub fn door_section(decl: &PlaneDecl) -> &'static str {
         .first()
         .copied()
         .unwrap_or(decl.config_section)
-}
-
-pub fn seam(decl: &PlaneDecl) -> &'static TestPlaneSeam {
-    install();
-    test_plane_seams()
-        .into_iter()
-        .find(|s| s.name == decl.key)
-        .unwrap_or_else(|| panic!("the `{}` plane registered no test seam", decl.key))
 }
 
 pub fn doors() -> &'static [(&'static str, busbar_contract::abi::mechanism::door::DoorFn)] {

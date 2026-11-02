@@ -5,6 +5,7 @@ use super::*;
 use crate::root::durability::{build_with_cards, keyset_of, DurabilityConfig, Scratch};
 use busbar_kernel_audit::{AuditChain, AuditRecord};
 use busbar_kernel_wal::NullShipper;
+use std::sync::Arc;
 
 const NOW: u64 = 1_700_000_000;
 
@@ -25,10 +26,10 @@ fn node(data_dir: Option<&Path>) -> Durability {
 }
 
 fn boot(
-    slots: &crate::root::store_double::RecordSlots,
+    slots: &Arc<crate::root::loader::store_v3::LoadedStore>,
     dir: &Path,
 ) -> (Durability, Result<KeysetSource, KeysetError>) {
-    let lane = crate::root::durability::JournalLane::start(slots.calls(), "test-store").unwrap();
+    let lane = crate::root::durability::JournalLane::start(slots.clone(), "test-store").unwrap();
     let mut durability = crate::root::durability::build_on_store(
         &DurabilityConfig {
             data_dir: Some(dir.to_path_buf()),
@@ -40,6 +41,22 @@ fn boot(
     .unwrap();
     let bound = bind(&mut durability, Some(dir), &token(), StepName::Meter, NOW);
     (durability, bound)
+}
+
+fn put_row(
+    store: &Arc<crate::root::loader::store_v3::LoadedStore>,
+    schema: &str,
+    key: &[u8],
+    value: &[u8],
+) {
+    use busbar_contract::store_calls::StoreCalls as _;
+    let value = busbar_contract::kinds::RecordBytes::new(value.to_vec()).unwrap();
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(store.record_put(schema, key, &value))
+        .unwrap();
 }
 
 fn drained(book: &Durability) {
@@ -67,7 +84,7 @@ fn seal(durability: &mut Durability) -> AuditRecord {
         },
         wall: NOW + 1,
         mono: 1,
-        origin: busbar_kernel_testkit::test_support::tokens::origin(OriginKind::Client),
+        origin: crate::root::kernel::new_kernel().origin(OriginKind::Client),
         outcome: OutcomeFacts {
             unit_end: Outcome::Completed,
             step: None,
@@ -89,7 +106,7 @@ fn seal(durability: &mut Durability) -> AuditRecord {
     durability
         .seal_unit(
             inputs,
-            busbar_kernel_testkit::test_support::tokens::pass(),
+            busbar_kernel::teller::verb_audit_pass(&crate::root::kernel::new_kernel()),
             &token(),
         )
         .expect("the node seals");
@@ -146,14 +163,14 @@ fn an_ephemeral_node_verifies_its_own_boots_signatures() {
 
 #[test]
 fn the_first_boot_with_a_data_dir_keeps_its_keyset_in_the_store_and_seals_a_bootstrap() {
-    let slots = crate::root::store_double::RecordSlots::new();
+    let slots = crate::root::real_store::store();
     let dir = Scratch::new("keyset-mint");
     let (durability, bound) = boot(&slots, &dir.0);
     assert_eq!(bound, Ok(KeysetSource::Stored));
     let records = durability.chain().unwrap().unwrap();
     assert_eq!(records.len(), 1);
     assert_eq!(records[0].class, RecordClass::Bootstrap);
-    let seed = crate::root::durability::stored_keyset(slots.calls().as_ref())
+    let seed = crate::root::durability::stored_keyset(slots.as_ref())
         .unwrap()
         .unwrap();
     let stored = AuditSigningKey::from_hex_seed(&seed).unwrap();
@@ -167,7 +184,7 @@ fn the_first_boot_with_a_data_dir_keeps_its_keyset_in_the_store_and_seals_a_boot
 
 #[test]
 fn a_restart_with_the_data_dir_signs_with_the_same_store_key() {
-    let slots = crate::root::store_double::RecordSlots::new();
+    let slots = crate::root::real_store::store();
     let dir = Scratch::new("keyset-restart");
     let (mut first, bound) = boot(&slots, &dir.0);
     bound.unwrap();
@@ -198,18 +215,18 @@ fn a_restart_with_the_data_dir_signs_with_the_same_store_key() {
 
 #[test]
 fn keyset_missing_refuses_in_its_exact_words_when_the_store_key_is_gone() {
-    let slots = crate::root::store_double::RecordSlots::new();
+    let slots = crate::root::real_store::store();
     let dir = Scratch::new("keyset-missing");
     let (first, bound) = boot(&slots, &dir.0);
     bound.unwrap();
     let fingerprint = sealed_fingerprint(&first).unwrap().unwrap();
     drained(&first);
-    let records = crate::root::durability::read_chain(slots.calls().as_ref(), 7).unwrap();
+    let records = crate::root::durability::read_chain(slots.as_ref(), 7).unwrap();
     drop(first);
 
-    let restored = crate::root::store_double::RecordSlots::new();
+    let restored = crate::root::real_store::store();
     let lane =
-        crate::root::durability::JournalLane::start(restored.calls(), "restored-store").unwrap();
+        crate::root::durability::JournalLane::start(restored.clone(), "restored-store").unwrap();
     lane.shipper().ship(&records).unwrap();
     assert!(lane.drain(std::time::Duration::from_secs(5)));
     let (second, bound) = boot(&restored, &dir.0);
@@ -219,23 +236,22 @@ fn keyset_missing_refuses_in_its_exact_words_when_the_store_key_is_gone() {
         hex::encode(fingerprint),
     ));
     assert!(second.record.signing_key_id().is_none());
-    assert!(
-        crate::root::durability::stored_keyset(restored.calls().as_ref())
-            .unwrap()
-            .is_none()
-    );
+    assert!(crate::root::durability::stored_keyset(restored.as_ref())
+        .unwrap()
+        .is_none());
     assert_eq!(std::fs::read_dir(&dir.0).unwrap().count(), 0);
 }
 
 #[test]
 fn keyset_missing_refuses_a_store_holding_another_key() {
-    let slots = crate::root::store_double::RecordSlots::new();
+    let slots = crate::root::real_store::store();
     let dir = Scratch::new("keyset-other");
     let (first, bound) = boot(&slots, &dir.0);
     bound.unwrap();
     drained(&first);
     drop(first);
-    slots.put_row(
+    put_row(
+        &slots,
         "busbar.keyset.v1",
         b"deployment",
         "11".repeat(32).as_bytes(),
@@ -264,13 +280,13 @@ fn helpers_never_cache_a_keyset_with_or_without_a_data_dir() {
 
 #[test]
 fn a_stored_keyset_with_no_bootstrap_is_adopted_and_a_legacy_cache_is_untouched() {
-    let slots = crate::root::store_double::RecordSlots::new();
+    let slots = crate::root::real_store::store();
     let dir = Scratch::new("keyset-adopt");
     let seed = "22".repeat(32);
     let legacy = "33".repeat(32);
     let file = dir.0.join("deployment-keyset");
     std::fs::write(&file, legacy.as_bytes()).unwrap();
-    slots.put_row("busbar.keyset.v1", b"deployment", seed.as_bytes());
+    put_row(&slots, "busbar.keyset.v1", b"deployment", seed.as_bytes());
     let expected = AuditSigningKey::from_hex_seed(&seed).unwrap();
     let (durability, bound) = boot(&slots, &dir.0);
     assert_eq!(bound, Ok(KeysetSource::Stored));

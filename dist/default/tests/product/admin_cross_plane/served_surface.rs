@@ -1,0 +1,1035 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
+//! THE SERVED ADMIN SURFACE, RECONCILED — against the oracle's admin corpus (item 44) and against
+//! the one generated OpenAPI document (items 45/46).
+//!
+//! The admin corpus (`testing/shadow-oracle/fixtures/admin-bodies.json`, enumerated into the
+//! `admin.ops` family of `cells.json`) was a fixture frozen at the 1.5.5 operation set, and nothing
+//! compared it with what the node serves: every operation 1.6.0 added had zero cells and no
+//! mechanism that could give it one. The OpenAPI document had the same blindness from the other
+//! side — 26 served verbs were in no document, and five more in a side-car one kept so the served
+//! bytes need not move.
+//!
+//! Both now answer to ONE list: [`served_admin_operations`], built from the three sources the
+//! administrative listener actually mounts from —
+//!
+//! 1. the closed verb table (`admin_codec::verbs::table`): every `(method, path)` the node's
+//!    administrative mount walks through the kernel loop, which is how the 66 legacy operations and
+//!    the 1.6.0 kernel verbs whose effect is bound are answered (a verb declared with no effect
+//!    bound is NOT served — [`unbound_declared_operations`], empty; the nine the owner removed from 1.6.0 are not
+//!    declared at all — [`REMOVED_OPERATIONS`]);
+//! 2. every named-definition section (`NamedMapSection::sections`), five operations each, which the
+//!    router mounts in one loop — including each plane-owned section;
+//! 3. every plane's admin trust verbs (`PlaneDecl::admin_routes`), which the router mounts in one
+//!    loop too.
+//!
+//! and the router half of it is checked LIVE: every operation this crate's router is responsible
+//! for is asked, over a real listener, and must answer something other than the router's own
+//! unmatched-path fallback.
+
+use std::collections::{BTreeMap, BTreeSet};
+
+use crate::distribution::admin_cross_plane::v1::contract::ADMIN_PREFIX;
+use busbar_kernel::config::named_map::NamedMapSection;
+
+type Op = (String, String);
+
+/// Where an operation comes from — which decides who answers it and whether it is always present.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Source {
+    /// A closed-table row the node's administrative loop answers itself (a 1.6.0 kernel verb).
+    KernelLoop,
+    /// A row this crate's router answers on every node (the 66 legacy operations, the core
+    /// named-definition sections).
+    Router,
+    /// A plane's section or trust verb: mounted only when the plane is configured.
+    Plane(&'static str),
+}
+
+fn abs(rel: &str) -> String {
+    format!("{ADMIN_PREFIX}{rel}")
+}
+
+fn loop_verbs() -> BTreeMap<&'static str, crate::distribution::admin_cross_plane::verb::KernelVerb>
+{
+    crate::distribution::admin_cross_plane::verb::NEW_VERBS
+        .iter()
+        .chain(crate::distribution::admin_cross_plane::verb::LEDGER_VERBS)
+        .chain(crate::distribution::admin_cross_plane::verb::AUDIT_VERBS)
+        .filter_map(|v| {
+            crate::distribution::admin_cross_plane::verb::verb_name(*v).map(|name| (name, *v))
+        })
+        .collect()
+}
+
+fn unbound_declared_operations() -> BTreeSet<Op> {
+    let verbs = loop_verbs();
+    crate::distribution::admin_cross_plane::admin_codec::verbs::table()
+        .into_iter()
+        .filter(|row| {
+            verbs
+                .get(row.verb)
+                .is_some_and(|v| !crate::distribution::admin_cross_plane::verb::effect_bound(*v))
+        })
+        .map(|row| (row.method.to_string(), row.template.to_string()))
+        .collect()
+}
+
+const REMOVED_OPERATIONS: [(&str, &str); 9] = [
+    ("POST", "/api/v1/admin/operator-key"),
+    ("POST", "/api/v1/admin/escrow"),
+    ("POST", "/api/v1/admin/dual-control"),
+    ("POST", "/api/v1/admin/export-keyset"),
+    ("POST", "/api/v1/admin/approve"),
+    ("POST", "/api/v1/admin/overdraft-ceiling"),
+    ("POST", "/api/v1/admin/dispute-max-age"),
+    ("POST", "/api/v1/admin/disputes/resolve"),
+    ("POST", "/api/v1/admin/slices/resolve"),
+];
+
+fn removed_operations() -> BTreeSet<Op> {
+    REMOVED_OPERATIONS
+        .iter()
+        .map(|(m, p)| (m.to_string(), p.to_string()))
+        .collect()
+}
+
+fn served_admin_operations() -> BTreeMap<Op, Source> {
+    crate::distribution::admin_cross_plane::ensure_seam();
+    let mut out = BTreeMap::new();
+    let loop_verbs = loop_verbs();
+    let unbound = unbound_declared_operations();
+    for row in crate::distribution::admin_cross_plane::admin_codec::verbs::table() {
+        let op = (row.method.to_string(), row.template.to_string());
+        if unbound.contains(&op) {
+            continue;
+        }
+        let source = if loop_verbs.contains_key(row.verb) {
+            Source::KernelLoop
+        } else {
+            Source::Router
+        };
+        out.insert(op, source);
+    }
+    for section in NamedMapSection::sections() {
+        let source = match section {
+            NamedMapSection::Plane(key) => Source::Plane(key),
+            _ => Source::Router,
+        };
+        let root = abs(section.path_root().as_ref());
+        let item = format!("{root}/{{name}}");
+        for op in [
+            ("GET", root.clone()),
+            ("GET", item.clone()),
+            ("PUT", item.clone()),
+            ("DELETE", item.clone()),
+            ("PATCH", format!("{item}/settings")),
+        ] {
+            out.entry((op.0.to_string(), op.1))
+                .or_insert_with(|| source.clone());
+        }
+    }
+    for decl in busbar_kernel::plane_driver::registry::plane_decls() {
+        let Some(admin_routes) = decl.admin_routes else {
+            continue;
+        };
+        for spec in admin_routes(decl, &() as &dyn std::any::Any) {
+            let method = serde_json::to_value(spec.method)
+                .ok()
+                .and_then(|m| m.as_str().map(str::to_string))
+                .expect("a route method serializes as its upper-case token");
+            out.insert(
+                (method, abs(&spec.path)),
+                Source::Plane(decl.config_section),
+            );
+        }
+    }
+    out
+}
+
+fn op_id(method: &str, path: &str) -> String {
+    fn cap(s: &str) -> String {
+        let mut c = s.chars();
+        match c.next() {
+            Some(f) => f.to_uppercase().collect::<String>() + &c.as_str().to_lowercase(),
+            None => String::new(),
+        }
+    }
+    let mut id = cap(method);
+    let rel = path.strip_prefix(ADMIN_PREFIX).unwrap_or(path);
+    for seg in rel.split('/').filter(|s| !s.is_empty()) {
+        let seg = seg.trim_matches(|c| c == '{' || c == '}');
+        for word in seg.split(|c: char| !c.is_ascii_alphanumeric()) {
+            if !word.is_empty() {
+                id.push_str(&cap(word));
+            }
+        }
+    }
+    id
+}
+
+fn instance_of(template: &str, concrete: &str) -> bool {
+    let concrete = concrete.split(['?', '#']).next().unwrap_or(concrete);
+    let (t, c): (Vec<&str>, Vec<&str>) =
+        (template.split('/').collect(), concrete.split('/').collect());
+    t.len() == c.len()
+        && t.iter()
+            .zip(&c)
+            .all(|(t, c)| (t.starts_with('{') && t.ends_with('}') && !c.is_empty()) || t == c)
+}
+
+fn oracle_dir() -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../testing/shadow-oracle")
+}
+
+fn read_json(path: std::path::PathBuf) -> serde_json::Value {
+    let text =
+        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+    serde_json::from_str(&text).unwrap_or_else(|e| panic!("parse {}: {e}", path.display()))
+}
+
+fn gov(admin_token: &str) -> std::sync::Arc<busbar_kernel::governance::GovState> {
+    std::sync::Arc::new(
+        busbar_kernel::governance::GovState::new_with_signer(
+            crate::root::real_store::store(),
+            Some(admin_token.to_string()),
+            Some(
+                busbar_kernel::governance::signing::TokenSigner::from_secret_bytes(
+                    &[9u8; 32],
+                    busbar_kernel::governance::signing::DEFAULT_KID,
+                ),
+            ),
+        )
+        .expect("governance"),
+    )
+}
+
+#[tokio::test]
+async fn admin_corpus_reconciles_with_the_served_router() {
+    crate::distribution::admin_cross_plane::ensure_seam();
+    let served = served_admin_operations();
+
+    const TOKEN: &str = "served-surface-token";
+    let app = {
+        crate::distribution::admin_cross_plane::ensure_seam();
+        let directory = super::plugins::scratch(&format!(
+            "admin-root-{}",
+            busbar_kernel::door::op_id().counter()
+        ));
+        let library_path = std::path::PathBuf::from(
+            std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
+                .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual Store product"),
+        );
+        let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
+            .expect("the actual Store statement reads")
+            .expect("the actual Store states itself");
+        let facts = busbar_contract::abi::mechanism::rendering::read(&statement)
+            .expect("the actual Store statement parses");
+        let mut manifest = super::plugins::manifest(
+            "store",
+            &facts.name,
+            busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
+        );
+        manifest.version = facts.version;
+        manifest.statement = Some(hex::encode(statement));
+        let archive = super::plugins::signed(
+            &crate::dist_root_install::release_key(),
+            manifest,
+            &std::fs::read(library_path).expect("the actual Store artifact reads"),
+        );
+        std::fs::write(directory.join("store.tar.gz"), archive)
+            .expect("stage the actual Store product");
+        std::fs::write(directory.join("admin.token"), TOKEN)
+            .expect("write the operator credential");
+        let settings: serde_json::Value = serde_json::from_str(
+            &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
+        )
+        .expect("the actual Store settings are JSON");
+        let mut document = serde_json::json!({});
+        document["providers"] = serde_json::json!({});
+        document["models"] = serde_json::json!({});
+        document["store"] = serde_json::json!({"module": facts.name, "settings": settings});
+        document["auth"] = serde_json::json!({"chain": [], "admin_auth": ["admin-tokens"]});
+        document["identity-providers"] = serde_json::json!({"admin-tokens": {
+            "module": "admin-tokens", "token": {"file": directory.join("admin.token")}
+        }});
+        document["advanced"] = serde_json::json!({"allow_destinations": ["127.0.0.1"]});
+        let deploy = busbar_kernel::config::deploy_from_deserializer(document)
+            .expect("the actual admin deployment parses");
+        let cfg = busbar_kernel::config::resolve(&deploy, &Default::default())
+            .expect("the actual admin deployment resolves");
+        let rules = std::sync::Arc::new(crate::root::door_steps::Rules::default())
+            as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
+        let (mut app, rotate, limits) = busbar_kernel::build_app_from_config(
+            cfg,
+            busbar_kernel::config::PluginsCfg {
+                enabled: true,
+                dir: directory.to_string_lossy().into_owned(),
+                ..Default::default()
+            },
+            None,
+            Default::default(),
+            Default::default(),
+            (None, None),
+            None,
+            &rules,
+        )
+        .expect("the product root builds the actual admin application");
+        limits.keep().expect("the product limits commit");
+        if let Some(rotate) = rotate {
+            rotate();
+        }
+        app.overlay_path = Some(
+            busbar_kernel::config::overlay::OverlayStore::new(
+                app.governance
+                    .as_ref()
+                    .expect("the actual root opened governance")
+                    .store_calls()
+                    .expect("the actual Store exposes its calls"),
+            )
+            .expect("the actual Store opens its overlay"),
+        );
+        app.governance = Some(gov(TOKEN));
+
+        std::sync::Arc::new(app)
+    };
+    let router = crate::distribution::admin_cross_plane::build_router(app);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let client = reqwest::Client::new();
+    let ask = |method: &str, path: &str| {
+        let method = reqwest::Method::from_bytes(method.as_bytes()).unwrap();
+        let req = client
+            .request(method.clone(), format!("http://{addr}{path}"))
+            .header("x-admin-token", TOKEN);
+
+        let req = if method == reqwest::Method::GET {
+            req
+        } else {
+            req.header("content-type", "application/json").body("{")
+        };
+        async move {
+            let resp = req.send().await.unwrap();
+            (resp.status().as_u16(), resp.text().await.unwrap())
+        }
+    };
+    let fallback_for = |method: &str| {
+        let method = method.to_string();
+        let ask = &ask;
+        async move { ask(&method, &abs("/no-such-admin-route/served-surface")).await }
+    };
+
+    let (control_status, _) = fallback_for("GET").await;
+    assert_eq!(
+        control_status, 404,
+        "the unmatched-path control must be the router's 404"
+    );
+    let mut router_ops = 0usize;
+    for ((method, path), source) in &served {
+        if *source != Source::Router {
+            continue;
+        }
+        let concrete = path
+            .split('/')
+            .map(|seg| {
+                if seg.starts_with('{') {
+                    "served-surface-probe"
+                } else {
+                    seg
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("/");
+        let answer = ask(method, &concrete).await;
+        let fallback = fallback_for(method).await;
+        assert_ne!(
+            answer, fallback,
+            "{method} {path} is in the served list but the router answers it with its \
+             unmatched-path fallback: nothing serves it"
+        );
+        assert_ne!(
+            answer.0, 405,
+            "{method} {path}: the router has the path but not this method"
+        );
+        router_ops += 1;
+    }
+    assert!(
+        router_ops >= 66,
+        "only {router_ops} router operations were probed"
+    );
+    handle.abort();
+
+    let fixture = read_json(oracle_dir().join("fixtures/admin-bodies.json"));
+    let ops = fixture["ops"]
+        .as_object()
+        .expect("admin-bodies.json `ops` object");
+    let mut entries: BTreeMap<Op, String> = BTreeMap::new();
+    for (id, op) in ops {
+        let method = op["method"].as_str().expect("method").to_string();
+        let path = op["path"].as_str().expect("path").to_string();
+        assert_eq!(
+            *id,
+            op_id(&method, &path),
+            "admin-bodies.json entry {id} is keyed under a name that is not its operation's"
+        );
+        entries.insert((method, path), id.clone());
+    }
+    let unbound = unbound_declared_operations();
+    assert_eq!(
+        unbound.len(),
+        0,
+        "every money-governance verb has its effect bound since owner answer Q71(2): {unbound:?}"
+    );
+    let removed = removed_operations();
+    let removed_but_present: Vec<&Op> = removed
+        .iter()
+        .filter(|op| served.contains_key(*op) || unbound.contains(*op))
+        .collect();
+    assert!(
+        removed_but_present.is_empty(),
+        "an operation the owner removed from 1.6.0 is still declared or served: \
+         {removed_but_present:?}"
+    );
+    let removed_uncorpused: Vec<&Op> = removed
+        .iter()
+        .filter(|op| !entries.contains_key(*op))
+        .collect();
+    assert!(
+        removed_uncorpused.is_empty(),
+        "a removed operation lost its admin-bodies.json entry (no cell can show it still answers \
+         the unmounted 404): {removed_uncorpused:?}"
+    );
+    let unserved: Vec<&Op> = entries
+        .keys()
+        .filter(|op| !served.contains_key(*op) && !unbound.contains(*op) && !removed.contains(*op))
+        .collect();
+    assert!(
+        unserved.is_empty(),
+        "admin-bodies.json names operations this build does not serve: {unserved:?}"
+    );
+    let unbound_uncorpused: Vec<&Op> = unbound
+        .iter()
+        .filter(|op| !entries.contains_key(*op))
+        .collect();
+    assert!(
+        unbound_uncorpused.is_empty(),
+        "declared-but-unbound operations with NO admin-bodies.json entry (no cell can show they \
+         answer 1.5.5's unmounted 404): {unbound_uncorpused:?}"
+    );
+    let uncorpused: Vec<&Op> = served
+        .keys()
+        .filter(|op| !entries.contains_key(*op))
+        .collect();
+    assert!(
+        uncorpused.is_empty(),
+        "served operations with NO admin-bodies.json entry (so no oracle cell can exist): \
+         {uncorpused:?}"
+    );
+
+    let corpus = read_json(oracle_dir().join("cells.json"));
+    let by_id: BTreeMap<&str, &Op> = entries.iter().map(|(op, id)| (id.as_str(), op)).collect();
+    let mut celled: BTreeSet<&str> = BTreeSet::new();
+    for cell in corpus["cells"].as_array().expect("cells array") {
+        if cell["family"] != "admin.ops" {
+            continue;
+        }
+        let id = cell["id"].as_str().expect("cell id");
+        let op_name = id.split('|').nth(1).expect("admin.ops|<op>|<variant>");
+
+        if op_name == "admin-token" {
+            continue;
+        }
+        let (method, template) = by_id.get(op_name).unwrap_or_else(|| {
+            panic!("cell {id} names {op_name}, which is not a served admin operation")
+        });
+        let request = &cell["request"];
+        assert_eq!(
+            request["method"].as_str(),
+            Some(method.as_str()),
+            "cell {id} does not call its operation's method"
+        );
+        let concrete = request["path"].as_str().expect("request path");
+        assert!(
+            instance_of(template, concrete),
+            "cell {id} calls {concrete}, which is not an instance of {template}"
+        );
+        celled.insert(op_name);
+    }
+    let cell_less: Vec<&str> = by_id
+        .keys()
+        .filter(|id| !celled.contains(*id))
+        .copied()
+        .collect();
+    assert!(
+        cell_less.is_empty(),
+        "served operations with NO admin.ops cell in cells.json (regenerate the corpus from \
+         admin-bodies.json): {cell_less:?}"
+    );
+}
+
+#[cfg(feature = "openapi-schema")]
+#[test]
+fn openapi_documents_every_served_admin_operation() {
+    let served = served_admin_operations();
+    let doc = super::openapi_doc_seamed();
+    let mut documented: BTreeMap<Op, &serde_json::Value> = BTreeMap::new();
+    for (path, item) in doc["paths"].as_object().expect("paths") {
+        for (method, op) in item.as_object().expect("path item") {
+            if method.starts_with("x-") {
+                continue;
+            }
+            documented.insert((method.to_ascii_uppercase(), path.clone()), op);
+        }
+    }
+    let undocumented: Vec<&Op> = served
+        .keys()
+        .filter(|op| !documented.contains_key(*op))
+        .collect();
+    assert!(
+        undocumented.is_empty(),
+        "served admin operations in NO OpenAPI document: {undocumented:?}"
+    );
+    let described_unbound: Vec<Op> = unbound_declared_operations()
+        .into_iter()
+        .filter(|op| documented.contains_key(op))
+        .collect();
+    assert!(
+        described_unbound.is_empty(),
+        "operations with no effect bound are not served, so no document may describe them: \
+         {described_unbound:?}"
+    );
+    let phantom: Vec<&Op> = documented
+        .keys()
+        .filter(|op| !served.contains_key(*op))
+        .collect();
+    assert!(
+        phantom.is_empty(),
+        "documented admin operations this build does not serve: {phantom:?}"
+    );
+    for (op, source) in &served {
+        let doc_op = documented[op];
+        let plane = doc_op["x-busbar-plane"].as_str();
+        match source {
+            Source::Plane(section) => assert_eq!(
+                plane,
+                Some(*section),
+                "{op:?} is mounted only when `{section}:` is configured and must say so"
+            ),
+            _ => assert_eq!(
+                plane, None,
+                "{op:?} is served on every node but is marked {plane:?}"
+            ),
+        }
+        assert_eq!(
+            doc_op["x-busbar-since"].as_str() == Some("1.6.0"),
+            *source == Source::KernelLoop,
+            "{op:?}: `x-busbar-since: 1.6.0` marks exactly the kernel loop's operations"
+        );
+    }
+    let side_car = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../docs/openapi-1.6.0-additive.json");
+    assert!(
+        !side_car.exists(),
+        "{} exists: there is ONE administrative OpenAPI document, generated from the code",
+        side_car.display()
+    );
+}
+
+async fn served_openapi(app: std::sync::Arc<busbar_kernel::state::App>) -> serde_json::Value {
+    let router = crate::distribution::admin_cross_plane::build_router(app);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let resp = reqwest::Client::new()
+        .get(format!("http://{addr}{}", abs("/openapi.json")))
+        .header("x-admin-token", "served-openapi-token")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status().as_u16(), 200, "the node serves its document");
+    let doc = resp.json().await.unwrap();
+    handle.abort();
+    doc
+}
+
+#[tokio::test]
+async fn served_openapi_lists_only_the_configured_planes() {
+    crate::distribution::admin_cross_plane::ensure_seam();
+    let served = served_admin_operations();
+    let plane_paths = |doc: &serde_json::Value, section: &str| -> Vec<String> {
+        let root = abs(&format!("/{section}"));
+        doc["paths"]
+            .as_object()
+            .expect("paths")
+            .keys()
+            .filter(|p| **p == root || p.starts_with(&format!("{root}/")))
+            .cloned()
+            .collect()
+    };
+
+    fn refs_in(v: &serde_json::Value, out: &mut BTreeSet<String>) {
+        match v {
+            serde_json::Value::Object(m) => {
+                for (k, x) in m {
+                    match (k.as_str(), x.as_str()) {
+                        ("$ref", Some(r)) => {
+                            if let Some(name) = r.strip_prefix("#/components/schemas/") {
+                                out.insert(name.to_string());
+                            }
+                        }
+                        _ => refs_in(x, out),
+                    }
+                }
+            }
+            serde_json::Value::Array(a) => a.iter().for_each(|x| refs_in(x, out)),
+            _ => {}
+        }
+    }
+
+    let sections = ["tools", "agents"];
+    let app = {
+        crate::distribution::admin_cross_plane::ensure_seam();
+        let directory = super::plugins::scratch(&format!(
+            "admin-root-{}",
+            busbar_kernel::door::op_id().counter()
+        ));
+        let library_path = std::path::PathBuf::from(
+            std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
+                .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual Store product"),
+        );
+        let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
+            .expect("the actual Store statement reads")
+            .expect("the actual Store states itself");
+        let facts = busbar_contract::abi::mechanism::rendering::read(&statement)
+            .expect("the actual Store statement parses");
+        let mut manifest = super::plugins::manifest(
+            "store",
+            &facts.name,
+            busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
+        );
+        manifest.version = facts.version;
+        manifest.statement = Some(hex::encode(statement));
+        let archive = super::plugins::signed(
+            &crate::dist_root_install::release_key(),
+            manifest,
+            &std::fs::read(library_path).expect("the actual Store artifact reads"),
+        );
+        std::fs::write(directory.join("store.tar.gz"), archive)
+            .expect("stage the actual Store product");
+        std::fs::write(directory.join("admin.token"), "served-openapi-token")
+            .expect("write the operator credential");
+        let settings: serde_json::Value = serde_json::from_str(
+            &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
+        )
+        .expect("the actual Store settings are JSON");
+        let mut document = serde_json::json!({});
+        document["providers"] = serde_json::json!({});
+        document["models"] = serde_json::json!({});
+        document["store"] = serde_json::json!({"module": facts.name, "settings": settings});
+        document["auth"] = serde_json::json!({"chain": [], "admin_auth": ["admin-tokens"]});
+        document["identity-providers"] = serde_json::json!({"admin-tokens": {
+            "module": "admin-tokens", "token": {"file": directory.join("admin.token")}
+        }});
+        document["advanced"] = serde_json::json!({"allow_destinations": ["127.0.0.1"]});
+        let deploy = busbar_kernel::config::deploy_from_deserializer(document)
+            .expect("the actual admin deployment parses");
+        let cfg = busbar_kernel::config::resolve(&deploy, &Default::default())
+            .expect("the actual admin deployment resolves");
+        let rules = std::sync::Arc::new(crate::root::door_steps::Rules::default())
+            as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
+        let (mut app, rotate, limits) = busbar_kernel::build_app_from_config(
+            cfg,
+            busbar_kernel::config::PluginsCfg {
+                enabled: true,
+                dir: directory.to_string_lossy().into_owned(),
+                ..Default::default()
+            },
+            None,
+            Default::default(),
+            Default::default(),
+            (None, None),
+            None,
+            &rules,
+        )
+        .expect("the product root builds the actual admin application");
+        limits.keep().expect("the product limits commit");
+        if let Some(rotate) = rotate {
+            rotate();
+        }
+        app.overlay_path = Some(
+            busbar_kernel::config::overlay::OverlayStore::new(
+                app.governance
+                    .as_ref()
+                    .expect("the actual root opened governance")
+                    .store_calls()
+                    .expect("the actual Store exposes its calls"),
+            )
+            .expect("the actual Store opens its overlay"),
+        );
+        app.governance = Some(gov("served-openapi-token"));
+        app.plane_sections = Some((&sections).iter().copied().collect());
+
+        std::sync::Arc::new(app)
+    };
+    let full = served_openapi(app).await;
+    let plane_owned: BTreeSet<String> = sections
+        .iter()
+        .flat_map(|s| plane_paths(&full, s))
+        .collect();
+    let (mut by_plane, mut by_rest) = (BTreeSet::new(), BTreeSet::new());
+    for (path, item) in full["paths"].as_object().expect("paths") {
+        let into = if plane_owned.contains(path) {
+            &mut by_plane
+        } else {
+            &mut by_rest
+        };
+        refs_in(item, into);
+    }
+    let plane_only: BTreeSet<String> = by_plane.difference(&by_rest).cloned().collect();
+    let full_schemas = full["components"]["schemas"].as_object().expect("schemas");
+    assert!(
+        !plane_only.is_empty() && plane_only.iter().all(|n| full_schemas.contains_key(n)),
+        "a node configuring every plane section serves the components only its plane operations \
+         reference ({plane_only:?}) — without them the check below would pass vacuously"
+    );
+
+    let app = {
+        crate::distribution::admin_cross_plane::ensure_seam();
+        let directory = super::plugins::scratch(&format!(
+            "admin-root-{}",
+            busbar_kernel::door::op_id().counter()
+        ));
+        let library_path = std::path::PathBuf::from(
+            std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
+                .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual Store product"),
+        );
+        let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
+            .expect("the actual Store statement reads")
+            .expect("the actual Store states itself");
+        let facts = busbar_contract::abi::mechanism::rendering::read(&statement)
+            .expect("the actual Store statement parses");
+        let mut manifest = super::plugins::manifest(
+            "store",
+            &facts.name,
+            busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
+        );
+        manifest.version = facts.version;
+        manifest.statement = Some(hex::encode(statement));
+        let archive = super::plugins::signed(
+            &crate::dist_root_install::release_key(),
+            manifest,
+            &std::fs::read(library_path).expect("the actual Store artifact reads"),
+        );
+        std::fs::write(directory.join("store.tar.gz"), archive)
+            .expect("stage the actual Store product");
+        std::fs::write(directory.join("admin.token"), "served-openapi-token")
+            .expect("write the operator credential");
+        let settings: serde_json::Value = serde_json::from_str(
+            &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
+        )
+        .expect("the actual Store settings are JSON");
+        let mut document = serde_json::json!({});
+        document["providers"] = serde_json::json!({});
+        document["models"] = serde_json::json!({});
+        document["store"] = serde_json::json!({"module": facts.name, "settings": settings});
+        document["auth"] = serde_json::json!({"chain": [], "admin_auth": ["admin-tokens"]});
+        document["identity-providers"] = serde_json::json!({"admin-tokens": {
+            "module": "admin-tokens", "token": {"file": directory.join("admin.token")}
+        }});
+        document["advanced"] = serde_json::json!({"allow_destinations": ["127.0.0.1"]});
+        let deploy = busbar_kernel::config::deploy_from_deserializer(document)
+            .expect("the actual admin deployment parses");
+        let cfg = busbar_kernel::config::resolve(&deploy, &Default::default())
+            .expect("the actual admin deployment resolves");
+        let rules = std::sync::Arc::new(crate::root::door_steps::Rules::default())
+            as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
+        let (mut app, rotate, limits) = busbar_kernel::build_app_from_config(
+            cfg,
+            busbar_kernel::config::PluginsCfg {
+                enabled: true,
+                dir: directory.to_string_lossy().into_owned(),
+                ..Default::default()
+            },
+            None,
+            Default::default(),
+            Default::default(),
+            (None, None),
+            None,
+            &rules,
+        )
+        .expect("the product root builds the actual admin application");
+        limits.keep().expect("the product limits commit");
+        if let Some(rotate) = rotate {
+            rotate();
+        }
+        app.overlay_path = Some(
+            busbar_kernel::config::overlay::OverlayStore::new(
+                app.governance
+                    .as_ref()
+                    .expect("the actual root opened governance")
+                    .store_calls()
+                    .expect("the actual Store exposes its calls"),
+            )
+            .expect("the actual Store opens its overlay"),
+        );
+        app.governance = Some(gov("served-openapi-token"));
+        app.plane_sections = Some((&[]).iter().copied().collect());
+
+        std::sync::Arc::new(app)
+    };
+    let doc = served_openapi(app).await;
+    for section in ["tools", "agents"] {
+        let leaked = plane_paths(&doc, section);
+        assert!(
+            leaked.is_empty(),
+            "a node with no `{section}:` section serves a document describing {leaked:?}"
+        );
+    }
+    let golden =
+        read_json(oracle_dir().join("golden/1.5.5/cells/admin.ops__GetOpenapiJson__ok.json"));
+    let mut expected: BTreeSet<String> = golden["body"]["json"]["paths"]
+        .as_object()
+        .expect("the 1.5.5 golden document's paths")
+        .keys()
+        .cloned()
+        .collect();
+    expected.extend(
+        served
+            .iter()
+            .filter(|(_, source)| **source == Source::KernelLoop)
+            .map(|((_, path), _)| path.clone()),
+    );
+    let got: BTreeSet<String> = doc["paths"]
+        .as_object()
+        .expect("paths")
+        .keys()
+        .cloned()
+        .collect();
+    assert_eq!(
+        got, expected,
+        "with a 1.5.5 config the served document must describe the 1.5.5 surface plus the \
+         always-served kernel verbs, and nothing else"
+    );
+
+    let schemas = doc["components"]["schemas"].as_object().expect("schemas");
+    for name in &plane_only {
+        assert!(
+            !schemas.contains_key(name),
+            "{name} is referenced only by unconfigured plane operations and was served"
+        );
+    }
+
+    let app = {
+        crate::distribution::admin_cross_plane::ensure_seam();
+        let directory = super::plugins::scratch(&format!(
+            "admin-root-{}",
+            busbar_kernel::door::op_id().counter()
+        ));
+        let library_path = std::path::PathBuf::from(
+            std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
+                .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual Store product"),
+        );
+        let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
+            .expect("the actual Store statement reads")
+            .expect("the actual Store states itself");
+        let facts = busbar_contract::abi::mechanism::rendering::read(&statement)
+            .expect("the actual Store statement parses");
+        let mut manifest = super::plugins::manifest(
+            "store",
+            &facts.name,
+            busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
+        );
+        manifest.version = facts.version;
+        manifest.statement = Some(hex::encode(statement));
+        let archive = super::plugins::signed(
+            &crate::dist_root_install::release_key(),
+            manifest,
+            &std::fs::read(library_path).expect("the actual Store artifact reads"),
+        );
+        std::fs::write(directory.join("store.tar.gz"), archive)
+            .expect("stage the actual Store product");
+        std::fs::write(directory.join("admin.token"), "served-openapi-token")
+            .expect("write the operator credential");
+        let settings: serde_json::Value = serde_json::from_str(
+            &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
+        )
+        .expect("the actual Store settings are JSON");
+        let mut document = serde_json::json!({});
+        document["providers"] = serde_json::json!({});
+        document["models"] = serde_json::json!({});
+        document["store"] = serde_json::json!({"module": facts.name, "settings": settings});
+        document["auth"] = serde_json::json!({"chain": [], "admin_auth": ["admin-tokens"]});
+        document["identity-providers"] = serde_json::json!({"admin-tokens": {
+            "module": "admin-tokens", "token": {"file": directory.join("admin.token")}
+        }});
+        document["advanced"] = serde_json::json!({"allow_destinations": ["127.0.0.1"]});
+        let deploy = busbar_kernel::config::deploy_from_deserializer(document)
+            .expect("the actual admin deployment parses");
+        let cfg = busbar_kernel::config::resolve(&deploy, &Default::default())
+            .expect("the actual admin deployment resolves");
+        let rules = std::sync::Arc::new(crate::root::door_steps::Rules::default())
+            as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
+        let (mut app, rotate, limits) = busbar_kernel::build_app_from_config(
+            cfg,
+            busbar_kernel::config::PluginsCfg {
+                enabled: true,
+                dir: directory.to_string_lossy().into_owned(),
+                ..Default::default()
+            },
+            None,
+            Default::default(),
+            Default::default(),
+            (None, None),
+            None,
+            &rules,
+        )
+        .expect("the product root builds the actual admin application");
+        limits.keep().expect("the product limits commit");
+        if let Some(rotate) = rotate {
+            rotate();
+        }
+        app.overlay_path = Some(
+            busbar_kernel::config::overlay::OverlayStore::new(
+                app.governance
+                    .as_ref()
+                    .expect("the actual root opened governance")
+                    .store_calls()
+                    .expect("the actual Store exposes its calls"),
+            )
+            .expect("the actual Store opens its overlay"),
+        );
+        app.governance = Some(gov("served-openapi-token"));
+        app.plane_sections = Some((&["tools"]).iter().copied().collect());
+
+        std::sync::Arc::new(app)
+    };
+    let doc = served_openapi(app).await;
+    assert!(
+        !plane_paths(&doc, "tools").is_empty(),
+        "a node that configured `tools:` must describe the tools operations"
+    );
+    assert!(
+        plane_paths(&doc, "agents").is_empty(),
+        "a node that did not configure `agents:` must not describe the agents operations"
+    );
+}
+
+#[tokio::test]
+async fn named_map_section_routes_answer_wrong_method_unknown_name_and_bad_body() {
+    crate::distribution::admin_cross_plane::ensure_seam();
+    const TOKEN: &str = "served-surface-token";
+    let app = {
+        crate::distribution::admin_cross_plane::ensure_seam();
+        let directory = super::plugins::scratch(&format!(
+            "admin-root-{}",
+            busbar_kernel::door::op_id().counter()
+        ));
+        let library_path = std::path::PathBuf::from(
+            std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
+                .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual Store product"),
+        );
+        let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
+            .expect("the actual Store statement reads")
+            .expect("the actual Store states itself");
+        let facts = busbar_contract::abi::mechanism::rendering::read(&statement)
+            .expect("the actual Store statement parses");
+        let mut manifest = super::plugins::manifest(
+            "store",
+            &facts.name,
+            busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
+        );
+        manifest.version = facts.version;
+        manifest.statement = Some(hex::encode(statement));
+        let archive = super::plugins::signed(
+            &crate::dist_root_install::release_key(),
+            manifest,
+            &std::fs::read(library_path).expect("the actual Store artifact reads"),
+        );
+        std::fs::write(directory.join("store.tar.gz"), archive)
+            .expect("stage the actual Store product");
+        std::fs::write(directory.join("admin.token"), TOKEN)
+            .expect("write the operator credential");
+        let settings: serde_json::Value = serde_json::from_str(
+            &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
+        )
+        .expect("the actual Store settings are JSON");
+        let mut document = serde_json::json!({});
+        document["providers"] = serde_json::json!({});
+        document["models"] = serde_json::json!({});
+        document["store"] = serde_json::json!({"module": facts.name, "settings": settings});
+        document["auth"] = serde_json::json!({"chain": [], "admin_auth": ["admin-tokens"]});
+        document["identity-providers"] = serde_json::json!({"admin-tokens": {
+            "module": "admin-tokens", "token": {"file": directory.join("admin.token")}
+        }});
+        document["advanced"] = serde_json::json!({"allow_destinations": ["127.0.0.1"]});
+        let deploy = busbar_kernel::config::deploy_from_deserializer(document)
+            .expect("the actual admin deployment parses");
+        let cfg = busbar_kernel::config::resolve(&deploy, &Default::default())
+            .expect("the actual admin deployment resolves");
+        let rules = std::sync::Arc::new(crate::root::door_steps::Rules::default())
+            as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
+        let (mut app, rotate, limits) = busbar_kernel::build_app_from_config(
+            cfg,
+            busbar_kernel::config::PluginsCfg {
+                enabled: true,
+                dir: directory.to_string_lossy().into_owned(),
+                ..Default::default()
+            },
+            None,
+            Default::default(),
+            Default::default(),
+            (None, None),
+            None,
+            &rules,
+        )
+        .expect("the product root builds the actual admin application");
+        limits.keep().expect("the product limits commit");
+        if let Some(rotate) = rotate {
+            rotate();
+        }
+        app.overlay_path = Some(
+            busbar_kernel::config::overlay::OverlayStore::new(
+                app.governance
+                    .as_ref()
+                    .expect("the actual root opened governance")
+                    .store_calls()
+                    .expect("the actual Store exposes its calls"),
+            )
+            .expect("the actual Store opens its overlay"),
+        );
+        app.governance = Some(gov(TOKEN));
+
+        std::sync::Arc::new(app)
+    };
+    let router = crate::distribution::admin_cross_plane::build_router(app);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let client = reqwest::Client::new();
+    let ask = |method: reqwest::Method, path: &str, body: &'static str| {
+        let req = client
+            .request(method, format!("http://{addr}{path}"))
+            .header("x-admin-token", TOKEN)
+            .header("content-type", "application/json")
+            .body(body);
+        async move { req.send().await.unwrap().status().as_u16() }
+    };
+    use reqwest::Method as M;
+    let (root, item) = (abs("/export"), abs("/export/served-surface-probe"));
+    let settings = format!("{item}/settings");
+    let cases = [
+        (M::GET, &root, "", 200, "list"),
+        (M::POST, &root, "", 405, "wrong method on the root"),
+        (M::POST, &item, "", 405, "wrong method on one name"),
+        (M::PUT, &settings, "", 405, "wrong method on settings"),
+        (M::GET, &item, "", 404, "unknown name"),
+        (M::PUT, &item, "{", 400, "malformed definition body"),
+        (M::PATCH, &settings, "{", 400, "malformed settings body"),
+    ];
+    for (method, path, body, want, what) in cases {
+        assert_eq!(ask(method, path, body).await, want, "{what}");
+    }
+    handle.abort();
+}

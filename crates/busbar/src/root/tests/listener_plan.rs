@@ -105,8 +105,38 @@ fn app(
     routes: Vec<RouteDecl>,
     generation: u64,
 ) -> Arc<busbar_kernel::state::App> {
-    let mut app = busbar_kernel_testkit::test_support::TestApp::new().build();
-    let candidate = Arc::get_mut(&mut app).unwrap();
+    crate::dist_root_install::install();
+    crate::root::test_plane_registry::register();
+    let deploy = busbar_kernel::config::deploy_from_yaml_str(
+        "store: {module: memory}\nauth: {chain: [], admin_auth: []}\nproviders: {}\nmodels: {}\n",
+    )
+    .expect("the listener deployment parses");
+    let cfg = busbar_kernel::config::resolve(&deploy, &Default::default())
+        .expect("the listener deployment resolves");
+    let store = crate::root::real_store::store();
+    let rules: Arc<dyn busbar_kernel::appbuild::RootRules> =
+        Arc::new(crate::root::door_steps::Rules::default());
+    let (mut candidate, rotate, limits) =
+        busbar_kernel::appbuild::build_app_from_config_with_store(
+            cfg,
+            Default::default(),
+            None,
+            Default::default(),
+            Default::default(),
+            (None, None),
+            None,
+            &rules,
+            Some(busbar_contract::store_calls::OpenedStore {
+                records: store.clone(),
+                calls: Some(store),
+            }),
+            false,
+        )
+        .expect("the product builds the listener application");
+    limits.keep().expect("the listener limits commit");
+    if let Some(rotate) = rotate {
+        rotate();
+    }
     candidate.plugin_routes =
         Arc::new(build_route_table(routes).expect("valid endpoint declarations"));
     candidate.config_version = generation;
@@ -124,7 +154,7 @@ fn app(
         providers: Default::default(),
         model_pools: Default::default(),
     }));
-    app
+    Arc::new(candidate)
 }
 
 #[test]
@@ -191,7 +221,7 @@ fn listener_policy_retains_each_candidate_across_three_new_generations() {
         app,
         door_refusals: Vec::new(),
         ids: Vec::new(),
-        signed_ingress: busbar_kernel_testkit::test_support::inbound::signed_by_dialect(),
+        signed_ingress: Arc::new(|_, _| false),
         scope: None,
     };
     let select = plan.policy("export.private.settings.ingress".into());
@@ -555,7 +585,7 @@ async fn physical_routers_share_publication_but_keep_handlers_and_refusals_separ
             )
         })
     };
-    let first = busbar_kernel_testkit::test_support::TestApp::new().build();
+    let first = app(topology(), Vec::new(), 1);
     let (left, _, handle) = busbar_kernel::build_split_routers_serving_doors(
         first,
         vec![mounted("left")],
@@ -578,8 +608,7 @@ async fn physical_routers_share_publication_but_keep_handlers_and_refusals_separ
         false,
     );
     for generation in 2..=4 {
-        let mut next = busbar_kernel_testkit::test_support::TestApp::new().build();
-        Arc::get_mut(&mut next).unwrap().config_version = generation;
+        let next = app(topology(), Vec::new(), generation);
         handle.swap(next);
         for (router, label) in [(&left, "left"), (&right, "right")] {
             let answer = router
@@ -993,17 +1022,26 @@ async fn a_kernel_keys_listener_prepares_and_keeps_real_key_verification() {
         .unwrap();
     let token_grant = busbar_kernel::seal::lend();
     let live_token = token.expose(&token_grant).as_str();
-    let enforcing = busbar_kernel_testkit::test_support::TestApp::new()
-        .keys_chain()
-        .governance(gov.clone())
-        .build();
     let mut candidate = app(
         topology,
         vec![route("private", PATH, RouteAuth::Key)],
         GENERATION,
     );
     let state = Arc::get_mut(&mut candidate).unwrap();
-    state.auth = enforcing.auth.clone();
+    let auth_cfg = busbar_kernel::config::AuthCfg {
+        chain: vec![busbar_kernel::config::AuthChainEntry::bare(
+            busbar_kernel::config::KEYS_MODULE,
+        )],
+        ..busbar_kernel::config::AuthCfg::default_none()
+    };
+    state.auth = Arc::new(
+        busbar_kernel::auth::AuthMiddleware::new(
+            &auth_cfg,
+            &state.hook_env.registry,
+            &busbar_kernel::config::secret::SecretResolver::builtins_only(),
+        )
+        .expect("the actual configured keys chain opens its credential readers"),
+    );
     state.governance = Some(gov.clone());
     assert!(candidate.auth.keys_in_chain);
     assert!(candidate

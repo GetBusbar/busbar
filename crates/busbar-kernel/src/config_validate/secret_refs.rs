@@ -138,6 +138,15 @@ enum TokenRefs {
 }
 
 fn walk_secret_refs(cfg: &RootCfg, tokens: TokenRefs) -> Vec<(String, &crate::config::SecretRef)> {
+    let boot_token = cfg.auth.as_ref().and_then(|auth| auth.admin_token_ref());
+    walk_secret_refs_with_boot_token(cfg, tokens, boot_token)
+}
+
+fn walk_secret_refs_with_boot_token<'a>(
+    cfg: &'a RootCfg,
+    tokens: TokenRefs,
+    boot_token: Option<&crate::config::SecretRef>,
+) -> Vec<(String, &'a crate::config::SecretRef)> {
     let RootCfg {
         tls,
         admin_tls,
@@ -257,7 +266,6 @@ fn walk_secret_refs(cfg: &RootCfg, tokens: TokenRefs) -> Vec<(String, &crate::co
             refs.push(("auth.signing_key".to_string(), sk));
         }
 
-        let boot_token = auth.admin_token_ref();
         for (plane, entries) in [("chain", chain), ("admin_auth", admin_auth)] {
             for entry in entries {
                 let crate::config::AuthChainEntry {

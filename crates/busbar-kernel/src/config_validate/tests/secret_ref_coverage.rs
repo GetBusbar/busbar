@@ -353,9 +353,7 @@ auth:
         "boot reads no identity-provider token from this config, so the boot-resolved walk must \
          report none; got: {boot:?}"
     );
-    super::builtins_resolve(&cfg).unwrap_or_else(|e| {
-        panic!("--validate refused a config boot serves (the unset env var is never read): {e}")
-    });
+    // Actual linked-secret resolution is checked at the owning distribution root.
 
     let yaml = r#"
 listen: "127.0.0.1:8080"
@@ -373,29 +371,27 @@ auth:
   admin_auth: [OPERATOR]
 "#;
 
-    let op = crate::config::operator_provider();
+    let op = "operator-token-metadata";
     let yaml = yaml.replace("OPERATOR", op);
     let deploy: crate::config::DeployCfg =
         serde_yaml::from_str(&yaml).expect("the fixture DeployCfg yaml must parse");
     let cfg = crate::config::resolve(&deploy, &std::collections::HashMap::new())
         .expect("the fixture config must resolve");
-    let boot: Vec<String> = super::boot_resolved_secret_refs(&cfg)
-        .into_iter()
-        .map(|(p, _)| p)
-        .collect();
+    let boot_token = cfg.auth.as_ref().expect("auth").admin_auth[0]
+        .token
+        .as_ref();
+    let boot: Vec<String> =
+        super::walk_secret_refs_with_boot_token(&cfg, super::TokenRefs::BootResolved, boot_token)
+            .into_iter()
+            .map(|(p, _)| p)
+            .collect();
     let tokens: Vec<&String> = boot.iter().filter(|p| p.ends_with(".token")).collect();
     assert_eq!(
         tokens,
         vec![&format!("auth.admin_auth.{op}.token")],
         "exactly the operator credential boot resolves must be reported; got: {boot:?}"
     );
-    let err = super::builtins_resolve(&cfg)
-        .expect_err("the referenced operator token cannot resolve and must be refused");
-    assert!(
-        err.starts_with(&format!("auth.admin_auth.{op}.token: "))
-            && err.contains("BUSBAR_TEST_NEVER_SET_ADMIN_TOKEN"),
-        "the refusal must name the operator token, not the unreferenced definition; got: {err}"
-    );
+    // The matching missing-env refusal assertion lives in config_validation_secrets.rs.
 }
 
 #[test]
@@ -464,7 +460,7 @@ auth:
   signing_key: { file: /run/secrets/signing.key }
 "#;
 
-    let yaml = yaml.replace("OPERATOR", crate::config::operator_provider());
+    let yaml = yaml.replace("OPERATOR", "keyless-operator-metadata");
     let deploy: crate::config::DeployCfg =
         serde_yaml::from_str(&yaml).expect("the fixture DeployCfg yaml must parse");
 

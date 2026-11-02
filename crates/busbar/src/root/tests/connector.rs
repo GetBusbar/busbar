@@ -180,9 +180,8 @@ fn operator_infrastructure_refuses_metadata_even_when_carved_out() {
 
 #[test]
 fn a_reload_that_removes_a_carve_out_refuses_the_next_dial() {
-    let _registry = busbar_kernel_testkit::test_support::planes::TestRegistryIsolation::seeded(&[
-        crate::root::test_plane_registry::fallback(),
-    ]);
+    crate::dist_root_install::install();
+    crate::root::test_plane_registry::register();
     let boot = deployment(
         &[],
         "security:\n  allow_metadata_hosts: [169.254.169.254]\n\
@@ -198,8 +197,26 @@ fn a_reload_that_removes_a_carve_out_refuses_the_next_dial() {
         None,
         "the boot config carves it out"
     );
-    busbar_kernel_testkit::app::build_once_under(deployment(&[], ""), None, &rules)
-        .expect("the reload builds");
+    let store = crate::root::real_store::store();
+    let (_app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
+        deployment(&[], ""),
+        Default::default(),
+        None,
+        Default::default(),
+        Default::default(),
+        (None, None),
+        None,
+        &rules,
+        Some(busbar_contract::store_calls::OpenedStore {
+            records: store.clone(),
+            calls: Some(store),
+        }),
+    )
+    .expect("the reload builds");
+    limits.keep().expect("the reload commits its limits");
+    if let Some(rotate) = rotate {
+        rotate();
+    }
     assert_eq!(
         metadata_verdict(judge.as_ref(), "imds-proxy.test", EGRESS_PROVIDER),
         Some(DEST_METADATA),
@@ -210,9 +227,8 @@ fn a_reload_that_removes_a_carve_out_refuses_the_next_dial() {
 #[test]
 fn a_reload_that_changes_the_allowlist_changes_nothing() {
     use busbar_contract::abi::host::service::DEST_INTERNAL;
-    let _registry = busbar_kernel_testkit::test_support::planes::TestRegistryIsolation::seeded(&[
-        crate::root::test_plane_registry::fallback(),
-    ]);
+    crate::dist_root_install::install();
+    crate::root::test_plane_registry::register();
     let private_a = vec!["10.0.0.5".parse().unwrap()];
     let private_b = vec!["10.0.0.9".parse().unwrap()];
     let verdict = |judge: &dyn DestJudge, host: &str, answer: &[std::net::IpAddr]| {
@@ -237,8 +253,26 @@ fn a_reload_that_changes_the_allowlist_changes_nothing() {
         "the host the boot did not name is refused"
     );
     let reloaded = deployment(&[], "advanced:\n  allow_destinations: [model-b.internal]\n");
-    busbar_kernel_testkit::test_support::build_once_under(reloaded, None, &rules)
-        .expect("the reload builds");
+    let store = crate::root::real_store::store();
+    let (_app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
+        reloaded,
+        Default::default(),
+        None,
+        Default::default(),
+        Default::default(),
+        (None, None),
+        None,
+        &rules,
+        Some(busbar_contract::store_calls::OpenedStore {
+            records: store.clone(),
+            calls: Some(store),
+        }),
+    )
+    .expect("the reload builds");
+    limits.keep().expect("the reload commits its limits");
+    if let Some(rotate) = rotate {
+        rotate();
+    }
     assert_eq!(
         verdict(judge.as_ref(), "model-a.internal", &private_a),
         None,

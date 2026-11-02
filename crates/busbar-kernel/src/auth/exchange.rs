@@ -68,42 +68,31 @@ pub(crate) async fn exchange(
         Err(super::VerifierUnavailable::Overloaded) => super::ChainVerdict::Denied,
     };
 
-    let SelfMint {
-        principal,
-        team,
-        granted_scopes: pools,
-        ttl,
-    } = match admit_self_mint(
+    let (
+        SelfMint {
+            principal,
+            team,
+            granted_scopes: pools,
+            ttl,
+        },
+        provider,
+        gov,
+    ) = match admit_exchange_mint(
         &verdict,
         &app.role_bindings,
         &app.mint_policy,
         app.self_key_ttl_secs,
-    ) {
-        Ok(v) => v,
-        Err(e) => return refusal(e),
+        app.governance.as_ref(),
+        claim,
+    )
+    .await
+    {
+        Ok(admitted) => admitted,
+        Err(error) => return refusal(error),
     };
-
-    let super::ChainVerdict::Identified {
-        module: provider, ..
-    } = &verdict
-    else {
-        return refusal(ExchangeError::Unauthorized);
-    };
-
-    let Some(gov) = app.governance.clone() else {
-        return refusal(ExchangeError::MintFailed(
-            "governance is disabled: cannot mint keys".to_string(),
-        ));
-    };
-
-    if let Some(claim) = claim {
-        if !claim.win().await {
-            return refusal(ExchangeError::Unauthorized);
-        }
-    }
 
     let provisioner = Arc::new(HandleProvisioner::new(handle.clone(), principal.id.clone()));
-    let keys = DeterministicEd25519Keys::new(gov, provider.clone(), team, pools, provisioner);
+    let keys = DeterministicEd25519Keys::new(gov, provider.to_string(), team, pools, provisioner);
     match issue_key(&keys, principal, ttl, false).await {
         Ok(issued) => {
             let base_url = app.public_url.as_deref().unwrap_or("");
@@ -115,6 +104,36 @@ pub(crate) async fn exchange(
         }
         Err(e) => refusal(e),
     }
+}
+
+// The post-verification admission continuation. A rejected policy/provider/governance decision
+// must return before the verified identity's replay claim can be consumed.
+async fn admit_exchange_mint<'a>(
+    verdict: &'a super::ChainVerdict,
+    bindings: &crate::config::RoleBindings,
+    policy: &crate::governance::mint_policy::MintPolicy,
+    default_ttl: u64,
+    governance: Option<&Arc<crate::governance::GovState>>,
+    claim: Option<super::PendingClaim>,
+) -> Result<(SelfMint<'a>, &'a str, Arc<crate::governance::GovState>), ExchangeError> {
+    let admitted = admit_self_mint(verdict, bindings, policy, default_ttl)?;
+    let super::ChainVerdict::Identified {
+        module: provider, ..
+    } = verdict
+    else {
+        return Err(ExchangeError::Unauthorized);
+    };
+    let Some(gov) = governance.cloned() else {
+        return Err(ExchangeError::MintFailed(
+            "governance is disabled: cannot mint keys".to_string(),
+        ));
+    };
+    if let Some(claim) = claim {
+        if !claim.win().await {
+            return Err(ExchangeError::Unauthorized);
+        }
+    }
+    Ok((admitted, provider.as_str(), gov))
 }
 
 fn exchange_ok_body(issued: &IssuedKey, base_url: &str) -> serde_json::Value {

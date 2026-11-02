@@ -3,7 +3,7 @@
 
 //! THE DATAGRAM DRIVER, end to end over a real handshake: a scripted datagram framer behind the
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -119,6 +119,7 @@ struct St {
     secured: Vec<Vec<u8>>,
     routes: Vec<(u32, u32, Vec<u8>)>,
     pieces: Vec<(u64, Vec<u8>)>,
+    begin: VecDeque<(u64, Vec<u8>, u16)>,
     /// Flags for the next scripted batch of pieces; ordinary messages use zero.
     piece_flags: u16,
     /// Channel messages the framer was asked to emit, before secure routing.
@@ -315,6 +316,24 @@ fn unhex(s: &str) -> Vec<u8> {
         .collect()
 }
 
+fn write_begin_piece(
+    st: &mut St,
+    sink: &FramerSink,
+    lane: Option<&DatagramLane>,
+    out: &mut FramerOut,
+) -> bool {
+    let Some((stream, bytes, flags)) = st.begin.pop_front() else {
+        return false;
+    };
+    st.pieces.push((stream, bytes));
+    st.piece_flags = flags;
+    write_answer(st, sink, lane, out);
+    if !st.begin.is_empty() {
+        out.yielded.flags = busbar_contract::abi::transport::YIELD_MORE;
+    }
+    true
+}
+
 impl Scripted {
     /// Dialling: a check to every path this call told, and a bind request for the first while
     fn check_told(&self, st: &mut St, lane: &DatagramLane) {
@@ -363,10 +382,12 @@ impl FramerDoor for Scripted {
             Call::Begin(i, o) => {
                 let lane = read_lane(&mut st, i.lane);
                 o.framing = 7;
-                if self.knobs.dial {
-                    st.pieces.push((0, b"offer".to_vec()));
+                if !write_begin_piece(&mut st, &i.sink, lane, o) {
+                    if self.knobs.dial {
+                        st.pieces.push((0, b"offer".to_vec()));
+                    }
+                    write_answer(&mut st, &i.sink, lane, o);
                 }
-                write_answer(&mut st, &i.sink, lane, o);
             }
             Call::Ingest(i, o) => {
                 let lane = read_lane(&mut st, i.lane).expect("a datagram framer reads its lane");
@@ -422,10 +443,12 @@ impl FramerDoor for Scripted {
             }
             Call::Timer(i, o) => {
                 let lane = read_lane(&mut st, i.lane);
-                if let Some(l) = lane {
-                    self.check_told(&mut st, l);
+                if !write_begin_piece(&mut st, &i.sink, lane, o) {
+                    if let Some(l) = lane {
+                        self.check_told(&mut st, l);
+                    }
+                    write_answer(&mut st, &i.sink, lane, o);
                 }
-                write_answer(&mut st, &i.sink, lane, o);
             }
             Call::Finish(i, o) => {
                 let lane = read_lane(&mut st, i.lane);
@@ -1209,6 +1232,10 @@ fn closes(s: &Sink) -> u32 {
 
 /// A connector serving the scripted dialling framer under `dg` and the identity framer under
 fn book() -> crate::Connector {
+    book_begin(VecDeque::new())
+}
+
+fn book_begin(begin: VecDeque<(u64, Vec<u8>, u16)>) -> crate::Connector {
     let dg = Arc::new(Scripted {
         facts: DoorFacts {
             name: "dg".into(),
@@ -1218,6 +1245,7 @@ fn book() -> crate::Connector {
         knobs: dialling(),
         st: Mutex::new(St {
             local: (HOST_UFRAG, HOST_PWD),
+            begin,
             ..St::default()
         }),
         park: Mutex::new(None),
@@ -1252,16 +1280,120 @@ fn open_unit(
     c: &crate::Connector,
     unit: u64,
 ) -> Result<busbar_contract::conn::ConnId, busbar_contract::conn::ConnError> {
+    open_unit_at(c, unit, "bytes://127.0.0.1:9")
+}
+
+fn open_unit_at(
+    c: &crate::Connector,
+    unit: u64,
+    target: &str,
+) -> Result<busbar_contract::conn::ConnId, busbar_contract::conn::ConnError> {
     use busbar_contract::conn::Conns as _;
     c.open(
         busbar_contract::conn::InstanceId(1),
         busbar_contract::conn::NeedId(0),
         &busbar_contract::conn::OpenDesc {
-            target: "bytes://127.0.0.1:9",
+            target,
             unit,
             ..busbar_contract::conn::OpenDesc::default()
         },
     )
+}
+
+#[test]
+fn a_composed_dial_keeps_all_begin_batches_before_and_after_its_description() {
+    use busbar_contract::abi::transport::PIECE_FIELDS;
+    use busbar_contract::conn::{Conns as _, InstanceId, PieceKind};
+    use busbar_contract::transport::wire::WireStatusClass;
+
+    crate::support::worker().block_on(async {
+        let c = book_begin(VecDeque::from([
+            (20, b"kind: audio\r\ncodec: opus\r\n".to_vec(), PIECE_FIELDS),
+            (3, b"label: messages\r\n".to_vec(), PIECE_FIELDS),
+            (0, b"offer".to_vec(), 0),
+            (20, b"first".to_vec(), 0),
+            (20, b"second".to_vec(), 0),
+            (3, b"channel".to_vec(), 0),
+        ]));
+        let sink = Arc::new(Sink::default());
+        let pairing =
+            super::Pairing::with_memory_limit(sink.clone(), p("127.0.0.1:3478"), Some(usize::MAX));
+        pairing.sort(
+            super::Leg::Caller,
+            vec![got(10, b"kind: audio\r\n", true)],
+            Instant::now(),
+        );
+        c.pair(7, Arc::clone(&pairing)).unwrap();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let target = format!("bytes://{}", listener.local_addr().unwrap());
+        let conn = open_unit_at(&c, 7, &target).unwrap();
+        assert!(pairing.published().await.failure.is_none());
+        assert_eq!(
+            *sink.lines.lock().unwrap(),
+            [
+                super::Across {
+                    stream: 10,
+                    bytes: b"first".to_vec(),
+                    end_of_frame: true,
+                },
+                super::Across {
+                    stream: 10,
+                    bytes: b"second".to_vec(),
+                    end_of_frame: true,
+                },
+            ]
+        );
+        assert!(pairing.memory_account().used() > 0);
+
+        let (_, held) = c.slab.get(InstanceId(1), conn).unwrap();
+        let d = held.dialled.as_ref().unwrap();
+        d.exchanged(head(WireStatusClass::Success), b"").unwrap();
+        let fp = hex(&SessionCert::mint().unwrap().fingerprint());
+        let answer = format!("{FAR_UFRAG} {FAR_PWD} {fp} 203.0.113.9:50000");
+        d.exchanged(piece(PieceKind::Body), answer.as_bytes())
+            .unwrap();
+        assert!(d
+            .exchanged(piece(PieceKind::Completion), b"")
+            .unwrap()
+            .is_none());
+        assert!(!pairing.closed());
+
+        let mut bytes = [0; 32];
+        let got = c.read(InstanceId(1), conn, 0, &mut bytes[..2]).unwrap();
+        assert_eq!((&bytes[..got.len], got.end), (&b"ch"[..], false));
+        let got = c.read(InstanceId(1), conn, 0, &mut bytes).unwrap();
+        assert_eq!((&bytes[..got.len], got.end), (&b"annel"[..], true));
+        assert_eq!(pairing.publication_outcome().handed_frames, 2);
+        c.close(InstanceId(1), conn).unwrap();
+        assert_eq!(pairing.memory_account().used(), 0);
+        assert_eq!(closes(&sink), 1);
+    });
+}
+
+#[test]
+fn closing_a_composed_dial_retires_unread_begin_output_before_the_exchange_answers() {
+    use busbar_contract::abi::transport::PIECE_FIELDS;
+    use busbar_contract::conn::{Conns as _, InstanceId};
+
+    crate::support::worker().block_on(async {
+        let c = book_begin(VecDeque::from([
+            (3, b"label: messages\r\n".to_vec(), PIECE_FIELDS),
+            (0, b"offer".to_vec(), 0),
+            (3, b"unread".to_vec(), 0),
+        ]));
+        let sink = Arc::new(Sink::default());
+        let pairing =
+            super::Pairing::with_memory_limit(sink.clone(), p("127.0.0.1:3478"), Some(usize::MAX));
+        c.pair(7, Arc::clone(&pairing)).unwrap();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let target = format!("bytes://{}", listener.local_addr().unwrap());
+        let conn = open_unit_at(&c, 7, &target).unwrap();
+        assert!(pairing.memory_account().used() > 0);
+        c.close(InstanceId(1), conn).unwrap();
+        assert!(pairing.closed());
+        assert_eq!(pairing.memory_account().used(), 0);
+        assert_eq!(closes(&sink), 1);
+    });
 }
 
 /// RED arms of the session book: an open over a datagram framer's need serving no unit, or a unit

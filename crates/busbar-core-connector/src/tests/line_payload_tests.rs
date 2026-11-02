@@ -425,3 +425,71 @@ fn metadata_pieces_release_the_batch_custody_with_the_frames_that_did_cross() {
         assert_eq!(pairing.publication_outcome().cancelled_frames, 0);
     });
 }
+
+#[test]
+fn copied_channel_payloads_and_empty_message_descriptors_keep_independent_custody() {
+    use crate::publication::{Message, Messages};
+    const EMPTY_PIECES: usize = 32;
+    for payload_bytes in [crate::framer::FRAME_CAP / 2, 0] {
+        let (pairing, _caller, _upstream) = paired(Some(8 * crate::framer::FRAME_CAP));
+        let memory = pairing.memory_account();
+        let baseline = memory.used();
+        let sample = vec![b'x'; payload_bytes];
+        let mut yielded = Yielded::default();
+        // These are the independent owned copies after the checked ABI boundary.
+        // Its overlap-copy check is exercised separately by framer_more_tests.
+        yielded.pieces = vec![payload(99, &sample), payload(99, &sample)];
+        yielded
+            .pieces
+            .extend((0..EMPTY_PIECES).map(|_| payload(99, b"")));
+        let mut batch = pairing.publish(Leg::Upstream, yielded, Instant::now());
+        assert_eq!(batch.pieces.len(), EMPTY_PIECES + 2);
+        let queue = Messages::new(EMPTY_PIECES + 2);
+        let mut owners = batch.owners.drain(..);
+        for piece in batch.pieces.drain(..) {
+            let owner = owners
+                .next()
+                .expect("every independently copied descriptor has custody");
+            queue
+                .send(Message {
+                    bytes: piece.bytes,
+                    end: piece.end_of_frame,
+                    consumed: 0,
+                    custody: owner.reader_on(Leg::Upstream),
+                })
+                .unwrap();
+        }
+        drop(owners);
+        drop(batch);
+        let retained = memory.used();
+        let minimum = 2 * payload_bytes + (EMPTY_PIECES + 2) * std::mem::size_of::<Message>();
+        assert!(retained >= baseline + minimum, "payload and empty descriptor charges: retained={retained}, baseline={baseline}, minimum={minimum}");
+        let first = queue.try_recv().unwrap();
+        assert_eq!(first.bytes, sample);
+        assert!(first.end);
+        assert_eq!(
+            memory.used(),
+            retained,
+            "a real queue handoff retains the allocation until its consumer lets it go"
+        );
+        drop(first);
+        assert!(memory.used() < retained);
+        let second = queue.try_recv().unwrap();
+        assert_eq!(second.bytes, sample);
+        drop(second);
+        for _ in 0..EMPTY_PIECES {
+            let message = queue
+                .try_recv()
+                .expect("empty messages remain visible and charged");
+            assert!(message.bytes.is_empty() && message.end);
+            drop(message);
+        }
+        assert!(queue.try_recv().is_err());
+        pairing.close();
+        assert_eq!(
+            memory.used(),
+            0,
+            "reader consumption and teardown release every independent owner"
+        );
+    }
+}

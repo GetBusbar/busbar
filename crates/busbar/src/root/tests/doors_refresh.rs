@@ -8,108 +8,273 @@ use busbar_contract::abi::sdk::door::{blank_in, blank_out};
 use busbar_contract::abi::transport::{ConnIn, ConnOut, DialIn, ShutIn};
 use busbar_contract::transport::TransportSettings;
 use busbar_core_connector::carrier::Carry;
-use busbar_core_connector::framer::FramerDoor;
 
-use busbar_core_connector::doors::{refresh_named, row_bind, Dispatched};
+use busbar_core_connector::doors::{refresh_named, Dispatched};
 
-use busbar_test_kit::root_door_fixtures::held_down;
+#[tokio::test]
+async fn an_apply_refreshes_a_live_transport_and_its_next_dial_spawns() {
+    use busbar_contract::abi::mechanism::call::AbiStr;
+    use busbar_contract::abi::sdk::door::abi_str;
+    use busbar_contract::abi::transport::{
+        Destination, IoOut, ReadIn, DEST_PROGRAM, READ_END_OF_FRAME,
+    };
+    use busbar_contract::services::HostServices;
+    use busbar_core_connector::carrier::{Carried, Driven};
+    use busbar_core_connector::doors::bind_on;
+    use busbar_core_connector::framer::FramerDoor;
+    use busbar_core_connector::hostio::{Admission, HostIo};
+    use busbar_core_connector::spawn_env::HeldEnv;
 
-fn opened(row: &str, settings: &TransportSettings) -> Arc<Dispatched> {
-    let plugin = crate::root::test_plugins::linked_transport(
-        held_down::door,
-        row_bind(row).expect("the row binds"),
-    );
-    Arc::new(Dispatched::open(plugin, settings).expect("the carrier opens"))
-}
+    const CHILD: &str = "BUSBAR_ROOT_REAL_STDIO_SUPERVISOR_REFRESH_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        struct OwnedChild(Option<std::process::Child>);
+        impl Drop for OwnedChild {
+            fn drop(&mut self) {
+                if let Some(mut child) = self.0.take() {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                }
+            }
+        }
+        let mut child = OwnedChild(Some(
+            std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "root::doors_refresh::an_apply_refreshes_a_live_transport_and_its_next_dial_spawns", "--nocapture"])
+                .env(CHILD, "1")
+                .stdout(std::process::Stdio::inherit())
+                .stderr(std::process::Stdio::inherit())
+                .spawn().unwrap(),
+        ));
+        let bound = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        loop {
+            if let Some(status) = child.0.as_mut().unwrap().try_wait().unwrap() {
+                child
+                    .0
+                    .take()
+                    .unwrap()
+                    .wait()
+                    .expect("reap the supervisor witness");
+                assert!(
+                    status.success(),
+                    "actual supervisor refresh failed: {status}"
+                );
+                return;
+            }
+            if std::time::Instant::now() >= bound {
+                drop(child);
+                panic!("actual supervisor refresh exceeded its bound");
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    }
 
-fn dial(door: &Dispatched) -> Outcome {
-    let side = door.side().expect("a carrier crosses on a side");
-    let (mut i, mut o) = (blank_in::<DialIn>(), blank_out::<ConnOut>());
-    door.carry(side.as_ref(), false, Carry::Dial(&mut i, &mut o))
-        .outcome
-}
-
-fn end(door: &Dispatched) {
-    let side = door.side().expect("a carrier crosses on a side");
-    let (mut i, mut o) = (blank_in::<ShutIn>(), blank_out::<OutHead>());
-    let shut = door.carry(side.as_ref(), false, Carry::Shut(&mut i, &mut o));
-    assert_eq!(shut.outcome, Outcome::Ready, "the program's end is taken");
-}
-
-fn holds(door: &Dispatched, secs: u64) -> bool {
-    let side = door.side().expect("a carrier crosses on a side");
-    let mut i = blank_in::<ConnIn>();
-    i.conn = secs;
-    let mut o = blank_out::<OutHead>();
-    door.carry(side.as_ref(), false, Carry::Flush(&mut i, &mut o))
-        .outcome
-        == Outcome::Ready
-}
-
-#[test]
-fn an_apply_refreshes_a_live_transport_and_its_next_dial_spawns() {
+    let late = crate::root::serve::LateServices::new();
+    let kernel = Arc::new(busbar_kernel::host_services::KernelServices::new());
+    late.install_kernel(kernel.clone(), kernel as Arc<dyn HostServices>)
+        .unwrap();
+    let dispatcher = Arc::new(crate::root::dispatch::build(1, &late));
+    crate::root::connector::install_io(&dispatcher);
+    let io = Arc::new(HostIo::new());
+    assert!(dispatcher.install_io(io.clone()));
+    let mut binding = bind_on(&dispatcher);
+    binding.instance = Arc::from("real-stdio-supervisor-refresh");
+    let plugin =
+        crate::root::test_plugins::linked_transport(busbar_transport_stdio::door::door, binding);
     let settings = TransportSettings::default();
-    let door = opened("row159-apply-clears", &settings);
+    let door = Arc::new(Dispatched::open_on(plugin, &settings, dispatcher).unwrap());
+    let mut side = Driven::of(door.as_ref()).expect("the actual carrier owns a side");
+    let executable = std::env::current_exe().unwrap();
+    let program = busbar_contract::conn::Program::from_settings(&serde_json::json!({
+        "command": executable,
+        "args": ["--list", "--exact", "__busbar_supervisor_natural_exit_fixture__"]
+    }))
+    .unwrap();
+    let arguments: Vec<AbiStr> = program
+        .args
+        .iter()
+        .map(|argument| AbiStr {
+            ptr: argument.as_ptr(),
+            len: argument.len(),
+        })
+        .collect();
+    let destination = Destination {
+        kind: DEST_PROGRAM,
+        _reserved: 0,
+        authority: abi_str(""),
+        program: AbiStr {
+            ptr: program.command.as_ptr(),
+            len: program.command.len(),
+        },
+        args: arguments.as_ptr(),
+        args_len: arguments.len(),
+        env: std::ptr::null(),
+        env_len: 0,
+    };
+    let dial = |side: &mut Driven, key| {
+        io.admit(
+            side.ticket(),
+            Admission::Spawn(program.clone(), HeldEnv::written_only()),
+        );
+        let mut input = blank_in::<DialIn>();
+        input.dest = &destination;
+        input.supervision_key = key;
+        let mut output = blank_out::<ConnOut>();
+        let called = side
+            .cross(door.as_ref(), Carry::Dial(&mut input, &mut output), None)
+            .unwrap();
+        let settled = io.settle(side.ticket());
+        (called.outcome, output.conn, settled)
+    };
+    // Listing an absent test is only a portable short-lived child program, never a test pass.
+    // Five genuine exits hold each member permanently, avoiding a short-backoff timing race.
+    for delay in [Some(120), Some(220), Some(420), Some(820), None] {
+        for key in [159, 160] {
+            let (outcome, connection, (native, failure)) = dial(&mut side, key);
+            assert_eq!(outcome, Outcome::Ready, "a fresh or elapsed member spawns");
+            assert!(failure.is_none(), "the real host spawned it: {failure:?}");
+            let native = native.expect("a real child handle");
+            tokio::time::timeout(std::time::Duration::from_secs(10), async {
+                let mut total = 0;
+                loop {
+                    let mut buffer = [0; 256];
+                    let mut input = blank_in::<ReadIn>();
+                    input.conn = connection;
+                    input.buf = buffer.as_mut_ptr();
+                    input.cap = buffer.len();
+                    let mut output = blank_out::<IoOut>();
+                    let called = std::future::poll_fn(|cx| {
+                        match side.cross(
+                            door.as_ref(),
+                            Carry::Read(&mut input, &mut output),
+                            Some(cx),
+                        ) {
+                            Some(called) => std::task::Poll::Ready(called),
+                            None => std::task::Poll::Pending,
+                        }
+                    })
+                    .await;
+                    assert_eq!(
+                        called.outcome,
+                        Outcome::Ready,
+                        "the actual child reaches EOF"
+                    );
+                    total += output.len;
+                    assert!(total <= 16 * 1024, "the actual fixture's stdout is bounded");
+                    if output.len == 0 && output.flags & READ_END_OF_FRAME == 0 {
+                        break;
+                    }
+                }
+            })
+            .await
+            .expect("the real program exits within its bound");
+            let mut input = blank_in::<ShutIn>();
+            input.conn = connection;
+            let mut output = blank_out::<OutHead>();
+            assert_eq!(
+                side.cross(door.as_ref(), Carry::Shut(&mut input, &mut output), None)
+                    .unwrap()
+                    .outcome,
+                Outcome::Ready,
+                "the ended connection retires"
+            );
+            assert!(
+                io.program_id(native).is_none(),
+                "the ended child was reaped"
+            );
+        }
+        if let Some(delay) = delay {
+            tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+        }
+    }
+    let (outcome, _, (native, _)) = dial(&mut side, 159);
     assert_eq!(
-        dial(&door),
-        Outcome::Ready,
-        "a fresh member's program spawns"
+        outcome,
+        Outcome::Refused,
+        "the repeatedly ended member is held down"
     );
-    end(&door);
-    assert_eq!(
-        dial(&door),
-        Outcome::Failed,
-        "a program that ended is held down by its carrier"
-    );
-
-    let refused = refresh_named(&settings, |name| name.starts_with("row159-"));
-    assert!(
-        refused.is_empty(),
-        "the carrier took the apply's refresh: {refused:?}"
-    );
-    assert_eq!(
-        dial(&door),
-        Outcome::Ready,
-        "after the apply the carrier's refresh released the hold, and the next dial spawns"
-    );
-    assert!(
-        holds(&door, settings.request_timeout_secs),
-        "the refresh handed it the applied timeout"
-    );
-}
-
-#[test]
-fn a_refused_refresh_keeps_the_prior_settings() {
-    let settings = TransportSettings::default();
-    let door = opened("row159-refused-keeps", &settings);
-    assert!(
-        holds(&door, settings.request_timeout_secs),
-        "it opened with the deployment's timeout"
-    );
+    assert!(native.is_none(), "a held member never spawns");
     let refusing = TransportSettings {
-        request_timeout_secs: held_down::REFUSED_TIMEOUT_SECS,
+        request_body_max_bytes: 0,
         ..settings
     };
-    let why = door
+    assert!(door
         .refresh(&refusing)
-        .expect_err("the sentinel timeout is refused");
+        .unwrap_err()
+        .contains("did not refresh"));
+    let (outcome, _, (native, _)) = dial(&mut side, 159);
+    assert_eq!(
+        outcome,
+        Outcome::Refused,
+        "a refused apply preserves the hold"
+    );
+    assert!(native.is_none());
+    let refused = refresh_named(&settings, |name| name == "stdio");
     assert!(
-        why.contains("did not refresh"),
-        "the refusal says so: {why}"
+        refused.is_empty(),
+        "the root's named apply is accepted: {refused:?}"
+    );
+    for key in [159, 160] {
+        let (outcome, _, (native, _)) = dial(&mut side, key);
+        assert_eq!(
+            outcome,
+            Outcome::Refused,
+            "an unchanged member's hold survives a settings refresh"
+        );
+        assert!(native.is_none());
+    }
+    // An apply retires a removed/redeclared member by its own supervision key. Ordinary
+    // settings refresh must leave other members' crash histories alone.
+    let retiring: Arc<dyn FramerDoor> = door.clone();
+    Carried::retire_key(&retiring, &io, 159);
+    let (outcome, connection, (native, failure)) = dial(&mut side, 159);
+    assert_eq!(
+        outcome,
+        Outcome::Ready,
+        "the redeclared member's retired key releases its hold and the next dial spawns"
     );
     assert!(
-        holds(&door, settings.request_timeout_secs),
-        "the refused refresh left the prior timeout in place"
+        failure.is_none(),
+        "the actual new spawn succeeds: {failure:?}"
+    );
+    let native = native.expect("the redeclared member has a real child handle");
+    let (other_outcome, _, (other_native, _)) = dial(&mut side, 160);
+    assert_eq!(
+        other_outcome,
+        Outcome::Refused,
+        "retiring one member leaves its sibling held"
     );
     assert!(
-        !holds(&door, held_down::REFUSED_TIMEOUT_SECS),
-        "the refused value was not taken"
+        other_native.is_none(),
+        "the sibling is never spawned by another member's retirement"
     );
-    assert_eq!(dial(&door), Outcome::Ready, "the instance keeps serving");
+    let mut input = blank_in::<ShutIn>();
+    input.conn = connection;
+    let mut output = blank_out::<OutHead>();
+    assert_eq!(
+        side.cross(door.as_ref(), Carry::Shut(&mut input, &mut output), None)
+            .unwrap()
+            .outcome,
+        Outcome::Ready
+    );
+    assert!(
+        io.program_id(native).is_none(),
+        "the new child handle also retires"
+    );
+}
+
+#[tokio::test]
+async fn a_refused_refresh_keeps_the_prior_settings() {
+    real_stdio_refresh_keeps_settings(
+        "root::doors_refresh::a_refused_refresh_keeps_the_prior_settings",
+    )
+    .await;
 }
 
 #[tokio::test]
 async fn a_real_stdio_refresh_changes_the_live_line_bound_and_a_refusal_preserves_it() {
+    real_stdio_refresh_keeps_settings("root::doors_refresh::a_real_stdio_refresh_changes_the_live_line_bound_and_a_refusal_preserves_it").await;
+}
+
+async fn real_stdio_refresh_keeps_settings(test_name: &'static str) {
     use crate::root::loader::dispatch::{DispatchConfig, Dispatcher};
     use busbar_contract::abi::sdk::door::abi_str;
     use busbar_contract::abi::transport::{
@@ -133,11 +298,15 @@ async fn a_real_stdio_refresh_changes_the_live_line_bound_and_a_refusal_preserve
                 }
             }
         }
-        let mut child = OwnedChild(Some(std::process::Command::new(std::env::current_exe().unwrap())
-            .args(["--exact", "root::doors_refresh::a_real_stdio_refresh_changes_the_live_line_bound_and_a_refusal_preserves_it", "--nocapture"])
-            .env(CHILD, "1")
-            .stdout(std::process::Stdio::inherit()).stderr(std::process::Stdio::inherit())
-            .spawn().unwrap()));
+        let mut child = OwnedChild(Some(
+            std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", test_name, "--nocapture"])
+                .env(CHILD, "1")
+                .stdout(std::process::Stdio::inherit())
+                .stderr(std::process::Stdio::inherit())
+                .spawn()
+                .unwrap(),
+        ));
         let bound = std::time::Instant::now() + std::time::Duration::from_secs(30);
         loop {
             match child

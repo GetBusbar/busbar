@@ -667,10 +667,6 @@ pub fn merge_into(cfg: &mut RootCfg, doc: OverlayDoc) {
 mod config_consolidation_tests;
 
 #[cfg(test)]
-#[path = "tests/version_gate_tests.rs"]
-mod version_gate_tests;
-
-#[cfg(test)]
 #[path = "tests/overlay_tests.rs"]
 mod tests;
 

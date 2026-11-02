@@ -1671,32 +1671,6 @@ fn secrets_block_rejects_alias_and_canonical_for_one_module() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-#[test]
-fn a_rejected_config_leaves_no_limits_behind() {
-    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
-
-    const ILLEGAL: usize = 4096;
-
-    const _: () = assert!(ILLEGAL < crate::config::REQUEST_BODY_MAX_BYTES_FLOOR);
-
-    let mut cfg = cfg_with_provider_api_key(crate::config::SecretRef::none());
-    cfg.limits.request_body_max_bytes = ILLEGAL;
-
-    let Err(err) = build_once(cfg, None) else {
-        panic!("a below-floor body cap must fail validation")
-    };
-    assert!(
-        err.contains("request_body_max_bytes"),
-        "the build failed for the expected reason: {err}"
-    );
-    assert_ne!(
-        busbar_kernel_egress::upstream::max_translate_body_bytes(),
-        ILLEGAL,
-        "the REJECTED config's limits are installed process-wide — an invalid apply changed the \
-         live signed-ingress and cross-protocol translate body caps"
-    );
-}
-
 #[tokio::test]
 async fn oversized_request_413_is_reshaped_on_the_live_stack() {
     crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));

@@ -84,6 +84,10 @@ use busbar_kernel::governance::mint_policy::{MintRequest, DEFAULT_KEY_TTL_SECS};
 #[path = "tests/parse_duration_secs_tests.rs"]
 mod parse_duration_secs_tests;
 
+#[cfg(test)]
+#[path = "tests/governance_disabled_responses.rs"]
+mod governance_disabled_responses;
+
 const MAX_KEY_NAME_LEN: usize = 256;
 const MAX_KEY_ID_LEN: usize = 64;
 
@@ -457,8 +461,27 @@ fn check_key_cap(
     if cap == 0 {
         return Ok(None);
     }
-    let n = gov
-        .all_keys()?
+    let keys = gov.all_keys()?;
+    Ok(check_key_cap_for_keys(
+        &keys,
+        cap,
+        group,
+        exclude_id,
+        |id| gov.is_revoked(id),
+    ))
+}
+
+fn check_key_cap_for_keys(
+    keys: &[VirtualKey],
+    cap: usize,
+    group: Option<&str>,
+    exclude_id: Option<&str>,
+    is_revoked: impl Fn(&str) -> bool,
+) -> Option<(String, usize)> {
+    if cap == 0 {
+        return None;
+    }
+    let n = keys
         .iter()
         .filter(|k| k.group.as_deref() == group)
         .filter(|k| Some(k.id.as_str()) != exclude_id)
@@ -468,12 +491,12 @@ fn check_key_cap(
                 .map(|g| !g.starts_with(busbar_kernel::governance::SELF_KEY_GROUP_PREFIX))
                 .unwrap_or(true)
         })
-        .filter(|k| k.enabled && !gov.is_revoked(&k.id))
+        .filter(|k| k.enabled && !is_revoked(&k.id))
         .count();
     if n >= cap {
-        return Ok(Some((group.unwrap_or(UNBOUND_BUCKET_LABEL).to_string(), n)));
+        return Some((group.unwrap_or(UNBOUND_BUCKET_LABEL).to_string(), n));
     }
-    Ok(None)
+    None
 }
 
 pub(crate) async fn create_key(

@@ -368,7 +368,6 @@ pub fn dispatch_latched() -> bool {
 mod store_overlay_management {
     use busbar_kernel::config::overlay::{persist_root, resolve_backend_with_env, RootSettings};
     use busbar_kernel::config::{ConfigMgmtCfg, OverlayBackend, OverlayCfg};
-    use busbar_kernel_testkit::test_support::TestOverlayStore;
     #[test]
     fn legacy_overlay_file_is_untouched_and_store_remains_writable() {
         let stamp = std::time::SystemTime::now()
@@ -394,9 +393,11 @@ mod store_overlay_management {
                 .unwrap()
                 .enabled
         );
-        let store = TestOverlayStore::new();
-        persist_root(Some(&store.backend()), &RootSettings::default()).unwrap();
-        assert!(store.read_bytes().is_some());
+        let store =
+            busbar_kernel::config::overlay::OverlayStore::new(crate::root::real_store::store())
+                .expect("the actual configured Store supports conditional overlay persistence");
+        persist_root(Some(&store), &RootSettings::default()).unwrap();
+        assert!(store.read_bytes().unwrap().is_some());
         assert_eq!(std::fs::read(&legacy).unwrap(), original);
         assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
         std::fs::remove_dir_all(dir).unwrap();

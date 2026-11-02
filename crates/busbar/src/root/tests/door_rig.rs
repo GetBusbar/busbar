@@ -44,9 +44,7 @@ pub(super) use super::secret_source_tests::{
 };
 
 pub(crate) fn register_linked_protocols() {
-    for decls in crate::LINKED.protocols {
-        busbar_kernel_testkit::test_support::protocols::register_test_protocols(decls);
-    }
+    crate::dist_root_install::install();
 }
 
 pub(crate) fn door_breaker(statement_name: &str) -> Result<Option<BreakerDecl>, String> {
@@ -108,7 +106,17 @@ pub(crate) fn folded_door(
 }
 
 pub(crate) fn register_door(door: DoorFn, instance: &str) -> Result<(), String> {
-    busbar_kernel_testkit::test_support::planes::register_test_plane(folded_door(door, instance)?);
+    crate::dist_root_install::install();
+    let declared = folded_door(door, instance)?;
+    if !busbar_kernel::plane_driver::registry::plane_decls()
+        .iter()
+        .any(|row| row.key == declared.key)
+    {
+        return Err(format!(
+            "the assembled root does not register `{}`",
+            declared.key
+        ));
+    }
     Ok(())
 }
 
@@ -123,11 +131,7 @@ pub(crate) fn install_io_reactor() {
 }
 
 pub(crate) fn install_root_auth() {
-    busbar_kernel::preflight::install_linked_auth(
-        crate::LINKED.auths,
-        crate::root::auth_bindings::operator_words(),
-    );
-    busbar_kernel_testkit::test_support::install_root_auth_axis(crate::root::dispatch::auth_axis);
+    crate::dist_root_install::install();
 }
 
 pub(crate) fn late_services(dest: Arc<dyn DestJudge>) -> Arc<LateServices> {
@@ -482,17 +486,6 @@ pub(crate) fn mount_node_admin(
         None,
         late,
         crate::root::adapters::BreakerPolicy::new(),
-    )
-}
-
-pub(crate) fn hook_env(
-    aliases: &[&str],
-    prompt: NeedLevel,
-    user: NeedLevel,
-) -> busbar_kernel::hooks::HookEnv {
-    busbar_kernel_testkit::test_support::test_hook_env(
-        aliases,
-        busbar_kernel_testkit::test_support::HookNeeds { prompt, user },
     )
 }
 

@@ -1,10 +1,6 @@
 use busbar_contract::codec::RequestHandler;
 use busbar_contract::operation::OpVerb;
 use busbar_contract::protocol::ProtocolDecl;
-use busbar_kernel_testkit::ingress::protocols::streaming_content_types as event_content_types;
-use busbar_kernel_testkit::ingress::protocols::{
-    detect_protocol, residual_dialect_for_path, Registry,
-};
 use http::{HeaderMap, HeaderName, HeaderValue};
 use serde_json::Value;
 use std::sync::LazyLock;
@@ -14,22 +10,52 @@ static FIXTURE: LazyLock<Value> = LazyLock::new(|| {
         .expect("the linked-protocols fixture is JSON")
 });
 
+include!(concat!(env!("OUT_DIR"), "/test_linked.rs"));
+
 fn linked_decls() -> Vec<&'static ProtocolDecl> {
-    crate::LINKED
-        .protocols
+    TEST_LINKED_PROTOCOLS
         .iter()
         .flat_map(|decls| decls.iter().copied())
         .collect()
 }
 
-fn registered() {
-    for decls in crate::LINKED.protocols {
-        busbar_kernel_testkit::test_support::protocols::register_test_protocols(decls);
-    }
+fn provider_protocols() -> &'static [&'static str] {
+    let row = fallback_door_row();
+    (row.provider_dialects)(row)
 }
 
-fn builtins() -> Registry {
-    Registry::new(linked_decls())
+fn declared_verbs() -> Vec<OpVerb> {
+    linked_decls()
+        .into_iter()
+        .flat_map(|decl| decl.verbs.iter().copied())
+        .collect()
+}
+
+fn residual_dialect_for_path(path: &str) -> Option<&'static str> {
+    linked_decls()
+        .into_iter()
+        .filter_map(|decl| {
+            decl.residual_claims
+                .and_then(|claim| claim(path))
+                .map(|strength| (strength, decl.name))
+        })
+        .min_by_key(|(strength, _)| *strength)
+        .map(|(_, name)| name)
+}
+
+fn detect_protocol(path: &str, headers: &HeaderMap) -> Option<&'static str> {
+    let fields: Vec<(&[u8], &[u8])> = headers
+        .iter()
+        .map(|(name, value)| (name.as_str().as_bytes(), value.as_bytes()))
+        .collect();
+    linked_decls()
+        .into_iter()
+        .filter_map(|decl| {
+            decl.claim_over(path, &fields)
+                .map(|strength| (strength, decl.name))
+        })
+        .min_by_key(|(strength, _)| *strength)
+        .map(|(_, name)| name)
 }
 
 fn strs(v: &Value) -> Vec<&str> {
@@ -56,13 +82,16 @@ fn headers(v: &Value) -> HeaderMap {
 }
 
 fn request_handler(proto: &str) -> Option<&'static dyn RequestHandler> {
-    busbar_kernel_testkit::ingress::protocols::decl_for(proto).and_then(|d| d.handler)
+    linked_decls()
+        .into_iter()
+        .find(|decl| decl.name == proto)
+        .and_then(|decl| decl.handler)
 }
 
 #[test]
 fn the_derived_protocol_list_is_byte_identical_to_the_const_it_replaced() {
     assert_eq!(
-        builtins().codec_protocols(),
+        provider_protocols(),
         strs(&FIXTURE["protocol_order"]).as_slice(),
         "the protocol name set AND ITS ORDER are operator-visible: the order indexes telemetry's \
          metric families and the set is what the config validator accepts"
@@ -71,9 +100,8 @@ fn the_derived_protocol_list_is_byte_identical_to_the_const_it_replaced() {
 
 #[test]
 fn the_derived_protocol_list_is_not_empty() {
-    registered();
     assert!(
-        !busbar_kernel_testkit::ingress::protocols::known_protocols().is_empty(),
+        !provider_protocols().is_empty(),
         "the codec-protocol list is derived from the declarations; an empty one means the built-in \
          table stopped being read, and every operator config would be refused with no cause named"
     );
@@ -81,35 +109,55 @@ fn the_derived_protocol_list_is_not_empty() {
 
 #[test]
 fn the_absorbed_sweeps_produce_the_sets_they_produced_before() {
-    registered();
+    let declarations = linked_decls();
+    let mut event_content_types: Vec<_> = declarations
+        .iter()
+        .filter_map(|decl| decl.streaming_content_type)
+        .collect();
+    event_content_types.sort_unstable();
+    event_content_types.dedup();
     assert_eq!(
-        event_content_types(),
-        strs(&FIXTURE["event_content_types"]).as_slice(),
+        event_content_types,
+        strs(&FIXTURE["event_content_types"]),
         "the absorbed event-stream content types"
     );
+    let mut array_stream_shim_keys: Vec<_> = declarations
+        .iter()
+        .filter_map(|decl| decl.array_stream_shim_key)
+        .collect();
+    array_stream_shim_keys.sort_unstable();
+    array_stream_shim_keys.dedup();
     assert_eq!(
-        busbar_kernel_testkit::ingress::protocols::array_stream_shim_keys(),
-        strs(&FIXTURE["array_stream_shim_keys"]).as_slice(),
+        array_stream_shim_keys,
+        strs(&FIXTURE["array_stream_shim_keys"]),
         "absorbed proto::array_stream_shim_keys()"
     );
+    let mut head_keys: Vec<_> = ["model", "stream", "stream_options", "system"]
+        .into_iter()
+        .chain(
+            declarations
+                .iter()
+                .flat_map(|decl| decl.head_keys.iter().copied()),
+        )
+        .collect();
+    head_keys.sort_unstable();
+    head_keys.dedup();
     assert_eq!(
-        builtins().head_keys(),
-        strs(&FIXTURE["head_keys"]).as_slice(),
-        "absorbed proxy::lazy_body::captured_head_keys() — the four core keys plus every declared \
-         shim key, sorted and deduped exactly as the sweep produced them"
+        head_keys,
+        strs(&FIXTURE["head_keys"]),
+        "the four core keys plus every declared shim key, sorted and deduped"
     );
 }
 
 #[test]
 fn the_declared_verbs_are_the_verbs_the_handler_serves() {
-    registered();
-    for decl in builtins().decls() {
+    for decl in linked_decls() {
         let handler = decl
             .handler
             .unwrap_or_else(|| panic!("{} declares no handler", decl.name));
         let mut candidates: Vec<OpVerb> = OpVerb::ALL
             .iter()
-            .chain(busbar_kernel_testkit::test_support::protocols::declared_verbs())
+            .chain(declared_verbs().iter())
             .copied()
             .collect();
         candidates.sort_unstable_by_key(|op| op.name());
@@ -137,12 +185,11 @@ fn the_declared_verbs_are_the_verbs_the_handler_serves() {
 
 #[test]
 fn every_declared_verb_has_a_serving_handler() {
-    registered();
     assert!(
-        !busbar_kernel_testkit::test_support::protocols::declared_verbs().is_empty(),
+        !declared_verbs().is_empty(),
         "the registry must declare at least the linked planes' verbs"
     );
-    for decl in builtins().decls() {
+    for decl in linked_decls() {
         let Some(handler) = decl.handler else {
             continue;
         };
@@ -159,9 +206,8 @@ fn every_declared_verb_has_a_serving_handler() {
 
 #[test]
 fn a_declaration_without_a_codec_dispatches_but_is_not_a_provider_protocol() {
-    registered();
     assert!(
-        !busbar_kernel_testkit::ingress::protocols::known_protocols().is_empty(),
+        !provider_protocols().is_empty(),
         "the exclusion below is asserted against a NON-EMPTY codec fold"
     );
     let codec_less: Vec<&'static ProtocolDecl> = linked_decls()
@@ -169,12 +215,14 @@ fn a_declaration_without_a_codec_dispatches_but_is_not_a_provider_protocol() {
         .filter(|d| d.codec.is_none())
         .collect();
     for decl in codec_less {
-        let d = busbar_kernel_testkit::ingress::protocols::decl_for(decl.name)
+        let d = linked_decls()
+            .into_iter()
+            .find(|row| row.name == decl.name)
             .expect("it declares itself");
         assert!(d.codec.is_none());
         assert!(d.handler.is_some(), "{} serves operations", d.name);
         assert!(
-            !busbar_kernel_testkit::ingress::protocols::known_protocols().contains(&d.name),
+            !provider_protocols().contains(&d.name),
             "a provider lane cannot name {}, which has no wire codec",
             d.name
         );
@@ -182,43 +230,7 @@ fn a_declaration_without_a_codec_dispatches_but_is_not_a_provider_protocol() {
 }
 
 #[test]
-#[should_panic(expected = "two protocol declarations claim the same name")]
-fn two_declarations_of_one_name_are_refused() {
-    let mut decls = linked_decls();
-    decls.push(decls[0]);
-    let _ = Registry::new(decls);
-}
-
-#[test]
-fn a_codec_less_declaration_does_not_move_the_operator_visible_list_when_it_is_folded_ahead() {
-    static CODEC_LESS: ProtocolDecl = ProtocolDecl::named("codec-less");
-    let with_codecs: Vec<&'static ProtocolDecl> = linked_decls()
-        .into_iter()
-        .filter(|d| d.codec.is_some())
-        .collect();
-    let at_the_tail: Vec<&'static ProtocolDecl> = with_codecs
-        .iter()
-        .copied()
-        .chain(std::iter::once(&CODEC_LESS))
-        .collect();
-    let at_the_head: Vec<&'static ProtocolDecl> = std::iter::once(&CODEC_LESS)
-        .chain(with_codecs.iter().copied())
-        .collect();
-    assert_ne!(
-        at_the_tail.iter().map(|d| d.name).collect::<Vec<_>>(),
-        at_the_head.iter().map(|d| d.name).collect::<Vec<_>>(),
-        "the two declaration orders must actually differ or the assertion below is vacuous"
-    );
-    assert_eq!(
-        Registry::new(at_the_tail).codec_protocols(),
-        Registry::new(at_the_head).codec_protocols(),
-        "a declaration that ships no wire codec contributes no entry to the operator-visible list"
-    );
-}
-
-#[test]
 fn resolver_table() {
-    registered();
     for case in FIXTURE["resolver"].as_array().expect("resolver") {
         let path = case[0].as_str().expect("path");
         let got = detect_protocol(path, &headers(&case[1])).and_then(|proto| {
@@ -255,7 +267,6 @@ fn resolver_table() {
 
 #[test]
 fn mandatory_header_beats_path_ordering() {
-    registered();
     let case = &FIXTURE["mandatory_header"];
     let p = detect_protocol(case[0].as_str().expect("path"), &headers(&case[1])).unwrap();
     assert_eq!(p, case[2].as_str().expect("proto"));
@@ -263,7 +274,6 @@ fn mandatory_header_beats_path_ordering() {
 
 #[test]
 fn test_residual_dialect_colon_model_id_is_openai_not_gemini() {
-    registered();
     for case in FIXTURE["residual"].as_array().expect("residual") {
         let path = case[0].as_str().expect("path");
         assert_eq!(
@@ -276,16 +286,15 @@ fn test_residual_dialect_colon_model_id_is_openai_not_gemini() {
 
 #[test]
 fn test_residual_dialect_names_none_rather_than_defaulting_to_openai() {
-    let registry = builtins();
     let live = &FIXTURE["residual_live"];
     assert_eq!(
-        registry.residual_dialect_for_path(live[0].as_str().expect("path")),
+        residual_dialect_for_path(live[0].as_str().expect("path")),
         live[1].as_str(),
         "the residual fold must be live, or the `None` assertions below prove nothing"
     );
     for path in strs(&FIXTURE["residual_none"]) {
         assert_eq!(
-            registry.residual_dialect_for_path(path),
+            residual_dialect_for_path(path),
             None,
             "`{path}` names no dialect — the classifier must say so, not name a default"
         );

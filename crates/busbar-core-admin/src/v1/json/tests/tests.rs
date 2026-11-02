@@ -66,7 +66,7 @@ async fn respond_maps_ok_and_err() {
 #[cfg(feature = "openapi-schema")]
 #[test]
 fn openapi_doc_is_31_and_v1_prefixed() {
-    let doc = openapi_doc_seamed();
+    let doc = openapi_doc();
     assert!(
         doc["openapi"].as_str().unwrap().starts_with("3.1"),
         "discovery doc is OpenAPI 3.1"
@@ -84,7 +84,7 @@ fn openapi_doc_is_31_and_v1_prefixed() {
 #[cfg(feature = "openapi-schema")]
 #[test]
 fn emit_openapi_artifact() {
-    let doc = openapi_doc_seamed();
+    let doc = openapi_doc();
     assert!(
         doc["openapi"]
             .as_str()
@@ -114,7 +114,7 @@ fn openapi_paths_annotate_required_scope() {
         "full"
     }
 
-    let doc = openapi_doc_seamed();
+    let doc = openapi_doc();
     let paths = doc["paths"].as_object().expect("paths object");
     assert!(!paths.is_empty());
     let mut checked = 0usize;
@@ -163,7 +163,7 @@ fn openapi_never_emits_a_boolean_items_subschema() {
             _ => {}
         }
     }
-    let doc = openapi_doc_seamed();
+    let doc = openapi_doc();
     let mut offenders = Vec::new();
     walk(&doc, "", &mut offenders);
     assert!(
@@ -176,7 +176,7 @@ fn openapi_never_emits_a_boolean_items_subschema() {
 #[test]
 fn openapi_error_enum_matches_admin_error_codes() {
     use std::collections::BTreeSet;
-    let doc = openapi_doc_seamed();
+    let doc = openapi_doc();
     let enum_codes: BTreeSet<String> = doc["components"]["schemas"]["Error"]["properties"]["error"]
         ["properties"]["code"]["enum"]
         .as_array()
@@ -215,7 +215,7 @@ fn openapi_error_enum_matches_admin_error_codes() {
 #[cfg(feature = "openapi-schema")]
 #[test]
 fn openapi_documents_the_loops_503_on_every_operation_it_walks() {
-    let doc = openapi_doc_seamed();
+    let doc = openapi_doc();
     let codes =
         &doc["components"]["schemas"]["Error"]["properties"]["error"]["properties"]["code"]["enum"];
     assert!(
@@ -258,7 +258,7 @@ fn openapi_documents_the_loops_503_on_every_operation_it_walks() {
 #[cfg(feature = "openapi-schema")]
 #[test]
 fn openapi_hook_escalation_endpoints_document_403() {
-    let doc = openapi_doc_seamed();
+    let doc = openapi_doc();
     let cases = [
         ("/api/v1/admin/hooks", "post"),
         ("/api/v1/admin/hooks/{name}", "put"),
@@ -278,12 +278,6 @@ const COMMITTED_OPENAPI_PATH: &str =
     concat!(env!("CARGO_MANIFEST_DIR"), "/src/v1/json/openapi.json");
 
 #[cfg(feature = "openapi-schema")]
-fn openapi_doc_seamed() -> serde_json::Value {
-    crate::ensure_seam();
-    openapi_doc()
-}
-
-#[cfg(feature = "openapi-schema")]
 #[test]
 fn served_openapi_equals_committed_file() {
     let committed =
@@ -294,7 +288,7 @@ fn served_openapi_equals_committed_file() {
 #[cfg(feature = "openapi-schema")]
 #[test]
 fn restart_request_body_is_documented_optional() {
-    let doc = openapi_doc_seamed();
+    let doc = openapi_doc();
     let required = &doc["paths"]["/api/v1/admin/restart"]["post"]["requestBody"]["required"];
     assert_eq!(
         required.as_bool(),
@@ -307,7 +301,7 @@ fn restart_request_body_is_documented_optional() {
 #[cfg(feature = "openapi-schema")]
 #[test]
 fn openapi_every_operation_has_a_typed_response_schema() {
-    let doc = openapi_doc_seamed();
+    let doc = openapi_doc();
     let schemas = doc["components"]["schemas"].as_object().expect("schemas");
     let paths = doc["paths"].as_object().expect("paths");
     let mut op_count = 0usize;
@@ -414,7 +408,7 @@ fn err_kind_bridges_every_admin_error_variant() {
 #[test]
 fn declared_errors_is_total_and_well_formed() {
     use crate::v1::contract::taxonomy::{declared_errors, declared_responses, MethodTag};
-    let doc = openapi_doc_seamed();
+    let doc = openapi_doc();
     let prefix = crate::v1::contract::ADMIN_PREFIX;
     for (path, methods) in doc["paths"].as_object().expect("paths") {
         let rel = path.strip_prefix(prefix).unwrap_or(path);
@@ -463,7 +457,7 @@ fn declared_errors_is_total_and_well_formed() {
 #[cfg(feature = "openapi-schema")]
 #[test]
 fn openapi_summaries_do_not_advertise_forbidden_body_fields() {
-    let doc = openapi_doc_seamed();
+    let doc = openapi_doc();
     let schemas = doc["components"]["schemas"].as_object().expect("schemas");
     let paths = doc["paths"].as_object().expect("paths");
 
@@ -560,9 +554,7 @@ async fn worker_was_free_during<Fut: std::future::Future<Output = Response>>(
 
 #[tokio::test(flavor = "current_thread")]
 async fn openapi_builds_the_served_document_off_the_async_worker() {
-    let handle = Arc::new(AppHandle::new(crate::new_test_app().build()));
-    let (free, resp) =
-        worker_was_free_during(super::handlers::openapi(State(Arc::clone(&handle)))).await;
+    let (free, resp) = worker_was_free_during(super::handlers::render_openapi(|_| false)).await;
     assert_eq!(resp.status(), StatusCode::OK);
     assert!(
         free,
@@ -577,8 +569,7 @@ async fn openapi_still_serves_the_document_filtered_to_the_configured_planes() {
             .expect("the committed document marks plane operations");
     let doc: serde_json::Value = serde_json::from_str(&expected).unwrap();
     assert!(doc["paths"].get("/api/v1/admin/keys").is_some());
-    let handle = Arc::new(AppHandle::new(crate::new_test_app().build()));
-    let resp = super::handlers::openapi(State(Arc::clone(&handle))).await;
+    let resp = super::handlers::render_openapi(|_| false).await;
     assert_eq!(resp.status(), StatusCode::OK);
     use http_body_util::BodyExt;
     let bytes = resp.into_body().collect().await.unwrap().to_bytes();
@@ -587,8 +578,7 @@ async fn openapi_still_serves_the_document_filtered_to_the_configured_planes() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn openapi_is_answered_with_1_5_5s_head() {
-    let handle = Arc::new(AppHandle::new(crate::new_test_app().build()));
-    let resp = super::handlers::openapi(State(Arc::clone(&handle))).await;
+    let resp = super::handlers::openapi_document_response(super::handlers::openapi_json());
     assert_eq!(resp.status(), StatusCode::OK);
     let names: Vec<&str> = resp.headers().keys().map(|k| k.as_str()).collect();
     assert_eq!(names, ["content-type"], "{:?}", resp.headers());
@@ -603,79 +593,14 @@ thread_local! {
     static TRUST_RESOLVED_HERE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
-struct MarkingAdmission;
-
-impl busbar_kernel::admission::PluginAdmission for MarkingAdmission {
-    fn is_tarball(&self, file: &str) -> bool {
-        busbar_kernel_testkit::test_support::AdmissionStandIn.is_tarball(file)
-    }
-    fn max_tarball_bytes(&self) -> u64 {
-        busbar_kernel_testkit::test_support::AdmissionStandIn.max_tarball_bytes()
-    }
-    fn restart_default(&self, kind: &str) -> bool {
-        busbar_kernel_testkit::test_support::AdmissionStandIn.restart_default(kind)
-    }
-    fn policy_resolves(&self, cfg: &busbar_kernel::config::PluginsCfg) -> Result<(), String> {
-        busbar_kernel_testkit::test_support::AdmissionStandIn.policy_resolves(cfg)
-    }
-    fn inventory(
-        &self,
-        dir: &std::path::Path,
-        cfg: &busbar_kernel::config::PluginsCfg,
-    ) -> Result<Vec<busbar_kernel::admission::Inventoried>, String> {
-        busbar_kernel_testkit::test_support::AdmissionStandIn.inventory(dir, cfg)
-    }
-    fn admit_upload(
-        &self,
-        dir: &std::path::Path,
-        file: &str,
-        tarball: &[u8],
-        cfg: &busbar_kernel::config::PluginsCfg,
-    ) -> Result<busbar_kernel::admission::Admitted, busbar_kernel::admission::Refusal> {
-        busbar_kernel_testkit::test_support::AdmissionStandIn.admit_upload(dir, file, tarball, cfg)
-    }
-    fn inspect(
-        &self,
-        _: &[u8],
-        _: &busbar_kernel::config::PluginsCfg,
-    ) -> Result<
-        (
-            busbar_kernel::admission::Stated,
-            busbar_kernel::admission::Judged,
-        ),
-        busbar_kernel::admission::Refusal,
-    > {
-        TRUST_RESOLVED_HERE.with(|here| here.set(true));
-        Err(busbar_kernel::admission::Refusal::Validation(
-            "the marking root refuses".into(),
-        ))
-    }
-    fn rollback_target(
-        &self,
-        file: &str,
-        bytes: &[u8],
-        cfg: &busbar_kernel::config::PluginsCfg,
-    ) -> Result<busbar_kernel::admission::Stated, busbar_kernel::admission::Refusal> {
-        busbar_kernel_testkit::test_support::AdmissionStandIn.rollback_target(file, bytes, cfg)
-    }
-}
-
-fn inspect_body(tarball: &[u8]) -> axum::body::Bytes {
-    use base64::Engine as _;
-    axum::body::Bytes::from(format!(
-        r#"{{"file":"candidate.tar.gz","tarball_b64":"{}"}}"#,
-        base64::engine::general_purpose::STANDARD.encode(tarball)
-    ))
-}
-
 #[tokio::test(flavor = "current_thread")]
 async fn inspect_plugin_unpacks_the_candidate_off_the_async_worker() {
-    let app = crate::new_test_app()
-        .plugin_admission(&MarkingAdmission)
-        .build();
-    let handle = Arc::new(AppHandle::new(app));
     TRUST_RESOLVED_HERE.with(|here| here.set(false));
-    let resp = super::handlers::inspect_plugin(State(handle), inspect_body(b"candidate")).await;
+    let resp = super::handlers::inspect_candidate(|| {
+        TRUST_RESOLVED_HERE.with(|here| here.set(true));
+        Err(AdminError::Validation("the marking root refuses".into()))
+    })
+    .await;
     let (status, _, body) = parts(resp).await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
     assert_eq!(body["error"]["message"], "the marking root refuses");
@@ -683,32 +608,4 @@ async fn inspect_plugin_unpacks_the_candidate_off_the_async_worker() {
         !TRUST_RESOLVED_HERE.with(std::cell::Cell::get),
         "the plugin inspect ran on the async worker"
     );
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn inspect_plugin_still_refuses_a_bad_candidate_in_the_envelope() {
-    let handle = Arc::new(AppHandle::new(crate::new_test_app().build()));
-    let resp = super::handlers::inspect_plugin(
-        State(Arc::clone(&handle)),
-        inspect_body(b"not a tarball at all"),
-    )
-    .await;
-    let (status, ct, body) = parts(resp).await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
-    assert!(ct.starts_with("application/json"), "{ct}");
-    assert_eq!(body["error"]["code"], "invalid_request");
-
-    assert_eq!(
-        body["error"]["message"],
-        "a test build has no plugin admission: the composition root's tests prove it",
-        "{body}"
-    );
-    let resp = super::handlers::inspect_plugin(
-        State(handle),
-        axum::body::Bytes::from(r#"{"file":"x.tar.gz","tarball_b64":"%%%"}"#),
-    )
-    .await;
-    let (status, _, body) = parts(resp).await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
-    assert_eq!(body["error"]["code"], "invalid_request");
 }

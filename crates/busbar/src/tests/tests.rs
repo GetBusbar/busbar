@@ -3,7 +3,6 @@ use crate::root::cli::{
     config_override_notice, providers_override_notice, resolve_config_path,
     signing_key_command_output, value_flag,
 };
-use busbar_kernel_testkit::test_support::EnvVarGuard;
 
 #[test]
 fn worker_threads_from_env_parses_valid_rejects_invalid() {
@@ -48,7 +47,29 @@ fn validate_worker_threads_config_diagnoses_zero() {
 
 #[test]
 fn worker_threads_from_config_reads_a_real_file() {
-    let _guard = EnvVarGuard::capture(ENV_CONFIG);
+    const CHILD: &str = "BUSBAR_WORKER_CONFIG_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        let name = concat!(
+            module_path!(),
+            "::worker_threads_from_config_reads_a_real_file"
+        );
+        let test_name = name.split_once("::").unwrap().1;
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", test_name])
+            .env(CHILD, "1")
+            .output()
+            .expect("run the config environment case in a fresh process");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            stdout.contains(&format!("test {test_name} ... ok")),
+            "{stdout}"
+        );
+        assert!(
+            output.status.success(),
+            "the config environment case passes: {stdout}"
+        );
+        return;
+    }
     let dir = std::env::temp_dir().join(format!(
         "busbar-wtcfg-{}-{}",
         std::process::id(),
@@ -215,8 +236,7 @@ async fn serve_listener_actually_serves_real_http_traffic() {
     let listener = Listening::bind_stream(None, "127.0.0.1:0", ROOT_BIND_LIMITS).unwrap();
     let addr = listener.local_addr();
     let router = Router::new().route("/probe", axum::routing::get(|| async { "ok" }));
-    let secret_resolver =
-        Arc::new(busbar_kernel_testkit::test_support::builtins_only_secret_resolver());
+    let secret_resolver = Arc::new(busbar_kernel::config::secret::SecretResolver::builtins_only());
     let (shutdown_tx, shutdown_rx) = tokio::sync::broadcast::channel::<()>(1);
 
     let serve_handle = tokio::spawn(serve_listener(
@@ -391,19 +411,6 @@ fn a_flag_value_is_the_last_one_passed_under_its_exact_name() {
     );
 }
 
-#[cfg(linked_axis_body_ingress)]
-static DATA_DIR_ENV: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-#[cfg(linked_axis_body_ingress)]
-fn data_dir_env(dir: &std::path::Path) -> (EnvVarGuard, std::sync::MutexGuard<'static, ()>) {
-    let held = DATA_DIR_ENV
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let guard = EnvVarGuard::capture("BUSBAR_DATA_DIR");
-    std::env::set_var("BUSBAR_DATA_DIR", dir);
-    (guard, held)
-}
-
 struct BookDir(std::path::PathBuf);
 
 impl BookDir {
@@ -445,31 +452,75 @@ impl Drop for BookDir {
     }
 }
 
-#[cfg(linked_axis_body_ingress)]
+#[cfg(distribution_root)]
 #[test]
 fn the_boot_path_keeps_its_journal_in_the_store_with_a_configured_directory() {
-    busbar_kernel_testkit::test_support::register_neutral_test_plane();
+    const CHILD: &str = "BUSBAR_JOURNAL_DIRECTORY_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        let name = concat!(
+            module_path!(),
+            "::the_boot_path_keeps_its_journal_in_the_store_with_a_configured_directory"
+        );
+        let test_name = name.split_once("::").unwrap().1;
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", test_name])
+            .env(CHILD, "1")
+            .output()
+            .expect("run the journal directory case in a fresh process");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            stdout.contains(&format!("test {test_name} ... ok")),
+            "{stdout}"
+        );
+        assert!(
+            output.status.success(),
+            "the journal directory case passes: {stdout}"
+        );
+        return;
+    }
+    crate::dist_root_install::install();
     use busbar_kernel_wal::RecordClass;
 
-    for decls in crate::LINKED.protocols {
-        busbar_kernel_testkit::test_support::protocols::register_test_protocols(decls);
-    }
-    busbar_kernel_testkit::test_support::metrics::init();
     let dir = BookDir::new("real-path");
     assert!(
         dir.entries().is_empty(),
         "the fixture directory starts empty, or nothing below is evidence of anything"
     );
 
-    let _env = data_dir_env(&dir.0);
+    std::env::set_var("BUSBAR_DATA_DIR", &dir.0);
 
-    let app = busbar_kernel_testkit::app::build_once(
-        busbar_kernel_testkit::test_support::cfg_with_provider_api_key(
-            busbar_kernel::config::SecretRef::env("BUSBAR_TEST_NO_SUCH_KEY_BOOT_BOOK"),
-        ),
+    let store_module = crate::LINKED
+        .stores
+        .iter()
+        .find(|store| store.1)
+        .expect("the distribution links its real ephemeral product store")
+        .0;
+    let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
+        "providers": {},
+        "models": {},
+        "store": { "module": store_module },
+        "auth": { "chain": [], "admin_auth": [] },
+    }))
+    .expect("the product deployment parses");
+    let config = busbar_kernel::config::resolve(&deploy, &Default::default())
+        .expect("the product deployment resolves");
+    let rules =
+        Arc::new(root::door_steps::Rules::default()) as Arc<dyn busbar_kernel::appbuild::RootRules>;
+    let (app, rotate, limits) = busbar_kernel::build_app_from_config(
+        config,
+        Default::default(),
         None,
+        Default::default(),
+        Default::default(),
+        (None, None),
+        None,
+        &rules,
     )
-    .expect("the app builds over the default memory store");
+    .expect("the production root builds the app and opens its real store through the ABI");
+    limits.keep().expect("the product limits commit");
+    if let Some(rotate) = rotate {
+        rotate();
+    }
 
     let book = root::boot::book(&app, "test-store").expect("the boot book opens");
 
@@ -497,24 +548,52 @@ fn the_boot_path_keeps_its_journal_in_the_store_with_a_configured_directory() {
     );
 }
 
-#[cfg(linked_axis_body_ingress)]
+#[cfg(distribution_root)]
 #[test]
 fn a_store_without_the_record_slots_refuses_the_boot_by_name() {
-    busbar_kernel_testkit::test_support::register_neutral_test_plane();
-    for decls in crate::LINKED.protocols {
-        busbar_kernel_testkit::test_support::protocols::register_test_protocols(decls);
-    }
-    busbar_kernel_testkit::test_support::metrics::init();
-    let app = busbar_kernel_testkit::app::build_once(
-        busbar_kernel_testkit::test_support::cfg_with_provider_api_key(
-            busbar_kernel::config::SecretRef::env("BUSBAR_TEST_NO_SUCH_KEY_NO_SLOTS"),
-        ),
+    crate::dist_root_install::install();
+    let store_module = crate::LINKED
+        .stores
+        .iter()
+        .find(|store| store.1)
+        .expect("the distribution links its real ephemeral product store")
+        .0;
+    let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
+        "providers": {},
+        "models": {},
+        "store": { "module": store_module },
+        "auth": { "chain": [], "admin_auth": [] },
+    }))
+    .expect("the product deployment parses");
+    let config = busbar_kernel::config::resolve(&deploy, &Default::default())
+        .expect("the product deployment resolves");
+    let rules =
+        Arc::new(root::door_steps::Rules::default()) as Arc<dyn busbar_kernel::appbuild::RootRules>;
+    let (app, rotate, limits) = busbar_kernel::build_app_from_config(
+        config,
+        Default::default(),
         None,
+        Default::default(),
+        Default::default(),
+        (None, None),
+        None,
+        &rules,
     )
-    .expect("the app builds");
+    .expect("the production root builds the app and opens its real store through the ABI");
+    limits.keep().expect("the product limits commit");
+    if let Some(rotate) = rotate {
+        rotate();
+    }
     let mut slotless = app.clone();
-    let store: std::sync::Arc<dyn busbar_contract::records::RecordStore> =
-        std::sync::Arc::new(busbar_kernel_testkit::test_support::store_double::MemoryStore::new());
+    let governance = app
+        .governance
+        .as_ref()
+        .expect("the product app opens its configured store");
+    assert!(
+        governance.store_calls().is_some(),
+        "the configured product store supplies record slots before they are withheld"
+    );
+    let store = governance.store();
     slotless.governance = Some(std::sync::Arc::new(
         busbar_kernel::governance::GovState::new(store, None).expect("the state opens"),
     ));
@@ -684,32 +763,105 @@ fn the_boot_book_binds_the_store_keyset_and_refuses_a_mismatched_store_key() {
     assert_eq!(std::fs::read(&legacy).unwrap(), seed.as_bytes());
 }
 
-#[cfg(linked_axis_body_ingress)]
+#[cfg(distribution_root)]
 #[test]
 fn one_seal_after_two_reloads() {
-    busbar_kernel_testkit::test_support::register_neutral_test_plane();
+    const CHILD: &str = "BUSBAR_JOURNAL_RELOAD_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        let name = concat!(module_path!(), "::one_seal_after_two_reloads");
+        let test_name = name.split_once("::").unwrap().1;
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", test_name])
+            .env(CHILD, "1")
+            .output()
+            .expect("run the journal reload case in a fresh process");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            stdout.contains(&format!("test {test_name} ... ok")),
+            "{stdout}"
+        );
+        assert!(
+            output.status.success(),
+            "the journal reload case passes: {stdout}"
+        );
+        return;
+    }
+    crate::dist_root_install::install();
     use busbar_kernel_wal::RecordClass;
 
-    for decls in crate::LINKED.protocols {
-        busbar_kernel_testkit::test_support::protocols::register_test_protocols(decls);
-    }
-    busbar_kernel_testkit::test_support::metrics::init();
     let dir = BookDir::new("two-reloads");
-    let _env = data_dir_env(&dir.0);
-    let cfg = || {
-        busbar_kernel_testkit::test_support::cfg_with_provider_api_key(
-            busbar_kernel::config::SecretRef::env("BUSBAR_TEST_NO_SUCH_KEY_ONE_SEAL"),
-        )
-    };
-
-    let boot = busbar_kernel_testkit::app::build_once(cfg(), None).expect("the boot builds");
+    std::env::set_var("BUSBAR_DATA_DIR", &dir.0);
+    let store_module = crate::LINKED
+        .stores
+        .iter()
+        .find(|store| store.1)
+        .expect("the distribution links its real ephemeral product store")
+        .0;
+    let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
+        "providers": {},
+        "models": {},
+        "store": { "module": store_module },
+        "auth": { "chain": [], "admin_auth": [] },
+    }))
+    .expect("the product deployment parses");
+    let config = busbar_kernel::config::resolve(&deploy, &Default::default())
+        .expect("the product deployment resolves");
+    let rules =
+        Arc::new(root::door_steps::Rules::default()) as Arc<dyn busbar_kernel::appbuild::RootRules>;
+    let (boot, rotate, limits) = busbar_kernel::build_app_from_config(
+        config,
+        Default::default(),
+        None,
+        Default::default(),
+        Default::default(),
+        (None, None),
+        None,
+        &rules,
+    )
+    .expect("the production root builds the app and opens its real store through the ABI");
+    limits.keep().expect("the product limits commit");
+    if let Some(rotate) = rotate {
+        rotate();
+    }
     let book = root::boot::book(&boot, "test-store").expect("the boot book opens");
     let store = boot
         .governance
         .clone()
         .expect("a boot resolves the store its book opens over");
-    let first = busbar_kernel_testkit::app::build_once(cfg(), Some(&boot)).expect("reload 1");
-    let second = busbar_kernel_testkit::app::build_once(cfg(), Some(&first)).expect("reload 2");
+    let config = busbar_kernel::config::resolve(&deploy, &Default::default())
+        .expect("the unchanged product deployment resolves for the first reload");
+    let (first, rotate, limits) = busbar_kernel::build_app_from_config(
+        config,
+        Default::default(),
+        None,
+        Default::default(),
+        Default::default(),
+        (None, None),
+        Some(&boot),
+        &rules,
+    )
+    .expect("the first product reload builds over the prior generation");
+    limits.keep().expect("the product limits commit");
+    if let Some(rotate) = rotate {
+        rotate();
+    }
+    let config = busbar_kernel::config::resolve(&deploy, &Default::default())
+        .expect("the unchanged product deployment resolves for the second reload");
+    let (second, rotate, limits) = busbar_kernel::build_app_from_config(
+        config,
+        Default::default(),
+        None,
+        Default::default(),
+        Default::default(),
+        (None, None),
+        Some(&first),
+        &rules,
+    )
+    .expect("the second product reload builds over the prior generation");
+    limits.keep().expect("the product limits commit");
+    if let Some(rotate) = rotate {
+        rotate();
+    }
 
     assert!(
         Arc::ptr_eq(

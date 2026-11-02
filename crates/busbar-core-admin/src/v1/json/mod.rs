@@ -85,6 +85,8 @@ impl AdminTransport for JsonV1 {
             .route("/plugins/{file}/schema", get(plugin_schema))
             .route("/auth", get(get_auth))
             .route(PATH_ADMIN_AUTH, get(get_admin_auth).put(put_auth))
+            .route("/ledger/recovery/list", post(crate::recovery::list))
+            .route("/ledger/recovery/resolve", post(crate::recovery::resolve))
             .route("/usage", get(get_usage))
             .route("/config", get(get_config))
             .route("/audit", get(get_audit))
