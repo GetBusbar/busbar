@@ -200,16 +200,14 @@ fn a_settled_list_never_dispatches_a_later_position_and_an_answer_is_not_repeate
 
 #[test]
 fn continuation_bytes_preserve_the_original_request_except_declared_partial_stripping() {
-    let original = Head {
-        method: "POST".into(),
-        target: "/v1/messages".into(),
-        fields: vec![
-            ("Authorization".into(), b"secret-A".to_vec()),
-            ("X-Resource".into(), b"A".to_vec()),
-        ],
-        query: Some("token=a&scope=A&token=b".into()),
-        ..Default::default()
-    };
+    let mut original = Head::default();
+    original.method = "POST".into();
+    original.target = "/v1/messages".into();
+    original.fields = vec![
+        ("Authorization".into(), b"secret-A".to_vec()),
+        ("X-Resource".into(), b"A".to_vec()),
+    ];
+    original.query = Some("token=a&scope=A&token=b".into());
     let strips = [
         Strip::field("authorization".to_string()),
         Strip::query("token".to_string()),
@@ -260,19 +258,17 @@ fn continuation_bytes_preserve_the_original_request_except_declared_partial_stri
 
 #[test]
 fn authenticated_framing_fields_remain_exact_at_the_claim_boundary() {
-    let original = Head {
-        method: "POST".into(),
-        target: "/v1/messages".into(),
-        fields: vec![
-            ("authorization".into(), b"credential".to_vec()),
-            ("connection".into(), b"close, x-signed".to_vec()),
-            ("content-length".into(), b"3".to_vec()),
-            ("x-signed".into(), b"first".to_vec()),
-            ("x-signed".into(), b"second".to_vec()),
-        ],
-        query: Some("x=1".into()),
-        ..Default::default()
-    };
+    let mut original = Head::default();
+    original.method = "POST".into();
+    original.target = "/v1/messages".into();
+    original.fields = vec![
+        ("authorization".into(), b"credential".to_vec()),
+        ("connection".into(), b"close, x-signed".to_vec()),
+        ("content-length".into(), b"3".to_vec()),
+        ("x-signed".into(), b"first".to_vec()),
+        ("x-signed".into(), b"second".to_vec()),
+    ];
+    original.query = Some("x=1".into());
     let strips = [Strip::field("authorization".to_string())];
     let admitted = original.stripped(&strips).unwrap();
     for removed in ["connection", "content-length", "x-signed"] {
