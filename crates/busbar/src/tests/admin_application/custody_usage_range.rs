@@ -207,15 +207,9 @@ fn assert_totals(view: &serde_json::Value, count: u64) {
     assert_eq!(view["total"]["tokens_input"].as_u64(), Some(count));
     assert_eq!(view["total"]["spend_micros"].as_u64(), Some(0));
     assert_eq!(view["by_model"].as_array().unwrap().len(), 1);
-    assert_eq!(
-        view["by_model"][0]["usage"]["tokens_input"].as_u64(),
-        Some(count)
-    );
+    assert_eq!(view["by_model"][0]["tokens_input"].as_u64(), Some(count));
     assert_eq!(view["by_key"].as_array().unwrap().len(), 1);
-    assert_eq!(
-        view["by_key"][0]["usage"]["tokens_input"].as_u64(),
-        Some(count)
-    );
+    assert_eq!(view["by_key"][0]["tokens_input"].as_u64(), Some(count));
     let json = serde_json::to_value(view).expect("usage wire view");
     assert_eq!(json["total"]["tokens_input"].as_u64(), Some(count));
 }
