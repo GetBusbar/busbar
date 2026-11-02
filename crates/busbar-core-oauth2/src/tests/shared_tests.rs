@@ -16,6 +16,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use busbar_contract::abi::store::OpId;
+use busbar_contract::abi::sdk::store::conditional::{Decision, Expected, Mutation, Request};
 use busbar_contract::kinds::RecordBytes;
 use busbar_contract::records::{MeteringDelta, PlaneRecordRef, PlaneSelector, UsageDelta};
 use busbar_contract::store_calls::{StoreCall, StoreCalls, StoreFailure};
@@ -41,9 +42,70 @@ struct OneStore {
     /// on a paused clock moves every claim's lapse with it.
     claims: Arc<Mutex<BTreeMap<(String, String), tokio::time::Instant>>>,
     stalls: Arc<Mutex<Vec<Stall>>>,
+    atomic: Arc<Mutex<AtomicRecords>>,
+    decisions: Arc<Mutex<Vec<DecisionDelay>>>,
+}
+
+#[derive(Default)]
+struct AtomicRecords {
+    rows: BTreeMap<(String, Vec<u8>), Vec<u8>>,
+    receipts: BTreeMap<[u8; 16], Request>,
+    calls: Vec<Request>,
+}
+
+/// Backend work is owned by its task, independently of the client awaiting the answer.
+struct DecisionDelay {
+    schema: String,
+    before: Option<Arc<tokio::sync::Notify>>,
+    accepted: Arc<tokio::sync::Notify>,
+    decided: Arc<tokio::sync::Notify>,
+    lose_answer: bool,
 }
 
 impl OneStore {
+    fn delay_decision(&self, name: &str, lose_answer: bool) -> (Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>) {
+        let release = Arc::new(tokio::sync::Notify::new());
+        let accepted = Arc::new(tokio::sync::Notify::new());
+        let decided = Arc::new(tokio::sync::Notify::new());
+        self.decisions.lock().unwrap().push(DecisionDelay {
+            schema: format!("{LABEL}{name}.atomic.v1"),
+            before: Some(release.clone()),
+            accepted: accepted.clone(),
+            decided: decided.clone(),
+            lose_answer,
+        });
+        (release, accepted, decided)
+    }
+
+    fn decide(&self, request: &Request) -> Result<Decision, StoreFailure> {
+        request.validate().map_err(|e| StoreFailure::Refused(e.into()))?;
+        let mut state = self.atomic.lock().unwrap();
+        state.calls.push(request.clone());
+        if let Some(applied) = state.receipts.get(&request.op_id.0) {
+            return if applied == request { Ok(Decision::Applied) } else { Err(StoreFailure::Conflict) };
+        }
+        if request.predicates.iter().any(|p| {
+            let value = state.rows.get(&(p.schema.clone(), p.key.clone()));
+            match &p.expected {
+                Expected::Absent => value.is_some(),
+                Expected::Bytes(bytes) => value != Some(bytes),
+            }
+        }) {
+            return Ok(Decision::ConditionConflict);
+        }
+        for mutation in &request.mutations {
+            match mutation {
+                Mutation::Put { schema, key, value } => { state.rows.insert((schema.clone(), key.clone()), value.clone()); }
+                Mutation::Delete { schema, key } => { state.rows.remove(&(schema.clone(), key.clone())); }
+                Mutation::DeleteRange { schema, prefix, exact_key_length } => {
+                    state.rows.retain(|(s, k), _| s != schema || k.len() as u64 != *exact_key_length || !k.starts_with(prefix));
+                }
+            }
+        }
+        state.receipts.insert(request.op_id.0, request.clone());
+        Ok(Decision::Applied)
+    }
+
     fn calls(&self) -> Arc<dyn StoreCalls> {
         Arc::new(self.clone())
     }
@@ -147,6 +209,30 @@ fn not_this<'a, T: Send + 'a>() -> StoreCall<'a, T> {
 }
 
 impl StoreCalls for OneStore {
+    fn supports_record_transaction(&self) -> bool { true }
+
+    fn record_transaction<'a>(&'a self, request: &'a Request) -> StoreCall<'a, Decision> {
+        let delayed = {
+            let mut delays = self.decisions.lock().unwrap();
+            delays.iter().position(|d| request.predicates.iter().any(|p| p.schema == d.schema)).map(|i| delays.remove(i))
+        };
+        if let Some(delay) = delayed {
+            let store = self.clone();
+            let request = request.clone();
+            let (answer, receiver) = tokio::sync::oneshot::channel();
+            tokio::spawn(async move {
+                delay.accepted.notify_one();
+                if let Some(release) = delay.before { release.notified().await; }
+                let decision = store.decide(&request);
+                delay.decided.notify_one();
+                let result = if delay.lose_answer { Err(StoreFailure::Fault("lost committed answer".into())) } else { decision };
+                let _ = answer.send(result);
+            });
+            return Box::pin(async move { receiver.await.expect("backend task answers") });
+        }
+        let result = self.decide(request);
+        Box::pin(async move { result })
+    }
     fn add_usage_batch<'a>(
         &'a self,
         _: OpId,
@@ -160,18 +246,44 @@ impl StoreCalls for OneStore {
     fn record_put<'a>(&'a self, _: &'a str, _: &'a [u8], _: &'a RecordBytes) -> StoreCall<'a, ()> {
         not_this()
     }
-    fn record_get<'a>(&'a self, _: &'a str, _: &'a [u8]) -> StoreCall<'a, Option<RecordBytes>> {
-        not_this()
+    fn record_get<'a>(&'a self, schema: &'a str, key: &'a [u8]) -> StoreCall<'a, Option<RecordBytes>> {
+        let got = self.atomic.lock().unwrap().rows.get(&(schema.into(), key.to_vec())).cloned().map(|b| RecordBytes::new(b).expect("bounded test row"));
+        let name = schema.strip_suffix(".atomic.v1").unwrap_or(schema);
+        let stall = self.stalled("get", name);
+        Box::pin(async move {
+            if let Some(by) = stall { tokio::time::sleep(by).await; }
+            Ok(got)
+        })
     }
     fn record_scan<'a>(
         &'a self,
-        _: &'a str,
-        _: &'a [u8],
-        _: u32,
+        schema: &'a str,
+        prefix: &'a [u8],
+        limit: u32,
     ) -> StoreCall<'a, Vec<(Vec<u8>, RecordBytes)>> {
-        not_this()
+        let rows = self.atomic.lock().unwrap().rows.iter().filter(|((s, k), _)| s == schema && k.starts_with(prefix)).take(limit as usize).map(|((_, k), v)| (k.clone(), RecordBytes::new(v.clone()).expect("bounded test row"))).collect();
+        Box::pin(async move { Ok(rows) })
     }
     fn upsert_plane_record<'a>(&'a self, record: PlaneRecordRef<'a>) -> StoreCall<'a, ()> {
+        let delayed = {
+            let mut delays = self.decisions.lock().unwrap();
+            delays.iter().position(|d| d.schema == format!("{}.atomic.v1", record.kind)).map(|i| delays.remove(i))
+        };
+        if let Some(delay) = delayed {
+            let store = self.clone();
+            let kind = record.kind.to_string();
+            let id = record.id.to_string();
+            let body = record.body.to_vec();
+            let (answer, receiver) = tokio::sync::oneshot::channel();
+            tokio::spawn(async move {
+                delay.accepted.notify_one();
+                if let Some(release) = delay.before { release.notified().await; }
+                store.put(&kind, &id, &body);
+                delay.decided.notify_one();
+                let _ = answer.send(Ok(()));
+            });
+            return Box::pin(async move { receiver.await.expect("backend task answers") });
+        }
         // Filed as the linked in-tree store files it: under the parent when there is one, at its
         // sequence position.
         let identity = record.parent.unwrap_or(record.id).to_string();
@@ -1068,4 +1180,105 @@ async fn a_replay_claim_does_not_extend_an_expired_absolute_deadline() {
         .claim_replay_id("expired-absolute-deadline", expired)
         .await
         .expect("claim"));
+}
+
+fn refresh(value: &str) -> oauth_as::token::RefreshTokenRecord {
+    oauth_as::token::RefreshTokenRecord::new(
+        value,
+        oauth_as::client::ClientId::new("atomic-client"),
+        Some("alice".into()),
+        oauth_as::scope::ScopeSet::default(),
+        "atomic-family",
+    )
+}
+
+/// The backend decides after the client future was dropped, past the old claim's lifetime.
+/// This uses an unexpired refresh token: authorization-code lifetimes cannot witness this race.
+#[tokio::test(start_paused = true)]
+async fn a_late_cancelled_write_cannot_undo_client_revocation() {
+    let store = OneStore::default();
+    let a = Arc::new(SharedStorage::new(Arc::new(Shared::new(store.calls()))));
+    let b = SharedStorage::new(Arc::new(Shared::new(store.calls())));
+    a.put_client(client("atomic-client")).await.expect("registers");
+    let (release, accepted, decided) = store.delay_decision("bucket", false);
+    let writer = {
+        let a = a.clone();
+        tokio::spawn(async move { a.put_refresh_token(refresh("late-refresh")).await })
+    };
+    accepted.notified().await;
+    writer.abort();
+    assert!(writer.await.expect_err("client cancelled").is_cancelled());
+    tokio::time::advance(std::time::Duration::from_secs(VERSION_CLAIM_SECS + 60)).await;
+    let now = std::time::SystemTime::now();
+    b.delete_client(&oauth_as::client::ClientId::new("atomic-client"), oauth_as::store::RevocationWindow {
+        recorded_at: now,
+        until: now + std::time::Duration::from_secs(3600),
+    }).await.expect("revokes while old backend work is pending");
+    release.notify_one();
+    decided.notified().await;
+    assert!(b.get_refresh_token("late-refresh").await.expect("reads").is_none(), "late backend write resurrected a revoked refresh token");
+    assert!(b.get_client(&oauth_as::client::ClientId::new("atomic-client")).await.expect("reads client").is_none());
+}
+
+#[tokio::test]
+async fn a_lost_answer_replays_the_exact_candidate_and_applied_receipt() {
+    let store = OneStore::default();
+    let shared = Arc::new(Shared::new(store.calls()));
+    let storage = Arc::new(SharedStorage::new(shared));
+    storage.put_client(client("atomic-client")).await.expect("registers");
+    let (release, accepted, decided) = store.delay_decision("bucket", true);
+    let writer = {
+        let storage = storage.clone();
+        tokio::spawn(async move { storage.put_refresh_token(refresh("replay-refresh")).await })
+    };
+    accepted.notified().await;
+    release.notify_one();
+    decided.notified().await;
+    assert!(writer.await.expect("writer answered").is_err(), "lost answer remains unknown");
+    let candidate = store.atomic.lock().unwrap().calls.last().expect("submitted candidate").clone();
+    assert!(storage.get_refresh_token("replay-refresh").await.expect("replays then reads").is_some());
+    let state = store.atomic.lock().unwrap();
+    let replays: Vec<_> = state.calls.iter().filter(|r| r.op_id == candidate.op_id).collect();
+    assert!(replays.len() >= 2, "the lost answer was inferred from rows instead of replayed");
+    assert!(replays.iter().all(|r| **r == candidate), "replay changed its operation id or exact candidate body");
+}
+
+#[tokio::test]
+async fn a_first_key_mint_race_keeps_one_key_after_a_late_decision() {
+    let store = OneStore::default();
+    let (release, accepted, decided) = store.delay_decision("key", false);
+    let first = {
+        let calls = store.calls();
+        tokio::spawn(async move { Shared::new(calls).signing_key(|| Ok(vec![1, 1, 1])).await })
+    };
+    accepted.notified().await;
+    let winner = Shared::new(store.calls()).signing_key(|| Ok(vec![2, 2, 2])).await.expect("second node commits");
+    release.notify_one();
+    decided.notified().await;
+    assert_eq!(first.await.expect("first node answers").expect("uses winner"), winner);
+    assert_eq!(Shared::new(store.calls()).signing_key(|| Ok(vec![3, 3, 3])).await.expect("restart reads"), winner);
+}
+
+#[tokio::test]
+async fn legacy_cells_and_keys_migrate_without_late_legacy_overwrites() {
+    use base64::Engine as _;
+    let store = OneStore::default();
+    let id = crate::shared::digest("atomic-client");
+    let mut bucket = crate::shared::Bucket { id: "atomic-client".into(), client: Some(client("atomic-client")), ..Default::default() };
+    bucket.refresh.insert("legacy-refresh".into(), refresh("legacy-refresh"));
+    let legacy = serde_json::to_vec(&crate::shared::Cell { v: 4, b: bucket, at: now_secs(), id: id.clone(), e: "legacy-epoch".into() }).unwrap();
+    store.put(&format!("{LABEL}bucket"), &id, &legacy);
+    let shared = Arc::new(Shared::new(store.calls()));
+    shared.index("rt", "legacy-refresh", "atomic-client").await.unwrap();
+    let storage = SharedStorage::new(shared);
+    assert!(storage.get_refresh_token("legacy-refresh").await.unwrap().is_some(), "live legacy refresh token was lost");
+    let now = std::time::SystemTime::now();
+    storage.delete_client(&oauth_as::client::ClientId::new("atomic-client"), oauth_as::store::RevocationWindow { recorded_at: now, until: now + std::time::Duration::from_secs(3600) }).await.unwrap();
+    store.put(&format!("{LABEL}bucket"), &id, &legacy);
+    let restarted = SharedStorage::new(Arc::new(Shared::new(store.calls())));
+    assert!(restarted.get_refresh_token("legacy-refresh").await.unwrap().is_none(), "legacy writer overrode the authoritative revocation");
+    store.put(&format!("{LABEL}key"), "signing", base64::engine::general_purpose::STANDARD.encode([7u8, 7, 7]).as_bytes());
+    assert_eq!(Shared::new(store.calls()).signing_key(|| panic!("must preserve legacy key")).await.unwrap(), vec![7, 7, 7]);
+    store.put(&format!("{LABEL}key"), "signing", base64::engine::general_purpose::STANDARD.encode([8u8, 8, 8]).as_bytes());
+    assert_eq!(Shared::new(store.calls()).signing_key(|| panic!("must preserve authority")).await.unwrap(), vec![7, 7, 7]);
 }
