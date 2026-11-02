@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use busbar_contract::hooks::BudgetBucketState;
-use busbar_kernel::plane_driver::hooks::{Bind, CallerFacts, CallerKey, HookBinder, HostHooks};
+use busbar_kernel::plane_driver::{Bind, CallerFacts, CallerKey, HookBinder, HostHooks};
 
 #[path = "../../root/tests/test_plugins.rs"]
 mod plugins;

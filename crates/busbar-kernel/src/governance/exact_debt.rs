@@ -330,6 +330,18 @@ impl SegmentedUsage {
             *self.0.entry(segment.clone()).or_default() += *count;
         }
     }
+    pub(super) fn subtract(&mut self, other: &Self) -> RecordStoreResult<()> {
+        let mut parts = self.0.clone();
+        for (segment, count) in &other.0 {
+            let current = parts.entry(segment.clone()).or_default();
+            *current = current.checked_sub(*count).ok_or_else(|| {
+                RecordStoreError("raw usage segment difference exceeds signed custody range".into())
+            })?;
+        }
+        self.0 = parts;
+        Ok(())
+    }
+
     pub(super) fn take_negatives(&mut self, capacity: Option<&Self>) -> Self {
         let mut taken = Self::default();
         for (segment, count) in &mut self.0 {

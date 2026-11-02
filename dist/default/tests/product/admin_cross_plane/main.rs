@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-#[path = "../linked/mod.rs"]
+#[path = "../../linked/mod.rs"]
 mod linked;
 
 use crate::dist_root_install as root_install;
@@ -12,7 +12,7 @@ mod openapi;
 mod served_surface;
 mod service;
 
-#[path = "../../../../crates/busbar/src/root/tests/test_plugins.rs"]
+#[path = "../../../../../crates/busbar/src/root/tests/test_plugins.rs"]
 mod plugins;
 
 #[cfg(feature = "openapi-schema")]

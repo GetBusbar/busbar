@@ -65,19 +65,31 @@ async fn test_admin_v1_mutation_rate_limit_config_class() {
         .expect("the actual admin deployment resolves");
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let (app, rotate, limits) = busbar_kernel::build_app_from_config(
+    let plugin_config = busbar_kernel::config::PluginsCfg {
+        enabled: true,
+        dir: directory.to_string_lossy().into_owned(),
+        ..Default::default()
+    };
+    let anchor = busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
+        .expect("the actual Store opens the configuration authority");
+    let overlay = busbar_kernel::config::overlay::OverlayStore::new(
+        anchor
+            .calls
+            .as_ref()
+            .cloned()
+            .expect("the actual Store exposes typed calls"),
+    )
+    .expect("the actual Store supports conditional configuration records");
+    let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
         config,
-        busbar_kernel::config::PluginsCfg {
-            enabled: true,
-            dir: directory.to_string_lossy().into_owned(),
-            ..Default::default()
-        },
-        None,
+        plugin_config,
+        Some(overlay),
         HashSet::new(),
         HashSet::new(),
         (None, None),
         None,
         &rules,
+        Some(anchor),
     )
     .expect("the real root composes the configured Store and admin application");
     limits.keep().expect("the actual limits commit");
@@ -178,19 +190,31 @@ async fn test_admin_v1_put_auth_applies_an_empty_chain_as_1_5_5_did() {
         .expect("the actual admin deployment resolves");
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let (app, rotate, limits) = busbar_kernel::build_app_from_config(
+    let plugin_config = busbar_kernel::config::PluginsCfg {
+        enabled: true,
+        dir: directory.to_string_lossy().into_owned(),
+        ..Default::default()
+    };
+    let anchor = busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
+        .expect("the actual Store opens the configuration authority");
+    let overlay = busbar_kernel::config::overlay::OverlayStore::new(
+        anchor
+            .calls
+            .as_ref()
+            .cloned()
+            .expect("the actual Store exposes typed calls"),
+    )
+    .expect("the actual Store supports conditional configuration records");
+    let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
         config,
-        busbar_kernel::config::PluginsCfg {
-            enabled: true,
-            dir: directory.to_string_lossy().into_owned(),
-            ..Default::default()
-        },
-        None,
+        plugin_config,
+        Some(overlay),
         HashSet::new(),
         HashSet::new(),
         (None, None),
         None,
         &rules,
+        Some(anchor),
     )
     .expect("the real root composes the configured Store and admin application");
     limits.keep().expect("the actual limits commit");
@@ -286,19 +310,31 @@ async fn test_admin_v1_config_validate_dry_run() {
         .expect("the actual admin deployment resolves");
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let (app, rotate, limits) = busbar_kernel::build_app_from_config(
+    let plugin_config = busbar_kernel::config::PluginsCfg {
+        enabled: true,
+        dir: directory.to_string_lossy().into_owned(),
+        ..Default::default()
+    };
+    let anchor = busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
+        .expect("the actual Store opens the configuration authority");
+    let overlay = busbar_kernel::config::overlay::OverlayStore::new(
+        anchor
+            .calls
+            .as_ref()
+            .cloned()
+            .expect("the actual Store exposes typed calls"),
+    )
+    .expect("the actual Store supports conditional configuration records");
+    let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
         config,
-        busbar_kernel::config::PluginsCfg {
-            enabled: true,
-            dir: directory.to_string_lossy().into_owned(),
-            ..Default::default()
-        },
-        None,
+        plugin_config,
+        Some(overlay),
         HashSet::new(),
         HashSet::new(),
         (None, None),
         None,
         &rules,
+        Some(anchor),
     )
     .expect("the real root composes the configured Store and admin application");
     limits.keep().expect("the actual limits commit");
@@ -447,19 +483,31 @@ async fn test_admin_v1_config_validate_accepts_1_6_0_additive_top_level_keys() {
         .expect("the actual admin deployment resolves");
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let (app, rotate, limits) = busbar_kernel::build_app_from_config(
+    let plugin_config = busbar_kernel::config::PluginsCfg {
+        enabled: true,
+        dir: directory.to_string_lossy().into_owned(),
+        ..Default::default()
+    };
+    let anchor = busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
+        .expect("the actual Store opens the configuration authority");
+    let overlay = busbar_kernel::config::overlay::OverlayStore::new(
+        anchor
+            .calls
+            .as_ref()
+            .cloned()
+            .expect("the actual Store exposes typed calls"),
+    )
+    .expect("the actual Store supports conditional configuration records");
+    let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
         config,
-        busbar_kernel::config::PluginsCfg {
-            enabled: true,
-            dir: directory.to_string_lossy().into_owned(),
-            ..Default::default()
-        },
-        None,
+        plugin_config,
+        Some(overlay),
         HashSet::new(),
         HashSet::new(),
         (None, None),
         None,
         &rules,
+        Some(anchor),
     )
     .expect("the real root composes the configured Store and admin application");
     limits.keep().expect("the actual limits commit");
@@ -563,19 +611,31 @@ async fn test_admin_v1_config_apply_accepts_the_boot_shape_and_refuses_an_unknow
         .expect("the actual admin deployment resolves");
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let (app, rotate, limits) = busbar_kernel::build_app_from_config(
+    let plugin_config = busbar_kernel::config::PluginsCfg {
+        enabled: true,
+        dir: directory.to_string_lossy().into_owned(),
+        ..Default::default()
+    };
+    let anchor = busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
+        .expect("the actual Store opens the configuration authority");
+    let overlay = busbar_kernel::config::overlay::OverlayStore::new(
+        anchor
+            .calls
+            .as_ref()
+            .cloned()
+            .expect("the actual Store exposes typed calls"),
+    )
+    .expect("the actual Store supports conditional configuration records");
+    let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
         config,
-        busbar_kernel::config::PluginsCfg {
-            enabled: true,
-            dir: directory.to_string_lossy().into_owned(),
-            ..Default::default()
-        },
-        None,
+        plugin_config,
+        Some(overlay),
         HashSet::new(),
         HashSet::new(),
         (None, None),
         None,
         &rules,
+        Some(anchor),
     )
     .expect("the real root composes the configured Store and admin application");
     limits.keep().expect("the actual limits commit");
@@ -683,19 +743,31 @@ async fn test_admin_v1_overlay_reset_unknown_section_400() {
         .expect("the actual admin deployment resolves");
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let (app, rotate, limits) = busbar_kernel::build_app_from_config(
+    let plugin_config = busbar_kernel::config::PluginsCfg {
+        enabled: true,
+        dir: directory.to_string_lossy().into_owned(),
+        ..Default::default()
+    };
+    let anchor = busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
+        .expect("the actual Store opens the configuration authority");
+    let overlay = busbar_kernel::config::overlay::OverlayStore::new(
+        anchor
+            .calls
+            .as_ref()
+            .cloned()
+            .expect("the actual Store exposes typed calls"),
+    )
+    .expect("the actual Store supports conditional configuration records");
+    let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
         config,
-        busbar_kernel::config::PluginsCfg {
-            enabled: true,
-            dir: directory.to_string_lossy().into_owned(),
-            ..Default::default()
-        },
-        None,
+        plugin_config,
+        Some(overlay),
         HashSet::new(),
         HashSet::new(),
         (None, None),
         None,
         &rules,
+        Some(anchor),
     )
     .expect("the real root composes the configured Store and admin application");
     limits.keep().expect("the actual limits commit");

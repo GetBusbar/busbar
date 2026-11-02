@@ -3203,7 +3203,7 @@ fn rate_limit_doc_table_matches_classifier() {
         .is_some_and(|row| loop_verbs.contains(row.verb))
     };
 
-    let doc = include_str!("../../../../docs/admin-api.md");
+    let doc = include_str!("../../../../../docs/admin-api.md");
     let row = doc
         .lines()
         .find(|l| l.trim_start().starts_with("| config | 10/min |"))
@@ -3257,7 +3257,7 @@ fn overlay_reset_doc_row_matches_the_section_set() {
 
     crate::distribution::admin_cross_plane::ensure_seam();
 
-    let doc = include_str!("../../../../docs/admin-api.md");
+    let doc = include_str!("../../../../../docs/admin-api.md");
     let row = doc
         .lines()
         .find(|l| {

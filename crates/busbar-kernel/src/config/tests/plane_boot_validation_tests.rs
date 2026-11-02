@@ -40,7 +40,7 @@ static BAYS: PlaneDefinition<'static> = PlaneDefinition {
     section: "bays",
     trust_keys: KEYS,
     caller_credential_refusal: None,
-    sections: &["bays", "export", "moorings"],
+    sections: &["bays", "identity-providers", "export", "tools", "agents"],
 };
 
 const PIN_REFUSAL: &str = "`bays.dock`: `anchor.mechanism: sealed_key` needs `anchor.key:` — the \
@@ -210,7 +210,14 @@ static MOORINGS: PlaneDefinition<'static> = PlaneDefinition {
     section: "moorings",
     trust_keys: &[],
     caller_credential_refusal: Some(FORWARD_REFUSAL),
-    sections: &["bays", "export", "moorings"],
+    sections: &[
+        "bays",
+        "moorings",
+        "identity-providers",
+        "export",
+        "tools",
+        "agents",
+    ],
 };
 
 #[test]

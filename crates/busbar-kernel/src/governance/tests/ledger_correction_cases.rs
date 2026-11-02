@@ -1013,14 +1013,10 @@ fn checkpointed_common_positive_survives_lost_handoff_ack_and_posts_once_before_
         .clone();
     drop(grant);
     drop(first);
-    // Remove only the existing fault-injection wrapper; the physical MemoryStore, including
-    // its original conditional receipt and raw rows, survives both runtime restarts.
-    let backend = Arc::new(
-        Arc::try_unwrap(faulting)
-            .ok()
-            .expect("faulting runtime released")
-            .inner,
-    );
+    // Retire only the fault-injection wrapper. Its actual loaded Store, conditional receipt
+    // and raw rows survive both runtime restarts.
+    let backend = faulting.inner.clone();
+    drop(faulting);
     backend
         .add_usage(
             &key.id,
@@ -1093,6 +1089,8 @@ fn checkpointed_common_positive_survives_lost_handoff_ack_and_posts_once_before_
         third.recovery_event(child_id).unwrap().state,
         RecoveryState::Settled
     );
+    assert_eq!(third.quarantined_correction_negative_capacity(&key.id, 0).unwrap().0.billable_requests, 0,
+        "the fee negative already selected in the accepted branch consumes its original positive exposure");
     third.resume_correction_verdicts(&cm).unwrap();
     assert_eq!(backend.get_usage(&key.id, 0).unwrap(), row);
     assert_eq!(
@@ -1106,4 +1104,172 @@ fn checkpointed_common_positive_survives_lost_handoff_ack_and_posts_once_before_
         1,
         "lost checkpoint acknowledgement and restart reuse the same authorized child"
     );
+}
+
+#[test]
+fn independent_entry_refund_posts_while_only_the_matching_entry_negative_is_quarantined() {
+    use busbar_kernel_ledger::cost::{plane_fee_lane, PER_SESSION};
+    let store = crate::real_store::store();
+    let journal = Arc::new(Journal::default());
+    let first = GovState::new(store.clone(), None).unwrap();
+    first.attach_recovery_sink(journal.clone()).unwrap();
+    let key = key("vk_correction_per_entry_negative_capacity", None);
+    store.put_key(&key).unwrap();
+    let cm = model(&[]);
+    let now = crate::store::now();
+    let lane = plane_fee_lane("tcp");
+    let entry_a = RawRateEra::entry(0, EntryId([81; 12]));
+    let entry_b = RawRateEra::entry(0, EntryId([82; 12]));
+    let one = BTreeMap::from([(PER_SESSION.to_string(), 1)]);
+    first.record_usage_served_in_era(&cm, &key, "", &lane, None, &one, now, entry_b);
+    store
+        .add_metering(&MeteringDelta {
+            key_id: key.id.clone(),
+            bucket: super::super::metering_bucket(now),
+            model: lane.clone(),
+            provider: String::new(),
+            tokens_input: 0,
+            tokens_output: 0,
+            tokens_cache_read: 0,
+            tokens_cache_write: 0,
+            requests: 0,
+            billable_requests: 0,
+            key_group_at_use: String::new(),
+            pricing_version: entry_b.entry_id.unwrap().metering_version(),
+            priced_from_ms: 0,
+            usage_units: one.clone(),
+        })
+        .unwrap();
+    let increase = BTreeMap::from([(PER_SESSION.to_string(), 1)]);
+    journal
+        .fail_after_write
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    assert!(first
+        .adjust_usage(
+            &cm,
+            &super::super::Adjustment {
+                key_id: &key.id,
+                pool: "",
+                model: &lane,
+                entry_era: 0,
+                entry_id: entry_b.entry_id,
+                card_epoch_ms: now * 1_000,
+                delta: &increase,
+                now,
+            }
+        )
+        .is_err());
+    let original = journal
+        .selected
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|event| event.kind == RecoveryKind::Correction)
+        .unwrap()
+        .clone();
+    drop(first);
+    journal
+        .fail_after_write
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+    let gov = GovState::new(store.clone(), None).unwrap();
+    gov.attach_recovery_sink(journal.clone()).unwrap();
+    gov.hydrate_budgets(&cm, now).unwrap();
+    gov.resume_correction_verdicts(&cm).unwrap();
+    let count = |row: &UsageLedger, model: &str| {
+        row.models
+            .iter()
+            .find(|row| row.model == model)
+            .and_then(|row| row.usage_units.get(PER_SESSION))
+            .copied()
+            .unwrap_or(0)
+    };
+    let exact_count = |debt: &ExactUsageDelta, model: &str| {
+        debt.models
+            .iter()
+            .find(|row| row.model == model)
+            .and_then(|row| row.usage_units.get(PER_SESSION))
+            .copied()
+            .unwrap_or(0)
+    };
+    let (_, capacity) = gov
+        .quarantined_correction_negative_capacity(&key.id, 0)
+        .unwrap();
+    assert_eq!(exact_count(&capacity, &era_model(entry_b, &lane)), 2);
+    assert_eq!(
+        exact_count(&capacity, &era_model(entry_a, &lane)),
+        0,
+        "distinct entries sharing a start never grant each other dependency capacity"
+    );
+    // A real new-runtime session charge is durably recorded, then its own era-specific
+    // refund must post without waiting for the unrelated entry-B operator verdict.
+    gov.record_usage_served_in_era(&cm, &key, "", &lane, None, &one, now, entry_a);
+    gov.flush_budgets();
+    assert_eq!(
+        count(
+            &store.get_usage(&era_bucket(&key.id), 0).unwrap(),
+            &era_model(entry_a, &lane)
+        ),
+        1
+    );
+    gov.refund_fee_unit_in_era(&cm, &key, &lane, now, PER_SESSION, Some(entry_a));
+    gov.flush_budgets();
+    gov.flush_budgets();
+    assert_eq!(count(&store.get_usage(&key.id, 0).unwrap(), &lane), 0);
+    assert_eq!(
+        count(
+            &store.get_usage(&era_bucket(&key.id), 0).unwrap(),
+            &era_model(entry_a, &lane)
+        ),
+        0,
+        "independent era-A negative reaches the actual Store while era-B stays quarantined"
+    );
+    let negative = UsageDelta {
+        models: vec![busbar_contract::records::ModelTokensDelta {
+            model: lane.clone(),
+            usage_units: BTreeMap::from([(PER_SESSION.to_string(), -1)]),
+        }],
+        ..Default::default()
+    };
+    let plain = ExactUsageDelta::from_signed(&negative);
+    let dated = ExactUsageDelta::from_signed(&dated_delta(&negative, entry_b));
+    let held = gov
+        .capture_usage_recovery(&key.id, 0, plain.clone(), dated.clone())
+        .unwrap();
+    assert!(
+        held.child.is_none() && held.prerequisite.is_some(),
+        "matching B negative transfers to its exact unknown owner"
+    );
+    let journal_len = journal.selected.lock().unwrap().len();
+    assert!(
+        gov.capture_usage_recovery(&key.id, 0, plain, dated)
+            .is_err(),
+        "an unconfirmed immutable take cannot spend the same selected capacity twice"
+    );
+    assert_eq!(journal.selected.lock().unwrap().len(), journal_len);
+    gov.drive_durable_usage_flight(&held).unwrap();
+    let (_, capacity) = gov
+        .quarantined_correction_negative_capacity(&key.id, 0)
+        .unwrap();
+    assert_eq!(
+        exact_count(&capacity, &era_model(entry_b, &lane)),
+        1,
+        "confirmed absorbed custody reduces only the matching entry's capacity"
+    );
+    assert_eq!(
+        gov.recovery_event(original.operation_id).unwrap().state,
+        RecoveryState::LandedUnknown
+    );
+    drop(gov);
+    let restarted = GovState::new(store.clone(), None).unwrap();
+    restarted.attach_recovery_sink(journal).unwrap();
+    restarted.hydrate_budgets(&cm, now).unwrap();
+    assert_eq!(
+        count(&store.get_usage(&key.id, 0).unwrap(), &lane),
+        0,
+        "the independent refund was durable before restart, not left in a RAM-only parked fold"
+    );
+    let (_, capacity) = restarted
+        .quarantined_correction_negative_capacity(&key.id, 0)
+        .unwrap();
+    assert_eq!(exact_count(&capacity, &era_model(entry_b, &lane)), 1);
 }

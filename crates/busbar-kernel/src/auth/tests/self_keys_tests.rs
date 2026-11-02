@@ -6,11 +6,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use super::super::self_keys::{
-    admit_self_mint, issue_key, mint_provisioned_self_key, resolve_exchange,
-    DeterministicEd25519Keys, ExchangeError,
+    admit_self_mint, mint_provisioned_self_key, resolve_exchange, ExchangeError,
 };
 use super::super::{ChainVerdict, Principal};
-use crate::config::groups::GroupCfg;
 use crate::config::{RoleBindingCfg, RoleBindings};
 use crate::governance::{GovState, RecordStore as _};
 
@@ -232,6 +230,8 @@ struct RefreshOverlapStore {
     >,
 }
 
+// Causal scheduling at the actual key-write boundary. The single owned pause is bounded;
+// every other operation, including optional capabilities, delegates unchanged to the real Store.
 impl crate::governance::RecordStore for RefreshOverlapStore {
     fn put_key(
         &self,
@@ -250,61 +250,281 @@ impl crate::governance::RecordStore for RefreshOverlapStore {
     fn get_key(
         &self,
         id: &str,
-    ) -> crate::governance::RecordStoreResult<Option<crate::governance::VirtualKey>> {
+    ) -> busbar_contract::records::RecordStoreResult<Option<busbar_contract::records::VirtualKey>>
+    {
         self.inner.get_key(id)
     }
 
     fn list_keys(
         &self,
-    ) -> crate::governance::RecordStoreResult<Vec<crate::governance::VirtualKey>> {
+    ) -> busbar_contract::records::RecordStoreResult<Vec<busbar_contract::records::VirtualKey>>
+    {
         self.inner.list_keys()
     }
 
-    fn delete_key(&self, id: &str) -> crate::governance::RecordStoreResult<()> {
+    fn delete_key(&self, id: &str) -> busbar_contract::records::RecordStoreResult<()> {
         self.inner.delete_key(id)
+    }
+
+    fn list_keys_since(
+        &self,
+        since: u64,
+    ) -> busbar_contract::records::RecordStoreResult<Vec<busbar_contract::records::VirtualKey>>
+    {
+        self.inner.list_keys_since(since)
     }
 
     fn get_usage(
         &self,
-        id: &str,
-        window: u64,
-    ) -> crate::governance::RecordStoreResult<crate::governance::UsageLedger> {
-        self.inner.get_usage(id, window)
+        bucket_id: &str,
+        window_start: u64,
+    ) -> busbar_contract::records::RecordStoreResult<busbar_contract::records::UsageLedger> {
+        self.inner.get_usage(bucket_id, window_start)
+    }
+
+    fn apply_usage_correction(
+        &self,
+        request: &busbar_contract::records::correction::Request,
+    ) -> busbar_contract::records::RecordStoreResult<busbar_contract::records::correction::Decision>
+    {
+        self.inner.apply_usage_correction(request)
+    }
+
+    fn supports_usage_correction(&self) -> bool {
+        self.inner.supports_usage_correction()
     }
 
     fn put_usage(
         &self,
-        id: &str,
-        window: u64,
-        ledger: &crate::governance::UsageLedger,
-    ) -> crate::governance::RecordStoreResult<()> {
-        self.inner.put_usage(id, window, ledger)
+        bucket_id: &str,
+        window_start: u64,
+        ledger: &busbar_contract::records::UsageLedger,
+    ) -> busbar_contract::records::RecordStoreResult<()> {
+        self.inner.put_usage(bucket_id, window_start, ledger)
+    }
+
+    fn add_usage(
+        &self,
+        bucket_id: &str,
+        window_start: u64,
+        delta: &busbar_contract::records::UsageDelta,
+    ) -> busbar_contract::records::RecordStoreResult<()> {
+        self.inner.add_usage(bucket_id, window_start, delta)
+    }
+
+    fn add_usage_batch_deduped(
+        &self,
+        op: busbar_contract::abi::store::OpId,
+        cells: &[(&str, u64, busbar_contract::records::UsageDelta)],
+    ) -> busbar_contract::records::RecordStoreResult<()> {
+        self.inner.add_usage_batch_deduped(op, cells)
+    }
+
+    fn supports_usage_batch_deduped(&self) -> bool {
+        self.inner.supports_usage_batch_deduped()
+    }
+
+    fn supports_metering_batch_deduped(&self) -> bool {
+        self.inner.supports_metering_batch_deduped()
+    }
+
+    fn add_metering_batch_deduped(
+        &self,
+        op: busbar_contract::abi::store::OpId,
+        deltas: &[busbar_contract::records::MeteringDelta],
+    ) -> busbar_contract::records::RecordStoreResult<()> {
+        self.inner.add_metering_batch_deduped(op, deltas)
     }
 
     fn add_metering(
         &self,
-        delta: &crate::governance::MeteringDelta,
-    ) -> crate::governance::RecordStoreResult<()> {
+        delta: &busbar_contract::records::MeteringDelta,
+    ) -> busbar_contract::records::RecordStoreResult<()> {
         self.inner.add_metering(delta)
     }
 
     fn list_metering(
         &self,
         bucket: u64,
-    ) -> crate::governance::RecordStoreResult<Vec<crate::governance::MeteringRow>> {
+    ) -> busbar_contract::records::RecordStoreResult<Vec<busbar_contract::records::MeteringRow>>
+    {
         self.inner.list_metering(bucket)
+    }
+
+    fn put_credential(
+        &self,
+        _secret: &busbar_contract::records::CredentialSecret,
+    ) -> busbar_contract::records::RecordStoreResult<()> {
+        self.inner.put_credential(_secret)
+    }
+
+    fn rewrap_credential(
+        &self,
+        _expected: &busbar_contract::records::CredentialSecret,
+        _replacement: &str,
+    ) -> busbar_contract::records::RecordStoreResult<bool> {
+        self.inner.rewrap_credential(_expected, _replacement)
+    }
+
+    fn put_key_with_credential(
+        &self,
+        key: &busbar_contract::records::VirtualKey,
+        secret: &busbar_contract::records::CredentialSecret,
+    ) -> busbar_contract::records::RecordStoreResult<()> {
+        self.inner.put_key_with_credential(key, secret)
+    }
+
+    fn list_credentials(
+        &self,
+        _key_id: &str,
+    ) -> busbar_contract::records::RecordStoreResult<Vec<busbar_contract::records::CredentialMeta>>
+    {
+        self.inner.list_credentials(_key_id)
+    }
+
+    fn revoke_credential(
+        &self,
+        _id: &str,
+        _reason: &str,
+    ) -> busbar_contract::records::RecordStoreResult<()> {
+        self.inner.revoke_credential(_id, _reason)
+    }
+
+    fn list_credentials_since(
+        &self,
+        _since: u64,
+    ) -> busbar_contract::records::RecordStoreResult<Vec<busbar_contract::records::CredentialSecret>>
+    {
+        self.inner.list_credentials_since(_since)
+    }
+
+    fn append_audit(
+        &self,
+        _entry: &busbar_contract::records::AuditRecord,
+    ) -> busbar_contract::records::RecordStoreResult<()> {
+        self.inner.append_audit(_entry)
+    }
+
+    fn list_audit(
+        &self,
+    ) -> busbar_contract::records::RecordStoreResult<Vec<busbar_contract::records::AuditRecord>>
+    {
+        self.inner.list_audit()
+    }
+
+    fn add_denylist(
+        &self,
+        _sub: &str,
+        _reason: &str,
+    ) -> busbar_contract::records::RecordStoreResult<()> {
+        self.inner.add_denylist(_sub, _reason)
+    }
+
+    fn list_denylist(&self) -> busbar_contract::records::RecordStoreResult<Vec<String>> {
+        self.inner.list_denylist()
+    }
+
+    fn list_audit_tail(
+        &self,
+        limit: u64,
+    ) -> busbar_contract::records::RecordStoreResult<Vec<busbar_contract::records::AuditRecord>>
+    {
+        self.inner.list_audit_tail(limit)
+    }
+
+    fn upsert_plane_record(
+        &self,
+        _record: busbar_contract::records::PlaneRecordRef<'_>,
+    ) -> busbar_contract::records::RecordStoreResult<()> {
+        self.inner.upsert_plane_record(_record)
+    }
+
+    fn get_plane_record(
+        &self,
+        _kind: &str,
+        _id: &str,
+    ) -> busbar_contract::records::RecordStoreResult<Option<Vec<u8>>> {
+        self.inner.get_plane_record(_kind, _id)
+    }
+
+    fn append_plane_record(
+        &self,
+        _record: busbar_contract::records::PlaneRecordRef<'_>,
+    ) -> busbar_contract::records::RecordStoreResult<()> {
+        self.inner.append_plane_record(_record)
+    }
+
+    fn list_plane_records(
+        &self,
+        _kind: &str,
+        _selector: &busbar_contract::records::PlaneSelector<'_>,
+    ) -> busbar_contract::records::RecordStoreResult<Vec<Vec<u8>>> {
+        self.inner.list_plane_records(_kind, _selector)
+    }
+
+    fn list_plane_record_parents(
+        &self,
+        _kind: &str,
+    ) -> busbar_contract::records::RecordStoreResult<Vec<String>> {
+        self.inner.list_plane_record_parents(_kind)
+    }
+
+    fn purge_plane_records_before(
+        &self,
+        _kind: &str,
+        _before: u64,
+    ) -> busbar_contract::records::RecordStoreResult<u64> {
+        self.inner.purge_plane_records_before(_kind, _before)
+    }
+
+    fn purge_plane_records(
+        &self,
+        kind: &str,
+        before: u64,
+        retention: busbar_contract::records::Retention,
+    ) -> busbar_contract::records::RecordStoreResult<u64> {
+        self.inner.purge_plane_records(kind, before, retention)
+    }
+
+    fn delete_plane_record(
+        &self,
+        _kind: &str,
+        _id: &str,
+    ) -> busbar_contract::records::RecordStoreResult<()> {
+        self.inner.delete_plane_record(_kind, _id)
+    }
+
+    fn redeem_plane_token(
+        &self,
+        _kind: &str,
+        _token: &str,
+        _expires_at: u64,
+        _now: u64,
+    ) -> busbar_contract::records::RecordStoreResult<bool> {
+        self.inner
+            .redeem_plane_token(_kind, _token, _expires_at, _now)
+    }
+
+    fn plane_token_live(
+        &self,
+        _kind: &str,
+        _token: &str,
+        _expires_at: u64,
+        _now: u64,
+    ) -> busbar_contract::records::RecordStoreResult<bool> {
+        self.inner
+            .plane_token_live(_kind, _token, _expires_at, _now)
     }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_login_or_refresh_overlapping_refresh_uses_the_surviving_binding() {
-    use crate::auth::login::{issue_self_key, SelfKeyIssue};
-
-    fn issued(answer: SelfKeyIssue) -> busbar_contract::redacted::Secret<String> {
-        match answer {
-            SelfKeyIssue::Issued { secret, .. } => secret,
-            other => panic!("the admitted identity must receive a key: {other:?}"),
-        }
+    fn issued(
+        answer: Result<super::super::self_keys::IssuedKey, ExchangeError>,
+    ) -> busbar_contract::redacted::Secret<String> {
+        answer
+            .expect("the admitted identity must receive an actual Store key")
+            .secret
     }
 
     for contender_refresh in [false, true] {
@@ -323,19 +543,21 @@ async fn a_login_or_refresh_overlapping_refresh_uses_the_surviving_binding() {
             )
             .unwrap(),
         );
-        let groups = serde_yaml::from_str(
-            "team: {}\nuser:sam: {parent: team}\nuser:other: {parent: team}\n",
-        )
-        .unwrap();
-        let app = crate::test_support::TestApp::new()
-            .governance(gov.clone())
-            .groups_tree(groups)
-            .role_bindings(bindings("corp", "eng", Some("team")))
-            .build();
-        let handle = Arc::new(crate::state::AppHandle::new(app));
-        let app = handle.snapshot();
-        let original =
-            issued(issue_self_key(&app, &handle, "corp", principal("sam", &["eng"]), false).await);
+        // Internal post-provisioning concurrency: actual subject claims, the actual Store,
+        // and a bounded pause before its write. Root public mint/group wiring is separate.
+        let mint_now = busbar_kernel::store::now();
+        let original = issued(
+            mint_provisioned_self_key(
+                gov.clone(),
+                crate::governance::SelfMintOp::Issue,
+                &principal("sam", &["eng"]),
+                "corp",
+                None,
+                mint_now.saturating_add(3600),
+                mint_now,
+            )
+            .await,
+        );
         let now = busbar_kernel::store::now();
         let original_id = gov
             .verify_token(original.expose(&crate::seal::lend()), now, None)
@@ -346,15 +568,16 @@ async fn a_login_or_refresh_overlapping_refresh_uses_the_surviving_binding() {
         let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
         let (release_tx, release_rx) = std::sync::mpsc::channel();
         *store.next_put.lock().unwrap() = Some((entered_tx, release_rx));
-        let first_handle = handle.clone();
+        let first_gov = gov.clone();
         let first = tokio::spawn(async move {
-            let app = first_handle.snapshot();
-            issue_self_key(
-                &app,
-                &first_handle,
+            mint_provisioned_self_key(
+                first_gov,
+                crate::governance::SelfMintOp::Refresh,
+                &principal("sam", &["eng"]),
                 "corp",
-                principal("sam", &["eng"]),
-                true,
+                None,
+                mint_now.saturating_add(3600),
+                mint_now,
             )
             .await
         });
@@ -363,20 +586,25 @@ async fn a_login_or_refresh_overlapping_refresh_uses_the_surviving_binding() {
             Ok(Ok(()))
         ) {
             let _ = release_tx.send(());
-            let _ = first.await;
+            let _ = tokio::time::timeout(Duration::from_secs(10), first).await;
             panic!("refresh did not reach the real store write");
         }
 
         let waiting = gov.observe_self_mint_wait("sam");
-        let next_handle = handle.clone();
+        let next_gov = gov.clone();
         let contender = tokio::spawn(async move {
-            let app = next_handle.snapshot();
-            issue_self_key(
-                &app,
-                &next_handle,
+            mint_provisioned_self_key(
+                next_gov,
+                if contender_refresh {
+                    crate::governance::SelfMintOp::Refresh
+                } else {
+                    crate::governance::SelfMintOp::Issue
+                },
+                &principal("sam", &["eng"]),
                 "corp",
-                principal("sam", &["eng"]),
-                contender_refresh,
+                None,
+                mint_now.saturating_add(3600),
+                mint_now,
             )
             .await
         });
@@ -388,15 +616,16 @@ async fn a_login_or_refresh_overlapping_refresh_uses_the_surviving_binding() {
         .await
         .is_ok();
 
-        let other_handle = handle.clone();
+        let other_gov = gov.clone();
         let mut other = tokio::spawn(async move {
-            let app = other_handle.snapshot();
-            issue_self_key(
-                &app,
-                &other_handle,
+            mint_provisioned_self_key(
+                other_gov,
+                crate::governance::SelfMintOp::Issue,
+                &principal("other", &["eng"]),
                 "corp",
-                principal("other", &["eng"]),
-                false,
+                None,
+                mint_now.saturating_add(3600),
+                mint_now,
             )
             .await
         });
@@ -405,11 +634,17 @@ async fn a_login_or_refresh_overlapping_refresh_uses_the_surviving_binding() {
         let completed_while_parked = contender.is_finished();
 
         let _ = release_tx.send(());
-        let first = first.await;
-        let contender = contender.await;
+        let first = tokio::time::timeout(Duration::from_secs(10), first)
+            .await
+            .expect("the released first actual mint completes");
+        let contender = tokio::time::timeout(Duration::from_secs(10), contender)
+            .await
+            .expect("the released contender actual mint completes");
         let other = match other_progress {
             Ok(answer) => answer,
-            Err(_) => other.await,
+            Err(_) => tokio::time::timeout(Duration::from_secs(10), other)
+                .await
+                .expect("the other actual mint completes after release"),
         };
         assert!(contended, "the overlapping caller must reach the subject's contended wait while refresh is parked");
         assert!(
@@ -1291,136 +1526,5 @@ async fn issued_key_debug_never_leaks_the_live_token() {
     assert!(
         dbg.contains(&issued.key_id),
         "key_id (safe id) still shows: {dbg}"
-    );
-}
-
-struct ModeReplayIdentity;
-
-struct ModeReplayAnswer(Option<busbar_contract::auth_calls::VerifyAnswer>);
-
-impl std::future::Future for ModeReplayAnswer {
-    type Output = busbar_contract::auth_calls::VerifyAnswer;
-
-    fn poll(
-        mut self: std::pin::Pin<&mut Self>,
-        _: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Self::Output> {
-        std::task::Poll::Ready(self.0.take().expect("the verify answers once"))
-    }
-}
-
-impl busbar_contract::auth_calls::Verifying for ModeReplayAnswer {
-    fn settled(&mut self) -> Option<busbar_contract::auth_calls::VerifyAnswer> {
-        self.0.take()
-    }
-}
-
-impl busbar_contract::auth_calls::AuthCalls for ModeReplayIdentity {
-    fn name(&self) -> &str {
-        "mode-replay-idp"
-    }
-
-    fn facts(&self) -> u32 {
-        0
-    }
-
-    fn verify_now(
-        &self,
-        _: &busbar_contract::auth_calls::VerifyRequest,
-    ) -> Option<busbar_contract::auth_calls::VerifyAnswer> {
-        use busbar_contract::auth_calls::{Replay, Verified, VerifiedIdentity};
-        Some(
-            Verified::Identity(VerifiedIdentity {
-                subject: "sam".into(),
-                groups: vec!["eng".into()],
-                replay: Some(Box::new(Replay {
-                    key: "self-mode-refused".into(),
-                    ttl_secs: 300,
-                })),
-                ..Default::default()
-            })
-            .into(),
-        )
-    }
-
-    fn verify(
-        &self,
-        request: busbar_contract::auth_calls::VerifyRequest,
-    ) -> Box<dyn busbar_contract::auth_calls::Verifying> {
-        Box::new(ModeReplayAnswer(self.verify_now(&request)))
-    }
-
-    fn refresh(&self) -> Result<u64, String> {
-        Ok(0)
-    }
-}
-
-#[tokio::test]
-async fn mode_refused_exchange_leaves_its_verified_identitys_replay_claim_unclaimed() {
-    use busbar_contract::store_calls::StoreDoor;
-
-    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
-    let opened = crate::test_support::store_axis_stand_in()
-        .open(
-            StoreDoor::Linked(crate::test_support::store_double::door),
-            crate::test_support::store_double::NAME,
-            b"{}",
-        )
-        .unwrap();
-    let gov = Arc::new(
-        GovState::new_with_signer(
-            opened.records,
-            None,
-            Some(crate::governance::signing::TokenSigner::from_secret_bytes(
-                &SEED,
-                crate::governance::signing::DEFAULT_KID,
-            )),
-        )
-        .unwrap(),
-    );
-    assert!(gov.attach_store_calls(opened.calls.unwrap()));
-    let auth = Arc::new(super::super::AuthMiddleware::from_doors_for_test(vec![(
-        "mode-replay-idp".into(),
-        Arc::new(ModeReplayIdentity),
-    )]));
-    let app = crate::test_support::TestApp::new()
-        .auth(auth)
-        .governance(gov.clone())
-        .group("team", GroupCfg::default())
-        .role_bindings(bindings("mode-replay-idp", "eng", Some("team")))
-        .mint_policy(crate::governance::mint_policy::MintPolicy {
-            block_binding_modes: Some(vec![crate::governance::SELF_KEY_BINDING_MODE_APP.into()]),
-            ..Default::default()
-        })
-        .build();
-    let handle = Arc::new(crate::state::AppHandle::new(app));
-    let before = handle.load();
-    for _ in 0..2 {
-        let response = crate::auth::exchange::exchange(
-            axum::extract::State(handle.clone()),
-            axum::http::Request::builder()
-                .method("POST")
-                .uri("/auth/token")
-                .header("authorization", "Bearer verified-message")
-                .body(axum::body::Body::empty())
-                .unwrap(),
-        )
-        .await;
-        assert_eq!(response.status(), axum::http::StatusCode::FORBIDDEN);
-    }
-    assert!(Arc::ptr_eq(&before, &handle.load()));
-    assert!(gov.all_keys().unwrap().is_empty());
-    let claim = busbar_contract::auth_calls::Replay {
-        key: "self-mode-refused".into(),
-        ttl_secs: 300,
-    };
-    let now = crate::store::now();
-    assert!(
-        super::super::replay_claimed(Some(&gov), "mode-replay-idp", &claim, now).await,
-        "the refused exchanges leave the verified replay claim available"
-    );
-    assert!(
-        !super::super::replay_claimed(Some(&gov), "mode-replay-idp", &claim, now).await,
-        "the attached store really enforces replay claims"
     );
 }

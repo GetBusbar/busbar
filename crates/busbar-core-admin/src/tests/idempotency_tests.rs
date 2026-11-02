@@ -159,3 +159,14 @@ fn a_reservation_marked_in_flight_survives_a_drop_and_still_commits() {
     drop(r);
     assert!(matches!(cache.probe(key, 21), Probe::InFlight));
 }
+
+#[test]
+fn create_and_rotate_claim_inputs_are_disjoint_before_durable_claim() {
+    use crate::idempotency::{create_replay_key, rotate_replay_key};
+    let rotate = key("alice", &rotate_replay_key("x", "h"));
+    let create = key("alice", &create_replay_key("rotate:1:x:1:h"));
+    assert_ne!(
+        create, rotate,
+        "the private factories supply distinct durable claim keys"
+    );
+}

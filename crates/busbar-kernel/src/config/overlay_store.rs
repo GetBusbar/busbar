@@ -449,12 +449,125 @@ fn wait<F: Future>(future: F) -> F::Output {
 mod tests {
     use super::*;
     use crate::config::overlay::{persist_root, write, RootSettings};
-    use crate::test_support::TestOverlayStore;
 
     #[test]
     fn planning_unwind_restores_idle_and_committed_reply_unwind_restores_exact_candidate() {
-        let fixture = TestOverlayStore::new();
-        let backend = fixture.backend();
+        use busbar_contract::abi::sdk::store::conditional::{Decision, Request};
+        use busbar_contract::abi::store::OpId;
+        use busbar_contract::kinds::RecordBytes;
+        use busbar_contract::records::{MeteringDelta, PlaneRecordRef, PlaneSelector, UsageDelta};
+        use busbar_contract::store_calls::{StoreCall, StoreCalls};
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::{Arc, Mutex};
+
+        struct PanickingCommitReply {
+            inner: Arc<busbar_plugin_loader::store_v3::LoadedStore>,
+            panic_reply: AtomicBool,
+            candidates: Mutex<Vec<Request>>,
+        }
+        impl StoreCalls for PanickingCommitReply {
+            fn supports_record_transaction(&self) -> bool {
+                self.inner.supports_record_transaction()
+            }
+            fn record_transaction<'a>(&'a self, request: &'a Request) -> StoreCall<'a, Decision> {
+                Box::pin(async move {
+                    self.candidates.lock().unwrap().push(request.clone());
+                    let decision = self.inner.record_transaction(request).await?;
+                    if self.panic_reply.swap(false, Ordering::SeqCst) {
+                        panic!("planted lost reply unwind");
+                    }
+                    Ok(decision)
+                })
+            }
+            fn add_usage_batch<'a>(
+                &'a self,
+                op: OpId,
+                cells: &'a [(&'a str, u64, UsageDelta)],
+            ) -> StoreCall<'a, ()> {
+                self.inner.add_usage_batch(op, cells)
+            }
+            fn add_metering_batch<'a>(
+                &'a self,
+                op: OpId,
+                deltas: &'a [MeteringDelta],
+            ) -> StoreCall<'a, ()> {
+                self.inner.add_metering_batch(op, deltas)
+            }
+            fn record_put<'a>(
+                &'a self,
+                schema: &'a str,
+                key: &'a [u8],
+                value: &'a RecordBytes,
+            ) -> StoreCall<'a, ()> {
+                self.inner.record_put(schema, key, value)
+            }
+            fn record_get<'a>(
+                &'a self,
+                schema: &'a str,
+                key: &'a [u8],
+            ) -> StoreCall<'a, Option<RecordBytes>> {
+                self.inner.record_get(schema, key)
+            }
+            fn record_scan<'a>(
+                &'a self,
+                schema: &'a str,
+                prefix: &'a [u8],
+                limit: u32,
+            ) -> StoreCall<'a, Vec<(Vec<u8>, RecordBytes)>> {
+                self.inner.record_scan(schema, prefix, limit)
+            }
+            fn upsert_plane_record<'a>(&'a self, record: PlaneRecordRef<'a>) -> StoreCall<'a, ()> {
+                self.inner.upsert_plane_record(record)
+            }
+            fn get_plane_record<'a>(
+                &'a self,
+                kind: &'a str,
+                id: &'a str,
+            ) -> StoreCall<'a, Option<Vec<u8>>> {
+                self.inner.get_plane_record(kind, id)
+            }
+            fn append_plane_record<'a>(
+                &'a self,
+                op: OpId,
+                record: PlaneRecordRef<'a>,
+            ) -> StoreCall<'a, ()> {
+                self.inner.append_plane_record(op, record)
+            }
+            fn list_plane_records<'a>(
+                &'a self,
+                kind: &'a str,
+                selector: &'a PlaneSelector<'a>,
+            ) -> StoreCall<'a, Vec<Vec<u8>>> {
+                self.inner.list_plane_records(kind, selector)
+            }
+            fn delete_plane_record<'a>(&'a self, kind: &'a str, id: &'a str) -> StoreCall<'a, ()> {
+                self.inner.delete_plane_record(kind, id)
+            }
+            fn redeem_plane_token<'a>(
+                &'a self,
+                kind: &'a str,
+                token: &'a str,
+                expires_at: u64,
+                now: u64,
+            ) -> StoreCall<'a, bool> {
+                self.inner.redeem_plane_token(kind, token, expires_at, now)
+            }
+            fn plane_token_live<'a>(
+                &'a self,
+                kind: &'a str,
+                token: &'a str,
+                expires_at: u64,
+                now: u64,
+            ) -> StoreCall<'a, bool> {
+                self.inner.plane_token_live(kind, token, expires_at, now)
+            }
+        }
+        let calls = Arc::new(PanickingCommitReply {
+            inner: crate::real_store::store(),
+            panic_reply: AtomicBool::new(false),
+            candidates: Mutex::new(Vec::new()),
+        });
+        let backend = OverlayStore::new(calls.clone()).unwrap();
         let panicking = backend.clone();
         assert!(
             std::thread::spawn(move || panicking.update(|_| panic!("planted planning unwind")))
@@ -462,7 +575,7 @@ mod tests {
                 .is_err()
         );
         persist_root(Some(&backend), &RootSettings::default()).unwrap();
-        fixture.on_next_transaction_reply(|| panic!("planted lost reply unwind"));
+        calls.panic_reply.store(true, Ordering::SeqCst);
         let panicking = backend.clone();
         assert!(std::thread::spawn(move || persist_root(
             Some(&panicking),
@@ -474,7 +587,7 @@ mod tests {
         .join()
         .is_err());
         assert!(persist_root(Some(&backend), &RootSettings::default()).is_err());
-        let candidates = fixture.candidates();
+        let candidates = calls.candidates.lock().unwrap().clone();
         assert_eq!(candidates[1], candidates[2]);
         assert_eq!(
             backend
@@ -490,22 +603,244 @@ mod tests {
 
     #[test]
     fn callbacks_can_reenter_without_holding_the_backend_mutex() {
-        let fixture = TestOverlayStore::new();
-        let backend = fixture.backend();
-        let reentrant = backend.clone();
-        fixture.on_next_transaction_reply(move || {
-            assert!(persist_root(Some(&reentrant), &RootSettings::default())
-                .unwrap_err()
-                .contains("already in progress"))
+        use busbar_contract::abi::sdk::store::conditional::{Decision, Request};
+        use busbar_contract::abi::store::OpId;
+        use busbar_contract::kinds::RecordBytes;
+        use busbar_contract::records::{MeteringDelta, PlaneRecordRef, PlaneSelector, UsageDelta};
+        use busbar_contract::store_calls::{StoreCall, StoreCalls};
+        use std::sync::{Arc, Mutex};
+        struct ReenterAfterCommit {
+            inner: Arc<busbar_plugin_loader::store_v3::LoadedStore>,
+            interference: Mutex<Option<std::sync::Weak<OverlayStore>>>,
+        }
+        impl StoreCalls for ReenterAfterCommit {
+            fn supports_record_transaction(&self) -> bool {
+                self.inner.supports_record_transaction()
+            }
+            fn record_transaction<'a>(&'a self, request: &'a Request) -> StoreCall<'a, Decision> {
+                Box::pin(async move {
+                    let decision = self.inner.record_transaction(request).await?;
+                    let interference = { self.interference.lock().unwrap().take() };
+                    if let Some(reentrant) = interference {
+                        let reentrant = reentrant.upgrade().expect("the active overlay backend");
+                        assert!(persist_root(Some(&reentrant), &RootSettings::default())
+                            .unwrap_err()
+                            .contains("already in progress"));
+                    }
+                    Ok(decision)
+                })
+            }
+            fn add_usage_batch<'a>(
+                &'a self,
+                op: OpId,
+                cells: &'a [(&'a str, u64, UsageDelta)],
+            ) -> StoreCall<'a, ()> {
+                self.inner.add_usage_batch(op, cells)
+            }
+            fn add_metering_batch<'a>(
+                &'a self,
+                op: OpId,
+                deltas: &'a [MeteringDelta],
+            ) -> StoreCall<'a, ()> {
+                self.inner.add_metering_batch(op, deltas)
+            }
+            fn record_put<'a>(
+                &'a self,
+                schema: &'a str,
+                key: &'a [u8],
+                value: &'a RecordBytes,
+            ) -> StoreCall<'a, ()> {
+                self.inner.record_put(schema, key, value)
+            }
+            fn record_get<'a>(
+                &'a self,
+                schema: &'a str,
+                key: &'a [u8],
+            ) -> StoreCall<'a, Option<RecordBytes>> {
+                self.inner.record_get(schema, key)
+            }
+            fn record_scan<'a>(
+                &'a self,
+                schema: &'a str,
+                prefix: &'a [u8],
+                limit: u32,
+            ) -> StoreCall<'a, Vec<(Vec<u8>, RecordBytes)>> {
+                self.inner.record_scan(schema, prefix, limit)
+            }
+            fn upsert_plane_record<'a>(&'a self, record: PlaneRecordRef<'a>) -> StoreCall<'a, ()> {
+                self.inner.upsert_plane_record(record)
+            }
+            fn get_plane_record<'a>(
+                &'a self,
+                kind: &'a str,
+                id: &'a str,
+            ) -> StoreCall<'a, Option<Vec<u8>>> {
+                self.inner.get_plane_record(kind, id)
+            }
+            fn append_plane_record<'a>(
+                &'a self,
+                op: OpId,
+                record: PlaneRecordRef<'a>,
+            ) -> StoreCall<'a, ()> {
+                self.inner.append_plane_record(op, record)
+            }
+            fn list_plane_records<'a>(
+                &'a self,
+                kind: &'a str,
+                selector: &'a PlaneSelector<'a>,
+            ) -> StoreCall<'a, Vec<Vec<u8>>> {
+                self.inner.list_plane_records(kind, selector)
+            }
+            fn delete_plane_record<'a>(&'a self, kind: &'a str, id: &'a str) -> StoreCall<'a, ()> {
+                self.inner.delete_plane_record(kind, id)
+            }
+            fn redeem_plane_token<'a>(
+                &'a self,
+                kind: &'a str,
+                token: &'a str,
+                expires_at: u64,
+                now: u64,
+            ) -> StoreCall<'a, bool> {
+                self.inner.redeem_plane_token(kind, token, expires_at, now)
+            }
+            fn plane_token_live<'a>(
+                &'a self,
+                kind: &'a str,
+                token: &'a str,
+                expires_at: u64,
+                now: u64,
+            ) -> StoreCall<'a, bool> {
+                self.inner.plane_token_live(kind, token, expires_at, now)
+            }
+        }
+        let calls = Arc::new(ReenterAfterCommit {
+            inner: crate::real_store::store(),
+            interference: Mutex::new(None),
         });
+        let backend = OverlayStore::new(calls.clone()).unwrap();
+        *calls.interference.lock().unwrap() = Some(Arc::downgrade(&backend));
         persist_root(Some(&backend), &RootSettings::default()).unwrap();
     }
 
     #[test]
     fn expired_unknown_receipt_retains_custody_without_replay_or_new_identity() {
-        let fixture = TestOverlayStore::new();
-        let backend = fixture.backend();
-        fixture.lose_next_commit_reply();
+        use busbar_contract::abi::sdk::store::conditional::{Decision, Request};
+        use busbar_contract::abi::store::OpId;
+        use busbar_contract::kinds::RecordBytes;
+        use busbar_contract::records::{MeteringDelta, PlaneRecordRef, PlaneSelector, UsageDelta};
+        use busbar_contract::store_calls::{StoreCall, StoreCalls, StoreFailure};
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::{Arc, Mutex};
+
+        struct LostCommitReply {
+            inner: Arc<busbar_plugin_loader::store_v3::LoadedStore>,
+            lose_reply: AtomicBool,
+            candidates: Mutex<Vec<Request>>,
+        }
+        impl StoreCalls for LostCommitReply {
+            fn supports_record_transaction(&self) -> bool {
+                self.inner.supports_record_transaction()
+            }
+            fn record_transaction<'a>(&'a self, request: &'a Request) -> StoreCall<'a, Decision> {
+                Box::pin(async move {
+                    self.candidates.lock().unwrap().push(request.clone());
+                    let decision = self.inner.record_transaction(request).await?;
+                    if self.lose_reply.swap(false, Ordering::SeqCst) {
+                        Err(StoreFailure::Failed("planted lost commit reply".into()))
+                    } else {
+                        Ok(decision)
+                    }
+                })
+            }
+            fn add_usage_batch<'a>(
+                &'a self,
+                op: OpId,
+                cells: &'a [(&'a str, u64, UsageDelta)],
+            ) -> StoreCall<'a, ()> {
+                self.inner.add_usage_batch(op, cells)
+            }
+            fn add_metering_batch<'a>(
+                &'a self,
+                op: OpId,
+                deltas: &'a [MeteringDelta],
+            ) -> StoreCall<'a, ()> {
+                self.inner.add_metering_batch(op, deltas)
+            }
+            fn record_put<'a>(
+                &'a self,
+                schema: &'a str,
+                key: &'a [u8],
+                value: &'a RecordBytes,
+            ) -> StoreCall<'a, ()> {
+                self.inner.record_put(schema, key, value)
+            }
+            fn record_get<'a>(
+                &'a self,
+                schema: &'a str,
+                key: &'a [u8],
+            ) -> StoreCall<'a, Option<RecordBytes>> {
+                self.inner.record_get(schema, key)
+            }
+            fn record_scan<'a>(
+                &'a self,
+                schema: &'a str,
+                prefix: &'a [u8],
+                limit: u32,
+            ) -> StoreCall<'a, Vec<(Vec<u8>, RecordBytes)>> {
+                self.inner.record_scan(schema, prefix, limit)
+            }
+            fn upsert_plane_record<'a>(&'a self, record: PlaneRecordRef<'a>) -> StoreCall<'a, ()> {
+                self.inner.upsert_plane_record(record)
+            }
+            fn get_plane_record<'a>(
+                &'a self,
+                kind: &'a str,
+                id: &'a str,
+            ) -> StoreCall<'a, Option<Vec<u8>>> {
+                self.inner.get_plane_record(kind, id)
+            }
+            fn append_plane_record<'a>(
+                &'a self,
+                op: OpId,
+                record: PlaneRecordRef<'a>,
+            ) -> StoreCall<'a, ()> {
+                self.inner.append_plane_record(op, record)
+            }
+            fn list_plane_records<'a>(
+                &'a self,
+                kind: &'a str,
+                selector: &'a PlaneSelector<'a>,
+            ) -> StoreCall<'a, Vec<Vec<u8>>> {
+                self.inner.list_plane_records(kind, selector)
+            }
+            fn delete_plane_record<'a>(&'a self, kind: &'a str, id: &'a str) -> StoreCall<'a, ()> {
+                self.inner.delete_plane_record(kind, id)
+            }
+            fn redeem_plane_token<'a>(
+                &'a self,
+                kind: &'a str,
+                token: &'a str,
+                expires_at: u64,
+                now: u64,
+            ) -> StoreCall<'a, bool> {
+                self.inner.redeem_plane_token(kind, token, expires_at, now)
+            }
+            fn plane_token_live<'a>(
+                &'a self,
+                kind: &'a str,
+                token: &'a str,
+                expires_at: u64,
+                now: u64,
+            ) -> StoreCall<'a, bool> {
+                self.inner.plane_token_live(kind, token, expires_at, now)
+            }
+        }
+        let calls = Arc::new(LostCommitReply {
+            inner: crate::real_store::store(),
+            lose_reply: AtomicBool::new(true),
+            candidates: Mutex::new(Vec::new()),
+        });
+        let backend = OverlayStore::new(calls.clone()).unwrap();
         assert!(persist_root(Some(&backend), &RootSettings::default()).is_err());
         {
             let mut state = backend.state.lock().unwrap();
@@ -519,20 +854,135 @@ mod tests {
                     ),
             );
         }
-        let original = fixture.candidates();
+        let original = calls.candidates.lock().unwrap().clone();
         for _ in 0..2 {
             assert!(persist_root(Some(&backend), &RootSettings::default())
                 .unwrap_err()
                 .contains("retention expired"));
         }
-        assert_eq!(fixture.candidates(), original);
+        assert_eq!(calls.candidates.lock().unwrap().clone(), original);
         assert!(matches!(*backend.state.lock().unwrap(), State::Pending(_)));
     }
 
     #[test]
     fn partial_staging_keeps_old_head_and_replays_the_same_generation() {
-        let fixture = TestOverlayStore::new();
-        let backend = fixture.backend();
+        use busbar_contract::abi::sdk::store::conditional::{Decision, Request};
+        use busbar_contract::abi::store::OpId;
+        use busbar_contract::kinds::RecordBytes;
+        use busbar_contract::records::{MeteringDelta, PlaneRecordRef, PlaneSelector, UsageDelta};
+        use busbar_contract::store_calls::{StoreCall, StoreCalls, StoreFailure};
+        use std::sync::atomic::{AtomicIsize, Ordering};
+        use std::sync::Arc;
+
+        struct LimitChunkWrites {
+            inner: Arc<busbar_plugin_loader::store_v3::LoadedStore>,
+            remaining: AtomicIsize,
+        }
+        impl StoreCalls for LimitChunkWrites {
+            fn supports_record_transaction(&self) -> bool {
+                self.inner.supports_record_transaction()
+            }
+            fn record_transaction<'a>(&'a self, request: &'a Request) -> StoreCall<'a, Decision> {
+                self.inner.record_transaction(request)
+            }
+            fn record_put<'a>(
+                &'a self,
+                schema: &'a str,
+                key: &'a [u8],
+                value: &'a RecordBytes,
+            ) -> StoreCall<'a, ()> {
+                let remaining = self.remaining.load(Ordering::SeqCst);
+                if remaining == 0 {
+                    Box::pin(std::future::ready(Err(StoreFailure::Refused(
+                        "planted chunk write refusal".into(),
+                    ))))
+                } else {
+                    if remaining > 0 {
+                        self.remaining.fetch_sub(1, Ordering::SeqCst);
+                    }
+                    self.inner.record_put(schema, key, value)
+                }
+            }
+            fn add_usage_batch<'a>(
+                &'a self,
+                op: OpId,
+                cells: &'a [(&'a str, u64, UsageDelta)],
+            ) -> StoreCall<'a, ()> {
+                self.inner.add_usage_batch(op, cells)
+            }
+            fn add_metering_batch<'a>(
+                &'a self,
+                op: OpId,
+                deltas: &'a [MeteringDelta],
+            ) -> StoreCall<'a, ()> {
+                self.inner.add_metering_batch(op, deltas)
+            }
+            fn record_get<'a>(
+                &'a self,
+                schema: &'a str,
+                key: &'a [u8],
+            ) -> StoreCall<'a, Option<RecordBytes>> {
+                self.inner.record_get(schema, key)
+            }
+            fn record_scan<'a>(
+                &'a self,
+                schema: &'a str,
+                prefix: &'a [u8],
+                limit: u32,
+            ) -> StoreCall<'a, Vec<(Vec<u8>, RecordBytes)>> {
+                self.inner.record_scan(schema, prefix, limit)
+            }
+            fn upsert_plane_record<'a>(&'a self, record: PlaneRecordRef<'a>) -> StoreCall<'a, ()> {
+                self.inner.upsert_plane_record(record)
+            }
+            fn get_plane_record<'a>(
+                &'a self,
+                kind: &'a str,
+                id: &'a str,
+            ) -> StoreCall<'a, Option<Vec<u8>>> {
+                self.inner.get_plane_record(kind, id)
+            }
+            fn append_plane_record<'a>(
+                &'a self,
+                op: OpId,
+                record: PlaneRecordRef<'a>,
+            ) -> StoreCall<'a, ()> {
+                self.inner.append_plane_record(op, record)
+            }
+            fn list_plane_records<'a>(
+                &'a self,
+                kind: &'a str,
+                selector: &'a PlaneSelector<'a>,
+            ) -> StoreCall<'a, Vec<Vec<u8>>> {
+                self.inner.list_plane_records(kind, selector)
+            }
+            fn delete_plane_record<'a>(&'a self, kind: &'a str, id: &'a str) -> StoreCall<'a, ()> {
+                self.inner.delete_plane_record(kind, id)
+            }
+            fn redeem_plane_token<'a>(
+                &'a self,
+                kind: &'a str,
+                token: &'a str,
+                expires_at: u64,
+                now: u64,
+            ) -> StoreCall<'a, bool> {
+                self.inner.redeem_plane_token(kind, token, expires_at, now)
+            }
+            fn plane_token_live<'a>(
+                &'a self,
+                kind: &'a str,
+                token: &'a str,
+                expires_at: u64,
+                now: u64,
+            ) -> StoreCall<'a, bool> {
+                self.inner.plane_token_live(kind, token, expires_at, now)
+            }
+        }
+        let calls = Arc::new(LimitChunkWrites {
+            inner: crate::real_store::store(),
+            remaining: AtomicIsize::new(1),
+        });
+        let backend = OverlayStore::new(calls.clone()).unwrap();
         let mut doc = OverlayDoc::default();
         doc.named_maps.insert(
             "export".into(),
@@ -541,10 +991,9 @@ mod tests {
                 serde_json::json!("x".repeat(busbar_contract::MAX_RECORD_BYTES + 10)),
             )]),
         );
-        fixture.fail_after_chunk_writes(1);
         assert!(write(&backend, &doc).is_err());
         assert!(backend.read_required().unwrap().is_none());
-        fixture.allow_chunk_writes();
+        calls.remaining.store(-1, Ordering::SeqCst);
         assert!(write(&backend, &OverlayDoc::default()).is_err());
         assert_eq!(
             serde_json::to_value(backend.read_required().unwrap().unwrap()).unwrap(),
@@ -554,9 +1003,123 @@ mod tests {
 
     #[test]
     fn forward_wall_clock_jump_also_expires_unknown_receipt_without_replay() {
-        let fixture = TestOverlayStore::new();
-        let backend = fixture.backend();
-        fixture.lose_next_commit_reply();
+        use busbar_contract::abi::sdk::store::conditional::{Decision, Request};
+        use busbar_contract::abi::store::OpId;
+        use busbar_contract::kinds::RecordBytes;
+        use busbar_contract::records::{MeteringDelta, PlaneRecordRef, PlaneSelector, UsageDelta};
+        use busbar_contract::store_calls::{StoreCall, StoreCalls, StoreFailure};
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::{Arc, Mutex};
+
+        struct LostCommitReply {
+            inner: Arc<busbar_plugin_loader::store_v3::LoadedStore>,
+            lose_reply: AtomicBool,
+            candidates: Mutex<Vec<Request>>,
+        }
+        impl StoreCalls for LostCommitReply {
+            fn supports_record_transaction(&self) -> bool {
+                self.inner.supports_record_transaction()
+            }
+            fn record_transaction<'a>(&'a self, request: &'a Request) -> StoreCall<'a, Decision> {
+                Box::pin(async move {
+                    self.candidates.lock().unwrap().push(request.clone());
+                    let decision = self.inner.record_transaction(request).await?;
+                    if self.lose_reply.swap(false, Ordering::SeqCst) {
+                        Err(StoreFailure::Failed("planted lost commit reply".into()))
+                    } else {
+                        Ok(decision)
+                    }
+                })
+            }
+            fn add_usage_batch<'a>(
+                &'a self,
+                op: OpId,
+                cells: &'a [(&'a str, u64, UsageDelta)],
+            ) -> StoreCall<'a, ()> {
+                self.inner.add_usage_batch(op, cells)
+            }
+            fn add_metering_batch<'a>(
+                &'a self,
+                op: OpId,
+                deltas: &'a [MeteringDelta],
+            ) -> StoreCall<'a, ()> {
+                self.inner.add_metering_batch(op, deltas)
+            }
+            fn record_put<'a>(
+                &'a self,
+                schema: &'a str,
+                key: &'a [u8],
+                value: &'a RecordBytes,
+            ) -> StoreCall<'a, ()> {
+                self.inner.record_put(schema, key, value)
+            }
+            fn record_get<'a>(
+                &'a self,
+                schema: &'a str,
+                key: &'a [u8],
+            ) -> StoreCall<'a, Option<RecordBytes>> {
+                self.inner.record_get(schema, key)
+            }
+            fn record_scan<'a>(
+                &'a self,
+                schema: &'a str,
+                prefix: &'a [u8],
+                limit: u32,
+            ) -> StoreCall<'a, Vec<(Vec<u8>, RecordBytes)>> {
+                self.inner.record_scan(schema, prefix, limit)
+            }
+            fn upsert_plane_record<'a>(&'a self, record: PlaneRecordRef<'a>) -> StoreCall<'a, ()> {
+                self.inner.upsert_plane_record(record)
+            }
+            fn get_plane_record<'a>(
+                &'a self,
+                kind: &'a str,
+                id: &'a str,
+            ) -> StoreCall<'a, Option<Vec<u8>>> {
+                self.inner.get_plane_record(kind, id)
+            }
+            fn append_plane_record<'a>(
+                &'a self,
+                op: OpId,
+                record: PlaneRecordRef<'a>,
+            ) -> StoreCall<'a, ()> {
+                self.inner.append_plane_record(op, record)
+            }
+            fn list_plane_records<'a>(
+                &'a self,
+                kind: &'a str,
+                selector: &'a PlaneSelector<'a>,
+            ) -> StoreCall<'a, Vec<Vec<u8>>> {
+                self.inner.list_plane_records(kind, selector)
+            }
+            fn delete_plane_record<'a>(&'a self, kind: &'a str, id: &'a str) -> StoreCall<'a, ()> {
+                self.inner.delete_plane_record(kind, id)
+            }
+            fn redeem_plane_token<'a>(
+                &'a self,
+                kind: &'a str,
+                token: &'a str,
+                expires_at: u64,
+                now: u64,
+            ) -> StoreCall<'a, bool> {
+                self.inner.redeem_plane_token(kind, token, expires_at, now)
+            }
+            fn plane_token_live<'a>(
+                &'a self,
+                kind: &'a str,
+                token: &'a str,
+                expires_at: u64,
+                now: u64,
+            ) -> StoreCall<'a, bool> {
+                self.inner.plane_token_live(kind, token, expires_at, now)
+            }
+        }
+        let calls = Arc::new(LostCommitReply {
+            inner: crate::real_store::store(),
+            lose_reply: AtomicBool::new(true),
+            candidates: Mutex::new(Vec::new()),
+        });
+        let backend = OverlayStore::new(calls.clone()).unwrap();
         assert!(persist_root(Some(&backend), &RootSettings::default()).is_err());
         {
             let mut state = backend.state.lock().unwrap();
@@ -570,18 +1133,132 @@ mod tests {
                     ),
             );
         }
-        let original = fixture.candidates();
+        let original = calls.candidates.lock().unwrap().clone();
         assert!(persist_root(Some(&backend), &RootSettings::default())
             .unwrap_err()
             .contains("retention expired"));
-        assert_eq!(fixture.candidates(), original);
+        assert_eq!(calls.candidates.lock().unwrap().clone(), original);
     }
 
     #[test]
     fn head_cas_retires_superseded_and_conflicted_generations() {
-        let fixture = TestOverlayStore::new();
-        let backend = fixture.backend();
-        let other = fixture.fork_backend();
+        use busbar_contract::abi::sdk::store::conditional::{Decision, Request};
+        use busbar_contract::abi::store::OpId;
+        use busbar_contract::kinds::RecordBytes;
+        use busbar_contract::records::{MeteringDelta, PlaneRecordRef, PlaneSelector, UsageDelta};
+        use busbar_contract::store_calls::{StoreCall, StoreCalls};
+        use std::sync::{Arc, Mutex};
+        struct SupersedeBeforeCommit {
+            inner: Arc<busbar_plugin_loader::store_v3::LoadedStore>,
+            interference: Mutex<Option<Arc<OverlayStore>>>,
+        }
+        impl StoreCalls for SupersedeBeforeCommit {
+            fn supports_record_transaction(&self) -> bool {
+                self.inner.supports_record_transaction()
+            }
+            fn record_transaction<'a>(&'a self, request: &'a Request) -> StoreCall<'a, Decision> {
+                let interference = { self.interference.lock().unwrap().take() };
+                if let Some(other) = interference {
+                    persist_root(
+                        Some(&other),
+                        &RootSettings {
+                            per_request_fee: Some(99),
+                            ..Default::default()
+                        },
+                    )
+                    .unwrap();
+                }
+                self.inner.record_transaction(request)
+            }
+            fn add_usage_batch<'a>(
+                &'a self,
+                op: OpId,
+                cells: &'a [(&'a str, u64, UsageDelta)],
+            ) -> StoreCall<'a, ()> {
+                self.inner.add_usage_batch(op, cells)
+            }
+            fn add_metering_batch<'a>(
+                &'a self,
+                op: OpId,
+                deltas: &'a [MeteringDelta],
+            ) -> StoreCall<'a, ()> {
+                self.inner.add_metering_batch(op, deltas)
+            }
+            fn record_put<'a>(
+                &'a self,
+                schema: &'a str,
+                key: &'a [u8],
+                value: &'a RecordBytes,
+            ) -> StoreCall<'a, ()> {
+                self.inner.record_put(schema, key, value)
+            }
+            fn record_get<'a>(
+                &'a self,
+                schema: &'a str,
+                key: &'a [u8],
+            ) -> StoreCall<'a, Option<RecordBytes>> {
+                self.inner.record_get(schema, key)
+            }
+            fn record_scan<'a>(
+                &'a self,
+                schema: &'a str,
+                prefix: &'a [u8],
+                limit: u32,
+            ) -> StoreCall<'a, Vec<(Vec<u8>, RecordBytes)>> {
+                self.inner.record_scan(schema, prefix, limit)
+            }
+            fn upsert_plane_record<'a>(&'a self, record: PlaneRecordRef<'a>) -> StoreCall<'a, ()> {
+                self.inner.upsert_plane_record(record)
+            }
+            fn get_plane_record<'a>(
+                &'a self,
+                kind: &'a str,
+                id: &'a str,
+            ) -> StoreCall<'a, Option<Vec<u8>>> {
+                self.inner.get_plane_record(kind, id)
+            }
+            fn append_plane_record<'a>(
+                &'a self,
+                op: OpId,
+                record: PlaneRecordRef<'a>,
+            ) -> StoreCall<'a, ()> {
+                self.inner.append_plane_record(op, record)
+            }
+            fn list_plane_records<'a>(
+                &'a self,
+                kind: &'a str,
+                selector: &'a PlaneSelector<'a>,
+            ) -> StoreCall<'a, Vec<Vec<u8>>> {
+                self.inner.list_plane_records(kind, selector)
+            }
+            fn delete_plane_record<'a>(&'a self, kind: &'a str, id: &'a str) -> StoreCall<'a, ()> {
+                self.inner.delete_plane_record(kind, id)
+            }
+            fn redeem_plane_token<'a>(
+                &'a self,
+                kind: &'a str,
+                token: &'a str,
+                expires_at: u64,
+                now: u64,
+            ) -> StoreCall<'a, bool> {
+                self.inner.redeem_plane_token(kind, token, expires_at, now)
+            }
+            fn plane_token_live<'a>(
+                &'a self,
+                kind: &'a str,
+                token: &'a str,
+                expires_at: u64,
+                now: u64,
+            ) -> StoreCall<'a, bool> {
+                self.inner.plane_token_live(kind, token, expires_at, now)
+            }
+        }
+        let calls = Arc::new(SupersedeBeforeCommit {
+            inner: crate::real_store::store(),
+            interference: Mutex::new(None),
+        });
+        let backend = OverlayStore::new(calls.clone()).unwrap();
+        let other = OverlayStore::new(calls.inner.clone()).unwrap();
         persist_root(Some(&backend), &RootSettings::default()).unwrap();
         for fee in 0..20 {
             persist_root(
@@ -593,17 +1270,13 @@ mod tests {
             )
             .unwrap();
         }
-        assert_eq!(fixture.stored_record_count(), 2);
-        fixture.before_next_transaction(move || {
-            persist_root(
-                Some(&other),
-                &RootSettings {
-                    per_request_fee: Some(99),
-                    ..Default::default()
-                },
-            )
-            .unwrap()
-        });
+        assert_eq!(
+            wait(calls.inner.record_scan(SCHEMA, &[], u32::MAX))
+                .unwrap()
+                .len(),
+            2
+        );
+        *calls.interference.lock().unwrap() = Some(other);
         assert!(persist_root(
             Some(&backend),
             &RootSettings {
@@ -612,7 +1285,12 @@ mod tests {
             }
         )
         .is_err());
-        assert_eq!(fixture.stored_record_count(), 2);
+        assert_eq!(
+            wait(calls.inner.record_scan(SCHEMA, &[], u32::MAX))
+                .unwrap()
+                .len(),
+            2
+        );
         assert_eq!(
             backend
                 .read_required()
@@ -627,9 +1305,126 @@ mod tests {
 
     #[test]
     fn reader_retries_only_when_its_immutable_snapshot_was_retired() {
-        let fixture = TestOverlayStore::new();
-        let backend = fixture.backend();
-        let other = fixture.fork_backend();
+        use busbar_contract::abi::sdk::store::conditional::{Decision, Request};
+        use busbar_contract::abi::store::OpId;
+        use busbar_contract::kinds::RecordBytes;
+        use busbar_contract::records::{MeteringDelta, PlaneRecordRef, PlaneSelector, UsageDelta};
+        use busbar_contract::store_calls::{StoreCall, StoreCalls};
+        use std::sync::{Arc, Mutex};
+        struct RetireAfterRead {
+            inner: Arc<busbar_plugin_loader::store_v3::LoadedStore>,
+            interference: Mutex<Option<Arc<OverlayStore>>>,
+        }
+        impl StoreCalls for RetireAfterRead {
+            fn supports_record_transaction(&self) -> bool {
+                self.inner.supports_record_transaction()
+            }
+            fn record_transaction<'a>(&'a self, request: &'a Request) -> StoreCall<'a, Decision> {
+                self.inner.record_transaction(request)
+            }
+            fn record_get<'a>(
+                &'a self,
+                schema: &'a str,
+                key: &'a [u8],
+            ) -> StoreCall<'a, Option<RecordBytes>> {
+                Box::pin(async move {
+                    let value = self.inner.record_get(schema, key).await?;
+                    let interference = { self.interference.lock().unwrap().take() };
+                    if let Some(other) = interference {
+                        persist_root(
+                            Some(&other),
+                            &RootSettings {
+                                per_request_fee: Some(2),
+                                ..Default::default()
+                            },
+                        )
+                        .unwrap();
+                    }
+                    Ok(value)
+                })
+            }
+            fn add_usage_batch<'a>(
+                &'a self,
+                op: OpId,
+                cells: &'a [(&'a str, u64, UsageDelta)],
+            ) -> StoreCall<'a, ()> {
+                self.inner.add_usage_batch(op, cells)
+            }
+            fn add_metering_batch<'a>(
+                &'a self,
+                op: OpId,
+                deltas: &'a [MeteringDelta],
+            ) -> StoreCall<'a, ()> {
+                self.inner.add_metering_batch(op, deltas)
+            }
+            fn record_put<'a>(
+                &'a self,
+                schema: &'a str,
+                key: &'a [u8],
+                value: &'a RecordBytes,
+            ) -> StoreCall<'a, ()> {
+                self.inner.record_put(schema, key, value)
+            }
+            fn record_scan<'a>(
+                &'a self,
+                schema: &'a str,
+                prefix: &'a [u8],
+                limit: u32,
+            ) -> StoreCall<'a, Vec<(Vec<u8>, RecordBytes)>> {
+                self.inner.record_scan(schema, prefix, limit)
+            }
+            fn upsert_plane_record<'a>(&'a self, record: PlaneRecordRef<'a>) -> StoreCall<'a, ()> {
+                self.inner.upsert_plane_record(record)
+            }
+            fn get_plane_record<'a>(
+                &'a self,
+                kind: &'a str,
+                id: &'a str,
+            ) -> StoreCall<'a, Option<Vec<u8>>> {
+                self.inner.get_plane_record(kind, id)
+            }
+            fn append_plane_record<'a>(
+                &'a self,
+                op: OpId,
+                record: PlaneRecordRef<'a>,
+            ) -> StoreCall<'a, ()> {
+                self.inner.append_plane_record(op, record)
+            }
+            fn list_plane_records<'a>(
+                &'a self,
+                kind: &'a str,
+                selector: &'a PlaneSelector<'a>,
+            ) -> StoreCall<'a, Vec<Vec<u8>>> {
+                self.inner.list_plane_records(kind, selector)
+            }
+            fn delete_plane_record<'a>(&'a self, kind: &'a str, id: &'a str) -> StoreCall<'a, ()> {
+                self.inner.delete_plane_record(kind, id)
+            }
+            fn redeem_plane_token<'a>(
+                &'a self,
+                kind: &'a str,
+                token: &'a str,
+                expires_at: u64,
+                now: u64,
+            ) -> StoreCall<'a, bool> {
+                self.inner.redeem_plane_token(kind, token, expires_at, now)
+            }
+            fn plane_token_live<'a>(
+                &'a self,
+                kind: &'a str,
+                token: &'a str,
+                expires_at: u64,
+                now: u64,
+            ) -> StoreCall<'a, bool> {
+                self.inner.plane_token_live(kind, token, expires_at, now)
+            }
+        }
+        let calls = Arc::new(RetireAfterRead {
+            inner: crate::real_store::store(),
+            interference: Mutex::new(None),
+        });
+        let backend = OverlayStore::new(calls.clone()).unwrap();
+        let other = OverlayStore::new(calls.inner.clone()).unwrap();
         persist_root(
             Some(&backend),
             &RootSettings {
@@ -638,16 +1433,7 @@ mod tests {
             },
         )
         .unwrap();
-        fixture.on_next_read_reply(move || {
-            persist_root(
-                Some(&other),
-                &RootSettings {
-                    per_request_fee: Some(2),
-                    ..Default::default()
-                },
-            )
-            .unwrap()
-        });
+        *calls.interference.lock().unwrap() = Some(other);
         assert_eq!(
             backend
                 .read_required()
@@ -662,9 +1448,123 @@ mod tests {
 
     #[test]
     fn replay_of_a_superseded_unknown_commit_never_resurrects_retired_chunks() {
-        let fixture = TestOverlayStore::new();
-        let backend = fixture.backend();
-        fixture.lose_next_commit_reply();
+        use busbar_contract::abi::sdk::store::conditional::{Decision, Request};
+        use busbar_contract::abi::store::OpId;
+        use busbar_contract::kinds::RecordBytes;
+        use busbar_contract::records::{MeteringDelta, PlaneRecordRef, PlaneSelector, UsageDelta};
+        use busbar_contract::store_calls::{StoreCall, StoreCalls, StoreFailure};
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::{Arc, Mutex};
+
+        struct LostCommitReply {
+            inner: Arc<busbar_plugin_loader::store_v3::LoadedStore>,
+            lose_reply: AtomicBool,
+            candidates: Mutex<Vec<Request>>,
+        }
+        impl StoreCalls for LostCommitReply {
+            fn supports_record_transaction(&self) -> bool {
+                self.inner.supports_record_transaction()
+            }
+            fn record_transaction<'a>(&'a self, request: &'a Request) -> StoreCall<'a, Decision> {
+                Box::pin(async move {
+                    self.candidates.lock().unwrap().push(request.clone());
+                    let decision = self.inner.record_transaction(request).await?;
+                    if self.lose_reply.swap(false, Ordering::SeqCst) {
+                        Err(StoreFailure::Failed("planted lost commit reply".into()))
+                    } else {
+                        Ok(decision)
+                    }
+                })
+            }
+            fn add_usage_batch<'a>(
+                &'a self,
+                op: OpId,
+                cells: &'a [(&'a str, u64, UsageDelta)],
+            ) -> StoreCall<'a, ()> {
+                self.inner.add_usage_batch(op, cells)
+            }
+            fn add_metering_batch<'a>(
+                &'a self,
+                op: OpId,
+                deltas: &'a [MeteringDelta],
+            ) -> StoreCall<'a, ()> {
+                self.inner.add_metering_batch(op, deltas)
+            }
+            fn record_put<'a>(
+                &'a self,
+                schema: &'a str,
+                key: &'a [u8],
+                value: &'a RecordBytes,
+            ) -> StoreCall<'a, ()> {
+                self.inner.record_put(schema, key, value)
+            }
+            fn record_get<'a>(
+                &'a self,
+                schema: &'a str,
+                key: &'a [u8],
+            ) -> StoreCall<'a, Option<RecordBytes>> {
+                self.inner.record_get(schema, key)
+            }
+            fn record_scan<'a>(
+                &'a self,
+                schema: &'a str,
+                prefix: &'a [u8],
+                limit: u32,
+            ) -> StoreCall<'a, Vec<(Vec<u8>, RecordBytes)>> {
+                self.inner.record_scan(schema, prefix, limit)
+            }
+            fn upsert_plane_record<'a>(&'a self, record: PlaneRecordRef<'a>) -> StoreCall<'a, ()> {
+                self.inner.upsert_plane_record(record)
+            }
+            fn get_plane_record<'a>(
+                &'a self,
+                kind: &'a str,
+                id: &'a str,
+            ) -> StoreCall<'a, Option<Vec<u8>>> {
+                self.inner.get_plane_record(kind, id)
+            }
+            fn append_plane_record<'a>(
+                &'a self,
+                op: OpId,
+                record: PlaneRecordRef<'a>,
+            ) -> StoreCall<'a, ()> {
+                self.inner.append_plane_record(op, record)
+            }
+            fn list_plane_records<'a>(
+                &'a self,
+                kind: &'a str,
+                selector: &'a PlaneSelector<'a>,
+            ) -> StoreCall<'a, Vec<Vec<u8>>> {
+                self.inner.list_plane_records(kind, selector)
+            }
+            fn delete_plane_record<'a>(&'a self, kind: &'a str, id: &'a str) -> StoreCall<'a, ()> {
+                self.inner.delete_plane_record(kind, id)
+            }
+            fn redeem_plane_token<'a>(
+                &'a self,
+                kind: &'a str,
+                token: &'a str,
+                expires_at: u64,
+                now: u64,
+            ) -> StoreCall<'a, bool> {
+                self.inner.redeem_plane_token(kind, token, expires_at, now)
+            }
+            fn plane_token_live<'a>(
+                &'a self,
+                kind: &'a str,
+                token: &'a str,
+                expires_at: u64,
+                now: u64,
+            ) -> StoreCall<'a, bool> {
+                self.inner.plane_token_live(kind, token, expires_at, now)
+            }
+        }
+        let calls = Arc::new(LostCommitReply {
+            inner: crate::real_store::store(),
+            lose_reply: AtomicBool::new(true),
+            candidates: Mutex::new(Vec::new()),
+        });
+        let backend = OverlayStore::new(calls.clone()).unwrap();
         assert!(persist_root(
             Some(&backend),
             &RootSettings {
@@ -673,7 +1573,7 @@ mod tests {
             }
         )
         .is_err());
-        let other = fixture.fork_backend();
+        let other = OverlayStore::new(calls.inner.clone()).unwrap();
         persist_root(
             Some(&other),
             &RootSettings {
@@ -682,9 +1582,19 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(fixture.stored_record_count(), 2);
+        assert_eq!(
+            wait(calls.inner.record_scan(SCHEMA, &[], u32::MAX))
+                .unwrap()
+                .len(),
+            2
+        );
         assert!(persist_root(Some(&backend), &RootSettings::default()).is_err());
-        assert_eq!(fixture.stored_record_count(), 2);
+        assert_eq!(
+            wait(calls.inner.record_scan(SCHEMA, &[], u32::MAX))
+                .unwrap()
+                .len(),
+            2
+        );
         assert_eq!(
             backend
                 .read_required()
@@ -702,11 +1612,11 @@ mod tests {
 
     #[test]
     fn diagnostics_and_failed_rebuild_never_advance_the_old_app_baseline() {
-        let fixture = TestOverlayStore::new();
-        let backend = fixture.backend();
+        let store = crate::real_store::store();
+        let backend = OverlayStore::new(store.clone()).unwrap();
         persist_root(Some(&backend), &RootSettings::default()).unwrap();
         let before = backend.observed.lock().unwrap().clone();
-        let other = fixture.fork_backend();
+        let other = OverlayStore::new(store).unwrap();
         persist_root(
             Some(&other),
             &RootSettings {
@@ -728,8 +1638,7 @@ mod tests {
 
     #[test]
     fn a_normal_confirmed_commit_advances_its_reopened_candidate_carrier() {
-        let fixture = TestOverlayStore::new();
-        let backend = fixture.backend();
+        let backend = OverlayStore::new(crate::real_store::store()).unwrap();
         persist_root(Some(&backend), &RootSettings::default()).unwrap();
         let (candidate, _) = backend.reopen_for_reload().unwrap();
         persist_root(
@@ -764,3 +1673,7 @@ mod tests {
 #[cfg(test)]
 #[path = "tests/version_gate_tests.rs"]
 mod version_gate_tests;
+
+#[cfg(test)]
+#[path = "tests/overlay_bytes_tests.rs"]
+mod overlay_bytes_tests;
