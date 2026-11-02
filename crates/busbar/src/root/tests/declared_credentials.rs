@@ -308,6 +308,66 @@ fn each_declared_scheme_presents_what_its_dialect_builder_wrote() {
     assert!(refused > 0, "the signed refusal rows were exercised");
 }
 
+#[test]
+fn every_recorded_nonblank_whitespace_credential_keeps_its_exact_bytes() {
+    let mut compared = 0;
+    let mut differences = Vec::new();
+    for (index, row) in fixture()["rows"].as_array().unwrap().iter().enumerate() {
+        let dialect = row["dialect"].as_str().unwrap();
+        let key = String::from_utf8(hex(&row["key_hex"])).unwrap();
+        if dialect == "bedrock" || key == key.trim_matches([' ', '\t']) {
+            continue;
+        }
+        let body = hex(&row["body_hex"]);
+        let ctx = SigningContext {
+            host: row["host"].as_str().unwrap(),
+            canonical_uri: row["canonical_uri"].as_str().unwrap(),
+            body: &body,
+            timestamp_epoch: row["timestamp_epoch"].as_u64().unwrap(),
+            upstream_creds: if row["mode"] == "own" {
+                UpstreamCreds::Own
+            } else {
+                UpstreamCreds::Passthrough
+            },
+        };
+        let got = serde_json::Value::Array(
+            present(twin(dialect), &key, &ctx)
+                .into_iter()
+                .map(|(name, value)| serde_json::json!([name, hex::encode(value.as_bytes())]))
+                .collect(),
+        );
+        if got != row["headers"] {
+            differences.push(serde_json::json!({"row": index, "got": got, "want": row["headers"]}));
+        }
+        compared += 1;
+    }
+    assert_eq!(
+        compared, 20,
+        "all eighteen affected rows and two selected-trim controls"
+    );
+    let binding = binding_of("api-key-override", "h.example.com", &[]);
+    for mode in [UpstreamCreds::Own, UpstreamCreds::Passthrough] {
+        let ctx = SigningContext {
+            host: "h.example.com",
+            canonical_uri: "/v1/x",
+            body: b"{}",
+            timestamp_epoch: 1_756_000_000,
+            upstream_creds: mode,
+        };
+        let got = present_bound(&binding, " leading", &ctx);
+        let want = vec![("api-key".to_string(), " leading".to_string())];
+        if got != want {
+            differences.push(
+                serde_json::json!({"override_mode": format!("{mode:?}"), "got": got, "want": want}),
+            );
+        }
+    }
+    assert!(
+        differences.is_empty(),
+        "nonblank credential bytes changed: {differences:#?}"
+    );
+}
+
 fn signed(key: &str, host: &str, uri: &str, body: &[u8]) -> Vec<(String, String)> {
     let ctx = SigningContext {
         host,
