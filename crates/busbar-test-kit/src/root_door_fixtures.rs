@@ -852,57 +852,6 @@ pub mod pending_h1_accept {
         }
     }
 
-    #[cfg(test)]
-    mod waker_tests {
-        use super::*;
-        use busbar_core_connector::carrier::Side;
-        use std::sync::atomic::{AtomicBool, Ordering};
-        use std::task::{Wake, Waker};
-
-        struct Reentrant {
-            gate: Arc<HeadGate>,
-            retired: Arc<AtomicBool>,
-        }
-        impl Wake for Reentrant {
-            fn wake(self: Arc<Self>) {
-                assert!(self.gate.waker.try_lock().is_ok(), "wake under gate lock");
-            }
-        }
-        impl Drop for Reentrant {
-            fn drop(&mut self) {
-                assert!(
-                    self.gate.waker.try_lock().is_ok(),
-                    "waker drop under gate lock"
-                );
-                self.retired.store(true, Ordering::SeqCst);
-            }
-        }
-        #[test]
-        fn release_and_replacement_run_waker_callbacks_outside_the_gate() {
-            let gate = Arc::new(HeadGate::default());
-            let ticket = HeadTicket {
-                ticket: busbar_contract::abi::mechanism::ticket::Ticket::NONE,
-                gate: Arc::clone(&gate),
-            };
-            let retired = Arc::new(AtomicBool::new(false));
-            let old = Waker::from(Arc::new(Reentrant {
-                gate: Arc::clone(&gate),
-                retired: Arc::clone(&retired),
-            }));
-            ticket.register(&old);
-            drop(old);
-            let next_retired = Arc::new(AtomicBool::new(false));
-            let next = Waker::from(Arc::new(Reentrant {
-                gate: Arc::clone(&gate),
-                retired: next_retired,
-            }));
-            ticket.register(&next);
-            assert!(retired.load(Ordering::SeqCst));
-            drop(next);
-            gate.release();
-        }
-    }
-
     struct HeldHead {
         bytes: Vec<u8>,
         framing: u64,
@@ -1067,6 +1016,57 @@ pub mod pending_h1_accept {
             }
         }
     }
+
+    #[cfg(test)]
+    mod waker_tests {
+        use super::*;
+        use busbar_core_connector::carrier::Side;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::task::{Wake, Waker};
+
+        struct Reentrant {
+            gate: Arc<HeadGate>,
+            retired: Arc<AtomicBool>,
+        }
+        impl Wake for Reentrant {
+            fn wake(self: Arc<Self>) {
+                assert!(self.gate.waker.try_lock().is_ok(), "wake under gate lock");
+            }
+        }
+        impl Drop for Reentrant {
+            fn drop(&mut self) {
+                assert!(
+                    self.gate.waker.try_lock().is_ok(),
+                    "waker drop under gate lock"
+                );
+                self.retired.store(true, Ordering::SeqCst);
+            }
+        }
+        #[test]
+        fn release_and_replacement_run_waker_callbacks_outside_the_gate() {
+            let gate = Arc::new(HeadGate::default());
+            let ticket = HeadTicket {
+                ticket: busbar_contract::abi::mechanism::ticket::Ticket::NONE,
+                gate: Arc::clone(&gate),
+            };
+            let retired = Arc::new(AtomicBool::new(false));
+            let old = Waker::from(Arc::new(Reentrant {
+                gate: Arc::clone(&gate),
+                retired: Arc::clone(&retired),
+            }));
+            ticket.register(&old);
+            drop(old);
+            let next_retired = Arc::new(AtomicBool::new(false));
+            let next = Waker::from(Arc::new(Reentrant {
+                gate: Arc::clone(&gate),
+                retired: next_retired,
+            }));
+            ticket.register(&next);
+            assert!(retired.load(Ordering::SeqCst));
+            drop(next);
+            gate.release();
+        }
+    }
 }
 
 /// A two-stream accepting protocol: input bytes `1` and `3` open independent requests.
@@ -1103,40 +1103,6 @@ pub mod pending_mux_accept {
             let next = waker.clone();
             let retired = { self.gate.wake.lock().unwrap().replace(next) };
             drop(retired);
-        }
-    }
-
-    #[cfg(test)]
-    mod waker_tests {
-        use super::*;
-        use busbar_core_connector::carrier::Side as _;
-        use std::task::{Wake, Waker};
-        struct Reentrant(Arc<Gate>);
-        impl Wake for Reentrant {
-            fn wake(self: Arc<Self>) {
-                assert!(self.0.wake.try_lock().is_ok());
-            }
-        }
-        impl Drop for Reentrant {
-            fn drop(&mut self) {
-                assert!(self.0.wake.try_lock().is_ok());
-            }
-        }
-        #[test]
-        fn replacement_and_release_retire_after_unlocking() {
-            let fixture = Mux::default();
-            let gate = Arc::clone(&fixture.gate);
-            let side = Side {
-                ticket: busbar_contract::abi::mechanism::ticket::Ticket::NONE,
-                gate: Arc::clone(&gate),
-            };
-            let old = Waker::from(Arc::new(Reentrant(Arc::clone(&gate))));
-            side.register(&old);
-            drop(old);
-            let next = Waker::from(Arc::new(Reentrant(Arc::clone(&gate))));
-            side.register(&next);
-            drop(next);
-            fixture.release();
         }
     }
 
@@ -1361,6 +1327,40 @@ pub mod pending_mux_accept {
                 }
             }
             ready
+        }
+    }
+
+    #[cfg(test)]
+    mod waker_tests {
+        use super::*;
+        use busbar_core_connector::carrier::Side as _;
+        use std::task::{Wake, Waker};
+        struct Reentrant(Arc<Gate>);
+        impl Wake for Reentrant {
+            fn wake(self: Arc<Self>) {
+                assert!(self.0.wake.try_lock().is_ok());
+            }
+        }
+        impl Drop for Reentrant {
+            fn drop(&mut self) {
+                assert!(self.0.wake.try_lock().is_ok());
+            }
+        }
+        #[test]
+        fn replacement_and_release_retire_after_unlocking() {
+            let fixture = Mux::default();
+            let gate = Arc::clone(&fixture.gate);
+            let side = Side {
+                ticket: busbar_contract::abi::mechanism::ticket::Ticket::NONE,
+                gate: Arc::clone(&gate),
+            };
+            let old = Waker::from(Arc::new(Reentrant(Arc::clone(&gate))));
+            side.register(&old);
+            drop(old);
+            let next = Waker::from(Arc::new(Reentrant(Arc::clone(&gate))));
+            side.register(&next);
+            drop(next);
+            fixture.release();
         }
     }
 }
