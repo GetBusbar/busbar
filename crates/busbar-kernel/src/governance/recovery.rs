@@ -125,7 +125,7 @@ impl RecoveryEvent {
         }
         use RecoveryState::*;
         match (previous.state, self.state) {
-            (Intent, Applied | ConditionConflict | LandedUnknown)
+            (Intent, Intent | Applied | ConditionConflict | LandedUnknown)
             | (
                 LandedUnknown,
                 LandedUnknown | Applied | ConditionConflict | VerdictLanded | VerdictNotLanded,
