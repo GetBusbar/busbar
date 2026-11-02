@@ -1311,6 +1311,7 @@ pub fn book(
         lane.hold_lease(lease);
     }
     let node = taken.id;
+    lane.bind_recovery_identity(&host, node)?;
 
     super::kernel::ROOT_CARD.keep_in_store(calls.clone(), node);
     let token = super::kernel::new_kernel().durability_token();
@@ -1333,6 +1334,13 @@ pub fn book(
         );
     }
     let durability = Arc::new(std::sync::Mutex::new(durability));
+
+    gov.attach_recovery_sink(super::durability::usage_recovery_sink(&durability))
+        .map_err(|why| {
+            format!("usage recovery could not be restored from the Store journal: {why}")
+        })?;
+    gov.hydrate_budgets(&app.cost, now)
+        .map_err(|why| format!("budget hydration after usage recovery failed: {why}"))?;
 
     super::durability::bind_amendments(&durability, &app.amendments);
 
