@@ -41,8 +41,7 @@ use tokio::sync::{mpsc, watch, Notify};
 use super::{
     guarded_run, CallerEnd, End, FarEnd, OutboundRequest, Piece, Pumping, Src, Step, Toward,
 };
-use crate::plane_driver::cancel::Facts;
-use crate::plane_driver::{PlaneDriver, PlaneUnits, UnitState};
+use crate::plane_driver::{PlaneDriver, PlaneUnits};
 use crate::teller::UnitCtx;
 
 /// THE CALLER'S SIDE OF A DUPLEX SESSION, one trait for every carrier that holds a session open:
@@ -158,12 +157,28 @@ impl Drop for Open<'_> {
 
 /// What the caller side waits for next.
 enum Next {
+    /// The admitted session opens before any caller piece is read.
+    Open,
     /// The other side ended the session.
     Halt(Halt),
     /// `drive` named the session: collect its output.
     Collect,
     /// The caller's piece; `None` once its side ended.
     Caller(Option<SessionInput>),
+}
+
+/// Collect ownership under the table lock; waking a task may run arbitrary waker code.
+fn wake_ready(sessions: &Mutex<std::collections::HashMap<u64, Arc<Notify>>>, ready: &[u64]) {
+    let told: Vec<_> = {
+        let open = sessions.lock().unwrap_or_else(PoisonError::into_inner);
+        ready
+            .iter()
+            .filter_map(|stream| open.get(stream).cloned())
+            .collect()
+    };
+    for told in told {
+        told.notify_one();
+    }
 }
 
 impl PlaneDriver {
@@ -184,13 +199,14 @@ impl PlaneDriver {
             if ready.is_empty() {
                 return;
             }
-            let open = self.lock_sessions();
-            for told in ready.iter().filter_map(|stream| open.get(stream)) {
-                told.notify_one();
-            }
+            wake_ready(&self.sessions, &ready);
         }
     }
 }
+
+#[cfg(test)]
+#[path = "tests/session_wake_tests.rs"]
+mod session_wake_tests;
 
 /// Why `end` ended a side; `None` for a side that simply finished.
 fn cause(end: &End) -> Option<ReasonCode> {
@@ -234,6 +250,7 @@ impl<S: crate::plane_driver::DriverSteps + Sync, F: FarEnd, C: SessionCaller>
         priced: bool,
     ) -> Result<(), ReasonCode> {
         let d = self.driver;
+        self.open_hooks(token, ctx).await?;
         if priced {
             d.money.session_opened(ctx)?;
         }
@@ -263,7 +280,6 @@ impl<S: crate::plane_driver::DriverSteps + Sync, F: FarEnd, C: SessionCaller>
             let dialect = st.decoded.as_ref().map_or(0, |x| x.dialect);
             (dialect, st.caller_ref.clone())
         };
-        let far_state = Mutex::new(UnitState::default());
         let none = bytes::Bytes::new();
         let mut near_run = Pumping::new(
             d,
@@ -274,7 +290,7 @@ impl<S: crate::plane_driver::DriverSteps + Sync, F: FarEnd, C: SessionCaller>
             self.deadline_ns,
             none.clone(),
         );
-        let mut far_run = Pumping::new(d, token, &far_state, ctx, far, self.deadline_ns, none);
+        let mut far_run = Pumping::new(d, token, &self.state, ctx, far, self.deadline_ns, none);
         for run in [&mut near_run, &mut far_run] {
             run.lend_unit(self.arrival.claim, dialect, &caller_ref, stream);
         }
@@ -307,8 +323,15 @@ impl<S: crate::plane_driver::DriverSteps + Sync, F: FarEnd, C: SessionCaller>
         mut ended: watch::Receiver<Option<Halt>>,
         turns: mpsc::Sender<OutboundRequest>,
     ) -> End {
+        let mut opening = true;
         loop {
-            let next = guarded_run(run, async {
+            let next = if std::mem::take(&mut opening) {
+                // The plane may have an opening request or server-first output even when the
+                // caller has sent no frame. It uses the same crossing, writes and backpressure
+                // as every later piece; it never marks the caller's side ended.
+                Ok(Next::Open)
+            } else {
+                guarded_run(run, async {
                 tokio::select! {
                     biased;
                     halt = ended.wait_for(Option::is_some) => {
@@ -317,8 +340,9 @@ impl<S: crate::plane_driver::DriverSteps + Sync, F: FarEnd, C: SessionCaller>
                     () = told.notified() => Next::Collect,
                     read = self.caller.read_owned() => Next::Caller(read),
                 }
-            })
-            .await;
+                })
+                .await
+            };
             let quiet = Piece {
                 from: FROM_CALLER,
                 flags: 0,
@@ -329,6 +353,7 @@ impl<S: crate::plane_driver::DriverSteps + Sync, F: FarEnd, C: SessionCaller>
                 reason: 0,
             };
             let piece = match next {
+                Ok(Next::Open) => quiet,
                 Err(cause) | Ok(Next::Halt(Halt::Cause(cause))) => return End::Cancel(cause, None),
                 Ok(Next::Halt(Halt::Over) | Next::Caller(None)) => Piece {
                     flags: PIECE_LAST,
@@ -398,7 +423,6 @@ impl<S: crate::plane_driver::DriverSteps + Sync, F: FarEnd, C: SessionCaller>
             Ok(Ok(None)) => return End::Done,
             Ok(Ok(Some(request))) => request,
         };
-        run.lock().facts = Facts::default();
         let held = watch::Sender::new(false);
         let token = run.token;
         let turn = Turn {
@@ -450,9 +474,19 @@ impl<S: crate::plane_driver::DriverSteps + Sync, F: FarEnd, C: SessionCaller>
         end: End,
         ended: &EndCell,
     ) -> Result<(), ReasonCode> {
-        let why = cause(&end);
-        if let End::Cancel(reason, done) = end {
-            let _bill = run.cancel(reason, done);
+        // The first side owns the session outcome. A worker retires a Pending sibling with
+        // a host timeout answer after normal unit completion; that induced failure must not
+        // replace the normal end already recorded by its completing sibling.
+        let why = match *ended.borrow() {
+            Some(Halt::Over) => None,
+            Some(Halt::Cause(reason)) => Some(reason),
+            None => cause(&end),
+        };
+        // Stop the sibling before awaiting a worker control reply. Its next guarded wait must
+        // observe this cause rather than submitting more work to a retiring logical unit.
+        end_session(ended, why.map_or(Halt::Over, Halt::Cause));
+        if let (Some(reason), End::Cancel(_, done)) = (why, end) {
+            let _bill = run.cancel(reason, done).await;
             if reason == ReasonCode::OverBudget {
                 self.cut_frame().await;
             }

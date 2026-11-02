@@ -107,3 +107,79 @@ fn a_credential_that_is_not_text_has_no_record_form() {
     };
     assert!(to_vec(&r).is_err());
 }
+
+#[test]
+fn record_growth_failure_and_unwind_wipe_each_initialized_encoder_allocation() {
+    use crate::alloc_counter::InitializedPayloadProbe;
+
+    #[derive(serde::Serialize)]
+    struct LongRecord {
+        auth: Row,
+        tail: String,
+        stop: Stop,
+    }
+    struct Stop(u8);
+    impl serde::Serialize for Stop {
+        fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+            match self.0 {
+                1 => Err(serde::ser::Error::custom(
+                    "record refused after its payload",
+                )),
+                2 => panic!("record serializer unwound after its payload"),
+                _ => serializer.serialize_unit(),
+            }
+        }
+    }
+
+    for stop in 0..3 {
+        let secret = SECRET.repeat(1024);
+        let record = LongRecord {
+            auth: Row {
+                scheme: "Bearer".into(),
+                credentials: cred(&secret),
+            },
+            tail: "tail".repeat(32_768),
+            stop: Stop(stop),
+        };
+        // SAFETY: encoder allocations stay owned, initialized and on this thread until they
+        // are wiped/freed; the long record forces growth after credential bytes were written.
+        let probe = unsafe { InitializedPayloadProbe::start().expect("open payload observer") };
+        let encoded = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| to_vec(&record)));
+        match (stop, encoded) {
+            (0, Ok(Ok(bytes))) => {
+                assert!(bytes
+                    .windows(secret.len())
+                    .any(|bytes| bytes == secret.as_bytes()));
+                drop(bytes);
+            }
+            (1, Ok(Err(_))) | (2, Err(_)) => {}
+            _ => panic!("wrong serializer outcome"),
+        }
+        let observed = probe.finish();
+        assert!(!observed.reentered);
+        assert!(observed.payloads.len() > 2, "the actual encoder grew");
+        for payload in observed.payloads {
+            assert!(payload.freed, "encoder allocation survived: {payload:?}");
+            assert!(
+                !payload.reallocated,
+                "ordinary realloc retired encoder bytes"
+            );
+            #[cfg(target_os = "linux")]
+            {
+                assert_eq!(payload.read_error, None);
+                assert!(payload.complete_read);
+                assert_eq!(payload.bytes_read, payload.len);
+                assert!(
+                    payload.wiped,
+                    "encoder bytes reached free unwiped: {payload:?}"
+                );
+            }
+            #[cfg(not(target_os = "linux"))]
+            assert_eq!(payload.read_error, Some(std::io::ErrorKind::Unsupported));
+        }
+        assert!(
+            serde_json::to_string(&record.auth).is_err(),
+            "record scope closed"
+        );
+    }
+}

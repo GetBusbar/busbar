@@ -855,6 +855,10 @@ fn begin_login(p: &Plugin<Auth>, begin: &serde_json::Value) -> String {
     f.input.code_challenge = AbiStr::over(&challenge);
     f.input.nonce = AbiStr::over(&nonce);
     let c = p.call(slot::BEGIN_LOGIN, &mut f);
+    // On Fault the loader has not judged the returned pointers or lease.
+    if c.outcome != busbar_contract::abi::mechanism::call::Outcome::Ready {
+        return format!("{} UNREAD", called(&c));
+    }
     let shape = if f.out.shape == BEGIN_FORM {
         format!("form={}", spelled_form(&f.out))
     } else {
@@ -1502,3 +1506,7 @@ fn contract(
 #[cfg(all(test, loader_self_tests))]
 #[path = "../../tests/conformance_auth_form_tests.rs"]
 mod form_tests;
+
+#[cfg(all(test, loader_self_tests))]
+#[path = "../../tests/conformance_auth_unjudged_tests.rs"]
+mod unjudged_tests;

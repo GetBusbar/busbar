@@ -18,7 +18,7 @@
 
 use std::collections::BTreeMap;
 
-use busbar_contract::kinds::RecordBytes;
+use busbar_contract::abi::sdk::store::conditional::{Decision, Expected, Mutation, Predicate};
 use busbar_contract::plugin_rows::{PluginRows, Trust};
 use busbar_contract::store_calls::StoreCalls;
 
@@ -62,28 +62,54 @@ pub fn hold(
             continue;
         }
         let key = floor_key(host, &row.name);
-        let held = wait_for(calls.record_get(PLUGIN_FLOOR_SCHEMA, &key))
-            .map_err(|e| format!("the first-party floor of `{}`: {e}", row.name))?
-            .and_then(|v| String::from_utf8(v.as_slice().to_vec()).ok())
-            .filter(|v| valid_semver(v));
-        if let Some(floor) = &held {
-            if !pins.contains_key(&row.name) && !version_at_least(&row.version, floor) {
-                return Err(format!(
+        loop {
+            let held = wait_for(calls.record_get(PLUGIN_FLOOR_SCHEMA, &key))
+                .map_err(|e| format!("the first-party floor of `{}`: {e}", row.name))?;
+            let floor = held
+                .as_ref()
+                .map(|v| {
+                    std::str::from_utf8(v.as_slice())
+                        .ok()
+                        .filter(|v| valid_semver(v))
+                        .ok_or_else(|| {
+                            format!("the first-party floor of `{}` is malformed", row.name)
+                        })
+                })
+                .transpose()?;
+            if let Some(floor) = floor {
+                if pins.get(&row.name) != Some(&row.version)
+                    && !version_at_least(&row.version, floor)
+                {
+                    return Err(format!(
                     "the first-party plugin `{}` {} is below {floor}, the highest version of it this \
                      host has loaded: an old signed release does not load in its place. To roll it \
                      back on purpose, call the audited `POST /api/v1/admin/plugins/rollback` with \
                      `{{\"file\": \"{}\"}}`; it pins `{}` in the overlay's `plugin_versions`",
                     row.name, row.version, row.file, row.name
                 ));
+                }
+                if version_at_least(floor, &row.version) {
+                    break;
+                }
             }
-            if version_at_least(floor, &row.version) {
-                continue;
+            let request = super::conditional::candidate(
+                vec![Predicate {
+                    schema: PLUGIN_FLOOR_SCHEMA.into(),
+                    key: key.clone(),
+                    expected: held
+                        .map_or(Expected::Absent, |v| Expected::Bytes(v.as_slice().to_vec())),
+                }],
+                vec![Mutation::Put {
+                    schema: PLUGIN_FLOOR_SCHEMA.into(),
+                    key: key.clone(),
+                    value: row.version.as_bytes().to_vec(),
+                }],
+            );
+            match super::conditional::decide(calls, &request)? {
+                Decision::Applied => break,
+                Decision::ConditionConflict => continue,
             }
         }
-        let value = RecordBytes::new(row.version.clone().into_bytes())
-            .map_err(|n| format!("a {n}-byte first-party floor of `{}`", row.name))?;
-        wait_for(calls.record_put(PLUGIN_FLOOR_SCHEMA, &key, &value))
-            .map_err(|e| format!("the first-party floor of `{}`: {e}", row.name))?;
     }
     Ok(())
 }

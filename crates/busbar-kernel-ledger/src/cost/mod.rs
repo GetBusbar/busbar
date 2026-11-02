@@ -83,7 +83,7 @@ mod view;
 pub use busbar_contract::count::Count;
 pub use history::{
     Author, CardEntry, CardEntryDraft, EntryId, EntryKey, History, HistorySeq, HistoryView,
-    ENTRY_ID_LEN, ENTRY_KEY_LEN,
+    RawRateEra, ENTRY_ID_LEN, ENTRY_KEY_LEN,
 };
 pub use posting::{
     checked_apply_tier, price, price_at_card, price_fail_closed, Posting, Priced, PricedLine,

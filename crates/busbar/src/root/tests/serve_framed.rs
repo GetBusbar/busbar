@@ -76,6 +76,11 @@ async fn a_framed_stream_carries_messages_and_its_final_status_is_its_framers() 
     let a = framed(&g, "/framed/status", b"\x02hi\x03abc").await;
     assert_eq!(a.status, 200);
     assert_eq!(
+        field(&a.head, "trailer"),
+        Some("frame-status, frame-reason, frame-message, frame-details"),
+        "the stream framer declares its closing fields before the first body byte"
+    );
+    assert_eq!(
         a.body, b"\x05hiabc",
         "the reply message, framed by the framer"
     );

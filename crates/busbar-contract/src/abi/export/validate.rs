@@ -101,7 +101,17 @@ pub fn check_tail(t: &Tail) -> Result<(), Fault> {
 ///
 /// # Errors
 /// The rule an entry breaks.
-pub fn check_tail_entries(streams: &[u8], routes: &[Route]) -> Result<(), Fault> {
+/// # Safety
+/// Every non-NULL, nonempty route path must name live initialized bytes of its stated length
+/// throughout this call. The validator checks pointer shape, not pointer liveness.
+///
+/// ```compile_fail,E0133
+/// use busbar_contract::abi::export::{Route, validate::check_tail_entries};
+/// fn without_ownership_proof(routes: &[Route]) {
+///     let _ = check_tail_entries(&[], routes);
+/// }
+/// ```
+pub unsafe fn check_tail_entries(streams: &[u8], routes: &[Route]) -> Result<(), Fault> {
     for (i, s) in streams.iter().enumerate() {
         code(
             u64::from(*s),
@@ -116,7 +126,7 @@ pub fn check_tail_entries(streams: &[u8], routes: &[Route]) -> Result<(), Fault>
     for r in routes {
         text(r.path, "tail.routes.path")?;
         text(r.method, "tail.routes.method")?;
-        // SAFETY: `text` checked a non-empty path is not NULL; one byte is read.
+        // SAFETY: `text` checked non-NULL shape; the caller guarantees this path byte is live.
         if r.path.len == 0 || unsafe { *r.path.ptr } != b'/' {
             return Err(fault(Rule::Missing, "tail.routes.path.root"));
         }

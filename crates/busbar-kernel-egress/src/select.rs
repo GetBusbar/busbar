@@ -26,7 +26,7 @@ use crate::ports::{Admit, Breaker, Capacity, DestinationId, Permit, Unavailable}
 
 /// The request's own state across the whole walk: the deadline, everything it has already tried,
 /// the pools it has already been through, and why the last pick found nothing.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct RequestCtx {
     /// The walk's deadline in whole seconds since the epoch, computed once at the start.
     deadline_secs: u64,

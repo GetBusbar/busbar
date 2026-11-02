@@ -13,6 +13,9 @@ use crate::config::{HookCfg, HookKind, PolicyOnError, PoolPolicy, PromptAccess, 
 use busbar_contract::hook_calls::HookAxis as _;
 use std::collections::HashMap;
 
+#[path = "resolution_tests.rs"]
+mod resolution_tests;
+
 const EXTRA_STRATEGY: &str = "operator-order";
 
 struct ReceivingCalls {

@@ -679,14 +679,14 @@ fn a_replayed_idempotency_key_answers_the_first_answers_bytes() {
     // Every run mints a fresh one-time secret, so a second run is told apart from a replay.
     let mint = || {
         let n = minted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        Ok(AdminAnswer {
+        Ok(bound::EffectAnswer::applied(AdminAnswer {
             status: 201,
             headers: vec![
                 ("content-type".to_string(), "application/json".to_string()),
                 ("location".to_string(), format!("/api/v1/admin/keys/vk_{n}")),
             ],
             body: format!(r#"{{"id":"vk_{n}","secret":"once-{n}"}}"#).into_bytes(),
-        })
+        }))
     };
     let first_answer = AdminAnswer {
         status: 201,
@@ -708,6 +708,7 @@ fn a_replayed_idempotency_key_answers_the_first_answers_bytes() {
             "operator",
             &request,
             &request.body,
+            None,
             mint,
         )
         .expect("the write answers")
@@ -2840,8 +2841,7 @@ fn amend_through_a_journal(
 #[cfg(test)]
 fn replayed_amendments(durability: &crate::root::durability::Durability) -> Vec<AmendmentRecord> {
     durability
-        .journal
-        .replay()
+        .chain()
         .expect("the journal reads back")
         .expect("the journal verifies")
         .iter()
@@ -3487,7 +3487,7 @@ fn a_replayed_signed_correction_is_refused_and_appends_nothing() {
 
 /// A scratch data directory, removed on drop.
 #[cfg(test)]
-struct AmendScratch(std::path::PathBuf);
+struct AmendScratch(std::path::PathBuf, crate::root::store_double::RecordSlots);
 
 #[cfg(test)]
 impl AmendScratch {
@@ -3499,18 +3499,22 @@ impl AmendScratch {
         ));
         let _ = std::fs::remove_dir_all(&path);
         std::fs::create_dir_all(&path).expect("scratch directory");
-        AmendScratch(path)
+        AmendScratch(path, crate::root::store_double::RecordSlots::new())
     }
 
     fn book(&self) -> Arc<Mutex<crate::root::durability::Durability>> {
+        let lane =
+            crate::root::durability::JournalLane::start(self.1.calls(), "test-store").unwrap();
         Arc::new(Mutex::new(
-            crate::root::durability::build(
+            crate::root::durability::build_on_store(
                 &crate::root::durability::DurabilityConfig {
                     data_dir: Some(self.0.clone()),
                 },
-                Box::new(busbar_kernel_wal::NullShipper::new()),
+                0,
+                lane,
+                None,
             )
-            .expect("the directory is writable"),
+            .expect("the Store reads back"),
         ))
     }
 }
@@ -3539,7 +3543,7 @@ fn a_priced_correction(fee: i64, micro: serde_json::Value) -> Vec<u8> {
 /// THE DEFECT THIS CLOSES. The only trail an amendment left was the root's legacy admin ring — a
 /// volatile thousand entries behind `NoSeam`, four strings (action, path, outcome, principal) and no
 /// figure. One restart erased it. The record now goes onto the node's journal: after the book is
-/// dropped and reopened over the same data directory, the amendment is there with the window, the
+/// dropped and reopened over the same Store, the amendment is there with the window, the
 /// sealed fee and rate, the submitter and the canonical bytes of the correction; the signer and
 /// signature slots are empty (#77(9)).
 #[test]
@@ -3558,8 +3562,10 @@ fn a_sealed_amendment_survives_a_restart_with_its_figures() {
         .expect("the correction applies");
     }
 
-    // RESTART: a fresh book over the same directory.
+    // RESTART: a fresh book over the same Store.
     let restarted = scratch.book();
+    assert!(restarted.lock().unwrap().durable_in_store());
+    assert_eq!(std::fs::read_dir(&scratch.0).unwrap().count(), 0);
     let records = replayed_amendments(&restarted.lock().unwrap());
     assert_eq!(records.len(), 1, "the amendment survived the restart");
     let record = &records[0];
@@ -3685,6 +3691,8 @@ fn a_thousand_later_amendments_do_not_erase_the_first() {
         }
     }
     let restarted = scratch.book();
+    assert!(restarted.lock().unwrap().durable_in_store());
+    assert_eq!(std::fs::read_dir(&scratch.0).unwrap().count(), 0);
     let records = replayed_amendments(&restarted.lock().unwrap());
     assert_eq!(records.len(), 1_001, "every amendment is on the journal");
     assert_eq!(
@@ -4220,6 +4228,154 @@ fn a_commit_the_journal_retained_is_answered_not_yet_kept_and_lands() {
     assert_eq!(commits, 1, "the retained commit landed on the chain");
 }
 
+/// A real journal write pends after healthy admission, then its acknowledgement deadline expires.
+/// The root replay wrapper must keep the sealed receipt across local retries, restart and TTL.
+#[test]
+fn a_keyed_commit_with_a_late_store_ack_seals_one_policy() {
+    let slots = crate::root::store_double::RecordSlots::new();
+    let book = a_book_over_the_store(&slots);
+    let journal = Arc::new(a_journal_over(&book));
+    append_the_next_record(&book);
+    journal
+        .acked(journal.sealed_through())
+        .expect("healthy journal");
+    journal.admit().expect("admitted before the store pends");
+    let store: Arc<dyn busbar_contract::records::RecordStore> =
+        Arc::new(busbar_kernel::governance::MemoryStore::new());
+    let replay_store: bound::ReplayStore = Arc::new(move || Some(Arc::clone(&store)));
+    let mut request = a_request();
+    request.method = "POST".into();
+    request.path = "/api/v1/admin/commit-upgrade".into();
+    request.headers = vec![("idempotency-key".into(), "late-commit-ack".into())];
+    request.body =
+        serde_json::to_vec(&serde_json::json!({ "version": bound::RUNNING_RELEASE })).unwrap();
+    let cache = Arc::new(bound::ReplayCache::new());
+    let admin = crate::root::kernel::new_kernel().admin_token();
+    let ask = |cache: Arc<bound::ReplayCache>,
+               request: &AdminRequest,
+               journal: Option<Arc<AmendmentJournal>>| {
+        let governance = CoreGovernance::new(
+            Arc::new(RefusingDispatch),
+            Arc::new(UnopenedLedger),
+            None,
+            KernelVerb::CommitUpgrade,
+            request.clone(),
+        )
+        .amending(
+            journal,
+            AmendAttribution {
+                principal: "admin".into(),
+            },
+        )
+        .replaying(cache, Some(Arc::clone(&replay_store)));
+        busbar_core_admin::Governance::execute_new_verb(
+            &governance,
+            KernelVerb::CommitUpgrade,
+            &admin,
+            &request.body,
+        )
+        .expect("the production caller answers")
+    };
+    struct Unpause<'a>(&'a crate::root::store_double::RecordSlots);
+    impl Drop for Unpause<'_> {
+        fn drop(&mut self) {
+            self.0.pause(false);
+        }
+    }
+    slots.pause(true);
+    let release = Unpause(&slots);
+    let first = ask(Arc::clone(&cache), &request, Some(Arc::clone(&journal)));
+    assert_eq!(
+        first.status,
+        503,
+        "{}",
+        String::from_utf8_lossy(&first.body)
+    );
+    assert!(String::from_utf8_lossy(&first.body).contains("do not re-submit"));
+    assert!(slots.waiting() > 0, "the real Store future reached Pending");
+    let sealed = journal.sealed_through();
+    drop(release);
+    journal
+        .acked(sealed)
+        .expect("the first receipt is now acknowledged");
+    assert_eq!(
+        ask(Arc::clone(&cache), &request, Some(Arc::clone(&journal))),
+        first
+    );
+    request.at += busbar_core_admin::idempotency::IDEMPOTENCY_TTL_SECS + 1;
+    assert_eq!(
+        ask(Arc::clone(&cache), &request, Some(Arc::clone(&journal))),
+        first,
+        "TTL cannot release the retained receipt"
+    );
+    assert_eq!(
+        ask(
+            Arc::new(bound::ReplayCache::new()),
+            &request,
+            Some(Arc::clone(&journal))
+        ),
+        first,
+        "restart keeps the receipt"
+    );
+    assert_eq!(
+        ask(Arc::new(bound::ReplayCache::new()), &request, None),
+        first,
+        "a sibling cannot replace the originating receipt"
+    );
+    assert_eq!(
+        journal.sealed_through(),
+        sealed,
+        "reconciliation seals nothing"
+    );
+    let chain = { book.lock().unwrap().chain_at() }.read().unwrap().unwrap();
+    assert_eq!(
+        chain
+            .iter()
+            .filter(|record| record.class == busbar_kernel_wal::RecordClass::Policy)
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn a_keyed_commit_refused_before_sealing_accepts_corrected_input() {
+    let book = a_memory_book();
+    let journal = a_journal_over(&book);
+    let store: Arc<dyn busbar_contract::records::RecordStore> =
+        Arc::new(busbar_kernel::governance::MemoryStore::new());
+    let replay_store: bound::ReplayStore = Arc::new(move || Some(Arc::clone(&store)));
+    let cache = bound::ReplayCache::new();
+    let mut request = a_request();
+    request.headers = vec![("idempotency-key".into(), "corrected-commit".into())];
+    request.body = br#"{"version":"not-this-binary"}"#.to_vec();
+    let ask = |request: &AdminRequest| {
+        bound::replayable(
+            &cache,
+            Some(&replay_store),
+            KernelVerb::CommitUpgrade,
+            "admin",
+            request,
+            &request.body,
+            Some(&journal),
+            || bound::commit_upgrade_effect(&request.body, request.at, "admin", Some(&journal)),
+        )
+        .expect("the write answers")
+    };
+    let before = journal.sealed_through();
+    assert_eq!(ask(&request).status, 409);
+    assert_eq!(
+        journal.sealed_through(),
+        before,
+        "a definite refusal sealed nothing"
+    );
+    request.body =
+        serde_json::to_vec(&serde_json::json!({ "version": bound::RUNNING_RELEASE })).unwrap();
+    let accepted = ask(&request);
+    assert_eq!(accepted.status, 200);
+    assert_eq!(ask(&request), accepted);
+    assert_eq!(journal.sealed_through(), before + 1);
+}
+
 /// ROUTE IS FAIL-CLOSED ON AN ABSENT GRANT (audit root-R1 M7).
 ///
 /// Approve records the caller's grant before Route reads it, and refuses a caller holding none. A
@@ -4269,11 +4425,11 @@ fn a_keyed_write_retried_after_a_restart_replays_and_runs_nothing_again() {
     let ran = std::sync::atomic::AtomicUsize::new(0);
     let effect = || {
         let n = ran.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        Ok(AdminAnswer {
+        Ok(bound::EffectAnswer::applied(AdminAnswer {
             status: 201,
             headers: vec![("content-type".to_string(), "application/json".to_string())],
             body: format!(r#"{{"run":{n}}}"#).into_bytes(),
-        })
+        }))
     };
     let first = bound::replayable(
         &bound::ReplayCache::new(),
@@ -4282,6 +4438,7 @@ fn a_keyed_write_retried_after_a_restart_replays_and_runs_nothing_again() {
         "operator",
         &request,
         &request.body,
+        None,
         effect,
     )
     .expect("the first write answers");
@@ -4293,6 +4450,7 @@ fn a_keyed_write_retried_after_a_restart_replays_and_runs_nothing_again() {
         "operator",
         &request,
         &request.body,
+        None,
         effect,
     )
     .expect("the retry answers");

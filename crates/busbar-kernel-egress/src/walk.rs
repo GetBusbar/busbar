@@ -155,7 +155,7 @@ pub struct Waited<'p> {
 
 /// ONE UNIT'S WALK: its request context (deadline, every member tried, every pool visited), where
 /// it is, and how many hops it has taken.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Walk {
     ctx: RequestCtx,
     phase: Phase,

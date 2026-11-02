@@ -23,6 +23,9 @@ use super::{compose_planes, compose_served, data_routes, door_routes};
 use crate::root::loader::dispatch::{DispatchConfig, Dispatcher};
 use crate::root::plane_node::{Node, NodeEndPost};
 
+#[path = "serve_datagram_open.rs"]
+mod datagram_opening_tests;
+
 /// A governed composition of the test plane: a signing book with one minted key, the plane's
 /// section one entry `m`, its data routes on a data router built with them, over a node of its own.
 pub(super) struct Governed {
@@ -1156,6 +1159,289 @@ fn session_custody_nest(parent: u64, target: &str) -> busbar_kernel::host_servic
             body: b"ping".to_vec(),
         },
     }
+}
+
+/// Capture the structured attachment diagnostic as tracing formats it for a subscriber.
+#[derive(Clone, Default)]
+struct AttachErrors(Arc<std::sync::Mutex<Vec<String>>>);
+
+impl tracing::field::Visit for AttachErrors {
+    fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+        if field.name() == "error" {
+            self.0
+                .lock()
+                .expect("unpoisoned")
+                .push(format!("{value:?}"));
+        }
+    }
+}
+
+impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for AttachErrors {
+    fn on_event(
+        &self,
+        event: &tracing::Event<'_>,
+        _ctx: tracing_subscriber::layer::Context<'_, S>,
+    ) {
+        event.record(&mut self.clone());
+    }
+}
+
+/// An attachment can fail after the kernel admitted the unit. That failure must replace the
+/// open's provisional Completed outcome before its one record is sealed, and close once.
+#[tokio::test]
+async fn a_failed_session_attachment_records_its_fault_and_cleans_up_once() {
+    use busbar_contract::caps::{Outcome, ReasonCode, StepName};
+    use tracing_subscriber::layer::SubscriberExt as _;
+    const ATTACH_FAILURE: &str = "the session book refused the unit: collision\nsecond line";
+    let _one = PUBLISHING.lock().await;
+    for fails in [true, false] {
+        let mut g = governed("session-attach-outcome", false);
+        let routes = session_custody_routes(&mut g, false);
+        let admitted = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let ended = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let on_admit = Arc::clone(&admitted);
+        let on_end = Arc::clone(&ended);
+        let errors = AttachErrors::default();
+        let _subscribed =
+            tracing::subscriber::set_default(tracing_subscriber::registry().with(errors.clone()));
+        let attach = super::Attach {
+            answered: super::SWITCHED,
+            admitted: Some(Box::new(move |unit| {
+                on_admit.lock().expect("unpoisoned").push(unit);
+                if fails {
+                    Err(ATTACH_FAILURE.to_string())
+                } else {
+                    Ok(())
+                }
+            })),
+            ended: Some(Box::new(move |unit| {
+                on_end.lock().expect("unpoisoned").push(unit);
+            })),
+        };
+        let (door, arrival, _) = routes.arrived(0, 1, session_custody_request(&g, "/open"));
+        let (verdict, said) = tokio::sync::oneshot::channel();
+        Arc::clone(&routes)
+            .session(door, session_custody_caller(), arrival, verdict, attach)
+            .await;
+        let verdict = said.await.expect("session verdict");
+        if fails {
+            assert!(
+                matches!(verdict, Err(None)),
+                "the carrier was never accepted"
+            );
+            let errors = errors.0.lock().expect("unpoisoned");
+            assert!(
+                errors.contains(&format!("{ATTACH_FAILURE:?}")),
+                "{errors:?}"
+            );
+            assert!(errors.iter().all(|error| !error.contains('\n')));
+        } else {
+            assert!(verdict.is_ok(), "the successful carrier was accepted");
+        }
+        let admitted = admitted.lock().expect("unpoisoned");
+        let ended = ended.lock().expect("unpoisoned");
+        assert_eq!(admitted.len(), 1);
+        assert_eq!(
+            *ended, *admitted,
+            "the carrier closes exactly once for its unit"
+        );
+        let book = g.book.lock().expect("unpoisoned");
+        assert_eq!(book.audit_records.len(), 1, "one final session record");
+        let record = &book.audit_records[0];
+        assert_eq!(record.what.unit_key.get(), admitted[0]);
+        assert_eq!(
+            record.outcome.unit_end,
+            if fails {
+                Outcome::Refused(StepName::Route, ReasonCode::HandoffMismatch)
+            } else {
+                Outcome::Completed
+            }
+        );
+        assert_eq!(g.post.open_units(), 0);
+        assert_eq!(g.money.open_units(), 0);
+        assert!(routes.frames_lock().is_empty());
+    }
+}
+
+/// A child whose reply crosses the existing buffering bound has already been admitted and
+/// produced output. Its host answer must say FAILED; a claim with no child still says REFUSED.
+#[tokio::test]
+async fn an_executed_nested_unit_with_an_oversized_reply_fails_instead_of_refusing() {
+    let _one = PUBLISHING.lock().await;
+    let g = governed("nested-unread-outcome", true);
+    let target = format!(
+        "/call/nest:/call/local-repeat:{}",
+        super::NEST_REPLY_MAX + 1
+    );
+    let (status, body) = g.post(&target, true).await;
+    assert_eq!(status, axum::http::StatusCode::OK.as_u16());
+    assert_eq!(body, format!("nest-failed:{}", super::NEST_UNREAD));
+    assert_eq!(g.requests(), 2, "the parent and exactly one admitted child");
+    assert_eq!(g.post.open_units(), 0);
+    assert_eq!(g.money.open_units(), 0);
+    {
+        let book = g.book.lock().expect("unpoisoned");
+        assert_eq!(book.audit_records.len(), 2);
+        assert_eq!(
+            book.audit_records
+                .iter()
+                .filter(|r| r.what.parent.is_some())
+                .count(),
+            1,
+            "the executed child is recorded once"
+        );
+    }
+    let (status, body) = g.post("/call/nest:/nowhere", true).await;
+    assert_eq!(status, axum::http::StatusCode::OK.as_u16());
+    assert_eq!(body, format!("nest-refused:{}", super::NEST_UNSERVED));
+    assert_eq!(g.requests(), 3, "an unserved claim starts no child");
+}
+
+/// Declaring a whole reply must not make the nested ingress buffer it before the nesting cap
+/// applies. The real child produces bounded windows and exposes its byte counter independently.
+#[tokio::test]
+async fn a_nested_declared_length_reply_stops_its_producer_at_the_existing_bound() {
+    let _one = PUBLISHING.lock().await;
+    let g = governed("nested-declared-length-bound", true);
+    let declared = super::NEST_REPLY_MAX * 4;
+    let (status, body) = g
+        .post(
+            &format!("/call/nest:/call/local-repeat-whole:{declared}"),
+            true,
+        )
+        .await;
+    assert_eq!(status, axum::http::StatusCode::OK.as_u16());
+    assert_eq!(body, format!("nest-failed:{}", super::NEST_UNREAD));
+    // Dropping the bounded reply drops its real producer. The ordinary lost-task sweep seals
+    // its final record and closes its money; no test aborts or substitutes the child's task.
+    tokio::time::timeout(super::OPEN_HEAD_WAIT, async {
+        loop {
+            g.post.node().sweep(g.post.node().arrived());
+            if g.post.open_units() == 0
+                && g.money.open_units() == 0
+                && g.book.lock().expect("unpoisoned").audit_records.len() == 2
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("the actual child retires");
+    assert_eq!(g.requests(), 2, "the parent and one child admission");
+    let (status, produced) = g.post("/call/local-produced", true).await;
+    assert_eq!(status, axum::http::StatusCode::OK.as_u16());
+    let produced: usize = produced
+        .parse()
+        .expect("the fixture's produced-byte counter");
+    // One channel slot, the window that crosses the cap, and a crossing already in flight.
+    const RETAINED_WINDOWS: usize = 3;
+    assert!(produced > super::NEST_REPLY_MAX);
+    assert!(
+        produced <= super::NEST_REPLY_MAX + RETAINED_WINDOWS * super::BufferCaps::default().reply,
+        "the producer ran beyond the bounded ingress windows: {produced}"
+    );
+    assert!(
+        produced < declared,
+        "the whole reply was never precollected"
+    );
+    let (_, stable) = g.post("/call/local-produced", true).await;
+    assert_eq!(
+        stable.parse::<usize>().expect("counter"),
+        produced,
+        "the child stopped producing"
+    );
+}
+
+#[tokio::test]
+async fn in_bound_nested_whole_and_streamed_replies_keep_their_bytes_and_head_fields() {
+    use busbar_kernel::plane_driver::CallerEnd as _;
+    const PAYLOAD: &[u8] = b"the child's complete body";
+    const FIELD_NAME: &str = "x-child-fixture";
+    const FIELD_VALUE: &[u8] = b"  same bytes  ";
+    for whole in [true, false] {
+        let (caller, reply) = super::IngressCaller::new();
+        let unit = async move {
+            let mut fields = vec![(FIELD_NAME.as_bytes().to_vec(), FIELD_VALUE.to_vec())];
+            if whole {
+                fields.push((
+                    axum::http::header::CONTENT_LENGTH
+                        .as_str()
+                        .as_bytes()
+                        .to_vec(),
+                    PAYLOAD.len().to_string().into_bytes(),
+                ));
+            }
+            caller.head(u32::from(axum::http::StatusCode::OK.as_u16()), fields);
+            assert!(caller.write(PAYLOAD).await);
+            None
+        };
+        let response = reply.answer_nested(Box::pin(unit)).await;
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        assert_eq!(
+            response
+                .headers()
+                .get(FIELD_NAME)
+                .expect("child field")
+                .as_bytes(),
+            FIELD_VALUE
+        );
+        assert!(
+            !response
+                .headers()
+                .contains_key(axum::http::header::CONTENT_LENGTH),
+            "whole nested replies retain their previous unlengthened head"
+        );
+        let body = axum::body::to_bytes(response.into_body(), super::NEST_REPLY_MAX)
+            .await
+            .expect("in-bound child reply");
+        assert_eq!(body.as_ref(), PAYLOAD);
+    }
+}
+
+/// The unitless catalog crosses the same credential boundary as an ordinary arrival. Echoing
+/// the head through the real dropped plane observes both removal and exact permitted bytes.
+#[tokio::test]
+async fn a_catalog_never_lends_never_kept_fields_and_preserves_permitted_field_bytes() {
+    use axum::http::{HeaderName, HeaderValue, StatusCode};
+    const PERMITTED_FIELD: &str = "x-catalog-fixture";
+    const PERMITTED_VALUE: &[u8] = b"  permitted\tbytes  ";
+    let _one = PUBLISHING.lock().await;
+    let mut g = governed("catalog-head-custody", false);
+    let routes = session_custody_routes(&mut g, false);
+    let mut request = session_custody_request(&g, "/catalog");
+    for field in busbar_contract::abi::host::conn::connector::NEVER_KEPT {
+        request.headers.insert(
+            HeaderName::from_bytes(field.as_bytes()).expect("a forbidden field name"),
+            HeaderValue::from_static("credential-fixture"),
+        );
+    }
+    request.headers.append(
+        PERMITTED_FIELD,
+        HeaderValue::from_bytes(PERMITTED_VALUE).expect("field bytes"),
+    );
+    request
+        .headers
+        .append(PERMITTED_FIELD, HeaderValue::from_static("second value"));
+    let answer = routes.catalog(0, &request);
+    assert_eq!(answer.status(), StatusCode::OK);
+    for field in busbar_contract::abi::host::conn::connector::NEVER_KEPT {
+        assert!(
+            !answer.headers().contains_key(*field),
+            "catalog received {field}"
+        );
+    }
+    let values: Vec<_> = answer
+        .headers()
+        .get_all(PERMITTED_FIELD)
+        .iter()
+        .map(|v| v.as_bytes())
+        .collect();
+    assert_eq!(values, [PERMITTED_VALUE, b"second value".as_slice()]);
+    assert!(g.book.lock().expect("unpoisoned").audit_records.is_empty());
+    assert_eq!(g.requests(), 0);
+    assert_eq!(g.post.open_units(), 0);
+    assert_eq!(g.money.open_units(), 0);
 }
 
 #[tokio::test]

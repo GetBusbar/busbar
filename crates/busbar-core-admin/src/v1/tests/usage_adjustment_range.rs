@@ -236,8 +236,35 @@ fn adjustment(lane: &str, delta: i128) -> UsageAdjustment {
         key_id: KEY.into(),
         lane: lane.into(),
         era: 0,
+        entry_id: None,
         delta: BTreeMap::from([(UNIT_INPUT.into(), delta)]),
     }
+}
+
+#[test]
+fn adjustments_at_one_timestamp_only_change_rows_of_their_recorded_entry() {
+    let first_history = History::opening(zero_cost().card().clone(), 0);
+    let second_history = History::opening(zero_cost().card().clone(), 1);
+    let first_id = first_history.entries()[0].id();
+    let second_id = second_history.entries()[0].id();
+    assert_ne!(first_id, second_id);
+    let mut first = row(LANE, 0, 7);
+    first.pricing_version = first_id.metering_version();
+    let mut second = row(LANE, 0, 9);
+    second.pricing_version = second_id.metering_version();
+    let mut rows = vec![second, row(LANE, 0, 11), first];
+    let mut exact = adjustment(LANE, -2);
+    exact.entry_id = Some(first_id);
+    fold_adjustments(&mut rows, &[exact]).unwrap();
+    assert_eq!(
+        rows.iter().map(|row| row.tokens_input).collect::<Vec<_>>(),
+        [9, 11, 5]
+    );
+    fold_adjustments(&mut rows, &[adjustment(LANE, 3)]).unwrap();
+    assert_eq!(
+        rows.iter().map(|row| row.tokens_input).collect::<Vec<_>>(),
+        [9, 14, 5]
+    );
 }
 
 #[test]

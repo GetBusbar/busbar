@@ -25,7 +25,7 @@
 //! were); a carrier carried as itself (a database's or a directory's raw stream) and a program
 //! never are, as 1.5.5's drivers never were.
 
-use std::sync::Arc;
+use std::{ffi::OsString, sync::Arc};
 
 pub use crate::proxy_route::{ProxyChoice, ProxyHop};
 
@@ -152,25 +152,50 @@ pub struct ProxyEnvValues {
     pub no: Option<String>,
 }
 
+const HTTPS_PROXY_KEYS: [&str; 2] = ["HTTPS_PROXY", "https_proxy"];
+const HTTP_PROXY_KEYS: [&str; 2] = ["HTTP_PROXY", "http_proxy"];
+const ALL_PROXY_KEYS: [&str; 2] = ["ALL_PROXY", "all_proxy"];
+const NO_PROXY_KEYS: [&str; 2] = ["NO_PROXY", "no_proxy"];
+
 impl ProxyEnvValues {
     /// Uppercase read before lowercase, empty values treated as unset — hyper-util
     /// `matcher::Builder::from_env`'s `get_first_env(&["HTTPS_PROXY", "https_proxy"])`
     /// ordering (empty parses to nothing there; skipping it here is the same outcome).
-    pub fn from_process_env() -> Self {
-        fn first(keys: [&str; 2]) -> Option<String> {
-            keys.iter()
-                .find_map(|k| std::env::var(k).ok().filter(|v| !v.is_empty()))
-        }
-        ProxyEnvValues {
-            https: first(["HTTPS_PROXY", "https_proxy"]),
+    ///
+    /// # Errors
+    ///
+    /// A selected nonempty value is not Unicode, including `NO_PROXY`. The refusal names
+    /// only the variable, never its value, which may contain a proxy credential.
+    pub fn from_process_env() -> Result<Self, String> {
+        Self::from_lookup(|key| std::env::var_os(key))
+    }
+
+    fn from_lookup(mut lookup: impl FnMut(&str) -> Option<OsString>) -> Result<Self, String> {
+        let mut first = |keys: [&str; 2]| -> Result<Option<String>, String> {
+            for key in keys {
+                let Some(value) = lookup(key) else {
+                    continue;
+                };
+                if value.is_empty() {
+                    continue;
+                }
+                return value
+                    .into_string()
+                    .map(Some)
+                    .map_err(|_| format!("proxy environment variable {key} is not valid Unicode"));
+            }
+            Ok(None)
+        };
+        Ok(ProxyEnvValues {
+            https: first(HTTPS_PROXY_KEYS)?,
             // Read unconditionally — hyper-util's matcher additionally skips uppercase
             // `HTTP_PROXY` under CGI (`REQUEST_METHOD` set; the httpoxy guard). busbar is a
             // server binary, never a CGI child, so the guard's precondition cannot hold and
             // the unconditional read is behavior-identical where this process runs.
-            http: first(["HTTP_PROXY", "http_proxy"]),
-            all: first(["ALL_PROXY", "all_proxy"]),
-            no: first(["NO_PROXY", "no_proxy"]),
-        }
+            http: first(HTTP_PROXY_KEYS)?,
+            all: first(ALL_PROXY_KEYS)?,
+            no: first(NO_PROXY_KEYS)?,
+        })
     }
 }
 
@@ -214,10 +239,11 @@ pub fn resolve_config(env: &ProxyEnvValues) -> Result<Option<Arc<ProxyChoice>>, 
 ///
 /// # Errors
 ///
-/// A proxy variable that is set and does not parse: the boot refuses (fail-loud beats silently
-/// egressing direct past a configured proxy), the password never in the text.
+/// A selected proxy or `NO_PROXY` variable is not Unicode, or a proxy variable does not parse:
+/// the boot refuses (fail-loud beats silently egressing direct past a configured proxy), the
+/// password never in the text.
 pub fn from_env() -> Result<Option<Arc<ProxyChoice>>, String> {
-    resolve_config(&ProxyEnvValues::from_process_env())
+    resolve_config(&ProxyEnvValues::from_process_env()?)
 }
 
 /// Hard ceiling on the proxy's CONNECT response head; a real response is one status line + a few

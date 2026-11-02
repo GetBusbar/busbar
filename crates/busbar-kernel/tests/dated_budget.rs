@@ -33,9 +33,22 @@ use busbar_kernel_ledger::cost::{
 };
 
 /// The deployment's dated history, as the composition root holds it.
-struct Holder(Mutex<Arc<History>>);
+struct Holder(Mutex<Arc<History>>, std::sync::atomic::AtomicBool);
 
 impl RateEpoch for Holder {
+    fn era_at(&self, at_ms: u64) -> busbar_kernel_ledger::cost::RawRateEra {
+        use busbar_kernel_ledger::cost::RawRateEra;
+        let history = self.0.lock().unwrap().clone();
+        let view = history.current();
+        view.entry_at(at_ms).map_or(RawRateEra::legacy(0), |entry| {
+            if self.1.load(std::sync::atomic::Ordering::Relaxed) {
+                RawRateEra::entry(entry.effective_from(), entry.id())
+            } else {
+                RawRateEra::legacy(entry.effective_from())
+            }
+        })
+    }
+
     fn effective_from_at(&self, at_ms: u64) -> u64 {
         let history = self.0.lock().unwrap().clone();
         let view = history.current();
@@ -51,17 +64,24 @@ impl RateEpoch for Holder {
 /// history in it.
 static SERIAL: Mutex<()> = Mutex::new(());
 
+#[path = "dated_budget/raw_provenance.rs"]
+mod raw_provenance;
+
 /// The installed holder, re-opened at `card`, and the lock the calling test holds while it runs.
 fn holder_opening(card: RateCard) -> (&'static Holder, std::sync::MutexGuard<'static, ()>) {
     static HOLDER: std::sync::OnceLock<&'static Holder> = std::sync::OnceLock::new();
     let serial = SERIAL.lock().unwrap_or_else(|p| p.into_inner());
     let holder = *HOLDER.get_or_init(|| {
         let opening = Arc::new(History::opening(history_card(0.0), 0));
-        let holder: &'static Holder = Box::leak(Box::new(Holder(Mutex::new(opening))));
+        let holder: &'static Holder = Box::leak(Box::new(Holder(
+            Mutex::new(opening),
+            std::sync::atomic::AtomicBool::new(false),
+        )));
         install_rate_epoch(holder);
         holder
     });
     *holder.0.lock().unwrap() = Arc::new(History::opening(card, 0));
+    holder.1.store(false, std::sync::atomic::Ordering::Relaxed);
     (holder, serial)
 }
 
@@ -674,6 +694,7 @@ fn a_correction_lands_in_its_units_own_window_and_card_entry() {
             key_id: key.id.clone(),
             lane: "m".to_string(),
             era: 0,
+            entry_id: None,
             delta: BTreeMap::from([("input".to_string(), -100_000)]),
         }],
         "the metered view carries the correction on the unit's own day"

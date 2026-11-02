@@ -558,6 +558,7 @@ def row_quickstart_boots(ctx) -> str:
     # documented default (0.0.0.0:8080) is itself part of what this proves.
     with open(os.path.join(work, "config.yaml"), "w") as fh:
         fh.write(
+            "store: { module: memory }\n"
             "providers:\n  anthropic:\n    api_key: { env: ANTHROPIC_KEY }\n"
             "models:\n  claude-sonnet:\n    provider: anthropic\n"
         )
@@ -1416,6 +1417,36 @@ def selftest(contract_path: str = DEFAULT_CONTRACT, targets_path: str = DEFAULT_
         else:
             print("  [FAILED] %-38s -> %s" % (label, why))
             failures += 1
+
+    # Exercise the row's actual config writer, stopping before any listener or artifact runs.
+    # A legacy providers/models-only config must fail this control even if boot is mocked.
+    from unittest.mock import patch
+
+    class ConfigWritten(Exception):
+        pass
+
+    with tempfile.TemporaryDirectory(prefix="busbar-quickstart-config-") as fixture:
+        ctx = Ctx()
+        ctx.work, ctx.repo_root, ctx.exe = fixture, ROOT, "unused-artifact"
+        with patch.dict(row_quickstart_boots.__globals__,
+                        require_free_listener=lambda _listener: None):
+            def config_written(*_args, **kwargs):
+                kwargs["stdout"].close()
+                raise ConfigWritten
+
+            with patch.object(subprocess, "Popen", side_effect=config_written):
+                try:
+                    row_quickstart_boots(ctx)
+                except ConfigWritten:
+                    pass
+        with open(os.path.join(fixture, "quickstart", "config.yaml"), encoding="utf-8") as fh:
+            quickstart = fh.read()
+        check("quickstart config declares the mandatory Store",
+              re.search(r"(?m)^store:\s*\{\s*module:\s*memory\s*\}\s*$", quickstart) is not None,
+              "the actual artifact row supplies the required in-memory Store")
+        check("quickstart still tests the documented default listener",
+              re.search(r"(?m)^listen:", quickstart) is None,
+              "listen remains omitted so the boot row proves the default 0.0.0.0:8080")
 
     # ── THE PLUGIN PROBE'S VERDICT, BOTH STATES, BOTH WAYS ───────────────────────────────────────
     # The row itself needs a real artifact; its JUDGE does not. A `refused` probe must accept the

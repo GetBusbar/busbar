@@ -19,6 +19,15 @@ type Seen = (
 );
 
 impl RateApply for Recorder {
+    fn prepare(
+        &self,
+        _: &CardFields,
+        _: &RawRates<'_>,
+        _: &str,
+    ) -> Result<Box<dyn PreparedRates>, String> {
+        Ok(Box::new(NoRates))
+    }
+
     fn rates_applied(&self, rates: &RawRates<'_>) {
         self.0.lock().unwrap().push((
             rates.lanes.to_vec(),

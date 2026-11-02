@@ -258,10 +258,7 @@ slot!(Open, PlaneOpenIn, PlaneOpenOut, |instance, input, out| {
         session_ticket: AtomicU64::new(0),
         drive_probe: DriveProbe::new(input.field(|i| &i.open.settings).bytes()),
         public: !input.field(|i| &i.public_url).bytes().is_empty(),
-        services: input
-            .field(|i| &i.open)
-            .host()
-            .and_then(|h| Services::of(&h)),
+        services: input.field(|i| &i.open).host().and_then(Services::of),
     };
     out.publish(
         |o| &o.snapshot,

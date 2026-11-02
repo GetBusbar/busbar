@@ -379,8 +379,8 @@ impl std::fmt::Debug for ConditionalOwed {
 #[derive(Debug)]
 pub(crate) struct ConditionalWrite {
     pub instance: Arc<str>,
-    pub request: conditional::Request,
-    pub chains: Vec<crate::host_chains::ConditionalChain>,
+    pub request: zeroize::Zeroizing<conditional::Request>,
+    pub chains: zeroize::Zeroizing<Vec<crate::host_chains::ConditionalChain>>,
     pub owed: ConditionalOwed,
     _unit: Option<Arc<crate::host_units::UnitRecord>>,
     prepared: bool,
@@ -392,8 +392,8 @@ pub(crate) struct ConditionalWrite {
 impl ConditionalWrite {
     pub(crate) fn new(
         instance: Arc<str>,
-        request: conditional::Request,
-        chains: Vec<crate::host_chains::ConditionalChain>,
+        request: zeroize::Zeroizing<conditional::Request>,
+        chains: zeroize::Zeroizing<Vec<crate::host_chains::ConditionalChain>>,
         owed: ConditionalOwed,
         unit: Option<Arc<crate::host_units::UnitRecord>>,
     ) -> Self {
@@ -417,7 +417,7 @@ impl ConditionalWrite {
     ) -> Option<Self> {
         if !self.prepared {
             // Preparation has no effects; never expose this candidate through PendingRecords.
-            for chain in &self.chains {
+            for chain in self.chains.iter() {
                 match chain.prepare(rows, &self.instance, &mut self.request, book) {
                     Ok(position) => self.positions.push(position),
                     Err(why) => {
@@ -426,7 +426,7 @@ impl ConditionalWrite {
                     }
                 }
             }
-            if self.request.encode().is_err() {
+            if self.request.encode_held().is_err() {
                 self.owed.answer(Err(ConditionalFailure::Refused(
                     "invalid record transaction",
                 )));
@@ -513,6 +513,9 @@ impl WriteBehind {
         if q.writes.len() + q.in_flight >= QUEUE_CAP {
             return None;
         }
+        // Keep the write (including its callback) in the outer argument until allocation has
+        // succeeded. An allocation unwind must release the queue lock before that owner drops.
+        q.writes.reserve(1);
         q.writes.push(QueuedWrite::Conditional(write));
         Some(!std::mem::replace(&mut q.flushing, true))
     }

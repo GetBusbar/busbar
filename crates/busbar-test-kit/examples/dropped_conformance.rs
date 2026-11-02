@@ -67,8 +67,9 @@ use busbar_plugin_loader::dispatch::kinds::export::Export;
 use busbar_plugin_loader::dispatch::kinds::secret::Secret;
 use busbar_plugin_loader::dispatch::{
     in_head, load_dropped, out_head, rendering_of_library, Bind, Called, DispatchConfig,
-    Dispatcher, Frame, InFrame, Kind, LoadError, ManifestFacts, NoSink, OutFrame, Plugin,
+    Dispatcher, Frame, InFrame, Kind, LoadError, ManifestFacts, OutFrame, Plugin,
 };
+use busbar_test_kit::conformance::canary::{credentials, find, Heard};
 
 /// The generated header the plugin builds from (the RED arm rebuilds against it).
 const INCLUDE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../busbar-contract/include");
@@ -175,20 +176,21 @@ fn rebuild(name: &str, defines: &[String]) -> Rebuilt {
     built
 }
 
-fn bind() -> (Bind, Arc<Dispatcher>) {
+fn bind() -> (Bind, Arc<Dispatcher>, Arc<Heard>) {
     let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
+    let heard = Arc::new(Heard::default());
     let bind = Bind {
         instance: Arc::from("dropped"),
         max_inflight_cap: 64,
-        sink: Arc::new(NoSink),
+        sink: heard.clone(),
         dispatcher: dispatcher.adopter(),
         conns: busbar_plugin_loader::dispatch::ConnTable::NoNeeds,
     };
-    (bind, dispatcher)
+    (bind, dispatcher, heard)
 }
 
 fn load<K: Kind>(path: &Path, stated: &[u8]) -> Result<(Plugin<K>, Arc<Dispatcher>), LoadError> {
-    let (b, d) = bind();
+    let (b, d, _) = bind();
     load_dropped::<K>(path, stated, b).map(|p| (p, d))
 }
 
@@ -390,7 +392,8 @@ fn secret_script(lib: &Path, stated: &[u8], inputs: &serde_json::Value) {
          settings carry (`\"credentials\": [\"<value>\", ...]`), or it proves nothing"
     );
 
-    let (p, _d) = load::<Secret>(lib, stated).expect("the dropped-in secret plugin loads");
+    let (b, _d, captured) = bind();
+    let p = load_dropped::<Secret>(lib, stated, b).expect("the dropped-in secret plugin loads");
     assert_eq!(p.kind(), KindCode::Secret);
     // THE CANARY: every answer's text, searched for every spelling of a configured credential.
     let mut said: Vec<(String, Vec<u8>)> = Vec::new();
@@ -409,6 +412,7 @@ fn secret_script(lib: &Path, stated: &[u8], inputs: &serde_json::Value) {
         );
     }
     let v = validate(&p, settings);
+    heard("validate", &v);
     assert_eq!(v.outcome, Outcome::Ready, "{}", line("validate", &v));
     for b in &bad {
         let o = open(&p, b.as_bytes());
@@ -417,6 +421,7 @@ fn secret_script(lib: &Path, stated: &[u8], inputs: &serde_json::Value) {
         assert!(!p.is_open(), "a refused open leaves no instance");
     }
     let o = open(&p, settings);
+    heard("open", &o);
     assert_eq!(o.outcome, Outcome::Ready, "{}", line("open", &o));
     assert!(p.is_open());
 
@@ -543,10 +548,12 @@ fn secret_script(lib: &Path, stated: &[u8], inputs: &serde_json::Value) {
 
     // No lease was granted: a release of one is refused.
     let r = release(&p, 1);
+    heard("release", &r);
     assert_eq!(r.outcome, Outcome::Refused, "{}", line("release", &r));
 
     let mut tk: Frame<TickIn, TickOut> = Frame::new(input(), output());
     let t = p.call(life::TICK, &mut tk);
+    heard("tick", &t);
     assert_eq!(t.outcome, Outcome::Ready, "{}", line("tick", &t));
     for b in &bad {
         let r = refresh(&p, b.as_bytes());
@@ -569,6 +576,7 @@ fn secret_script(lib: &Path, stated: &[u8], inputs: &serde_json::Value) {
         assert_eq!(r.c.lease, 0);
     }
     let r = refresh(&p, settings);
+    heard("refresh", &r);
     assert_eq!(r.outcome, Outcome::Ready, "{}", line("refresh", &r));
     // After the good refresh: the known name resolves.
     let r = resolve(&p, known);
@@ -584,6 +592,7 @@ fn secret_script(lib: &Path, stated: &[u8], inputs: &serde_json::Value) {
 
     let mut cl: Frame<InHead, OutHead> = Frame::new(input(), output());
     let c = p.call(life::CLOSE, &mut cl);
+    heard("close", &c);
     assert_eq!(c.outcome, Outcome::Ready, "{}", line("close", &c));
     let r = resolve(&p, known);
     heard("resolve after close", &r.c);
@@ -595,29 +604,18 @@ fn secret_script(lib: &Path, stated: &[u8], inputs: &serde_json::Value) {
     );
     assert!(r.got.is_empty());
 
-    for planted in planted {
-        for (step, text) in &said {
-            assert!(
-                !text.windows(planted.len()).any(|w| w == planted.as_slice()),
-                "a configured credential crossed back in step '{step}'"
-            );
-        }
+    drop(p);
+    said.extend(
+        captured
+            .captured()
+            .unwrap_or_else(|reason| panic!("canary envelope capture incomplete: {reason}"))
+            .into_iter()
+            .enumerate()
+            .map(|(i, text)| (format!("envelope string {i}"), text)),
+    );
+    if let Some(step) = find(&planted, &said) {
+        panic!("a configured credential crossed back in step '{step}'");
     }
-}
-
-/// The credentials `conformance.json` names (`"credentials": ["<value>", ...]`), as the suite's
-/// canary reads them. Empty when it names none.
-fn credentials(inputs: &serde_json::Value) -> Vec<Vec<u8>> {
-    inputs["credentials"]
-        .as_array()
-        .map(|a| {
-            a.iter()
-                .filter_map(|v| v.as_str())
-                .filter(|v| !v.is_empty())
-                .map(|v| v.as_bytes().to_vec())
-                .collect()
-        })
-        .unwrap_or_default()
 }
 
 /// **THE PROOF.** The plugin, built from the header alone, is admitted by the one dropped-in path

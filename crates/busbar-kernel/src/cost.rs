@@ -38,9 +38,9 @@ use crate::config::groups::{AdmissionMode, LimitMetric};
 /// naming the ledger crate. Each name is the ledger's own item re-exported as it is: the same type
 /// and the same function, so a figure priced through this path is the ledger's figure.
 pub use busbar_kernel_ledger::cost::{
-    budget_remaining, plane_fee_lane, price_ledger, sum_spend, Author, CardEntryDraft, History,
-    HistorySeq, HistoryView, LedgerEntry, MeteredRow, MoneyError, PlaneFees, RateCard, TierRates,
-    PER_SESSION,
+    budget_remaining, plane_fee_lane, price_ledger, sum_spend, Author, CardEntryDraft, EntryId,
+    History, HistorySeq, HistoryView, LedgerEntry, MeteredRow, MoneyError, PlaneFees, RateCard,
+    RawRateEra, TierRates, PER_SESSION,
 };
 
 /// The prefix namespacing GROUP bucket ids in the store, so a group named like a key id can never
@@ -53,6 +53,18 @@ pub use busbar_kernel_ledger::cost::{
 /// scheme was `#<pool>` before this widened to carry the kind; safe to change with no migration
 /// since no store persists this literal string durably yet.)
 pub const GROUP_BUCKET_PREFIX: &str = "group:";
+
+/// The persisted enforcement identity, shared with candidate validation. Existing unambiguous
+/// identities stay stable; validation refuses distinct components that would spell one identity.
+pub(crate) fn group_bucket_id(name: &str, window: &str, scope: Option<&ScopeRef>) -> String {
+    match scope {
+        Some(scope) => format!(
+            "{GROUP_BUCKET_PREFIX}{name}@{window}#{}:{}",
+            scope.kind, scope.value
+        ),
+        None => format!("{GROUP_BUCKET_PREFIX}{name}@{window}"),
+    }
+}
 
 /// One model's per-token rates in integer NANO-units per token (config micro-units x 1000, rounded
 /// once at resolve). All hot-path math is integer over these.
@@ -426,15 +438,7 @@ impl CostModel {
                             {
                                 Some(b) => b,
                                 None => {
-                                    let bucket_id = match &l.scope {
-                                        Some(s) => {
-                                            format!(
-                                                "{GROUP_BUCKET_PREFIX}{name}@{w}#{}:{}",
-                                                s.kind, s.value
-                                            )
-                                        }
-                                        None => format!("{GROUP_BUCKET_PREFIX}{name}@{w}"),
-                                    };
+                                    let bucket_id = group_bucket_id(name, w, l.scope.as_ref());
                                     buckets.push(GroupBucket {
                                         bucket_id,
                                         window: w,

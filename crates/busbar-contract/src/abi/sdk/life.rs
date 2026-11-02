@@ -739,7 +739,7 @@ life_slot!(
     /// box is retained across the pend); the RESUME runs the step again on that instance, and a
     /// RESUME with no instance or nothing parked is FAULT (an open never runs afresh on it).
     Open(OpenIn => OpenOut) |instance, input, out| {
-        let host = input.host().map(|h| Host::of(&h));
+        let host = input.host().map(Host::of);
         let ticket = instance.ticket();
         if instance.resuming() {
             let Some(h) = instance.get() else {
@@ -830,7 +830,7 @@ life_slot!(
         let Some(h) = instance.get() else {
             return Outcome::Fault;
         };
-        let Some(host) = input.host().map(|t| Host::of(&t)) else {
+        let Some(host) = input.host().map(Host::of) else {
             return Outcome::Fault;
         };
         match h.life.ready(&host, instance.ticket()) {

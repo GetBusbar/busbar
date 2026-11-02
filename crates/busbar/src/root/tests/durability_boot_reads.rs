@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! A STORE THAT STOPS READING THE JOURNAL BACK is never taken for an empty chain (audit R1#3, row
-//! 159). A node with no data directory keeps its chain in the configured store; the boot reads it
+//! 159). Every production node keeps its chain in the configured Store; the boot reads it
 //! once to rebuild the book, and the boot steps after that read it again. When that second read
 //! fails, the amendment rebuild and the keyset binding must not go on as
 //! if the chain held nothing, and an audit window must not be answered as empty.
@@ -24,7 +24,7 @@ fn token() -> Grant<DurableWrite> {
     busbar_kernel::test_support::tokens::grant::<DurableWrite>()
 }
 
-/// A book with NO DATA DIRECTORY over `slots`, as `root::boot::compose_book` builds it: the chain
+/// A book with an unusable legacy data directory over `slots`, as the production boot builds it: the chain
 /// the store kept is resumed (and read back once, whole, to rebuild the book).
 fn over_store(slots: &RecordSlots) -> Durability {
     rebuilt_over(slots).expect("the store reads back")
@@ -33,7 +33,14 @@ fn over_store(slots: &RecordSlots) -> Durability {
 /// [`over_store`], answering the build itself: a boot the chain refuses is an `Err` here.
 fn rebuilt_over(slots: &RecordSlots) -> Result<Durability, OpenError> {
     let lane = JournalLane::start(slots.calls(), "test-store").expect("the lane starts");
-    build_on_store(&DurabilityConfig { data_dir: None }, NODE, lane, None)
+    build_on_store(
+        &DurabilityConfig {
+            data_dir: Some(std::path::PathBuf::from("/dev/null/legacy-journal")),
+        },
+        NODE,
+        lane,
+        None,
+    )
 }
 
 /// Wait until the store took everything the book's lane holds.
@@ -213,4 +220,26 @@ fn an_amendment_rebuild_over_a_chain_that_does_not_verify_refuses_the_boot() {
          break; the rebuild answered {answered}"
     );
     assert_eq!(restarted.amendments_through, None, "nothing was rebuilt");
+}
+
+#[test]
+fn a_keyset_binding_over_a_chain_that_does_not_verify_refuses_without_a_second_bootstrap() {
+    let slots = RecordSlots::new();
+    let mut first = over_store(&slots);
+    crate::root::keyset::bind(&mut first, None, &token(), StepName::Meter, NOW).unwrap();
+    drained(&first);
+    drop(first);
+    let mut restarted = over_store(&slots);
+    let next = restarted.journal.next_seq();
+    slots.corrupt(JOURNAL_SCHEMA, &part_key(NODE, 1, 0));
+    let bound = crate::root::keyset::bind(
+        &mut restarted,
+        Some(std::path::Path::new("/dev/null/legacy-journal")),
+        &token(),
+        StepName::Meter,
+        NOW,
+    );
+    assert!(bound.is_err_and(|why| why.to_string().contains("does not verify")));
+    assert_eq!(restarted.journal.next_seq(), next);
+    assert!(restarted.record.signing_key_id().is_none());
 }

@@ -298,21 +298,29 @@ impl RawSlot for Locate {
     }
 }
 
-/// `begin`: either side; nothing is owed to the far side first.
+/// `begin`: a stream declares its own closing fields in the initial response block.
 pub struct Begin;
 impl RawSlot for Begin {
     type In = BeginIn;
     type Out = FramerOut;
     unsafe fn call(p: *mut c_void, i: &BeginIn, o: &mut FramerOut) -> Outcome {
+        const OPENING: &[u8] =
+            b"trailer: frame-status, frame-reason, frame-message, frame-details\r\n";
         let inst = instance(p);
         let token = inst.next.fetch_add(1, Ordering::Relaxed);
-        inst.framings.lock().expect("framings").insert(
-            token,
-            Framing {
-                stream: i.side == SIDE_ACCEPT_STREAM,
-                ..Framing::default()
-            },
-        );
+        let mut framing = Framing {
+            stream: i.side == SIDE_ACCEPT_STREAM,
+            ..Framing::default()
+        };
+        if framing.stream {
+            framing.outbound.extend(OPENING);
+        }
+        // A short sink leaves the initial fields owned by this framing for its Timer drains.
+        framing.answer(&i.sink, o);
+        inst.framings
+            .lock()
+            .expect("framings")
+            .insert(token, framing);
         o.framing = token;
         Outcome::Ready
     }

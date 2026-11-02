@@ -462,13 +462,15 @@ fn binding_the_node_to_the_book_journals_every_card_applied_after_it() {
     let holder: &'static RootHistory = Box::leak(Box::default());
     holder.arm_journal();
     apply(holder, 3.0, 1_000);
+    let slots = crate::root::store_double::RecordSlots::new();
+    let lane = crate::root::durability::JournalLane::start(slots.calls(), "test-store").unwrap();
     let book = Arc::new(Mutex::new(
-        crate::root::durability::build_with_cards(
+        crate::root::durability::build_on_store(
             &crate::root::durability::DurabilityConfig {
                 data_dir: Some(dir.clone()),
             },
             7,
-            Box::new(busbar_kernel_wal::NullShipper::new()),
+            lane,
             Some(holder),
         )
         .expect("the journal opens"),
@@ -481,8 +483,7 @@ fn binding_the_node_to_the_book_journals_every_card_applied_after_it() {
     let cards = book
         .lock()
         .expect("the book")
-        .journal
-        .replay()
+        .chain()
         .expect("reads")
         .expect("verifies")
         .iter()
@@ -495,6 +496,9 @@ fn binding_the_node_to_the_book_journals_every_card_applied_after_it() {
         vec![0, 20_000],
         "the boot card and the card applied after the binding are both on the chain"
     );
+    let lane = book.lock().unwrap().lane().unwrap().clone();
+    assert!(lane.drain(std::time::Duration::from_secs(5)));
+    assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
     drop(book);
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -1125,56 +1129,63 @@ async fn a_screened_veto_through_the_node_admits_nothing() {
 /// RED before the fix: the node admitted the unit and drove it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_full_journal_lane_refuses_a_new_unit_with_the_reason() {
-    let slots = crate::root::store_double::RecordSlots::new();
-    slots.refuse(true);
-    let lane = crate::root::durability::JournalLane::with_capacity(slots.calls(), "test-store", 1)
-        .expect("the lane starts");
-    let book = Arc::new(std::sync::Mutex::new(
-        crate::root::durability::build_on_store(
-            &crate::root::durability::DurabilityConfig { data_dir: None },
+    for data_dir in [
+        None,
+        Some(std::path::PathBuf::from("/dev/null/legacy-journal")),
+    ] {
+        let slots = crate::root::store_double::RecordSlots::new();
+        slots.refuse(true);
+        let lane =
+            crate::root::durability::JournalLane::with_capacity(slots.calls(), "test-store", 1)
+                .expect("the lane starts");
+        let book = Arc::new(std::sync::Mutex::new(
+            crate::root::durability::build_on_store(
+                &crate::root::durability::DurabilityConfig { data_dir },
+                0,
+                lane,
+                None,
+            )
+            .expect("the store reads back"),
+        ));
+        let token =
+            busbar_kernel::test_support::tokens::grant::<busbar_contract::caps::DurableWrite>();
+        for _ in 0..3 {
+            let _lost = book.lock().unwrap().journal.append(
+                &token,
+                busbar_contract::caps::StepName::Meter,
+                &[busbar_kernel_wal::Entry::new(
+                    busbar_kernel_wal::RecordClass::Load,
+                    Vec::new(),
+                )],
+            );
+        }
+        let node = Arc::new(Node::new());
+        node.bind_book(Arc::clone(&book));
+        let post = NodeEndPost::new(Arc::clone(&node));
+        let unit = DoorUnit::served();
+        let (_, outcome) = drive_door(&node, &post, &unit, node.arrived(), no_late(), None).await;
+        assert!(
+            outcome.is_none(),
+            "the node refuses the unit: the table never takes it"
+        );
+        assert!(
+            !unit.reached_arrival.load(Ordering::SeqCst),
+            "a refused unit is never driven"
+        );
+        assert_eq!(post.open_units(), 0, "nothing is held open for it");
+        let why = node
+            .journal_refusal()
+            .expect("the node states why it refuses");
+        assert!(
+            why.contains("journal is full") && why.contains("`test-store`"),
+            "the reason names the full journal and the store: {why}"
+        );
+        assert_eq!(
+            book.lock().unwrap().journal.dropped_total(),
             0,
-            lane,
-            None,
-        )
-        .expect("the store reads back"),
-    ));
-    let token = busbar_kernel::test_support::tokens::grant::<busbar_contract::caps::DurableWrite>();
-    for _ in 0..3 {
-        let _lost = book.lock().unwrap().journal.append(
-            &token,
-            busbar_contract::caps::StepName::Meter,
-            &[busbar_kernel_wal::Entry::new(
-                busbar_kernel_wal::RecordClass::Load,
-                Vec::new(),
-            )],
+            "no record is dropped"
         );
     }
-    let node = Arc::new(Node::new());
-    node.bind_book(Arc::clone(&book));
-    let post = NodeEndPost::new(Arc::clone(&node));
-    let unit = DoorUnit::served();
-    let (_, outcome) = drive_door(&node, &post, &unit, node.arrived(), no_late(), None).await;
-    assert!(
-        outcome.is_none(),
-        "the node refuses the unit: the table never takes it"
-    );
-    assert!(
-        !unit.reached_arrival.load(Ordering::SeqCst),
-        "a refused unit is never driven"
-    );
-    assert_eq!(post.open_units(), 0, "nothing is held open for it");
-    let why = node
-        .journal_refusal()
-        .expect("the node states why it refuses");
-    assert!(
-        why.contains("journal is full") && why.contains("`test-store`"),
-        "the reason names the full journal and the store: {why}"
-    );
-    assert_eq!(
-        book.lock().unwrap().journal.dropped_total(),
-        0,
-        "no record is dropped"
-    );
 }
 
 /// **NO PROCESS-WIDE LOCK STANDS IN FRONT OF A UNIT'S MONEY** (MONEY-DESIGN §4, PR-C; owner ruling:

@@ -250,7 +250,7 @@ async fn serve() -> (String, Arc<busbar_kernel::state::App>) {
 /// route only refuses when there is something to refuse, so a test of that refusal needs a chain
 /// that actually demands one. Every other test here passes an empty chain and gets the open posture
 /// described above.
-async fn serve_with_admin_chain(
+pub(crate) async fn serve_with_admin_chain(
     admin_chain: Vec<String>,
 ) -> (String, Arc<busbar_kernel::state::App>) {
     serve_with_store(admin_chain, None).await
@@ -936,6 +936,17 @@ struct FailClientRead {
 }
 
 impl StoreCalls for FailClientRead {
+    fn supports_record_transaction(&self) -> bool {
+        self.inner.supports_record_transaction()
+    }
+
+    fn record_transaction<'a>(
+        &'a self,
+        request: &'a busbar_contract::abi::sdk::store::conditional::Request,
+    ) -> StoreCall<'a, busbar_contract::abi::sdk::store::conditional::Decision> {
+        self.inner.record_transaction(request)
+    }
+
     fn add_usage_batch<'a>(
         &'a self,
         op: OpId,
@@ -966,6 +977,15 @@ impl StoreCalls for FailClientRead {
         schema: &'a str,
         key: &'a [u8],
     ) -> StoreCall<'a, Option<RecordBytes>> {
+        if schema == format!("{}bucket.atomic.v1", crate::shared::LABEL)
+            && self.fail_next.swap(false, Ordering::SeqCst)
+        {
+            return Box::pin(async {
+                Err(StoreFailure::Failed(
+                    "client lookup unavailable".to_string(),
+                ))
+            });
+        }
         self.inner.record_get(schema, key)
     }
 

@@ -253,3 +253,109 @@ fn an_in_process_answer_reads_back_through_the_frame() {
     assert_eq!(outcome, Outcome::Ready);
     assert_eq!(grown.order(out.order_written), vec![1, 0]);
 }
+
+/// The kept static half is checked in release too: a shorter dynamic half must never be
+/// published with the cached half's longer length, and changed facts must never leak a stale view.
+#[test]
+fn a_mismatched_static_half_is_rejected_before_publishing_a_view() {
+    let ctx = RoutingContext {
+        pool: "p",
+        budget_remaining: None,
+        budget: &[],
+    };
+    let candidate = |model: &'static str| Candidate {
+        idx: 0,
+        model,
+        provider: "prov",
+        weight: 1,
+        context_max: None,
+        tier: None,
+        cost_per_mtok: None,
+        tags: &[],
+        latency_ms: None,
+        available_concurrency: 1,
+        budget_remaining: None,
+        rate_headroom: None,
+        signals: SignalBag::new(),
+    };
+    let statics = CandidateStatics::build(&[candidate("original")]);
+    for candidates in [vec![], vec![candidate("changed")]] {
+        let refused = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            DecideView::build_with(&req(false), Arc::clone(&statics), &candidates, &ctx)
+        }));
+        assert!(refused.is_err(), "a mismatched static half was published");
+    }
+}
+
+/// Retaining an Arc on the client side cannot race a native operation's answer buffers.
+/// The dispatcher's retained owner keeps the reservation after the client owner disappears.
+#[test]
+fn a_native_reservation_excludes_safe_answers_and_readers_until_the_last_owner_releases() {
+    use crate::abi::sdk::hook::{RewriteVerdict, Verdict};
+    let ctx = RoutingContext {
+        pool: "p",
+        budget_remaining: None,
+        budget: &[],
+    };
+    let frame = DecideFrame::first(DecideView::build(&req(true), &[], &ctx));
+    let client = Arc::new(frame.try_lend().expect("initial reservation"));
+    let dispatcher = Arc::clone(&client);
+    drop(client);
+    assert!(frame.try_lend().is_none());
+    let refused = |f: &dyn Fn()| {
+        assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).is_err());
+    };
+    refused(&|| {
+        let _ = frame.answer_decide(&Verdict::Prefer(vec![0]));
+    });
+    refused(&|| {
+        let _ = frame.answer_transform(&RewriteVerdict::Rewrite(vec![1]));
+    });
+    refused(&|| {
+        let _ = frame.order(1);
+    });
+    refused(&|| {
+        let _ = frame.reject_message(1);
+    });
+    refused(&|| {
+        let _ = frame.restrict_tags(1);
+    });
+    refused(&|| {
+        let _ = frame.rewrite(1);
+    });
+    // Immutable projection callbacks remain usable without claiming or exposing answer buffers.
+    let _ = frame.decoded(|decoded| {
+        assert_eq!(decoded.request_id, 7);
+        assert_eq!(
+            frame.projection_json(crate::hook_wire::OP_DECIDE)["request"]["messages"][0]["text"],
+            "hi"
+        );
+    });
+    drop(dispatcher);
+    let (outcome, out) = frame.answer_decide(&Verdict::Prefer(vec![0]));
+    assert_eq!(outcome, Outcome::Ready);
+    assert_eq!(frame.order(out.order_written), vec![0]);
+}
+
+/// A settled reply can release the reservation before the dispatcher's owner is dropped.
+/// Dropping that stale owner must never unlock a later operation on the same frame.
+#[test]
+fn completing_a_reservation_does_not_let_its_late_drop_release_the_next_operation() {
+    let ctx = RoutingContext {
+        pool: "p",
+        budget_remaining: None,
+        budget: &[],
+    };
+    let frame = DecideFrame::first(DecideView::build(&req(false), &[], &ctx));
+    let old = frame.try_lend().expect("first operation");
+    // SAFETY: no native invocation was started, and this reservation will never be used again.
+    unsafe { old.complete() };
+    let next = frame.try_lend().expect("second operation");
+    drop(old);
+    assert!(
+        frame.try_lend().is_none(),
+        "late drop unlocked the second operation"
+    );
+    drop(next);
+    assert!(frame.try_lend().is_some());
+}

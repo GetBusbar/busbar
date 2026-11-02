@@ -460,7 +460,7 @@ pub const DEPLOY_KEYS: &[&str] = &[
 pub fn deployments<'de, D: serde::Deserializer<'de>>(
     de: D,
 ) -> Result<HashMap<String, ProviderDeploy>, D::Error> {
-    let entries: HashMap<String, Deployment> = HashMap::deserialize(de)?;
+    let entries: HashMap<String, Deployment> = unique_entries(de)?;
     Ok(entries.into_iter().map(|(k, v)| (k, v.0)).collect())
 }
 
@@ -526,8 +526,42 @@ pub const CATALOG_KEYS: &[&str] = &[
 pub fn catalog<'de, D: serde::Deserializer<'de>>(
     de: D,
 ) -> Result<HashMap<String, ProviderDef>, D::Error> {
-    let entries: HashMap<String, CatalogEntry> = HashMap::deserialize(de)?;
+    let entries: HashMap<String, CatalogEntry> = unique_entries(de)?;
     Ok(entries.into_iter().map(|(k, v)| (k, v.0)).collect())
+}
+
+/// Keep the entry-name boundary strict too: HashMap's ordinary reader silently replaces a
+/// previous provider with the same name, including a duplicate introduced by interpolation.
+fn unique_entries<'de, D, T>(de: D) -> Result<HashMap<String, T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    struct Entries<T>(std::marker::PhantomData<T>);
+    impl<'de, T: Deserialize<'de>> serde::de::Visitor<'de> for Entries<T> {
+        type Value = HashMap<String, T>;
+
+        fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("a map")
+        }
+
+        fn visit_map<A: serde::de::MapAccess<'de>>(
+            self,
+            mut map: A,
+        ) -> Result<Self::Value, A::Error> {
+            let mut entries = HashMap::new();
+            while let Some(name) = map.next_key::<String>()? {
+                if entries.contains_key(&name) {
+                    return Err(serde::de::Error::custom(format!(
+                        "duplicate entry with key {name:?}"
+                    )));
+                }
+                entries.insert(name, map.next_value()?);
+            }
+            Ok(entries)
+        }
+    }
+    de.deserialize_map(Entries(std::marker::PhantomData))
 }
 
 /// [`catalog`] over a `providers.yaml` text.

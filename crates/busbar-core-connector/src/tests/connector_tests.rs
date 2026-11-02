@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use super::*;
+use busbar_contract::abi::host::service::DEST_PLAINTEXT;
 
 #[path = "fanout_waker_tests.rs"]
 mod fanout_waker_tests;
@@ -20,6 +21,9 @@ mod pending_write;
 
 #[path = "final_insert_retirement_tests.rs"]
 mod final_insert_retirement_tests;
+
+#[path = "declared_timeout_tests.rs"]
+mod declared_timeout_tests;
 
 /// The literal judge over a guard that allowlists the loopback far ends these tests dial, and the
 /// private address the scheme-rule test names (the destination guard refuses both by default), so
@@ -807,6 +811,9 @@ fn config_targeted_need(target_from: &str) -> ReadNeed {
             bytes: Vec::new(),
         },
         timeout_ms: 0,
+        keep_mode: busbar_contract::abi::host::conn::connector::KEEP_NAMED,
+        keep_response_headers: Vec::new(),
+        deny_response_headers: Vec::new(),
     }
 }
 
@@ -2939,6 +2946,9 @@ mod transport_pin {
                 bytes: Vec::new(),
             },
             timeout_ms: 0,
+            keep_mode: busbar_contract::abi::host::conn::connector::KEEP_NAMED,
+            keep_response_headers: Vec::new(),
+            deny_response_headers: Vec::new(),
         };
         DeclaredConns::declare(c, OWNER, NeedId(0), &need, None, Some(pem))
     }

@@ -25,6 +25,8 @@
 //! call the unit already had.
 
 use busbar_contract::abi::mechanism::ticket::Ticket;
+
+use super::cancel::{poll_cancel, CancelFuture};
 use busbar_contract::caps::PrincipalId;
 
 use super::{PlaneDriver, PlaneUnits};
@@ -56,6 +58,8 @@ pub(crate) struct Owed {
     unit: u64,
     /// The principal the kernel verified for it: its `cancel`'s row is written under it.
     principal: Option<PrincipalId>,
+    ticket: Option<Ticket>,
+    cancel: Option<CancelFuture>,
 }
 
 impl PlaneDriver {
@@ -63,27 +67,42 @@ impl PlaneDriver {
     /// it carried (the instance's ticketless crossing, so none is held past it), its record writes
     /// written. Called by [`PlaneDriver::sweep`]; never inside a `Drop`, never under a lock.
     pub(crate) fn close_owed(&self) {
-        // One at a time, the lock let go before each crossing: a crossing that unwinds leaves the
-        // rest owed, and the one it was paying owed again, for the next sweep, never dropped.
-        loop {
-            let next = self.lock_owed().pop();
-            let Some(owed) = next else {
+        // One bounded pass: each pending reply remains owned for the next sweep. A panic keeps
+        // the current and remaining debts; no host callback runs under the debt-table mutex.
+        let count = self.lock_owed().len();
+        for _ in 0..count {
+            let Some(owed) = self.lock_owed().pop() else {
                 return;
             };
-            let (unit, principal) = (owed.unit, owed.principal.clone());
             let mut paying = Paying {
                 driver: self,
                 owed: Some(owed),
             };
-            let ticket = self.calls.mint();
-            let cancelled = self.cancel_now(ticket.unwrap_or(Ticket::NONE), unit);
-            // The `cancel` answered: the debt is paid, whatever it answered.
-            paying.owed = None;
-            if let Some(t) = ticket {
-                self.calls.recycle(t);
+            let owed = paying.owed.as_mut().expect("owned debt");
+            if owed.ticket.is_none() {
+                let Some(ticket) = self.calls.mint() else {
+                    return;
+                };
+                self.calls.bind_unit(ticket, owed.unit);
+                owed.ticket = Some(ticket);
             }
-            if let Some(c) = cancelled {
-                self.fold_writes(&c.writes, principal.as_ref());
+            if owed.cancel.is_none() {
+                owed.cancel = Some(self.cancel_unit(owed.ticket.expect("owned ticket"), owed.unit));
+            }
+            let cancelled = match poll_cancel(owed.cancel.as_mut().expect("queued cancel")) {
+                std::task::Poll::Pending => {
+                    let owed = paying.owed.take().expect("pending debt");
+                    self.lock_owed().insert(0, owed);
+                    continue;
+                }
+                std::task::Poll::Ready(cancelled) => cancelled,
+            };
+            let owed = paying.owed.take().expect("paid debt");
+            if let Some(ticket) = owed.ticket {
+                self.calls.recycle(ticket);
+            }
+            if let Some(cancelled) = cancelled {
+                self.fold_writes(&cancelled.writes, owed.principal.as_ref());
             }
         }
     }
@@ -131,6 +150,8 @@ impl<S, F, C> Drop for PlaneUnits<'_, S, F, C> {
         let owed = Owed {
             unit: st.unit,
             principal: st.principal.clone(),
+            ticket: None,
+            cancel: None,
         };
         self.driver.lock_owed().push(owed);
     }

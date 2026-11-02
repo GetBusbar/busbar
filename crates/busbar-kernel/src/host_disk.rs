@@ -53,7 +53,7 @@ pub const LANE_GONE: &str = "the host's disk lane is not running";
 /// One append the FIFO executor owes.
 struct Append {
     dest: DiskDest,
-    bytes: Vec<u8>,
+    bytes: zeroize::Zeroizing<Vec<u8>>,
     later: Later,
 }
 
@@ -75,6 +75,7 @@ impl DiskLane {
     ///
     /// The lane is full or not running: the report to answer at once (FAILED, nothing written).
     pub fn submit(&self, dest: DiskDest, bytes: Vec<u8>, later: Later) -> Result<(), DiskReport> {
+        let bytes = zeroize::Zeroizing::new(bytes);
         let Some(tx) = self.tx.get_or_init(start) else {
             return Err(refused(LANE_GONE));
         };

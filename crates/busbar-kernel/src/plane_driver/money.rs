@@ -267,8 +267,14 @@ impl PlaneMoney {
                         .filter_map(|c| m.classes.get(*c as usize))
                         .filter(|u| u.as_str() != busbar_contract::plane::PER_REQUEST)
                     {
-                        self.gov
-                            .refund_fee_unit(&m.cost, &m.key, &m.pool, m.arrived, unit);
+                        self.gov.refund_fee_unit_in_era(
+                            &m.cost,
+                            &m.key,
+                            &m.pool,
+                            m.arrived,
+                            unit,
+                            Some(m.charge.raw_era()),
+                        );
                     }
                 }
             }
@@ -332,24 +338,38 @@ impl PlaneMoney {
                 &saturated
             }
         };
-        self.gov.record_usage_served(
-            &m.cost, &m.key, &m.pool, &m.lane, provider, units, m.arrived,
+        self.gov.record_usage_served_in_era(
+            &m.cost,
+            &m.key,
+            &m.pool,
+            &m.lane,
+            provider,
+            units,
+            m.arrived,
+            m.charge.raw_era(),
         );
         if metered(counts) {
             let units = checked.unwrap_or_default();
-            self.gov
-                .record_lane_metering_for_key(&m.key, &m.lane, provider, &units, m.arrived);
+            self.gov.record_lane_metering_in_era(
+                &m.key,
+                &m.lane,
+                provider,
+                &units,
+                m.arrived,
+                m.charge.raw_era(),
+            );
         }
     }
 
     /// Whether `counts`, priced at the card in force, reach what the unit's tightest applicable
     /// budget has left. A count the card cannot price reaches it (fail closed).
     fn dry(&self, m: &UnitMoney, counts: &[(u32, u64)]) -> bool {
+        let (_, pool) = busbar_kernel_ledger::cost::split_plane_lane(&m.pool);
         let remaining = self
             .gov
             .budget_state(&m.cost, &m.key, m.arrived)
             .into_iter()
-            .filter(|b| b.pool.as_deref().is_none_or(|p| p == m.pool))
+            .filter(|b| b.pool.as_deref().is_none_or(|p| p == pool))
             .filter_map(|b| b.remaining_micros)
             .min();
         let Some(remaining) = remaining else {
@@ -617,3 +637,7 @@ fn bills(usage: &[(u32, u64)]) -> bool {
 #[cfg(test)]
 #[path = "tests/money_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "tests/qualified_pool_tests.rs"]
+mod qualified_pool_tests;

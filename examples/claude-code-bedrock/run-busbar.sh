@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Boot Busbar for the Claude-Code → Amazon Nova (Bedrock) example. Reads AWS creds from
 # ~/.aws/credentials and hands them to Busbar as AWS_BEDROCK_CREDS (ACCESS:SECRET[:SESSION]).
-# No secrets are printed. Build first: `cargo build --release`.
+# No secrets are printed. Build the assembled distribution first (see README.md).
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
@@ -15,12 +15,12 @@ else
   export AWS_BEDROCK_CREDS="${AKID}:${SKEY}"
 fi
 
-# The admin token guards the admin API; mint the agent's signed key with:
-#   curl -s -X POST http://127.0.0.1:8081/api/v1/admin/keys -H "authorization: Bearer $BUSBAR_ADMIN_TOKEN" -d '{"name":"claude-code"}'
-export BUSBAR_ADMIN_TOKEN="${BUSBAR_ADMIN_TOKEN:-demo-admin-token}"
+# Both credentials are operator-owned. The README generates fresh values without printing them.
+: "${BUSBAR_SIGNING_KEY:?Set BUSBAR_SIGNING_KEY using busbar --generate-signing-key}"
+: "${BUSBAR_ADMIN_TOKEN:?Set the admin token before starting the example}"
+export BUSBAR_SIGNING_KEY BUSBAR_ADMIN_TOKEN
 export BUSBAR_CONFIG="$HERE/config.yaml"
 export BUSBAR_PROVIDERS="$ROOT/providers.yaml"
-export BUSBAR_STATE_FILE=""
 export RUST_LOG="${RUST_LOG:-warn}"
 
 exec "$ROOT/target/release/busbar"

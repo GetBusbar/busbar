@@ -6,22 +6,25 @@
 use super::tests::{open, seal, Scratch};
 use super::*;
 
-/// THE BOOK SEALS AS THE KERNEL'S NODE (THE DESIGN §1: "when (wall + monotonic, node)"): every
-/// record names the node half of the op ids this process mints, it survives the journal, and a
-/// restarted book seals as the node it runs as.
+/// Every record names the Store-assigned node, and a restarted book on that same Store resumes it.
 #[test]
 fn every_record_the_book_seals_names_this_node() {
-    let node = busbar_kernel::door::node();
-    assert_ne!(node, 0, "the kernel's node is a non-zero draw");
+    let node = 7;
     let scratch = Scratch::new("seals-as-node");
+    let slots = crate::root::store_double::RecordSlots::new();
     let before = {
-        let mut book = open(&scratch.0);
+        let mut book = open(&scratch.0, &slots);
         assert_eq!(book.record.node(), node);
-        seal(&mut book, 1..=2)
+        let before = seal(&mut book, 1..=2);
+        assert!(book
+            .lane()
+            .unwrap()
+            .drain(std::time::Duration::from_secs(5)));
+        before
     };
     assert!(before.iter().all(|r| r.node == node), "{before:?}");
 
-    let mut restarted = open(&scratch.0);
+    let mut restarted = open(&scratch.0, &slots);
     assert_eq!(
         restarted.record.node(),
         node,

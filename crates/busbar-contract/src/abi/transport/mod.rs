@@ -518,7 +518,12 @@ pub const SIDE_DIAL: u32 = 1;
 /// `side`: the accepting end of ONE STREAM whose connection and head the host's own framer carries
 /// (ARCHITECT 4l, 2026-10-05: one listener port carries every claim's streams, so a claim's framer
 /// frames the stream, not the connection). Its one stream is stream `1`. `begin` takes the stream's
-/// target and its head fields ([`BeginIn::fields`]); `ingest` takes the stream's body bytes and
+/// target and its head fields ([`BeginIn::fields`]) and yields its initial response field block in
+/// `wire` (ordinary valid field names and values, [`fields`] rendering). The host retains that
+/// block and adds it to the unit's response head. The stream framer declares every possible
+/// closing field there when its carrier requires an early declaration; the host invents no
+/// protocol names. A pending Begin owns this block until its empty resumes/drains complete.
+/// `ingest` takes the stream's body bytes and
 /// yields each message as a piece that ends its frame (no piece ends the stream: the host's framer
 /// knows where its body ended); `emit` takes one message's bytes (`end_of_frame` = it ends) and yields the
 /// stream's body bytes in `wire`; `refuse` and `finish` yield the stream's CLOSING FIELD BLOCK in
@@ -680,6 +685,13 @@ pub const FRAME_PIECE_SIZE: u32 = 48;
 /// one or the other (ws sends them under its TEXT opcode); read on the call that completes the
 /// frame. Absent means binary. The outbound twin of [`PIECE_TEXT`].
 pub const EMIT_TEXT: u32 = 1;
+
+/// [`EmitIn::flags`]: the bytes are the accepted answer's final field block, after its head and
+/// body, rendered by the transport as trailers. Requires `end_of_frame = 1`, no status or opening
+/// body length, and no [`EMIT_TEXT`]. Unsupported transports refuse it before consuming bytes.
+/// Only the fresh crossing carries it: a pending operation owns its fields and kind until its
+/// resume and every empty `YIELD_MORE` drain complete.
+pub const EMIT_TRAILERS: u32 = 2;
 
 /// [`WriteIn::flags`]: the bytes complete a FRAME of the carrier's own wire, for a carrier that
 /// delimits frames itself (a carrier carried as itself, with no framer above it). A carrier that
@@ -1607,7 +1619,7 @@ pub struct EmitIn {
     pub len: usize,
     /// `1` = they complete the frame.
     pub end_of_frame: u32,
-    /// `EMIT_*` bits: [`EMIT_TEXT`].
+    /// `EMIT_*` bits: [`EMIT_TEXT`] or [`EMIT_TRAILERS`], never both.
     pub flags: u32,
     /// The sink.
     pub sink: FramerSink,

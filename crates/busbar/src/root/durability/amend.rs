@@ -12,8 +12,8 @@
 //! So each amendment goes on the node's journal as it is sealed — an access as an `Access` record,
 //! a legacy adjustment as a `Transaction` record (the classes the journal unit names for them) — carrying
 //! every field its digest covers, and a boot rebuilds the node journal from the chain before
-//! anything can seal onto it, whenever the chain has a durable source: a data directory, or the
-//! configured store the chain was resumed from. A node with neither journals and rebuilds nothing.
+//! anything can seal onto it, whenever the chain was resumed from the configured Store. A helper
+//! with no Store source rebuilds nothing.
 //!
 //! A private child module of `durability`, as `replay` is; the parent re-exports the two items that
 //! are part of its public surface.
@@ -196,8 +196,8 @@ impl Durability {
     /// `App` carries), before anything can seal onto it: it becomes exactly the run this book's
     /// chain holds, so every recorded content access
     /// survives a restart. It runs whenever the chain
-    /// has a durable source ([`Durability::keeps_chain`]): a disk, or the configured store the
-    /// chain was resumed from. A book with neither rebuilds nothing.
+    /// has a durable source ([`Durability::keeps_chain`]): the configured Store the chain was
+    /// resumed from. A helper with no Store source rebuilds nothing.
     ///
     /// An amendment record the walk cannot link is REPORTED on
     /// [`Durability::restart_findings`], never spliced in. Once rebuilt, the book is the one

@@ -7,6 +7,56 @@ use crate::root::store_double::RecordSlots;
 
 const WAIT: Duration = Duration::from_secs(5);
 
+/// Unblock a deliberately delayed Store crossing even when the asserting thread unwinds.
+struct ReleaseTransaction(Option<std::sync::mpsc::Sender<()>>);
+
+impl ReleaseTransaction {
+    fn release(mut self) {
+        if let Some(send) = self.0.take() {
+            let _ = send.send(());
+        }
+    }
+}
+
+impl Drop for ReleaseTransaction {
+    fn drop(&mut self) {
+        if let Some(send) = self.0.take() {
+            let _ = send.send(());
+        }
+    }
+}
+
+/// Delay one selected immutable candidate before the fixture takes its transaction locks.
+fn gate_transaction(
+    slots: &RecordSlots,
+    selected: impl Fn(&busbar_contract::abi::sdk::store::conditional::Request) -> bool
+        + Send
+        + Sync
+        + 'static,
+) -> (
+    std::sync::mpsc::Receiver<busbar_contract::abi::sdk::store::conditional::Request>,
+    ReleaseTransaction,
+) {
+    let (arrived, receive) = std::sync::mpsc::channel();
+    let (release, released) = std::sync::mpsc::channel();
+    let released = Mutex::new(released);
+    let first = AtomicBool::new(true);
+    slots.on_transaction(move |request| {
+        if selected(request) && first.swap(false, Ordering::AcqRel) {
+            arrived
+                .send(request.clone())
+                .expect("the test receives the crossing");
+            released
+                .lock()
+                .unwrap()
+                .recv_timeout(WAIT)
+                .expect("the test releases the crossing");
+        }
+        None
+    });
+    (receive, ReleaseTransaction(Some(release)))
+}
+
 /// A record of `len` body bytes for `(node, seq)`.
 fn record(node: u64, seq: u64, len: usize) -> Record {
     Record::new(
@@ -234,4 +284,222 @@ fn a_retained_batch_larger_than_the_lane_is_taken_once_the_lane_is_empty() {
         6,
         "every record reached the store, once"
     );
+}
+
+/// A's part write already holds its exact lease predicate when B takes the expired lease and
+/// publishes the same node/sequence. The Store must reject A's stale transaction atomically.
+#[test]
+fn a_delayed_old_journal_writer_cannot_overwrite_the_successors_same_position() {
+    use super::super::store_identity::{lease_row, set_lease_expiry};
+    use crate::root::durability::take_node;
+
+    let slots = RecordSlots::new();
+    let calls = slots.calls();
+    let host = "fenced-pending-journal";
+    let first = take_node(calls.as_ref(), host).expect("A takes the host identity");
+    let node = first.id;
+    let old_lease = first.lease.expect("A holds the host lease");
+    let lane_a = JournalLane::start(slots.calls(), "test-store").unwrap();
+    lane_a.hold_lease(old_lease.clone());
+    let mut shipper_a = lane_a.shipper();
+    let old = record(node, 1, 19);
+    let old_part = parts_of(&old).unwrap()[0].as_slice().to_vec();
+    let (crossing, release) = gate_transaction(&slots, move |request| {
+        request.mutations.iter().any(|mutation| matches!(mutation,
+            Mutation::Put { schema, value, .. } if schema == JOURNAL_SCHEMA && value.as_slice() == old_part.as_slice()))
+    });
+    shipper_a
+        .ship(&[old.clone()])
+        .expect("A hands off its accepted record");
+    let held = crossing.recv_timeout(WAIT).expect("A reached its part CAS");
+    assert_eq!(
+        held.predicates.len(),
+        1,
+        "ownership and the part share one transaction"
+    );
+    assert_eq!(lane_a.pending(), 1);
+
+    set_lease_expiry(calls.as_ref(), host, 1);
+    let successor = take_node(calls.as_ref(), host).expect("B takes the expired host lease");
+    assert_eq!(
+        successor.id, node,
+        "B resumes this host's stable journal identity"
+    );
+    let lease_b = successor.lease.expect("B holds the replacement lease");
+    let lane_b = JournalLane::start(slots.calls(), "test-store").unwrap();
+    lane_b.hold_lease(lease_b);
+    let mut shipper_b = lane_b.shipper();
+    let replacement = record(node, 1, 37);
+    shipper_b
+        .ship(&[replacement.clone()])
+        .expect("B writes the same position");
+    lane_b
+        .wait_acked(node, 1, WAIT)
+        .expect("B's exact replacement is kept");
+    let held_b = lease_row(calls.as_ref(), host).expect("B's lease is stored");
+    assert_eq!(
+        read_chain(calls.as_ref(), node).unwrap(),
+        vec![replacement.clone()]
+    );
+
+    release.release();
+    let refused = lane_a
+        .wait_acked(node, 1, WAIT)
+        .expect_err("A no longer owns its predicate");
+    assert!(
+        refused.contains("no longer owns"),
+        "the ownership refusal, not a timeout: {refused}"
+    );
+    assert!(
+        lane_a.refuses_money().is_some(),
+        "the stale node fails closed"
+    );
+    assert!(lane_a.healthy().is_err());
+    assert_eq!(
+        lane_a.pending(),
+        1,
+        "its accepted record remains owned and retained"
+    );
+    assert_eq!(
+        lane_a.queued(),
+        vec![old],
+        "the exact accepted bytes stay in custody"
+    );
+    assert!(
+        shipper_a.ship(&[record(node, 2, 1)]).is_err(),
+        "a fenced lane accepts no new batch"
+    );
+    assert_eq!(read_chain(calls.as_ref(), node).unwrap(), vec![replacement]);
+    assert!(!old_lease.refresh(calls.as_ref()).unwrap());
+    old_lease.release(calls.as_ref()).unwrap();
+    assert_eq!(
+        lease_row(calls.as_ref(), host),
+        Some(held_b),
+        "old lease methods cannot alter B"
+    );
+    lane_a.release_held_lease();
+    assert_eq!(
+        lease_row(calls.as_ref(), host),
+        Some(held_b),
+        "an undrained stale lane cannot release B"
+    );
+    lane_b.release_held_lease();
+}
+
+/// Renewal/release was prepared while A still owned the row; takeover occurs before its CAS.
+/// Checking ownership only before an unconditional write would clobber B in both cases.
+#[test]
+fn a_stale_lease_renewal_or_release_cannot_change_a_taken_over_lease() {
+    use super::super::store_identity::{lease_row, set_lease_expiry};
+    use crate::root::durability::take_node;
+
+    for releasing in [false, true] {
+        let slots = RecordSlots::new();
+        let calls = slots.calls();
+        let host = if releasing {
+            "stale-release"
+        } else {
+            "stale-refresh"
+        };
+        let first = take_node(calls.as_ref(), host).unwrap();
+        let node = first.id;
+        let lease = first.lease.unwrap();
+        let holder_a = lease_row(calls.as_ref(), host).unwrap().0;
+        let (crossing, release) = gate_transaction(&slots, move |request| {
+            request.mutations.iter().any(|mutation| {
+                matches!(mutation,
+                Mutation::Put { value, .. } if value.len() == 24 && value[..16] == holder_a
+                    && (value[16..] == 0u64.to_be_bytes()) == releasing)
+            })
+        });
+        let work_calls = slots.calls();
+        let (settled, outcome) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let result = if releasing {
+                lease.release(work_calls.as_ref()).map(|()| false)
+            } else {
+                lease.refresh(work_calls.as_ref())
+            };
+            let _ = settled.send(result);
+        });
+        crossing
+            .recv_timeout(WAIT)
+            .expect("A prepared its old ownership transition");
+        set_lease_expiry(calls.as_ref(), host, 1);
+        let successor = take_node(calls.as_ref(), host).expect("B takes the expired row");
+        assert_eq!(successor.id, node);
+        let held_b = lease_row(calls.as_ref(), host).unwrap();
+        assert_ne!(held_b.0, holder_a);
+        release.release();
+        assert!(
+            !outcome
+                .recv_timeout(WAIT)
+                .expect("the old ownership decision completes")
+                .unwrap(),
+            "stale renewal is refused and stale release is a no-op"
+        );
+        worker.join().unwrap();
+        assert_eq!(lease_row(calls.as_ref(), host), Some(held_b));
+        successor.lease.unwrap().release(calls.as_ref()).unwrap();
+    }
+}
+
+/// Shutdown cannot free an identity while its accepted Store crossing can still land. Once the
+/// lane drains, release retires the worker and prevents every retained shipper from publishing.
+#[test]
+fn a_lane_releases_its_host_lease_only_after_the_pending_writer_drains_and_retires() {
+    use super::super::store_identity::lease_row;
+    use crate::root::durability::take_node;
+
+    let slots = RecordSlots::new();
+    let calls = slots.calls();
+    let host = "release-pending-writer";
+    let taken = take_node(calls.as_ref(), host).unwrap();
+    let node = taken.id;
+    let lane = JournalLane::start(slots.calls(), "test-store").unwrap();
+    lane.hold_lease(taken.lease.unwrap());
+    let held = lease_row(calls.as_ref(), host).unwrap();
+    let mut shipper = lane.shipper();
+    let (crossing, release) = gate_transaction(&slots, |request| {
+        request.mutations.iter().any(|mutation| {
+            matches!(mutation,
+            Mutation::Put { schema, .. } if schema == JOURNAL_SCHEMA)
+        })
+    });
+    shipper.ship(&[record(node, 1, 13)]).unwrap();
+    crossing
+        .recv_timeout(WAIT)
+        .expect("the accepted write is in the Store crossing");
+    lane.release_held_lease();
+    assert_eq!(
+        lease_row(calls.as_ref(), host),
+        Some(held),
+        "pending publication keeps the lease"
+    );
+    assert_eq!(lane.pending(), 1);
+    shipper
+        .ship(&[record(node, 2, 17)])
+        .expect("an attempted early release did not retire the active writer");
+    release.release();
+    lane.wait_acked(node, 2, WAIT)
+        .expect("both accepted records landed");
+    assert!(lane.drain(WAIT));
+    lane.release_held_lease();
+    assert_eq!(lease_row(calls.as_ref(), host), Some((held.0, 0)));
+    assert!(
+        lane.refuses_money().is_some(),
+        "retirement closes admission"
+    );
+    assert!(
+        shipper.ship(&[record(node, 3, 1)]).is_err(),
+        "an old shipper cannot publish after lease release"
+    );
+    assert_eq!(lane.pending(), 0);
+    let successor = take_node(calls.as_ref(), host).unwrap();
+    assert_eq!(successor.id, node);
+    assert_eq!(
+        read_chain(calls.as_ref(), node).unwrap(),
+        vec![record(node, 1, 13), record(node, 2, 17)]
+    );
+    successor.lease.unwrap().release(calls.as_ref()).unwrap();
 }

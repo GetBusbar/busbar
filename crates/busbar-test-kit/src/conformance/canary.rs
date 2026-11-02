@@ -17,20 +17,57 @@ use crate::dispatch::{Diagnostic, Dropped, EnvelopeSink, Metric};
 
 const MAX_HEARD: usize = 65_536;
 
-/// What one bound instance logged (its #85 diagnostics, log records included).
+/// The envelope strings one bound instance emitted: diagnostic names/text and metric labels.
 #[derive(Debug, Default)]
-pub struct Heard(Mutex<Vec<Vec<u8>>>);
+pub struct Heard(Mutex<Capture>);
 
-impl EnvelopeSink for Heard {
-    fn metric(&self, _: Metric<'_>) {}
-    fn diag(&self, d: Diagnostic<'_>) {
-        if let Ok(mut v) = self.0.lock() {
-            if v.len() < MAX_HEARD {
-                v.push(d.text.to_vec());
+#[derive(Debug, Default)]
+struct Capture {
+    bytes: Vec<Vec<u8>>,
+    incomplete: bool,
+}
+
+impl Heard {
+    fn record(&self, bytes: &[u8]) {
+        if let Ok(mut capture) = self.0.lock() {
+            if capture.bytes.len() < MAX_HEARD {
+                capture.bytes.push(bytes.to_vec());
+            } else {
+                capture.incomplete = true;
             }
         }
     }
-    fn dropped(&self, _: Dropped) {}
+
+    /// Every observed envelope string, or a refusal when any envelope could not be observed.
+    ///
+    /// # Errors
+    /// Capture was capped, the host dropped an envelope, or the capture mutex was poisoned.
+    pub fn captured(&self) -> Result<Vec<Vec<u8>>, &'static str> {
+        let capture = self.0.lock().map_err(|_| "capture mutex poisoned")?;
+        if capture.incomplete {
+            return Err("envelope capture incomplete");
+        }
+        Ok(capture.bytes.clone())
+    }
+}
+
+impl EnvelopeSink for Heard {
+    fn metric(&self, m: Metric<'_>) {
+        for label in m.labels {
+            self.record(label);
+        }
+    }
+    fn diag(&self, d: Diagnostic<'_>) {
+        if !d.name.is_empty() {
+            self.record(d.name);
+        }
+        self.record(d.text);
+    }
+    fn dropped(&self, _: Dropped) {
+        if let Ok(mut capture) = self.0.lock() {
+            capture.incomplete = true;
+        }
+    }
 }
 
 thread_local! {
@@ -44,12 +81,15 @@ pub(super) fn heard() -> Arc<Heard> {
     h
 }
 
-/// Everything the fold's instances logged since the last call.
+/// Everything the fold's instances emitted since the last call; incomplete capture fails closed.
 pub(super) fn take_heard() -> Vec<Vec<u8>> {
     FOLD_HEARD
         .with(|f| std::mem::take(&mut *f.borrow_mut()))
         .iter()
-        .flat_map(|h| h.0.lock().map(|v| v.clone()).unwrap_or_default())
+        .flat_map(|h| {
+            h.captured()
+                .unwrap_or_else(|reason| panic!("canary envelope capture incomplete: {reason}"))
+        })
         .collect()
 }
 
@@ -72,13 +112,18 @@ pub fn credentials(inputs: &serde_json::Value) -> Vec<Vec<u8>> {
     }
 }
 
-fn percent(b: &[u8]) -> Vec<u8> {
+fn percent(b: &[u8], uppercase: bool) -> Vec<u8> {
     let mut out = Vec::with_capacity(b.len() * 3);
     for &c in b {
         if c.is_ascii_alphanumeric() || matches!(c, b'-' | b'.' | b'_' | b'~') {
             out.push(c);
         } else {
-            out.extend_from_slice(format!("%{c:02X}").as_bytes());
+            let encoded = if uppercase {
+                format!("%{c:02X}")
+            } else {
+                format!("%{c:02x}")
+            };
+            out.extend_from_slice(encoded.as_bytes());
         }
     }
     out
@@ -89,7 +134,8 @@ fn percent(b: &[u8]) -> Vec<u8> {
 pub fn spellings(secret: &[u8]) -> Vec<Vec<u8>> {
     let mut out = vec![
         secret.to_vec(),
-        percent(secret),
+        percent(secret, true),
+        percent(secret, false),
         base64::engine::general_purpose::STANDARD
             .encode(secret)
             .trim_end_matches('=')
@@ -99,6 +145,7 @@ pub fn spellings(secret: &[u8]) -> Vec<Vec<u8>> {
             .encode(secret)
             .into_bytes(),
         hex::encode(secret).into_bytes(),
+        hex::encode_upper(secret).into_bytes(),
     ];
     out.sort();
     out.dedup();
@@ -116,4 +163,93 @@ pub fn find(secrets: &[Vec<u8>], emitted: &[(String, Vec<u8>)]) -> Option<String
             .any(|n| !n.is_empty() && bytes.windows(n.len()).any(|w| w == n.as_slice()))
             .then(|| at.clone())
     })
+}
+
+#[cfg(all(test, loader_self_tests))]
+mod capture_tests {
+    use super::*;
+
+    fn diagnostic(text: &[u8]) -> Diagnostic<'_> {
+        Diagnostic {
+            id: 0,
+            name: b"",
+            severity: 0,
+            text,
+        }
+    }
+
+    #[test]
+    fn capture_overflow_cannot_hide_a_later_credential() {
+        let heard = Heard::default();
+        for _ in 0..MAX_HEARD {
+            heard.diag(diagnostic(b"benign"));
+        }
+        assert!(heard.captured().is_ok());
+        heard.diag(diagnostic(b"CANARY-overflow"));
+        assert_eq!(heard.captured(), Err("envelope capture incomplete"));
+    }
+
+    #[test]
+    fn dropped_logs_and_malformed_envelopes_refuse_a_clean_result() {
+        for reason in [
+            Dropped::Logs(1),
+            Dropped::BadArray,
+            Dropped::DiagOutOfRange(9),
+        ] {
+            let heard = Heard::default();
+            heard.diag(diagnostic(b"benign"));
+            heard.dropped(reason);
+            assert_eq!(heard.captured(), Err("envelope capture incomplete"));
+        }
+    }
+
+    #[test]
+    fn poisoned_capture_refuses_a_clean_result() {
+        let heard = Heard::default();
+        let _ = std::panic::catch_unwind(|| {
+            let _guard = heard.0.lock().unwrap();
+            panic!("poison the capture");
+        });
+        assert_eq!(heard.captured(), Err("capture mutex poisoned"));
+    }
+
+    #[test]
+    fn diagnostic_names_text_and_metric_labels_all_reach_the_canary() {
+        let credential = b"CANARY-envelope/";
+        for channel in 0..3 {
+            let heard = Heard::default();
+            match channel {
+                0 => heard.diag(Diagnostic {
+                    name: credential,
+                    ..diagnostic(b"benign")
+                }),
+                1 => heard.diag(diagnostic(credential)),
+                _ => heard.metric(Metric {
+                    family: 0,
+                    kind: 0,
+                    value: 1.0,
+                    labels: &[credential],
+                }),
+            }
+            let emitted: Vec<_> = heard
+                .captured()
+                .unwrap()
+                .into_iter()
+                .map(|text| ("envelope".to_string(), text))
+                .collect();
+            assert_eq!(
+                find(&[credential.to_vec()], &emitted),
+                Some("envelope".to_string())
+            );
+        }
+    }
+
+    #[test]
+    fn fold_capture_itself_refuses_an_incomplete_sink() {
+        let _ = take_heard();
+        let heard = heard();
+        heard.dropped(Dropped::Logs(1));
+        assert!(std::panic::catch_unwind(take_heard).is_err());
+        assert!(take_heard().is_empty());
+    }
 }

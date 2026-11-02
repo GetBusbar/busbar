@@ -208,19 +208,23 @@ fn a_broken_stdout_ends_the_line_session_without_waiting_for_stdin_eof() {
         &governed_config(&dir, include_str!("fixtures/stdio_budget_bindings.yaml")),
     );
     let token = token_for(canonical());
-    let mut child = command(&dir, Some(&token))
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("line child");
+    let mut child = common::boot::Reap(
+        command(&dir, Some(&token))
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("line child"),
+    );
     drop(child.stdout.take());
     let mut input = child.stdin.take().unwrap();
     writeln!(input, "{}", serde_json::json!({"jsonrpc":"2.0","id":"broken-output","method":"ping","params":{"_meta":meta()}})).unwrap();
     let code = wait_bounded(&mut child, Duration::from_secs(120));
     drop(input);
-    let output = child.wait_with_output().unwrap();
-    let error = String::from_utf8_lossy(&output.stderr);
+    let mut stderr = Vec::new();
+    std::io::Read::read_to_end(&mut child.stderr.take().expect("stderr piped"), &mut stderr)
+        .expect("read the exited child stderr");
+    let error = String::from_utf8_lossy(&stderr);
     assert_ne!(code, 0, "a failed output is not EOF: {error}");
     assert!(
         error.contains("line output failed"),
@@ -240,15 +244,19 @@ fn a_stdin_read_error_is_not_a_successful_eof() {
         &governed_config(&dir, include_str!("fixtures/stdio_budget_bindings.yaml")),
     );
     let token = token_for(canonical());
-    let mut child = command(&dir, Some(&token))
-        .stdin(Stdio::from(std::fs::File::open(&dir).unwrap()))
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("line child");
+    let mut child = common::boot::Reap(
+        command(&dir, Some(&token))
+            .stdin(Stdio::from(std::fs::File::open(&dir).unwrap()))
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("line child"),
+    );
     let code = wait_bounded(&mut child, Duration::from_secs(120));
-    let output = child.wait_with_output().unwrap();
-    let error = String::from_utf8_lossy(&output.stderr);
+    let mut stderr = Vec::new();
+    std::io::Read::read_to_end(&mut child.stderr.take().expect("stderr piped"), &mut stderr)
+        .expect("read the exited child stderr");
+    let error = String::from_utf8_lossy(&stderr);
     assert_ne!(code, 0, "read error is not EOF: {error}");
     assert!(
         error.contains("line input failed"),

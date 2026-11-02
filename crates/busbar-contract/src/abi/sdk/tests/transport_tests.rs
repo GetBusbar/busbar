@@ -144,11 +144,14 @@ fn a_carrier_op_on_no_instance_answers_in_words() {
     input.head.size = std::mem::size_of::<ConnIn>() as u32;
     input.head.op = slot::FLUSH;
     let mut o = out();
-    let raw = flush(
-        std::ptr::null_mut(),
-        std::ptr::from_ref(&input).cast(),
-        std::ptr::from_mut(&mut o).cast(),
-    );
+    // SAFETY: the SDK FLUSH accepts NULL instance to report failure; the initialized input/output frames stay live.
+    let raw = unsafe {
+        flush(
+            std::ptr::null_mut(),
+            std::ptr::from_ref(&input).cast(),
+            std::ptr::from_mut(&mut o).cast(),
+        )
+    };
     assert_eq!(raw.outcome(), Outcome::Failed);
     assert!(!o.error.ptr.is_null(), "the words reach the caller");
     // SAFETY: a non-null `error` names `len` bytes the door lent for the call's answer.

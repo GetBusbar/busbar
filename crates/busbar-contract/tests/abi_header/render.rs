@@ -1452,6 +1452,13 @@ fn render_with(srcs: &[Src<'_>], golden: &str, every_pinned: bool) -> Result<Str
                 asserts.push_str(&format!(
                     "BB_ASSERT(offsetof({t}, {cf}) == {off}, \"{t}.{cf}: offset\");\n"
                 ));
+            } else if !s.union {
+                // Struct fields each have their own ABI offset. Unions deliberately permit a
+                // size/alignment-only pin (all members overlap), as HookSignalValue does.
+                errs.push(format!(
+                    "golden `{key}` does not pin field `{f}` of Rust struct `{}`",
+                    s.name
+                ));
             }
         }
         for (f, _) in entries {

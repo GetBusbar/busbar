@@ -260,11 +260,14 @@ fn a_door_states_migrate_on_its_tail_and_the_host_calls_it_with_no_instance() {
         size: size_of::<OutHead>() as u32,
         ..OutHead::default()
     };
-    let raw = op(
-        std::ptr::null_mut(),
-        std::ptr::from_ref(&input).cast(),
-        std::ptr::from_mut(&mut out).cast(),
-    );
+    // SAFETY: the stateless SDK MIGRATE accepts NULL instance; input settings/from and writable error buffer remain live.
+    let raw = unsafe {
+        op(
+            std::ptr::null_mut(),
+            std::ptr::from_ref(&input).cast(),
+            std::ptr::from_mut(&mut out).cast(),
+        )
+    };
     assert_eq!(raw.outcome(), Outcome::Ready);
     let m = read_answer(raw.outcome(), &buf[..out.error.len]).expect("a migration");
     assert_eq!(m.settings, serde_json::json!({"signing_secret": "x"}));

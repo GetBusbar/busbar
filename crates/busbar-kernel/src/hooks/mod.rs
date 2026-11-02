@@ -132,6 +132,9 @@ pub struct HookEnv {
     /// process's one dispatcher. `None` = this build installs no axis: no hook opens.
     axis: Option<std::sync::Arc<dyn busbar_contract::hook_calls::HookAxis>>,
     route_calls: Arc<std::collections::HashMap<String, RouteCalls>>,
+    /// Declared paths read once outside cache admission. Reading a linked row's Statement may
+    /// invoke its door, so the cache key must consult this snapshot instead of the registry.
+    resolution_paths: Arc<resolution::Paths>,
     /// The secret resolver used to turn any SecretRef-typed hook setting (e.g. a `licenseKey`) into
     /// its raw value BEFORE the settings cross the ABI at open/configure (ADR-0010). Shared with the
     /// store/auth open paths; the same fail-closed resolver. Held behind the NEUTRAL
@@ -167,10 +170,12 @@ impl HookEnv {
             Some(build) => Some(build(&registry)?),
             None => None,
         };
+        let resolution_paths = resolution::Paths::new(&registry);
         Ok(HookEnv {
             registry,
             axis,
             route_calls: Arc::new(std::collections::HashMap::new()),
+            resolution_paths,
             secret_resolver,
             banner_seen: std::sync::Arc::new(std::sync::Mutex::new(
                 std::collections::HashSet::new(),
@@ -186,10 +191,12 @@ impl HookEnv {
         axis: std::sync::Arc<dyn busbar_contract::hook_calls::HookAxis>,
         secret_resolver: std::sync::Arc<dyn busbar_contract::secret::SecretResolve>,
     ) -> Self {
+        let resolution_paths = resolution::Paths::new(&registry);
         HookEnv {
             registry,
             axis: Some(axis),
             route_calls: Arc::new(std::collections::HashMap::new()),
+            resolution_paths,
             secret_resolver,
             banner_seen: std::sync::Arc::new(std::sync::Mutex::new(
                 std::collections::HashSet::new(),
@@ -1122,6 +1129,35 @@ mod resolution {
     /// hit-rate tuning knob.
     const CAP: usize = 128;
 
+    /// Only reference paths, never resolved values. The weak identity also detects replacement
+    /// of the environment's public registry field; an unmatched snapshot cannot authorize reuse.
+    pub(super) struct Paths {
+        registry: std::sync::Weak<dyn busbar_contract::plugin_rows::PluginRows>,
+        modules: HashMap<String, Vec<String>>,
+    }
+
+    impl Paths {
+        pub(super) fn new(
+            registry: &std::sync::Arc<dyn busbar_contract::plugin_rows::PluginRows>,
+        ) -> std::sync::Arc<Self> {
+            let mut modules = HashMap::new();
+            for row in registry.loadable().into_iter().chain(registry.linked()) {
+                if row.kind != busbar_contract::abi::mechanism::kind::HOOK {
+                    continue;
+                }
+                let mut paths = registry.secret_slots(&row.name);
+                paths.extend(registry.reference_slots(&row.name));
+                for name in [row.name, row.key, row.alias] {
+                    modules.insert(name, paths.clone());
+                }
+            }
+            std::sync::Arc::new(Self {
+                registry: std::sync::Arc::downgrade(registry),
+                modules,
+            })
+        }
+    }
+
     struct Entry {
         /// Insertion order, for the oldest-first eviction.
         seq: u64,
@@ -1166,13 +1202,29 @@ mod resolution {
         hook: &crate::config::HookCfg,
         env: &super::HookEnv,
     ) -> Option<u64> {
+        use busbar_contract::secret_fields;
         use std::hash::{Hash as _, Hasher as _};
-        if hook.settings.values().any(|v| {
-            matches!(
-                crate::config::secret::classify_setting(v),
-                crate::config::secret::SettingShape::Reference(_)
-            )
-        }) {
+
+        if !std::sync::Weak::ptr_eq(
+            &env.resolution_paths.registry,
+            &std::sync::Arc::downgrade(&env.registry),
+        ) {
+            return None;
+        }
+        // An unlisted name (e.g. a former alias absent from the row projection) has no path
+        // snapshot, so conservatively resolve it fresh without asking a plugin from this path.
+        let paths = env.resolution_paths.modules.get(&hook.plugin)?;
+        let settings = serde_json::Value::Object(hook.settings.clone());
+        // With no declared paths, the resolver's policing walk finds ANY reference, including
+        // nested objects/arrays, while leaving opaque `{ literal: ... }` data alone. Inspect the
+        // declared positions too: the resolver's path walker can reach references below a literal
+        // wrapper when the Statement explicitly names that position. Neither walk resolves a
+        // source or calls a plugin; the environment holds the already-read Statement paths.
+        if secret_fields::undeclared_reference(&settings, &[]).is_some()
+            || paths
+                .iter()
+                .any(|path| !secret_fields::declared_references(&settings, path).is_empty())
+        {
             return None;
         }
         let mut h = std::collections::hash_map::DefaultHasher::new();
@@ -1189,9 +1241,7 @@ mod resolution {
         name.hash(&mut h);
         hook.plugin.hash(&mut h);
         super::policy_timeout(hook.timeout_ms).hash(&mut h);
-        serde_json::Value::Object(hook.settings.clone())
-            .to_string()
-            .hash(&mut h);
+        settings.to_string().hash(&mut h);
         Some(h.finish())
     }
 

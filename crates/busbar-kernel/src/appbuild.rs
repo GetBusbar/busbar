@@ -8,12 +8,11 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::auth::{open_operator, AuthMiddleware};
+use crate::auth::{AuthMiddleware, open_operator};
 use crate::diagnostics::{
-    diag_error, diag_warn, DEPRECATED_ENV_VAR_HONORED, DURABLE_KEYS_INERT,
-    GOVERNANCE_STORE_EPHEMERAL, OPEN_RELAY_NO_AUTH, PLUGINS_FETCH_RELOAD_MISS,
-    PROVIDER_API_KEY_UNRESOLVABLE, SAFE_MODE_OVERLAY_QUARANTINED, STATEFUL_PLANE_EPHEMERAL_STORE,
-    STORE_SECRET_REF_UNRESOLVED,
+    DEPRECATED_ENV_VAR_HONORED, DURABLE_KEYS_INERT, GOVERNANCE_STORE_EPHEMERAL, OPEN_RELAY_NO_AUTH,
+    PLUGINS_FETCH_RELOAD_MISS, PROVIDER_API_KEY_UNRESOLVABLE, SAFE_MODE_OVERLAY_QUARANTINED,
+    STATEFUL_PLANE_EPHEMERAL_STORE, STORE_SECRET_REF_UNRESOLVED, diag_error, diag_warn,
 };
 use crate::preflight::{
     build_secret_resolver, resolve_admin_token, resolve_at_rest_keys, resolve_signing_key,
@@ -45,9 +44,8 @@ pub const ENV_CONFIG: &str = "BUSBAR_CONFIG";
 /// operator's existing pin keeps working across the upgrade.
 pub const ENV_PROVIDERS: &str = "BUSBAR_PROVIDERS";
 
-/// DEPRECATED (1.5.3) environment variable name for the config-overlay backend path — migrated to
-/// `config.overlay.file` in config.yaml. Still honored, with a deprecation warning, only when
-/// `config.overlay` is unset.
+/// Deprecated legacy overlay selector. Accepted with a warning and never used for filesystem
+/// access; runtime config is always stored in the configured Store.
 pub const ENV_CONFIG_OVERLAY: &str = "BUSBAR_CONFIG_OVERLAY";
 
 /// DEPRECATED (1.5.3) environment variable that forces HTTP/2 prior-knowledge for cleartext
@@ -215,19 +213,13 @@ pub struct LoadedConfig {
     /// the config dir, the `--providers` flag override, or `providers.yaml` next to the
     /// config. Carried so callers display / re-use the same file across a reload.
     pub providers_path: std::path::PathBuf,
-    /// The resolved config-overlay backend path (1.5.3): `Some` = a writable file backend (mutable
-    /// config); `None` = either the config is LOCKED (`config.locked: true`) or its backend is not
-    /// writable (a read-only config mount — busbar boots and serves, but refuses config mutations).
-    /// The boot invariant guarantees `overlay_path.is_none()` whenever busbar cannot durably persist,
-    /// so a `Some` path is always one that was probed writable.
-    pub overlay_path: Option<std::path::PathBuf>,
+    /// The opened Store overlay anchor. Plain disk loading returns no backend; boot attaches
+    /// the base-config Store and live reload carries that same anchor. No path identifies it.
+    pub overlay_path: Option<Arc<config::overlay::OverlayStore>>,
     /// `config.locked` (1.5.3): `true` ⇒ admin-API config mutations are refused at runtime.
     pub config_locked: bool,
-    /// `true` ⇒ the config did NOT declare `config.locked: true`, but its overlay backend is not
-    /// writable (the read-only config mount the documented Docker quickstart creates). Busbar boots
-    /// and serves; admin-API config mutations are refused because they could not be persisted.
-    /// Distinguished from `config_locked` so the boot log can tell the operator which of the two
-    /// postures they are in — one they chose, one the filesystem chose for them.
+    /// Compatibility posture field. Always false: input-file permissions do not select Store
+    /// writability, and an unavailable Store refuses recovery instead of dropping security state.
     pub config_read_only: bool,
     /// The persisted overlay document (API-registered hooks), applied onto the RESOLVED config
     /// (`overlay::merge_into(&mut RootCfg, …)`) after `config::resolve` - the runtime registry is
@@ -355,11 +347,8 @@ pub fn load_config_from_disk_judged(
         config::providers::catalog_from_str(&interpolated_providers)
             .map_err(|e| format!("providers.yaml: invalid YAML: {e}"))?;
 
-    // 1.5.3: resolve the config-management posture + overlay backend from the `config:` block, and
-    // ENFORCE the boot invariant (`locked` XOR a writable overlay). The deprecated
-    // `BUSBAR_CONFIG_OVERLAY` env var is honored only when `config.overlay` is unset. The writability
-    // probe runs at boot/reload (Strict) but not under `--validate` (Lenient), which must stay
-    // side-effect-free.
+    // Resolve management policy without opening or probing any storage. Legacy file selector
+    // text is accepted for compatibility; the opened base-config Store is attached at boot.
     let env_overlay = std::env::var(ENV_CONFIG_OVERLAY)
         .ok()
         .filter(|s| !s.is_empty())
@@ -371,9 +360,9 @@ pub fn load_config_from_disk_judged(
         env_overlay.as_deref(),
         probe_fs,
     )?;
-    let overlay_path = resolution.path;
+    let overlay_path = None;
     let config_locked = resolution.locked;
-    let config_read_only = resolution.read_only_backend;
+    let config_read_only = false;
 
     if safe_mode {
         // `--safe-mode`: boot on the operator-owned base config ALONE — the persisted overlay
@@ -382,7 +371,7 @@ pub fn load_config_from_disk_judged(
         diag_warn!(
             SAFE_MODE_OVERLAY_QUARANTINED,
             "SAFE MODE: config overlay NOT merged — running on base config.yaml alone (the \
-             overlay file is untouched; boot without --safe-mode to re-apply it)"
+             Store overlay is untouched; boot without --safe-mode to re-apply it)"
         );
         return Ok(LoadedConfig {
             deploy,
@@ -399,27 +388,9 @@ pub fn load_config_from_disk_judged(
     // starting without it would run with the operator's API-registered hooks and groups — security
     // gates included — silently absent. `--safe-mode` boots on base config alone without touching
     // the file, so this is a one-flag recovery rather than a brick.
-    if let Some(p) = overlay_path.as_ref() {
-        if let config::overlay::OverlayReadState::VersionTooNew(v) = config::overlay::read_state(p)
-        {
-            return Err(format!(
-                "config overlay '{}' was written by a newer busbar (overlay version {v}; this                  binary understands {}). Starting without it would silently drop API-registered                  hooks and groups. Upgrade busbar, or boot with --safe-mode to run on config.yaml                  alone (the overlay is left untouched).",
-                p.display(),
-                config::overlay::OVERLAY_VERSION
-            ));
-        }
-    }
-    let overlay_doc = overlay_path.as_ref().and_then(|p| {
-        let doc = config::overlay::read(p);
-        if let Some(ref d) = doc {
-            tracing::info!(
-                path = %p.display(),
-                hooks = d.hooks.len(),
-                "config overlay loaded (merged onto the resolved config after resolve)"
-            );
-        }
-        doc
-    });
+    // Disk loading reads operator inputs only. Boot attaches the actual opened base Store;
+    // reload attaches the running generation's anchor through load_config_from_disk_with_store.
+    let overlay_doc = None;
     Ok(LoadedConfig {
         deploy,
         defs,
@@ -432,13 +403,40 @@ pub fn load_config_from_disk_judged(
     })
 }
 
+/// Read operator inputs and recover the running deployment's exact Store-owned overlay.
+/// The anchor is selected at boot, never inferred from a path or redirected by an overlay.
+pub fn load_config_from_disk_with_store(
+    config_path: &std::path::Path,
+    providers_override: Option<&std::path::Path>,
+    safe_mode: bool,
+    env_mode: config::EnvSubst,
+    rules: &dyn RootRules,
+    overlay: Option<Arc<config::overlay::OverlayStore>>,
+) -> Result<LoadedConfig, String> {
+    let mut loaded =
+        load_config_from_disk_judged(config_path, providers_override, safe_mode, env_mode, rules)?;
+    if !loaded.config_locked {
+        let store = overlay.ok_or_else(|| {
+            "running config has no Store overlay anchor; restart to bootstrap it".to_string()
+        })?;
+        if safe_mode {
+            loaded.overlay_path = Some(store);
+        } else {
+            let (reopened, doc) = store.reopen_for_reload()?;
+            loaded.overlay_path = Some(reopened);
+            loaded.overlay_doc = doc;
+        }
+    }
+    Ok(loaded)
+}
+
 /// A queued-but-not-yet-applied governance credential rotation: `build_app_from_config` resolves it
 /// but does NOT invoke it (see the call site below for why). `Send` because it is carried across the
 /// `spawn_blocking` boundary the admin transaction (`txn.rs`) applies it on.
 pub type GovCredentialRotation = Box<dyn FnOnce() + Send>;
 
 /// RE-WRAP the stored recoverable credentials under the at-rest `key` just installed (boot, or a
-/// reload that changed the keys). Never fatal: a row it does not reach still opens under the key it
+/// reload that declares the keys). Never fatal: a row it does not reach still opens under the key it
 /// was sealed under, so a store hiccup here costs a later pass, never a credential.
 fn rewrap_at_rest(gs: &governance::GovState) {
     match gs.rewrap_credentials(busbar_kernel::store::now()) {
@@ -479,18 +477,20 @@ fn rewrap_at_rest(gs: &governance::GovState) {
 /// So the publication is the CALLER's, and it is the same shape as the governance-credential
 /// rotation beside it: the build hands back an unpublished handle, the swap that installs the
 /// generation publishes its limits (`AppHandle::swap`, so the generation's first reader already
-/// sees them), and the one place that knows the transaction landed calls [`InstalledLimits::keep`]
-/// (the boot generation, which no swap installs, is published there). Dropped unkept — a persist
+/// sees them). The transaction confirms its candidate and activation before publication through
+/// [`InstalledLimits::prepare_rates`] and [`PreparedLimits::confirm_activation`]; only its final
+/// [`ConfirmedLimits::keep`] publishes prices and limits. Dropped unkept — a persist
 /// failure, an early return, a caller that simply lets it drop — nothing was published
 /// and the running generation's limits stand.
 ///
 /// **THE RATE APPLY RIDES THE SAME COMMIT.** The build resolves this configuration's rates, but the
-/// rate-apply seam ([`crate::rate_apply::rates_applied`]) is raised HERE, at `keep`, and not
-/// during the build: its holder appends the rates to the dated rate-card history and journals them
-/// (#79), and neither is a thing a rejected apply may leave behind. Raised during the build, an
+/// rate-apply seam is prepared before App publication, and commits at the same cutover as the App.
+/// The configured Store confirms both the saved candidate and its activation; no failed
+/// preparation can activate a price. Raised during the build, an
 /// apply whose persist then failed kept serving the old `App` while the history and the journal
 /// said its rates were in force — a price the operator was told was never applied, dated as if it
-/// had been. Dropped unkept, the resolved rates are dropped with it and nothing was raised.
+/// had been. A dropped preparation retains durable or unknown candidate custody without
+/// publishing it. The boot-only convenience [`InstalledLimits::keep`] performs the same stages.
 #[must_use = "an unkept InstalledLimits never publishes the generation's limits"]
 pub struct InstalledLimits {
     /// This generation's operational limits, published process-wide at [`InstalledLimits::keep`]
@@ -533,21 +533,99 @@ struct ResolvedRates {
 }
 
 impl InstalledLimits {
-    /// The new generation is live (and durable, where the caller persists): KEEP these limits, and
-    /// raise the rate-apply seam with the rates this build resolved — the one moment the
-    /// configuration they came from is the one in force.
-    pub fn keep(self) {
+    /// Capture the boot configuration before the composition root opens its book.
+    /// This stages fields only; it activates neither rates nor limits.
+    pub fn stage_boot(&self) {
+        crate::rate_apply::card_applied(&self.configured_card);
+    }
+
+    /// Confirm this generation's exact rates before publishing its App or limits.
+    /// A refused or unknown Store result leaves the old generation active.
+    pub fn prepare_rates(self) -> Result<PreparedLimits, String> {
+        let rates = crate::rate_apply::prepare(&self.configured_card, &self.rates.raw())?;
+        Ok(PreparedLimits {
+            installed: self,
+            rates,
+        })
+    }
+
+    /// Prepare an authoritative reload and reconcile exact retained Store effects.
+    pub fn prepare_rates_for_reload(self) -> Result<PreparedLimits, String> {
+        let rates = crate::rate_apply::prepare_recovery(&self.configured_card, &self.rates.raw())?;
+        Ok(PreparedLimits {
+            installed: self,
+            rates,
+        })
+    }
+
+    /// Confirm and commit a boot generation that is not installed through AppSwap.
+    pub fn keep(self) -> Result<(), String> {
+        self.prepare_rates()?.confirm_activation()?.keep().notify();
+        Ok(())
+    }
+}
+
+/// A generation whose rate candidate has been confirmed by its Store.
+/// Dropping it leaves the running generation unchanged and retains candidate custody.
+#[must_use = "a prepared generation must be committed to activate its rates and limits"]
+pub struct PreparedLimits {
+    installed: InstalledLimits,
+    rates: Box<dyn crate::rate_apply::PreparedRates>,
+}
+
+impl PreparedLimits {
+    /// Confirm the authorized activation after desired-state persistence succeeds.
+    /// On failure the old rates remain active and the exact candidate is retained for retry.
+    pub fn confirm_activation(self) -> Result<ConfirmedLimits, String> {
+        let Self { installed, rates } = self;
+        Ok(ConfirmedLimits {
+            installed,
+            rates: rates.confirm_activation()?,
+        })
+    }
+}
+
+/// Both the immutable candidate and its authorized activation are Store-confirmed.
+#[must_use = "confirmed rates must be published with their App generation"]
+pub struct ConfirmedLimits {
+    installed: InstalledLimits,
+    rates: Box<dyn crate::rate_apply::RateCommit>,
+}
+
+impl ConfirmedLimits {
+    /// Activate the confirmed prices and publish this generation's remaining limits.
+    /// Call only at the generation commit, after any desired-state persistence succeeds.
+    pub fn keep(self) -> CommittedLimits {
+        let Self {
+            installed,
+            rates: commit,
+        } = self;
         let InstalledLimits {
             limits,
-            rates,
-            configured_card,
+            rates: _,
+            configured_card: _,
             destinations,
             rules,
-        } = self;
+        } = installed;
+        commit.commit();
         busbar_kernel::config::limits::publish(&limits);
-        rules.destinations_applied(&destinations);
-        crate::rate_apply::card_applied(&configured_card);
-        crate::rate_apply::rates_applied(&rates.raw());
+        CommittedLimits {
+            destinations,
+            rules,
+        }
+    }
+}
+
+/// External notifications deferred until after the App generation has been published.
+pub struct CommittedLimits {
+    destinations: config::Destinations,
+    rules: std::sync::Arc<dyn RootRules>,
+}
+
+impl CommittedLimits {
+    /// Notify callbacks after publication; these cannot interrupt the rate/App cutover.
+    pub fn notify(self) {
+        self.rules.destinations_applied(&self.destinations);
     }
 }
 
@@ -627,18 +705,208 @@ impl RootRules for AcceptAll {
     }
 }
 
+/// Open only the base-config Store needed to recover runtime configuration. The composition
+/// root installs its connector first. This path is never used by validation or a live reload.
+pub fn bootstrap_config_store(
+    cfg: &config::RootCfg,
+    plugins: &config::PluginsCfg,
+) -> Result<busbar_contract::store_calls::OpenedStore, String> {
+    config_validate::validate(cfg).map_err(|errors| errors.join("; "))?;
+    if plugins.enabled && !plugins.fetch.is_empty() {
+        fetch_config_plugins(plugins, cfg, true)?;
+    }
+    // Only the anchor must resolve before its pins are recoverable. Other hook/auth/export
+    // modules may legitimately depend on those persisted pins; the complete recovered build
+    // validates them before opening or serving them.
+    let registry = crate::preflight::plugins_preflight(
+        cfg.store.as_ref(),
+        None,
+        &Default::default(),
+        &HashMap::new(),
+        plugins,
+        &Default::default(),
+    )?;
+    if let Some(admit) = crate::preflight::root_rows().secret_admit {
+        admit(&registry)?;
+    }
+    let dependencies = bootstrap_dependency_names(cfg, registry.as_ref());
+    let bootstrap_secrets = cfg
+        .secrets
+        .iter()
+        .filter(|(module, _)| {
+            registry
+                .resolve(module)
+                .is_some_and(|row| row.kind == "secret" && dependencies.contains(&row.name))
+        })
+        .map(|(module, settings)| (module.clone(), settings.clone()))
+        .collect();
+    let resolver = build_secret_resolver(registry.clone(), &bootstrap_secrets)?;
+    // The same trust/auth material must resolve before the anchor opens as before ordinary boot.
+    let _admin = resolve_admin_token(cfg.auth.as_ref(), &resolver)?;
+    let _signer = resolve_signing_key(cfg.auth.as_ref(), &resolver)?;
+    let _at_rest = resolve_at_rest_keys(&cfg.credentials, &resolver)?;
+    open_config_store(cfg.store.as_ref(), &registry, &resolver)
+}
+
+/// Canonical modules required before an overlay can be read: its Store, the Store's declared
+/// setting references, and the base credentials bootstrap resolves. Other application modules
+/// are validated only after their persisted pins are recovered. No bytes are resolved here.
+pub fn bootstrap_dependency_names(
+    cfg: &config::RootCfg,
+    registry: &dyn busbar_contract::plugin_rows::PluginRows,
+) -> std::collections::BTreeSet<String> {
+    let mut modules = std::collections::BTreeSet::new();
+    let mut add = |module: &str| {
+        let name = registry
+            .resolve(module)
+            .map(|row| row.name)
+            .or_else(|| registry.unresolved_reason(module).map(|row| row.name))
+            .unwrap_or_else(|| module.to_string());
+        modules.insert(name);
+    };
+    if let Some(store) = &cfg.store {
+        add(&store.module);
+        let mut tree = serde_json::Value::Object(store.settings.clone());
+        let fields = registry
+            .secret_slots(&store.module)
+            .into_iter()
+            .chain(registry.reference_slots(&store.module));
+        for path in fields {
+            for at in busbar_contract::secret_fields::declared_references(&tree, &path) {
+                if let Some(value) = busbar_contract::secret_fields::value_at_mut(&mut tree, &at) {
+                    if let config::secret::SettingShape::Reference(reference) =
+                        config::secret::classify_setting(value)
+                    {
+                        add(&reference.module);
+                    }
+                }
+            }
+        }
+    }
+    if let Some(auth) = &cfg.auth {
+        if let Some(reference) = auth.admin_token_ref() {
+            add(&reference.module);
+        }
+        if let Some(reference) = &auth.signing_key {
+            add(&reference.module);
+        }
+    }
+    if let Some(keys) = &cfg.credentials.at_rest {
+        add(&keys.key.module);
+        if let Some(previous) = &keys.previous {
+            add(&previous.module);
+        }
+    }
+    modules
+}
+
+fn open_config_store(
+    store: Option<&config::StoreCfg>,
+    registry: &Arc<dyn busbar_contract::plugin_rows::PluginRows>,
+    resolver: &config::secret::SecretResolver,
+) -> Result<busbar_contract::store_calls::OpenedStore, String> {
+    let store = store.ok_or_else(config::store_required)?;
+    let row = registry.resolve(&store.module);
+    let resolved = if row.as_ref().is_some_and(|row| row.in_process) {
+        Default::default()
+    } else {
+        config::secret::resolve_settings(
+            &store.settings,
+            &registry.secret_slots(&store.module),
+            &registry.reference_slots(&store.module),
+            &store.module,
+            resolver,
+            &busbar_contract::config_time::ConfigScope::config_time(),
+        )
+        .map_err(|error| format!("store '{}' settings: {error}", store.module))?
+    };
+    let settings = zeroize::Zeroizing::new(resolved.as_value().to_string());
+    drop(resolved);
+    let failed = |error: String| format!("store '{}' plugin load failed: {error}", store.module);
+    let door = registry.store_door(&store.module).map_err(failed)?;
+    let axis = crate::preflight::root_rows()
+        .store_axis
+        .ok_or_else(|| failed("no store axis is installed".into()))?;
+    axis()
+        .open(door, &store.module, settings.as_bytes())
+        .map_err(failed)
+}
+
+fn fetch_config_plugins(
+    plugins: &config::PluginsCfg,
+    cfg: &config::RootCfg,
+    boot: bool,
+) -> Result<(), String> {
+    let targets = plugins.fetch_targets()?;
+    let dir = std::path::Path::new(&plugins.dir);
+    crate::durable::create_dir_all(dir).map_err(|error| {
+        format!(
+            "plugins.fetch: cannot create plugins dir '{}': {error}",
+            dir.display()
+        )
+    })?;
+    let fetch = crate::preflight::root_rows()
+        .plugins_fetch
+        .ok_or("plugins.fetch failed: no composition root installed the plugins fetch")?;
+    let outcomes = fetch(dir, &targets, boot, &cfg.blocked_metadata_hosts)
+        .map_err(|errors| format!("plugins.fetch failed: {}", errors.join("; ")))?;
+    for outcome in outcomes {
+        match outcome {
+            crate::preflight::Fetched::Cached { filename } => {
+                tracing::info!(filename, "plugins.fetch: cached")
+            }
+            crate::preflight::Fetched::Fetched { filename } => {
+                tracing::info!(filename, "plugins.fetch: downloaded + verified")
+            }
+            crate::preflight::Fetched::Warned { url, error } => diag_warn!(
+                PLUGINS_FETCH_RELOAD_MISS,
+                url,
+                error,
+                "plugins.fetch: miss on reload; keeping current artifact"
+            ),
+        }
+    }
+    Ok(())
+}
+
 #[cold] // boot/admin-only — keeps hot text dense (never inlined into a warm path)
 #[inline(never)]
 #[allow(clippy::too_many_arguments)] // the build's whole input, one argument each; #1001 added the root's rules
 pub fn build_app_from_config(
     cfg: config::RootCfg,
     plugins_cfg: config::PluginsCfg,
-    overlay_path: Option<std::path::PathBuf>,
+    overlay_path: Option<Arc<config::overlay::OverlayStore>>,
     base_hook_names: std::collections::HashSet<String>,
     base_group_names: std::collections::HashSet<String>,
     config_paths: (Option<std::path::PathBuf>, Option<std::path::PathBuf>),
     prior: Option<&state::App>,
     rules: &std::sync::Arc<dyn RootRules>,
+) -> Result<(state::App, Option<GovCredentialRotation>, InstalledLimits), String> {
+    build_app_from_config_with_store(
+        cfg,
+        plugins_cfg,
+        overlay_path,
+        base_hook_names,
+        base_group_names,
+        config_paths,
+        prior,
+        rules,
+        None,
+    )
+}
+
+/// Boot reuses the exact Store opened to recover its overlay, including ephemeral Stores.
+#[allow(clippy::too_many_arguments)]
+pub fn build_app_from_config_with_store(
+    cfg: config::RootCfg,
+    plugins_cfg: config::PluginsCfg,
+    overlay_path: Option<Arc<config::overlay::OverlayStore>>,
+    base_hook_names: std::collections::HashSet<String>,
+    base_group_names: std::collections::HashSet<String>,
+    config_paths: (Option<std::path::PathBuf>, Option<std::path::PathBuf>),
+    prior: Option<&state::App>,
+    rules: &Arc<dyn RootRules>,
+    boot_store: Option<busbar_contract::store_calls::OpenedStore>,
 ) -> Result<(state::App, Option<GovCredentialRotation>, InstalledLimits), String> {
     // The card this configuration resolves, raised at the commit (`InstalledLimits::keep`).
     let configured_card = config::card::CardFields::of_root(&cfg);
@@ -1222,9 +1490,10 @@ pub fn build_app_from_config(
                         gs.set_signing_key(signer);
                     }
                     if let Some(keys) = at_rest {
-                        if gs.set_at_rest_keys(Some(keys)) {
-                            rewrap_at_rest(&gs);
-                        }
+                        gs.set_at_rest_keys(Some(keys));
+                        // A prior pass may have failed or lost a row claim. The same keys must
+                        // retry that debt on a committed reload, after persistence and swap.
+                        rewrap_at_rest(&gs);
                     }
                 }));
             }
@@ -1265,38 +1534,14 @@ pub fn build_app_from_config(
                 diag_warn!(STATEFUL_PLANE_EPHEMERAL_STORE, "{msg}");
             }
         }
-        // Resolve any SecretRef-typed setting (e.g. a `licenseKey`) against the secret store BEFORE
-        // the settings cross the ABI (ADR-0010). FAIL-CLOSED: an unresolvable ref refuses the store
-        // load rather than handing the plugin a dangling reference. A row opened IN PROCESS is
-        // handed no settings, so it has none to resolve (the built-in store never read its own).
-        let resolved = match row.as_ref().is_some_and(|p| p.in_process) {
-            true => Default::default(),
-            false => config::secret::resolve_settings(
-                &g.settings,
-                &plugin_registry.secret_slots(&g.module),
-                &plugin_registry.reference_slots(&g.module),
-                &g.module,
+        let opened = match boot_store {
+            Some(opened) => opened,
+            None => open_config_store(
+                cfg.store.as_ref(),
+                &plugin_registry,
                 secret_resolver.as_ref(),
-                &busbar_contract::config_time::ConfigScope::config_time(),
-            )
-            .map_err(|e| format!("store '{}' settings: {e}", g.module))?,
+            )?,
         };
-        // The resolved bag's text is a copy of its secrets too: held in a zeroising buffer and
-        // wiped, with the bag, once the store's `open` has answered (security.md:318).
-        let cfg_json = zeroize::Zeroizing::new(resolved.as_value().to_string());
-        drop(resolved);
-        // The configured store's DOOR (a linked row's, or a dropped-in plugin's verified bytes),
-        // loaded through the root's one dispatcher and opened through the store v3 table, on the
-        // store axis the composition root installed (WIRE-STORE Q8/Q9). Compiled in or dropped
-        // in, one path.
-        let load_failed = |e: String| format!("store '{}' plugin load failed: {e}", g.module);
-        let door = plugin_registry.store_door(&g.module).map_err(load_failed)?;
-        let axis = crate::preflight::root_rows()
-            .store_axis
-            .ok_or_else(|| load_failed("no store axis is installed".to_string()))?;
-        let opened = axis().open(door, &g.module, cfg_json.as_bytes());
-        drop(cfg_json);
-        let opened = opened.map_err(load_failed)?;
         let store: Arc<dyn governance::RecordStore> = opened.records;
         let store_calls = opened.calls;
         // The operator ADMIN credential: the operator-credential entry's `token:` secret ref.
@@ -1978,3 +2223,7 @@ pub fn build_app_from_config(
 #[cfg(test)]
 #[path = "tests/root_rules_hearing_tests.rs"]
 mod root_rules_hearing_tests;
+
+#[cfg(test)]
+#[path = "tests/config_store_recovery_tests.rs"]
+mod config_store_recovery_tests;

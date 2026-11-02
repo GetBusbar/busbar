@@ -274,8 +274,11 @@ impl ServiceStore {
             .filter(|held| held.epoch == epoch)
             .and_then(|held| held.entries.get_mut(&issue))
         {
-            Some((_, e)) if matches!(e, Entry::Running { invocation: current } if *current == invocation) =>
-            {
+            Some((_, e)) => {
+                if !matches!(&*e, Entry::Running { invocation: current } if *current == invocation)
+                {
+                    return false;
+                }
                 *e = Entry::Done {
                     invocation,
                     stored,
@@ -1185,10 +1188,13 @@ service! {
         if check_disk_append_in(&i).is_err() {
             return Answered::fault();
         }
-        let (Some(key), Some(bytes)) = (
-            text_of(i.dest_key, "disk_append.dest_key"),
-            blob_of(i.bytes, "disk_append.bytes"),
-        ) else {
+        let Some(bytes) = blob_of(i.bytes, "disk_append.bytes") else {
+            return Answered::fault();
+        };
+        // Own the copy before parsing another field: malformed keys, replay and refusal also
+        // retire initialized request bytes without issuing a disk job.
+        let mut bytes = zeroize::Zeroizing::new(bytes);
+        let Some(key) = text_of(i.dest_key, "disk_append.dest_key") else {
             return Answered::fault();
         };
         let Some(dest) = destination(&route, &key) else {
@@ -1212,7 +1218,7 @@ service! {
         // SAFETY: no buffer: the result is the `DiskWritten` slot, written below.
         let mut a = unsafe {
             pended(&served, &route, &head, req, None, |later| {
-                provider.disk_append(&dest, bytes, later)
+                provider.disk_append(&dest, std::mem::take(&mut *bytes), later)
             })
         };
         if matches!(a.outcome, Outcome::Ready | Outcome::Failed) {

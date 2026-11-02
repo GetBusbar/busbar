@@ -340,10 +340,10 @@ impl AdminService {
 
     /// The overlay entries of `section` this binary could not parse, read OFF THE ASYNC WORKER.
     ///
-    /// Finding them reads the operator's overlay FILE and parses all of it — every section, the
+    /// Finding them reads the operator's Store overlay and parses all of it — every section, the
     /// group tree a self-service mint grows among them — on a read-scope endpoint the admin limiter
-    /// does not meter. Inline, that file read held the runtime worker the data plane shares for as
-    /// long as the disk took; on a blocking thread it holds nothing. A blocking task that fails to
+    /// does not meter. Inline, that Store read held the runtime worker the data plane shares for as
+    /// long as the Store took; on a blocking thread it holds nothing. A blocking task that fails to
     /// join answers what a panic inside the handler always answered, the `500` `internal` envelope.
     async fn unparseable_overlay_entries(
         &self,
@@ -373,7 +373,8 @@ impl AdminService {
                 "admin blocking task failed"
             );
             AdminError::Internal
-        })
+        })?
+        .map_err(AdminError::Validation)
     }
 
     /// `GET /api/v1/admin/groups` — the `groups:` limit tree read. Read scope. Each entry is the
@@ -1024,6 +1025,7 @@ impl AdminService {
                        serves it: nothing was written",
             });
         }
+        self.validate_bootstrap_candidate("install", &file, manifest, tarball, admission)?;
 
         // ── 5. atomic publish via the crate's ONE durable-write choke point ──
         // Directory provisioning goes through the primitive too: `std::fs::create_dir_all` leaves the
@@ -1221,11 +1223,90 @@ impl AdminService {
         let manifest = admission
             .rollback_target(&file, &bytes, &self.app.plugins_cfg)
             .map_err(refused)?;
+        self.validate_bootstrap_candidate("rollback", &file, &manifest, &bytes, admission)?;
 
         // Merge: this plugin's pin becomes the target version; other plugins' prior pins are preserved.
         let mut pins = prior_pins.clone();
         pins.insert(manifest.name.clone(), manifest.version.clone());
         Ok((manifest, pins))
+    }
+
+    /// A dependency needed to open the overlay cannot use its own unread pin to lower bootstrap
+    /// trust. Reuse the ordinary admission under the operator's existing base policy, before any
+    /// pin is persisted. An explicit safe rollback of any other plugin keeps its existing path.
+    fn validate_bootstrap_candidate(
+        &self,
+        operation: &str,
+        file: &str,
+        manifest: &Stated,
+        bytes: &[u8],
+        admission: &dyn PluginAdmission,
+    ) -> Result<(), AdminError> {
+        let Some(config_path) = self.app.config_path.as_deref() else {
+            return Ok(());
+        };
+        let loaded = busbar_kernel::load_config_from_disk_judged(
+            config_path,
+            self.app.providers_path.as_deref(),
+            false,
+            busbar_kernel::config::EnvSubst::Strict,
+            &*self.app.root_rules,
+        )
+        .map_err(|error| {
+            AdminError::Validation(format!(
+                "cannot validate the operator's Store overlay bootstrap policy: {error}"
+            ))
+        })?;
+        let cfg =
+            busbar_kernel::config::resolve(&loaded.deploy, &loaded.defs).map_err(|errors| {
+                AdminError::Validation(format!(
+                    "cannot validate the operator's Store overlay bootstrap policy: {}",
+                    errors.join("; ")
+                ))
+            })?;
+        let build = busbar_kernel::preflight::root_rows()
+            .registry_build
+            .ok_or_else(|| {
+                AdminError::Validation(
+                    "no root installed the Store overlay bootstrap registry".into(),
+                )
+            })?;
+        let data_dir = busbar_kernel::preflight::fleet_data_dir();
+        let rows = build(
+            busbar_kernel::preflight::RegistryIn {
+                linked: busbar_kernel::preflight::linked_rows(),
+                plugins: Some(&loaded.deploy.plugins),
+                data_dir: data_dir.as_deref(),
+            },
+            &mut |_| {},
+        )
+        .map_err(|error| {
+            AdminError::Validation(format!(
+                "cannot validate the operator's Store overlay bootstrap registry: {error}"
+            ))
+        })?;
+        let dependencies = busbar_kernel::appbuild::bootstrap_dependency_names(&cfg, rows.as_ref());
+        if dependencies.contains(&manifest.name) || dependencies.contains(&manifest.alias) {
+            let (_, verdict) = admission
+                .inspect(bytes, &loaded.deploy.plugins)
+                .map_err(refused)?;
+            let refused_reason = match verdict {
+                Judged::Rejected { reason } => Some(reason),
+                // A rollback names the exact installed artifact the base registry judged. An
+                // upload can repair that file with different bytes, so its old verdict cannot
+                // reject the replacement candidate.
+                _ if operation == "rollback" => rows
+                    .skipped()
+                    .into_iter()
+                    .find(|row| row.file == file && row.name == manifest.name)
+                    .map(|row| row.reason),
+                _ => None,
+            };
+            if let Some(reason) = refused_reason {
+                return Err(AdminError::Conflict(format!("plugin {operation} would make Store overlay bootstrap dependency '{}' unavailable under the operator's base trust policy: {reason}. Keep an admitted bootstrap version, or deliberately change the base config.yaml Store/trust/floor configuration and reload or restart before this change; an unread Store-owned version pin cannot authorize opening that same Store", manifest.name)));
+            }
+        }
+        Ok(())
     }
 
     /// `GET /api/v1/admin/config` — the EFFECTIVE running config, composed from the same redacted reads as
@@ -1479,7 +1560,7 @@ impl AdminService {
         });
         // THE VERSION THE RESPONSE WAS PRICED AT (#44, Q93): the highest history seq among the
         // cards that priced its rows. It is RECORDED as each row's card resolves and never read back
-        // by the pricing: a row's card is resolved by its own instant (#79). `?as_of=<it>` re-derives
+        // by the pricing: a row retains its served era and its amendment instant. `?as_of=<it>` re-derives
         // every figure below, and a card published after these rows were earned leaves it as it was.
         let mut priced_by: Option<u64> = None;
         // THE ROWS AS ADJUSTED: every root `adjust` of the day moves its rows' counts before any is
@@ -1517,13 +1598,9 @@ impl AdminService {
                 spend_micros: 0,
                 classes: std::collections::BTreeMap::new(),
             };
-            // **THE RESOLUTION**, and the key is the ROW'S OWN FIRST INSTANT (see
-            // `row_priced_at_ms`): the row prices against the card it was earned under rather than
-            // the newest card ever authored, and a card edit inside the day opened a second row at
-            // the edit so the two halves resolve to the two cards. Never
-            // `PostingStamp::rate_card_version` — that is reporting provenance (#44), and a
-            // version resolves only forward, which is what would put a back-dated correction out
-            // of reach.
+            // Resolve the row's served configuration era separately from its wall-clock correction
+            // instant. A late activation must not steal old-served counts in a later bucket, while
+            // deliberate amendments still resolve at that bucket's own first instant.
             //
             // ONE WAY TO FALL BACK: no source installed or no history resolved (a build with no
             // root ledger in it) prices through the derivation this read has always used. A HOLE —
@@ -1532,25 +1609,25 @@ impl AdminService {
             // item 374). Pricing a hole at the current card would answer for an instant with a
             // card nobody put in force for it; the record has a gap and the read says so.
             //
-            // THE PRICING ITSELF IS NOT HERE AND IS NOT THIS CRATE'S: the row is handed to
-            // the ledger's `cost::price_in_view`, THE ONE FUNCTION, which resolves the
-            // card at the instant below and prices against it. See
-            // `derive_spend_micros_row_at_card`.
+            // The ledger resolves the entry and owns all pricing arithmetic. Both total and
+            // itemized classes use that same pinned entry without a second temporal lookup.
             let at = row_priced_at_ms(window.start, r.priced_from_ms);
+            let resolved = view
+                .as_ref()
+                .map(|v| row_card(v, r, at))
+                .transpose()
+                .map_err(|e| usage_refusal("usage.price", &e))?;
             // THE ROW'S LEDGERED CLASSES (`usage_units`) — every count the budget book holds that the
             // token split does not (a plane's declared classes, a pools open class, a plane's session
             // count) — price on the row's lane beside its tokens, as the budget book prices them.
             let classes: &std::collections::BTreeMap<String, u64> = &r.usage_units;
-            let row_spend = match view.as_ref() {
-                Some(v) => match v.card_at(at) {
-                    Some((card_seq, card)) => {
-                        priced_by = priced_by.max(Some(card_seq.get()));
-                        derive_spend_micros_row_classes_at_card(
-                            v, at, card, &cost, &lane, &row_view, classes,
-                        )
-                    }
-                    None => Err(busbar_kernel::cost::MoneyError::NoCardInForce { at }),
-                },
+            let row_spend = match resolved {
+                Some((card_seq, card)) => {
+                    priced_by = priced_by.max(Some(card_seq.get()));
+                    derive_spend_micros_row_classes_at_entry(
+                        card_seq, card, &cost, &lane, &row_view, classes,
+                    )
+                }
                 None => derive_spend_micros_row_classes(&cost, &lane, &row_view, classes),
             };
             // A REFUSED figure fails the read (#42, items 31 and 374): the card is present and
@@ -1576,13 +1653,10 @@ impl AdminService {
             };
             for (class, count) in itemized {
                 let one = std::collections::BTreeMap::from([(class.clone(), *count)]);
-                let class_cost = match view.as_ref() {
-                    Some(v) => match v.card_at(at) {
-                        Some((_card_seq, card)) => derive_spend_micros_row_classes_at_card(
-                            v, at, card, &cost, &lane, &none, &one,
-                        ),
-                        None => Err(busbar_kernel::cost::MoneyError::NoCardInForce { at }),
-                    },
+                let class_cost = match resolved {
+                    Some((card_seq, card)) => derive_spend_micros_row_classes_at_entry(
+                        card_seq, card, &cost, &lane, &none, &one,
+                    ),
                     None => derive_spend_micros_row_classes(&cost, &lane, &none, &one),
                 }
                 .map_err(|e| usage_refusal("usage.price", &e))?;

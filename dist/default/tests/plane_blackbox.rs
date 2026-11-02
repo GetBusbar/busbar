@@ -26,7 +26,7 @@ mod common;
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
@@ -714,7 +714,7 @@ struct World {
     responder: Option<Responder>,
     counts_mark: BTreeMap<String, usize>,
     counts_start: BTreeMap<String, usize>,
-    node: Option<Child>,
+    node: Option<common::boot::Reap>,
     vars: BTreeMap<String, String>,
     unset: Vec<String>,
     issuer: bool,
@@ -1141,7 +1141,8 @@ fn run_step(world: &mut World, step: &Step) -> Result<(), String> {
             let mut cmd = world.command(&args)?;
             cmd.stdout(Stdio::from(file.try_clone().map_err(|e| e.to_string())?))
                 .stderr(Stdio::from(file));
-            let mut child = cmd.spawn().map_err(|e| format!("spawn the binary: {e}"))?;
+            let mut child =
+                common::boot::Reap(cmd.spawn().map_err(|e| format!("spawn the binary: {e}"))?);
             // A boot that states its `exit` expects one.
             let default = if s.get("exit").is_some() {
                 "exit"

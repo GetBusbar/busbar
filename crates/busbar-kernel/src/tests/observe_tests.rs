@@ -124,6 +124,153 @@ fn a_plugins_own_labels_are_carried() {
     assert_eq!(labels.len(), 3);
 }
 
+/// The real observer's accepted histogram reaches the real Source with only the host's quantiles.
+/// Reporter-supplied reserved labels neither shadow provenance nor spend cardinality slots; actual
+/// dimensions still do. Cover granted first-party series too, whose provenance is deliberately absent.
+#[test]
+fn observer_histograms_reserve_generated_quantiles_before_cardinality_and_snapshot() {
+    use busbar_contract::abi::mechanism::observe::SeriesDecl;
+    for (plugin, name, granted) in [
+        ("quantile-third-party", "quantile_observer_seconds", false),
+        (
+            "quantile-first-party",
+            "busbar_quantile_observer_seconds",
+            true,
+        ),
+    ] {
+        forget_cardinality(plugin);
+        if granted {
+            grant(plugin, &[SeriesDecl::new(name, "histogram")]);
+        }
+        let source: &'static crate::snapshot::Source =
+            Box::leak(Box::new(crate::snapshot::Source::new(
+                crate::snapshot::GAUGE_IDLE_TIMEOUT,
+                crate::snapshot::SUMMARY_BUCKETS,
+                crate::snapshot::GAUGE_IDLE_TIMEOUT,
+            )));
+        let entry = |dimension: &str, claim: usize| {
+            serde_json::json!({
+                "name": name, "type": "histogram", "value": 2,
+                "labels": {"plugin": format!("forged-{claim}"),
+                    "quantile": claim.to_string(), "sink": dimension}
+            })
+        };
+        metrics::with_local_recorder(&source, || {
+            let observe = |metric| {
+                OBSERVER.observe(
+                    &*TEST_GRANTS,
+                    plugin,
+                    busbar_contract::abi::mechanism::kind::EXPORT,
+                    &[metric],
+                    &[],
+                );
+            };
+            // More reserved-label claims than the entire label-set budget must remain one series.
+            for claim in 0..=MAX_LABEL_SETS_PER_SERIES {
+                observe(entry("audit", claim));
+            }
+            for dimension in 1..MAX_LABEL_SETS_PER_SERIES {
+                observe(entry(&dimension.to_string(), 0));
+            }
+            observe(entry("over-budget", 0));
+            observe(entry("audit", 0)); // An established dimension keeps reporting at the ceiling.
+        });
+        let families = source.snapshot();
+        let family = families.iter().find(|family| family.name == name).unwrap();
+        assert_eq!(
+            family.kind,
+            busbar_contract::abi::export::SCRAPE_KIND_SUMMARY
+        );
+        assert_eq!(family.samples.len(), MAX_LABEL_SETS_PER_SERIES * 9);
+        for sample in &family.samples {
+            let keys: std::collections::HashSet<_> =
+                sample.labels.iter().map(|(key, _)| key).collect();
+            assert_eq!(keys.len(), sample.labels.len(), "{sample:?}");
+            let provenance: Vec<_> = sample
+                .labels
+                .iter()
+                .filter(|(key, _)| key == PLUGIN_LABEL)
+                .map(|(_, value)| value.as_str())
+                .collect();
+            assert_eq!(provenance, if granted { vec![] } else { vec![plugin] });
+            assert!(!sample
+                .labels
+                .iter()
+                .any(|(_, value)| value == "over-budget"));
+            let quantiles: Vec<_> = sample
+                .labels
+                .iter()
+                .filter(|(key, _)| key == super::super::source::QUANTILE_LABEL)
+                .map(|(_, value)| value.as_str())
+                .collect();
+            if sample.name == name {
+                assert_eq!(quantiles.len(), 1, "{sample:?}");
+                assert!(["0", "0.5", "0.9", "0.95", "0.99", "0.999", "1"].contains(&quantiles[0]));
+                assert_eq!(sample.value, "2");
+            } else {
+                assert!(quantiles.is_empty(), "{sample:?}");
+                let audit = sample
+                    .labels
+                    .iter()
+                    .any(|(key, value)| key == "sink" && value == "audit");
+                let count = if audit {
+                    MAX_LABEL_SETS_PER_SERIES + 2
+                } else {
+                    1
+                };
+                let value = if sample.name == format!("{name}_count") {
+                    count
+                } else {
+                    assert_eq!(sample.name, format!("{name}_sum"));
+                    count * 2
+                };
+                assert_eq!(sample.value, value.to_string());
+            }
+        }
+        forget_cardinality(plugin);
+    }
+}
+
+#[test]
+fn observer_counters_and_gauges_keep_their_quantile_dimension() {
+    let plugin = "quantile-scalar-control";
+    forget_cardinality(plugin);
+    let source: &'static crate::snapshot::Source =
+        Box::leak(Box::new(crate::snapshot::Source::new(
+            crate::snapshot::GAUGE_IDLE_TIMEOUT,
+            crate::snapshot::SUMMARY_BUCKETS,
+            crate::snapshot::GAUGE_IDLE_TIMEOUT,
+        )));
+    metrics::with_local_recorder(&source, || {
+        for kind in ["counter", "gauge"] {
+            OBSERVER.observe(
+                &*TEST_GRANTS,
+                plugin,
+                busbar_contract::abi::mechanism::kind::EXPORT,
+                &[
+                    serde_json::json!({"name": format!("quantile_control_{kind}"),
+                    "type": kind, "value": 3, "labels": {"quantile": "reported"}}),
+                ],
+                &[],
+            );
+        }
+    });
+    let families = source.snapshot();
+    assert_eq!(families.len(), 2);
+    for family in families {
+        assert_eq!(family.samples.len(), 1);
+        assert_eq!(family.samples[0].value, "3");
+        assert_eq!(
+            family.samples[0].labels,
+            [
+                (PLUGIN_LABEL.to_string(), plugin.to_string()),
+                ("quantile".to_string(), "reported".to_string()),
+            ]
+        );
+    }
+    forget_cardinality(plugin);
+}
+
 /// A THREAD-LOCAL capture of what the fold REGISTERS — every series key it asked a recorder for,
 /// rendered `name{k=v,…}` — so the fold runs for real under `metrics::with_local_recorder` without
 /// touching the process-global recorder no unit test may install into.

@@ -24,9 +24,7 @@ use busbar_contract::abi::mechanism::door::{
     Door, DoorFn, DoorParts, KindTailHead, MetricFamily, Statement, FAMILY_HISTOGRAM,
 };
 use busbar_contract::abi::mechanism::lifecycle::{OpsHead, LIFECYCLE_SLOTS};
-use busbar_contract::abi::mechanism::rendering::{
-    render, RENDERING_MAGIC, RENDERING_MAGIC_TAIL_SIZE_ONLY,
-};
+use busbar_contract::abi::mechanism::rendering::{read, render};
 use busbar_contract::abi::mechanism::{KindCode, DOOR_MAGIC, DOOR_SYMBOL, MECHANISM_VERSION};
 use busbar_contract::abi::plane::{PlaneTail, ANSWER_LAYOUT};
 use busbar_contract::abi::sdk::door::RawDoorFn;
@@ -56,36 +54,18 @@ impl ManifestFacts {
     ///
     /// # Errors
     ///
-    /// [`LoadError::Rendering`] for a rendering too short or without the magic, or naming no kind;
-    /// a rendering an older pack tool made (its tail stated by size alone) names the repack.
+    /// [`LoadError::Rendering`] for an incomplete or malformed rendering, or one naming no kind;
+    /// a rendering an older pack tool made names the repack. The whole rendering is read before
+    /// any plugin code may run, including the need retention policy.
     pub fn read(rendering: &[u8]) -> Result<Self, LoadError> {
-        let magic = RENDERING_MAGIC.len();
-        if rendering.starts_with(RENDERING_MAGIC_TAIL_SIZE_ONLY) {
-            return Err(LoadError::Rendering(
-                "it is a Statement rendering whose kind tail is stated by size alone, from an \
-                 older pack tool — repack the plugin"
-                    .into(),
-            ));
-        }
-        if rendering.len() < magic + 12 || &rendering[..magic] != RENDERING_MAGIC {
-            return Err(LoadError::Rendering(
-                "it does not start with a Statement rendering's head".into(),
-            ));
-        }
-        let word = |at: usize| {
-            u32::from_le_bytes([
-                rendering[at],
-                rendering[at + 1],
-                rendering[at + 2],
-                rendering[at + 3],
-            ])
-        };
-        let kind = word(magic + 4);
+        let facts = read(rendering)
+            .map_err(|e| LoadError::Rendering(format!("byte {} is not {}", e.at, e.what)))?;
+        let kind = facts.kind;
         Ok(Self {
-            mechanism_version: word(magic),
+            mechanism_version: facts.mechanism_version,
             kind: KindCode::from_raw(kind)
                 .ok_or_else(|| LoadError::Rendering(format!("it names kind {kind}")))?,
-            kind_abi: word(magic + 8),
+            kind_abi: facts.kind_abi,
         })
     }
 }
@@ -921,6 +901,7 @@ pub fn load_linked<K: Kind>(row: &LinkedRow, bind: Bind) -> Result<Plugin<K>, Lo
 
 /// [`validate`], then the door's Statement rendered and compared with the `stated` rendering.
 fn admitted<K: Kind>(door: RawDoorFn, stated: &[u8]) -> Result<Validated, LoadError> {
+    check_facts::<K>(stated)?;
     let v = validate::<K>(door)?;
     // SAFETY: `validate` ran `check_statement` on this Statement.
     let own = unsafe { render(&v.statement) }.map_err(|e| LoadError::Rendering(e.to_string()))?;

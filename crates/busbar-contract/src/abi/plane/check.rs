@@ -650,7 +650,18 @@ pub struct ProjectHost<'a> {
 /// # Errors
 ///
 /// The rule the answer breaks.
-pub fn check_project(
+/// # Safety
+///
+/// Every written signal with a recognized tag must have the member named by that tag initialized. The tag is
+/// checked here, but a public tag cannot prove which member the plugin initialized.
+///
+/// ```compile_fail,E0133
+/// use busbar_contract::abi::{mechanism::call::Outcome, plane::{ProjectOut, check::{check_project, ProjectHost}}};
+/// fn without_ownership_proof(out: &ProjectOut, host: &ProjectHost<'_>) {
+///     let _ = check_project(Outcome::Ready, out, host);
+/// }
+/// ```
+pub unsafe fn check_project(
     outcome: Outcome,
     out: &ProjectOut,
     host: &ProjectHost<'_>,
@@ -756,11 +767,11 @@ pub fn check_project(
             "project.signal.tag",
         )?;
         if e.tag == SIGNAL_TAG_STR {
-            // SAFETY: the tag names `str_` live; every bit pattern of an `AbiStr` is a valid value.
+            // SAFETY: the caller guarantees the checked tag names an initialized `str_` member.
             let s = unsafe { e.value.str_ };
             in_arena(s, arena.0, out.arena_written, "project.signal.value")?;
         } else if e.tag == SIGNAL_TAG_BOOL {
-            // SAFETY: the tag names `boolean` live; every `u8` is a valid value.
+            // SAFETY: the caller guarantees the checked tag names an initialized `boolean` member.
             let b = unsafe { e.value.boolean };
             code(u64::from(b), 0, 1, "project.signal.value")?;
         }
@@ -785,46 +796,33 @@ pub fn check_drive(outcome: Outcome, out: &PlaneDriveOut, sessions_cap: u64) -> 
     Ok(())
 }
 
-/// `refusal`'s and `serve`'s shared reply: body, fields and arena under the short-buffer rule; a short answer writes
-/// nothing; every field written is judged.
+/// A reply is one short answer over body, fields, arena and records. Judge every dimension
+/// together before inspecting any written field or record; a shortage in one forbids all writes.
 fn reply(
     outcome: Outcome,
-    op: [&'static str; 4],
-    reply: (u64, u64),
-    fields_wn: (u32, u32),
-    arena: (u64, u64),
+    op: [&'static str; 5],
+    wn: [(u64, u64); 4],
     fields_buf: &[OutField],
+    records_buf: &[RecordWrite],
     caps: &Caps,
+    b: &Bounds,
 ) -> Result<(), Fault> {
-    let dims = [
-        Dim {
-            written: reply.0,
-            needed: reply.1,
-            cap: caps.reply,
-            max: MAX_BYTES,
-            field: op[0],
-        },
-        Dim {
-            written: u64::from(fields_wn.0),
-            needed: u64::from(fields_wn.1),
-            cap: caps.fields,
-            max: MAX_FIELDS,
-            field: op[1],
-        },
-        Dim {
-            written: arena.0,
-            needed: arena.1,
-            cap: caps.arena,
-            max: MAX_BYTES,
-            field: op[2],
-        },
-    ];
-    results(outcome, op[3], &dims)?;
-    fields(fields_buf, u64::from(fields_wn.0), arena.0)
+    let caps = [caps.reply, caps.fields, caps.arena, caps.records];
+    let max = [MAX_BYTES, MAX_FIELDS, MAX_BYTES, MAX_RECORDS];
+    let dims: [Dim; 4] = core::array::from_fn(|i| Dim {
+        written: wn[i].0,
+        needed: wn[i].1,
+        cap: caps[i],
+        max: max[i],
+        field: op[i],
+    });
+    results(outcome, op[4], &dims)?;
+    fields(fields_buf, wn[1].0, wn[2].0)?;
+    records(records_buf, wn[3].0, wn[2].0, b)
 }
 
 /// `refusal`: the marker is `0` (the kernel sets [`super::MARK_GATE_REJECTED`], never a
-/// plane); the reply is valid.
+/// plane); body, fields, arena and records obey one short-buffer rule and every written item is valid.
 ///
 /// # Errors
 ///
@@ -833,7 +831,9 @@ pub fn check_refusal(
     outcome: Outcome,
     out: &RefusalOut,
     fields_buf: &[OutField],
+    records_buf: &[RecordWrite],
     caps: &Caps,
+    b: &Bounds,
 ) -> Result<(), Fault> {
     code(u64::from(out.marker), 0, 0, "refusal.marker")?;
     reply(
@@ -842,72 +842,27 @@ pub fn check_refusal(
             "refusal.reply",
             "refusal.fields",
             "refusal.arena",
+            "refusal.records",
             "refusal",
         ],
-        (out.reply_written, out.reply_needed),
-        (out.fields_written, out.fields_needed),
-        (out.arena_written, out.arena_needed),
+        [
+            (out.reply_written, out.reply_needed),
+            (u64::from(out.fields_written), u64::from(out.fields_needed)),
+            (out.arena_written, out.arena_needed),
+            (
+                u64::from(out.records_written),
+                u64::from(out.records_needed),
+            ),
+        ],
         fields_buf,
+        records_buf,
         caps,
+        b,
     )
 }
 
-/// `refusal`'s record writes (SEAM-L(o)): under the short-buffer rule over `records_buf`, each
-/// write judged as an `on_piece` answer's, its bytes inside the arena written.
-///
-/// # Errors
-///
-/// The rule the answer breaks.
-pub fn check_refusal_records(
-    outcome: Outcome,
-    out: &RefusalOut,
-    records_buf: &[RecordWrite],
-    records_cap: u64,
-    b: &Bounds,
-) -> Result<(), Fault> {
-    let n = (out.records_written, out.records_needed, out.arena_written);
-    answer_records(outcome, n, records_buf, records_cap, b, "refusal.records")
-}
-
-/// `serve`'s record writes (SEAM-L(t)): as a refusal's ([`check_refusal_records`]).
-///
-/// # Errors
-///
-/// The rule the answer breaks.
-pub fn check_serve_records(
-    outcome: Outcome,
-    out: &ServeOut,
-    records_buf: &[RecordWrite],
-    records_cap: u64,
-    b: &Bounds,
-) -> Result<(), Fault> {
-    let n = (out.records_written, out.records_needed, out.arena_written);
-    answer_records(outcome, n, records_buf, records_cap, b, "serve.records")
-}
-
-/// An answer's record writes, `(written, needed, arena written)`: the short-buffer rule over the
-/// host's buffer, then each write judged as an `on_piece` answer's.
-fn answer_records(
-    outcome: Outcome,
-    (written, needed, arena): (u32, u32, u64),
-    records_buf: &[RecordWrite],
-    records_cap: u64,
-    b: &Bounds,
-    field: &'static str,
-) -> Result<(), Fault> {
-    let written = u64::from(written);
-    result(
-        outcome,
-        written,
-        u64::from(needed),
-        records_cap,
-        MAX_RECORDS,
-        field,
-    )?;
-    records(records_buf, written, arena, b)
-}
-
-/// `serve`: a known `AUDIT_*`, and the reply is valid.
+/// `serve`: a known `AUDIT_*`; body, fields, arena and records obey one short-buffer rule and
+/// every written item is valid.
 ///
 /// # Errors
 ///
@@ -916,7 +871,9 @@ pub fn check_serve(
     outcome: Outcome,
     out: &ServeOut,
     fields_buf: &[OutField],
+    records_buf: &[RecordWrite],
     caps: &Caps,
+    b: &Bounds,
 ) -> Result<(), Fault> {
     code(
         u64::from(out.audit),
@@ -926,16 +883,30 @@ pub fn check_serve(
     )?;
     reply(
         outcome,
-        ["serve.reply", "serve.fields", "serve.arena", "serve"],
-        (out.reply_written, out.reply_needed),
-        (out.fields_written, out.fields_needed),
-        (out.arena_written, out.arena_needed),
+        [
+            "serve.reply",
+            "serve.fields",
+            "serve.arena",
+            "serve.records",
+            "serve",
+        ],
+        [
+            (out.reply_written, out.reply_needed),
+            (u64::from(out.fields_written), u64::from(out.fields_needed)),
+            (out.arena_written, out.arena_needed),
+            (
+                u64::from(out.records_written),
+                u64::from(out.records_needed),
+            ),
+        ],
         fields_buf,
+        records_buf,
         caps,
+        b,
     )
 }
 
-/// `catalog`: the reply is valid.
+/// `catalog`: the reply is valid. This operation has no record buffer.
 ///
 /// # Errors
 ///
@@ -953,13 +924,19 @@ pub fn check_catalog(
             "catalog.reply",
             "catalog.fields",
             "catalog.arena",
+            "catalog.records",
             "catalog",
         ],
-        (out.reply_written, out.reply_needed),
-        (out.fields_written, out.fields_needed),
-        (out.arena_written, out.arena_needed),
+        [
+            (out.reply_written, out.reply_needed),
+            (u64::from(out.fields_written), u64::from(out.fields_needed)),
+            (out.arena_written, out.arena_needed),
+            (0, 0),
+        ],
         fields_buf,
+        &[],
         caps,
+        &Bounds::default(),
     )
 }
 
@@ -1608,16 +1585,30 @@ pub fn check_billable_classes(classes: &[BillableClass]) -> Result<(), Fault> {
 /// # Errors
 ///
 /// The rule a fee unit breaks.
-pub fn check_fee_units(fee_units: &[AbiStr], classes: &[BillableClass]) -> Result<(), Fault> {
+/// # Safety
+///
+/// Every non-NULL, nonempty fee and class string must name initialized bytes valid for a shared
+/// slice of its stated length throughout this call. Shape checks cannot prove pointer liveness.
+///
+/// ```compile_fail,E0133
+/// use busbar_contract::abi::{mechanism::call::AbiStr, plane::{BillableClass, check::check_fee_units}};
+/// fn without_ownership_proof(fees: &[AbiStr], classes: &[BillableClass]) {
+///     let _ = check_fee_units(fees, classes);
+/// }
+/// ```
+pub unsafe fn check_fee_units(
+    fee_units: &[AbiStr],
+    classes: &[BillableClass],
+) -> Result<(), Fault> {
     const FIELD: &str = "tail.fee_units";
     for f in fee_units {
         named(*f, FIELD)?;
-        // SAFETY: `named` checked the string non-NULL with its length; the plugin's static bytes.
+        // SAFETY: `named` checked the shape; the caller guarantees live initialized bytes.
         let fee = unsafe { core::slice::from_raw_parts(f.ptr, f.len) };
         let listed = classes.iter().any(|c| {
             c.class.len == fee.len()
                 && !c.class.ptr.is_null()
-                // SAFETY: a non-NULL class string of its stated length; the plugin's static bytes.
+                // SAFETY: the caller guarantees this non-NULL class string is live and initialized.
                 && unsafe { core::slice::from_raw_parts(c.class.ptr, c.class.len) } == fee
         });
         if !listed {
@@ -1633,7 +1624,18 @@ pub fn check_fee_units(fee_units: &[AbiStr], classes: &[BillableClass]) -> Resul
 /// # Errors
 ///
 /// The rule a word breaks.
-pub fn check_metric_lanes(lanes: &[AbiStr]) -> Result<(), Fault> {
+/// # Safety
+///
+/// Every non-NULL, nonempty lane string must name initialized bytes valid for a shared slice of
+/// its stated length throughout this call. Shape checks cannot prove pointer liveness.
+///
+/// ```compile_fail,E0133
+/// use busbar_contract::abi::{mechanism::call::AbiStr, plane::check::check_metric_lanes};
+/// fn without_ownership_proof(lanes: &[AbiStr]) {
+///     let _ = check_metric_lanes(lanes);
+/// }
+/// ```
+pub unsafe fn check_metric_lanes(lanes: &[AbiStr]) -> Result<(), Fault> {
     const FIELD: &str = "tail.metric_lanes";
     if lanes.len() > MAX_METRIC_LANES {
         return Err(fault(Rule::OverMax, FIELD));
@@ -1641,7 +1643,7 @@ pub fn check_metric_lanes(lanes: &[AbiStr]) -> Result<(), Fault> {
     let mut seen: Vec<&[u8]> = Vec::with_capacity(lanes.len());
     for l in lanes {
         named(*l, FIELD)?;
-        // SAFETY: `named` checked the string non-NULL with its length; the plugin's static bytes.
+        // SAFETY: `named` checked the shape; the caller guarantees live initialized bytes.
         let word = unsafe { core::slice::from_raw_parts(l.ptr, l.len) };
         // A label value: UTF-8, no control character (it is rendered into an exposition line).
         if core::str::from_utf8(word).is_err() || word.iter().any(u8::is_ascii_control) {

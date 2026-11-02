@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
+//! SAFETY for raw service calls below: the test supplies the selected slot's initialized
+//! frame, live nested loans, and an exclusive initialized output for the whole invocation.
+//! Malformed heads are rejected before any range they do not cover is accessed.
+
 //! THE CONNECTOR SLOTS, both ways: an instance whose Statement declares a need is handed the slots
 //! and its needs are declared on the host's one connection table (the whole need, under its
 //! Statement index) — a need whose `target_from` names a config path at `open` and every `refresh`,
@@ -348,7 +352,7 @@ fn establish_as(
     let mut out: ServiceOut = unsafe { std::mem::zeroed() };
     out.size = std::mem::size_of::<ServiceOut>() as u32;
     let slot = CONN_SLOTS.establish.expect("ESTABLISH is served");
-    let _: RawOutcome = slot(p.inner.ctx(), std::ptr::from_ref(&i).cast(), &mut out);
+    let _: RawOutcome = unsafe { slot(p.inner.ctx(), std::ptr::from_ref(&i).cast(), &mut out) };
     out
 }
 
@@ -972,6 +976,9 @@ struct Scripted {
     close_gate: Gate,
     /// Every dial is still connecting when its establish asks: `landed` answers PENDING.
     landing: bool,
+    /// The independent dial and whole-request bounds every actual open received.
+    timeouts: Mutex<Vec<(u64, u64)>>,
+    declared_timeouts: Mutex<Vec<u64>>,
 }
 
 /// A door double's park: armed, the next caller notes it entered and waits for the release (at
@@ -1014,14 +1021,30 @@ impl Gate {
 type Upgrade = (ConnId, Option<String>, Option<String>);
 
 impl DeclaredConns for Scripted {
+    fn open_request(
+        &self,
+        caller: InstanceId,
+        need: NeedId,
+        desc: &OpenDesc<'_>,
+        require_secure: bool,
+        dial_timeout_ms: u64,
+    ) -> Result<ConnId, ConnError> {
+        self.timeouts
+            .lock()
+            .unwrap()
+            .push((dial_timeout_ms, desc.timeout_ms));
+        self.open_with_security(caller, need, desc, require_secure)
+    }
+
     fn declare(
         &self,
         owner: InstanceId,
         need: NeedId,
-        _: &ReadNeed,
+        spec: &ReadNeed,
         _: Option<&str>,
         _: Option<&str>,
     ) -> Result<(), ConnError> {
+        self.declared_timeouts.lock().unwrap().push(spec.timeout_ms);
         self.slab.declare(owner, need);
         Ok(())
     }
@@ -1192,12 +1215,20 @@ fn bound_over(table: &Arc<Scripted>) -> Plugin<TestKind> {
 
 /// [`bound_over`], adopted by `adopter` (a dispatcher's: its wakes route, so a read may pend).
 fn bound_over_by(table: &Arc<Scripted>, adopter: Adopter) -> Plugin<TestKind> {
+    bound_over_needs(table.clone(), adopter, &NAMED)
+}
+
+fn bound_over_needs(
+    conns: Arc<dyn DeclaredConns>,
+    adopter: Adopter,
+    needs: &'static [Need],
+) -> Plugin<TestKind> {
     // SAFETY: the real door and its Statement are `'static`.
     let real: Door = unsafe { *plug::busbar_plugin_door() };
     let st: Statement = unsafe { *real.statement() };
     let st: &'static Statement = Box::leak(Box::new(Statement {
-        needs: NAMED.as_ptr(),
-        needs_len: NAMED.len(),
+        needs: needs.as_ptr(),
+        needs_len: needs.len(),
         ..st
     }));
     let door: &'static Door = Box::leak(Box::new(unsafe {
@@ -1207,7 +1238,6 @@ fn bound_over_by(table: &Arc<Scripted>, adopter: Adopter) -> Plugin<TestKind> {
         })
     }));
     let v = validate_door::<TestKind>(door).expect("the door validates");
-    let conns: Arc<dyn DeclaredConns> = table.clone();
     Plugin::bind(
         v,
         None,
@@ -1221,6 +1251,9 @@ fn bound_over_by(table: &Arc<Scripted>, adopter: Adopter) -> Plugin<TestKind> {
     )
     .expect("the instance binds")
 }
+
+#[path = "conn_timeout_tests.rs"]
+mod conn_timeout_tests;
 
 fn head_of<I>(op: u32, seq: u32) -> ServiceHead {
     ServiceHead {
@@ -1240,7 +1273,7 @@ fn call<I>(p: &Plugin<TestKind>, f: Option<ServiceFn>, input: &I) -> ServiceOut 
     let mut out: ServiceOut = unsafe { std::mem::zeroed() };
     out.size = std::mem::size_of::<ServiceOut>() as u32;
     let _: RawOutcome =
-        f.expect("served")(p.inner.ctx(), std::ptr::from_ref(input).cast(), &mut out);
+        unsafe { f.expect("served")(p.inner.ctx(), std::ptr::from_ref(input).cast(), &mut out) };
     out
 }
 
@@ -1677,7 +1710,7 @@ fn admit(p: &Plugin<TestKind>, need: u32) -> Outcome {
     let slot = crate::dispatch::services::HOST_SLOTS
         .need_admit
         .expect("need.admit is served");
-    let _: RawOutcome = slot(p.inner.ctx(), std::ptr::from_ref(&i).cast(), &mut out);
+    let _: RawOutcome = unsafe { slot(p.inner.ctx(), std::ptr::from_ref(&i).cast(), &mut out) };
     out.outcome.outcome()
 }
 
@@ -1708,15 +1741,18 @@ fn need_admit_answers_the_tables_verdict_on_the_declared_need() {
 /// The instance's host tables as `open` hands them: its context and the connector slots.
 fn sdk_host(p: &Plugin<TestKind>) -> busbar_contract::abi::sdk::conn::Host {
     use busbar_contract::abi::mechanism::ticket::HostTables;
-    busbar_contract::abi::sdk::conn::Host::of(&HostTables {
-        size: std::mem::size_of::<HostTables>() as u32,
-        _reserved: 0,
-        ctx: p.inner.ctx(),
-        wake: None,
-        conns: &CONN_SLOTS,
-        services: std::ptr::null(),
-        io: std::ptr::null(),
-    })
+    /* SAFETY: these harness tables and callbacks are live for the snapshot. */
+    unsafe {
+        busbar_contract::abi::sdk::conn::Host::from_raw(&HostTables {
+            size: std::mem::size_of::<HostTables>() as u32,
+            _reserved: 0,
+            ctx: p.inner.ctx(),
+            wake: None,
+            conns: &CONN_SLOTS,
+            services: std::ptr::null(),
+            io: std::ptr::null(),
+        })
+    }
 }
 
 /// RED (Q-FC3): the plugin-facing path. Through the SDK's `Connector`, an op establishes a raw
@@ -3234,6 +3270,7 @@ fn the_auth_request_signs_the_authority_the_socket_dials() {
         target: Vec::new(),
         fields: Vec::new(),
         timeout_ms: 0,
+        dial_timeout_ms: 0,
     };
     for (target, authority, path, query) in [
         (
@@ -3293,6 +3330,7 @@ fn the_auth_request_signs_the_lines_the_open_completes_the_head_with() {
             ("busbar-sealed-query".to_owned(), b"forged=value".to_vec()),
         ],
         timeout_ms: 0,
+        dial_timeout_ms: 0,
     };
     let located = busbar_contract::conn::HeadDefaults {
         lines: vec![

@@ -609,6 +609,44 @@ fn project_request_headers(headers: &HeaderMap) -> Vec<(String, String)> {
     projected
 }
 
+/// The response's allocation follows every HTTP data-chunk clone until its last owner retires.
+struct ResponseBytes {
+    bytes: Vec<u8>,
+    #[cfg(test)]
+    retired: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+}
+
+impl ResponseBytes {
+    fn new(bytes: Vec<u8>) -> Self {
+        Self {
+            bytes,
+            #[cfg(test)]
+            retired: None,
+        }
+    }
+}
+
+impl AsRef<[u8]> for ResponseBytes {
+    fn as_ref(&self) -> &[u8] {
+        &self.bytes
+    }
+}
+
+impl Drop for ResponseBytes {
+    fn drop(&mut self) {
+        use zeroize::Zeroize;
+        self.bytes.as_mut_slice().zeroize();
+        #[cfg(test)]
+        if let Some(retired) = &self.retired {
+            // Observe the live initialized range after wiping, before Vec releases it.
+            retired.store(
+                self.bytes.iter().all(|b| *b == 0),
+                std::sync::atomic::Ordering::SeqCst,
+            );
+        }
+    }
+}
+
 /// Relay a plugin's [`EndpointResponse`] as an axum [`Response`], dropping any header name/value
 /// that is not a valid HTTP header (a plugin cannot smuggle a malformed header onto the response path).
 ///
@@ -621,6 +659,8 @@ fn project_request_headers(headers: &HeaderMap) -> Vec<(String, String)> {
 /// cap that needs raising.
 fn relay_response(owner: &str, path: &str, resp: EndpointResponse) -> Response {
     use axum::http::{HeaderName, HeaderValue};
+    // Guard before every refusal, then transfer this exact allocation to the HTTP body.
+    let body = ResponseBytes::new(resp.body);
     if resp.headers.len() > MAX_PLUGIN_HEADERS {
         metrics::counter!(crate::snapshot::PLUGIN_RESPONSE_HEADERS_REJECTED_TOTAL).increment(1);
         // Fail-closed 502 is UNCHANGED. Rate-limit the log to warn-once-per-(plugin,route): a
@@ -665,7 +705,7 @@ fn relay_response(owner: &str, path: &str, resp: EndpointResponse) -> Response {
         }
     }
     builder
-        .body(Body::from(resp.body))
+        .body(Body::from(Bytes::from_owner(body)))
         .unwrap_or_else(|_| StatusCode::BAD_GATEWAY.into_response_stub())
 }
 

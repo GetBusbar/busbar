@@ -429,6 +429,7 @@ impl LatencyReservoir {
 /// breaker state and error rate in the routing pool, and the lane's p95 reservoir.
 pub struct ModelSignals {
     app: LiveApp,
+    names: Arc<HashMap<DestinationId, String>>,
     permits: Arc<crate::root::egress_ports::MemberPermits>,
     reservoirs: Arc<HashMap<usize, LatencyReservoir>>,
 }
@@ -439,7 +440,14 @@ impl busbar_kernel::plane_driver::MemberSignals for ModelSignals {
         pool: &str,
         destination: DestinationId,
     ) -> busbar_kernel::plane_driver::MemberStanding {
-        let (app, lane) = (self.app.load(), lane_of(destination));
+        let app = self.app.load();
+        let Some(lane) = model_lane(&app, &self.names, destination) else {
+            return busbar_kernel::plane_driver::MemberStanding {
+                breaker_state: Some("open"),
+                budget_remaining: Some(0),
+                ..Default::default()
+            };
+        };
         let store = &app.store;
         let state = match store.breaker_state_snapshot_in(pool, lane) {
             busbar_kernel::store::BreakerState::Closed => "closed",
@@ -457,7 +465,7 @@ impl busbar_kernel::plane_driver::MemberSignals for ModelSignals {
             error_rate: store.error_rate_in(pool, lane, busbar_kernel::store::now()),
             latency_p95_ms: self
                 .reservoirs
-                .get(&lane)
+                .get(&lane_of(destination))
                 .and_then(LatencyReservoir::p95_ms),
         }
     }
@@ -477,6 +485,7 @@ pub struct ModelShown {
 struct CellPlan {
     records: HashMap<String, busbar_kernel::store::BreakerCfg>,
     direct: HashSet<String>,
+    names: Arc<HashMap<DestinationId, String>>,
 }
 
 /// One App and its lane store's breaker unit, resolved together.
@@ -504,6 +513,25 @@ struct WalkCells {
     live: LiveApp,
     bound: arc_swap::ArcSwap<Bound>,
     plan: Arc<CellPlan>,
+    probes: std::sync::Mutex<HashMap<u64, HeldProbe>>,
+    next_probe: std::sync::atomic::AtomicU64,
+    budgets: std::sync::Mutex<
+        HashMap<DestinationId, Vec<(Arc<busbar_kernel_breaker::BreakerUnit>, DestinationId)>>,
+    >,
+}
+
+struct HeldProbe {
+    unit: Arc<busbar_kernel_breaker::BreakerUnit>,
+    pool: String,
+    destination: DestinationId,
+    epoch: u64,
+}
+
+impl Drop for HeldProbe {
+    fn drop(&mut self) {
+        self.unit
+            .release_probe(&self.pool, self.destination, self.epoch);
+    }
 }
 
 impl WalkCells {
@@ -512,6 +540,9 @@ impl WalkCells {
             bound: arc_swap::ArcSwap::new(Bound::of(live.load())),
             live,
             plan,
+            probes: std::sync::Mutex::default(),
+            next_probe: std::sync::atomic::AtomicU64::new(0),
+            budgets: std::sync::Mutex::default(),
         }
     }
 
@@ -532,6 +563,24 @@ impl WalkCells {
             pool
         }
     }
+
+    fn destination(&self, bound: &Bound, destination: DestinationId) -> Option<DestinationId> {
+        model_lane(&bound.app, &self.plan.names, destination)
+            .map(|lane| DestinationId::new(lane as u64))
+    }
+}
+
+/// Destination numbers belong to the retained egress. Cross a generation only by model name.
+fn model_lane(
+    app: &busbar_kernel::state::App,
+    names: &HashMap<DestinationId, String>,
+    destination: DestinationId,
+) -> Option<usize> {
+    let model = names.get(&destination)?;
+    let tables = app.engine_tables_view();
+    tables
+        .model_index(model)
+        .filter(|&lane| lane < tables.lane_count())
 }
 
 /// The lane a destination of this egress names (its destination is the model's lane index).
@@ -546,15 +595,48 @@ impl Breaker for WalkCells {
         destination: DestinationId,
         now: u64,
     ) -> Result<Admit, Unavailable> {
-        adapters::try_admit(&self.bound().unit, self.cell(pool), destination, now)
+        let bound = self.bound();
+        let translated = self
+            .destination(&bound, destination)
+            .ok_or(Unavailable::Dead)?;
+        let mut admit = adapters::try_admit(&bound.unit, self.cell(pool), translated, now)?;
+        if let Some(epoch) = admit.probe_epoch {
+            let held = HeldProbe {
+                unit: Arc::clone(&bound.unit),
+                pool: self.cell(pool).to_string(),
+                destination: translated,
+                epoch,
+            };
+            let ticket = self
+                .next_probe
+                .fetch_update(
+                    std::sync::atomic::Ordering::Relaxed,
+                    std::sync::atomic::Ordering::Relaxed,
+                    |n| n.checked_add(1),
+                )
+                .map_err(|_| Unavailable::ProbeInFlight)?
+                .saturating_add(1);
+            self.probes
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .insert(ticket, held);
+            admit.probe_epoch = Some(ticket);
+        }
+        Ok(admit)
     }
 
     fn ready(&self, pool: &str, destination: DestinationId, now: u64, token: &Pass<Route>) -> bool {
-        adapters::ready(&self.bound().unit, self.cell(pool), destination, now, token)
+        let bound = self.bound();
+        self.destination(&bound, destination)
+            .is_some_and(|translated| {
+                adapters::ready(&bound.unit, self.cell(pool), translated, now, token)
+            })
     }
 
     fn admissible(&self, destination: DestinationId) -> bool {
-        adapters::admissible(&self.bound().unit, destination)
+        let bound = self.bound();
+        self.destination(&bound, destination)
+            .is_some_and(|translated| adapters::admissible(&bound.unit, translated))
     }
 
     fn cooldown_remaining(
@@ -564,7 +646,11 @@ impl Breaker for WalkCells {
         now: u64,
         token: &Pass<Route>,
     ) -> u64 {
-        adapters::cooldown_remaining(&self.bound().unit, self.cell(pool), destination, now, token)
+        let bound = self.bound();
+        self.destination(&bound, destination)
+            .map_or(0, |translated| {
+                adapters::cooldown_remaining(&bound.unit, self.cell(pool), translated, now, token)
+            })
     }
 
     fn classify(&self, _destination: DestinationId, status: UpstreamStatus) -> Classified {
@@ -596,7 +682,10 @@ impl Breaker for WalkCells {
     ) -> bool {
         let cell = self.cell(pool);
         let bound = self.bound();
-        let (store, lane) = (&bound.app.store, lane_of(destination));
+        let Some(translated) = self.destination(&bound, destination) else {
+            return false;
+        };
+        let (store, lane) = (&bound.app.store, lane_of(translated));
         // The caller's own fault (the one answer the far end records as nothing): counted on the
         // lane, its breaker untouched, whatever its pool configured (1.5.5's `record_outcome`
         // `ClientFault` arm). The far end records through this call alone, so the count is here.
@@ -642,13 +731,17 @@ impl Breaker for WalkCells {
             c.in_namespace(busbar_contract::transport::registry::status_ns::RESERVED[0])
         });
         let cell = self.cell(pool);
-        let lane = lane_of(destination);
+        let bound = self.bound();
+        let Some(translated) = self.destination(&bound, destination) else {
+            return (classified, false);
+        };
+        let lane = lane_of(translated);
         let tripped = match (classified.outcome, code) {
             // The previous release's rate-limit record: its own ladder step, the far end's wait
             // honoured.
             (Outcome::Transient { retry_after }, Some(429)) => match self.plan.records.get(cell) {
                 Some(cfg) => {
-                    self.bound()
+                    bound
                         .app
                         .store
                         .record_rate_limit_in(cell, lane, now, cfg, retry_after)
@@ -663,10 +756,9 @@ impl Breaker for WalkCells {
     }
 
     fn suppressing(&self, destination: DestinationId, now: u64) -> bool {
-        self.bound()
-            .app
-            .store
-            .lane_needs_probe(lane_of(destination), now)
+        let bound = self.bound();
+        self.destination(&bound, destination)
+            .is_some_and(|translated| bound.app.store.lane_needs_probe(lane_of(translated), now))
     }
 
     /// A health probe's answer, recorded as 1.5.5's prober recorded it (`engine/health.rs`): a
@@ -676,7 +768,10 @@ impl Breaker for WalkCells {
     /// walk's own records and reads take (BUSBAR-1.6.0.md l.161).
     fn probed(&self, destination: DestinationId, outcome: Outcome, now: u64, _token: &Pass<Route>) {
         let bound = self.bound();
-        let (store, lane) = (&bound.app.store, lane_of(destination));
+        let Some(translated) = self.destination(&bound, destination) else {
+            return;
+        };
+        let (store, lane) = (&bound.app.store, lane_of(translated));
         match outcome {
             Outcome::Success => {
                 if store.lane_needs_probe(lane, now) {
@@ -705,18 +800,43 @@ impl Breaker for WalkCells {
         }
     }
 
-    fn release_probe(&self, pool: &str, destination: DestinationId, epoch: u64, _now: u64) {
-        self.bound()
-            .unit
-            .release_probe(self.cell(pool), destination, epoch);
+    fn release_probe(&self, _pool: &str, _destination: DestinationId, epoch: u64, _now: u64) {
+        let held = self
+            .probes
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(&epoch);
+        // Drop invokes the originating unit outside the custody lock, even after model removal.
+        drop(held);
     }
 
     fn spend_budget(&self, destination: DestinationId) -> bool {
-        self.bound().unit.spend_budget(destination)
+        let bound = self.bound();
+        let Some(translated) = self.destination(&bound, destination) else {
+            return false;
+        };
+        if !bound.unit.spend_budget(translated) {
+            return false;
+        }
+        self.budgets
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .entry(destination)
+            .or_default()
+            .push((Arc::clone(&bound.unit), translated));
+        true
     }
 
     fn refund_budget(&self, destination: DestinationId) {
-        self.bound().unit.refund_budget(destination);
+        let held = self
+            .budgets
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get_mut(&destination)
+            .and_then(Vec::pop);
+        if let Some((unit, translated)) = held {
+            unit.refund_budget(translated);
+        }
     }
 }
 
@@ -725,6 +845,7 @@ impl Breaker for WalkCells {
 /// direct route names); the wait-terminal depth as the root's walk counters keep it.
 struct ModelTelemetry {
     app: LiveApp,
+    names: Arc<HashMap<DestinationId, String>>,
     queued: crate::root::egress_ports::WalkTelemetry,
     /// Each lane's p95 reservoir, fed only while the generation declares the signal.
     reservoirs: Arc<HashMap<usize, LatencyReservoir>>,
@@ -732,16 +853,18 @@ struct ModelTelemetry {
 
 impl busbar_kernel_egress::ports::Telemetry for ModelTelemetry {
     fn upstream_attempt(&self, pool: &str, destination: DestinationId) {
-        busbar_kernel::telemetry::upstream_attempt(&self.app.load(), pool, lane_of(destination));
+        let app = self.app.load();
+        if let Some(lane) = model_lane(&app, &self.names, destination) {
+            busbar_kernel::telemetry::upstream_attempt(&app, pool, lane);
+        }
     }
 
     fn upstream_failure(&self, pool: &str, destination: DestinationId, disposition: &'static str) {
-        busbar_kernel::telemetry::upstream_failure(
-            &self.app.load(),
-            pool,
-            lane_of(destination),
-            disposition,
-        );
+        let app = self.app.load();
+        let Some(lane) = model_lane(&app, &self.names, destination) else {
+            return;
+        };
+        busbar_kernel::telemetry::upstream_failure(&app, pool, lane, disposition);
     }
 
     fn failover(&self, pool: &str, reason: &'static str) {
@@ -749,14 +872,19 @@ impl busbar_kernel_egress::ports::Telemetry for ModelTelemetry {
     }
 
     fn breaker_trip(&self, pool: &str, destination: DestinationId) {
-        busbar_kernel::telemetry::breaker_trip(&self.app.load(), pool, lane_of(destination));
+        let app = self.app.load();
+        if let Some(lane) = model_lane(&app, &self.names, destination) {
+            busbar_kernel::telemetry::breaker_trip(&app, pool, lane);
+        }
     }
 
     fn upstream_latency(&self, destination: DestinationId, ms: f64) {
         // The lane's latency signal (the admin pool listing's `latency_ms`, the `fastest` order's
         // input), as 1.5.5's served attempt recorded it.
         let app = self.app.load();
-        let lane = lane_of(destination);
+        let Some(lane) = model_lane(&app, &self.names, destination) else {
+            return;
+        };
         app.store.record_latency_in("", lane, ms);
         // The same sample into the lane's p95 reservoir, ONLY while the generation declares the
         // signal, as 1.5.5 collected it.
@@ -764,7 +892,7 @@ impl busbar_kernel_egress::ports::Telemetry for ModelTelemetry {
             .requested_signals
             .wants(busbar_contract::signal::Signal::CandidateLatencyP95Ms)
         {
-            if let Some(r) = self.reservoirs.get(&lane) {
+            if let Some(r) = self.reservoirs.get(&lane_of(destination)) {
                 r.record(ms);
             }
         }
@@ -876,10 +1004,13 @@ pub fn compose(
             .map(|lane| (*lane, LatencyReservoir::default()))
             .collect(),
     );
+    let stable_names: Arc<HashMap<DestinationId, String>> =
+        Arc::new(names.iter().cloned().collect());
     let shown = ModelShown {
         described: plan.meta.clone(),
         signals: Arc::new(ModelSignals {
             app: serving.app.clone(),
+            names: Arc::clone(&stable_names),
             permits: Arc::clone(&permits),
             reservoirs: Arc::clone(&reservoirs),
         }),
@@ -887,6 +1018,7 @@ pub fn compose(
     let cells = Arc::new(CellPlan {
         records: plan.records.clone(),
         direct,
+        names: Arc::clone(&stable_names),
     });
     let app = serving.app.clone();
     let breaker: busbar_kernel::plane_driver::BreakerSource =
@@ -903,6 +1035,7 @@ pub fn compose(
             journal,
             telemetry: Arc::new(ModelTelemetry {
                 app: serving.app.clone(),
+                names: stable_names,
                 queued: crate::root::egress_ports::WalkTelemetry::new(names),
                 reservoirs,
             }),

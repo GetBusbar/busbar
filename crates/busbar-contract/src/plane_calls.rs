@@ -9,8 +9,8 @@
 //! A duplex session's pieces ride two request tickets, one per side; its unsolicited output is
 //! named by the instance's one driver ticket's `drive` ([`PlaneCalls::ready`]).
 //!
-//! The pure ops (`arrive`, `refusal`, `project`) and the host's own `cancel` are ticketless: they
-//! never pend.
+//! The pure ops (`arrive`, `refusal`, `project`) are ticketless. Unit cancellation is ordered on
+//! the request tickets' worker and awaited; its one plugin callback never pends.
 //! `on_piece` and `serve` are submitted on a request ticket and cross on that ticket's worker; the
 //! answer is a future, so the caller's task awaits it and no thread is parked.
 //!
@@ -427,6 +427,29 @@ pub trait PlaneCalls: Send + Sync {
     /// `ArriveIn::unit`; `0` for none): the disposition it answered and the record writes it
     /// carried (SEAM-L(r)), or `None` when it did not answer READY.
     fn cancel(&self, ticket: Ticket, unit: u64) -> Option<Cancelled>;
+
+    /// Bind this live request-ticket generation to an admitted nonzero unit before submitting
+    /// any work. All tickets of one unit must be minted on the same worker (`mint_beside`).
+    /// Submission is eager and nonblocking. The binding lasts until that generation is recycled.
+    fn bind_unit(&self, ticket: Ticket, unit: u64) {
+        let _ = (ticket, unit);
+    }
+
+    /// Eagerly enqueue one logical unit cancellation on its request worker, then await it.
+    /// Pending and queued sibling tickets are retired together. Exactly one result owns the
+    /// record writes; repeated cancellation of a closed generation never calls the plugin again.
+    /// `None` means FAULT, a stale/unbound generation, or a unit that already completed normally.
+    /// The caller retains this future until completion, including when its request is abandoned.
+    /// The default serves simple synchronous test implementations; a dispatcher implementation
+    /// must override it to preserve worker ordering.
+    fn cancel_unit(
+        &self,
+        ticket: Ticket,
+        unit: u64,
+    ) -> Pin<Box<dyn Future<Output = Option<Cancelled>> + Send>> {
+        let cancelled = self.cancel(ticket, unit);
+        Box::pin(async move { cancelled })
+    }
 
     /// A request ticket for one unit; `None` when none can be minted.
     fn mint(&self) -> Option<Ticket>;

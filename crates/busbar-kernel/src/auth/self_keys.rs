@@ -334,6 +334,8 @@ pub(crate) struct SelfMint<'a> {
 /// key's lifetime rather than refusing the mint (`apply_mint_ttl_ceiling`'s default arm). The pools
 /// are the bindings' union; a role ceiling that does not admit them refuses the mint
 /// ([`ExchangeError::OverCeiling`], 403), as it refuses the same pools on the admin path.
+/// The mode is the `user-bound` mode recorded on the self-serve binding, even when the caller
+/// names none: both the deployment's mode list and the caller's role ceilings must admit it.
 pub(crate) fn admit_self_mint<'a>(
     verdict: &'a ChainVerdict,
     role_bindings: &RoleBindings,
@@ -349,7 +351,7 @@ pub(crate) fn admit_self_mint<'a>(
             grants_other_kinds: other_kinds,
             requested_ttl_secs: default_ttl_secs,
             explicit_ttl: false,
-            requested_mode: None,
+            requested_mode: Some(crate::governance::SELF_KEY_BINDING_MODE),
         })
         .map_err(ExchangeError::OverCeiling)?;
     Ok(SelfMint {

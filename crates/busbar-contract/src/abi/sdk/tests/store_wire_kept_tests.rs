@@ -172,15 +172,18 @@ mod waiting {
             pool: Arc::downgrade(pool),
             ..Script::default()
         });
-        Host::of(&HostTables {
-            size: std::mem::size_of::<HostTables>() as u32,
-            _reserved: 0,
-            ctx: HostCtx::NONE,
-            wake: Some(wake),
-            conns,
-            services,
-            io: std::ptr::null(),
-        })
+        /* SAFETY: these harness tables and callbacks are live for the snapshot. */
+        unsafe {
+            Host::from_raw(&HostTables {
+                size: std::mem::size_of::<HostTables>() as u32,
+                _reserved: 0,
+                ctx: HostCtx::NONE,
+                wake: Some(wake),
+                conns,
+                services,
+                io: std::ptr::null(),
+            })
+        }
     }
 
     const HOLDER: Ticket = Ticket {

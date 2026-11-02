@@ -134,6 +134,7 @@ public = "true"
 
 [[suite]]
 id = "voice-transcribe"
+repo = "GetBusbar/busbar-plane-llm"
 standard = "OpenAI Audio API: POST /v1/audio/transcriptions"
 plan = "busbar's request to the provider and answer to the caller held to the openai-openapi document; control: known-good captures; negative control: planted defects refused"
 tier = "spec-conformant"
@@ -144,6 +145,7 @@ public = "true"
 
 [[suite]]
 id = "voice-tts"
+repo = "GetBusbar/busbar-plane-llm"
 standard = "OpenAI Audio API: POST /v1/audio/speech"
 plan = "busbar's request to the provider and answer to the caller held to the openai-openapi document; control: known-good captures; negative control: planted defects refused"
 tier = "spec-conformant"
@@ -154,6 +156,7 @@ public = "true"
 
 [[suite]]
 id = "voice-twilio"
+repo = "GetBusbar/busbar-plane-streaming"
 standard = "Twilio Media Streams"
 plan = "spec battery + replay"
 tier = "spec-conformant"
@@ -276,6 +279,7 @@ public = "true"
 
 [[suite]]
 id = "evidence-audit-trail"
+repo = "GetBusbar/busbar"
 standard = "Audit trail: hash-chained, Ed25519-signed, tamper-evident action log"
 plan = "an independent verifier written from docs/audit-chain-digest-v4.md over /audit/range of the shipped binary: the live chain verifies; tampered, deleted, reordered and truncated records are each refused"
 tier = "evidence-only"
@@ -285,6 +289,7 @@ public = "true"
 
 [[suite]]
 id = "evidence-rbac"
+repo = "GetBusbar/busbar"
 standard = "Scope-based RBAC: least-privilege admin scopes, per-verb grants, admin/data-plane separation"
 plan = "every admin operation the node's OpenAPI document lists, against principals lacking its scope (refused) and holding it (admitted), plus the data plane's key gate and plane separation"
 tier = "evidence-only"
@@ -294,6 +299,7 @@ public = "true"
 
 [[suite]]
 id = "evidence-tls"
+repo = "GetBusbar/busbar"
 standard = "TLS / mutual TLS: native termination, client-certificate enforcement, admin plane isolation"
 plan = "the testssl subject (the tls suite) plus certless and rogue-CA clients refused on an mTLS data listener and on admin_tls with client_ca"
 tier = "evidence-only"

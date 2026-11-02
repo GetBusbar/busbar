@@ -62,14 +62,16 @@ pub fn migrate_door(
     };
     let mut out = super::out_head();
     let called = crate::ffi_thread::on_plugin_thread(|| {
-        // The door's admitted `migrate`, called with no instance on a frame the host owns for the
+        // SAFETY: the door's admitted `migrate`, called with no instance on a frame the host owns for the
         // whole call: `input` and what it lends (`section`, `from`, `answer`) outlive it, and `out`
         // is a whole `OutHead`.
-        op(
-            std::ptr::null_mut(),
-            std::ptr::from_ref(&input).cast(),
-            std::ptr::from_mut(&mut out).cast(),
-        )
+        unsafe {
+            op(
+                std::ptr::null_mut(),
+                std::ptr::from_ref(&input).cast(),
+                std::ptr::from_mut(&mut out).cast(),
+            )
+        }
     })
     .map_err(|_| "its migrate panicked".to_string())?;
     let outcome = called.outcome();

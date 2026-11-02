@@ -450,14 +450,12 @@ impl Book {
 
 impl MoneySeam for Book {
     fn checkpoint(&self, ctx: &UnitCtx, units: &[UnitCount]) -> Checkpoint {
-        if let Some(f) = &self.forward {
-            let _ = f.checkpoint(ctx, units);
-        }
+        let forwarded = self.forward.as_ref().map(|f| f.checkpoint(ctx, units));
         let amount = units.iter().map(|u| u.amount).max().unwrap_or(0);
         self.checkpoints.lock().unwrap().push(amount);
         match self.cut_at {
             Some(at) if amount >= at => Checkpoint::Cut,
-            _ => Checkpoint::Continue,
+            _ => forwarded.unwrap_or(Checkpoint::Continue),
         }
     }
 
@@ -493,7 +491,7 @@ impl MoneySeam for Book {
 }
 
 impl Book {
-    fn bills(&self) -> Vec<CancelBill> {
+    pub(crate) fn bills(&self) -> Vec<CancelBill> {
         self.bills.lock().unwrap().clone()
     }
 
@@ -1777,7 +1775,11 @@ async fn cancel_on_the_cut() {
         );
         let s = r.stats();
         assert_eq!(s[stat::CANCELS], 1);
-        assert_eq!(s[stat::CANCELS_ON_WORKER], 0, "ticketless, on this task");
+        assert_eq!(
+            s[stat::CANCELS_ON_WORKER],
+            1,
+            "ordered on the unit's worker"
+        );
         assert!(
             units.take_rendered().is_none(),
             "the frame went in the stream"

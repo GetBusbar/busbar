@@ -5,6 +5,10 @@ use super::{FramedFacts, StreamFacts};
 use busbar_contract::conn::DeclaredConns;
 use std::sync::Arc;
 
+#[path = "https_timeout_tests.rs"]
+#[allow(unsafe_code)] // Restates the loader's real test door; every service uses its real context.
+mod https_timeout_tests;
+
 /// `stand_in.json` reads, and states a transport for each double.
 #[test]
 fn the_stand_in_facts_read_from_data() {
@@ -73,6 +77,9 @@ fn an_unreached_scheme_is_served_at_boot_and_reaches_nothing() {
             bytes: Vec::new(),
         },
         timeout_ms: 0,
+        keep_mode: busbar_contract::abi::host::conn::connector::KEEP_NAMED,
+        keep_response_headers: Vec::new(),
+        deny_response_headers: Vec::new(),
     };
     let (owner, id) = (InstanceId(7), NeedId(0));
     assert_eq!(framed.declare(owner, id, &need, None, None), Ok(()));
@@ -201,6 +208,9 @@ fn an_open_on_an_unreached_scheme_is_counted() {
             bytes: Vec::new(),
         },
         timeout_ms: 0,
+        keep_mode: busbar_contract::abi::host::conn::connector::KEEP_NAMED,
+        keep_response_headers: Vec::new(),
+        deny_response_headers: Vec::new(),
     };
     let (owner, id) = (InstanceId(7), NeedId(0));
     assert!(framed.declare(owner, id, &need, None, None).is_ok());
@@ -237,6 +247,9 @@ fn a_member_need_is_declared_with_no_one_target_as_the_connector_declares_it() {
             bytes: Vec::new(),
         },
         timeout_ms: 0,
+        keep_mode: busbar_contract::abi::host::conn::connector::KEEP_NAMED,
+        keep_response_headers: Vec::new(),
+        deny_response_headers: Vec::new(),
     };
     let owner = InstanceId(9);
     for (i, (target, trust)) in [
@@ -287,6 +300,9 @@ fn an_undeclared_far_end_is_refused() {
             bytes: Vec::new(),
         },
         timeout_ms: 0,
+        keep_mode: busbar_contract::abi::host::conn::connector::KEEP_NAMED,
+        keep_response_headers: Vec::new(),
+        deny_response_headers: Vec::new(),
     };
     let (me, member) = (InstanceId(1), NeedId(0));
     assert_eq!(table.declare(me, member, &need, None, None), Ok(()));

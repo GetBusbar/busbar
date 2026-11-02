@@ -148,12 +148,12 @@ struct State {
     seen: Seen,
     /// Exchanges opened while the connection was out, in order: its owner opens them on the way
     /// back, before anyone else can take it.
-    opening: Vec<(u64, HeldOpening)>,
+    opening: VecDeque<(u64, HeldOpening)>,
     /// An exchange whose open was handed to the owner and failed: its holder's next read answers
     /// why.
     refused: HashMap<u64, Failure>,
     /// The holders that found the connection out, woken when it is back.
-    missed: Vec<Waker>,
+    missed: Vec<Arc<Waker>>,
     /// Pieces read off the connection for a holder that has not taken them, by stream.
     parked: HashMap<u64, VecDeque<Got>>,
     /// The streams a holder still reads.
@@ -195,9 +195,9 @@ impl State {
     }
 
     /// `waker`'s holder found the connection out: it is woken when the connection is back.
-    fn miss(&mut self, waker: &Waker) {
+    fn miss(&mut self, waker: &Arc<Waker>) {
         if !self.missed.iter().any(|w| w.will_wake(waker)) {
-            self.missed.push(waker.clone());
+            self.missed.push(Arc::clone(waker));
         }
     }
 }
@@ -214,7 +214,10 @@ enum Turn<R> {
 
 /// A connection a holder has out of its line. Only an unwind out of a drive drops it still holding
 /// the connection: the line is then closed with the connection put back, to be closed (its
-/// plugins' ends crossed) by whoever lets the line go.
+/// plugins' ends crossed) by whoever lets the line go. Nothing else drives a closed line, so the
+/// holders that found the connection out are woken, and the exchanges handed to its owner are
+/// abandoned, exactly as [`Line::bring_back`] does on a line closed meanwhile; both run with the
+/// lock let go, and the connection is not closed here (no plugin crossing in a drop on an unwind).
 struct Taken<'l> {
     line: &'l Line,
     conn: Option<Connection>,
@@ -222,11 +225,20 @@ struct Taken<'l> {
 
 impl Drop for Taken<'_> {
     fn drop(&mut self) {
-        if let Some(conn) = self.conn.take() {
+        let Some(conn) = self.conn.take() else {
+            return;
+        };
+        let (missed, abandoned) = {
             let mut s = self.line.state();
             s.closing = true;
             s.conn = Some(conn);
-        }
+            (
+                std::mem::take(&mut s.missed),
+                std::mem::take(&mut s.opening),
+            )
+        };
+        drop(abandoned);
+        wake(missed);
     }
 }
 
@@ -264,7 +276,7 @@ impl Line {
                 conn: Some(conn),
                 closing: false,
                 seen,
-                opening: Vec::new(),
+                opening: VecDeque::new(),
                 refused: HashMap::new(),
                 missed: Vec::new(),
                 parked: HashMap::new(),
@@ -293,7 +305,7 @@ impl Line {
     fn turn<R>(
         &self,
         mut s: MutexGuard<'_, State>,
-        missed: Option<&Waker>,
+        missed: Option<&Arc<Waker>>,
         drive: impl FnOnce(&mut Connection) -> R,
         settle: impl FnOnce(&mut State, &mut R),
     ) -> Turn<R> {
@@ -322,6 +334,9 @@ impl Line {
     /// closed meanwhile, closed here, with no lock held), and the holders that found it out are
     /// woken.
     fn bring_back(&self, taken: &mut Taken<'_>, settle: impl FnOnce(&mut State)) {
+        // Declared before the guard so it is dropped after it, whichever way this returns: a
+        // failure whose exchange is no longer held is retired with the lock let go.
+        let mut discarded: Vec<Failure> = Vec::new();
         let mut s = self.state();
         settle(&mut s);
         loop {
@@ -336,8 +351,7 @@ impl Line {
                 wake(missed);
                 return;
             }
-            let opening = std::mem::take(&mut s.opening);
-            if opening.is_empty() {
+            if s.opening.is_empty() {
                 let Some(conn) = taken.conn.take() else {
                     return;
                 };
@@ -348,20 +362,29 @@ impl Line {
                 wake(missed);
                 return;
             }
+            // Select just one opening under the same lock that a leaving holder uses to
+            // cancel it. Later openings stay queued, cancellable while this one crosses. Once
+            // selected, an open is in flight: cancellation cannot unsend it.
+            let (stream, held) = s.opening.pop_front().expect("an opening waits");
             drop(s);
             let waker = self.fan_waker();
             let mut cx = Context::from_waker(&waker);
-            let mut refused = Vec::new();
-            if let Some(conn) = taken.conn.as_mut() {
-                for (stream, held) in opening {
-                    let (opening, head_words) = held.take();
-                    if let Err(f) = conn.open_exchange(stream, opening, head_words, &mut cx) {
-                        refused.push((stream, f));
-                    }
+            let failure = taken.conn.as_mut().and_then(|conn| {
+                let (opening, head_words) = held.take();
+                conn.open_exchange(stream, opening, head_words, &mut cx)
+                    .err()
+            });
+            s = self.state();
+            // The open ran with no lock held, so a holder may have left meanwhile
+            // ([`Self::leave`] forgot its stream): nobody reads that failure, and kept it would
+            // be an entry nothing ever removes. A holder still on the line is told why.
+            if let Some(failure) = failure {
+                if s.held.contains(&stream) {
+                    s.refused.insert(stream, failure);
+                } else {
+                    discarded.push(failure);
                 }
             }
-            s = self.state();
-            s.refused.extend(refused);
         }
     }
 
@@ -465,7 +488,7 @@ impl Line {
             return Err((stream, Failure::Closed));
         }
         if s.conn.is_none() {
-            s.opening.push((stream, held));
+            s.opening.push_back((stream, held));
             return Ok(stream);
         }
         match self.turn(
@@ -495,7 +518,7 @@ impl Line {
     fn park_pieces(
         &self,
         s: MutexGuard<'_, State>,
-        missed: &Waker,
+        missed: &Arc<Waker>,
     ) -> Turn<Option<Result<(), Failure>>> {
         let every = !self.dialled;
         // A connection that does not multiplex has one holder at a time, who reads every piece (a
@@ -582,6 +605,7 @@ impl Line {
         cx: &mut Context<'_>,
     ) -> Poll<Result<Option<Got>, Failure>> {
         self.fan.wait(stream, cx.waker());
+        let missed = Arc::new(cx.waker().clone());
         let mut s = self.state();
         if let Some(f) = s.refused.remove(&stream) {
             return Poll::Ready(Err(f));
@@ -596,7 +620,7 @@ impl Line {
             }
             return Poll::Ready(Ok(Some(got)));
         }
-        let end = self.park_pieces(s, cx.waker());
+        let end = self.park_pieces(s, &missed);
         let mut s = self.state();
         let full = s.conn.is_none()
             || s.parked_bytes().saturating_add(s.seen.buffered_input) >= RECEIVE_BUFFER_BYTES;
@@ -621,8 +645,9 @@ impl Line {
     /// Whether a piece (or the end) is ready for `stream`, without taking it.
     pub(crate) fn poll_ready(&self, stream: u64, cx: &mut Context<'_>) -> Poll<()> {
         self.fan.wait(stream, cx.waker());
+        let missed = Arc::new(cx.waker().clone());
         let s = self.state();
-        let end = self.park_pieces(s, cx.waker());
+        let end = self.park_pieces(s, &missed);
         let s = self.state();
         if matches!(end, Turn::Ran(Some(_)) | Turn::Closed) || s.closing || s.waiting_for(stream) {
             Poll::Ready(())
@@ -640,10 +665,11 @@ impl Line {
     ) -> Poll<Result<(), Failure>> {
         self.fan.wait(stream, cx.waker());
         let waker = self.fan_waker();
+        let missed = Arc::new(cx.waker().clone());
         let s = self.state();
         match self.turn(
             s,
-            Some(cx.waker()),
+            Some(&missed),
             |conn| conn.poll_landed(&mut Context::from_waker(&waker)),
             |_, _| {},
         ) {
@@ -682,11 +708,12 @@ impl Line {
         if let Some(waker) = missed {
             self.fan.wait(stream, waker);
         }
+        let missed = missed.map(|waker| Arc::new(waker.clone()));
         let waker = self.fan_waker();
         let s = self.state();
         match self.turn(
             s,
-            missed,
+            missed.as_ref(),
             |conn| conn.emit(stream, bytes, end, text, &mut Context::from_waker(&waker)),
             |_, _| {},
         ) {
@@ -726,7 +753,7 @@ impl Line {
         unread_above: bool,
         cx: &mut Context<'_>,
     ) -> Poll<Result<(), Failure>> {
-        let missed = cx.waker().clone();
+        let missed = Arc::new(cx.waker().clone());
         let s = self.state();
         let parked = s.parked.values().any(|q| !q.is_empty());
         match self.turn(
@@ -760,12 +787,20 @@ impl Line {
     /// `stream`'s holder leaves (`whole` = its answer was read to its end); answers how many
     /// holders are left.
     pub(crate) fn leave(&self, stream: u64, whole: bool) -> usize {
-        let unparked = {
+        let retired = {
             let mut s = self.state();
             s.held.remove(&stream);
-            s.refused.remove(&stream);
-            s.parked.remove(&stream).is_some_and(|q| !q.is_empty())
+            let opening = s
+                .opening
+                .iter()
+                .position(|(queued, _)| *queued == stream)
+                .and_then(|at| s.opening.remove(at));
+            (opening, s.refused.remove(&stream), s.parked.remove(&stream))
         };
+        let unparked = retired.2.as_ref().is_some_and(|q| !q.is_empty());
+        // A cancelled opening still owns its fields, target and body. Wiping it and releasing
+        // payload owners (including parked pieces) may run caller code, with the lock let go.
+        drop(retired);
         self.fan.forget(stream);
         if unparked {
             // What it left parked is dropped: under the cap, the connection is read again for
@@ -795,12 +830,16 @@ impl Line {
 }
 
 /// Wake every holder in `missed`.
-fn wake(missed: Vec<Waker>) {
+fn wake(missed: Vec<Arc<Waker>>) {
     for w in missed {
-        w.wake();
+        w.wake_by_ref();
     }
 }
 
 #[cfg(test)]
 #[path = "tests/line_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "tests/line_callback_tests.rs"]
+mod callback_tests;

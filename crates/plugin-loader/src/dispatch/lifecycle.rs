@@ -10,6 +10,26 @@ use busbar_contract::abi::mechanism::lifecycle::{
 
 use super::{in_head, out_head, Called, Frame, Kind, Plugin, NO_BLOB};
 
+/// A typed adapter's custody of an answer it consumed. Keep the plugin borrowed until all
+/// leased bytes have been copied, including early returns and recall failures. Raw Called/Done
+/// values keep their existing caller-owned lease contract.
+pub(crate) struct AnswerLease<'a, K: Kind> {
+    plugin: &'a Plugin<K>,
+    lease: u64,
+}
+
+impl<'a, K: Kind> AnswerLease<'a, K> {
+    pub(crate) fn new(plugin: &'a Plugin<K>, lease: u64) -> Self {
+        Self { plugin, lease }
+    }
+}
+
+impl<K: Kind> Drop for AnswerLease<'_, K> {
+    fn drop(&mut self) {
+        release(self.plugin, self.lease);
+    }
+}
+
 /// A string the host lends for a call.
 pub(crate) fn lend(s: &str) -> AbiStr {
     AbiStr {
@@ -129,6 +149,7 @@ pub(crate) fn validate_call<K: Kind>(plugin: &Plugin<K>, settings: Blob) -> Call
 /// plugin's words (the outcome's name when it wrote none).
 pub(crate) fn validate_json<K: Kind>(plugin: &Plugin<K>, settings: &[u8]) -> Result<(), String> {
     let c = validate_call(plugin, blob(settings, BLOB_JSON, 0));
+    let _lease = AnswerLease::new(plugin, c.lease);
     match c.outcome {
         Outcome::Ready => Ok(()),
         o => Err(text(c.error).unwrap_or_else(|| format!("{o:?}"))),

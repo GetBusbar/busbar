@@ -469,6 +469,20 @@ impl Conns for HttpsConns {
 }
 
 impl DeclaredConns for HttpsConns {
+    fn open_request(
+        &self,
+        caller: InstanceId,
+        need: NeedId,
+        desc: &OpenDesc<'_>,
+        require_secure: bool,
+        _dial_timeout_ms: u64,
+    ) -> Result<ConnId, ConnError> {
+        // Far ends and their replies are in memory: open completes the lookup immediately,
+        // with no asynchronous dial to time. Preserve the request's own bound and all existing
+        // admission, trust, secure-delivery and send-record behavior through the same open path.
+        self.open_with_security(caller, need, desc, require_secure)
+    }
+
     fn declare(
         &self,
         owner: InstanceId,

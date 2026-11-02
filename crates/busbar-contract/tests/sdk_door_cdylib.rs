@@ -159,11 +159,15 @@ fn out_head(size: usize) -> OutHead {
 }
 
 fn call<I, O>(op: Option<Op>, input: &I, out: &mut O) -> Outcome {
-    op.expect("the macro fills every slot")(
-        ptr::null_mut(),
-        ptr::from_ref(input).cast(),
-        ptr::from_mut(out).cast(),
-    )
+    // SAFETY: this private fixture selects its matching stateless RawSlot and owns the
+    // initialized input/output frames and nested ranges throughout the synchronous call.
+    unsafe {
+        op.expect("the macro fills every slot")(
+            ptr::null_mut(),
+            ptr::from_ref(input).cast(),
+            ptr::from_mut(out).cast(),
+        )
+    }
     .outcome()
 }
 

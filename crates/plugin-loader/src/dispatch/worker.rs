@@ -65,6 +65,9 @@ use super::services::{HostServices, Served, ServiceStore, ServicesSlot};
 use super::ticket::{decode, encode, WakeRoute, MAX_INDEX, MAX_WORKERS};
 use super::{in_head, now_ns, out_head, watchdog, DriveFrame, Frame, InFrame, Kind, OutFrame};
 
+#[path = "worker_unit_cancel.rs"]
+mod unit_cancel;
+
 /// The longest a crossing may take before the watchdog faults it, per class. A crossing never
 /// blocks by contract, so these bound a wedged plugin, not a slow request (that is the deadline).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -593,6 +596,8 @@ impl<I, O> Drop for Reply<I, O> {
 /// A submitted op's frame and reply, kind-erased.
 pub(crate) trait Job: Send {
     fn heads(&mut self) -> (*mut InHead, *mut OutHead, u32);
+    fn keep_lent(&self) -> Option<Lent>;
+    fn closes_unit(&self, slot: u32, final_answer: bool) -> bool;
     /// Deliver the answer with the frame; `false` when the caller already had one (detached).
     fn finish(self: Box<Self>, c: Crossed, short: Option<Arc<ShortLease>>) -> bool;
 }
@@ -622,6 +627,14 @@ pub type Lent = Arc<dyn std::any::Any + Send + Sync>;
 impl<I: InFrame, O: OutFrame> Job for JobOf<I, O> {
     fn heads(&mut self) -> (*mut InHead, *mut OutHead, u32) {
         self.frame.heads()
+    }
+
+    fn keep_lent(&self) -> Option<Lent> {
+        self.lent.clone()
+    }
+
+    fn closes_unit(&self, slot: u32, final_answer: bool) -> bool {
+        unit_cancel::closes(&self.instance, slot, &self.frame, final_answer)
     }
 
     fn finish(self: Box<Self>, c: Crossed, short: Option<Arc<ShortLease>>) -> bool {
@@ -674,6 +687,9 @@ pub(crate) struct Meta {
     drainable: bool,
     /// An admitted unit's op ([`Dispatcher::submit_unit`]): counted in [`Instance::unit_ops`].
     unit: bool,
+    /// An exact nonzero plane unit, captured from this host-owned input before submission.
+    unit_key: Option<u64>,
+    unit_final: bool,
     /// PlaneCalls reads only TickOut's scalar schedule; no answer lease is handed to it.
     tick_copy: bool,
     pub(crate) reply: Arc<dyn Settle>,
@@ -968,6 +984,8 @@ pub(crate) struct Entry {
     /// The connection-table identity of every instance whose op ran on this ticket: the connector
     /// slots' kept answers are forgotten under each of them, and only them, when it is recycled.
     pub(crate) conns: Vec<InstanceId>,
+    unit_binding: Option<unit_cancel::Binding>,
+    unit_waiters: Vec<unit_cancel::Waiter>,
 }
 
 impl Entry {
@@ -1004,6 +1022,17 @@ pub(crate) enum Msg {
     Wake(Ticket, Option<&'static super::ticket::InstanceWake>),
     DropClient(Ticket),
     Recycle(Ticket),
+    BindUnit {
+        ticket: Ticket,
+        instance: Arc<Instance>,
+        unit: u64,
+    },
+    CancelUnit {
+        ticket: Ticket,
+        instance: Arc<Instance>,
+        unit: u64,
+        waiter: unit_cancel::Waiter,
+    },
     Stop,
 }
 
@@ -1247,24 +1276,42 @@ impl Worker {
     /// Apply one message; `false` on Stop.
     fn apply(&self, st: &mut WorkerState, m: Msg, env: &Env) -> bool {
         match m {
-            Msg::Submit { ticket, meta, job } => match self.entry(st, ticket) {
-                Some((idx, e))
-                    if !e.client_dropped && (e.driver.is_none() || meta.slot == slot::TICK) =>
-                {
-                    e.note(meta.instance.instance);
-                    e.queue.push_back((meta, job));
-                    if e.current.is_none() {
-                        Self::schedule(st, idx, Action::Start);
-                    }
+            Msg::Submit {
+                ticket,
+                mut meta,
+                job,
+            } => {
+                // A stale generation is a host routing fault, including when the frame names
+                // a plane unit. Preserve the ordinary submission result before unit admission.
+                if self.entry(st, ticket).is_none() {
+                    drop(meta);
+                    drop_after_lock(Box::new(job));
+                    return true;
                 }
-                Some((_, e)) if e.client_dropped => {
-                    let mut meta = meta;
+                if !self.accept_unit(st, ticket, &meta) {
                     meta.give_back();
                     meta.reply.settle(Outcome::Refused, false);
+                    return true;
                 }
-                // A stale or foreign ticket: `meta` drops and settles FAULT.
-                _ => drop(meta),
-            },
+                match self.entry(st, ticket) {
+                    Some((idx, e))
+                        if !e.client_dropped && (e.driver.is_none() || meta.slot == slot::TICK) =>
+                    {
+                        e.note(meta.instance.instance);
+                        e.queue.push_back((meta, job));
+                        if e.current.is_none() {
+                            Self::schedule(st, idx, Action::Start);
+                        }
+                    }
+                    Some((_, e)) if e.client_dropped => {
+                        let mut meta = meta;
+                        meta.give_back();
+                        meta.reply.settle(Outcome::Refused, false);
+                    }
+                    // A stale or foreign ticket: `meta` drops and settles FAULT.
+                    _ => drop(meta),
+                }
+            }
             Msg::Wake(t, supplier) => match self.entry(st, t) {
                 None => {
                     env.stats.stale_wakes.fetch_add(1, Ordering::Relaxed);
@@ -1276,6 +1323,9 @@ impl Worker {
                     }
                 }
                 Some((idx, e)) => {
+                    if e.unit_binding.as_ref().is_some_and(|b| b.closed()) {
+                        return true;
+                    }
                     if e.driver.is_some() {
                         Self::owe_drive(st, idx);
                     } else if e.current.as_ref().is_some_and(|c| c.pending) {
@@ -1293,6 +1343,10 @@ impl Worker {
                     e.client_dropped = true;
                     e.short_reply = None;
                     e.short_slot = None;
+                    if e.unit_binding.is_some() {
+                        Self::schedule(st, idx, Action::Cancel);
+                        return true;
+                    }
                     let (keep, gone): (VecDeque<_>, VecDeque<_>) = std::mem::take(&mut e.queue)
                         .into_iter()
                         .partition(|(m, _)| m.class == DeadlineClass::WriteBehind);
@@ -1325,6 +1379,23 @@ impl Worker {
                     }
                 }
             }
+            Msg::BindUnit {
+                ticket,
+                instance,
+                unit,
+            } => {
+                self.bind_unit_entry(st, ticket, &instance, unit);
+                drop_after_lock(Box::new(instance));
+            }
+            Msg::CancelUnit {
+                ticket,
+                instance,
+                unit,
+                waiter,
+            } => {
+                self.request_unit_cancel(st, ticket, &instance, unit, waiter);
+                drop_after_lock(Box::new(instance));
+            }
             Msg::Stop => return false,
         }
         true
@@ -1351,6 +1422,8 @@ impl Worker {
         e.short_reply = None;
         e.next = None;
         e.driver = None;
+        e.unit_binding = None;
+        e.unit_waiters.clear();
         // A slot whose counter is spent is RETIRED: never handed out again, so no generation of
         // it is ever re-minted; the next mint takes a fresh slot.
         if next.is_some() {
@@ -1701,6 +1774,9 @@ impl Worker {
                 self.cross_current(st, idx, &inst, s, budget, env)
             }
             Action::Cancel => {
+                if e.unit_binding.is_some() {
+                    return self.cancel_unit_group(st, idx, env);
+                }
                 let Some(cur) = e.current.as_mut() else {
                     return Some(st);
                 };
@@ -1906,6 +1982,7 @@ impl Worker {
             if let Some(d) = e.driver.as_mut().filter(|_| c.outcome == Outcome::Pending) {
                 d.ticks_held = d.ticks_held.saturating_add(1);
             }
+            self.finish_unit_answer(&mut st, idx, &c, env);
             self.end(&mut st, idx, c, env);
         }
         Some(st)
@@ -1928,74 +2005,34 @@ impl Worker {
         gone: Vec<Entry>,
         wedged: &Arc<Instance>,
     ) -> (Vec<Orphan>, Vec<Entry>) {
-        let mut orphans = Vec::new();
-        let mut rest = Vec::new();
-        for (idx, e) in gone.into_iter().enumerate() {
-            let ticket = self.ticket(idx as u32, e.generation);
-            let pending = e.driver.is_none()
-                && e.current.as_ref().is_some_and(|c| {
-                    c.pending
-                        && c.job.is_some()
-                        && !Arc::ptr_eq(&c.meta.instance, wedged)
-                        && !c.meta.instance.faulted.load(Ordering::Acquire)
-                });
-            if pending {
-                orphans.push(Orphan { ticket, entry: e });
-            } else {
-                for id in &e.conns {
-                    drop(super::conn_services::forget(*id, ticket));
-                }
-                rest.push(e);
-            }
-        }
-        (orphans, rest)
+        unit_cancel::group_orphans(self, gone, wedged)
     }
 }
 
 /// A healthy instance's PENDING op on a worker that was replaced ([`Worker::orphans`]).
 pub(crate) struct Orphan {
-    ticket: Ticket,
-    entry: Entry,
+    entries: Vec<(Ticket, Entry)>,
 }
 
 impl Drop for Orphan {
     fn drop(&mut self) {
-        for id in &self.entry.conns {
-            drop(super::conn_services::forget(*id, self.ticket));
+        for (ticket, entry) in &self.entries {
+            for id in &entry.conns {
+                drop(super::conn_services::forget(*id, *ticket));
+            }
         }
     }
 }
 
 impl Orphan {
-    /// Tell the plugin its op on the replaced worker ended: `cancel` of the op's ticket, a watched
-    /// ticket-less crossing ([`Instance::cancel_abandoned`]). Only once it has returned is the op's
-    /// frame, with the memory it lent the plugin, dropped, and its caller answered FAULT (THE DESIGN
-    /// `BUSBAR-1.6.0.md` l.324-325: "The memory a call lends a plugin lives until that call
-    /// completes, abandoned or not, for every kind").
-    pub(crate) fn cancel(mut self) {
-        if let Some(cur) = self.entry.current.as_mut() {
-            let unit = cur.job.as_mut().and_then(|job| {
-                let (input, _, _) = job.heads();
-                (cur.meta.instance.unit_of)(
-                    cur.meta.slot,
-                    input.cast_const(),
-                    cur.meta.in_size as usize,
-                )
-            });
-            let outcome = cur.meta.instance.cancel_abandoned(
-                self.ticket,
-                cur.meta.class,
-                unit,
-                cur.meta.framing.clone(),
-            );
-            if outcome != Outcome::Ready {
-                tracing::warn!(
-                    plugin = %cur.meta.instance.name(),
-                    outcome = ?outcome,
-                    "the cancel of an op orphaned by a replaced worker did not answer READY"
-                );
-            }
-        }
+    pub(crate) fn fault_replies(&mut self) {
+        unit_cancel::fault_orphan_replies(self);
+    }
+
+    /// A logical unit is canceled once; all its sibling frames and loans stay here until that
+    /// actual crossing returns, even when the ticketless watchdog has already faulted it.
+    pub(crate) fn cancel(self) {
+        unit_cancel::cancel_orphan(self);
     }
 }
 
@@ -2818,6 +2855,8 @@ impl Dispatcher {
             lifecycle,
             drainable,
             unit,
+            unit_key: unit_cancel::key(inst, s, &frame.input),
+            unit_final: unit_cancel::final_piece(inst, s, &frame.input),
             tick_copy: admit == Admit::DriverCopy,
             reply: slot.clone(),
         };

@@ -675,6 +675,7 @@ impl HostServices for Host {
         }
         Stored {
             bytes: self.draw(len as usize),
+            spans: Vec::new(),
             ..Stored::ready(0)
         }
     }

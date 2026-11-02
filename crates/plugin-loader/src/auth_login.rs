@@ -37,7 +37,7 @@ use busbar_contract::auth_calls::{LoginCall, LoginCallback, LoginSettled, Verify
 use super::{blob, grown, identify_out, lend, lend_opt, zero, Held, Shared};
 use crate::dispatch::call::{Answering, Pending, Ticketed};
 use crate::dispatch::kinds::auth::Auth;
-use crate::dispatch::lifecycle::release;
+use crate::dispatch::lifecycle::{release, AnswerLease};
 use crate::dispatch::{in_head, now_ns, out_head, Done, Frame, InFrame, OutFrame, Plugin};
 
 /// A submitted `begin_login`'s deadline.
@@ -273,7 +273,14 @@ impl CompleteHeld {
                 .filter_map(|(n, v)| Some((n.clone(), v.expose(seal?).as_bytes().to_vec())))
                 .collect(),
             named: Vec::new(),
-            id: Held::new(&VerifyRequest::default(), seal, buf_cap, groups_cap, 0),
+            id: Held::new(
+                &VerifyRequest::default(),
+                seal,
+                &super::Headers::None,
+                buf_cap,
+                groups_cap,
+                0,
+            ),
         };
         held.named = held
             .submitted
@@ -429,6 +436,7 @@ impl Answering<CompleteLoginIn, IdentifyOut> for Complete {
         done: Done<CompleteLoginIn, IdentifyOut>,
         call: &mut Ticketed<CompleteLoginIn, IdentifyOut>,
     ) -> Option<LoginOutcome> {
+        let _lease = AnswerLease::new(&self.shared.plugin, done.lease);
         let out = done.frame.as_ref().map(|f| f.out);
         if done.short && !self.recalled {
             self.recalled = true;

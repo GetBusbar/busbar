@@ -69,6 +69,7 @@ macro_rules! lend_pairs {
         }
     };
     (@pair $ty:ty, one $p:ident) => { None };
+    (@pair $ty:ty, host $p:ident) => { None };
     (@pair $ty:ty, $how:ident $p:ident, $n:ident) => {
         Some((
             offset_of!($ty, $p),

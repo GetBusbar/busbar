@@ -12,7 +12,8 @@ Design: docs/design/conformance-release.md.
           release/plugin-pins.tsv).
       A plugin verdict judged against another core is re-run against T where ModernCI can; where it
       cannot, it stays unused. Writes:
-        - DIR/conformance/<owner>/<name>/{receipt.json, verdicts/*.json};
+        - DIR/conformance/<owner>/<name>/receipt.json, atomically selecting a complete generation
+          with its exact fetched artifact.tar and inspection copies verdicts/*.json;
         - DIR/conformance-manifest.json (scripts/conformance/sync.py's release render).
   conformance_gate.py gate --candidate DIR --release V --commit T --allowed-signers FILE
       G-C on its own: the same rule publish_gate.py runs in `verify`.
@@ -35,13 +36,12 @@ from __future__ import annotations
 
 import base64
 import hashlib
-import io
 import json
+import os
 import re
 import shutil
 import subprocess
 import sys
-import tarfile
 import tempfile
 from pathlib import Path
 
@@ -89,8 +89,11 @@ class ModernCI:
                     raise NoOutput(err.splitlines()[0] if err else "404")
                 raise CannotRun(f"modernci artifact {repo}@{head}: {err}")
             d = json.loads(p.stdout)
+            page_meta = {k: d.get(k) for k in ("repo", "from", "head", "state", "sha")}
+            if meta is not None and page_meta != meta:
+                raise CannotRun(f"modernci artifact {repo}@{head}: metadata changed between archive chunks")
             buf += base64.b64decode(d["data"])
-            meta = meta or {k: d.get(k) for k in ("repo", "from", "head", "state", "sha")}
+            meta = page_meta
             if not d.get("next"):
                 break
             offset = d["next"]
@@ -129,17 +132,19 @@ class ModernCI:
 
 def verdicts_in(data: bytes) -> dict:
     """{suite id: raw verdict} from a check's output archive: its `.../verdicts/<id>.json` members."""
-    out = {}
-    with tarfile.open(fileobj=io.BytesIO(data), mode="r:*") as t:
-        for m in t.getmembers():
-            parts = m.name.split("/")
-            if m.isfile() and len(parts) >= 2 and parts[-2] == "verdicts" and m.name.endswith(".json"):
-                raw = t.extractfile(m).read()
-                try:
-                    out[parts[-1][:-5]] = json.loads(raw)
-                except ValueError as e:
-                    out[parts[-1][:-5]] = f"not JSON: {e}"
-    return out
+    return sync.archive_verdicts(data)
+
+
+def publish_receipt(directory: Path, receipt: dict) -> None:
+    """One atomic selector publishes a complete generation; readers never merge generations."""
+    with tempfile.NamedTemporaryFile("w", dir=directory, prefix=".receipt-", delete=False) as f:
+        name = Path(f.name)
+        json.dump(receipt, f, indent=2, sort_keys=True)
+        f.write("\n")
+    try:
+        os.replace(name, directory / "receipt.json")
+    finally:
+        name.unlink(missing_ok=True)
 
 
 def fetch(client: ModernCI, root: Path, commit: str, out: Path, testkit: str = None) -> None:
@@ -156,12 +161,16 @@ def fetch(client: ModernCI, root: Path, commit: str, out: Path, testkit: str = N
         d = base / repo
         d.mkdir(parents=True, exist_ok=True)
         rec = {"repo": repo, "check": CHECK, "head": head}
+        # A failed refresh must not leave a previous same-head pass looking freshly fetched.
+        publish_receipt(d, {**rec, "missing": "the latest fetch did not complete"})
         try:
             meta, data = client.artifact(repo, head)
         except NoOutput as e:
             rec["missing"] = str(e)
-            (d / "receipt.json").write_text(json.dumps(rec, indent=2, sort_keys=True) + "\n")
+            publish_receipt(d, rec)
             continue
+        if meta.get("repo") != repo or meta.get("head") != head:
+            raise CannotRun(f"ModernCI returned {meta.get('repo')}@{meta.get('head')}, wanted {repo}@{head}")
         rec.update({"from": meta.get("from"), "head": meta.get("head"), "state": meta.get("state"),
                     "sha": hashlib.sha256(data).hexdigest()})
         verdicts = verdicts_in(data)
@@ -170,15 +179,21 @@ def fetch(client: ModernCI, root: Path, commit: str, out: Path, testkit: str = N
         if repo != sync.CORE_REPO and stale:
             try:
                 meta2, data2 = client.rerun(repo, head, core)
+                if meta2.get("repo") != repo or meta2.get("head") != head:
+                    raise CannotRun(f"ModernCI rerun did not return {repo}@{head}")
                 verdicts = verdicts_in(data2)
                 rec["rerun"] = {"core": core, "head": meta2.get("head"), "sha": hashlib.sha256(data2).hexdigest()}
+                data = data2
             except CannotRerun as e:
                 rec["rerun"] = {"core": core, "refused": str(e)}
-        (d / "verdicts").mkdir(exist_ok=True)
+        generation = Path(tempfile.mkdtemp(prefix="generation-", dir=d))
+        (generation / "artifact.tar").write_bytes(data)
+        (generation / "verdicts").mkdir()
         for sid, v in sorted(verdicts.items()):
             body = v if isinstance(v, dict) else {"unreadable": v}
-            (d / "verdicts" / f"{sid}.json").write_text(json.dumps(body, indent=2, sort_keys=True) + "\n")
-        (d / "receipt.json").write_text(json.dumps(rec, indent=2, sort_keys=True) + "\n")
+            (generation / "verdicts" / f"{sid}.json").write_text(json.dumps(body, indent=2, sort_keys=True) + "\n")
+        rec["generation"] = generation.name
+        publish_receipt(d, rec)
 
 
 def render(root: Path, cand: Path, commit: str, release: str, testkit: str = None) -> str:

@@ -308,6 +308,21 @@ pub(crate) fn door_answer() -> AdminAnswer {
     answer
 }
 
+/// The synchronous live door's no-verdict answer, sharing the awaited middleware's exact message
+/// and retry window. Authenticate keeps this answer on the walk before ending the unit.
+pub(crate) fn authentication_unavailable_answer() -> AdminAnswer {
+    let refused = busbar_kernel::admin::gate::ApiError::Unavailable(
+        busbar_kernel::auth::ADMIN_AUTH_UNAVAILABLE_MESSAGE.to_string(),
+    );
+    let mut answer =
+        error_answer_with_message(refused.http_status(), refused.code(), &refused.message());
+    answer.headers.push((
+        "retry-after".to_string(),
+        busbar_kernel::auth::ADMIN_AUTH_RETRY_AFTER.to_string(),
+    ));
+    answer
+}
+
 /// The surface's answer for one ending.
 ///
 /// The vocabulary is the previous release's admin envelope and nothing here invents a status: each

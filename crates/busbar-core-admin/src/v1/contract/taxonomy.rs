@@ -537,6 +537,7 @@ pub fn declared_errors(method: MethodTag, rel: &str) -> &'static [DocErr] {
         ],
         (Post, "/keys/{id}/rotate") => de![
             Validation / Overlong,
+            Validation / KeyExpiryFields,
             NotFound / UnknownResource,
             Conflict / GovernanceOff,
             Conflict / IdempotencyInFlight,

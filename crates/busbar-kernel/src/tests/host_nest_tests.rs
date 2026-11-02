@@ -223,3 +223,42 @@ fn a_reply_the_root_drops_answers_failed_and_gives_its_permit_back() {
     assert_eq!((got.outcome, got.error), (Outcome::Failed, NEST_DROPPED));
     assert_eq!(s.nested().available(), NEST_CONCURRENCY);
 }
+
+#[test]
+fn an_unread_reply_after_the_child_ran_answers_failed_and_releases_its_permit() {
+    const CHILD_REPLY_UNREAD: &str = "the child ran but its reply could not be read";
+    let seam = Arc::new(Seam {
+        hold: true,
+        ..Seam::default()
+    });
+    let s = services(Arc::clone(&seam));
+    s.units().admitted(1, UnitRecord::default());
+    for (reply, outcome, reason) in [
+        (
+            NestReply::Failed(CHILD_REPLY_UNREAD),
+            Outcome::Failed,
+            CHILD_REPLY_UNREAD,
+        ),
+        (
+            NestReply::Unserved(NO_NEST_ROUTE),
+            Outcome::Refused,
+            NO_NEST_ROUTE,
+        ),
+    ] {
+        let slot: Arc<Mutex<Option<Stored>>> = Arc::default();
+        let mine = Arc::clone(&slot);
+        let ran = s.unit_nest(
+            &caller(),
+            Some(1),
+            ask(b"child-body"),
+            Box::new(move |answer| *mine.lock().unwrap() = Some(answer)),
+        );
+        assert!(matches!(ran, Ran::Later));
+        assert_eq!(s.nested().available(), NEST_CONCURRENCY - 1);
+        let done = seam.held.lock().unwrap().pop().unwrap();
+        done(reply);
+        let got = slot.lock().unwrap().take().expect("the child answered");
+        assert_eq!((got.outcome, got.error), (outcome, reason));
+        assert_eq!(s.nested().available(), NEST_CONCURRENCY);
+    }
+}

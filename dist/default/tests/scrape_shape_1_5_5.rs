@@ -201,16 +201,18 @@ fn a_1_5_5_shaped_config_exposes_no_plane_series_with_every_plane_compiled_in() 
     let log_path = dir.join("out.log");
     let log = std::fs::File::create(&log_path).unwrap();
     let log_err = log.try_clone().unwrap();
-    let mut child = Command::new(common::boot::exe())
-        .env("BUSBAR_CONFIG", dir.join("config.yaml"))
-        .env("BUSBAR_PROVIDERS", dir.join("providers.yaml"))
-        .env("MOCK_KEY", "x")
-        .env("BUSBAR_ADMIN_TOKEN", ADMIN_TOKEN)
-        .env("RUST_LOG", "info")
-        .stdout(log)
-        .stderr(log_err)
-        .spawn()
-        .expect("spawn busbar");
+    let mut child = common::boot::Reap(
+        Command::new(common::boot::exe())
+            .env("BUSBAR_CONFIG", dir.join("config.yaml"))
+            .env("BUSBAR_PROVIDERS", dir.join("providers.yaml"))
+            .env("MOCK_KEY", "x")
+            .env("BUSBAR_ADMIN_TOKEN", ADMIN_TOKEN)
+            .env("RUST_LOG", "info")
+            .stdout(log)
+            .stderr(log_err)
+            .spawn()
+            .expect("spawn busbar"),
+    );
     // Any panic from here on prints the node's whole log (its stdout and stderr) with it.
     let _dump = common::boot::DumpOnPanic(&log_path);
 

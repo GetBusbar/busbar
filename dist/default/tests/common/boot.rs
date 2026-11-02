@@ -53,7 +53,8 @@ pub fn exe() -> &'static str {
 /// a socket is bound to. Never listening, it takes no connection and a connect before the child
 /// listens is refused as it was.
 ///
-/// That holds on Linux, where every test run that gates this tree runs. On other unixes a bound,
+/// That holds on Linux, where every test run that gates this tree runs. Elsewhere the socket is
+/// dropped after choosing the port. On other unixes a bound,
 /// non-listening socket swallows a SYN instead of refusing it (a poll that connects before the child
 /// listens would hang for the OS connect timeout), so there the socket is dropped as before.
 ///
@@ -83,6 +84,7 @@ fn held_ephemeral_port() -> (socket2::Socket, u16) {
     use socket2::{Domain, Socket, Type};
     let socket = Socket::new(Domain::IPV4, Type::STREAM, None).expect("a stream socket");
     socket.set_reuse_address(true).expect("SO_REUSEADDR");
+    #[cfg(unix)]
     socket.set_reuse_port(true).expect("SO_REUSEPORT");
     socket
         .bind(&std::net::SocketAddr::from(([127, 0, 0, 1], 0)).into())
@@ -107,6 +109,30 @@ pub fn try_reserve(port: u16) -> Option<std::fs::File> {
         .open(dir.join(format!("{port}.lock")))
         .expect("the port-claim file");
     file.try_lock().ok().map(|()| file)
+}
+
+/// Own a child through every assertion path; unwinding must stop and reap the real binary too.
+pub struct Reap(pub std::process::Child);
+
+impl std::ops::Deref for Reap {
+    type Target = std::process::Child;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for Reap {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+impl Drop for Reap {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
 }
 
 /// Whether the node's log holds BOTH "busbar listening" lines, the data side's (written by data

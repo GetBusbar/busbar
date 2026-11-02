@@ -441,6 +441,8 @@ impl DiskReport {
                 Outcome::Failed
             },
             error: self.error,
+            bytes: Vec::new(),
+            spans: Vec::new(),
             ..Stored::ready(value)
         }
     }
@@ -483,8 +485,9 @@ pub struct RecordsList {
     pub limit: u32,
 }
 
-/// One service result, as the host stores it under its handle.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// One service result, as the host stores it under its handle. Its bytes may carry a credential:
+/// every copy wipes them on drop, and Debug never prints their contents.
+#[derive(Clone, PartialEq, Eq)]
 pub struct Stored {
     /// The outcome.
     pub outcome: Outcome,
@@ -496,6 +499,25 @@ pub struct Stored {
     pub spans: Vec<ItemSpan>,
     /// The reason, for FAILED/REFUSED.
     pub error: &'static str,
+}
+
+impl std::fmt::Debug for Stored {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Stored")
+            .field("outcome", &self.outcome)
+            .field("value", &self.value)
+            .field("bytes", &"<redacted>")
+            .field("spans", &self.spans)
+            .field("error", &self.error)
+            .finish()
+    }
+}
+
+impl Drop for Stored {
+    fn drop(&mut self) {
+        use zeroize::Zeroize as _;
+        self.bytes.zeroize();
+    }
 }
 
 impl Stored {
@@ -517,6 +539,8 @@ impl Stored {
         Self {
             outcome: Outcome::Refused,
             error: why,
+            bytes: Vec::new(),
+            spans: Vec::new(),
             ..Self::ready(0)
         }
     }

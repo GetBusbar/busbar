@@ -24,6 +24,9 @@ mod close_cases;
 #[path = "support/plane_driver_session_input_cases.rs"]
 mod session_input_cases;
 
+#[path = "support/plane_driver_retirement_cases.rs"]
+mod retirement_cases;
+
 use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
@@ -221,6 +224,8 @@ struct Double {
     tickets: Mutex<HashMap<Ticket, u64>>,
     /// The ops held pending, by ticket, and what their `cancel` will answer.
     held: Mutex<HashMap<Ticket, (Arc<Shared>, OnPieceOut)>>,
+    held_lent: Mutex<HashMap<Ticket, Lent>>,
+    cancelled_units: Mutex<HashMap<u64, Option<u32>>>,
     controlled: Mutex<Option<(Arc<Shared>, Answered, OnPieceOut)>>,
     pending_notice: Mutex<Option<std::sync::mpsc::Sender<bool>>>,
     next: AtomicU32,
@@ -264,12 +269,18 @@ struct WakeLine {
 #[derive(Default)]
 struct Sessions {
     open: Mutex<Vec<u64>>,
+    initials: AtomicU64,
+    server_first: AtomicBool,
     read: Mutex<Vec<(u64, Vec<u8>)>>,
     read_at: Mutex<Vec<usize>>,
     collects: AtomicU64,
     named: Mutex<Vec<u64>>,
     told: tokio::sync::Notify,
     input_mode: Mutex<SessionInputMode>,
+    far_pending: AtomicBool,
+    cancel_row: AtomicBool,
+    delay_cancel_reply: AtomicBool,
+    cancel_reply: Arc<tokio::sync::Notify>,
     /// A controlled crossing that still borrows the session input after its answer or drop.
     borrowed: Mutex<Option<(SendIn, Lent)>>,
 }
@@ -279,6 +290,8 @@ enum SessionInputMode {
     #[default]
     Ready,
     Pending,
+    /// A worker-owned Pending op that cancellation can retire with its siblings.
+    Cancellable,
     Fault,
 }
 // SAFETY: the held `out`s are plain data the double wrote.
@@ -391,6 +404,88 @@ impl Double {
         d
     }
 
+    /// Model the ordered control boundary: one cancel result, sibling retirements, one writes
+    /// owner. Loader tests independently exercise the actual worker implementation.
+    fn cancel_group(
+        &self,
+        ticket: Ticket,
+        unit: u64,
+        explicit: bool,
+    ) -> Option<busbar_contract::plane_calls::Cancelled> {
+        let tickets = self
+            .tickets
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|(ticket, key)| (*key == unit).then_some(*ticket))
+            .collect::<Vec<_>>();
+        let previous = self.cancelled_units.lock().unwrap().get(&unit).copied();
+        let mut cancelled = match previous {
+            Some(disposition) => {
+                disposition.map(|disposition| busbar_contract::plane_calls::Cancelled {
+                    disposition,
+                    writes: Vec::new(),
+                })
+            }
+            None => {
+                self.count(stat::CANCELS_ON_WORKER);
+                let mut cancelled = self.cancel(ticket, unit);
+                if self.sessions.cancel_row.load(Ordering::SeqCst) {
+                    if let Some(cancelled) = cancelled.as_mut() {
+                        cancelled
+                            .writes
+                            .push(busbar_contract::plane_calls::CancelWrite {
+                                kind: AUDIT_APPLIED,
+                                op: RECORD_AUDIT,
+                                key: b"session.cancel".to_vec(),
+                                value: b"session:7".to_vec(),
+                            });
+                    }
+                }
+                self.sessions
+                    .open
+                    .lock()
+                    .unwrap()
+                    .retain(|stream| *stream != unit);
+                self.cancelled_units
+                    .lock()
+                    .unwrap()
+                    .insert(unit, cancelled.as_ref().map(|c| c.disposition));
+                cancelled
+            }
+        };
+        let mut held = Vec::new();
+        {
+            let mut table = self.held.lock().unwrap();
+            for sibling in &tickets {
+                if let Some((slot, out)) = table.remove(sibling) {
+                    held.push((*sibling, slot, out));
+                }
+            }
+        }
+        for (sibling, slot, out) in held {
+            if !explicit && sibling == ticket {
+                if let Some(cancelled) = cancelled.as_mut() {
+                    slot.0.lock().unwrap().writes = std::mem::take(&mut cancelled.writes);
+                }
+            }
+            slot.put(
+                match cancelled.as_ref() {
+                    Some(cancelled) => Answered {
+                        outcome: Outcome::Failed,
+                        short: false,
+                        disposition: Some(cancelled.disposition),
+                    },
+                    None => ready(Outcome::Fault),
+                },
+                out,
+            );
+            let lent = self.held_lent.lock().unwrap().remove(&sibling);
+            drop(lent);
+        }
+        cancelled
+    }
+
     /// One `on_piece`, as the test plane answers it: the outcome, and whether it is held.
     unsafe fn piece(&self, t: Ticket, i: &OnPieceIn, o: &mut OnPieceOut) -> (Answered, Hold) {
         self.count(stat::ON_PIECES);
@@ -402,6 +497,11 @@ impl Double {
         if i.stream != 0 {
             let answer = self.session_piece(i, o);
             let mode = *self.sessions.input_mode.lock().unwrap();
+            if (i.from == FROM_CALLER && i.bytes.len != 0 && mode == SessionInputMode::Cancellable)
+                || (i.from == FROM_FAR_END && self.sessions.far_pending.load(Ordering::SeqCst))
+            {
+                return (ready(Outcome::Failed), Hold::Forever);
+            }
             return match (i.from == FROM_CALLER && i.bytes.len != 0, mode) {
                 (true, SessionInputMode::Pending) => (answer, Hold::Forever),
                 (true, SessionInputMode::Fault) => (ready(Outcome::Fault), Hold::No),
@@ -717,15 +817,43 @@ impl Double {
             }
             FROM_CALLER => {
                 let body = bytes(i.bytes).to_vec();
+                let initial = {
+                    let mut open = s.open.lock().unwrap();
+                    let initial = !open.contains(&i.stream);
+                    if initial {
+                        open.push(i.stream);
+                    }
+                    initial
+                };
+                if initial && body.is_empty() {
+                    s.initials.fetch_add(1, Ordering::SeqCst);
+                    if s.server_first.load(Ordering::SeqCst) {
+                        let mut at = 0;
+                        o.verb = put(i, &mut at, b"GET");
+                        o.target = put(i, &mut at, b"/open");
+                        o.arena_written = at as u64;
+                        o.flags = EMIT_TO_FAR_END;
+                    }
+                    return ready(Outcome::Ready);
+                }
                 s.read_at.lock().unwrap().push(i.bytes.ptr as usize);
                 s.read.lock().unwrap().push((i.stream, body.clone()));
-                s.open.lock().unwrap().push(i.stream);
+                if s.server_first.load(Ordering::SeqCst) {
+                    reply(o, &body);
+                    o.flags = EMIT_TO_FAR_END;
+                    return ready(Outcome::Ready);
+                }
                 o.reply_status = 200;
                 reply(o, &[b"open:".as_slice(), &body].concat());
             }
             FROM_KERNEL if i.attempt_no == 0 => {
                 s.collects.fetch_add(1, Ordering::SeqCst);
                 reply(o, b"keepalive;");
+            }
+            FROM_KERNEL if s.server_first.load(Ordering::SeqCst) => {}
+            FROM_FAR_END if s.server_first.load(Ordering::SeqCst) => {
+                o.reply_status = 200;
+                reply(o, bytes(i.bytes));
             }
             _ => return ready(Outcome::Refused),
         }
@@ -1226,6 +1354,26 @@ impl PlaneCalls for Double {
             })
     }
 
+    fn bind_unit(&self, ticket: Ticket, unit: u64) {
+        self.tickets.lock().unwrap().insert(ticket, unit);
+    }
+
+    fn cancel_unit(
+        &self,
+        ticket: Ticket,
+        unit: u64,
+    ) -> Pin<Box<dyn Future<Output = Option<busbar_contract::plane_calls::Cancelled>> + Send>> {
+        let cancelled = self.cancel_group(ticket, unit, true);
+        let delayed = self.sessions.delay_cancel_reply.load(Ordering::SeqCst);
+        let reply = self.sessions.cancel_reply.clone();
+        Box::pin(async move {
+            if delayed {
+                reply.notified().await;
+            }
+            cancelled
+        })
+    }
+
     fn mint(&self) -> Option<Ticket> {
         Some(Ticket {
             slot: self.next.fetch_add(1, Ordering::SeqCst),
@@ -1293,27 +1441,13 @@ impl PlaneCalls for Double {
     /// The client-drop path: an op held on `ticket` is cancelled "on its worker" and answers the
     /// plane kind's timeout outcome with the disposition (or FAULT when the cancel FAULTs).
     fn drop_client(&self, ticket: Ticket) {
-        let Some((slot, out)) = self.held.lock().unwrap().remove(&ticket) else {
+        if !self.held.lock().unwrap().contains_key(&ticket) {
+            return;
+        }
+        let Some(unit) = self.tickets.lock().unwrap().get(&ticket).copied() else {
             return;
         };
-        self.count(stat::CANCELS);
-        self.count(stat::CANCELS_ON_WORKER);
-        if let Some(key) = self.tickets.lock().unwrap().get(&ticket).copied() {
-            self.closed(key);
-        }
-        let u = self.unit_of(ticket);
-        let answer = match self.disposition(&u) {
-            Some(d) => Answered {
-                outcome: Outcome::Failed,
-                short: false,
-                disposition: Some(d),
-            },
-            None => ready(Outcome::Fault),
-        };
-        if answer.disposition.is_some() {
-            slot.0.lock().unwrap().writes = self.cancel_row(&u);
-        }
-        slot.put(answer, out);
+        let _ = self.cancel_group(ticket, unit, false);
     }
 
     fn on_piece(
@@ -1366,6 +1500,7 @@ impl PlaneCalls for Double {
                         let _ = notice.send(true);
                     }
                 } else {
+                    self.held_lent.lock().unwrap().insert(ticket, lent.clone());
                     self.held
                         .lock()
                         .unwrap()
@@ -1630,7 +1765,7 @@ fn list(s: &KernelServices) -> Vec<u8> {
         after: None,
         limit: 0,
     };
-    answer(|l| s.records_list(&instance(), all, l)).bytes
+    std::mem::take(&mut answer(|l| s.records_list(&instance(), all, l)).bytes)
 }
 
 /// One unit whose plane writes `body`'s records and answers locally.
@@ -1974,7 +2109,7 @@ async fn an_uncalled_upstream_is_never_fetched_over_time() {
     let services = stored();
     let section: serde_yaml::Value = serde_yaml::from_str("peer: {reverify: 1h}").unwrap();
     let (_plane, _book, driver) = driven_over(declaring(), 0, services.clone(), &section);
-    let due = |s: &KernelServices| s.trust_due(&instance()).bytes;
+    let due = |s: &KernelServices| std::mem::take(&mut s.trust_due(&instance()).bytes);
     assert!(due(&services).is_empty(), "nothing is due before a tick");
     tokio::time::timeout(Duration::from_secs(5), driver.ticks())
         .await
@@ -3222,7 +3357,7 @@ async fn a_credential_refusal_is_handed_as_a_piece_first_only_to_a_plane_that_ta
         if takes {
             assert_eq!(c.refused, vec![code]);
             assert_eq!(
-                (c.written.value, c.written.bytes),
+                (c.written.value, c.written.bytes.as_slice()),
                 (svc::FOUND, code.to_string().into_bytes()),
                 "the refused piece's record write is written"
             );
@@ -3274,7 +3409,7 @@ async fn a_walk_that_ends_after_a_request_went_out_is_handed_as_a_piece_first() 
     );
     assert_eq!(taken.refused, vec![code]);
     assert_eq!(
-        (taken.written.value, taken.written.bytes),
+        (taken.written.value, taken.written.bytes.as_slice()),
         (svc::FOUND, code.to_string().into_bytes()),
         "the refused piece's record write is written"
     );
@@ -3298,7 +3433,7 @@ async fn a_walk_that_ends_after_a_request_went_out_is_handed_as_a_piece_first() 
         "a walk that exhausted before any request went out is handed the refused piece"
     );
     assert_eq!(
-        (unsent.written.value, unsent.written.bytes),
+        (unsent.written.value, unsent.written.bytes.as_slice()),
         (svc::FOUND, code.to_string().into_bytes()),
         "the refused piece's record write is written"
     );
@@ -3370,7 +3505,7 @@ async fn a_walk_that_exhausted_with_nothing_sent_names_why_on_its_refused_piece(
         );
         assert!(nothing_sent(code.code()), "{code:?}");
         assert_eq!(
-            (c.written.value, c.written.bytes),
+            (c.written.value, c.written.bytes.as_slice()),
             (svc::FOUND, code.code().to_string().into_bytes()),
             "{code:?}: the refused piece's record write is written"
         );

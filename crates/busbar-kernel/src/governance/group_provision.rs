@@ -213,7 +213,7 @@ pub fn persist_provisioned_group(
                 crate::audit_ring::OUTCOME_REJECTED,
                 &actor,
             );
-            format!("group could not be persisted to the overlay: {e}; nothing was changed")
+            format!("group persistence to the Store overlay was not confirmed: {e}; the running group tree is unaffected")
         })
     }
 }

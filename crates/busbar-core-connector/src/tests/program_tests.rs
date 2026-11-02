@@ -19,6 +19,9 @@ use crate::registry::{Entry, Transports};
 use crate::support::{worker, Knobs, TestDoor};
 use crate::Connector;
 
+#[path = "program_callback_tests.rs"]
+mod callback_tests;
+
 const OWNER: InstanceId = InstanceId(1);
 const NEED: NeedId = NeedId(1);
 
@@ -56,6 +59,9 @@ fn need(class: u32) -> ReadNeed {
             bytes: Vec::new(),
         },
         timeout_ms: 0,
+        keep_mode: busbar_contract::abi::host::conn::connector::KEEP_NAMED,
+        keep_response_headers: Vec::new(),
+        deny_response_headers: Vec::new(),
     }
 }
 
@@ -599,13 +605,9 @@ fn due(c: &Connector, id: ConnId) -> Option<std::time::Instant> {
 
 /// The test's own hand on lease `id`'s bound: moved to `at`, as the clock would bring it there.
 fn set_due(c: &Connector, id: ConnId, at: std::time::Instant) {
-    *c.slab
-        .get(OWNER, id)
-        .expect("a live lease")
-        .1
-        .due
-        .lock()
-        .expect("due") = Some(crate::Due { at, timer: None });
+    let held = c.slab.get(OWNER, id).expect("a live lease").1;
+    let previous = held.due.lock().expect("due").replace(crate::Due::new(at));
+    drop(previous);
 }
 
 fn open_bounded(c: &Connector, target: &str) -> ConnId {

@@ -225,6 +225,7 @@ One binary and one YAML file. No interpreter, no database, no sidecar.
 curl -fsSL https://getbusbar.com/install.sh | sh      # busbar + providers.yaml into ./
 
 cat > config.yaml <<'EOF'
+store: { module: memory }
 providers:
   anthropic: { api_key: { env: ANTHROPIC_KEY } }   # the NAME of the env var, never the key
 models:
@@ -284,6 +285,7 @@ data:
   config.yaml: |
     listen: "0.0.0.0:8080"
     config: { locked: true }          # GitOps: config changes ship as a new ConfigMap
+    store: { module: memory }          # required; this example uses ephemeral RAM
     providers:
       anthropic: { api_key: { env: ANTHROPIC_KEY } }
       openai:    { api_key: { env: OPENAI_KEY } }
@@ -325,7 +327,7 @@ spec:
             allowPrivilegeEscalation: false
             capabilities: { drop: [ ALL ] }
           volumeMounts:
-            - { name: config, mountPath: /etc/busbar, readOnly: true }
+            - { name: config, mountPath: /etc/busbar/config.yaml, subPath: config.yaml, readOnly: true }
       volumes:
         - name: config
           configMap: { name: busbar-config }

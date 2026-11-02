@@ -140,11 +140,11 @@ impl ExactUsageDelta {
                 i128::from(cell.billable_requests) - i128::from(cell.flushed_billable_requests);
         }
         for model in &cell.models {
-            if dated && model.era == 0 {
+            if dated && model.era == RawRateEra::legacy(0) {
                 continue;
             }
             let name = if dated {
-                format!("{}{ERA_MODEL_SEP}{}", model.era, model.model)
+                era_model(model.era, &model.model)
             } else {
                 model.model.to_string()
             };
@@ -176,7 +176,7 @@ impl ExactUsageDelta {
                 .collect::<std::collections::BTreeSet<_>>()
             {
                 debt.unit(
-                    &era.to_string(),
+                    &era_tag(*era),
                     ERA_FEE_UNIT,
                     i128::from(current.get(era).copied().unwrap_or(0))
                         - i128::from(flushed.get(era).copied().unwrap_or(0)),

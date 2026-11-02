@@ -94,8 +94,15 @@ pub struct OauthAsCfg {
 pub struct StaticClientCfg {
     /// The `client_id` the client authenticates as (its assertion's `iss` and `sub`).
     pub client_id: String,
-    /// The redirect URIs, matched EXACTLY at the authorization endpoint (OAuth 2.1 s4.1.3).
+    /// Redirect URIs, matched exactly at authorization. May be empty only for an explicitly
+    /// device-enabled client; without a redirect URI that client receives no authorization-code
+    /// grant permission.
+    #[serde(default)]
     pub redirect_uris: Vec<String>,
+    /// Permit RFC 8628 device authorization for this operator-provisioned client. Off by
+    /// default; public registration and metadata documents cannot enable this grant.
+    #[serde(default)]
+    pub device_authorization: bool,
     /// The client's public keys, as RFC 7591 s2 `jwks` spells them.
     pub jwks: StaticClientJwks,
 }
@@ -228,6 +235,9 @@ pub struct AsIdentity {
     pub metadata_path: String,
     pub authorize_path: String,
     pub token_path: String,
+    pub device_authorization_path: String,
+    pub verification_path: String,
+    pub revocation_path: String,
     /// The RFC 7591 registration endpoint's path. Always derived, never optional: registration is
     /// one of the three always-on ways a client obtains a `client_id` on this plane.
     pub register_path: String,
@@ -336,6 +346,9 @@ impl AsIdentity {
             metadata_path: format!("{AS_WELL_KNOWN}{issuer_path}"),
             authorize_path: under("authorize"),
             token_path: under("token"),
+            device_authorization_path: under("device_authorization"),
+            verification_path: under("device"),
+            revocation_path: under("revoke"),
             register_path: under("register"),
             jwks_path: under("jwks"),
             consent_path: under("consent"),
@@ -362,6 +375,18 @@ impl AsIdentity {
     }
     pub fn token_path(&self) -> &str {
         &self.token_path
+    }
+    pub fn device_authorization_path(&self) -> &str {
+        &self.device_authorization_path
+    }
+    pub fn verification_path(&self) -> &str {
+        &self.verification_path
+    }
+    pub fn revocation_path(&self) -> &str {
+        &self.revocation_path
+    }
+    pub fn verification_url(&self) -> String {
+        format!("{}{}", self.origin(), self.verification_path)
     }
     pub fn register_path(&self) -> &str {
         &self.register_path
@@ -428,7 +453,7 @@ fn validate_clients(clients: &[StaticClientCfg]) -> Result<(), AsCfgError> {
         if !seen.insert(client.client_id.as_str()) {
             return Err(refuse("the client_id is declared twice"));
         }
-        if client.redirect_uris.is_empty() {
+        if client.redirect_uris.is_empty() && !client.device_authorization {
             return Err(refuse(
                 "redirect_uris is empty; the authorization code has nowhere to go",
             ));
@@ -585,6 +610,9 @@ pub(crate) fn secret_refs(identity: &AsIdentity) -> Vec<(String, &SecretRef)> {
         metadata_path: _,
         authorize_path: _,
         token_path: _,
+        device_authorization_path: _,
+        verification_path: _,
+        revocation_path: _,
         register_path: _,
         jwks_path: _,
         consent_path: _,

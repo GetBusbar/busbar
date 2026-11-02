@@ -79,6 +79,7 @@ pub mod process;
 mod program;
 pub mod proxy;
 pub mod proxy_route;
+pub mod publication;
 pub mod registry;
 pub(crate) mod seal;
 pub mod socket;
@@ -103,7 +104,7 @@ use std::time::Duration;
 use busbar_contract::abi::host::conn::connector::{
     DIRECTION_OUTBOUND, EGRESS_LOOPBACK_ALLOWED, EGRESS_OPEN_WEB, EGRESS_OPERATOR_INFRASTRUCTURE,
 };
-use busbar_contract::abi::host::service::{DEST_NO_ADDRESSES, DEST_PLAINTEXT, DEST_UNRESOLVABLE};
+use busbar_contract::abi::host::service::{DEST_NO_ADDRESSES, DEST_UNRESOLVABLE};
 use busbar_contract::abi::mechanism::rendering::ReadNeed;
 use busbar_contract::abi::transport::{ROLE_CARRIER, ROLE_FRAMER};
 use busbar_contract::conn::{
@@ -151,6 +152,10 @@ pub const DEFAULT_CLASS: u32 = 0;
 /// literal) answers at once, `Some`, before any resolution; a name that must resolve answers `None`
 /// and `done` gets the pin or the refusal later, from any thread.
 pub trait DialJudge: Send + Sync {
+    /// Replace the bootstrap listener-port metadata before the effective plugins open.
+    /// A judge that keeps no such metadata ignores the publication.
+    fn own_ports_applied(&self, _ports: &[u16]) {}
+
     /// Judge `dest` (`host:port`) under egress class `class`.
     fn judge_dial(
         &self,
@@ -484,6 +489,8 @@ impl Drop for AcceptingOut<'_> {
 /// is spent once the dial starts; its remaining writes then keep their original order and flags.
 struct Judging {
     planned: Option<Planned>,
+    /// A spent dial or replay's terminal error, retained for every poll until close.
+    failed: Option<ConnError>,
     /// The need's egress class, whose scheme rule the pinned address is held to.
     egress_class: u32,
     /// The address set the pinned address must be in (`OpenDesc::within`); empty = any.
@@ -544,6 +551,18 @@ impl<'h> Crossing<'h> {
         drop(judging);
         Self { held }
     }
+
+    /// Keep the crossing's failure before releasing its callers to read it. A consumed plan
+    /// cannot be retried, and accepted writes must never be replayed after a terminal failure.
+    fn finish(self, result: Result<bool, ConnError>) -> Result<bool, ConnError> {
+        if let Err(error) = result {
+            if error != ConnError::Pending {
+                self.held
+                    .fail(self.held.judging.lock().expect("judging"), error);
+            }
+        }
+        result
+    }
 }
 
 impl Drop for Crossing<'_> {
@@ -592,10 +611,13 @@ impl<'h> Reading<'h> {
     /// Take the rest for one read: what a short buffer left, and whether the end was answered.
     /// `None` while another read has it, `waker` woken once it is back.
     fn begin(rest: &'h Mutex<Rest>, waker: &Waker) -> Option<(Self, Option<Left>)> {
+        // A RawWaker clone may call back into this connector. Own it before taking Rest, and
+        // declare it first so an unused clone is also released after the guard.
+        let incoming = waker.clone();
         let mut r = rest.lock().expect("rest");
         if r.reading {
             if !r.missed.iter().any(|w| w.will_wake(waker)) {
-                r.missed.push(waker.clone());
+                r.missed.push(incoming);
             }
             return None;
         }
@@ -661,6 +683,8 @@ struct Held {
     /// THE REQUEST'S WHOLE BOUND until its answer (`OpenDesc::timeout_ms`; `None` = unbounded
     /// here): see [`Due`].
     due: Mutex<Option<Due>>,
+    /// The dial's original bound, including a pended judgement, independent of the request.
+    dial_due: Mutex<Option<Due>>,
     /// A held session's UPSTREAM LEG over a datagram framer's need ([`dialled`]): its exchange
     /// rides this connection's line, then its reads and writes are the leg's.
     dialled: Option<dialled::Dialled>,
@@ -685,9 +709,141 @@ fn due_at(now: std::time::Instant, timeout_ms: u64) -> Option<std::time::Instant
 /// it. Once an answer has begun the bound is spent: what bounds a streamed answer is its own class,
 /// as its reader keeps it, never this one (an answer cut mid-stream by a time-to-answer bound would
 /// be a different outcome from the one the reader chose).
+#[derive(Clone)]
 struct Due {
     at: std::time::Instant,
-    timer: Option<std::pin::Pin<Box<tokio::time::Sleep>>>,
+    timer: Arc<std::sync::OnceLock<Mutex<Option<DeadlineTimer>>>>,
+    wake: Arc<DeadlineWake>,
+}
+
+type DeadlineTimer = std::pin::Pin<Box<tokio::time::Sleep>>;
+
+#[derive(Clone, Copy)]
+enum DeadlineInterest {
+    Ticket(Ticket),
+    Task,
+}
+
+#[derive(Default)]
+struct DeadlineWaiters {
+    tickets: HashMap<Ticket, Waker>,
+    tasks: Vec<Waker>,
+}
+
+#[derive(Default)]
+struct DeadlineWake {
+    cancelled: AtomicBool,
+    waiters: Mutex<DeadlineWaiters>,
+}
+
+impl DeadlineWake {
+    fn register(&self, interest: DeadlineInterest, waker: &Waker) {
+        if matches!(interest, DeadlineInterest::Ticket(NO_TICKET)) {
+            return;
+        }
+        // Cloning and destroying a host waker can run arbitrary host code.
+        let mut fresh = Some(waker.clone());
+        let previous = {
+            let mut waiters = self.waiters.lock().expect("deadline waiters");
+            if self.cancelled.load(Ordering::Acquire) {
+                None
+            } else {
+                match interest {
+                    DeadlineInterest::Ticket(ticket) => {
+                        waiters.tickets.insert(ticket, fresh.take().unwrap())
+                    }
+                    DeadlineInterest::Task => {
+                        if !waiters.tasks.iter().any(|old| old.will_wake(waker)) {
+                            waiters.tasks.push(fresh.take().unwrap());
+                        }
+                        None
+                    }
+                }
+            }
+        };
+        drop(previous);
+        drop(fresh);
+    }
+
+    fn cancel(&self) {
+        self.cancelled.store(true, Ordering::Release);
+        let waiters = std::mem::take(&mut *self.waiters.lock().expect("deadline waiters"));
+        drop(waiters);
+    }
+}
+
+impl Wake for DeadlineWake {
+    fn wake(self: Arc<Self>) {
+        self.wake_by_ref();
+    }
+
+    fn wake_by_ref(self: &Arc<Self>) {
+        let waiters = std::mem::take(&mut *self.waiters.lock().expect("deadline waiters"));
+        for waker in waiters.tickets.into_values().chain(waiters.tasks) {
+            waker.wake();
+        }
+    }
+}
+
+impl Due {
+    fn new(at: std::time::Instant) -> Self {
+        Self {
+            at,
+            timer: Arc::default(),
+            wake: Arc::default(),
+        }
+    }
+
+    fn cancel(&self) {
+        self.wake.cancel();
+        let timer = self
+            .timer
+            .get()
+            .and_then(|slot| slot.lock().expect("deadline timer").take());
+        drop(timer);
+    }
+
+    /// Poll the one timer outside every host guard. Copies retain one clock across polls.
+    fn check(&self) -> Result<(), ConnError> {
+        if self.wake.cancelled.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        if std::time::Instant::now() >= self.at {
+            return Err(ConnError::Timeout);
+        }
+        let _entered = crate::io::enter_process_runtime();
+        if tokio::runtime::Handle::try_current().is_ok() {
+            let slot = self.timer.get_or_init(|| {
+                Mutex::new(Some(Box::pin(tokio::time::sleep_until(
+                    tokio::time::Instant::from_std(self.at),
+                ))))
+            });
+            let timer = slot.lock().expect("deadline timer").take();
+            let Some(mut timer) = timer else {
+                // The in-flight poll uses the same aggregate waker for every subscriber.
+                return Ok(());
+            };
+            let waker = Waker::from(self.wake.clone());
+            let ready = std::pin::Pin::new(&mut timer)
+                .poll(&mut Context::from_waker(&waker))
+                .is_ready();
+            let mut timer = Some(timer);
+            let previous = {
+                let mut slot = slot.lock().expect("deadline timer");
+                if !self.wake.cancelled.load(Ordering::Acquire) {
+                    slot.replace(timer.take().expect("the polled timer"))
+                } else {
+                    None
+                }
+            };
+            drop(previous);
+            drop(timer);
+            if ready {
+                return Err(ConnError::Timeout);
+            }
+        }
+        Ok(())
+    }
 }
 
 impl Held {
@@ -708,6 +864,7 @@ impl Held {
             redial: Mutex::new(None),
             lease: None,
             due: Mutex::new(None),
+            dial_due: Mutex::new(None),
             dialled: None,
         }
     }
@@ -726,46 +883,70 @@ impl Held {
     /// hold, = no bound of its own ([`due_at`]).
     fn bounded(self, timeout_ms: u64) -> Self {
         if let Some(at) = due_at(std::time::Instant::now(), timeout_ms) {
-            *self.due.lock().expect("due") = Some(Due { at, timer: None });
+            *self.due.lock().expect("due") = Some(Due::new(at));
         }
         self
     }
 
-    /// [`ConnError::Timeout`] once the bound has passed; otherwise `waker` is woken when it passes.
-    fn within_due(&self, waker: &Waker) -> Result<(), ConnError> {
-        let mut due = self.due.lock().expect("due");
-        let Some(d) = due.as_mut() else {
-            return Ok(());
-        };
-        if std::time::Instant::now() >= d.at {
-            return Err(ConnError::Timeout);
-        }
-        if d.timer.is_none() {
-            // A conn read from a dispatcher worker arms its bound on the process's runtime timer,
-            // as its socket is on that runtime's reactor; with no runtime to arm it on, the bound
-            // is still held at every read.
-            let _entered = crate::io::enter_process_runtime();
-            if tokio::runtime::Handle::try_current().is_ok() {
-                d.timer = Some(Box::pin(tokio::time::sleep_until(
-                    tokio::time::Instant::from_std(d.at),
-                )));
+    fn watch_deadlines(&self, interest: DeadlineInterest, waker: &Waker) {
+        let due = self.due.lock().expect("due").clone();
+        let dial_due = self.dial_due.lock().expect("dial due").clone();
+        for due in due.into_iter().chain(dial_due) {
+            if std::time::Instant::now() < due.at {
+                due.wake.register(interest, waker);
             }
         }
-        if let Some(timer) = d.timer.as_mut() {
-            if timer
-                .as_mut()
-                .poll(&mut Context::from_waker(waker))
-                .is_ready()
-            {
-                return Err(ConnError::Timeout);
-            }
+    }
+
+    /// [`ConnError::Timeout`] once the bound has passed; subscribers are woken when it passes.
+    fn within_due(&self) -> Result<(), ConnError> {
+        let due = self.due.lock().expect("due").clone();
+        due.map_or(Ok(()), |d| d.check())
+    }
+
+    fn dial_bounded(self, timeout: Duration) -> Self {
+        if let Some(at) = std::time::Instant::now().checked_add(timeout) {
+            *self.dial_due.lock().expect("dial due") = Some(Due::new(at));
         }
-        Ok(())
+        self
+    }
+
+    fn within_dial_due(&self) -> Result<(), ConnError> {
+        let due = self.dial_due.lock().expect("dial due").clone();
+        due.map_or(Ok(()), |d| d.check())
+    }
+
+    fn landed(&self) {
+        let due = self.dial_due.lock().expect("dial due").take();
+        if let Some(due) = &due {
+            due.cancel();
+        }
+        drop(due);
     }
 
     /// The answer began: the bound is spent.
     fn answered(&self) {
-        *self.due.lock().expect("due") = None;
+        let due = self.due.lock().expect("due").take();
+        if let Some(due) = &due {
+            due.cancel();
+        }
+        drop(due);
+        self.landed();
+    }
+
+    /// A terminal judgement, dial or replay spends the bound too: a later deadline cannot
+    /// replace its answer. Release the judgement before retiring a timer or waking any caller.
+    fn fail(
+        &self,
+        mut judging: std::sync::MutexGuard<'_, Option<Judging>>,
+        error: ConnError,
+    ) -> ConnError {
+        if let Some(j) = judging.as_mut() {
+            j.failed = Some(error);
+        }
+        drop(judging);
+        self.answered();
+        error
     }
 }
 
@@ -1033,6 +1214,23 @@ impl Connector {
     pub fn proxying(mut self, config: Option<Arc<proxy::ProxyChoice>>) -> Self {
         self.proxy = config;
         self
+    }
+
+    /// Publish the effective boot's validated transport view, listener ports and pool posture
+    /// before its plugins open. Existing needs and active lines retain their captured doors.
+    pub fn finalize_boot_metadata(
+        &self,
+        transports: Transports,
+        own_ports: &[u16],
+        posture: PoolPosture,
+    ) {
+        self.judge.own_ports_applied(own_ports);
+        self.pools.reconfigure(posture);
+        let previous = std::mem::replace(
+            &mut *self.transports.write().expect("transports"),
+            transports,
+        );
+        drop(previous);
     }
 
     /// The proxy a dial of `planned` goes through: a framed dial (never a carrier carried as
@@ -1594,6 +1792,22 @@ impl Connector {
     /// Dial a held connection whose judgement has answered and replay its accepted writes.
     /// `Ok(false)`: still judging, crossing or replaying; `waker` is registered for progress.
     fn settle(&self, held: &Held, waker: Option<&Waker>) -> Result<bool, ConnError> {
+        let ready = self.settle_dial(held, waker)?;
+        // A backpressured replay can already be connected. Its remaining accepted writes are
+        // bounded by the request/reply operation, never by a dial timer left running until drain.
+        if self.observe_landing(held, waker.unwrap_or_else(|| Waker::noop()))? && !ready {
+            if let Some(waker) = waker {
+                waker.wake_by_ref();
+            }
+        }
+        Ok(ready)
+    }
+
+    fn settle_dial(&self, held: &Held, waker: Option<&Waker>) -> Result<bool, ConnError> {
+        if held.retired.load(Ordering::Acquire) {
+            return Err(ConnError::Closed);
+        }
+        held.within_dial_due()?;
         let mut wake = waker.cloned();
         let mut judging = held.judging.lock().expect("judging");
         if held.retired.load(Ordering::Acquire) {
@@ -1614,9 +1828,12 @@ impl Connector {
         let Some(j) = judging.as_mut() else {
             return Ok(true);
         };
+        if let Some(error) = j.failed {
+            return Err(error);
+        }
         if j.planned.is_none() {
-            let _crossing = Crossing::begin(held, judging);
-            return self.replay_early(held, waker);
+            let crossing = Crossing::begin(held, judging);
+            return crossing.finish(self.replay_early(held, waker));
         }
         let (got, also) = {
             let mut a = j.answer.lock().expect("judgement");
@@ -1643,10 +1860,11 @@ impl Connector {
         if let Some(p) = j.proxied.as_mut() {
             if !p.target_judged {
                 match got {
-                    Err(v) if !unresolved_here(v) => return Err(pended_verdict(v)),
+                    Err(v) if !unresolved_here(v) => {
+                        return Err(held.fail(judging, pended_verdict(v)))
+                    }
                     Ok(at) if !class_admits(j.egress_class, secure, &[], &target, at) => {
-                        j.answer.lock().expect("judgement").0 = Some(Err(DEST_PLAINTEXT));
-                        return Err(ConnError::Refused);
+                        return Err(held.fail(judging, ConnError::Refused));
                     }
                     _ => {}
                 }
@@ -1663,46 +1881,49 @@ impl Connector {
                         None
                     }
                 };
-                let _crossing = Crossing::begin(held, judging);
-                drop(previous);
-                if held.retired.load(Ordering::Acquire) {
-                    return Err(ConnError::Closed);
-                }
-                let proxy_judged = self.judge_into(&spec.endpoint(), class, true, &answer);
-                if held.retired.load(Ordering::Acquire) {
-                    return Err(ConnError::Closed);
-                }
-                let proxy_addr = match proxy_judged {
-                    None => return Ok(false),
-                    Some(Err(v)) => {
-                        answer.lock().expect("judgement").0 = Some(Err(v));
-                        return Err(pended_verdict(v));
-                    }
-                    Some(Ok(at)) => at,
-                };
-                let planned = {
-                    let mut judging = held.judging.lock().expect("judging");
+                let crossing = Crossing::begin(held, judging);
+                return crossing.finish((|| {
+                    drop(previous);
                     if held.retired.load(Ordering::Acquire) {
                         return Err(ConnError::Closed);
                     }
-                    judging
-                        .as_mut()
-                        .and_then(|j| j.planned.take())
-                        .ok_or(ConnError::Closed)?
-                };
-                return self.settle_proxy(held, planned, &spec, proxy_addr, waker);
+                    let proxy_judged = self.judge_into(&spec.endpoint(), class, true, &answer);
+                    if held.retired.load(Ordering::Acquire) {
+                        return Err(ConnError::Closed);
+                    }
+                    let proxy_addr = match proxy_judged {
+                        None => return Ok(false),
+                        Some(Err(v)) => return Err(pended_verdict(v)),
+                        Some(Ok(at)) => at,
+                    };
+                    let planned = {
+                        let mut judging = held.judging.lock().expect("judging");
+                        if held.retired.load(Ordering::Acquire) {
+                            return Err(ConnError::Closed);
+                        }
+                        judging
+                            .as_mut()
+                            .and_then(|j| j.planned.take())
+                            .ok_or(ConnError::Closed)?
+                    };
+                    self.settle_proxy(held, planned, &spec, proxy_addr, waker)
+                })());
             }
-            let proxy_addr = got.map_err(pended_verdict)?;
+            let proxy_addr = match got {
+                Ok(at) => at,
+                Err(v) => return Err(held.fail(judging, pended_verdict(v))),
+            };
             let spec = Arc::clone(&p.spec);
             let planned = j.planned.take().ok_or(ConnError::Refused)?;
-            let _crossing = Crossing::begin(held, judging);
-            return self.settle_proxy(held, planned, &spec, proxy_addr, waker);
+            let crossing = Crossing::begin(held, judging);
+            return crossing.finish(self.settle_proxy(held, planned, &spec, proxy_addr, waker));
         }
-        let addr = got.map_err(pended_verdict)?;
+        let addr = match got {
+            Ok(at) => at,
+            Err(v) => return Err(held.fail(judging, pended_verdict(v))),
+        };
         if !class_admits(j.egress_class, secure, &j.within, &target, addr) {
-            // The refusal stays the connection's answer.
-            j.answer.lock().expect("judgement").0 = Some(Err(DEST_PLAINTEXT));
-            return Err(ConnError::Refused);
+            return Err(held.fail(judging, ConnError::Refused));
         }
         // The name's other admitted addresses a refused connect falls back to, each held to the
         // need's class and `within` as the pinned one is.
@@ -1711,10 +1932,12 @@ impl Connector {
             .filter(|&at| class_admits(j.egress_class, secure, &j.within, &target, at))
             .collect();
         let planned = j.planned.take().ok_or(ConnError::Refused)?;
-        let _crossing = Crossing::begin(held, judging);
-        let conn = planned.dial_at_any(addr, also).map_err(|f| map(&f))?;
-        self.ride(held, conn)?;
-        self.replay_early(held, waker)
+        let crossing = Crossing::begin(held, judging);
+        crossing.finish((|| {
+            let conn = planned.dial_at_any(addr, also).map_err(|f| map(&f))?;
+            self.ride(held, conn)?;
+            self.replay_early(held, waker)
+        })())
     }
 
     /// Complete a proxy dial while the crossing owns its plan and no judgement guard is held.
@@ -1802,7 +2025,16 @@ impl Connector {
 
     /// `held` rides `conn`, just dialled, as its first exchange; a pooled exchange's line is held
     /// in its shard's pool from now on (shared once it multiplexes).
-    fn ride(&self, held: &Held, conn: Connection) -> Result<Arc<Line>, ConnError> {
+    fn ride(&self, held: &Held, mut conn: Connection) -> Result<Arc<Line>, ConnError> {
+        let at = held
+            .dial_due
+            .lock()
+            .expect("dial due")
+            .as_ref()
+            .map(|due| due.at);
+        if let Some(at) = at {
+            conn.bound_open(at);
+        }
         let line = Line::new(conn);
         let mut home = held.line.lock().expect("line");
         if held.retired.load(Ordering::Acquire) {
@@ -1850,6 +2082,7 @@ impl Connector {
                         None,
                         Some(Judging {
                             planned: Some(planned),
+                            failed: None,
                             egress_class,
                             within: Vec::new(),
                             early: VecDeque::new(),
@@ -1880,6 +2113,7 @@ impl Connector {
                     None,
                     Some(Judging {
                         planned: Some(planned),
+                        failed: None,
                         egress_class,
                         within: Vec::new(),
                         early: VecDeque::new(),
@@ -1914,6 +2148,7 @@ impl Connector {
                 None,
                 Some(Judging {
                     planned: Some(planned),
+                    failed: None,
                     egress_class,
                     within: within.to_vec(),
                     early: VecDeque::new(),
@@ -1950,6 +2185,11 @@ impl Connector {
         drop(home);
         drop(kept);
         self.let_go(held, &line, stream, false);
+        let at = std::time::Instant::now()
+            .checked_add(r.dial.open_timeout)
+            .map(Due::new);
+        let previous = std::mem::replace(&mut *held.dial_due.lock().expect("dial due"), at);
+        drop(previous);
         let planned = self.plan(&r.door, r.dial).map_err(|f| map(&f))?;
         if r.require_secure && !planned.secure() {
             return Err(ConnError::AuthRefused);
@@ -1984,16 +2224,25 @@ impl Connector {
         caller: InstanceId,
         conn: ConnId,
         waker: &Waker,
+        interest: DeadlineInterest,
         buf: &mut [u8],
     ) -> Result<Piece, ConnError> {
         let (_, held) = self.slab.get(caller, conn)?;
+        held.watch_deadlines(interest, waker);
         // THE WHOLE REQUEST'S BOUND, held before anything is read: past it the read is a timeout,
         // and short of it the reader is woken when it passes.
-        held.within_due(waker)?;
-        let read = match &held.dialled {
+        held.within_due()?;
+        let mut read = match &held.dialled {
             Some(d) => self.read_dialled(&held, d, waker, buf),
             None => self.read_held(&held, waker, buf),
         };
+        if matches!(read, Err(ConnError::Pending)) {
+            match self.observe_landing(&held, waker) {
+                Ok(true) => waker.wake_by_ref(),
+                Ok(false) => {}
+                Err(error) => read = Err(error),
+            }
+        }
         // A LEASE'S HEAD is the host's own (the generation of the program it reaches), served the
         // instant the lease opens: the far end's answer begins with the program's first bytes.
         if read
@@ -2003,6 +2252,28 @@ impl Connector {
             held.answered();
         }
         read
+    }
+
+    /// A read may finish the connect before any reply arrives. Retire its dial bound then,
+    /// leaving the independent whole-request bound and the loader's reply wait untouched.
+    fn observe_landing(&self, held: &Held, waker: &Waker) -> Result<bool, ConnError> {
+        if held.dial_due.lock().expect("dial due").is_none() {
+            return Ok(false);
+        }
+        let Some((line, stream)) = held.line() else {
+            return Ok(false);
+        };
+        match line.poll_landed(stream, &mut Context::from_waker(waker)) {
+            Poll::Ready(Ok(())) => {
+                held.landed();
+                Ok(true)
+            }
+            Poll::Ready(Err(f)) => {
+                held.answered();
+                Err(map(&f))
+            }
+            Poll::Pending => Ok(false),
+        }
     }
 
     /// One read of a held session's upstream leg: its exchange's pieces, judged (the far end's
@@ -2207,6 +2478,17 @@ fn without_userinfo(target: &str) -> Option<String> {
 }
 
 impl DeclaredConns for Connector {
+    fn open_request(
+        &self,
+        caller: InstanceId,
+        need: NeedId,
+        desc: &OpenDesc<'_>,
+        require_secure: bool,
+        dial_timeout_ms: u64,
+    ) -> Result<ConnId, ConnError> {
+        self.open_timed(caller, need, desc, require_secure, Some(dial_timeout_ms))
+    }
+
     fn hold_authority(&self, owner: InstanceId) {
         self.authority_held
             .lock()
@@ -2351,6 +2633,7 @@ impl DeclaredConns for Connector {
                 .ok_or(ConnError::Refused)?
         };
         let waker = self.waker(caller, ticket);
+        held.watch_deadlines(DeadlineInterest::Ticket(ticket), &waker);
         if !self.settle(&held, Some(&waker))? {
             return Err(ConnError::Pending);
         }
@@ -2396,12 +2679,16 @@ impl DeclaredConns for Connector {
             return Ok(());
         }
         let waker = self.waker(caller, ticket);
+        held.watch_deadlines(DeadlineInterest::Ticket(ticket), &waker);
         if !self.settle(&held, Some(&waker))? {
             return Err(ConnError::Pending);
         }
         let (line, stream) = held.line().ok_or(ConnError::Closed)?;
         match line.poll_landed(stream, &mut Context::from_waker(&waker)) {
-            Poll::Ready(Ok(())) => Ok(()),
+            Poll::Ready(Ok(())) => {
+                held.landed();
+                Ok(())
+            }
             Poll::Ready(Err(f)) => Err(map(&f)),
             Poll::Pending => Err(ConnError::Pending),
         }
@@ -2857,7 +3144,9 @@ impl Connector {
         }
         let (conn, judging) =
             self.dial_judged(planned, egress_class, judged_class, desc.within, reach)?;
-        let held = Held::over(None, judging, pooled).bounded(desc.timeout_ms);
+        let held = Held::over(None, judging, pooled)
+            .bounded(desc.timeout_ms)
+            .dial_bounded(open_timeout);
         if let Some(conn) = conn {
             self.ride(&held, conn)?;
         }
@@ -2865,24 +3154,33 @@ impl Connector {
     }
 }
 
-impl Conns for Connector {
-    fn open(
-        &self,
-        caller: InstanceId,
-        need: NeedId,
-        desc: &OpenDesc<'_>,
-    ) -> Result<ConnId, ConnError> {
-        self.open_with_security(caller, need, desc, false)
-    }
-
-    fn open_with_security(
+impl Connector {
+    fn open_timed(
         &self,
         caller: InstanceId,
         need: NeedId,
         desc: &OpenDesc<'_>,
         require_secure: bool,
+        dial_timeout_ms: Option<u64>,
     ) -> Result<ConnId, ConnError> {
         self.slab.check_need(caller, need)?;
+        let declared_timeout_ms = self
+            .declared
+            .lock()
+            .expect("declared needs")
+            .get(&(caller, need))
+            .map_or(0, |(spec, _)| spec.timeout_ms);
+        let dial_timeout_ms = dial_timeout_ms.unwrap_or(desc.timeout_ms);
+        let dial_timeout_ms = if dial_timeout_ms == 0 {
+            declared_timeout_ms
+        } else {
+            dial_timeout_ms
+        };
+        let open_timeout = if dial_timeout_ms == 0 {
+            DEFAULT_OPEN_TIMEOUT
+        } else {
+            Duration::from_millis(dial_timeout_ms)
+        };
         let authority_held = self
             .authority_held
             .lock()
@@ -2941,7 +3239,7 @@ impl Conns for Connector {
                 target: program.command.clone(),
                 tls: None,
                 alpn,
-                open_timeout: DEFAULT_OPEN_TIMEOUT,
+                open_timeout,
                 opening: Some((
                     desc.fields
                         .iter()
@@ -2963,7 +3261,9 @@ impl Conns for Connector {
             return self.slab.insert(
                 caller,
                 need,
-                Held::over(Some((line, EXCHANGE_STREAM)), None, None).bounded(desc.timeout_ms),
+                Held::over(Some((line, EXCHANGE_STREAM)), None, None)
+                    .bounded(desc.timeout_ms)
+                    .dial_bounded(open_timeout),
             );
         }
         // No target named: the need's own, its config's (`EstablishIn.target` absent = the need's
@@ -2974,11 +3274,6 @@ impl Conns for Connector {
         }
         .to_owned();
         let target = named.as_str();
-        let open_timeout = if desc.timeout_ms == 0 {
-            DEFAULT_OPEN_TIMEOUT
-        } else {
-            Duration::from_millis(desc.timeout_ms)
-        };
         // A DATAGRAM FRAMER'S NEED: the composed open of a held session's upstream leg.
         if door.facts().datagram {
             let held = self.open_dialled(
@@ -3029,7 +3324,9 @@ impl Conns for Connector {
             return self.slab.insert(
                 caller,
                 need,
-                Held::over(Some((line, EXCHANGE_STREAM)), None, None).bounded(desc.timeout_ms),
+                Held::over(Some((line, EXCHANGE_STREAM)), None, None)
+                    .bounded(desc.timeout_ms)
+                    .dial_bounded(open_timeout),
             );
         }
         let held = self.dial_exchange(
@@ -3058,6 +3355,27 @@ impl Conns for Connector {
         }
         inserted
     }
+}
+
+impl Conns for Connector {
+    fn open(
+        &self,
+        caller: InstanceId,
+        need: NeedId,
+        desc: &OpenDesc<'_>,
+    ) -> Result<ConnId, ConnError> {
+        self.open_with_security(caller, need, desc, false)
+    }
+
+    fn open_with_security(
+        &self,
+        caller: InstanceId,
+        need: NeedId,
+        desc: &OpenDesc<'_>,
+        require_secure: bool,
+    ) -> Result<ConnId, ConnError> {
+        self.open_timed(caller, need, desc, require_secure, None)
+    }
 
     /// A write is taken whole, short, or (no room under
     /// [`WRITE_BUFFER_BYTES`](crate::compose::WRITE_BUFFER_BYTES)) not at all: `Pending`. A pending
@@ -3081,6 +3399,9 @@ impl Conns for Connector {
         }
         if !self.settle(&held, None)? {
             if let Some(j) = held.judging.lock().expect("judging").as_mut() {
+                if let Some(error) = j.failed {
+                    return Err(error);
+                }
                 // Held until the line accepts them, under the same cap a connection's buffer has.
                 // An empty frame still carries end/text, but spends no payload room. Hold it
                 // once, then backpressure until judgement wakes the caller to drain and retry.
@@ -3105,7 +3426,13 @@ impl Conns for Connector {
             return Err(ConnError::Pending);
         }
         let (line, stream) = held.line().ok_or(ConnError::Closed)?;
-        match line.emit(stream, bytes, end, text) {
+        let got = line.emit(stream, bytes, end, text);
+        if got.is_ok() {
+            // Bytes already accepted keep their count even if observing landing finds a later
+            // failure; the line retains that failure for the reader, with no replay.
+            let _ = self.observe_landing(&held, Waker::noop());
+        }
+        match got {
             Ok(0) if !bytes.is_empty() => Err(ConnError::Pending),
             got => got.map_err(|f| map(&f)),
         }
@@ -3118,7 +3445,13 @@ impl Conns for Connector {
         ticket: Ticket,
         buf: &mut [u8],
     ) -> Result<Piece, ConnError> {
-        self.read_waking(caller, conn, &self.waker(caller, ticket), buf)
+        self.read_waking(
+            caller,
+            conn,
+            &self.waker(caller, ticket),
+            DeadlineInterest::Ticket(ticket),
+            buf,
+        )
     }
 
     fn wait(&self, caller: InstanceId, set: &[ConnId], ticket: Ticket) -> Result<usize, ConnError> {
@@ -3126,8 +3459,9 @@ impl Conns for Connector {
         let mut cx = Context::from_waker(&waker);
         for (at, conn) in set.iter().enumerate() {
             let (_, held) = self.slab.get(caller, *conn)?;
+            held.watch_deadlines(DeadlineInterest::Ticket(ticket), &waker);
             // A request past its bound is ready: its read answers the timeout.
-            if held.within_due(&waker).is_err() {
+            if held.within_due().is_err() {
                 return Ok(at);
             }
             if let Some((member, lease)) = &held.lease {
@@ -3154,7 +3488,13 @@ impl Conns for Connector {
                 return Ok(at);
             };
             if line.poll_ready(stream, &mut cx).is_ready() {
+                let _ = self.observe_landing(&held, &waker);
                 return Ok(at);
+            }
+            match self.observe_landing(&held, &waker) {
+                Ok(true) => waker.wake_by_ref(),
+                Err(_) => return Ok(at),
+                Ok(false) => {}
             }
         }
         Err(ConnError::Pending)
@@ -3196,6 +3536,7 @@ impl Conns for Connector {
             held.retired.store(true, Ordering::Release);
             home.take()
         };
+        held.answered();
         if let Some((member, lease)) = &held.lease {
             // The lease ends here; the member's program runs on for the next open.
             member.close(*lease);
@@ -3228,7 +3569,7 @@ impl PollConns for Connector {
         cx: &mut Context<'_>,
         buf: &mut [u8],
     ) -> Poll<Result<Piece, ConnError>> {
-        match self.read_waking(caller, conn, cx.waker(), buf) {
+        match self.read_waking(caller, conn, cx.waker(), DeadlineInterest::Task, buf) {
             Err(ConnError::Pending) => Poll::Pending,
             done => Poll::Ready(done),
         }
@@ -3348,6 +3689,19 @@ impl PollConns for Connector {
 #[cfg(test)]
 #[path = "tests/connector_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "tests/callback_waker.rs"]
+#[allow(unsafe_code)]
+mod callback_waker;
+
+#[cfg(test)]
+#[path = "tests/rest_callback_tests.rs"]
+mod rest_callback_tests;
+
+#[cfg(test)]
+#[path = "tests/settled_dial_error_tests.rs"]
+mod settled_dial_error_tests;
 
 /// TEST ONLY: busbar-test-kit's log double, mounted into this crate's test build.
 #[cfg(test)]

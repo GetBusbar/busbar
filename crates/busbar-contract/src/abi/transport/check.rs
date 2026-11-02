@@ -738,6 +738,33 @@ pub fn check_emit_body_len(i: &EmitIn) -> Result<(), Fault> {
     }
 }
 
+/// Validate an emit's neutral kind before consuming its fresh bytes. `side` is the framing's
+/// established side; `answers_head` states whether the stream still owes its initial head.
+/// A transport also refuses kinds it cannot render. Pending resumes and empty drains carry no
+/// new kind: the transport retains the original operation's custody.
+///
+/// # Errors
+/// Unknown flags, mixed message/trailer kinds, or trailers outside a final accepted answer.
+pub fn check_emit_flags(i: &EmitIn, side: u32, answers_head: bool) -> Result<(), Fault> {
+    bits(
+        u64::from(i.flags),
+        u64::from(super::EMIT_TEXT | super::EMIT_TRAILERS),
+        "emit.flags",
+    )?;
+    if i.flags & super::EMIT_TRAILERS != 0
+        && (i.flags & super::EMIT_TEXT != 0
+            || side != super::SIDE_ACCEPT
+            || answers_head
+            || i.end_of_frame != 1
+            || i.status != 0
+            || i.body_len_known != 0
+            || i.body_len != 0)
+    {
+        return Err(fault(Rule::Contradiction, "emit.flags"));
+    }
+    Ok(())
+}
+
 /// An `emit`'s STATUS ([`EmitIn::status`], INBOUND-LISTEN, `BUSBAR-1.6.0.md` l.4913): stated on
 /// the emit that carries an ACCEPTED stream's answer head (`answers_head`), and on no other. The
 /// framer refuses the emit that breaks it, before any byte of it reaches the wire.

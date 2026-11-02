@@ -67,8 +67,31 @@ impl RawOutcome {
 /// that escapes a slot body aborts the process (Rust's `extern "C"` guarantee). The SDK's door
 /// macro catches every panic first and answers [`Outcome::Fault`]; the abort is the floor under a
 /// hand-written slot that did not.
-pub type Op =
-    extern "C" fn(instance: *mut c_void, input: *const c_void, out: *mut c_void) -> RawOutcome;
+///
+/// # Safety
+/// The caller must uphold the selected slot's kind and lifecycle contract. `instance` is NULL
+/// only where that slot permits it, or the live instance this table's `open` returned; `close`
+/// has not completed and may run only after the instance's other crossings end. `input` and
+/// `out` name this slot's initialized, correctly aligned host frames, including their leading
+/// heads and every advertised byte. All nested input ranges remain live and immutable for the
+/// crossing; writable output ranges remain live, exclusive and at least their stated capacity.
+/// The caller preserves the ticket, generation, lease and reply-consumption lifetimes stated
+/// by the mechanism and kind. A particular implementation may explicitly accept narrower
+/// malformed frames to test its rejection path; that does not relax another implementation.
+///
+/// Raw frames require an explicit proof even when the function pointer came from a safe SDK door:
+///
+/// ```compile_fail,E0133
+/// use busbar_contract::abi::mechanism::call::Op;
+/// fn forged_call(op: Op) {
+///     op(std::ptr::null_mut(), std::ptr::null(), std::ptr::null_mut());
+/// }
+/// ```
+pub type Op = unsafe extern "C" fn(
+    instance: *mut c_void,
+    input: *const c_void,
+    out: *mut c_void,
+) -> RawOutcome;
 
 /// [`InHead::flags`]: this call RESUMES a call that answered [`Outcome::Pending`], with the same
 /// ticket and the same `in`/`out`.

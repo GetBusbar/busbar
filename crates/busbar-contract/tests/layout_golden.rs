@@ -361,6 +361,8 @@ fn compute_layout() -> String {
         StoreStoreTail,
         [head, durable_plane, fork_refusal, _reserved]
     );
+    // The C renderer names the tuple member `f0`; Rust addresses the same member as `0`.
+    writeln!(s, "StoreOpId.f0={}", std::mem::offset_of!(StoreOpId, 0)).unwrap();
     record!(s, StoreOpId, []);
     record!(s, StoreUsageCell, [bucket, window_start, delta]);
     record!(s, StoreAddUsageBatchIn, [head, op_id, cells, cells_len]);
@@ -806,7 +808,7 @@ fn compute_layout() -> String {
         tkind::DatagramLane,
         [
             size, lane, path, bound, path_addr, local_addr, verified, _reserved, keying, routes,
-            routes_cap
+            routes_cap, paths, paths_len
         ]
     );
     record!(
@@ -1316,7 +1318,7 @@ fn compute_layout() -> String {
     record!(
         s,
         hconn::EstablishIn,
-        [head, need, timeout_ms, target, within]
+        [head, need, timeout_ms, target, within, member]
     );
     record!(s, hconn::StreamIn, [head, stream]);
     record!(s, hconn::IoIn, [head, stream, buf, len]);

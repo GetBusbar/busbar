@@ -2065,6 +2065,7 @@ pub fn kernel_sections(
     let limits = json!({
         "default_max_tokens": cfg.limits.default_max_tokens,
         "request_body_max_bytes": cfg.limits.request_body_max_bytes,
+        "datagram_line_memory_bytes": cfg.limits.datagram_line_memory_bytes,
         "reasoning_effort_budgets": {
             "minimal": cfg.limits.reasoning_effort_budgets.minimal,
             "low": cfg.limits.reasoning_effort_budgets.low,
@@ -2826,6 +2827,30 @@ impl busbar_contract::conn::Conns for PresentingConns {
 }
 
 impl busbar_contract::conn::DeclaredConns for PresentingConns {
+    fn open_request(
+        &self,
+        caller: busbar_contract::conn::InstanceId,
+        need: busbar_contract::conn::NeedId,
+        desc: &busbar_contract::conn::OpenDesc<'_>,
+        require_secure: bool,
+        dial_timeout_ms: u64,
+    ) -> Result<busbar_contract::conn::ConnId, busbar_contract::conn::ConnError> {
+        let target = busbar_kernel_egress::trust::net::strip_userinfo(desc.target);
+        let led = self.userinfo.leading(desc.fields);
+        let fields = led.as_deref().unwrap_or(desc.fields);
+        self.inner.open_request(
+            caller,
+            need,
+            &busbar_contract::conn::OpenDesc {
+                target: &target,
+                fields,
+                ..desc.clone()
+            },
+            require_secure,
+            dial_timeout_ms,
+        )
+    }
+
     fn declare(
         &self,
         owner: busbar_contract::conn::InstanceId,
@@ -3913,6 +3938,10 @@ pub fn member_routes(
                 bytes: Vec::new(),
             },
             timeout_ms: 0,
+            // This projection only matches member auth styles. Response heads use served.keeps.
+            keep_mode: busbar_contract::abi::host::conn::connector::KEEP_NAMED,
+            keep_response_headers: Vec::new(),
+            deny_response_headers: Vec::new(),
         })
         .collect();
     let members: Vec<MemberAuth<'_>> = resolved

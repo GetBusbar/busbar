@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 
 /// The child, its pipes, and a line-reader thread per output stream.
 pub struct LineChild {
-    pub child: Child,
+    pub child: super::boot::Reap,
     pub stdin: Option<std::process::ChildStdin>,
     pub stdout: mpsc::Receiver<String>,
     pub stderr: mpsc::Receiver<String>,
@@ -24,7 +24,7 @@ pub fn spawn(mut cmd: Command) -> LineChild {
     cmd.stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    let mut child = cmd.spawn().expect("spawn the line-served child");
+    let mut child = super::boot::Reap(cmd.spawn().expect("spawn the line-served child"));
     let stdin = child.stdin.take();
     let (out_tx, out_rx) = mpsc::channel();
     let stdout = child.stdout.take().expect("stdout piped");
@@ -119,4 +119,30 @@ pub fn try_wait_bounded(child: &mut Child, bound: Duration) -> Result<i32, Strin
         }
         std::thread::sleep(Duration::from_millis(50));
     }
+}
+
+#[cfg(unix)]
+#[test]
+fn line_child_is_stopped_and_reaped_when_the_caller_unwinds() {
+    let pid = std::cell::Cell::new(0);
+    let unwind = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let mut command = Command::new("sh");
+        command.args(["-c", "exec sleep 60"]);
+        let child = spawn(command);
+        pid.set(child.child.id());
+        panic!("induced caller failure while the line child is live");
+    }));
+    assert!(unwind.is_err());
+    assert_ne!(pid.get(), 0, "the real child was spawned");
+    let still_exists = Command::new("kill")
+        .args(["-0", &pid.get().to_string()])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .expect("probe whether the owned child still exists")
+        .success();
+    assert!(
+        !still_exists,
+        "the line child survived or remained a zombie"
+    );
 }

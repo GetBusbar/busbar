@@ -91,7 +91,7 @@ impl PlaneDriver {
         run.lend_unit(CLAIM_PROBE, decoded.dialect, &[], 0);
         if let route::End::Cancel(_, None) = units.attempts(&mut run, None).await {
             // The deadline or a reload between crossings: the driver's own ticketless cancel.
-            let _ = run.cancel_now();
+            let _ = run.cancel_now().await;
         }
         run.finish();
     }

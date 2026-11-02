@@ -99,11 +99,15 @@ fn out_head<T>() -> OutHead {
     }
 }
 fn call<I, O>(op: Option<Op>, instance: *mut c_void, input: &I, out: &mut O) -> Outcome {
-    op.unwrap()(
-        instance,
-        ptr::from_ref(input).cast(),
-        ptr::from_mut(out).cast(),
-    )
+    // SAFETY: this private fixture supplies matching initialized plane frames and live nested
+    // input ranges, with NULL for OPEN or its still-live SDK instance.
+    unsafe {
+        op.unwrap()(
+            instance,
+            ptr::from_ref(input).cast(),
+            ptr::from_mut(out).cast(),
+        )
+    }
     .outcome()
 }
 fn open() -> *mut c_void {

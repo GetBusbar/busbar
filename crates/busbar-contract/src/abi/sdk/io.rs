@@ -8,7 +8,8 @@
 //!
 //! A slot that MAY PEND answers [`Poll::Pending`] when nothing moved: the host wakes the ticket
 //! once the handle may make progress, and the op, re-entered, simply calls again. Nothing here
-//! allocates: every result is a scalar or a count of the caller's own buffer.
+//! allocates except [`Io::spawn`], which lays out its borrowed arguments and environment for the
+//! ABI call: every result is a scalar or a count of the caller's own buffer.
 
 use std::task::Poll;
 
@@ -159,7 +160,11 @@ impl<'h> Io<'h> {
             outcome: RawOutcome::of(Outcome::Fault),
             ..ServiceOut::ZERO
         };
-        match f(self.ctx, std::ptr::from_ref(&input).cast(), &mut out).outcome() {
+        // SAFETY: every wrapper builds `input` from its live borrowed strings/buffers or a sealed
+        // host loan. `out` is initialized and exclusive; the trusted slot keeps no caller buffer
+        // after an I/O call returns (PENDING means readiness, with nothing transferred).
+        let ret = unsafe { f(self.ctx, std::ptr::from_ref(&input).cast(), &mut out) };
+        match ret.outcome() {
             Outcome::Ready => Poll::Ready(Ok(out)),
             Outcome::Pending => Poll::Pending,
             Outcome::Failed => Poll::Ready(Err(IoFailure::Failed(host_text(out.error)))),
@@ -369,10 +374,40 @@ impl<'h> Io<'h> {
     /// # Errors
     ///
     /// The host did not admit the program for this dial, or the system could not start it.
-    pub fn spawn(&mut self, program: AbiStr, args: &[AbiStr], env: &[Field]) -> IoAnswer<u64> {
+    ///
+    /// Borrowed strings keep every nested ABI pointer live through the call:
+    ///
+    /// ```
+    /// #![forbid(unsafe_code)]
+    /// use busbar_contract::abi::sdk::io::Io;
+    /// fn start(io: &mut Io<'_>) {
+    ///     let program = String::from("/usr/bin/tool");
+    ///     let argument = String::from("--quiet");
+    ///     let value = String::from("value");
+    ///     let _ = io.spawn(&program, &[&argument], &[("NAME", &value)]);
+    /// }
+    /// ```
+    ///
+    /// Raw strings with arbitrary pointers are not accepted by the safe wrapper:
+    ///
+    /// ```compile_fail,E0308
+    /// use busbar_contract::abi::{mechanism::call::AbiStr, sdk::io::Io};
+    /// fn start(io: &mut Io<'_>, program: AbiStr) {
+    ///     let _ = io.spawn(program, &[], &[]);
+    /// }
+    /// ```
+    pub fn spawn(&mut self, program: &str, args: &[&str], env: &[(&str, &str)]) -> IoAnswer<u64> {
+        let args: Vec<AbiStr> = args.iter().map(|arg| text(arg)).collect();
+        let env: Vec<Field> = env
+            .iter()
+            .map(|(name, value)| Field {
+                name: text(name),
+                value: text(value),
+            })
+            .collect();
         let i = SpawnIn {
             head: head(),
-            program,
+            program: text(program),
             args: args.as_ptr(),
             args_len: args.len(),
             env: env.as_ptr(),

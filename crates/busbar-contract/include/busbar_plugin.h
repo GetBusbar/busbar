@@ -234,7 +234,8 @@ extern "C" {
 #define BB_AUTH_EXT_RETRY_AFTER "retry_after" /* `complete_login`'s REPLY EXTENSIONS KEY: on a [`LOGIN_OUTAGE`], the IdP's `Retry-After`. */
 #define BB_AUTH_SCOPE_REQUEST_FIELD "busbar-auth-scope" /* THE REQUEST FIELD BY WHICH A PLUGIN STATES ITS PER-CALL SCOPE to the host: a field of this name */
 #define BB_AUTH_NO_MEMBER_AUTH_FIELD "busbar-no-member-auth" /* THE REQUEST FIELD BY WHICH A PLUGIN WAIVES ITS MEMBER'S BINDING FOR ONE REQUEST: a field of this */
-#define BB_AUTH_FIELD_SENSITIVE UINT32_C(1) /* [`FieldSpan::flags`]: when SET, an h2 encoder sends the field never-indexed. 1.5.5 sent its */
+#define BB_AUTH_FIELD_SENSITIVE UINT32_C(1) /* [`FieldSpan::flags`]: when SET, an h2 encoder sends the field never-indexed. Every credential */
+#define BB_AUTH_EXT_CARRIERS "auth.carriers" /* An auth instance's carrier selection in successful OPEN and REFRESH reply extensions: a JSON */
 #define BB_AUTH_FIELD_QUERY UINT32_C(2) /* [`FieldSpan::flags`]: this field is a QUERY PARAMETER, not a header. The host's framer appends */
 #define BB_AUTH_FORM_TEXT UINT32_C(1) /* [`LoginField::kind`]: plain text. */
 #define BB_AUTH_FORM_PASSWORD UINT32_C(2) /* [`LoginField::kind`]: a password; its submitted value arrives as a secret */
@@ -584,6 +585,7 @@ extern "C" {
 #define BB_TRANSPORT_PIECE_CODE_HANDOFF UINT16_C(2048) /* [`FramePiece::flags`], with [`PIECE_HAS_CODE`]: `code` (and the `status_class` and `fault` read */
 #define BB_TRANSPORT_FRAME_PIECE_SIZE UINT32_C(48) /* The size of one [`FramePiece`], in bytes: the stride of [`FramerSink::pieces`]. */
 #define BB_TRANSPORT_EMIT_TEXT UINT32_C(1) /* [`EmitIn::flags`]: the bytes are a TEXT message, not a binary one, on a wire whose messages are */
+#define BB_TRANSPORT_EMIT_TRAILERS UINT32_C(2) /* [`EmitIn::flags`]: the bytes are the accepted answer's final field block, after its head and */
 #define BB_TRANSPORT_WRITE_END_OF_FRAME UINT32_C(1) /* [`WriteIn::flags`]: the bytes complete a FRAME of the carrier's own wire, for a carrier that */
 #define BB_TRANSPORT_READ_END_OF_FRAME UINT32_C(1) /* [`IoOut::flags`] on a `read`: the bytes complete a FRAME of the carrier's own wire. A carrier */
 #define BB_TRANSPORT_YIELD_ENDED UINT32_C(1) /* [`FramerYield::flags`]: no frame follows on this connection. */
@@ -4480,6 +4482,7 @@ BB_ASSERT(offsetof(bb_store_Ops, add_usage_batch) == 312, "bb_store_Ops.add_usag
 BB_ASSERT(offsetof(bb_store_Ops, add_metering_batch) == 320, "bb_store_Ops.add_metering_batch: offset");
 BB_ASSERT(sizeof(bb_store_OpId) == 16, "bb_store_OpId: size");
 BB_ASSERT(BB_ALIGNOF(bb_store_OpId) == 1, "bb_store_OpId: alignment");
+BB_ASSERT(offsetof(bb_store_OpId, f0) == 0, "bb_store_OpId.f0: offset");
 BB_ASSERT(sizeof(bb_store_UsageCell) == 48, "bb_store_UsageCell: size");
 BB_ASSERT(BB_ALIGNOF(bb_store_UsageCell) == 8, "bb_store_UsageCell: alignment");
 BB_ASSERT(offsetof(bb_store_UsageCell, bucket) == 0, "bb_store_UsageCell.bucket: offset");
@@ -5544,6 +5547,8 @@ BB_ASSERT(offsetof(bb_transport_DatagramLane, _reserved) == 52, "bb_transport_Da
 BB_ASSERT(offsetof(bb_transport_DatagramLane, keying) == 56, "bb_transport_DatagramLane.keying: offset");
 BB_ASSERT(offsetof(bb_transport_DatagramLane, routes) == 64, "bb_transport_DatagramLane.routes: offset");
 BB_ASSERT(offsetof(bb_transport_DatagramLane, routes_cap) == 72, "bb_transport_DatagramLane.routes_cap: offset");
+BB_ASSERT(offsetof(bb_transport_DatagramLane, paths) == 80, "bb_transport_DatagramLane.paths: offset");
+BB_ASSERT(offsetof(bb_transport_DatagramLane, paths_len) == 88, "bb_transport_DatagramLane.paths_len: offset");
 BB_ASSERT(sizeof(bb_transport_RendezvousTerms) == 104, "bb_transport_RendezvousTerms: size");
 BB_ASSERT(BB_ALIGNOF(bb_transport_RendezvousTerms) == 8, "bb_transport_RendezvousTerms: alignment");
 BB_ASSERT(offsetof(bb_transport_RendezvousTerms, role) == 0, "bb_transport_RendezvousTerms.role: offset");
@@ -5953,6 +5958,7 @@ BB_ASSERT(offsetof(bb_hconn_EstablishIn, need) == 24, "bb_hconn_EstablishIn.need
 BB_ASSERT(offsetof(bb_hconn_EstablishIn, timeout_ms) == 28, "bb_hconn_EstablishIn.timeout_ms: offset");
 BB_ASSERT(offsetof(bb_hconn_EstablishIn, target) == 32, "bb_hconn_EstablishIn.target: offset");
 BB_ASSERT(offsetof(bb_hconn_EstablishIn, within) == 48, "bb_hconn_EstablishIn.within: offset");
+BB_ASSERT(offsetof(bb_hconn_EstablishIn, member) == 64, "bb_hconn_EstablishIn.member: offset");
 BB_ASSERT(sizeof(bb_hconn_StreamIn) == 32, "bb_hconn_StreamIn: size");
 BB_ASSERT(BB_ALIGNOF(bb_hconn_StreamIn) == 8, "bb_hconn_StreamIn: alignment");
 BB_ASSERT(offsetof(bb_hconn_StreamIn, head) == 0, "bb_hconn_StreamIn.head: offset");

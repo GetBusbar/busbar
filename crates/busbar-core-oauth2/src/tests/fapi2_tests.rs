@@ -312,6 +312,7 @@ async fn serve(fapi2: bool) -> Subject {
     let (key, other) = (Key::new("fapi-client-key"), Key::new("fapi-client-2-key"));
     let rsa = RsaKey::new("fapi-client-ps256-key");
     let declared = |client_id: &str, jwk: StaticClientJwk| StaticClientCfg {
+        device_authorization: false,
         client_id: client_id.to_string(),
         redirect_uris: vec![REDIRECT_URI.to_string()],
         jwks: StaticClientJwks { keys: vec![jwk] },

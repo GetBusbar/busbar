@@ -4668,13 +4668,15 @@ fn binding_the_node_to_the_book_journals_every_card_applied_after_it() {
     let holder: &'static RootHistory = Box::leak(Box::default());
     holder.arm_journal();
     apply(holder, 3.0, 1_000);
+    let slots = crate::root::store_double::RecordSlots::new();
+    let lane = crate::root::durability::JournalLane::start(slots.calls(), "test-store").unwrap();
     let book = Arc::new(Mutex::new(
-        crate::root::durability::build_with_cards(
+        crate::root::durability::build_on_store(
             &crate::root::durability::DurabilityConfig {
                 data_dir: Some(dir.clone()),
             },
             7,
-            Box::new(busbar_kernel_wal::NullShipper::new()),
+            lane,
             Some(holder),
         )
         .expect("the journal opens"),
@@ -4687,8 +4689,7 @@ fn binding_the_node_to_the_book_journals_every_card_applied_after_it() {
     let cards = book
         .lock()
         .expect("the book")
-        .journal
-        .replay()
+        .chain()
         .expect("reads")
         .expect("verifies")
         .iter()
@@ -4701,6 +4702,9 @@ fn binding_the_node_to_the_book_journals_every_card_applied_after_it() {
         vec![0, 20_000],
         "the boot card and the card applied after the binding are both on the chain"
     );
+    let lane = book.lock().unwrap().lane().unwrap().clone();
+    assert!(lane.drain(std::time::Duration::from_secs(5)));
+    assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
     drop(book);
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -5057,59 +5061,66 @@ async fn a_screened_veto_through_the_node_admits_nothing() {
 /// RED before the fix: the node admitted the unit and drove its build.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_full_journal_lane_refuses_a_new_unit_503_with_the_reason() {
-    let slots = crate::root::store_double::RecordSlots::new();
-    slots.refuse(true);
-    let lane = crate::root::durability::JournalLane::with_capacity(slots.calls(), "test-store", 1)
-        .expect("the lane starts");
-    let book = Arc::new(std::sync::Mutex::new(
-        crate::root::durability::build_on_store(
-            &crate::root::durability::DurabilityConfig { data_dir: None },
+    for data_dir in [
+        None,
+        Some(std::path::PathBuf::from("/dev/null/legacy-journal")),
+    ] {
+        let slots = crate::root::store_double::RecordSlots::new();
+        slots.refuse(true);
+        let lane =
+            crate::root::durability::JournalLane::with_capacity(slots.calls(), "test-store", 1)
+                .expect("the lane starts");
+        let book = Arc::new(std::sync::Mutex::new(
+            crate::root::durability::build_on_store(
+                &crate::root::durability::DurabilityConfig { data_dir },
+                0,
+                lane,
+                None,
+            )
+            .expect("the store reads back"),
+        ));
+        let token =
+            busbar_kernel::test_support::tokens::grant::<busbar_contract::caps::DurableWrite>();
+        for _ in 0..3 {
+            let _lost = book.lock().unwrap().journal.append(
+                &token,
+                busbar_contract::caps::StepName::Meter,
+                &[busbar_kernel_wal::Entry::new(
+                    busbar_kernel_wal::RecordClass::Load,
+                    Vec::new(),
+                )],
+            );
+        }
+        let node = Node::new();
+        node.bind_book(Arc::clone(&book));
+        let built = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let saw = Arc::clone(&built);
+        let handed: crate::root::linked::node::Handed = (
+            PrincipalId::new("acct:full"),
+            busbar_contract::caps::OpClassId::new("call"),
+            PROTO,
+            Box::new(move |_lent| {
+                saw.store(true, std::sync::atomic::Ordering::SeqCst);
+                panic!("a refused unit is never built");
+            }),
+        );
+        let response = node.answer(handed).await;
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("the body");
+        let body = String::from_utf8_lossy(&body);
+        assert!(
+            body.contains("journal is full") && body.contains("`test-store`"),
+            "the reason names the full journal and the store: {body}"
+        );
+        assert!(!built.load(std::sync::atomic::Ordering::SeqCst));
+        assert_eq!(
+            book.lock().unwrap().journal.dropped_total(),
             0,
-            lane,
-            None,
-        )
-        .expect("the store reads back"),
-    ));
-    let token = busbar_kernel::test_support::tokens::grant::<busbar_contract::caps::DurableWrite>();
-    for _ in 0..3 {
-        let _lost = book.lock().unwrap().journal.append(
-            &token,
-            busbar_contract::caps::StepName::Meter,
-            &[busbar_kernel_wal::Entry::new(
-                busbar_kernel_wal::RecordClass::Load,
-                Vec::new(),
-            )],
+            "no record is dropped"
         );
     }
-    let node = Node::new();
-    node.bind_book(Arc::clone(&book));
-    let built = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let saw = Arc::clone(&built);
-    let handed: crate::root::linked::node::Handed = (
-        PrincipalId::new("acct:full"),
-        busbar_contract::caps::OpClassId::new("call"),
-        PROTO,
-        Box::new(move |_lent| {
-            saw.store(true, std::sync::atomic::Ordering::SeqCst);
-            panic!("a refused unit is never built");
-        }),
-    );
-    let response = node.answer(handed).await;
-    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
-    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
-        .await
-        .expect("the body");
-    let body = String::from_utf8_lossy(&body);
-    assert!(
-        body.contains("journal is full") && body.contains("`test-store`"),
-        "the reason names the full journal and the store: {body}"
-    );
-    assert!(!built.load(std::sync::atomic::Ordering::SeqCst));
-    assert_eq!(
-        book.lock().unwrap().journal.dropped_total(),
-        0,
-        "no record is dropped"
-    );
 }
 
 /// THE RECORD'S AMOUNT IS COUNTS AND A CARD VERSION, NEVER A PRICE (`BUSBAR-1.6.0.md` THE DESIGN

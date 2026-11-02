@@ -20,7 +20,7 @@
 //! would abort, never unwind. What a slot hands back that borrows the host — a piece's status
 //! numbering, a connection's facts — stays valid until that connection is closed.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::os::raw::c_void;
 use std::sync::{Arc, Mutex};
 
@@ -272,11 +272,48 @@ struct HostState {
     held: Mutex<HashMap<ConnId, Held>>,
 }
 
-/// What the host holds for a connection so the plugin's borrows stay valid until it closes.
+/// What the host holds for a connection so the plugin's borrows stay valid until it closes: every
+/// string a slot exposed to the plugin as a [`DeclStr`] range (a piece's status numbering, and the
+/// six strings of the facts), interned once and never mutated, shrunk, replaced or moved out until
+/// the connection's successful close drops the whole set.
+///
+/// A later `read` or `facts` answer states its own strings; it never takes the storage an earlier
+/// range names. Equal strings share one allocation, so a connection that keeps answering the same
+/// numbering or facts holds each once, and a different one adds to the set. Growing the set
+/// rehashes the `String` headers, not the heap bytes they own, so a range stays where it was
+/// handed out. What the plugin is never shown (the key pin, the client-identity bit) is not kept.
+///
+/// `epoch` names THIS retention's life. An operation that answers from the backend (`read`,
+/// `facts`) takes a clone before it asks, and may publish its strings, and its out-slot, only
+/// while the same epoch is still the one in the table ([`Operation::publish`]); a successful close
+/// removes the entry (and so the epoch), so a late publication finds it gone and answers
+/// [`ConnError::Closed`] instead of recreating a retention nobody will close. The allocation is
+/// unique while any operation holds it, so a later entry for the same id can never be mistaken
+/// for it.
 #[derive(Default)]
 struct Held {
-    facts: Option<ConnFacts>,
-    ns: Option<String>,
+    retention: HashSet<String>,
+    epoch: Arc<()>,
+}
+
+impl Held {
+    /// `s` as an exposed range that stays valid until this connection's close: the interned copy
+    /// (made now if `s` is new).
+    fn keep(&mut self, s: &str) -> DeclStr {
+        if let Some(kept) = self.retention.get(s) {
+            return range(kept);
+        }
+        self.retention.insert(s.to_owned());
+        self.retention
+            .get(s)
+            .map_or(DeclStr::NONE, |kept| range(kept))
+    }
+
+    /// [`Self::keep`] where the string is stated; an absent one is the NULL range and touches
+    /// nothing already exposed.
+    fn keep_opt(&mut self, s: Option<&str>) -> DeclStr {
+        s.map_or(DeclStr::NONE, |s| self.keep(s))
+    }
 }
 
 impl std::fmt::Debug for ConnHost {
@@ -315,6 +352,74 @@ impl HostState {
         self.held
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Begin a `read`/`facts` operation on `conn`: capture the epoch of its retention (an empty
+    /// entry is made if there is none yet) BEFORE the backend is asked, with every host lock let
+    /// go again. The guard prunes what it made if nothing was published.
+    fn begin(&self, conn: ConnId) -> Operation<'_> {
+        let epoch = Arc::clone(&self.held().entry(conn).or_default().epoch);
+        Operation {
+            host: self,
+            conn,
+            epoch: Some(epoch),
+        }
+    }
+}
+
+/// One in-flight `read`/`facts` operation on a connection: the retention epoch it captured before
+/// the backend answered. The backend is always asked with no host lock held.
+struct Operation<'h> {
+    host: &'h HostState,
+    conn: ConnId,
+    epoch: Option<Arc<()>>,
+}
+
+impl Operation<'_> {
+    /// Run `publish` over the connection's retention and, under the SAME table guard, let it write
+    /// the successful out-slot, so a close cannot retire the retention between the two. Only while
+    /// the captured epoch is still the table's: an absent entry (closed meanwhile) or a different
+    /// one answers [`ConnError::Closed`], writes nothing and creates nothing.
+    fn publish(
+        &self,
+        publish: impl FnOnce(&mut Held) -> Result<(), ConnError>,
+    ) -> Result<(), ConnError> {
+        let ours = self.epoch.as_ref().ok_or(ConnError::Fault)?;
+        let mut held = self.host.held();
+        match held.get_mut(&self.conn) {
+            Some(entry) if Arc::ptr_eq(&entry.epoch, ours) => publish(entry),
+            _ => Err(ConnError::Closed),
+        }
+    }
+}
+
+impl Drop for Operation<'_> {
+    fn drop(&mut self) {
+        let Some(epoch) = self.epoch.take() else {
+            return;
+        };
+        let retired = {
+            let mut held = self.host.held();
+            // Empty, still ours, and nobody else's operation holds the epoch (the table's clone and
+            // this one's are the only two): the entry was only this operation's scaffolding. The
+            // count cannot rise under the table lock (clones are made under it) and our clone is
+            // let go under it below, so a concurrent operation's drop sees an exact count.
+            let ours_and_empty = held.get(&self.conn).is_some_and(|entry| {
+                Arc::ptr_eq(&entry.epoch, &epoch)
+                    && entry.retention.is_empty()
+                    && Arc::strong_count(&epoch) == 2
+            });
+            let retired = if ours_and_empty {
+                held.remove(&self.conn)
+            } else {
+                None
+            };
+            // A bare counter: nothing runs on its release.
+            drop(epoch);
+            retired
+        };
+        // The guard is released before the retired (empty) state is destroyed.
+        drop(retired);
     }
 }
 
@@ -398,14 +503,15 @@ fn range(s: &str) -> DeclStr {
     }
 }
 
-extern "C" fn host_open(
+unsafe extern "C" fn host_open(
     ctx: ConnCtx,
     need: u32,
     desc: *const WireOpenDesc,
     out_conn: *mut u64,
 ) -> RawConnOutcome {
     hosted(ctx, |host| {
-        if desc.is_null() {
+        // The out-slot is required: checked before the backend can open anything.
+        if desc.is_null() || out_conn.is_null() {
             return Err(ConnError::Fault);
         }
         // SAFETY: the plugin's live sized descriptor and its ranges, for the call; read only as far
@@ -454,7 +560,7 @@ extern "C" fn host_open(
     })
 }
 
-extern "C" fn host_write(
+unsafe extern "C" fn host_write(
     ctx: ConnCtx,
     conn: u64,
     buf: *const u8,
@@ -463,6 +569,10 @@ extern "C" fn host_write(
     out_written: *mut usize,
 ) -> RawConnOutcome {
     hosted(ctx, |host| {
+        // The out-slot is required: checked before the backend can take any byte.
+        if out_written.is_null() {
+            return Err(ConnError::Fault);
+        }
         // SAFETY: the plugin's live range and out-slot, for the call.
         unsafe {
             let n = host.conns.write(
@@ -477,7 +587,7 @@ extern "C" fn host_write(
     })
 }
 
-extern "C" fn host_read(
+unsafe extern "C" fn host_read(
     ctx: ConnCtx,
     conn: u64,
     ticket: u64,
@@ -495,6 +605,9 @@ extern "C" fn host_read(
         } else {
             unsafe { std::slice::from_raw_parts_mut(buf, cap) }
         };
+        // The retention's epoch is captured BEFORE the backend answers (no host lock held across
+        // it), and the answer is published only while it is still the table's.
+        let operation = host.begin(ConnId(conn));
         let piece = host.conns.read(host.instance, ConnId(conn), ticket, into)?;
         if piece.len > cap
             || piece
@@ -504,14 +617,6 @@ extern "C" fn host_read(
         {
             return Err(ConnError::Fault);
         }
-        // The numbering is held until the connection closes, so the plugin's borrow outlives the
-        // call.
-        let ns = {
-            let mut held = host.held();
-            let entry = held.entry(ConnId(conn)).or_default();
-            entry.ns = piece.status_namespace.clone();
-            entry.ns.as_deref().map_or(DeclStr::NONE, range)
-        };
         let mut flags = 0;
         if piece.status_code.is_some() {
             flags |= PIECE_HAS_CODE;
@@ -522,36 +627,47 @@ extern "C" fn host_read(
         if piece.declared_len.is_some() {
             flags |= PIECE_HAS_DECLARED_LEN;
         }
-        // SAFETY: the plugin's out-slot, checked non-null above.
-        unsafe {
-            set(
-                out_piece,
-                WirePiece {
-                    size: core::mem::size_of::<WirePiece>() as u32,
-                    kind: piece_kind(piece.kind),
-                    end: u8::from(piece.end),
-                    status_class: code::status_class(piece.status),
-                    flags,
-                    stream: piece.stream.0,
-                    len: piece.len,
-                    code: piece.status_code.unwrap_or(0),
-                    _reserved: 0,
-                    ns,
-                    retry_after_secs: piece.retry_after_secs.unwrap_or(0),
-                    reason: piece.reason.as_ref().map_or_else(Default::default, |r| {
-                        crate::abi::transport::FrameSpan {
-                            offset: r.start as u64,
-                            len: (r.end - r.start) as u64,
-                        }
-                    }),
-                    declared_len: piece.declared_len.unwrap_or(0),
-                },
-            )
-        }
+        // The numbering is held until the connection closes, so the plugin's borrow outlives the
+        // call and every later one: a different numbering is held beside it, an absent one states
+        // the NULL range and leaves what was exposed alone. It is interned and the out-slot
+        // written under ONE table guard: a close cannot retire the retention between the two, and
+        // one that already did answers Closed with nothing written.
+        operation.publish(|held| {
+            let ns = piece
+                .status_namespace
+                .as_deref()
+                .map_or(DeclStr::NONE, |numbering| held.keep(numbering));
+            // SAFETY: the plugin's out-slot, checked non-null above.
+            unsafe {
+                set(
+                    out_piece,
+                    WirePiece {
+                        size: core::mem::size_of::<WirePiece>() as u32,
+                        kind: piece_kind(piece.kind),
+                        end: u8::from(piece.end),
+                        status_class: code::status_class(piece.status),
+                        flags,
+                        stream: piece.stream.0,
+                        len: piece.len,
+                        code: piece.status_code.unwrap_or(0),
+                        _reserved: 0,
+                        ns,
+                        retry_after_secs: piece.retry_after_secs.unwrap_or(0),
+                        reason: piece.reason.as_ref().map_or_else(Default::default, |r| {
+                            crate::abi::transport::FrameSpan {
+                                offset: r.start as u64,
+                                len: (r.end - r.start) as u64,
+                            }
+                        }),
+                        declared_len: piece.declared_len.unwrap_or(0),
+                    },
+                )
+            }
+        })
     })
 }
 
-extern "C" fn host_wait(
+unsafe extern "C" fn host_wait(
     ctx: ConnCtx,
     set_ptr: *const u64,
     set_len: usize,
@@ -559,7 +675,8 @@ extern "C" fn host_wait(
     out_ready: *mut usize,
 ) -> RawConnOutcome {
     hosted(ctx, |host| {
-        if set_ptr.is_null() && set_len != 0 {
+        // The out-slot is required: checked before the backend can register any interest.
+        if out_ready.is_null() || (set_ptr.is_null() && set_len != 0) {
             return Err(ConnError::Fault);
         }
         // SAFETY: the plugin's live `set_len` ids, for the call.
@@ -572,38 +689,56 @@ extern "C" fn host_wait(
     })
 }
 
-extern "C" fn host_facts(ctx: ConnCtx, conn: u64, out_facts: *mut WireConnFacts) -> RawConnOutcome {
+unsafe extern "C" fn host_facts(
+    ctx: ConnCtx,
+    conn: u64,
+    out_facts: *mut WireConnFacts,
+) -> RawConnOutcome {
     hosted(ctx, |host| {
-        let facts = host.conns.facts(host.instance, ConnId(conn))?;
-        let mut held = host.held();
-        let entry = held.entry(ConnId(conn)).or_default();
-        let f = entry.facts.insert(facts);
-        let opt = |s: Option<&String>| s.map_or(DeclStr::NONE, |s| range(s));
-        let cert = f.peer_cert.as_ref();
-        // SAFETY: the plugin's out-slot; every range borrows what the host holds until close.
-        unsafe {
-            set(
-                out_facts,
-                WireConnFacts {
-                    size: core::mem::size_of::<WireConnFacts>() as u32,
-                    version: 0,
-                    sni: opt(f.sni.as_ref()),
-                    alpn: opt(f.alpn.as_ref()),
-                    cert_subject: opt(cert.map(|c| &c.subject)),
-                    cert_issuer: opt(cert.map(|c| &c.issuer)),
-                    cert_fingerprint: opt(cert.map(|c| &c.fingerprint)),
-                    claim: opt(f.claim.as_ref()),
-                },
-            )
+        // The out-slot is required: checked before the backend is asked or anything is held.
+        if out_facts.is_null() {
+            return Err(ConnError::Fault);
         }
+        // The epoch is captured before the backend answers, which it does with no host lock held.
+        let operation = host.begin(ConnId(conn));
+        let facts = host.conns.facts(host.instance, ConnId(conn))?;
+        let cert = facts.peer_cert.as_ref();
+        // Each exposed string is interned in the connection's retention (never the facts value
+        // itself, which a later answer would replace and free under a range the plugin kept), and
+        // the out-slot written, under ONE table guard and only while the captured epoch is still
+        // the table's: a close that already retired it answers Closed, writing and keeping nothing.
+        operation.publish(|kept| {
+            let wire = WireConnFacts {
+                size: core::mem::size_of::<WireConnFacts>() as u32,
+                version: 0,
+                sni: kept.keep_opt(facts.sni.as_deref()),
+                alpn: kept.keep_opt(facts.alpn.as_deref()),
+                cert_subject: kept.keep_opt(cert.map(|c| c.subject.as_str())),
+                cert_issuer: kept.keep_opt(cert.map(|c| c.issuer.as_str())),
+                cert_fingerprint: kept.keep_opt(cert.map(|c| c.fingerprint.as_str())),
+                claim: kept.keep_opt(facts.claim.as_deref()),
+            };
+            // SAFETY: the plugin's out-slot, checked non-null above; every range borrows what the
+            // host holds until close.
+            unsafe { set(out_facts, wire) }
+        })
     })
 }
 
-extern "C" fn host_close(ctx: ConnCtx, conn: u64) -> RawConnOutcome {
+unsafe extern "C" fn host_close(ctx: ConnCtx, conn: u64) -> RawConnOutcome {
     hosted(ctx, |host| {
-        host.conns.close(host.instance, ConnId(conn))?;
-        host.held().remove(&ConnId(conn));
-        Ok(())
+        // The backend closes with no host lock held (it may re-enter any slot). A close that
+        // succeeded, or that answers `Closed` (explicitly closed already, or never open), ends
+        // every borrow: the retention is taken out under the table lock and dropped after it is
+        // let go, and the backend's own outcome is what the plugin is told. Any other refusal
+        // (`NotOwner`, a fault) ends nothing, and a panic after the backend committed is an
+        // unknown `Fault` that is not inferred to be a close.
+        let outcome = host.conns.close(host.instance, ConnId(conn));
+        if matches!(outcome, Ok(()) | Err(ConnError::Closed)) {
+            let retired = host.held().remove(&ConnId(conn));
+            drop(retired);
+        }
+        outcome
     })
 }
 
@@ -690,7 +825,9 @@ impl HostConns {
             },
         };
         let mut conn = 0_u64;
-        f(self.ctx, need.0, &wire, &mut conn).result()?;
+        // SAFETY: new() proves the table/context live; wire borrows desc and fields for this
+        // synchronous call, and conn is our exclusive initialized output.
+        unsafe { f(self.ctx, need.0, &wire, &mut conn) }.result()?;
         Ok(ConnId(conn))
     }
 
@@ -708,14 +845,18 @@ impl HostConns {
     ) -> Result<usize, ConnError> {
         let f = self.slots.write.ok_or(ConnError::Fault)?;
         let mut n = 0_usize;
-        f(
-            self.ctx,
-            conn.0,
-            bytes.as_ptr(),
-            bytes.len(),
-            u8::from(end) | if text { WRITE_TEXT } else { 0 },
-            &mut n,
-        )
+        // SAFETY: new() proves the table/context live; bytes stays borrowed and n is an
+        // exclusive initialized output for the synchronous call.
+        unsafe {
+            f(
+                self.ctx,
+                conn.0,
+                bytes.as_ptr(),
+                bytes.len(),
+                u8::from(end) | if text { WRITE_TEXT } else { 0 },
+                &mut n,
+            )
+        }
         .result()?;
         Ok(n)
     }
@@ -728,14 +869,18 @@ impl HostConns {
     pub fn read(&self, conn: ConnId, ticket: Ticket, buf: &mut [u8]) -> Result<Piece, ConnError> {
         let f = self.slots.read.ok_or(ConnError::Fault)?;
         let mut p = core::mem::MaybeUninit::<WirePiece>::zeroed();
-        f(
-            self.ctx,
-            conn.0,
-            ticket,
-            buf.as_mut_ptr(),
-            buf.len(),
-            p.as_mut_ptr(),
-        )
+        // SAFETY: new() proves the table/context live; buf is exclusively borrowed at its
+        // full stated capacity, and p is an initialized exclusive WirePiece output.
+        unsafe {
+            f(
+                self.ctx,
+                conn.0,
+                ticket,
+                buf.as_mut_ptr(),
+                buf.len(),
+                p.as_mut_ptr(),
+            )
+        }
         .result()?;
         // SAFETY: an `Ok` answer wrote the piece; every field is valid zeroed besides.
         let p = unsafe { p.assume_init() };
@@ -778,7 +923,9 @@ impl HostConns {
         let f = self.slots.wait.ok_or(ConnError::Fault)?;
         let ids: Vec<u64> = set.iter().map(|c| c.0).collect();
         let mut ready = 0_usize;
-        f(self.ctx, ids.as_ptr(), ids.len(), ticket, &mut ready).result()?;
+        // SAFETY: new() proves the table/context live; ids is immutable for the call and ready
+        // is our exclusive initialized output.
+        unsafe { f(self.ctx, ids.as_ptr(), ids.len(), ticket, &mut ready) }.result()?;
         Ok(ready)
     }
 
@@ -790,7 +937,8 @@ impl HostConns {
     pub fn facts(&self, conn: ConnId) -> Result<ConnFacts, ConnError> {
         let f = self.slots.facts.ok_or(ConnError::Fault)?;
         let mut w = core::mem::MaybeUninit::<WireConnFacts>::zeroed();
-        f(self.ctx, conn.0, w.as_mut_ptr()).result()?;
+        // SAFETY: new() proves the table/context live; w is an initialized, exclusive output.
+        unsafe { f(self.ctx, conn.0, w.as_mut_ptr()) }.result()?;
         // SAFETY: an `Ok` answer wrote the facts; every range borrows the host until close, and is
         // copied out now.
         unsafe {
@@ -823,10 +971,19 @@ impl HostConns {
     /// As [`Conns::close`].
     pub fn close(&self, conn: ConnId) -> Result<(), ConnError> {
         let f = self.slots.close.ok_or(ConnError::Fault)?;
-        f(self.ctx, conn.0).result()
+        // SAFETY: new() proves this copied table and its host context live for every call.
+        unsafe { f(self.ctx, conn.0) }.result()
     }
 }
 
 #[cfg(test)]
 #[path = "../../tests/conn_lowering_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "../../tests/abi_conn_retention_tests.rs"]
+mod retention_tests;
+
+#[cfg(test)]
+#[path = "../../tests/abi_conn_close_tests.rs"]
+mod close_tests;

@@ -128,3 +128,64 @@ async fn a_refused_session_answers_before_any_upgrade() {
     }
     server.abort();
 }
+
+#[tokio::test]
+async fn a_websocket_plane_receives_no_scheme_derived_from_a_raw_credential() {
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+
+    let (seen, sighting) = tokio::sync::oneshot::channel();
+    let seen = Arc::new(std::sync::Mutex::new(Some(seen)));
+    let spec = PlaneSessionSpec {
+        path: OPEN.into(),
+        auth: RouteAuth::Key,
+        handler: Arc::new(move |ctx: PlaneReqCtx| {
+            let seen = Arc::clone(&seen);
+            Box::pin(async move {
+                assert!(!ctx.headers.contains_key("x-api-key"));
+                assert!(!ctx.headers.contains_key("authorization"));
+                seen.lock()
+                    .unwrap()
+                    .take()
+                    .unwrap()
+                    .send(ctx.consumed_fields)
+                    .unwrap();
+                let mut response = axum::response::Response::new(axum::body::Body::empty());
+                *response.status_mut() = axum::http::StatusCode::FORBIDDEN;
+                SessionAnswer::Refused(response)
+            })
+        }),
+    };
+    let app = crate::test_support::TestApp::new().build();
+    let router = crate::build_split_routers_serving_sessions(
+        app,
+        Vec::new(),
+        vec![spec],
+        busbar_kernel_egress::upstream::max_translate_body_bytes(),
+        crate::config::DEFAULT_MAX_INBOUND_CONCURRENT,
+        crate::config::DEFAULT_RESPONSE_HEADERS_SERVER_TIMING,
+    )
+    .0;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let mut request = format!("ws://{addr}{OPEN}").into_client_request().unwrap();
+    request
+        .headers_mut()
+        .insert("x-api-key", "secret-prefix secret-tail".parse().unwrap());
+    request
+        .headers_mut()
+        .insert("authorization", "Bearer caller-secret".parse().unwrap());
+    let response = tokio_tungstenite::connect_async(request).await;
+    match response {
+        Err(tokio_tungstenite::tungstenite::Error::Http(r)) => assert_eq!(r.status().as_u16(), 403),
+        other => panic!(
+            "the plane saw the request before refusing: {:?}",
+            other.map(|_| ())
+        ),
+    }
+    let fields: Vec<(String, String)> = sighting.await.unwrap();
+    server.abort();
+    assert!(fields.contains(&("x-api-key".into(), String::new())));
+    assert!(fields.contains(&("authorization".into(), "Bearer".into())));
+    assert!(!format!("{fields:?}").contains("secret"));
+}

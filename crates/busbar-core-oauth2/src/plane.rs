@@ -169,6 +169,15 @@ tokio::task_local! {
     /// The registration request this task is answering ([`AsPlane::handle`]), and whether it holds
     /// a share of the budget.
     static REGISTERING: Answering;
+    /// The device route's settled session/CSRF work, lent to synchronous library hooks for this
+    /// request only. No cross-request or node-local token cache.
+    static DEVICE_FORM: DeviceForm;
+}
+
+struct DeviceForm {
+    subject: String,
+    issued: String,
+    consumed: std::cell::RefCell<Option<String>>,
 }
 
 /// One registration request being answered. Its share of the budget goes back when it is let go,
@@ -352,9 +361,19 @@ impl AsPlane {
             }
         };
 
-        let mut config = ServerConfig::new(identity.issuer(), identity.consent_url());
+        let mut config = ServerConfig::new(identity.issuer(), identity.verification_url());
         config.authorization_endpoint = Some(format!("{}/authorize", identity.issuer()));
         config.token_endpoint = Some(format!("{}/token", identity.issuer()));
+        config.device_authorization_endpoint = Some(format!(
+            "{}{}",
+            identity.origin(),
+            identity.device_authorization_path()
+        ));
+        config.revocation_endpoint = Some(format!(
+            "{}{}",
+            identity.origin(),
+            identity.revocation_path()
+        ));
         config.jwks_uri = Some(identity.jwks_uri());
         config.registration = Some(super::policy::registration_config(&identity));
         config.access_token_ttl = identity.access_token_ttl();
@@ -431,8 +450,23 @@ impl AsPlane {
         );
 
         let sessions = Arc::clone(&carried.sessions);
+        let consent_subject = super::consent::subject_resolver(Arc::clone(&sessions));
         let service = oauth_as::http::ServiceBuilder::new(Arc::clone(&server))
-            .with_subject_resolver(super::consent::subject_resolver(Arc::clone(&sessions)))
+            .with_subject_resolver(move |headers| {
+                DEVICE_FORM
+                    .try_with(|form| form.subject.clone())
+                    .ok()
+                    .or_else(|| consent_subject(headers))
+            })
+            .with_csrf_tokens(
+                |_| DEVICE_FORM.try_with(|form| form.issued.clone()).ok(),
+                |_| {
+                    DEVICE_FORM
+                        .try_with(|form| form.consumed.borrow_mut().take())
+                        .ok()
+                        .flatten()
+                },
+            )
             .with_approval_resolver(super::consent::approval_resolver(
                 Arc::clone(&sessions),
                 identity.consent_url(),
@@ -641,6 +675,77 @@ impl AsPlane {
         }
     }
 
+    /// Persist one form before rendering it. A fresh session per form bounds the in-process
+    /// fallback by Sessions' existing cap and gives each token a single spend.
+    pub(crate) async fn issue_device_form(
+        &self,
+        id: &str,
+        csrf: &str,
+        subject: &str,
+    ) -> Result<(), oauth_as::store::StorageError> {
+        let key = format!("device-csrf:{csrf}");
+        match self.carried.store() {
+            Some(store) => {
+                store
+                    .open_session(id, subject, super::consent::SESSION_TTL)
+                    .await?;
+                store
+                    .stake(id, &key, true, super::consent::SESSION_TTL)
+                    .await?;
+            }
+            None => {
+                self.sessions.open(subject, id.to_string());
+                self.sessions.stake(id, key, true);
+            }
+        }
+        Ok(())
+    }
+
+    /// Read the authoritative session and spend in the deployment Store, so a form rendered by
+    /// one node may be submitted to another.
+    pub(crate) async fn consume_device_form(
+        &self,
+        id: &str,
+        csrf: &str,
+        subject: &str,
+    ) -> Result<bool, oauth_as::store::StorageError> {
+        let key = format!("device-csrf:{csrf}");
+        match self.carried.store() {
+            Some(store) => {
+                if store.session_subject(id).await?.as_deref() != Some(subject) {
+                    return Ok(false);
+                }
+                Ok(store.spend(id, &key).await? == Some(true))
+            }
+            None => Ok(self.sessions.subject(id).as_deref() == Some(subject)
+                && self.sessions.spend(id, &key) == Some(true)),
+        }
+    }
+
+    /// Only the Admin-mounted route enters this scope, after its Store operations settle. The
+    /// library still checks Origin, the token, explicit approval and the device grant state.
+    pub(crate) async fn handle_device<B>(
+        &self,
+        request: http::Request<B>,
+        subject: &str,
+        issued: String,
+        consumed: Option<String>,
+    ) -> oauth_as::http::Response
+    where
+        B: axum::body::HttpBody,
+    {
+        DEVICE_FORM
+            .scope(
+                DeviceForm {
+                    subject: subject.to_string(),
+                    issued,
+                    consumed: std::cell::RefCell::new(consumed),
+                },
+                self.handle(request),
+            )
+            .await
+    }
+
     /// With the store: hand the two synchronous consent callbacks what this request needs from it,
     /// before `oauth-as` asks. The session the cookie names is read into this process's table, and on
     /// the authorization endpoint the answer staked for this exact request is SPENT in the store (one
@@ -762,10 +867,16 @@ fn provisioned_clients(identity: &AsIdentity) -> Vec<oauth_as::client::Client> {
                     keys: c.jwks.keys.iter().map(public_jwk).collect(),
                 },
             },
-            grant_types: vec![
-                oauth_as::grant::GrantType::AuthorizationCode,
-                oauth_as::grant::GrantType::RefreshToken,
-            ],
+            grant_types: {
+                let mut grants = vec![oauth_as::grant::GrantType::RefreshToken];
+                if !c.redirect_uris.is_empty() {
+                    grants.push(oauth_as::grant::GrantType::AuthorizationCode);
+                }
+                if c.device_authorization {
+                    grants.push(oauth_as::grant::GrantType::DeviceCode);
+                }
+                grants
+            },
             redirect_uris: c.redirect_uris.clone(),
             allowed_scopes: ceiling.clone(),
             default_scopes: ceiling.clone(),
@@ -871,6 +982,9 @@ pub(crate) fn seam_build<C: crate::Connections>(
     store: Option<Arc<dyn busbar_contract::store_calls::StoreCalls>>,
 ) -> Result<Arc<dyn std::any::Any + Send + Sync>, String> {
     let identity = crate::config::identity_of(block)?;
+    if let Some(calls) = store.as_deref() {
+        super::shared::Shared::require_atomic(calls)?;
+    }
     // The first generation decides where the records are kept; every later one carries them on.
     let carried = prior
         .and_then(|p| Arc::clone(p).downcast::<AsPlane>().ok())

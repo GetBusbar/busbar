@@ -20,6 +20,7 @@ use busbar_contract::abi::mechanism::call::{DeadlineClass, Outcome};
 use busbar_contract::abi::mechanism::lifecycle::{slot, ReadyIn};
 
 use super::{in_head, now_ns, out_head, Dispatcher, Frame, Kind, Plugin};
+use super::lifecycle::AnswerLease;
 
 /// How long boot waits for one instance's `ready`: the lifecycle budget
 /// ([`super::Budgets::lifecycle`]'s default). At the deadline the dispatcher cancels the op and it
@@ -67,6 +68,7 @@ impl<K: Kind> Plugin<K> {
         let Some(done) = done else {
             return Err(failed(format!("no answer within {deadline:?}")));
         };
+        let _lease = AnswerLease::new(self, done.lease);
         match (done.outcome, done.error) {
             (Outcome::Ready, _) => Ok(()),
             (_, Some(text)) if !text.is_empty() => {

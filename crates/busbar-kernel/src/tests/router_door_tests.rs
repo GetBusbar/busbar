@@ -123,3 +123,36 @@ async fn an_unclaimed_path_under_the_api_root_stays_behind_the_operator_chain() 
     .await;
     assert_eq!(code, 401, "the admin prefix fails closed: {body}");
 }
+
+#[tokio::test]
+async fn a_http_plane_receives_no_scheme_derived_from_a_raw_credential() {
+    let spec = PlaneRouteSpec {
+        path: DOOR.into(),
+        method: RouteMethod::Post,
+        auth: RouteAuth::Key,
+        handler: Arc::new(|ctx: PlaneReqCtx| {
+            Box::pin(async move {
+                assert!(!ctx.headers.contains_key("x-api-key"));
+                assert!(!ctx.headers.contains_key("authorization"));
+                axum::response::IntoResponse::into_response(axum::Json(ctx.consumed_fields))
+            })
+        }),
+    };
+    let router = data_router(vec![spec]);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let response = reqwest::Client::new()
+        .post(format!("http://{addr}{DOOR}"))
+        .header("x-api-key", "secret-prefix secret-tail")
+        .header("authorization", "Bearer caller-secret")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status().as_u16(), 200);
+    let fields: Vec<(String, String)> = response.json().await.unwrap();
+    server.abort();
+    assert!(fields.contains(&("x-api-key".into(), String::new())));
+    assert!(fields.contains(&("authorization".into(), "Bearer".into())));
+    assert!(!format!("{fields:?}").contains("secret"));
+}

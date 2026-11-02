@@ -16,7 +16,9 @@
 //! prices or even touches this memo: staleness is decided at read time, by comparing inputs, so no
 //! write path can forget to mark a bucket.
 
-use super::{wall_ms, BudgetCell, DerivedUsage, FeeEras, History, MoneyError};
+use super::{
+    wall_ms, BudgetCell, DerivedUsage, EntryId, History, MoneyError, RawFeeEras, RawRateEra,
+};
 
 /// A bucket's derived figure, or the one function's refusal.
 type Priced = Result<DerivedUsage, MoneyError>;
@@ -30,8 +32,8 @@ struct Facts {
     window_start: u64,
     requests: u64,
     billable_requests: u64,
-    fee_eras: FeeEras,
-    models: Vec<(Arc<str>, u64, BTreeMap<String, u64>)>,
+    fee_eras: RawFeeEras,
+    models: Vec<(Arc<str>, RawRateEra, BTreeMap<String, u64>)>,
 }
 
 /// Everything one bucket's derived figure depends on.
@@ -43,7 +45,7 @@ pub(in crate::governance) struct Inputs {
     card: u64,
     /// The dated history the read resolves through, held so its address cannot be reused, with the
     /// entry count it had and the card in force at the read.
-    history: Option<(Arc<History>, usize, Option<u64>)>,
+    history: Option<(Arc<History>, usize, Option<EntryId>)>,
 }
 
 impl PartialEq for Inputs {
@@ -73,7 +75,10 @@ impl Inputs {
         let history = crate::rate_apply::dated_history().map(|h| {
             let now_ms = wall_ms();
             let view = h.current();
-            let (len, in_force) = (view.entries().len(), view.card_at(now_ms).map(|(s, _)| s.0));
+            let (len, in_force) = (
+                view.entries().len(),
+                view.entry_at(now_ms).map(|entry| entry.id()),
+            );
             (h, len, in_force)
         });
         Inputs {

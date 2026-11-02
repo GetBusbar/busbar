@@ -261,6 +261,19 @@ impl GovState {
                 .filter(|row| row.key_id == adj.key_id)
                 .collect();
             correction::canonical_metering(&mut metering);
+            let metered_era = unique_metered_era(adj, &metering)?;
+            if let Some(history) = crate::rate_apply::dated_history() {
+                if metered_era.entry_id.is_some()
+                    && history
+                        .current()
+                        .card_for_raw_era(metered_era, adj.card_epoch_ms)
+                        .is_none()
+                {
+                    return Ok(Err(AdjustRefused::NoCardInForce {
+                        at: adj.card_epoch_ms,
+                    }));
+                }
+            }
             if let Err(refused) = check_metered(
                 adj,
                 delta,
@@ -268,6 +281,7 @@ impl GovState {
                 &metering,
                 &snapshots[&address(ADJUST_UP_BUCKET, day)],
                 &snapshots[&address(ADJUST_DOWN_BUCKET, day)],
+                metered_era,
             ) {
                 return Ok(Err(refused));
             }
@@ -312,8 +326,15 @@ impl GovState {
                 if let Some(names) = owners.get(bucket) {
                     before.group_owners.extend(names.iter().cloned());
                 }
-                let target = durable_cell(plain_after.clone(), dated_after.clone(), *window);
-                let segment = segment_at(&target.models, adj.model, adj.card_epoch_ms);
+                let target = durable_cell(plain_after.clone(), dated_after.clone(), *window)?;
+                let segment = if metered_era.entry_id.is_some() {
+                    target
+                        .models
+                        .iter()
+                        .position(|m| &*m.model == adj.model && m.era == metered_era)
+                } else {
+                    segment_at(&target.models, adj.model, adj.card_epoch_ms)
+                };
                 if segment.is_none() && delta.values().any(|count| *count < 0) {
                     return Ok(Err(AdjustRefused::Unplaced {
                         bucket: bucket.clone(),
@@ -326,7 +347,7 @@ impl GovState {
                             .to_string(),
                     }));
                 }
-                let era = segment.map_or(adj.entry_era, |index| target.models[index].era);
+                let era = segment.map_or(metered_era, |index| target.models[index].era);
                 for (class, change) in delta {
                     let held = segment.map_or(0, |index| {
                         target.models[index].cur.get(*class).copied().unwrap_or(0)
@@ -345,10 +366,10 @@ impl GovState {
                         class,
                         i128::from(*change),
                     ))?;
-                    if era != 0 {
+                    if era != RawRateEra::legacy(0) {
                         exact(move_unit(
                             &mut dated_after,
-                            &format!("{era}{ERA_MODEL_SEP}{}", adj.model),
+                            &era_model(era, adj.model),
                             class,
                             i128::from(*change),
                         ))?;
@@ -356,7 +377,7 @@ impl GovState {
                 }
                 let mut accepted = if before.window_start == *window {
                     let mut accepted =
-                        durable_cell(plain_after.clone(), dated_after.clone(), *window);
+                        durable_cell(plain_after.clone(), dated_after.clone(), *window)?;
                     copy_custody(&before, &mut accepted);
                     accepted
                 } else {
@@ -372,7 +393,7 @@ impl GovState {
                 replacements.insert(dated_address, dated_after);
                 branches.push((bucket.clone(), *window, before, accepted));
             }
-            let slot = adjustment_slot(adj.key_id, adj.model, adj.entry_era);
+            let slot = adjustment_slot(adj.key_id, adj.model, metered_era);
             for (class, change) in delta {
                 let bucket = if *change > 0 {
                     ADJUST_UP_BUCKET
@@ -448,6 +469,34 @@ impl GovState {
     }
 }
 
+fn unique_metered_era(adj: &Adjustment<'_>, rows: &[MeteringRow]) -> RecordStoreResult<RawRateEra> {
+    let mut captured = None;
+    for row in rows.iter().filter(|row| {
+        row.priced_from_ms == adj.entry_era && metering_lane(&row.model, &row.provider) == adj.model
+    }) {
+        let id = match EntryId::parse_metering_version(&row.pricing_version) {
+            Some(Some(id)) => Some(id),
+            Some(None) => {
+                return Err(RecordStoreError(
+                    "malformed versioned metering provenance".into(),
+                ))
+            }
+            None => None,
+        };
+        let era = RawRateEra {
+            effective_from: row.priced_from_ms,
+            entry_id: id,
+        };
+        if captured.is_some_and(|previous| previous != era) {
+            return Err(RecordStoreError(
+                "correction timestamp names multiple raw rate entries".into(),
+            ));
+        }
+        captured = Some(era);
+    }
+    Ok(captured.unwrap_or_else(|| RawRateEra::legacy(adj.entry_era)))
+}
+
 fn check_metered(
     adj: &Adjustment<'_>,
     delta: &BTreeMap<&str, i64>,
@@ -455,6 +504,7 @@ fn check_metered(
     metering: &[MeteringRow],
     up: &UsageLedger,
     down: &UsageLedger,
+    era: RawRateEra,
 ) -> Result<(), AdjustRefused> {
     let lane: Vec<_> = metering
         .iter()
@@ -478,7 +528,7 @@ fn check_metered(
     if rows.is_empty() {
         return Err(AdjustRefused::NotMetered { day });
     }
-    let slot = adjustment_slot(adj.key_id, adj.model, adj.entry_era);
+    let slot = adjustment_slot(adj.key_id, adj.model, era);
     for (class, change) in delta {
         let adjusted = |ledger: &UsageLedger| {
             ledger
@@ -554,10 +604,10 @@ fn capture_target(
             }
         }
         for model in &local.models {
-            if model.era != 0 {
+            if model.era != RawRateEra::legacy(0) {
                 exact(add_units_difference(
                     &mut combined_dated,
-                    &format!("{}{ERA_MODEL_SEP}{}", model.era, model.model),
+                    &era_model(model.era, &model.model),
                     &model.cur,
                     &model.flushed_era,
                 ))?;
@@ -574,13 +624,13 @@ fn capture_target(
                 - i128::from(flushed.get(era).copied().unwrap_or(0));
             exact(move_unit(
                 &mut combined_dated,
-                &era.to_string(),
+                &era_tag(*era),
                 ERA_FEE_UNIT,
                 difference,
             ))?;
         }
-        let baseline = durable_cell(plain.clone(), dated.clone(), window);
-        let mut before = durable_cell(combined.clone(), combined_dated.clone(), window);
+        let baseline = durable_cell(plain.clone(), dated.clone(), window)?;
+        let mut before = durable_cell(combined.clone(), combined_dated.clone(), window)?;
         copy_custody(&local, &mut before);
         before.flushed_requests = baseline.requests;
         before.flushed_billable_requests = baseline.billable_requests;

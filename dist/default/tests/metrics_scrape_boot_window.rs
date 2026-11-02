@@ -126,15 +126,17 @@ fn metrics_scrape_is_never_a_200_with_an_empty_body() {
     let log_path = dir.join("out.log");
     let log = std::fs::File::create(&log_path).unwrap();
     let log_err = log.try_clone().unwrap();
-    let mut child = Command::new(common::boot::exe())
-        .env("BUSBAR_CONFIG", dir.join("config.yaml"))
-        .env("BUSBAR_PROVIDERS", dir.join("providers.yaml"))
-        .env("MOCK_KEY", "x")
-        .env("RUST_LOG", "warn")
-        .stdout(log)
-        .stderr(log_err)
-        .spawn()
-        .expect("spawn busbar");
+    let mut child = common::boot::Reap(
+        Command::new(common::boot::exe())
+            .env("BUSBAR_CONFIG", dir.join("config.yaml"))
+            .env("BUSBAR_PROVIDERS", dir.join("providers.yaml"))
+            .env("MOCK_KEY", "x")
+            .env("RUST_LOG", "warn")
+            .stdout(log)
+            .stderr(log_err)
+            .spawn()
+            .expect("spawn busbar"),
+    );
 
     // Do NOT wait for a "listening" log line first: that line is written from inside a per-core
     // worker thread AFTER its own bind, which is exactly the moment we want to race. Instead poll
@@ -187,7 +189,7 @@ fn metrics_scrape_is_never_a_200_with_an_empty_body() {
         .unwrap_or_else(|e| e.into_inner());
 
     // Let the process fully settle, then take one more scrape as the REFERENCE full exposition —
-    // the closed `# HELP` name set every genuinely-`200` scrape must match exactly.
+    // the closed `# HELP`/`# TYPE` metadata every genuinely-`200` scrape must match exactly.
     std::thread::sleep(Duration::from_millis(500));
     let reference = wait_for_full_scrape(data_port, Duration::from_secs(10)).unwrap_or_else(|| {
         panic!(
@@ -195,6 +197,8 @@ fn metrics_scrape_is_never_a_200_with_an_empty_body() {
             read_to_string(&log_path)
         )
     });
+    let reference_metadata = complete_metadata(&reference.body)
+        .expect("the settled reference must have one HELP and TYPE per family");
     let reference_names = help_names(&reference.body);
     assert!(
         !reference_names.is_empty(),
@@ -214,23 +218,14 @@ fn metrics_scrape_is_never_a_200_with_an_empty_body() {
         );
     }
     let golden = golden_meta_lines();
-    let mut drifted = Vec::new();
-    for line in meta_lines(&reference.body) {
-        let name = meta_name(&line);
-        let kind = &line[..6];
-        if let Some(want) = golden
-            .iter()
-            .find(|g| meta_name(g) == name && g.starts_with(kind))
-        {
-            if *want != line {
-                drifted.push(format!("got  {line}\nwant {want}"));
-            }
-        }
-    }
+    let drifted: Vec<_> = golden
+        .iter()
+        .filter(|line| reference_names.contains(meta_name(line)))
+        .filter(|line| !reference_metadata.contains(line.as_str()))
+        .collect();
     assert!(
         drifted.is_empty(),
-        "HELP/TYPE lines differ from the 1.5.5 golden:\n{}",
-        drifted.join("\n")
+        "HELP/TYPE lines differ from the 1.5.5 golden (missing or changed):\n{drifted:#?}"
     );
 
     let _ = child.kill();
@@ -243,11 +238,10 @@ fn metrics_scrape_is_never_a_200_with_an_empty_body() {
     let mut violations = Vec::new();
     for s in &collected {
         if s.status == 200 {
-            let names = help_names(&s.body);
-            if names != reference_names {
+            let metadata = complete_metadata(&s.body);
+            if metadata.as_ref() != Ok(&reference_metadata) {
                 violations.push(format!(
-                    "200 with an INCOMPLETE exposition (missing: {:?}); body:\n{}",
-                    reference_names.difference(&names).collect::<Vec<_>>(),
+                    "200 with incomplete or changed HELP/TYPE metadata ({metadata:?}); body:\n{}",
                     s.body
                 ));
             }
@@ -279,6 +273,51 @@ fn meta_lines(body: &str) -> Vec<String> {
         .filter(|l| l.starts_with("# HELP ") || l.starts_with("# TYPE "))
         .map(str::to_string)
         .collect()
+}
+
+/// Validate the reference independently: a HELP-only exposition is not a complete reference.
+/// Preserve the full lines so changed descriptions and TYPE values also fail the race verdict.
+fn complete_metadata(body: &str) -> Result<BTreeSet<String>, String> {
+    let mut lines = BTreeSet::new();
+    let mut help = BTreeSet::new();
+    let mut types = BTreeSet::new();
+    for line in meta_lines(body) {
+        let name = meta_name(&line);
+        let names = if line.starts_with("# HELP ") {
+            &mut help
+        } else {
+            &mut types
+        };
+        let has_value = line[7..]
+            .split_once(' ')
+            .is_some_and(|(_, value)| !value.trim().is_empty());
+        if name.is_empty() || !has_value || !names.insert(name.to_string()) {
+            return Err(format!("missing or duplicate metadata family in {line:?}"));
+        }
+        lines.insert(line);
+    }
+    if help.is_empty() || help != types {
+        return Err(format!(
+            "HELP/TYPE families differ: HELP={help:?}, TYPE={types:?}"
+        ));
+    }
+    Ok(lines)
+}
+
+#[test]
+fn metadata_comparison_refuses_missing_changed_and_duplicate_types() {
+    let reference = "# HELP requests Total requests\n# TYPE requests counter\nrequests 1\n";
+    let expected = complete_metadata(reference).unwrap();
+    assert_eq!(complete_metadata(reference).unwrap(), expected);
+    assert!(complete_metadata("# HELP requests Total requests\nrequests 1\n").is_err());
+    assert_ne!(
+        complete_metadata(&reference.replace("counter", "gauge")).unwrap(),
+        expected
+    );
+    assert!(complete_metadata(&(reference.to_owned() + "# TYPE requests counter\n")).is_err());
+    assert!(complete_metadata("# TYPE requests counter\n").is_err());
+    assert!(complete_metadata("# HELP requests Total\n# TYPE requests\n").is_err());
+    assert!(complete_metadata("").is_err());
 }
 
 /// The family a `# HELP` / `# TYPE` line names.
@@ -322,15 +361,17 @@ fn the_dispatchers_bb_counters_are_not_on_the_customer_scrape() {
     let log_path = dir.join("out.log");
     let log = std::fs::File::create(&log_path).unwrap();
     let log_err = log.try_clone().unwrap();
-    let mut child = Command::new(common::boot::exe())
-        .env("BUSBAR_CONFIG", dir.join("config.yaml"))
-        .env("BUSBAR_PROVIDERS", dir.join("providers.yaml"))
-        .env("MOCK_KEY", "x")
-        .env("RUST_LOG", "warn")
-        .stdout(log)
-        .stderr(log_err)
-        .spawn()
-        .expect("spawn busbar");
+    let mut child = common::boot::Reap(
+        Command::new(common::boot::exe())
+            .env("BUSBAR_CONFIG", dir.join("config.yaml"))
+            .env("BUSBAR_PROVIDERS", dir.join("providers.yaml"))
+            .env("MOCK_KEY", "x")
+            .env("RUST_LOG", "warn")
+            .stdout(log)
+            .stderr(log_err)
+            .spawn()
+            .expect("spawn busbar"),
+    );
     let scrape = wait_for_full_scrape(data_port, Duration::from_secs(30));
     let _ = child.kill();
     let _ = child.wait();
@@ -455,15 +496,17 @@ fn test_metrics_admitted_in_open_relay_mode() {
     let log_path = dir.join("out.log");
     let log = std::fs::File::create(&log_path).unwrap();
     let log_err = log.try_clone().unwrap();
-    let mut child = Command::new(common::boot::exe())
-        .env("BUSBAR_CONFIG", dir.join("config.yaml"))
-        .env("BUSBAR_PROVIDERS", dir.join("providers.yaml"))
-        .env("MOCK_KEY", "x")
-        .env("RUST_LOG", "warn")
-        .stdout(log)
-        .stderr(log_err)
-        .spawn()
-        .expect("spawn busbar");
+    let mut child = common::boot::Reap(
+        Command::new(common::boot::exe())
+            .env("BUSBAR_CONFIG", dir.join("config.yaml"))
+            .env("BUSBAR_PROVIDERS", dir.join("providers.yaml"))
+            .env("MOCK_KEY", "x")
+            .env("RUST_LOG", "warn")
+            .stdout(log)
+            .stderr(log_err)
+            .spawn()
+            .expect("spawn busbar"),
+    );
     let scraped = wait_for_full_scrape(data_port, Duration::from_secs(30));
     let _ = child.kill();
     let _ = child.wait();

@@ -21,8 +21,8 @@
 //!   stderr, not one frame first.
 //! - EOF on stdin, or the shutdown signal, ends the session: no further line is read, the units
 //!   already in flight finish and answer within the drain grace (as the listener path lets its
-//!   in-flight requests drain on the same signal), any still running after it are ended, and the
-//!   serve returns `0`.
+//!   in-flight requests drain on the same signal), and any still running after it are ended. The
+//!   output shares that grace: output that cannot finish makes the serve return nonzero.
 //!
 //! Every meaning a line has is the plane's, and every name the carrier answers by is the
 //! transport's; this module names neither.
@@ -346,6 +346,78 @@ where
             return 1;
         }
     };
+    run_io(carrier, reader, writer, stop, move |caller| {
+        // THE CARRIER SESSION on the kernel's services: what the plane emits on it goes to the writer.
+        let principal = gov.key().map_or_else(
+            || {
+                busbar_contract::auth::AuthPrincipal(None)
+                    .actor_id()
+                    .to_string()
+            },
+            |k| k.id.clone(),
+        );
+        let sink_out = caller.out.clone();
+        let number = kernel.open_carrier_session(
+            &instance,
+            &principal,
+            Arc::new(move |bytes: &[u8]| sink_out.send(terminated(bytes)).is_ok()),
+        );
+        let session_field = axum::http::HeaderValue::from(number);
+        let answer = move |line: Vec<u8>| {
+            let mut headers = axum::http::HeaderMap::new();
+            headers.insert(CARRIER_SESSION_FIELD, session_field.clone());
+            let req = DoorRequest {
+                method: axum::http::Method::POST,
+                uri: axum::http::Uri::try_from(target.as_str())
+                    .unwrap_or_else(|_| axum::http::Uri::from_static("/")),
+                headers,
+                body: axum::body::Bytes::from(line),
+                gov: gov.clone(),
+                // The boot credential is the caller's verified credential, lent for a passthrough
+                // member's outbound auth call alone, as the data listener lends the gate's.
+                credential: credential
+                    .as_ref()
+                    .map(|c| busbar_contract::redacted::Secret::new(c.as_bytes().to_vec())),
+                // A carrier line presents no ticket: its session was bound once, at its open.
+                ticket: None,
+                app: app.load(),
+                // The process's own stdin/stdout: no listener, no connection security.
+                scheme: busbar_contract::abi::host::service::SCHEME_PLAIN,
+                consumed_fields: Vec::new(),
+            };
+            let routes = Arc::clone(&routes);
+            let caller = Arc::clone(&caller);
+            async move {
+                let response = routes.answer(plane, claim, req).await;
+                let body = collect(response).await;
+                if !body.is_empty() {
+                    let _ = caller.write(&body).await;
+                }
+            }
+        };
+        (answer, move || kernel.close_carrier_session(number))
+    })
+    .await
+}
+
+/// The production carrier loop, with the bound session's unit dispatch and close supplied by boot.
+/// Keeping the I/O loop independent of admission also lets its shutdown run against stalled writers.
+async fn run_io<R, W, S, Open, Answer, Unit, Close>(
+    carrier: &str,
+    reader: R,
+    writer: W,
+    stop: S,
+    open: Open,
+) -> i32
+where
+    R: AsyncRead + Unpin + Send + 'static,
+    W: AsyncWrite + Unpin + Send + 'static,
+    S: std::future::Future<Output = ()>,
+    Open: FnOnce(Arc<LineCaller<R>>) -> (Answer, Close),
+    Answer: Fn(Vec<u8>) -> Unit,
+    Unit: std::future::Future<Output = ()> + Send + 'static,
+    Close: FnOnce(),
+{
     // THE ONE WRITER: whole lines, in the order they were handed over, flushed each.
     let (out, mut lines_out) = mpsc::unbounded_channel::<Vec<u8>>();
     let failure = Arc::new(IoFailure::default());
@@ -374,25 +446,10 @@ where
     let caller = Arc::new(LineCaller {
         lines: AsyncMutex::new(tokio::io::BufReader::new(reader)),
         max_line,
-        out: out.clone(),
+        out,
         failure: Arc::clone(&failure),
     });
-    // THE CARRIER SESSION on the kernel's services: what the plane emits on it goes to the writer.
-    let principal = gov.key().map_or_else(
-        || {
-            busbar_contract::auth::AuthPrincipal(None)
-                .actor_id()
-                .to_string()
-        },
-        |k| k.id.clone(),
-    );
-    let sink_out = out.clone();
-    let number = kernel.open_carrier_session(
-        &instance,
-        &principal,
-        Arc::new(move |bytes: &[u8]| sink_out.send(terminated(bytes)).is_ok()),
-    );
-    let session_field = axum::http::HeaderValue::from(number);
+    let (answer, close) = open(Arc::clone(&caller));
     let mut units = tokio::task::JoinSet::new();
     let mut stop = std::pin::pin!(stop);
     let mut writer_ended = false;
@@ -409,50 +466,22 @@ where
             line = next_line(&*caller, stop.as_mut()) => line,
         };
         let Some(line) = line else { break };
-        let mut headers = axum::http::HeaderMap::new();
-        headers.insert(CARRIER_SESSION_FIELD, session_field.clone());
-        let req = DoorRequest {
-            method: axum::http::Method::POST,
-            uri: axum::http::Uri::try_from(target.as_str())
-                .unwrap_or_else(|_| axum::http::Uri::from_static("/")),
-            headers,
-            body: axum::body::Bytes::from(line),
-            gov: gov.clone(),
-            // The boot credential is the caller's verified credential, lent for a passthrough
-            // member's outbound auth call alone, as the data listener lends the gate's.
-            credential: credential
-                .as_ref()
-                .map(|c| busbar_contract::redacted::Secret::new(c.as_bytes().to_vec())),
-            // A carrier line presents no ticket: its session was bound once, at its open.
-            ticket: None,
-            app: app.load(),
-            // The process's own stdin/stdout: no listener, no connection security.
-            scheme: busbar_contract::abi::host::service::SCHEME_PLAIN,
-            consumed_fields: Vec::new(),
-        };
-        let routes = Arc::clone(&routes);
-        let caller = Arc::clone(&caller);
-        units.spawn(async move {
-            let response = routes.answer(plane, claim, req).await;
-            let body = collect(response).await;
-            if !body.is_empty() {
-                let _ = caller.write(&body).await;
-            }
-        });
+        units.spawn(answer(line));
         // Units that ended are reaped as the session goes, so a long session holds only its open ones.
         while units.try_join_next().is_some() {}
     }
     // EOF or the shutdown signal: no further line is read. The units already in flight finish and
-    // answer within the drain grace, as the listener path lets its in-flight requests drain on the
-    // same signal; any still running after it are ended. Then the session closes (an emit on it is
-    // refused from now on).
+    // answer within the drain grace. Their answers and already queued output share this one
+    // deadline; finishing units does not grant the writer another grace. Then the session closes
+    // (an emit on it is refused from now on), so the writer can finish its queue and final flush.
+    let deadline = tokio::time::Instant::now() + busbar_kernel::detached::DETACHED_DRAIN_GRACE;
     let ended = if writer_ended {
         let ended = units.len();
         units.abort_all();
         while units.join_next().await.is_some() {}
         ended
     } else {
-        drain_units(&mut units, busbar_kernel::detached::DETACHED_DRAIN_GRACE).await
+        drain_units(&mut units, deadline).await
     };
     if ended > 0 {
         tracing::warn!(
@@ -461,12 +490,32 @@ where
             "{carrier} serve: remaining units were ended"
         );
     }
-    kernel.close_carrier_session(number);
+    close();
+    drop(answer);
     drop(caller);
-    drop(out);
     if !writer_ended {
-        if let Err(error) = written.await {
-            failure.record("output", std::io::Error::other(error));
+        match tokio::time::timeout_at(deadline, &mut written).await {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => failure.record("output", std::io::Error::other(error)),
+            Err(_) => {
+                // Retire the async writer, including its queue and channel receiver. Tokio's
+                // stdout may still have a blocking OS write in progress: aborting this task does
+                // not cancel that operation. The root can now run its final accounting flush.
+                written.abort();
+                match written.await {
+                    // Completion can race the deadline. Preserve a successful drain or the
+                    // writer's own error/panic instead of claiming it was cancelled.
+                    Ok(()) => {}
+                    Err(error) if error.is_cancelled() => failure.record(
+                        "output",
+                        std::io::Error::new(
+                            std::io::ErrorKind::TimedOut,
+                            "output did not drain within the shutdown grace",
+                        ),
+                    ),
+                    Err(error) => failure.record("output", std::io::Error::other(error)),
+                }
+            }
         }
     }
     i32::from(failure.report())
@@ -487,11 +536,16 @@ where
     }
 }
 
-/// THE DRAIN: the units in `units` finish within `grace`; whatever is still running after it is
+/// THE DRAIN: the units in `units` finish by `deadline`; whatever is still running after it is
 /// ended. Returns how many were ended.
-async fn drain_units(units: &mut tokio::task::JoinSet<()>, grace: std::time::Duration) -> usize {
-    let finished =
-        tokio::time::timeout(grace, async { while units.join_next().await.is_some() {} }).await;
+async fn drain_units(
+    units: &mut tokio::task::JoinSet<()>,
+    deadline: tokio::time::Instant,
+) -> usize {
+    let finished = tokio::time::timeout_at(deadline, async {
+        while units.join_next().await.is_some() {}
+    })
+    .await;
     if finished.is_ok() {
         return 0;
     }

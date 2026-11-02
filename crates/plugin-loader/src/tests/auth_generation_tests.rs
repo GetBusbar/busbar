@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
+//! SAFETY for raw service calls below: the test supplies the selected slot's initialized
+//! frame, live nested loans, and an exclusive initialized output for the whole invocation.
+//! Malformed heads are rejected before any range they do not cover is accessed.
+
 use super::*;
 
 #[test]
@@ -53,7 +57,9 @@ fn existing_units_keep_their_generation_at_all_three_services_but_new_requests_c
         answer: &mut answer,
     };
     let mut out = blank();
-    let ret = HOST_SLOTS.unit_hand_in.unwrap()(d.ctx, std::ptr::from_ref(&hand).cast(), &mut out);
+    let ret = unsafe {
+        HOST_SLOTS.unit_hand_in.unwrap()(d.ctx, std::ptr::from_ref(&hand).cast(), &mut out)
+    };
     assert_eq!(ret.outcome(), Outcome::Ready, "{}", error(&out));
     assert_eq!(side.hands.lock().unwrap()[0].generation, old_generation);
 
@@ -76,7 +82,9 @@ fn existing_units_keep_their_generation_at_all_three_services_but_new_requests_c
         request: get_view(),
     };
     let mut out = blank();
-    let ret = HOST_SLOTS.unit_refuse.unwrap()(d.ctx, std::ptr::from_ref(&refuse).cast(), &mut out);
+    let ret = unsafe {
+        HOST_SLOTS.unit_refuse.unwrap()(d.ctx, std::ptr::from_ref(&refuse).cast(), &mut out)
+    };
     assert_eq!(ret.outcome(), Outcome::Ready, "{}", error(&out));
     assert_eq!(side.refusals.lock().unwrap()[0].generation, old_generation);
 }

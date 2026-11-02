@@ -7,7 +7,7 @@
 //! honoured exactly.
 
 use crate::idempotency::durable::{self, Refused, Settled};
-use crate::idempotency::{IdempotencyCache, Probe, IDEMPOTENCY_TTL_SECS};
+use crate::idempotency::{IDEMPOTENCY_TTL_SECS, IdempotencyCache, Probe};
 use busbar_kernel::governance::MemoryStore;
 
 fn key(actor: &str, header: &str) -> (String, String) {
@@ -113,12 +113,11 @@ fn replay_expires_after_the_ttl_and_a_fresh_mint_is_then_allowed() {
 
 #[test]
 fn create_and_rotate_scoped_keys_never_replay_each_other() {
-    // A create's cache key is (actor, header); a rotate's is (actor, "rotate:{id}:{k}"). The same
-    // header value presented to both verbs must never collide, or one verb replays the other's
-    // cached response — and a rotate's response carries secret material.
+    use crate::idempotency::{create_replay_key, rotate_replay_key};
+    // Even a create header spelling the complete rotate key belongs to the create namespace.
     let cache: IdempotencyCache<String> = IdempotencyCache::new();
-    let create_key = key("alice", "shared-header");
-    let rotate_key = key("alice", "rotate:key-42:shared-header");
+    let rotate_key = key("alice", &rotate_replay_key("key-42", "shared-header"));
+    let create_key = key("alice", &create_replay_key(&rotate_key.1));
 
     let r = match cache.probe(create_key, 1_000) {
         Probe::Reserved(r) => r,
@@ -126,7 +125,7 @@ fn create_and_rotate_scoped_keys_never_replay_each_other() {
     };
     r.commit("created".to_string(), 1_000);
 
-    // The rotate-scoped key, despite sharing the header string, must be a fresh reservation.
+    // The rotate must reserve independently of the adversarial create header.
     match cache.probe(rotate_key, 1_000) {
         Probe::Reserved(_) => {}
         _ => panic!("a rotate's scoped key must not see the create's committed slot"),
@@ -141,13 +140,46 @@ mod sentinel_tests;
 /// create and a rotate sharing a header value never share one.
 #[test]
 fn the_rotate_replay_key_is_framed_so_no_two_pairs_share_a_slot() {
-    use crate::idempotency::rotate_replay_key;
+    use crate::idempotency::{create_replay_key, rotate_replay_key};
     assert_eq!(rotate_replay_key("a:b", "c"), "rotate:3:a:b:1:c");
     assert_eq!(rotate_replay_key("a", "b:c"), "rotate:1:a:3:b:c");
     assert_ne!(rotate_replay_key("a:b", "c"), rotate_replay_key("a", "b:c"));
-    assert_ne!(rotate_replay_key("x", "shared"), "shared");
+    assert_ne!(
+        rotate_replay_key("x", "shared"),
+        create_replay_key("shared")
+    );
+    assert_ne!(
+        rotate_replay_key("x", "h"),
+        create_replay_key("rotate:1:x:1:h")
+    );
+    assert_eq!(create_replay_key("é"), "create:2:é");
     // The length is of BYTES, so a multi-byte id puts its boundary where the reader finds it.
     assert_eq!(rotate_replay_key("é", "h"), "rotate:2:é:1:h");
+}
+
+/// Cache loss or another node still uses disjoint Store claims in both operation orders.
+#[test]
+fn create_and_rotate_claims_are_disjoint_after_cache_loss() {
+    use crate::idempotency::{create_replay_key, rotate_replay_key};
+    let rotate = key("alice", &rotate_replay_key("x", "h"));
+    let create = key("alice", &create_replay_key("rotate:1:x:1:h"));
+    for (first, second) in [(&create, &rotate), (&rotate, &create)] {
+        let store = MemoryStore::new();
+        let claim = durable::claim(&store, first, 1_000).expect("first operation claims");
+        durable::settle(&store, &claim, 1_001, &Settled::Applied("key".into()))
+            .expect("first operation settles");
+        assert!(
+            durable::claim(&store, second, 1_002).is_ok(),
+            "other operation must claim independently"
+        );
+        assert!(
+            matches!(
+                durable::claim(&store, first, 1_002),
+                Err(Refused::Applied(_))
+            ),
+            "the original operation remains protected"
+        );
+    }
 }
 
 /// A reservation handed to an uncancellable path stays finishable: after `in_flight` a drop leaves
@@ -232,4 +264,91 @@ fn claims_are_scoped_to_the_principal() {
     let store = MemoryStore::new();
     durable::claim(&store, &key("alice", "same"), 1_000).unwrap();
     assert!(durable::claim(&store, &key("bob", "same"), 1_000).is_ok());
+}
+
+#[test]
+fn a_held_claim_never_expires_while_its_effect_or_settlement_is_unknown() {
+    let store = MemoryStore::new();
+    let k = key("alice", "held-without-settlement");
+    let first = durable::claim_held(&store, &k, 1_000).unwrap();
+    let later = 1_000 + IDEMPOTENCY_TTL_SECS * 3;
+    // Death or a failed settlement after the effect leaves no record. Its permanent token still
+    // prevents both the same node and a fresh caller from starting another effect.
+    assert_eq!(
+        durable::claim_held(&store, &k, later),
+        Err(Refused::InFlight)
+    );
+    let receipt = b"the exact first operation, metadata, body and 503".to_vec();
+    durable::settle(&store, &first, 1_000, &Settled::Retained(receipt.clone())).unwrap();
+    // An unrelated settle sweeps old terminal rows; the retained row remains active.
+    let other = durable::claim_held(&store, &key("alice", "unrelated-held"), later).unwrap();
+    durable::settle(&store, &other, later, &Settled::Answer(b"done".to_vec())).unwrap();
+    assert_eq!(
+        durable::claim_held(&store, &k, later),
+        Err(Refused::Retained(receipt))
+    );
+}
+
+#[test]
+fn an_old_held_refusal_cannot_skip_a_newer_in_flight_generation() {
+    let store = MemoryStore::new();
+    let k = key("alice", "held-released");
+    let first = durable::claim_held(&store, &k, 1_000).unwrap();
+    durable::settle(&store, &first, 1_000, &Settled::Released).unwrap();
+    let second = durable::claim_held(&store, &k, 1_001).unwrap();
+    assert_ne!(first, second);
+    assert_eq!(
+        durable::claim_held(&store, &k, 1_002),
+        Err(Refused::InFlight)
+    );
+    let later = 1_000 + IDEMPOTENCY_TTL_SECS * 3;
+    assert_eq!(
+        durable::claim_held(&store, &k, later),
+        Err(Refused::InFlight)
+    );
+    durable::settle(
+        &store,
+        &second,
+        1_001,
+        &Settled::Answer(b"completed".to_vec()),
+    )
+    .unwrap();
+    let third = durable::claim_held(&store, &k, later).unwrap();
+    assert_ne!(second, third, "only a definite answer expires normally");
+    assert_eq!(
+        durable::claim_held(&store, &k, later + 1),
+        Err(Refused::InFlight)
+    );
+}
+
+#[test]
+fn a_late_predecessor_settlement_cannot_replace_a_successor_receipt() {
+    let store = MemoryStore::new();
+    let k = key("alice", "late-settlement");
+    let first = durable::claim_held(&store, &k, 1_000).unwrap();
+    durable::settle(&store, &first, 1_000, &Settled::Released).unwrap();
+    let second = durable::claim_held(&store, &k, 1_001).unwrap();
+    let receipt = Settled::Retained(b"exact successor operation and answer".to_vec());
+    durable::settle(&store, &second, 1_001, &receipt).unwrap();
+    // The first upsert had timed out, and its delayed retry lands after generation1 settled.
+    durable::settle(&store, &first, 1_000, &Settled::Released).unwrap();
+    assert_eq!(
+        durable::claim_held(&store, &k, 10_000),
+        Err(Refused::Retained(
+            b"exact successor operation and answer".to_vec()
+        ))
+    );
+}
+
+#[test]
+fn a_legacy_refusal_cannot_hide_its_pending_successor_during_migration() {
+    let store = MemoryStore::new();
+    let k = key("alice", "legacy-pending-successor");
+    let first = durable::claim(&store, &k, 1_000).unwrap();
+    durable::settle(&store, &first, 1_000, &Settled::Released).unwrap();
+    let _pending = durable::claim(&store, &k, 1_001).unwrap();
+    assert_eq!(
+        durable::claim_held(&store, &k, 1_002),
+        Err(Refused::InFlight)
+    );
 }

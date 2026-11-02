@@ -282,7 +282,7 @@ fn a_failed_era_row_retries_without_repeating_the_successful_plain_row() {
         let mut cells = gov.budget.write(bucket);
         let cell = cells.get_mut(bucket).unwrap();
         cell.fee_eras = Default::default();
-        cell.fee_eras.charge(42);
+        cell.fee_eras.charge(RawRateEra::legacy(42));
     }
     store
         .era_down
@@ -325,7 +325,7 @@ fn correction_hydration_preserves_an_older_inflight_eras_retry_and_group_owner()
         let mut cells = gov.budget.write(bucket);
         let cell = cells.get_mut(bucket).unwrap();
         cell.fee_eras = Default::default();
-        cell.fee_eras.charge(42);
+        cell.fee_eras.charge(RawRateEra::legacy(42));
     }
     metered(&gov, &key.id, "m", 1, next);
     // Isolate the older group-window flush. The key's all-time row is a different target

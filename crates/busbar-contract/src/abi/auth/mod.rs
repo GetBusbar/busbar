@@ -538,12 +538,18 @@ pub fn retry_after_secs(header_value: &[u8], now_unix: u64) -> Option<u64> {
             n.saturating_mul(10).saturating_add(u64::from(d - b'0'))
         }));
     }
-    let at = http_date_unix(std::str::from_utf8(v).ok()?)?;
-    Some(u64::try_from(at).map_or(0, |at| at.saturating_sub(now_unix)))
+    let at = http_date_unix(std::str::from_utf8(v).ok()?, now_unix)?;
+    u64::try_from((at - i128::from(now_unix)).max(0)).ok()
 }
 
 /// An HTTP-date (IMF-fixdate, RFC 850 or asctime; RFC 9110 §5.6.7) as Unix seconds.
-fn http_date_unix(v: &str) -> Option<i64> {
+fn http_date_unix(v: &str, now_unix: u64) -> Option<i128> {
+    const SECONDS_PER_DAY: u64 = 86_400;
+    const YEARS_PER_CENTURY: i128 = 100;
+    const YEARS_PER_ERA: i128 = 400;
+    const DAYS_PER_ERA: i128 = 146_097;
+    const CIVIL_UNIX_EPOCH_DAYS: i128 = 719_468;
+    const RFC850_FUTURE_YEARS: i128 = 50;
     const DAYS: [&str; 7] = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
     const LONG_DAYS: [&str; 7] = [
         "Monday",
@@ -584,7 +590,7 @@ fn http_date_unix(v: &str) -> Option<i64> {
     let (year, mon, day, (h, m, s)) = match *tokens.as_slice() {
         // IMF-fixdate: `Sun, 06 Nov 1994 08:49:37 GMT`.
         [wd, d, mo, y, t, "GMT"] if DAYS.iter().any(|n| wd.strip_suffix(',') == Some(*n)) => (
-            i64::from(digits(y, 4)?),
+            i128::from(digits(y, 4)?),
             month(mo)?,
             digits(d, 2)?,
             time(t)?,
@@ -596,17 +602,40 @@ fn http_date_unix(v: &str) -> Option<i64> {
             if p.next().is_some() {
                 return None;
             }
-            let y = i64::from(digits(y, 2)?);
-            (
-                if y < 70 { 2000 + y } else { 1900 + y },
-                month(mo)?,
-                digits(d, 2)?,
-                time(t)?,
-            )
+            let y = i128::from(digits(y, 2)?);
+            let (mon, day, (h, m, s)) = (month(mo)?, digits(d, 2)?, time(t)?);
+            // H. Hinnant's `civil_from_days`, inverse of the conversion below. Using i128
+            // keeps both conversions in range even when now_unix is u64::MAX.
+            let z = i128::from(now_unix / SECONDS_PER_DAY) + CIVIL_UNIX_EPOCH_DAYS;
+            let era = z / DAYS_PER_ERA;
+            let doe = z - era * DAYS_PER_ERA;
+            let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+            let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+            let mp = (5 * doy + 2) / 153;
+            let now_day = doy - (153 * mp + 2) / 5 + 1;
+            let now_mon = if mp < 10 { mp + 3 } else { mp - 9 };
+            let now_year = yoe + era * YEARS_PER_ERA + i128::from(now_mon <= 2);
+            let last_future_year = now_year + RFC850_FUTURE_YEARS;
+            let mut year = last_future_year - (last_future_year - y).rem_euclid(YEARS_PER_CENTURY);
+            let seconds = u64::from(h) * 3600 + u64::from(m) * 60 + u64::from(s);
+            // RFC 9110 §5.6.7: only a timestamp MORE than 50 calendar years ahead moves
+            // to the most recent matching past year. Compare month, day and time too,
+            // before validating leap days in the resolved century.
+            if (year, i128::from(mon), i128::from(day), seconds)
+                > (
+                    last_future_year,
+                    now_mon,
+                    now_day,
+                    now_unix % SECONDS_PER_DAY,
+                )
+            {
+                year -= YEARS_PER_CENTURY;
+            }
+            (year, mon, day, (h, m, s))
         }
         // asctime: `Sun Nov  6 08:49:37 1994`.
         [wd, mo, d, t, y] if DAYS.contains(&wd) => (
-            i64::from(digits(y, 4)?),
+            i128::from(digits(y, 4)?),
             month(mo)?,
             digits(d, 1).or_else(|| digits(d, 2))?,
             time(t)?,
@@ -625,13 +654,18 @@ fn http_date_unix(v: &str) -> Option<i64> {
     }
     // Days from the civil date (H. Hinnant's `days_from_civil`), March-based years.
     let y = if mon <= 2 { year - 1 } else { year };
-    let era = y.div_euclid(400);
-    let yoe = y - era * 400;
-    let mp = i64::from((mon + 9) % 12);
-    let doy = (153 * mp + 2) / 5 + i64::from(day) - 1;
+    let era = y.div_euclid(YEARS_PER_ERA);
+    let yoe = y - era * YEARS_PER_ERA;
+    let mp = i128::from((mon + 9) % 12);
+    let doy = (153 * mp + 2) / 5 + i128::from(day) - 1;
     let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    let days = era * 146_097 + doe - 719_468;
-    Some(days * 86_400 + i64::from(h) * 3600 + i64::from(m) * 60 + i64::from(s))
+    let days = era * DAYS_PER_ERA + doe - CIVIL_UNIX_EPOCH_DAYS;
+    Some(
+        days * i128::from(SECONDS_PER_DAY)
+            + i128::from(h) * 3600
+            + i128::from(m) * 60
+            + i128::from(s),
+    )
 }
 
 /// The reply extensions that state `secs` under [`EXT_RETRY_AFTER`], as ASCII decimal.

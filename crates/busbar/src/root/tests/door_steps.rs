@@ -1457,6 +1457,8 @@ pub(crate) struct TokenEndpoint {
     opened: std::sync::Mutex<Vec<Opened>>,
     /// Each open's head fields, as the table received them.
     fields: std::sync::Mutex<Vec<HeadFields>>,
+    /// Independent dial, whole-request and secure-delivery requirements seen at the host seam.
+    bounds: std::sync::Mutex<Vec<(u64, u64, bool)>>,
     replies: std::sync::Mutex<Replies>,
     /// The reply body to a request body, when the endpoint answers by what it was asked (an RFC
     /// 8693 exchange's token names its scope); `None` = the minted replies above.
@@ -1513,6 +1515,22 @@ fn reply_piece(kind: busbar_contract::conn::PieceKind, len: usize) -> busbar_con
 }
 
 impl busbar_contract::conn::DeclaredConns for TokenEndpoint {
+    fn open_request(
+        &self,
+        caller: busbar_contract::conn::InstanceId,
+        need: busbar_contract::conn::NeedId,
+        desc: &busbar_contract::conn::OpenDesc<'_>,
+        require_secure: bool,
+        dial_timeout_ms: u64,
+    ) -> Result<busbar_contract::conn::ConnId, busbar_contract::conn::ConnError> {
+        use busbar_contract::conn::Conns as _;
+        self.bounds
+            .lock()
+            .unwrap()
+            .push((dial_timeout_ms, desc.timeout_ms, require_secure));
+        self.open_with_security(caller, need, desc, require_secure)
+    }
+
     fn declare(
         &self,
         owner: busbar_contract::conn::InstanceId,
@@ -1548,6 +1566,49 @@ impl busbar_contract::conn::DeclaredConns for TokenEndpoint {
     fn serves_scheme(&self, _: &str) -> bool {
         true
     }
+}
+
+#[test]
+fn presenting_a_request_preserves_its_independent_bounds_and_secure_delivery_requirement() {
+    use busbar_contract::conn::{ConnError, DeclaredConns, InstanceId, NeedId, OpenDesc};
+    use std::sync::Arc;
+    const OWNER: InstanceId = InstanceId(99);
+    const NEED: NeedId = NeedId(0);
+    const TARGET: &str = "https://user:pass@tokens.test/mint";
+    let endpoint = Arc::new(TokenEndpoint::default());
+    endpoint.slab.declare(OWNER, NEED);
+    let table = super::PresentingConns {
+        inner: endpoint.clone(),
+        userinfo: crate::root::userinfo::UserinfoBasic::of(TARGET).unwrap(),
+    };
+    let fields: &[(&str, &[u8])] = &[("x-order", b"last")];
+    let desc = OpenDesc {
+        target: TARGET,
+        fields,
+        timeout_ms: 900,
+        ..Default::default()
+    };
+    table.open_request(OWNER, NEED, &desc, false, 123).unwrap();
+    assert_eq!(*endpoint.bounds.lock().unwrap(), vec![(123, 900, false)]);
+    assert_eq!(
+        endpoint.opened.lock().unwrap()[0].1,
+        "https://tokens.test/mint"
+    );
+    let sent = endpoint.fields.lock().unwrap();
+    assert_eq!(sent[0][0].0, "authorization");
+    assert!(sent[0][0].1.starts_with(b"Basic "));
+    assert_eq!(sent[0][1], ("x-order".to_owned(), b"last".to_vec()));
+    drop(sent);
+    assert_eq!(
+        table.open_request(OWNER, NEED, &desc, true, 456),
+        Err(ConnError::AuthRefused)
+    );
+    assert_eq!(endpoint.bounds.lock().unwrap()[1], (456, 900, true));
+    assert_eq!(
+        endpoint.opened.lock().unwrap().len(),
+        1,
+        "protected fields never reach an insecure open"
+    );
 }
 
 impl busbar_contract::conn::Conns for TokenEndpoint {

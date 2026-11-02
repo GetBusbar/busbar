@@ -500,8 +500,11 @@ fn dest_judge_refuses_private_reach_when_asked_and_names_what_decided_it() {
         ));
         let done = r.held.lock().unwrap().pop().expect("a resolution asked");
         done(answer);
-        let got = slot.lock().unwrap().take().expect("answered");
-        (got.value, String::from_utf8(got.bytes).expect("text"))
+        let mut got = slot.lock().unwrap().take().expect("answered");
+        (
+            got.value,
+            String::from_utf8(std::mem::take(&mut got.bytes)).expect("text"),
+        )
     };
     let private = vec![
         "93.184.216.34".parse().unwrap(),

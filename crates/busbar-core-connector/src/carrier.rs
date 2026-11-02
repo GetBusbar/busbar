@@ -283,7 +283,23 @@ impl Carried {
         };
         let mut o: ConnOut = blank_out();
         let c = wr.cross(door.as_ref(), Carry::Dial(&mut i, &mut o), None);
+        // A dial that PENDED is not wanted (it may not pend): cancel it, on its own ticket and
+        // while its admission still stands, so whatever the carrier's cancel makes or releases is
+        // still recorded under that ticket for the settle below. No host lock is held here.
+        if c.is_none() {
+            wr.cancel(door.as_ref());
+        }
         let (handle, failure) = io.settle(wr.ticket());
+        // READY alone transfers the made handle to the connection. Every other end (the carrier
+        // refused or failed, the host recorded a failure, a fault, or the dial pended and was
+        // cancelled) leaves a handle the dial made with no owner: the host's socket or the
+        // spawned program would stay registered until the carrier's instance ends. It is retired
+        // now, after the settle and with no lock held; a handle the carrier already closed
+        // itself names nothing and is left alone.
+        let ready = c.as_ref().is_some_and(|c| c.outcome == Outcome::Ready);
+        if let (false, Some(h)) = (ready, handle) {
+            io.retire_handle(h);
+        }
         match c {
             Some(c) if c.outcome == Outcome::Ready => Ok(Self {
                 door,
@@ -515,3 +531,7 @@ impl Drop for Carried {
 #[cfg(test)]
 #[path = "tests/carrier_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "tests/carrier_dial_retirement_tests.rs"]
+mod dial_retirement_tests;

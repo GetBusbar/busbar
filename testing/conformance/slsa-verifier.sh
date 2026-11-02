@@ -17,8 +17,9 @@
 #   <release>/busbar-linux-x86_64-<sha>  <release>/busbar-linux-aarch64-<sha>
 #   <release>/busbar-linux-<sha>.att.json      the DSSE envelope over an in-toto statement whose
 #                                              subjects are those binaries' sha256
-# where <release> is the public rolling release dev-provenance of GetBusbar/busbar (no token).
-# Until both exist the verdict is `not-run` (armed=false), never a pass.
+# The assets must be supplied by the immutable current build (or the explicit fixture directory),
+# never selected from a moving historical release. Until the signed source-identity contract and
+# native delivery exist the verdict is `not-run` (armed=false), never a pass.
 #
 # THE THREE LEGS (pass only when all hold):
 #   CONTROL           (1) a third-party artifact attested keyless by its project (slsa-verifier's own
@@ -30,7 +31,9 @@
 #                     refused, each for the stated reason;
 #   SUBJECT           every published dev binary verifies against ModernCI's key and the type.
 # The attestation's tlog is not consulted (--insecure-ignore-tlog): a key-signed ModernCI attestation
-# is not uploaded to Rekor; the key is the only trust root. The predicate's content is not judged.
+# is not uploaded to Rekor; the key is the only trust root. A signature and subject digest alone do
+# not prove which source was built. RP-7 has no shipped predicate schema or producer yet, so this
+# rig cannot promote even a cryptographically valid envelope to a current-source pass.
 #
 # Test hooks: BUSBAR_DEV_PROVENANCE_DIR=<dir with the assets>, BUSBAR_BUILDER_PUB=<key file>.
 set -uo pipefail
@@ -40,19 +43,19 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 COSIGN_TAG=v2.6.5
 SV_BASE="https://github.com/slsa-framework/slsa-verifier/releases/download/v2.7.1"
 PTYPE=https://modernci.dev/attestation/check-output/v1
-REL_API="https://api.github.com/repos/GetBusbar/busbar/releases/tags/dev-provenance"
-REL_DL="https://github.com/GetBusbar/busbar/releases/download/dev-provenance"
 PUB="${BUSBAR_BUILDER_PUB:-$here/testing/conformance/modernci-builder.pub}"
 NOTRUN="dev builds' provenance moves from GitHub to ModernCI-signed attestations (ModernCI RP-7 not shipped)"
+EXPECTED_HEAD="${CONF_HEAD:-${MODERNCI_COMMIT:-$(git -C "$here" rev-parse HEAD)}}"
 W="$(mktemp -d)"
 trap 'rm -rf "$W"' EXIT
 say() { printf 'slsa-verifier: %s\n' "$*" >&2; }
 
 verdict() { # <status> <armed true|false> <reason>
-  python3 -I - "$CONFORMANCE_OUT/verdict.json" "$1" "$2" "$3" <<'PY'
+  python3 -I - "$CONFORMANCE_OUT/verdict.json" "$1" "$2" "$3" "$EXPECTED_HEAD" <<'PY'
 import json, sys
-out, status, armed, reason = sys.argv[1:5]
+out, status, armed, reason, head = sys.argv[1:6]
 json.dump({"suite": "slsa-verifier", "status": status, "armed": armed == "true",
+           "repo": "GetBusbar/busbar", "commit": head, "core_pin": head,
            "standard": "Signed build attestation (in-toto, ModernCI check output)",
            "plan": "cosign verify-blob-attestation of the dev build binaries against ModernCI's builder key",
            "spec_version": "cosign v2.6.5; " + "https://modernci.dev/attestation/check-output/v1",
@@ -60,7 +63,7 @@ json.dump({"suite": "slsa-verifier", "status": status, "armed": armed == "true",
 PY
 }
 fail() { say "FAIL: $*"; verdict fail true "$*"; exit 0; }
-notrun() { say "not-run: $*"; verdict not-run false "$NOTRUN"; exit 0; }
+notrun() { say "not-run: $*"; verdict not-run false "$*"; exit 0; }
 
 sha256() { if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | cut -d' ' -f1; else shasum -a 256 "$1" | cut -d' ' -f1; fi; }
 fetch() { # <url> <sha256> <dest>
@@ -126,28 +129,21 @@ grep -q 'invalid predicate type' "$W/n3.log" || fail "NEGATIVE CONTROL: the wron
 say "control 2 ok: key path accepts a good attestation; tampered artifact, wrong key and wrong type refused"
 
 # --- the subject's inputs --------------------------------------------------------------------------
+[[ "$EXPECTED_HEAD" =~ ^[0-9a-f]{40}$ ]] || fail "the expected source commit is not a full sha"
+[ "${BUSBAR_PIN:-$EXPECTED_HEAD}" = "$EXPECTED_HEAD" ] || fail "this core suite's pin differs from its expected source commit"
 [ -s "$PUB" ] || notrun "no ModernCI builder public key at $PUB"
 A="$W/asset"; mkdir -p "$A"
 if [ -n "${BUSBAR_DEV_PROVENANCE_DIR:-}" ]; then
   cp "$BUSBAR_DEV_PROVENANCE_DIR"/* "$A"/ 2>/dev/null || notrun "BUSBAR_DEV_PROVENANCE_DIR unreadable"
 else
-  curl -fsSL --retry 3 -o "$W/rel.json" "$REL_API" 2>/dev/null || notrun "no public dev-provenance release on GetBusbar/busbar"
-  python3 -I - "$W/rel.json" >"$W/assets.txt" <<'PY' || notrun "dev-provenance release is unreadable"
-import json, sys
-for a in json.load(open(sys.argv[1])).get("assets", []):
-    print(a["name"])
-PY
-  while read -r n; do
-    case "$n" in busbar-linux-*) curl -fsSL --retry 3 -o "$A/$n" "$REL_DL/$n" || fail "download of $n failed" ;; esac
-  done <"$W/assets.txt"
+  notrun "$NOTRUN; no immutable native attestation delivery for $EXPECTED_HEAD"
 fi
-att="$(ls "$A"/busbar-linux-*.att.json 2>/dev/null | head -n1)"
-[ -n "$att" ] || notrun "the dev-provenance release holds no busbar-linux-<sha>.att.json"
-sha="$(basename "$att" .att.json)"; sha="${sha#busbar-linux-}"
+sha="$EXPECTED_HEAD"
+att="$A/busbar-linux-$sha.att.json"
+[ -s "$att" ] || notrun "no attestation for the exact expected source $sha; historical builds cannot qualify"
 bins=(); for arch in x86_64 aarch64; do [ -f "$A/busbar-linux-$arch-$sha" ] && bins+=("$A/busbar-linux-$arch-$sha"); done
 [ "${#bins[@]}" = 2 ] || fail "SUBJECT: the release holds ${#bins[@]} of the two binaries (x86_64, aarch64) for $sha"
-head="$(git ls-remote https://github.com/GetBusbar/busbar refs/heads/dev 2>/dev/null | cut -c1-40)"
-say "subject: attestation for $sha (dev head: ${head:-unknown})"
+say "subject: attestation candidate for the exact expected source $sha"
 
 # --- NEGATIVE CONTROLS on the subject ------------------------------------------------------------
 b0="${bins[0]}"; cp "$b0" "$W/tam"; printf x >>"$W/tam"
@@ -163,6 +159,6 @@ for b in "${bins[@]}"; do
     || { sed 's/^/  /' "$W/s.log" >&2; fail "SUBJECT: cosign refused $(basename "$b"): $(tail -n1 "$W/s.log" | cut -c1-300)"; }
   say "subject ok: $(basename "$b")"
 done
-note="attestation for dev commit $sha, ${#bins[@]} binaries verified against ModernCI's builder key"
-[ -n "$head" ] && [ "$head" != "$sha" ] && note="$note; dev head is now $head (its build is not published yet)"
-verdict pass true "$note"
+# Do not invent RP-7 predicate fields or treat the artifact's filename as signed source proof.
+# Enable a pass only with the producer's published source/repo/builder binding and native receipt.
+notrun "${#bins[@]} binary digests and envelope signatures verified for filenames naming $sha; $NOTRUN, so the signed source commit/repo/builder binding is unproved"

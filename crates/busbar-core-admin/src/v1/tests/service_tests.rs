@@ -6,6 +6,8 @@
 use super::*;
 use busbar_kernel::config::{migrated_store_module, HookCfg, HookKind, PromptAccess, UserAccess};
 
+#[path = "bootstrap_rollback.rs"]
+mod bootstrap_rollback;
 #[path = "usage_adjustment_range.rs"]
 mod usage_adjustment_range;
 
@@ -286,6 +288,12 @@ fn fake_tarball_with(
 }
 
 impl DirAdmission {
+    fn rollback_only(bytes: &[u8]) -> bool {
+        bytes
+            .strip_prefix(FAKE_HEAD)
+            .and_then(|json| serde_json::from_slice::<serde_json::Value>(json).ok())
+            .is_some_and(|value| value["trust"].as_str() == Some("rollback-only"))
+    }
     /// What `bytes` state and the verdict on them.
     fn read(bytes: &[u8]) -> Result<(Stated, Judged), String> {
         let json = bytes
@@ -308,6 +316,9 @@ impl DirAdmission {
                 publisher: stated.publisher.clone(),
             },
             Some("allowed") => Judged::Allowed,
+            Some("rollback-only") => Judged::Rejected {
+                reason: "operator bootstrap floor rejects this test target".into(),
+            },
             _ => Judged::Rejected {
                 reason: "unsigned plugin (set plugins.trust.allow_unsigned)".to_string(),
             },
@@ -398,10 +409,17 @@ impl PluginAdmission for DirAdmission {
         _dir: &std::path::Path,
         _file: &str,
         tarball: &[u8],
-        _cfg: &busbar_kernel::config::PluginsCfg,
+        cfg: &busbar_kernel::config::PluginsCfg,
     ) -> Result<Admitted, Refusal> {
-        let (stated, judged) = Self::read(tarball)
+        let (stated, mut judged) = Self::read(tarball)
             .map_err(|e| Refusal::Validation(format!("invalid plugin tarball: {e}")))?;
+        if Self::rollback_only(tarball)
+            && cfg.min_versions.get(&stated.name) == Some(&stated.version)
+        {
+            judged = Judged::Trusted {
+                publisher: stated.publisher.clone(),
+            };
+        }
         if let Judged::Rejected { reason } = judged {
             return Err(Refusal::Conflict(format!(
                 "plugin rejected by the trust policy: {reason}"
@@ -417,9 +435,18 @@ impl PluginAdmission for DirAdmission {
     fn inspect(
         &self,
         tarball: &[u8],
-        _cfg: &busbar_kernel::config::PluginsCfg,
+        cfg: &busbar_kernel::config::PluginsCfg,
     ) -> Result<(Stated, Judged), Refusal> {
-        Self::read(tarball).map_err(|e| Refusal::Validation(format!("invalid plugin tarball: {e}")))
+        let (stated, mut judged) = Self::read(tarball)
+            .map_err(|e| Refusal::Validation(format!("invalid plugin tarball: {e}")))?;
+        if Self::rollback_only(tarball)
+            && cfg.min_versions.get(&stated.name) == Some(&stated.version)
+        {
+            judged = Judged::Trusted {
+                publisher: stated.publisher.clone(),
+            };
+        }
+        Ok((stated, judged))
     }
 
     fn rollback_target(
@@ -430,6 +457,7 @@ impl PluginAdmission for DirAdmission {
     ) -> Result<Stated, Refusal> {
         match Self::read(bytes) {
             Ok((stated, Judged::Trusted { .. } | Judged::Allowed)) => Ok(stated),
+            Ok((stated, _)) if Self::rollback_only(bytes) => Ok(stated),
             Ok((stated, Judged::Rejected { reason })) => Err(Refusal::Conflict(format!(
                 "rollback target `{file}` is not loadable under the trust policy even with the \
                  floor lowered to its own version {}: {reason}",
@@ -2579,14 +2607,20 @@ mod dated_rate_card_history {
     /// seam because `record_metering` can only ever bucket at the wall clock, and these windows are
     /// in the past.
     pub(super) fn gov_with_rows(rows: &[(u64, u64)]) -> Arc<GovState> {
+        gov_with_priced_rows(rows.iter().map(|(bucket, era)| (*bucket, *era, "")))
+    }
+
+    fn gov_with_priced_rows<'a>(
+        rows: impl IntoIterator<Item = (u64, u64, &'a str)>,
+    ) -> Arc<GovState> {
         let store = Arc::new(MemoryStore::new());
-        for (bucket, priced_from_ms) in rows {
+        for (bucket, priced_from_ms, pricing_version) in rows {
             busbar_contract::records::RecordStore::add_metering(
                 store.as_ref(),
                 &busbar_contract::records::MeteringDelta {
                     usage_units: Default::default(),
                     key_id: KEY.to_string(),
-                    bucket: *bucket,
+                    bucket,
                     model: LANE.to_string(),
                     provider: PROVIDER.to_string(),
                     tokens_input: TOKENS,
@@ -2596,8 +2630,8 @@ mod dated_rate_card_history {
                     requests: 1,
                     billable_requests: 1,
                     key_group_at_use: String::new(),
-                    pricing_version: String::new(),
-                    priced_from_ms: *priced_from_ms,
+                    pricing_version: pricing_version.to_string(),
+                    priced_from_ms,
                 },
             )
             .expect("the memory store accepts a metering delta");
@@ -2820,6 +2854,145 @@ mod dated_rate_card_history {
             read(gov, src, prepaid).await.total.spend_micros,
             1_000,
             "the prepaid window prices at 1"
+        );
+    }
+
+    /// A Store activation can remain unconfirmed across a UTC boundary while the serving App
+    /// continues stamping its old configuration era. Observing that activation later must not
+    /// reprice those old-served counts at the later bucket's newer configuration.
+    #[tokio::test]
+    async fn old_served_counts_keep_their_config_era_across_a_later_bucket_and_activation() {
+        let (old, activated, later) = windows();
+        let mut history = History::opening(card(20.0), 0);
+        let old_seq = history.append(CardEntryDraft {
+            effective_from: old * 1_000,
+            effective_until: None,
+            card: card(10.0),
+            appended_at: old * 1_000,
+            author: Author::Config { policy_epoch: 1 },
+        });
+        history.append(CardEntryDraft {
+            effective_from: activated * 1_000,
+            effective_until: None,
+            card: card(1.0),
+            appended_at: activated * 1_000,
+            author: Author::Config { policy_epoch: 2 },
+        });
+        let src = source(history);
+        let old_rows = gov_with_rows(&[(later, old * 1_000)]);
+        let old_read = read(old_rows.clone(), src, later).await;
+        assert_eq!(old_read.total.spend_micros, 10_000);
+        assert_eq!(old_read.rate_card_version, Some(old_seq.get()));
+        assert_eq!(
+            read_as_of(old_rows, src, later, Some(old_seq.get()))
+                .await
+                .unwrap()
+                .total
+                .spend_micros,
+            10_000,
+        );
+        let both = gov_with_rows(&[(later, old * 1_000), (later, activated * 1_000)]);
+        let both_read = read(both, src, later).await;
+        assert_eq!(both_read.total.tokens_input, TOKENS * 2);
+        assert_eq!(both_read.total.spend_micros, 11_000);
+    }
+
+    /// Era selection and correction time are separate: a later Config cannot steal an old row,
+    /// while a covering amendment still reaches that row at its own wall-clock bucket.
+    #[tokio::test]
+    async fn amendments_reach_old_served_eras_without_enabling_later_config_repricing() {
+        let (old, activated, corrected_day) = windows();
+        let mut history = History::opening(card(20.0), 0);
+        let old_seq = history.append(CardEntryDraft {
+            effective_from: old * 1_000,
+            effective_until: None,
+            card: card(10.0),
+            appended_at: old * 1_000,
+            author: Author::Config { policy_epoch: 1 },
+        });
+        let activated_seq = history.append(CardEntryDraft {
+            effective_from: activated * 1_000,
+            effective_until: None,
+            card: card(1.0),
+            appended_at: activated * 1_000,
+            author: Author::Config { policy_epoch: 2 },
+        });
+        let amended_seq = history.append(CardEntryDraft {
+            effective_from: corrected_day * 1_000,
+            effective_until: Some((corrected_day + DAY) * 1_000),
+            card: card(5.0),
+            appended_at: busbar_kernel::store::now_ms(),
+            author: Author::Amend {
+                reason_hash: [7; 32],
+            },
+        });
+        let src = source(history);
+        let rows = gov_with_rows(&[(activated, old * 1_000), (corrected_day, old * 1_000)]);
+        let before = read_as_of(rows.clone(), src, corrected_day, Some(activated_seq.get()))
+            .await
+            .unwrap();
+        assert_eq!(before.total.spend_micros, 10_000);
+        assert_eq!(before.rate_card_version, Some(old_seq.get()));
+        let corrected = read(rows.clone(), src, corrected_day).await;
+        assert_eq!(corrected.total.spend_micros, 5_000);
+        assert_eq!(corrected.rate_card_version, Some(amended_seq.get()));
+        assert_eq!(read(rows, src, activated).await.total.spend_micros, 10_000);
+    }
+
+    /// Exact opening provenance distinguishes new counts served at era zero from historical
+    /// undated rows. Legacy free-text versions keep their temporal reading; a malformed or unknown
+    /// versioned identity refuses instead of quietly picking the current configuration.
+    #[tokio::test]
+    async fn exact_opening_provenance_survives_a_later_config_and_legacy_names_keep_their_reading()
+    {
+        use busbar_kernel::cost::EntryId;
+        const UNKNOWN_ENTRY_ID: &str = "ffffffffffffffffffffffff";
+        const LEGACY_NAMED_VERSION: &str = "historical-card";
+        let (_old, activated, later) = windows();
+        let mut history = History::opening(card(10.0), 0);
+        let opening_version = history.entries()[0].id().metering_version();
+        let activated_seq = history.append(CardEntryDraft {
+            effective_from: activated * 1_000,
+            effective_until: None,
+            card: card(1.0),
+            appended_at: activated * 1_000,
+            author: Author::Config { policy_epoch: 1 },
+        });
+        let activated_version = history.entries()[1].id().metering_version();
+        let src = source(history);
+        let known = gov_with_priced_rows([(later, 0, opening_version.as_str())]);
+        let view = read(known, src, later).await;
+        assert_eq!(view.total.spend_micros, 10_000);
+        assert_eq!(view.rate_card_version, Some(0));
+        for legacy in ["", LEGACY_NAMED_VERSION] {
+            let rows = gov_with_priced_rows([(later, 0, legacy)]);
+            let view = read(rows, src, later).await;
+            assert_eq!(view.total.spend_micros, 1_000);
+            assert_eq!(view.rate_card_version, Some(activated_seq.get()));
+        }
+        let malformed = EntryId::METERING_VERSION_PREFIX;
+        let unknown = EntryId::parse_hex(UNKNOWN_ENTRY_ID)
+            .unwrap()
+            .metering_version();
+        for (era, version) in [
+            (0, malformed),
+            (0, unknown.as_str()),
+            (activated * 1_000, opening_version.as_str()),
+        ] {
+            let rows = gov_with_priced_rows([(later, era, version)]);
+            assert!(matches!(
+                read_as_of(rows, src, later, None).await,
+                Err(AdminError::Internal)
+            ));
+        }
+        let new_rows =
+            gov_with_priced_rows([(later, activated * 1_000, activated_version.as_str())]);
+        assert!(
+            matches!(
+                read_as_of(new_rows, src, later, Some(0)).await,
+                Err(AdminError::Internal)
+            ),
+            "a snapshot cannot price counts whose exact source entry it does not contain"
         );
     }
 
@@ -4189,6 +4362,77 @@ mod plane_fees_on_admin_usage {
         assert_eq!(admin, 410 * MICROS_PER_MINOR);
     }
 
+    /// The row total and each reported class use the same old served entry after a newer
+    /// activation becomes visible across a bucket boundary. Resolving the class by wall time a
+    /// second time would report a cost that disagrees with the very row containing it.
+    #[tokio::test]
+    async fn an_old_served_entry_prices_both_the_row_and_its_itemized_classes() {
+        use busbar_kernel::cost::{Author, CardEntryDraft, History};
+        const TOOL_SUBJECT: &str = "srv.read";
+        const TOOL_CLASS: &str = "tool_calls";
+        const CALLS: u64 = 3;
+        const OLD_CALL_MICROS: u64 = 70_000;
+        const NEW_CALL_MICROS: u64 = 10_000;
+        const OLD_REQUEST_MINOR: i64 = 3;
+        const NEW_REQUEST_MINOR: i64 = 1;
+        let bucket = busbar_kernel::governance::metering_bucket(busbar_kernel::store::now());
+        let day = busbar_kernel::governance::METERING_BUCKET_SECS;
+        let old_era = (bucket - day) * 1_000;
+        let activated = (bucket - day / 2) * 1_000;
+        let old_cost = carded_cost(OLD_CALL_MICROS, OLD_REQUEST_MINOR, 0);
+        let new_cost = carded_cost(NEW_CALL_MICROS, NEW_REQUEST_MINOR, 0);
+        let mut history = History::opening(new_cost.card().clone(), 0);
+        let old_seq = history.append(CardEntryDraft {
+            effective_from: old_era,
+            effective_until: None,
+            card: old_cost.card().clone(),
+            appended_at: old_era,
+            author: Author::Config { policy_epoch: 1 },
+        });
+        let old_version = history.entries()[1].id().metering_version();
+        history.append(CardEntryDraft {
+            effective_from: activated,
+            effective_until: None,
+            card: new_cost.card().clone(),
+            appended_at: activated,
+            author: Author::Config { policy_epoch: 2 },
+        });
+        let store = Arc::new(MemoryStore::new());
+        store
+            .add_metering(&busbar_contract::records::MeteringDelta {
+                key_id: KEY.to_string(),
+                bucket,
+                model: TOOL_SUBJECT.to_string(),
+                provider: FEE_PLANE.to_string(),
+                tokens_input: 0,
+                tokens_output: 0,
+                tokens_cache_read: 0,
+                tokens_cache_write: 0,
+                requests: CALLS,
+                billable_requests: CALLS,
+                key_group_at_use: String::new(),
+                pricing_version: old_version,
+                priced_from_ms: old_era,
+                usage_units: std::collections::BTreeMap::from([(TOOL_CLASS.to_string(), CALLS)]),
+            })
+            .unwrap();
+        let gov = Arc::new(GovState::new(store, None).unwrap());
+        let app = crate::new_test_app().governance(gov).cost(new_cost).build();
+        let _planes = TestRegistryIsolation::seeded(&[&POOLS, &FEE, &FREE]);
+        let view = AdminService::new(app)
+            .with_rate_history(Arc::new(history))
+            .get_usage(Some(bucket), None)
+            .await
+            .unwrap();
+        let call_count = i64::try_from(CALLS).unwrap();
+        let class_cost = call_count * i64::try_from(OLD_CALL_MICROS).unwrap();
+        let request_cost = call_count * OLD_REQUEST_MINOR * MICROS_PER_MINOR;
+        assert_eq!(view.total.spend_micros, class_cost + request_cost);
+        assert_eq!(view.total.classes[TOOL_CLASS].cost, class_cost);
+        assert_eq!(view.by_model[0].usage.classes[TOOL_CLASS].cost, class_cost);
+        assert_eq!(view.rate_card_version, Some(old_seq.get()));
+    }
+
     /// THE DATED PATH (#79) prices a row's ledgered classes as the fallback does: a plane's fee row
     /// carrying 2 sessions at 40, a tool row carrying 3 requests at fee 3 and 3 `tool_calls` at 7, a
     /// pools row carrying 1,000,000 search units at 3 micro-units and 1 request at the flat 5.
@@ -4399,70 +4643,45 @@ fn every_admin_trust_moment_resolves_through_the_snapshots_builder() {
     assert!(validate_plugin_filename(&none, "plain.tar.gz").is_err());
 }
 
-/// An overlay file that is a NAMED PIPE, and the read of it as a race between the runtime and a
-/// watchdog: a read of the pipe parks until something opens its writing end. A sibling task on the
-/// test's one-worker runtime opens it — which it can do only if the read left that worker free. A
-/// watchdog thread opens it instead after a bound, so a read that held the worker still finishes,
-/// and says that it had to.
-///
-/// Returns whether the read ran off the worker: `true` when the sibling released it, `false` when
-/// only the watchdog could.
-#[cfg(unix)]
-async fn overlay_read_left_the_worker_free<F, Fut>(tag: &str, read: F) -> bool
+/// A Store read parks at a barrier. A sibling on the one-worker runtime announces it ran;
+/// the watchdog releases the read after that announcement or a bounded timeout. The timeout
+/// still releases an incorrectly inline read, so the regression fails without hanging.
+async fn overlay_read_left_the_worker_free<F, Fut>(read: F) -> bool
 where
     F: FnOnce(Arc<App>) -> Fut,
     Fut: std::future::Future<Output = ()>,
 {
-    let dir = tmp_plugins_dir(tag);
-    std::fs::create_dir_all(&dir).unwrap();
-    let pipe = dir.join("overlay.json");
-    let made = std::process::Command::new("mkfifo")
-        .arg(&pipe)
-        .status()
-        .expect("mkfifo runs");
-    assert!(made.success(), "mkfifo {}", pipe.display());
-    let app = crate::new_test_app().overlay_path(pipe.clone()).build();
-
-    let watchdog_fired = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let overlay = busbar_kernel::test_support::TestOverlayStore::new();
+    let app = crate::new_test_app()
+        .overlay_backend(overlay.backend())
+        .build();
+    let barrier = Arc::new(std::sync::Barrier::new(2));
+    overlay.block_reads(barrier.clone());
     let (done, finished) = std::sync::mpsc::channel::<()>();
-    let watchdog = {
-        let pipe = pipe.clone();
-        let fired = Arc::clone(&watchdog_fired);
-        std::thread::spawn(move || {
-            if finished
-                .recv_timeout(std::time::Duration::from_secs(5))
-                .is_err()
-            {
-                fired.store(true, std::sync::atomic::Ordering::SeqCst);
-                let _ = std::fs::OpenOptions::new().write(true).open(&pipe);
-            }
-        })
-    };
-    let sibling = {
-        let pipe = pipe.clone();
-        tokio::spawn(async move {
-            let _ = std::fs::OpenOptions::new().write(true).open(&pipe);
-        })
-    };
+    let watchdog = std::thread::spawn(move || {
+        let free = finished
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .is_ok();
+        barrier.wait();
+        free
+    });
+    let sibling = tokio::spawn(async move {
+        let _ = done.send(());
+    });
     read(app).await;
-    let _ = done.send(());
-    watchdog.join().unwrap();
-    // A read that held the worker never let the sibling start, and with the read over nothing
-    // would ever open the pipe's reading end for it: cancel it before its first poll. A read that
-    // left the worker free already let it run to completion, so this cancels nothing.
+    let free = watchdog.join().unwrap();
     sibling.abort();
     let _ = sibling.await;
-    !watchdog_fired.load(std::sync::atomic::Ordering::SeqCst)
+    free
 }
 
 /// RED (a read blocks an async worker): `GET /<section>` lists the overlay's unparseable entries,
-/// which reads and parses the operator's overlay FILE. That read runs off the async worker, as every
-/// other admin disk read does. RED while it ran inline: the worker parked on the file, the sibling
+/// which reads and parses the operator's Store overlay. That read runs off the async worker.
+/// RED while it ran inline: the worker parked in the Store, the sibling
 /// never ran, and only the watchdog could release the read.
-#[cfg(unix)]
 #[tokio::test(flavor = "current_thread")]
 async fn list_named_defs_reads_the_overlay_off_the_async_worker() {
-    let free = overlay_read_left_the_worker_free("named-list-pipe", |app| async move {
+    let free = overlay_read_left_the_worker_free(|app| async move {
         let page = AdminService::new(app)
             .list_named_defs(NamedMapSection::Export)
             .await
@@ -4472,17 +4691,16 @@ async fn list_named_defs_reads_the_overlay_off_the_async_worker() {
     .await;
     assert!(
         free,
-        "the named-definition list read the overlay file on the async worker: no other task ran \
+        "the named-definition list read the Store overlay on the async worker: no other task ran \
          while it was parked"
     );
 }
 
 /// RED, the single-entry twin: `GET /<section>/{name}` for a name the live config does not hold
-/// falls back to the overlay's unparseable entries — the same file read, off the worker too.
-#[cfg(unix)]
+/// falls back to the overlay's unparseable entries — the same Store read, off the worker too.
 #[tokio::test(flavor = "current_thread")]
 async fn get_named_def_reads_the_overlay_off_the_async_worker() {
-    let free = overlay_read_left_the_worker_free("named-get-pipe", |app| async move {
+    let free = overlay_read_left_the_worker_free(|app| async move {
         let err = AdminService::new(app)
             .get_named_def(NamedMapSection::Export, "absent")
             .await
@@ -4492,7 +4710,7 @@ async fn get_named_def_reads_the_overlay_off_the_async_worker() {
     .await;
     assert!(
         free,
-        "the named-definition read held the async worker while the overlay file was read"
+        "the named-definition read held the async worker while the Store overlay was read"
     );
 }
 
@@ -4501,14 +4719,14 @@ async fn get_named_def_reads_the_overlay_off_the_async_worker() {
 /// live definitions — moving the read off the worker changed where it runs, not what it says.
 #[tokio::test(flavor = "current_thread")]
 async fn named_defs_still_flag_an_unparseable_overlay_entry() {
-    let dir = tmp_plugins_dir("named-flagged");
-    std::fs::create_dir_all(&dir).unwrap();
-    let overlay = dir.join("overlay.json");
+    let overlay = busbar_kernel::test_support::TestOverlayStore::new();
     let mut doc = serde_json::json!({"version": 1, "named_maps": {}});
     doc["named_maps"][NamedMapSection::Export.key()] =
         serde_json::json!({"broken": {"no_such_field": true}});
-    std::fs::write(&overlay, doc.to_string()).unwrap();
-    let app = crate::new_test_app().overlay_path(overlay).build();
+    overlay.seed_bytes(doc.to_string().as_bytes());
+    let app = crate::new_test_app()
+        .overlay_backend(overlay.backend())
+        .build();
     let page = AdminService::new(Arc::clone(&app))
         .list_named_defs(NamedMapSection::Export)
         .await
@@ -4524,6 +4742,27 @@ async fn named_defs_still_flag_an_unparseable_overlay_entry() {
         serde_json::to_value(&page.items[0]).unwrap(),
         "the list and the single read give the one flagged view"
     );
+}
+
+/// A Store read failure is an error, never a fabricated empty list or missing definition.
+#[tokio::test]
+async fn named_defs_propagate_store_overlay_read_failures() {
+    let overlay = busbar_kernel::test_support::TestOverlayStore::new();
+    let app = crate::new_test_app()
+        .overlay_backend(overlay.backend())
+        .build();
+    overlay.fail_reads(true);
+    let service = AdminService::new(app);
+    assert!(matches!(
+        service.list_named_defs(NamedMapSection::Export).await,
+        Err(AdminError::Validation(_))
+    ));
+    assert!(matches!(
+        service
+            .get_named_def(NamedMapSection::Export, "absent")
+            .await,
+        Err(AdminError::Validation(_))
+    ));
 }
 
 /// SENSITIVE BY DEFAULT (owner ruling 2026-10-27): a settings bag in an admin view shows its keys,

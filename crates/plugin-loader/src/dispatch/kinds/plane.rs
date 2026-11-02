@@ -46,9 +46,9 @@ use busbar_contract::abi::mechanism::KindCode;
 use busbar_contract::abi::plane::check::{
     check_arrive, check_billable_classes, check_cancel, check_cancel_records, check_drive,
     check_fee_units, check_metric_lanes, check_on_piece, check_pin_mechanisms, check_project,
-    check_record_chains, check_record_retentions, check_refusal, check_refusal_records,
-    check_refusal_statuses, check_route_cost, check_sections, check_serve, check_serve_records,
-    check_snapshot, check_tail, check_trust_keys, Bounds, Caps, ProjectHost, MAX_SESSIONS,
+    check_record_chains, check_record_retentions, check_refusal, check_refusal_statuses,
+    check_route_cost, check_sections, check_serve, check_snapshot, check_tail, check_trust_keys,
+    Bounds, Caps, ProjectHost, MAX_SESSIONS,
 };
 use busbar_contract::abi::plane::{
     self, slot, ArriveIn, ArriveOut, BillableClass, OnPieceIn, OnPieceOut, PlaneDriveIn,
@@ -284,7 +284,8 @@ fn tail_facts_read(st: &Statement) -> Result<PlaneFacts, String> {
         check_tail_text(*lane, "tail.metric_lanes")
             .map_err(|f| format!("the plane tail breaks {:?} at {}", f.rule, f.field))?;
     }
-    check_metric_lanes(&metric_lanes)
+    // SAFETY: the bound Statement owns these static lane bytes for the loaded plugin lifetime.
+    unsafe { check_metric_lanes(&metric_lanes) }
         .map_err(|f| format!("the plane tail breaks {:?} at {}", f.rule, f.field))?;
     // A plane declares exactly one section: its verb. The loader's Statement check already
     // refused a NULL list with a count.
@@ -1259,7 +1260,8 @@ fn check_tail_fee_units(tail: &PlaneTail) -> Result<(), Fault> {
     for fee in &fee_units {
         check_tail_text(*fee, "tail.fee_units")?;
     }
-    check_fee_units(&fee_units, &classes)
+    // SAFETY: the bound Statement owns the static fee/class bytes for the loaded plugin lifetime.
+    unsafe { check_fee_units(&fee_units, &classes) }
 }
 
 /// The same byte bound the canonical tail rendering applies, before a validator reads text.
@@ -1332,9 +1334,9 @@ impl Kind for Plane {
                     reply: i.reply_cap as u64,
                     fields: i.fields_cap as u64,
                     arena: i.arena_cap as u64,
+                    records: i.records_cap as u64,
                     ..Caps::default()
                 };
-                check_refusal(a.outcome, o, fields, &caps)?;
                 // SAFETY: `records_buf` is the host's own buffer of `records_cap` `RecordWrite`s,
                 // named by this op's `in` (NULL with `0` from a host that lends none).
                 let records = unsafe {
@@ -1351,7 +1353,7 @@ impl Kind for Plane {
                 } else {
                     *bounds(a)?
                 };
-                check_refusal_records(a.outcome, o, records, i.records_cap as u64, &b)
+                check_refusal(a.outcome, o, fields, records, &caps, &b)
             }
             slot::SERVE => {
                 let i = a.input::<ServeIn>()?;
@@ -1369,9 +1371,9 @@ impl Kind for Plane {
                     reply: i.reply_cap as u64,
                     fields: i.fields_cap as u64,
                     arena: i.arena_cap as u64,
+                    records: i.records_cap as u64,
                     ..Caps::default()
                 };
-                check_serve(a.outcome, o, fields, &caps)?;
                 // SAFETY: as `refusal`: the host's `records_buf` of `records_cap` elements.
                 let records = unsafe {
                     reported(
@@ -1386,7 +1388,7 @@ impl Kind for Plane {
                 } else {
                     *bounds(a)?
                 };
-                check_serve_records(a.outcome, o, records, i.records_cap as u64, &b)
+                check_serve(a.outcome, o, fields, records, &caps, &b)
             }
             slot::PROJECT => project(a),
             slot::CATALOG => {
@@ -1512,12 +1514,18 @@ impl Kind for Plane {
                     || o.fields_needed != 0
                     || o.arena_needed != 0
             }),
-            slot::REFUSAL => a
-                .out::<RefusalOut>()
-                .is_ok_and(|o| o.reply_needed != 0 || o.fields_needed != 0 || o.arena_needed != 0),
-            slot::SERVE => a
-                .out::<ServeOut>()
-                .is_ok_and(|o| o.reply_needed != 0 || o.fields_needed != 0 || o.arena_needed != 0),
+            slot::REFUSAL => a.out::<RefusalOut>().is_ok_and(|o| {
+                o.reply_needed != 0
+                    || o.fields_needed != 0
+                    || o.arena_needed != 0
+                    || o.records_needed != 0
+            }),
+            slot::SERVE => a.out::<ServeOut>().is_ok_and(|o| {
+                o.reply_needed != 0
+                    || o.fields_needed != 0
+                    || o.arena_needed != 0
+                    || o.records_needed != 0
+            }),
             slot::PROJECT => a.out::<ProjectOut>().is_ok_and(|o| {
                 o.signals_needed != 0 || o.messages_needed != 0 || o.arena_needed != 0
             }),
@@ -1760,18 +1768,23 @@ fn project(a: &Answer) -> Result<(), Fault> {
             "project.messages",
         )
     }?;
-    check_project(
-        a.outcome,
-        o,
-        &ProjectHost {
-            signals,
-            signals_cap: cap,
-            messages,
-            messages_cap,
-            arena: (i.arena_buf.cast_const(), i.arena_cap as u64),
-            rewrite: i.rewrite.len != 0,
-        },
-    )
+    // SAFETY: the ABI requires each reported signal's tag to name its initialized union member;
+    // the host owns these buffers until validation and delivery complete. This checks the answer's
+    // values, not whether an untrusted native plugin obeyed Rust initialization requirements.
+    unsafe {
+        check_project(
+            a.outcome,
+            o,
+            &ProjectHost {
+                signals,
+                signals_cap: cap,
+                messages,
+                messages_cap,
+                arena: (i.arena_buf.cast_const(), i.arena_cap as u64),
+                rewrite: i.rewrite.len != 0,
+            },
+        )
+    }
 }
 
 /// A READY `open`'s or `refresh`'s generation snapshot: present, then `check_snapshot` (its size

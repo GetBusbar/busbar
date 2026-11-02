@@ -101,7 +101,8 @@ fn facts(st: &Statement) -> Result<ExportFacts, String> {
             listed(t.routes, t.routes_len),
         )
     };
-    validate::check_tail_entries(streams, routes).map_err(why)?;
+    // SAFETY: the loaded Statement owns the static route path bytes for this plugin lifetime.
+    unsafe { validate::check_tail_entries(streams, routes) }.map_err(why)?;
     let routes = routes.iter().map(route).collect::<Result<Vec<_>, _>>()?;
     // SAFETY: the loader's Statement check bounded `families` and refused it behind NULL.
     let declared = unsafe { listed(st.families, st.families_len) };

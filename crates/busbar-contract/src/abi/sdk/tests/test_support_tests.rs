@@ -4,7 +4,8 @@
 //! The plugin test support against a REAL door: a transport built by `plugin_door!` over the
 //! generic lifecycle, with two claims, two claim rows, their facts and one declared answer. Its
 //! Statement is read back through [`DoorView`] and its `open`/`close` slots are called over
-//! [`zeroed`] `in`s and `out`s, all without `unsafe`, as a plugin's own tests do. Beside it: a plane
+//! [`zeroed`] `in`s and `out`s. Proof-taking calls are safe; raw compatibility calls state their
+//! frame and instance guarantees explicitly. Beside it: a plane
 //! door whose tail's texts and lists read back, the reason a failed `open` wrote into the buffer the
 //! test lent, and fake host services called as a plugin's SDK calls them.
 
@@ -182,16 +183,18 @@ fn a_real_doors_slots_run_over_zeroed_ins_and_outs() {
 
     let mut input: OpenIn = zeroed();
     input.head = in_head::<OpenIn>(slot::OPEN);
-    let opened = call(open, ptr::null_mut(), &input, zeroed::<OpenOut>());
+    let opened = unsafe { call(open, ptr::null_mut(), &input, zeroed::<OpenOut>()) };
     assert_eq!(opened.outcome, Outcome::Ready);
     assert!(!opened.out.instance.is_null(), "open answered an instance");
 
-    let closed = call(
-        close,
-        opened.out.instance,
-        &in_head::<InHead>(slot::CLOSE),
-        out_head::<OutHead>(),
-    );
+    let closed = unsafe {
+        call(
+            close,
+            opened.out.instance,
+            &in_head::<InHead>(slot::CLOSE),
+            out_head::<OutHead>(),
+        )
+    };
     assert_eq!(closed.outcome, Outcome::Ready);
 }
 
@@ -379,7 +382,7 @@ fn a_failed_opens_reason_reads_back_from_the_lent_buffer() {
     };
     input.err_buf = reason.as_mut_ptr();
     input.err_cap = reason.len();
-    let got = call(open, ptr::null_mut(), &input, zeroed::<OpenOut>());
+    let got = unsafe { call(open, ptr::null_mut(), &input, zeroed::<OpenOut>()) };
     assert_eq!(got.outcome, Outcome::Failed);
     assert_eq!(got.error.as_deref(), Some("probe open failed: x"));
     assert_eq!(
@@ -493,7 +496,7 @@ fn a_fake_service_answers_the_sdks_own_calls_as_the_host_does() {
         .serve(fake::host::RECORDS_GET, Records);
     // The SDK's own wrapper, over the tables an `open` would be lent: it stamps every head and
     // judges every answer by the host's checks.
-    let services = Services::of(host.tables_for_tests()).expect("the host offers services");
+    let services = Services::of(host.lent()).expect("the host offers services");
     let handle = CompletionHandle {
         ticket: Ticket::NONE,
         seq: 0,
@@ -552,11 +555,14 @@ fn a_fake_refuses_an_in_of_another_op_a_short_in_and_a_stray_selector_with_fault
     let call = |host: &FakeHost, input: &RecordsGetIn| {
         let mut out: ServiceOut = zeroed();
         let f = host.slots_for_tests().0.records_get.expect("served");
-        f(
-            HostCtx::NONE,
-            ptr::from_ref(input).cast(),
-            ptr::from_mut(&mut out).cast(),
-        )
+        // SAFETY: `input` is the selected slot's live frame and every loan stays live; `out` is exclusive.
+        unsafe {
+            f(
+                HostCtx::NONE,
+                ptr::from_ref(input).cast(),
+                ptr::from_mut(&mut out).cast(),
+            )
+        }
         .outcome()
     };
     // An `in` whose head names another op: the double never runs.
@@ -575,6 +581,8 @@ fn a_fake_refuses_an_in_of_another_op_a_short_in_and_a_stray_selector_with_fault
 
 // ── a reply copied before release ───────────────────────────────────────────────────────────────
 
+// Raw helper crossings below use test-owned, correctly typed frames and instances. Their plugin
+// answers point into live test storage; each helper copies those answers before that storage drops.
 use super::reply::{call, Reply};
 use crate::abi::auth::{BeginLoginOut, LoginField, BEGIN_FORM};
 use crate::abi::export::{CheckOut, ServeOut};
@@ -598,13 +606,15 @@ extern "C" fn answer<O: Reply>(
 }
 
 /// `answer::<O>` called over `template`.
-fn answered<O: Reply>(template: &mut O) -> super::reply::Called<O> {
-    call(
-        answer::<O>,
-        ptr::from_mut(template).cast(),
-        &in_head::<InHead>(0),
-        *template,
-    )
+fn answered<O: Reply>(template: &mut O) -> super::reply::Called<'static, O> {
+    unsafe {
+        call(
+            answer::<O>,
+            ptr::from_mut(template).cast(),
+            &in_head::<InHead>(0),
+            *template,
+        )
+    }
 }
 
 fn bytes_of(b: &[u8]) -> Blob {
@@ -644,16 +654,18 @@ fn resolved(secret: Blob) -> ResolveOut {
 fn answered_resolve(
     template: &mut ResolveOut,
     material: &mut [u8],
-) -> super::reply::Called<ResolveOut> {
+) -> super::reply::Called<'static, ResolveOut> {
     let mut input: crate::abi::secret::ResolveIn = zeroed();
     input.secret_buf = material.as_mut_ptr();
     input.secret_cap = material.len();
-    call(
-        answer::<ResolveOut>,
-        ptr::from_mut(template).cast(),
-        &input,
-        *template,
-    )
+    unsafe {
+        call(
+            answer::<ResolveOut>,
+            ptr::from_mut(template).cast(),
+            &input,
+            *template,
+        )
+    }
 }
 
 #[test]
@@ -717,18 +729,20 @@ fn a_resolve_cannot_claim_more_than_the_lent_buffer() {
     let mut input: crate::abi::secret::ResolveIn = zeroed();
     input.secret_buf = material.as_mut_ptr();
     input.secret_cap = 2;
-    let _ = call(
-        answer::<ResolveOut>,
-        ptr::from_mut(&mut t).cast(),
-        &input,
-        t,
-    );
+    let _ = unsafe {
+        call(
+            answer::<ResolveOut>,
+            ptr::from_mut(&mut t).cast(),
+            &input,
+            t,
+        )
+    };
 }
 
 fn answered_scrape(
     written: usize,
     cap: usize,
-) -> super::reply::Called<crate::abi::export::ScrapeOut> {
+) -> super::reply::Called<'static, crate::abi::export::ScrapeOut> {
     let mut material = vec![0; cap];
     let mut input: crate::abi::export::ScrapeIn = zeroed();
     input.buf = material.as_mut_ptr();
@@ -736,12 +750,14 @@ fn answered_scrape(
     let mut out: crate::abi::export::ScrapeOut = zeroed();
     out.head = ready_head(0);
     out.written = written;
-    call(
-        answer::<crate::abi::export::ScrapeOut>,
-        ptr::from_mut(&mut out).cast(),
-        &input,
-        out,
-    )
+    unsafe {
+        call(
+            answer::<crate::abi::export::ScrapeOut>,
+            ptr::from_mut(&mut out).cast(),
+            &input,
+            out,
+        )
+    }
 }
 
 #[test]
@@ -1007,12 +1023,14 @@ fn the_heads_a_slot_reads_state_the_structs_call_passed() {
     // Heads that claim the larger `open` structs, over a bare `InHead` and `OutHead`.
     let lying_in = in_head::<OpenIn>(slot::OPEN);
     let lying_out = out_head::<OpenOut>();
-    let got = call(
-        heads_seen,
-        ptr::from_mut(&mut seen).cast(),
-        &lying_in,
-        lying_out,
-    );
+    let got = unsafe {
+        call(
+            heads_seen,
+            ptr::from_mut(&mut seen).cast(),
+            &lying_in,
+            lying_out,
+        )
+    };
     assert_eq!(got.outcome, Outcome::Ready);
     assert_eq!(
         seen,
@@ -1074,7 +1092,8 @@ fn io_in(op: u32, buf: &mut [u8]) -> IoIn {
 
 fn served_by(f: crate::abi::host::service::ServiceFn, input: *const c_void) -> Outcome {
     let mut out: ServiceOut = zeroed();
-    f(HostCtx::NONE, input, ptr::from_mut(&mut out).cast()).outcome()
+    // SAFETY: each test passes the frame matching `f`, with live nested loans; `out` is exclusive.
+    unsafe { f(HostCtx::NONE, input, ptr::from_mut(&mut out).cast()) }.outcome()
 }
 
 #[test]
@@ -1240,12 +1259,23 @@ fn a_door_opens_over_the_tables_a_fake_host_lent_while_the_host_lives() {
     // The lent `in` lives only in this block: it borrows the host, and its borrow ends here.
     let opened = {
         let lent = host.lend_to(input);
-        super::reply::call_hosted(open, ptr::null_mut(), &lent, zeroed::<OpenOut>())
+        unsafe { super::reply::call_hosted(open, ptr::null_mut(), &lent, zeroed::<OpenOut>()) }
     };
-    // Nothing the host lent is left, so the host may go.
-    drop(host);
     assert_eq!(opened.outcome, Outcome::Ready);
     assert!(!opened.out.instance.is_null());
+    let close = table.head.close.expect("the door states close");
+    // SAFETY: this instance was opened by the same door above and its host is still alive.
+    let closed = unsafe {
+        call(
+            close,
+            opened.out.instance,
+            &in_head::<InHead>(slot::CLOSE),
+            out_head::<OutHead>(),
+        )
+    };
+    assert_eq!(closed.outcome, Outcome::Ready);
+    drop(opened);
+    drop(host);
 }
 
 // ── the slot handles #1471 keeps under these names (status rows 159 and 194, expand) ─────────────
@@ -1286,7 +1316,7 @@ fn call_in_opens_and_close_in_closes_as_call_does_over_the_raw_slot() {
     // The old path: the raw slot, a zeroed `in`.
     let mut input: OpenIn = zeroed();
     input.head = in_head::<OpenIn>(slot::OPEN);
-    let by_raw = call(open.parts().0, ptr::null_mut(), &input, zeroed::<OpenOut>());
+    let by_raw = unsafe { call(open.parts().0, ptr::null_mut(), &input, zeroed::<OpenOut>()) };
 
     // The new path: the door's slot and a `TestIn`; the instance comes back sealed.
     let built = super::test_in::TestIn::<OpenIn>::new().set(|i| &i.head.op, slot::OPEN);
@@ -1309,12 +1339,14 @@ fn call_in_opens_and_close_in_closes_as_call_does_over_the_raw_slot() {
     );
     assert_eq!(closed.outcome, Outcome::Ready);
     // The raw path's instance is closed the raw way.
-    let _ = call(
-        close.parts().0,
-        by_raw.out.instance,
-        &in_head::<InHead>(slot::CLOSE),
-        out_head::<OutHead>(),
-    );
+    let _ = unsafe {
+        call(
+            close.parts().0,
+            by_raw.out.instance,
+            &in_head::<InHead>(slot::CLOSE),
+            out_head::<OutHead>(),
+        )
+    };
 }
 
 #[test]
@@ -1353,7 +1385,9 @@ fn call_hosted_in_opens_over_the_fake_hosts_tables_as_call_hosted_does() {
     input.head = in_head::<OpenIn>(slot::OPEN);
     let by_raw = {
         let lent = host.lend_to(input);
-        super::reply::call_hosted(open.parts().0, ptr::null_mut(), &lent, zeroed::<OpenOut>())
+        unsafe {
+            super::reply::call_hosted(open.parts().0, ptr::null_mut(), &lent, zeroed::<OpenOut>())
+        }
     };
     let mut by_view = {
         let lent =
@@ -1491,4 +1525,29 @@ fn the_slot_table_maps_every_slot_of_every_kind_to_its_own_in() {
         super::kit::slot_in_type::<store::Ops>(store::slot::GET_KEY),
         in_of::<store::Ops, { store::slot::GET_KEY }>()
     );
+}
+
+#[test]
+fn safe_host_handles_own_tables_after_the_fake_host_is_dropped() {
+    use crate::abi::sdk::conn::Host;
+    use crate::abi::sdk::services::Services;
+    let (host, services) = {
+        let fake = FakeHost::new().serve(fake::host::CLOCK_NOW, Clock);
+        (Host::of(fake.lent()), Services::of(fake.lent()).unwrap())
+    };
+    // Both constructors copied callable tables rather than erasing a borrow of their boxes.
+    let handle = CompletionHandle {
+        ticket: Ticket::NONE,
+        seq: 0,
+        _reserved: 0,
+    };
+    assert_eq!(services.clock_now(handle).unwrap().mono_ns, 9);
+    assert_eq!(
+        host.services().unwrap().clock_now(handle).unwrap().wall_ns,
+        7
+    );
+    assert!(
+        matches!(host.connector(Ticket::NONE).clock_now(), std::task::Poll::Ready(Ok(r)) if r.mono_ns == 9)
+    );
+    assert!(host.io(Ticket::NONE).armed());
 }

@@ -1354,6 +1354,26 @@ limits:
 | `max_auto_provisioned_groups` | integer | `0` | Anti-sprawl cap on the SHAPE of the limit tree: the maximum size of the runtime group set that `POST /keys` may grow by auto-provisioning (`parent:`). `0` = unlimited. Over ceiling is a terminal `409 conflict`; binding to an existing group is unaffected. |
 | `hook_content_max_bytes` | integer | `0` | Ceiling on the request CONTENT a hook holding a `prompt: ro`/`rw` grant is shown in one projection. `0` = **unlimited (the default)**: the projection is sent uncapped. A non-zero value is an **opt-in** ceiling — when set, over-cap content is omitted **whole** — never truncated mid-value, because a guardrail that screens half a payload and passes it is worse than one that refuses — and the hook receives a present-but-empty content projection, which the wire distinguishes from the absent one an ungranted hook sees; the always-present size fields still report the real totals, so an omission is visible in the payload rather than silent. `busbar_hook_content_truncated_total` counts it. Leaving it at the `0` default keeps a `prompt: rw` redaction gate from being fail-open no-op'd by a blanked projection. Live: a `PUT` takes effect on the next request. This bounds the tool-argument and tool-result content a hook now sees, which on an agent request is limited by neither a context window nor a token count. |
 
+`datagram_line_memory_bytes` allocates on demand. It reserves conservatively before each framer
+crossing, including independent overlapping-span copies, and counts accepted application input,
+both LINE directions, reader-held CHANNEL buffers, empty-message descriptors and queue owners.
+Reader consumption or actual storage retirement returns credit. Existing fixed association/framer
+loans, secure-engine state, socket storage and allocator retention remain separate; this setting
+does not establish a process RSS or unconditional aggregate-memory bound. A value below a required
+single-crossing reservation can fail that connection even when its next answer would be small.
+
+The host first publishes runnable FIFO output or waits for an independent transfer that can free
+storage. If the required reservation cannot fit, it reports `resource_exhausted` once and closes
+only that pairing. Some finite expanding feedback chains therefore fail when the option is set.
+Accepted input is never replayed as untaken; publication records distinguish handed-on bytes,
+cancelled output and unknown crossing results. A synchronous connection-write success still means
+accepted input, rather than an acknowledgment of remote delivery.
+
+New raw UDP packets for an association that is busy or lacks pre-crossing output credit are
+discarded before framer acceptance and counted separately. The port reports its
+`raw_busy_dropped` total on close.
+Accepted application writes and LINE output keep their ordered publication and failure handling.
+
 ---
 
 ### `export`

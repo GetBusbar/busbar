@@ -105,6 +105,7 @@ pub async fn tail(
     };
     if !drained {
         tracing::warn!("journal records were still queued for the store at shutdown");
+        return;
     }
     // THE NODE'S LEASE ON ITS HOST NAME, held on that lane, released once its chain reached the
     // store, so the next boot of this host resumes it at once. Off the runtime: it waits on

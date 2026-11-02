@@ -17,7 +17,7 @@ fn declared(
 ) -> Registered {
     Registered {
         key,
-        composes_over,
+        composes_over: std::borrow::Cow::Borrowed(composes_over),
         composed_over,
     }
 }

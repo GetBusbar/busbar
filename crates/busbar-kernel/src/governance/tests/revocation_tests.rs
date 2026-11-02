@@ -188,6 +188,8 @@ fn a_hung_store_does_not_park_the_reactor() {
     // Without it, `spawn_blocking` alone would trade a dead reactor for a drained blocking pool.
     for window in 200..210u64 {
         rev.refresh_if_stale(REVOCATION_SYNC_TTL_SECS * window);
+        // A corrected wall clock must not start more work while this read is outstanding.
+        rev.refresh_if_stale_at(0, REVOCATION_SYNC_TTL_SECS * 1_000 * window);
     }
     std::thread::sleep(Duration::from_millis(200));
     assert_eq!(
@@ -324,5 +326,98 @@ fn a_key_another_node_minted_rotated_or_deleted_is_seen_within_one_window() {
     assert!(
         b.verify_token(&second, window(3), None).is_none(),
         "node b stops admitting a key node a deleted"
+    );
+}
+
+#[test]
+fn a_backwards_wall_clock_still_observes_shared_store_rotation_and_revocation() {
+    use crate::governance::signing::{TokenSigner, DEFAULT_KID};
+    use crate::governance::{GovState, NewKeySpec};
+
+    let store: Arc<dyn RecordStore> = Arc::new(MemoryStore::new());
+    let node = || {
+        GovState::new_with_signer(
+            store.clone(),
+            None,
+            Some(TokenSigner::from_secret_bytes(&[19; 32], DEFAULT_KID)),
+        )
+        .unwrap()
+    };
+    let (a, b) = (node(), node());
+    let t0 = crate::store::now();
+    let exp = t0 + 7_200;
+    let rolled_back = t0 - 3_600;
+    let (key, first) = a
+        .mint_signed(
+            NewKeySpec {
+                name: "clock-regression".into(),
+                ..Default::default()
+            },
+            exp,
+            t0,
+        )
+        .unwrap();
+    b.refresh().unwrap();
+    assert!(b
+        .verify_token(first.expose(&crate::seal::lend()), t0, None)
+        .is_some());
+
+    let second = a.rotate_key(&key.id, exp).unwrap().unwrap().token;
+    // The old cache remains in force until its next bounded refresh, even with a healthy Store.
+    assert!(b
+        .verify_token(first.expose(&crate::seal::lend()), rolled_back, None)
+        .is_some());
+    let window_ms = REVOCATION_SYNC_TTL_SECS * 1_000;
+    b.denylist.refresh_if_stale_at(rolled_back, window_ms);
+    assert!(b
+        .verify_token(first.expose(&crate::seal::lend()), rolled_back, None)
+        .is_none());
+    assert!(b
+        .verify_token(second.expose(&crate::seal::lend()), rolled_back, None)
+        .is_some());
+    assert_eq!(
+        b.denylist.synced_at(),
+        rolled_back,
+        "the successful wall stamp is reset"
+    );
+
+    a.revoke(&key.id, "peer revoke after clock correction")
+        .unwrap();
+    // A clock which stays at the corrected value is also bounded by monotonic age.
+    b.denylist.refresh_if_stale_at(rolled_back, window_ms * 2);
+    assert!(b
+        .verify_token(second.expose(&crate::seal::lend()), rolled_back, None)
+        .is_none());
+    assert!(b.denylist.contains(&key.id));
+}
+
+#[test]
+fn failed_refreshes_under_a_regressing_clock_are_rate_limited_by_monotonic_age() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let rev = RevocationSync::new(
+        Arc::new(BrokenDenylistStore {
+            inner: MemoryStore::new(),
+            calls: calls.clone(),
+        }),
+        HashSet::new(),
+        10_000,
+    );
+    let window_ms = REVOCATION_SYNC_TTL_SECS * 1_000;
+    rev.refresh_if_stale_at(6_400, window_ms);
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    for n in 1..100 {
+        rev.refresh_if_stale_at(6_400 - n, window_ms + n);
+    }
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "regression never creates a retry storm"
+    );
+    rev.refresh_if_stale_at(6_000, window_ms * 2);
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+    assert_eq!(
+        rev.synced_at(),
+        10_000,
+        "a failure never closes the stale window"
     );
 }

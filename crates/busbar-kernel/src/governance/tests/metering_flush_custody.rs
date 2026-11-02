@@ -97,6 +97,10 @@ impl RecordStore for UncertainStore {
 }
 
 fn accrue(gov: &GovState, input: u64, era: u64) {
+    accrue_raw(gov, input, RawRateEra::legacy(era));
+}
+
+fn accrue_raw(gov: &GovState, input: u64, era: RawRateEra) {
     gov.record_metered_request_dated(
         "retry-key",
         "historical-group",
@@ -108,9 +112,70 @@ fn accrue(gov: &GovState, input: u64, era: u64) {
             ..Default::default()
         },
         NOW,
-        &|| era,
-        &|at| at,
+        &|| era.effective_from,
+        &|_| era,
     );
+}
+
+#[test]
+fn unknown_and_unwound_flushes_keep_exact_same_timestamp_entry_identity() {
+    const FIRST_ID_HEX: &str = "010101010101010101010101";
+    const SECOND_ID_HEX: &str = "020202020202020202020202";
+    const SHARED_START: u64 = 0;
+    let first = RawRateEra::entry(SHARED_START, EntryId::parse_hex(FIRST_ID_HEX).unwrap());
+    let second = RawRateEra::entry(SHARED_START, EntryId::parse_hex(SECOND_ID_HEX).unwrap());
+    let store = Arc::new(UncertainStore::new([Reply::Unknown, Reply::Unwind]));
+    let gov = GovState::new(store.clone(), None).unwrap();
+    accrue_raw(&gov, 3, first);
+    assert_eq!(gov.flush_metering(), 0);
+    accrue_raw(&gov, 5, second);
+    assert!(
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| gov.flush_metering())).is_err()
+    );
+    assert_eq!(gov.flush_metering_final(), 2);
+    let calls = store.calls.lock().unwrap();
+    assert_eq!(calls[0], calls[1]);
+    assert_eq!(calls[0], calls[2]);
+    assert_eq!(
+        calls[0].1[0].pricing_version,
+        first.entry_id.unwrap().metering_version()
+    );
+    assert_eq!(
+        calls[3].1[0].pricing_version,
+        second.entry_id.unwrap().metering_version()
+    );
+    assert_ne!(calls[0].0, calls[3].0);
+    let rows = gov.metering_for(metering_bucket(NOW)).unwrap();
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows.iter().map(|row| row.tokens_input).sum::<u64>(), 8);
+    assert_eq!(rows.iter().map(|row| row.requests).sum::<u64>(), 2);
+}
+
+#[test]
+fn ordinary_refusal_requeues_the_original_exact_provenance() {
+    const OLD_ID_HEX: &str = "030303030303030303030303";
+    const NEW_ID_HEX: &str = "040404040404040404040404";
+    let old = RawRateEra::entry(0, EntryId::parse_hex(OLD_ID_HEX).unwrap());
+    let new = RawRateEra::entry(0, EntryId::parse_hex(NEW_ID_HEX).unwrap());
+    let mut store = UncertainStore::new([Reply::Unknown]);
+    store.supported = false;
+    let store = Arc::new(store);
+    let gov = GovState::new(store.clone(), None).unwrap();
+    accrue_raw(&gov, 3, old);
+    assert_eq!(gov.flush_metering(), 0);
+    accrue_raw(&gov, 5, new);
+    assert_eq!(gov.flush_metering_final(), 2);
+    let rows = gov.metering_for(metering_bucket(NOW)).unwrap();
+    assert_eq!(rows.len(), 2);
+    for (era, count) in [(old, 3), (new, 5)] {
+        let row = rows
+            .iter()
+            .find(|row| row.pricing_version == era.entry_id.unwrap().metering_version())
+            .unwrap();
+        assert_eq!(row.tokens_input, count);
+        assert_eq!(row.requests, 1);
+    }
+    assert_eq!(store.legacy_calls.load(Ordering::SeqCst), 3);
 }
 
 fn requests(gov: &GovState) -> u64 {
@@ -264,4 +329,52 @@ fn repeated_unknowns_retain_one_snapshot_and_coalesce_fresh_pending_separately()
     assert_eq!(gov.flush_metering(), 1);
     assert_eq!(gov.flush_metering(), 1);
     assert_eq!(requests(&gov), 9);
+}
+
+#[test]
+fn expired_unknown_metering_is_not_replayed_by_periodic_or_final_flush() {
+    let store = Arc::new(UncertainStore::new([Reply::Lost, Reply::Unknown]));
+    let gov = GovState::new(store.clone(), None).unwrap();
+    let era = RawRateEra::entry(0, EntryId::parse_hex("050505050505050505050505").unwrap());
+    accrue_raw(&gov, 3, era);
+    assert_eq!(gov.flush_metering(), 0); // Applied, but the acknowledgement was lost.
+    assert_eq!(gov.flush_metering(), 0); // Still unknown; retains the first operation.
+    let first = store.calls.lock().unwrap()[0].clone();
+    assert_eq!(store.calls.lock().unwrap()[1], first);
+    gov.pending_metering
+        .flight
+        .lock()
+        .unwrap()
+        .front_mut()
+        .unwrap()
+        .expire_attempt();
+    accrue_raw(&gov, 5, era); // Fresh arrivals remain separate from the uncertain body.
+
+    for final_flush in [false, true, false] {
+        assert_eq!(
+            if final_flush {
+                gov.flush_metering_final()
+            } else {
+                gov.flush_metering()
+            },
+            0
+        );
+        assert_eq!(
+            store.calls.lock().unwrap().len(),
+            2,
+            "expired ids never cross the Store"
+        );
+        assert_eq!(
+            requests(&gov),
+            1,
+            "the possibly committed body is never applied twice"
+        );
+        let (cells, counts) = gov.pending_metering_totals();
+        assert_eq!((cells, counts.requests, counts.tokens_input), (2, 2, 8));
+    }
+    assert_eq!(
+        first.1[0].pricing_version,
+        era.entry_id.unwrap().metering_version()
+    );
+    assert_eq!(store.legacy_calls.load(Ordering::SeqCst), 0);
 }

@@ -28,8 +28,8 @@ use busbar_contract::abi::transport::{check::check_final_status, StatusRow, CLOS
 use busbar_contract::abi::transport::{
     AdoptIn, BeginIn, ConnFacts, EmitIn, EncodeIn, FinishIn, FramePiece, FrameSpan, FramerOut,
     FramerSink, FramingIn, HeadSlots, IngestIn, LocateIn, LocateOut, RefuseIn, EMIT_TEXT,
-    PIECE_CODE_HANDOFF, PIECE_CONTINUED, PIECE_END, PIECE_END_OF_FRAME, PIECE_FIELDS,
-    PIECE_HAS_CODE, PIECE_HAS_DECLARED_LEN, PIECE_HAS_RETRY_AFTER, PIECE_INTERIM,
+    EMIT_TRAILERS, PIECE_CODE_HANDOFF, PIECE_CONTINUED, PIECE_END, PIECE_END_OF_FRAME,
+    PIECE_FIELDS, PIECE_HAS_CODE, PIECE_HAS_DECLARED_LEN, PIECE_HAS_RETRY_AFTER, PIECE_INTERIM,
     PIECE_STREAM_FAILED, PIECE_TEXT, PIECE_WRITABLE, SIDE_ACCEPT, SIDE_DIAL, YIELD_ENDED,
     YIELD_HAS_DEADLINE, YIELD_MORE, YIELD_STREAM_FULL,
 };
@@ -309,6 +309,8 @@ pub enum StreamFlow {
 /// Everything one op answered, across its `YIELD_MORE` re-calls.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Yielded {
+    /// A datagram producer still owes a same-op recall or secure-layer settle.
+    pub continuing: bool,
     /// Head slots, in order.
     pub heads: Vec<Head>,
     /// Bytes owed to the far side, in order.
@@ -328,6 +330,101 @@ pub struct Yielded {
     /// The protocol the framer last stated it agreed on an accepted connection
     /// (`FramerYield::agreed`): a 1-based position in its accepting offer; `0` = not stated.
     pub agreed: u32,
+    /// Independent reservations for each `pieces` allocation and its later queue/reader owners.
+    pub piece_custody: Vec<crate::publication::Custody>,
+    /// Host storage custody, declared after payloads so allocation retirement precedes credit.
+    pub custody: crate::publication::Custody,
+    /// A crossing/output owner retained until the pairing classifies even a late closed batch.
+    pub producer: crate::publication::ProducerCustody,
+}
+
+impl Drop for Yielded {
+    fn drop(&mut self) {
+        zeroize::Zeroize::zeroize(&mut self.wire);
+    }
+}
+
+impl Yielded {
+    /// Grow on a fresh allocation: reallocating a live Vec would retire credential-bearing wire
+    /// bytes without wiping them. Both owners remain guarded through copying and unwinding.
+    fn extend_wire(&mut self, bytes: &[u8]) {
+        let required = self
+            .wire
+            .len()
+            .checked_add(bytes.len())
+            .expect("framer wire length overflow");
+        if required > self.wire.capacity() {
+            let capacity = required.max(self.wire.capacity().saturating_mul(2));
+            let mut grown = zeroize::Zeroizing::new(Vec::with_capacity(capacity));
+            grown.extend_from_slice(&self.wire);
+            zeroize::Zeroize::zeroize(&mut self.wire);
+            self.wire = std::mem::take(&mut *grown);
+        }
+        self.wire.extend_from_slice(bytes);
+    }
+
+    pub(crate) fn adoption_bound(&self) -> Option<usize> {
+        use std::mem::size_of;
+        let containers = self.retained_capacity().checked_add(
+            self.pieces
+                .len()
+                .checked_mul(size_of::<crate::publication::Custody>())?,
+        )?;
+        self.pieces.iter().try_fold(containers, |sum, piece| {
+            let bytes = piece
+                .bytes
+                .capacity()
+                .checked_add(piece.reason.as_ref().map_or(0, Vec::capacity))?
+                .checked_add(if piece.fields { piece.bytes.len() } else { 0 })?
+                .checked_add(
+                    3 * size_of::<Got>()
+                        + 3 * size_of::<crate::publication::Message>()
+                        + 16 * size_of::<usize>(),
+                )?;
+            sum.checked_add(crate::publication::Memory::reservation_size(bytes)?)
+        })
+    }
+
+    pub(crate) fn split_piece_custody(&mut self) {
+        if !self.custody.tracked() {
+            return;
+        }
+        use std::mem::size_of;
+        self.piece_custody = Vec::with_capacity(self.pieces.len());
+        for piece in &self.pieces {
+            let bytes = piece.bytes.capacity()
+                + piece.reason.as_ref().map_or(0, Vec::capacity)
+                + if piece.fields { piece.bytes.len() } else { 0 }
+                + 3 * size_of::<Got>()
+                + 3 * size_of::<crate::publication::Message>()
+                + 16 * size_of::<usize>();
+            self.piece_custody.push(self.custody.split(bytes));
+        }
+    }
+
+    pub(crate) fn retained_capacity(&self) -> usize {
+        use std::mem::size_of;
+        let piece = |got: &Got| got.bytes.capacity() + got.reason.as_ref().map_or(0, Vec::capacity);
+        let head = |head: &Head| {
+            [&head.method, &head.target, &head.authority, &head.reason]
+                .into_iter()
+                .map(|slot| slot.as_ref().map_or(0, Vec::capacity))
+                .sum::<usize>()
+        };
+        self.wire.capacity()
+            + self.pieces.capacity() * size_of::<Got>()
+            + self.interim.capacity() * size_of::<Got>()
+            + self.heads.capacity() * size_of::<Head>()
+            + self.flow.capacity() * size_of::<StreamFlow>()
+            + self.piece_custody.capacity() * size_of::<crate::publication::Custody>()
+            + self.interim.iter().map(piece).sum::<usize>()
+            + self.heads.iter().map(head).sum::<usize>()
+            // Splitting a batch temporarily retains its original vector and separately
+            // allocated FIFO/reader nodes. Empty pieces pay these positive owner costs too.
+            + self.interim.len()
+                * (3 * size_of::<Got>() + 3 * size_of::<crate::publication::Message>() + 16 * size_of::<usize>())
+            + 4 * size_of::<Yielded>() + 32 * size_of::<usize>()
+    }
 }
 
 /// The host's buffers a framer op writes into.
@@ -492,6 +589,85 @@ const EMPTY_PIECE: FramePiece = FramePiece {
 };
 
 impl Buffers {
+    /// Work retained by a validated answer. Count each independent copy, including overlapping
+    /// spans and a reason copied into both a head and its piece. Empty records still own metadata.
+    /// Keep the original frame-byte charge when the framer wrote scratch without a copied span.
+    fn output_work(&self, o: &FramerOut) -> u64 {
+        use std::mem::size_of;
+        let y = &o.yielded;
+        let Some(pieces) = self.pieces.get(..y.pieces_len as usize) else {
+            return u64::MAX;
+        };
+        let Some(heads) = self.heads.get(..y.heads_len as usize) else {
+            return u64::MAX;
+        };
+        let mut copied = 0_u64;
+        let mut metadata = 0_u64;
+        for piece in pieces {
+            if piece.flags & PIECE_WRITABLE != 0 {
+                metadata = metadata.saturating_add(size_of::<StreamFlow>() as u64);
+            } else {
+                metadata = metadata.saturating_add(size_of::<Got>() as u64);
+                copied = copied.saturating_add(piece.len);
+            }
+        }
+        for head in heads {
+            metadata = metadata.saturating_add(size_of::<Head>() as u64);
+            for slot in [head.method, head.target, head.authority, head.reason] {
+                copied = copied.saturating_add(slot.len);
+            }
+            // A reason may also be retained by its associated final or interim field piece.
+            copied = copied.saturating_add(head.reason.len);
+        }
+        if y.flags & YIELD_STREAM_FULL != 0 {
+            metadata = metadata.saturating_add(size_of::<StreamFlow>() as u64);
+        }
+        y.wire_len
+            .saturating_add(y.frame_len.max(copied))
+            .saturating_add(metadata)
+    }
+
+    pub(crate) fn field_storage(&self) -> usize {
+        // HashMap capacity excludes empty control buckets. Account an upper bound including
+        // those buckets and per-entry alignment, rather than charging only occupied entries.
+        if self.lines.open.capacity() == 0 {
+            return 0;
+        }
+        (self.lines.open.capacity() + 8)
+            * 4
+            * (std::mem::size_of::<(u64, Line)>() + std::mem::align_of::<(u64, Line)>())
+    }
+    /// Conservative deep-copy storage for one answer, including independently overlapping
+    /// spans, duplicate reasons, containers and the subsequent publication/reader owners.
+    pub(crate) fn retention_bound(&self) -> Option<usize> {
+        use std::mem::size_of;
+        let pieces = self.pieces.len();
+        let heads = self.heads.len();
+        let payload = pieces
+            .checked_mul(self.frame.len())?
+            .checked_mul(2)?
+            .checked_add(heads.checked_mul(5)?.checked_mul(self.frame.len())?)?
+            .checked_add(self.wire.len())?;
+        let metadata = pieces
+            .checked_mul(
+                8 * size_of::<Got>()
+                    + 8 * size_of::<StreamFlow>()
+                    + 8 * size_of::<crate::publication::Message>()
+                    + 32 * size_of::<usize>(),
+            )?
+            .checked_add(heads.checked_mul(4 * size_of::<Head>())?)?
+            .checked_add(8 * size_of::<Yielded>() + 64 * size_of::<usize>())?;
+        let fields = self
+            .lines
+            .open
+            .capacity()
+            .checked_add(pieces)?
+            .checked_add(8)?
+            .checked_mul(8)?
+            .checked_mul(size_of::<(u64, Line)>() + std::mem::align_of::<(u64, Line)>())?;
+        payload.checked_add(metadata)?.checked_add(fields)
+    }
+
     /// Buffers of the given capacities (each at least one).
     #[must_use]
     pub fn new(wire: usize, frame: usize, pieces: usize) -> Self {
@@ -548,7 +724,9 @@ impl Buffers {
             .wire
             .get(..usize::try_from(y.wire_len).map_err(|_| bad("wire"))?)
             .ok_or_else(|| bad("wire"))?;
-        into.wire.extend_from_slice(wire);
+        into.extend_wire(wire);
+        #[cfg(test)]
+        crate::support::watch_yielded_wire(&into.wire);
         let frame_len = usize::try_from(y.frame_len).map_err(|_| bad("frame"))?;
         let frame = self.frame.get(..frame_len).ok_or_else(|| bad("frame"))?;
         let pieces = self
@@ -694,21 +872,27 @@ impl Default for Buffers {
     }
 }
 
-/// The host's monotonic clock, nanoseconds since this process first read it (never `0`: a framer
-/// states "no deadline" as `0`).
+/// The one instant every host-clock reading ([`now_ns`]) and every instant it names
+/// ([`instant_of`]) is measured from, fixed the first time either is used.
+static EPOCH: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+
+/// The host's monotonic clock, nanoseconds since this process first read it, plus one (never `0`:
+/// a framer states "no deadline" as `0`).
 #[must_use]
 pub fn now_ns() -> u64 {
-    static EPOCH: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
     let epoch = *EPOCH.get_or_init(Instant::now);
-    u64::try_from(epoch.elapsed().as_nanos()).unwrap_or(u64::MAX) + 1
+    u64::try_from(epoch.elapsed().as_nanos())
+        .unwrap_or(u64::MAX)
+        .saturating_add(1)
 }
 
-/// The host's monotonic instant `ns` names.
+/// The host's monotonic instant `ns` names: the exact inverse of [`now_ns`], so one reading names
+/// the same instant however often and whenever it is mapped (a deadline the framer stated from a
+/// reading at or before the caller's `now` is due at that `now`).
 #[must_use]
 pub fn instant_of(ns: u64) -> Instant {
-    let now = now_ns();
-    let from_now = std::time::Duration::from_nanos(ns.saturating_sub(now));
-    Instant::now() + from_now
+    let epoch = *EPOCH.get_or_init(Instant::now);
+    epoch + std::time::Duration::from_nanos(ns.saturating_sub(1))
 }
 
 fn unix_ns() -> u64 {
@@ -884,6 +1068,7 @@ struct EmitHead {
     body_len: Option<u64>,
     status: u32,
     extensions: Vec<u8>,
+    trailers: bool,
 }
 
 /// A TICKETED FRAMER OP, as the framing issues it (and re-issues it on a resume): `begin`,
@@ -913,6 +1098,7 @@ enum Ticketed<'a> {
         bytes: std::borrow::Cow<'a, [u8]>,
         end_of_frame: bool,
         text: bool,
+        trailers: bool,
         /// The opening body's length on a dialled request's head emit: `Some` = known.
         body_len: Option<u64>,
         /// An accepted stream's answer status, on the emit that carries its head; `0` otherwise.
@@ -957,6 +1143,7 @@ impl Ticketed<'_> {
                 stream,
                 end_of_frame,
                 text,
+                trailers,
                 body_len,
                 status,
                 extensions,
@@ -966,6 +1153,7 @@ impl Ticketed<'_> {
                 bytes: std::borrow::Cow::Owned(Vec::new()),
                 end_of_frame,
                 text,
+                trailers,
                 body_len,
                 status,
                 extensions,
@@ -1340,18 +1528,23 @@ pub fn encode_head(
 /// that owes more and gives nothing would otherwise hold the host worker forever.
 pub(crate) const MORE_STALLS: usize = 64;
 
-/// The most bytes one op's `YIELD_MORE` re-calls may write before the framing FAULTs: an op's own
-/// input is bounded (a socket read, a write under the write buffer), so a framer that keeps writing
-/// past this is not answering it.
+/// The most output/control work one op's `YIELD_MORE` answers may retain before the framing FAULTs:
+/// payload bytes and the structural sizes of retained pieces, heads, flow and control records.
+/// An op's own input is bounded (a socket read, a write under the write buffer), so a framer that
+/// keeps writing past this is not answering it.
 pub(crate) const MORE_BYTES: u64 = 64 * 1024 * 1024;
 
-/// Whether one answer wrote anything: wire bytes, frame bytes, a piece or a head.
+/// Whether one answer wrote anything: wire bytes, frame bytes, a piece, head or flow record.
 pub(crate) fn wrote(o: &FramerOut) -> bool {
     let y = &o.yielded;
-    y.wire_len != 0 || y.frame_len != 0 || y.pieces_len != 0 || y.heads_len != 0
+    y.wire_len != 0
+        || y.frame_len != 0
+        || y.pieces_len != 0
+        || y.heads_len != 0
+        || y.flags & YIELD_STREAM_FULL != 0
 }
 
-/// The re-calls of one op: their count with nothing written, and the bytes written.
+/// The re-calls of one op: their count with nothing written, and their output/control work.
 #[derive(Default)]
 pub(crate) struct Recalls {
     stalls: usize,
@@ -1361,20 +1554,23 @@ pub(crate) struct Recalls {
 impl Recalls {
     /// Count one more answer that owed more: a FAULT once [`MORE_STALLS`] in a row wrote nothing,
     /// or the op's answers wrote past [`MORE_BYTES`].
-    pub(crate) fn owed(&mut self, o: &FramerOut) -> Result<(), Refused> {
-        self.owed_with_progress(o, false)
+    pub(crate) fn owed(&mut self, o: &FramerOut, bufs: &Buffers) -> Result<(), Refused> {
+        self.owed_with_progress(o, bufs, false)
     }
 
-    fn owed_with_progress(&mut self, o: &FramerOut, control_progress: bool) -> Result<(), Refused> {
+    fn owed_with_progress(
+        &mut self,
+        o: &FramerOut,
+        bufs: &Buffers,
+        control_progress: bool,
+    ) -> Result<(), Refused> {
         self.stalls = if wrote(o) || control_progress {
             0
         } else {
-            self.stalls + 1
+            self.stalls.saturating_add(1)
         };
-        self.bytes = self
-            .bytes
-            .saturating_add(o.yielded.wire_len)
-            .saturating_add(o.yielded.frame_len);
+        self.bytes = self.bytes.saturating_add(bufs.output_work(o));
+        self.control_progress(control_progress)?;
         if self.stalls >= MORE_STALLS {
             return Err(Refused {
                 outcome: Outcome::Fault,
@@ -1383,10 +1579,24 @@ impl Recalls {
                 ),
             });
         }
+        Ok(())
+    }
+
+    /// A PENDING crossing retains no output, but a newly granted stream still did control work.
+    /// Preserve that charge with the parked op, just as for READY/MORE crossings.
+    fn control_progress(&mut self, progress: bool) -> Result<(), Refused> {
+        if progress {
+            self.stalls = 0;
+            self.bytes = self.bytes.saturating_add(std::mem::size_of::<
+                busbar_contract::abi::transport::guest_policy::Open,
+            >() as u64);
+        }
         if self.bytes > MORE_BYTES {
             return Err(Refused {
                 outcome: Outcome::Fault,
-                error: format!("the framer's answers to one op ran past {MORE_BYTES} bytes"),
+                error: format!(
+                    "the framer's output/control work for one op ran past {MORE_BYTES} bytes"
+                ),
             });
         }
         Ok(())
@@ -1806,6 +2016,7 @@ impl Framing {
                 bytes,
                 end_of_frame,
                 text,
+                trailers,
                 body_len,
                 status,
                 extensions,
@@ -1825,7 +2036,8 @@ impl Framing {
                     i.bytes = bytes.as_ptr();
                     i.len = bytes.len();
                     i.end_of_frame = u32::from(*end_of_frame);
-                    i.flags = if *text { EMIT_TEXT } else { 0 };
+                    i.flags = if *text { EMIT_TEXT } else { 0 }
+                        | if *trailers { EMIT_TRAILERS } else { 0 };
                 }
                 // An accepted answer's status rides the emit that carries its head, and that op's
                 // resume; a `YIELD_MORE` re-call of it states none.
@@ -1904,8 +2116,13 @@ impl Framing {
             });
             resume = false;
             if c.outcome == Outcome::Pending {
-                if control_progress {
-                    recalls.stalls = 0;
+                if let Err(error) = recalls.control_progress(control_progress) {
+                    // This crossing still owns a pending service. Cancel it before dropping its
+                    // ticket; it must never re-enter the idle pool as a completed operation.
+                    if let Some(side) = ticket.take() {
+                        self.cancel_ticket(side.as_ref());
+                    }
+                    return Err(error);
                 }
                 if let Some(t) = ticket.take() {
                     self.parked.push(Parked {
@@ -1938,6 +2155,7 @@ impl Framing {
             if self.bufs.take(&o, &mut yielded)? {
                 return Ok(Some(yielded));
             }
+            recalls.owed_with_progress(&o, &self.bufs, control_progress)?;
             if adopt {
                 // After adoption, drain leftover input on the same ticket without lending it again.
                 return self.run_on(
@@ -1954,11 +2172,8 @@ impl Framing {
             }
             if begin {
                 // What `begin` still owes comes out on `timer` re-calls, never another `begin`.
-                self.more(Again::Timer, &mut yielded)?;
+                self.more_with_recalls(Again::Timer, &mut yielded, recalls)?;
                 return Ok(Some(yielded));
-            }
-            if recall {
-                recalls.owed_with_progress(&o, control_progress)?;
             }
             recall = true;
         }
@@ -2088,18 +2303,31 @@ impl Framing {
 
     /// Re-call `again` with no new bytes until the framer owes nothing more.
     fn more(&mut self, again: Again, y: &mut Yielded) -> Result<(), Refused> {
+        self.more_with_recalls(again, y, Recalls::default())
+    }
+
+    fn more_with_recalls(
+        &mut self,
+        again: Again,
+        y: &mut Yielded,
+        recalls: Recalls,
+    ) -> Result<(), Refused> {
         if let Some(context) = &self.context {
             context.operation_started(Ticket::NONE);
         }
-        let result = self.more_on(again, y);
+        let result = self.more_on(again, y, recalls);
         if let Some(context) = &self.context {
             context.operation_finished(Ticket::NONE, result.is_err());
         }
         result
     }
 
-    fn more_on(&mut self, again: Again, y: &mut Yielded) -> Result<(), Refused> {
-        let mut recalls = Recalls::default();
+    fn more_on(
+        &mut self,
+        again: Again,
+        y: &mut Yielded,
+        mut recalls: Recalls,
+    ) -> Result<(), Refused> {
         loop {
             let sink = self.bufs.sink();
             let mut o: FramerOut = blank_out();
@@ -2139,7 +2367,7 @@ impl Framing {
             if self.bufs.take(&o, y)? {
                 return Ok(());
             }
-            recalls.owed_with_progress(&o, control_progress)?;
+            recalls.owed_with_progress(&o, &self.bufs, control_progress)?;
         }
     }
 
@@ -2267,6 +2495,31 @@ impl Framing {
         )
     }
 
+    /// End an accepted answer with a neutral field block after its body. The transport renders
+    /// these as trailers; they are never payload bytes. Pending and drain recalls retain this
+    /// operation's identity and cannot be overtaken by later work on the stream.
+    ///
+    /// # Errors
+    /// The framer refused the trailers or the stream is held by an earlier operation.
+    pub fn emit_trailers(&mut self, stream: u64, fields: &[u8]) -> Result<Yielded, Refused> {
+        if self.bufs.side != SIDE_ACCEPT {
+            return Err(Refused {
+                outcome: Outcome::Refused,
+                error: "trailers end an accepted answer only".into(),
+            });
+        }
+        self.emit_op(
+            stream,
+            fields,
+            true,
+            false,
+            EmitHead {
+                trailers: true,
+                ..EmitHead::default()
+            },
+        )
+    }
+
     /// The one `emit` op every emit is.
     fn emit_op(
         &mut self,
@@ -2282,6 +2535,7 @@ impl Framing {
             bytes: std::borrow::Cow::Borrowed(bytes),
             end_of_frame,
             text,
+            trailers: head.trailers,
             body_len: head.body_len,
             status: head.status,
             extensions: head.extensions,
@@ -2327,7 +2581,9 @@ impl Framing {
         ))?;
         let mut y = Yielded::default();
         if !self.bufs.take(&o, &mut y)? {
-            self.more(Again::Refuse(stream, status, head_sent), &mut y)?;
+            let mut recalls = Recalls::default();
+            recalls.owed(&o, &self.bufs)?;
+            self.more_with_recalls(Again::Refuse(stream, status, head_sent), &mut y, recalls)?;
         }
         Ok(y)
     }
@@ -2383,7 +2639,7 @@ impl Framing {
                     context,
                 });
             }
-            recalls.owed(&o)?;
+            recalls.owed(&o, &self.bufs)?;
         }
     }
 
@@ -2462,7 +2718,7 @@ impl Framing {
                 }
                 return Ok(y);
             }
-            recalls.owed(&o)?;
+            recalls.owed(&o, &self.bufs)?;
         }
     }
 
@@ -2505,19 +2761,23 @@ impl Framing {
 }
 
 impl Framing {
+    fn cancel_ticket(&self, side: &dyn crate::carrier::Side) {
+        let mut i: busbar_contract::abi::mechanism::lifecycle::CancelIn = blank_in();
+        i.ticket = side.ticket();
+        let mut o: busbar_contract::abi::mechanism::lifecycle::CancelOut = blank_out();
+        let _ = self.door.cancel_scoped(
+            self.context.as_ref(),
+            side,
+            crate::carrier::Carry::Cancel(&mut i, &mut o),
+        );
+    }
+
     /// CANCEL every op parked on the framing's tickets, each on its own (`abi::mechanism::lifecycle`,
     /// `cancel`, made on no ticket: the ticket it cancels rides its `in`).
     fn cancel_parked(&mut self) {
         for p in std::mem::take(&mut self.parked) {
             let side = p.ticket.as_ref();
-            let mut i: busbar_contract::abi::mechanism::lifecycle::CancelIn = blank_in();
-            i.ticket = side.ticket();
-            let mut o: busbar_contract::abi::mechanism::lifecycle::CancelOut = blank_out();
-            let _ = self.door.cancel_scoped(
-                self.context.as_ref(),
-                side,
-                crate::carrier::Carry::Cancel(&mut i, &mut o),
-            );
+            self.cancel_ticket(side);
             if let Some(context) = &self.context {
                 context.operation_finished(side.ticket(), true);
             }
@@ -2527,12 +2787,14 @@ impl Framing {
 
 /// What one more completed op yielded, after what `into` holds: its head slots, wire bytes and
 /// pieces in order, its end, and the deadline it stated last.
-fn merge(into: &mut Yielded, y: Yielded) {
-    into.heads.extend(y.heads);
-    into.wire.extend(y.wire);
-    into.pieces.extend(y.pieces);
-    into.interim.extend(y.interim);
-    into.flow.extend(y.flow);
+fn merge(into: &mut Yielded, mut y: Yielded) {
+    into.heads.append(&mut y.heads);
+    into.extend_wire(&y.wire);
+    #[cfg(test)]
+    crate::support::watch_yielded_wire(&into.wire);
+    into.pieces.append(&mut y.pieces);
+    into.interim.append(&mut y.interim);
+    into.flow.append(&mut y.flow);
     into.ended |= y.ended;
     into.deadline_ns = y.deadline_ns.or(into.deadline_ns);
     if y.agreed != 0 {
@@ -2557,3 +2819,7 @@ impl Drop for Framing {
 #[cfg(test)]
 #[path = "tests/framer_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "tests/framer_deadline_tests.rs"]
+mod deadline_tests;

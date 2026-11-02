@@ -34,8 +34,7 @@ use std::time::{Duration, Instant};
 const STREAMS: usize = 2000;
 /// The open files the cell needs: two sockets per stream on each side of busbar, and headroom.
 const OPEN_FILES: u64 = 16_384;
-/// How long the upstream waits for every stream to arrive before it finishes them anyway (the
-/// assertion on the peak then says how many arrived).
+/// How long the upstream waits for every stream to arrive before failing the barrier.
 const ARRIVAL_WAIT: Duration = Duration::from_secs(120);
 /// A caller that has not read its whole answer by now is parked or cut.
 const CALLER_BUDGET: Duration = Duration::from_secs(240);
@@ -91,15 +90,17 @@ fn cap_perf_streams_2000_body() {
     let log_path = dir.join("out.log");
     let log = std::fs::File::create(&log_path).unwrap();
     let log_err = log.try_clone().unwrap();
-    let mut child = Command::new(common::boot::exe())
-        .env("BUSBAR_CONFIG", dir.join("config.yaml"))
-        .env("BUSBAR_PROVIDERS", dir.join("providers.yaml"))
-        .env("MOCK_KEY", "x")
-        .env("RUST_LOG", "warn")
-        .stdout(log)
-        .stderr(log_err)
-        .spawn()
-        .expect("spawn busbar");
+    let mut child = common::boot::Reap(
+        Command::new(common::boot::exe())
+            .env("BUSBAR_CONFIG", dir.join("config.yaml"))
+            .env("BUSBAR_PROVIDERS", dir.join("providers.yaml"))
+            .env("MOCK_KEY", "x")
+            .env("RUST_LOG", "warn")
+            .stdout(log)
+            .stderr(log_err)
+            .spawn()
+            .expect("spawn busbar"),
+    );
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         if let Some(status) = child.try_wait().expect("try_wait") {
@@ -132,9 +133,14 @@ fn cap_perf_streams_2000_body() {
         .map(|h| h.join().expect("a caller did not panic"))
         .collect();
     let peak = upstream.peak.load(Ordering::SeqCst);
+    let barrier_failed = upstream.arrived.0.lock().unwrap().failed;
     let _ = child.kill();
     let _ = child.wait();
 
+    assert!(
+        !barrier_failed,
+        "the upstream barrier expired before all {STREAMS} streams were live together (peak {peak})"
+    );
     let want = expected_stream();
     let bad: Vec<String> = answers
         .iter()
@@ -169,10 +175,34 @@ fn cap_perf_streams_2000_body() {
 // ── the stand-in upstream ────────────────────────────────────────────────────────────────────────
 
 /// An OpenAI-shaped streaming upstream: each request is answered with its first events at once,
-/// then held until every stream has arrived (or [`ARRIVAL_WAIT`]), then finished.
+/// then held until every stream is live together. An expired barrier fails the cell; it never
+/// releases a partial batch that later arrivals could mistake for concurrent capacity.
 struct Upstream {
     port: u16,
     peak: Arc<AtomicUsize>,
+    arrived: Arc<(Mutex<ArrivalState>, Condvar)>,
+}
+
+#[derive(Default)]
+struct ArrivalState {
+    live: usize,
+    released: bool,
+    failed: bool,
+}
+
+/// Keep the count tied to this handler's lifetime, including early returns and unwinding.
+struct LiveStream<'a> {
+    arrived: &'a (Mutex<ArrivalState>, Condvar),
+    registered: bool,
+}
+
+impl Drop for LiveStream<'_> {
+    fn drop(&mut self) {
+        if self.registered {
+            let mut state = self.arrived.0.lock().unwrap_or_else(|p| p.into_inner());
+            state.live -= 1;
+        }
+    }
 }
 
 impl Upstream {
@@ -180,7 +210,8 @@ impl Upstream {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         let peak = Arc::new(AtomicUsize::new(0));
-        let arrived = Arc::new((Mutex::new(0usize), Condvar::new()));
+        let arrived = Arc::new((Mutex::new(ArrivalState::default()), Condvar::new()));
+        let held = Arc::clone(&arrived);
         let p = Arc::clone(&peak);
         std::thread::spawn(move || {
             for conn in listener.incoming() {
@@ -191,11 +222,15 @@ impl Upstream {
                     .spawn(move || serve(stream, &p, &arrived));
             }
         });
-        Upstream { port, peak }
+        Upstream {
+            port,
+            peak,
+            arrived: held,
+        }
     }
 }
 
-fn serve(mut stream: TcpStream, peak: &AtomicUsize, arrived: &(Mutex<usize>, Condvar)) {
+fn serve(mut stream: TcpStream, peak: &AtomicUsize, arrived: &(Mutex<ArrivalState>, Condvar)) {
     let mut reader = BufReader::new(stream.try_clone().unwrap());
     let mut content_length = 0usize;
     loop {
@@ -211,26 +246,54 @@ fn serve(mut stream: TcpStream, peak: &AtomicUsize, arrived: &(Mutex<usize>, Con
         }
     }
     let mut body = vec![0u8; content_length];
-    let _ = reader.read_exact(&mut body);
+    if reader.read_exact(&mut body).is_err() {
+        return;
+    }
     let events = events();
     let (head, tail) = events.split_at(2);
-    let _ = stream.write_all(
-        b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: close\r\n\r\n",
-    );
-    for e in head {
-        let _ = stream.write_all(e.as_bytes());
+    if stream
+        .write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: close\r\n\r\n")
+        .is_err()
+    {
+        return;
     }
-    let _ = stream.flush();
-    // Hold until every stream is in flight together.
+    for e in head {
+        if stream.write_all(e.as_bytes()).is_err() {
+            return;
+        }
+    }
+    if stream.flush().is_err() {
+        return;
+    }
+    // A timeout permanently fails this generation. Later arrivals cannot complete a partial batch.
+    let mut live = LiveStream {
+        arrived,
+        registered: false,
+    };
     let (count, all) = arrived;
-    let mut n = count.lock().unwrap();
-    *n += 1;
-    peak.fetch_max(*n, Ordering::SeqCst);
-    if *n >= STREAMS {
-        drop(n);
+    let mut state = count.lock().unwrap();
+    if state.failed {
+        return;
+    }
+    state.live += 1;
+    live.registered = true;
+    peak.fetch_max(state.live, Ordering::SeqCst);
+    if state.live == STREAMS {
+        state.released = true;
+        drop(state);
         all.notify_all();
     } else {
-        let _ = all.wait_timeout_while(n, ARRIVAL_WAIT, |n| *n < STREAMS);
+        let (mut state, _) = all
+            .wait_timeout_while(state, ARRIVAL_WAIT, |state| {
+                !state.released && !state.failed
+            })
+            .unwrap();
+        if !state.released {
+            state.failed = true;
+            drop(state);
+            all.notify_all();
+            return;
+        }
     }
     for e in tail {
         let _ = stream.write_all(e.as_bytes());

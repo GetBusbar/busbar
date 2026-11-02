@@ -12,7 +12,9 @@
 //! `/call/local-counted`, `/call/local-quiet` and `/call/local-estimated` (routed `ROUTE_LOCAL`:
 //! counted as an admitted call, not, and stating expected units); a unit on `/call/nest:<target>`
 //! runs `POST <target>` as a NESTED unit through the host's `unit.nest` and answers its caller
-//! `nested:<status>:<the child's body>` (`nest-refused:<reason>` when the host refused it); a unit on
+//! `nested:<status>:<the child's body>` (`nest-refused:<reason>` when the host refused it,
+//! `nest-failed:<reason>` when a child ran but its reply failed); `/call/local-repeat:<bytes>`
+//! counts one local admission and emits that many fixture bytes in bounded pieces. A unit on
 //! `/call/services` (or `/call/services-pool:<pool>`, routed over that pool) passes its body
 //! through the host's `content.scan`, `hook.call` (a gate, then a rewrite) and `verify.lookup`
 //! (keyed by the body; a lead stores `fetched`), and answers `<op>=<value>` (or
@@ -77,12 +79,12 @@ use busbar_contract::abi::mechanism::lifecycle::{
 use busbar_contract::abi::mechanism::ticket::{CompletionHandle, HostCtx, Ticket, WakeFn};
 use busbar_contract::abi::mechanism::{KindCode, DOOR_MAGIC, MECHANISM_VERSION};
 use busbar_contract::abi::plane::{
-    AdminRoute, ArriveIn, ArriveOut, BillableClass, Claim, OnPieceIn, OnPieceOut, OpClass, Ops,
-    OutField, PlaneDriveIn, PlaneDriveOut, PlaneOpenIn, PlaneOpenOut, PlaneRefreshOut,
-    PlaneSnapshot, PlaneTail, ProjectOut, RefusalIn, RefusalOut, RefusalStatus, ServeIn, ServeOut,
-    UnitCount, ANSWER_LAYOUT, AUDIT_APPLIED, AUDIT_NONE, AUDIT_REJECTED, CANCEL_ABORTED,
-    CANCEL_FAILED, CANCEL_OK_PARTIAL, CLAIM_EXACT, CLAIM_OPEN, EMIT_DONE, EMIT_FINAL_STATUS,
-    EMIT_MESSAGE_END, EMIT_TO_FAR_END, FROM_CALLER, FROM_FAR_END, FROM_KERNEL,
+    AdminRoute, ArriveIn, ArriveOut, BillableClass, CatalogIn, CatalogOut, Claim, OnPieceIn,
+    OnPieceOut, OpClass, Ops, OutField, PlaneDriveIn, PlaneDriveOut, PlaneOpenIn, PlaneOpenOut,
+    PlaneRefreshOut, PlaneSnapshot, PlaneTail, ProjectOut, RefusalIn, RefusalOut, RefusalStatus,
+    ServeIn, ServeOut, UnitCount, ANSWER_LAYOUT, AUDIT_APPLIED, AUDIT_NONE, AUDIT_REJECTED,
+    CANCEL_ABORTED, CANCEL_FAILED, CANCEL_OK_PARTIAL, CLAIM_EXACT, CLAIM_OPEN, EMIT_DONE,
+    EMIT_FINAL_STATUS, EMIT_MESSAGE_END, EMIT_TO_FAR_END, FROM_CALLER, FROM_FAR_END, FROM_KERNEL,
     INGRESS_DUPLEX_SESSION, INGRESS_REQUEST_RESPONSE, INGRESS_RESPONSE_STREAM, PIECE_FIELDS,
     PIECE_HAS_STATUS, PIECE_LAST, PIECE_OUT_TEXT, PRINCIPAL_OPTIONAL, REFUSAL_ANY_DIALECT,
     ROUTE_COUNTED, ROUTE_DIRECT, ROUTE_LOCAL, ROUTE_POOL, ROUTE_PUBLIC, SHAPE_WHOLE, SPAN_ABSENT,
@@ -358,8 +360,8 @@ static OPS: Shared<Ops> = Shared(Ops {
     hydrate: Some(ready),
     start: Some(ready),
     project: Some(project),
-    // This test plane claims no catalog route (ARCHITECT ruling 2026-10-16, 3b C).
-    catalog: None,
+    // No claim mounts this renderer; root tests call the unitless seam directly.
+    catalog: Some(catalog),
 });
 
 // SAFETY: the Statement and plane table are this file's own `'static` data, laid out above: every
@@ -431,6 +433,20 @@ static ADMIN_ROUTES: Shared<[AdminRoute; 2]> = Shared([
 /// answer is short and the one re-call is served.
 const SHORT_REPLY: usize = 1 << 20;
 
+/// A local reply emitted in bounded pieces, of the byte length its target suffix names.
+const LOCAL_REPEAT: &[u8] = b"/call/local-repeat:";
+/// The same producer declaring Content-Length, and its observable byte counter.
+const LOCAL_REPEAT_WHOLE: &[u8] = b"/call/local-repeat-whole:";
+const LOCAL_PRODUCED: &[u8] = b"/call/local-produced";
+const CONTENT_LENGTH: &[u8] = b"content-length";
+
+/// HTTP's successful response status, used by the head echo and repeated local reply controls.
+const HTTP_OK: u32 = 200;
+
+/// Datagram-opening controls: wait without stating a head, or state one and keep the session.
+const DATAGRAM_HEAD_PENDING: &[u8] = b"/open?head=pending";
+const DATAGRAM_HEAD_READY: &[u8] = b"/open?head=ready";
+
 /// THE DOOR: the `DoorFn` a compiled-in row holds.
 pub extern "C" fn door() -> &'static Door {
     &DOOR.0
@@ -471,6 +487,7 @@ struct Inst {
     /// The unit each ticket serves, for `cancel`.
     tickets: Mutex<HashMap<Ticket, u64>>,
     stats: [AtomicU64; STATS],
+    produced: AtomicU64,
     /// The envelope `drive` answers: valid until the next op on the driver ticket.
     drive_metric: Box<Mutex<MetricEntry>>,
     /// The host's connection slots (NULL without a table).
@@ -702,6 +719,7 @@ extern "C" fn open(_: *mut c_void, input: *const c_void, out: *mut c_void) -> Ra
             heads: Mutex::new(HashMap::new()),
             tickets: Mutex::new(HashMap::new()),
             stats: Default::default(),
+            produced: AtomicU64::new(0),
             conns: host.conns,
             tick_every_ms: AtomicU64::new(0),
             tick_read: AtomicBool::new(false),
@@ -925,12 +943,15 @@ extern "C" fn arrive(instance: *mut c_void, input: *const c_void, out: *mut c_vo
             }
             // UNITS THE PLANE ANSWERS ITSELF (`ROUTE_LOCAL`), stating no expected units: counted as an
             // admitted call (`ROUTE_COUNTED`), or not; and one stating expected units.
-            b"/call/local-counted" => {
+            t if t == b"/call/local-counted"
+                || t.starts_with(LOCAL_REPEAT)
+                || t.starts_with(LOCAL_REPEAT_WHOLE) =>
+            {
                 o.route = ROUTE_LOCAL;
                 o.route_flags = ROUTE_COUNTED;
                 vec![]
             }
-            b"/call/local-quiet" => {
+            t if t == b"/call/local-quiet" || t == LOCAL_PRODUCED => {
                 o.route = ROUTE_LOCAL;
                 vec![]
             }
@@ -963,7 +984,11 @@ extern "C" fn arrive(instance: *mut c_void, input: *const c_void, out: *mut c_vo
                 o.refusal_status = 404;
                 return say(out, Outcome::Refused);
             }
-            t if t == b"/open" || t.starts_with(b"/framed") => {
+            t if t == b"/open"
+                || t == DATAGRAM_HEAD_PENDING
+                || t == DATAGRAM_HEAD_READY
+                || t.starts_with(b"/framed") =>
+            {
                 // The open claims route directly over the section's `m`.
                 o.route = ROUTE_DIRECT;
                 o.pool = AbiStr {
@@ -1061,6 +1086,45 @@ extern "C" fn on_piece(
                 return say(out, Outcome::Pending);
             }
         }
+        if let Some((length, whole)) = head
+            .strip_prefix(LOCAL_REPEAT)
+            .map(|length| (length, false))
+            .or_else(|| {
+                head.strip_prefix(LOCAL_REPEAT_WHOLE)
+                    .map(|length| (length, true))
+            })
+        {
+            // The body of this local unit is a repeated fixture byte. Re-calls emit only the
+            // remainder, so a host buffering limit can fail after real child admission/output.
+            let Ok(length) = std::str::from_utf8(length)
+                .unwrap_or_default()
+                .parse::<u64>()
+            else {
+                return RawOutcome::of(Outcome::Fault);
+            };
+            let n = usize::try_from(length.saturating_sub(u.emitted))
+                .unwrap_or(usize::MAX)
+                .min(i.reply_cap);
+            if whole && u.emitted == 0 {
+                let mut at = 0;
+                let name = put(i, &mut at, CONTENT_LENGTH);
+                let value = put(i, &mut at, length.to_string().as_bytes());
+                *i.fields_buf = OutField { name, value };
+                o.fields_written = 1;
+                o.arena_written = at as u64;
+            }
+            std::ptr::write_bytes(i.reply_buf, b'x', n);
+            u.emitted += n as u64;
+            me.produced.fetch_add(n as u64, Ordering::SeqCst);
+            o.reply_status = HTTP_OK;
+            o.emitted = n as u64;
+            o.more = u32::from(u.emitted < length);
+            u.more_from = (o.more != 0).then_some(i.from);
+            if o.more == 0 {
+                o.flags = EMIT_DONE;
+            }
+            return say(out, Outcome::Ready);
+        }
         match i.from {
             FROM_KERNEL if i.attempt_no > 0 => {
                 *u = Unit {
@@ -1144,6 +1208,15 @@ extern "C" fn on_piece(
                     // A LOCAL ANSWER: the plane answers the caller itself (an echo of the body),
                     // with nothing for the far end.
                     o.reply_status = 200;
+                    if head.as_slice() == LOCAL_PRODUCED {
+                        emit(
+                            i,
+                            o,
+                            me.produced.load(Ordering::SeqCst).to_string().as_bytes(),
+                        );
+                        o.flags = EMIT_DONE;
+                        return say(out, Outcome::Ready);
+                    }
                     let n = u.body.len().min(i.reply_cap);
                     std::ptr::copy_nonoverlapping(u.body.as_ptr(), i.reply_buf, n);
                     o.emitted = n as u64;
@@ -1268,7 +1341,8 @@ extern "C" fn on_piece(
 }
 
 /// `POST <child>` as a nested unit of the unit on ticket `t`, through the host's `unit.nest`:
-/// `None` while it pends; then `nested:<status>:<body>`, or `nest-refused:<reason>`.
+/// `None` while it pends; then `nested:<status>:<body>`, `nest-refused:<reason>` or
+/// `nest-failed:<reason>`, preserving the host's terminal distinction.
 unsafe fn nest(me: &'static Inst, t: Ticket, child: &[u8], body: &[u8]) -> Option<Vec<u8>> {
     me.count(Stat::HostCalls);
     let Some(slot) = me.services.as_ref().and_then(|table| table.unit_nest) else {
@@ -1313,14 +1387,54 @@ unsafe fn nest(me: &'static Inst, t: Ticket, child: &[u8], body: &[u8]) -> Optio
             let child_body = &buf[at..at + first.len as usize];
             Some([format!("nested:{}:", answer.value).as_bytes(), child_body].concat())
         }
-        _ => {
+        outcome => {
             let why = if answer.error.ptr.is_null() {
                 &[][..]
             } else {
                 std::slice::from_raw_parts(answer.error.ptr, answer.error.len)
             };
-            Some([b"nest-refused:".as_slice(), why].concat())
+            let prefix = if outcome == Outcome::Failed {
+                b"nest-failed:".as_slice()
+            } else {
+                b"nest-refused:".as_slice()
+            };
+            Some([prefix, why].concat())
         }
+    }
+}
+
+/// Echo the catalog head as response fields, so root tests observe exactly what crossed.
+extern "C" fn catalog(_: *mut c_void, input: *const c_void, out: *mut c_void) -> RawOutcome {
+    unsafe {
+        let i = &*input.cast::<CatalogIn>();
+        let o = &mut *out.cast::<CatalogOut>();
+        let fields = std::slice::from_raw_parts(i.fields, i.fields_len);
+        let needed: usize = fields.iter().map(|f| f.name.len + f.value.len).sum();
+        if fields.len() > i.fields_cap || needed > i.arena_cap {
+            o.fields_needed = fields.len() as u32;
+            o.arena_needed = needed as u64;
+            return say(out, Outcome::Failed);
+        }
+        let mut at = 0;
+        for (k, field) in fields.iter().enumerate() {
+            let mut put = |value: AbiStr| {
+                std::ptr::copy_nonoverlapping(value.ptr, i.arena_buf.add(at), value.len);
+                let span = Span {
+                    offset: at as u32,
+                    len: value.len as u32,
+                };
+                at += value.len;
+                span
+            };
+            *i.fields_buf.add(k) = OutField {
+                name: put(field.name),
+                value: put(field.value),
+            };
+        }
+        o.status = HTTP_OK;
+        o.fields_written = fields.len() as u32;
+        o.arena_written = at as u64;
+        say(out, Outcome::Ready)
     }
 }
 
@@ -1488,6 +1602,14 @@ unsafe fn session_piece(
     t: Ticket,
     out: *mut c_void,
 ) -> RawOutcome {
+    if i.from == FROM_CALLER && i.flags & PIECE_LAST == 0 {
+        let heads = me.heads.lock().unwrap();
+        match heads.get(&i.unit).map(Vec::as_slice) {
+            Some(DATAGRAM_HEAD_PENDING) => return say(out, Outcome::Ready),
+            Some(DATAGRAM_HEAD_READY) => o.reply_status = HTTP_OK,
+            _ => {}
+        }
+    }
     {
         let mut seen = me.session_tickets.lock().unwrap();
         let tickets = seen.entry(i.stream).or_default();

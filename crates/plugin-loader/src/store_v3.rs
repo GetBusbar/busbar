@@ -472,6 +472,14 @@ struct Owned {
     rows: Vec<Box<dyn std::any::Any>>,
 }
 
+impl Drop for Owned {
+    fn drop(&mut self) {
+        // Conditional carrier keys and extension bytes are opaque. Keeping their initialized
+        // copies private to this request also gives every legacy byte field the same custody.
+        zeroize::Zeroize::zeroize(&mut self.bytes);
+    }
+}
+
 impl Owned {
     fn keep(&mut self, b: Vec<u8>) -> (*const u8, usize) {
         let at = (b.as_ptr(), b.len());
@@ -521,6 +529,19 @@ impl Owned {
             ptr,
             len,
             fmt: BLOB_JSON,
+            flags: BLOB_SECRET,
+        }
+    }
+
+    fn secret_octets(&mut self, mut bytes: zeroize::Zeroizing<Vec<u8>>) -> Blob {
+        let (ptr, len) = (bytes.as_ptr(), bytes.len());
+        // Reserve while the wiping owner still holds the bytes; handoff itself cannot allocate.
+        self.secrets.reserve(1);
+        self.secrets.push(Zeroing(std::mem::take(&mut *bytes)));
+        Blob {
+            ptr,
+            len,
+            fmt: BLOB_OCTETS,
             flags: BLOB_SECRET,
         }
     }
@@ -796,7 +817,7 @@ impl<I> BytesReq<I> {
 /// A transaction is a typed host request carried on GET, with its own immutable intent.
 struct ConditionalReq {
     read: BytesReq<RecordGetIn>,
-    candidate: conditional::Request,
+    candidate: zeroize::Zeroizing<conditional::Request>,
 }
 
 /// Empty legacy batch plus an owned, immutable correction intent. Pending/resumed crossings
@@ -847,19 +868,24 @@ impl Req for CorrectionReq {
 impl ConditionalReq {
     fn new(candidate: &conditional::Request) -> Result<Self, StoreFailure> {
         let encoded = candidate
-            .encode()
+            .encode_held()
             .map_err(|s| StoreFailure::Refused(s.into()))?;
         let (schema, key) = candidate.carrier().ok_or_else(|| {
             StoreFailure::Refused("record transaction requires a predicate".into())
         })?;
         let mut read = LoadedStore::record_get_req(schema, key);
-        read.input.head.extensions = read._owned.octets(&extensions::encode(&[(
+        let mut extension = zeroize::Zeroizing::new(Vec::with_capacity(extensions::entry_len(
             conditional::INTENT,
-            encoded.as_slice(),
-        )]));
+            &encoded,
+        )));
+        extension.extend_from_slice(&(conditional::INTENT.len() as u16).to_le_bytes());
+        extension.extend_from_slice(conditional::INTENT.as_bytes());
+        extension.extend_from_slice(&(encoded.len() as u32).to_le_bytes());
+        extension.extend_from_slice(&encoded);
+        read.input.head.extensions = read._owned.secret_octets(extension);
         Ok(Self {
             read,
-            candidate: candidate.clone(),
+            candidate: zeroize::Zeroizing::new(candidate.clone()),
         })
     }
 }
@@ -2152,7 +2178,7 @@ unsafe impl Sync for OpenLent {}
 struct Zeroing(Vec<u8>);
 impl Drop for Zeroing {
     fn drop(&mut self) {
-        self.0.iter_mut().for_each(|b| *b = 0);
+        zeroize::Zeroize::zeroize(&mut self.0);
     }
 }
 

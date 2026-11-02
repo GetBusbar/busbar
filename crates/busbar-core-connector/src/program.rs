@@ -45,23 +45,25 @@ use crate::map;
 /// are driven with this waker, so a frame read for one lease wakes them all.
 #[derive(Default)]
 struct Fan {
-    wakers: Mutex<HashMap<u64, Waker>>,
+    wakers: Mutex<HashMap<u64, Arc<Waker>>>,
 }
 
 impl Fan {
-    fn register(&self, lease: u64, waker: &Waker) {
+    /// The caller owns `waker` before taking any member lock. Return the displaced owner so its
+    /// RawWaker destructor can be deferred until that outer lock is released too.
+    fn register(&self, lease: u64, waker: &Arc<Waker>) -> Option<Arc<Waker>> {
         self.wakers
             .lock()
             .expect("lease wakers")
-            .insert(lease, waker.clone());
+            .insert(lease, Arc::clone(waker))
     }
 
-    fn forget(&self, lease: u64) {
-        self.wakers.lock().expect("lease wakers").remove(&lease);
+    fn forget(&self, lease: u64) -> Option<Arc<Waker>> {
+        self.wakers.lock().expect("lease wakers").remove(&lease)
     }
 
     fn wake_all(&self) {
-        let woken: Vec<Waker> = self
+        let woken: Vec<Arc<Waker>> = self
             .wakers
             .lock()
             .expect("lease wakers")
@@ -69,7 +71,7 @@ impl Fan {
             .map(|(_, w)| w)
             .collect();
         for w in woken {
-            w.wake();
+            w.wake_by_ref();
         }
     }
 }
@@ -129,7 +131,11 @@ struct State {
     programs_outstanding: usize,
     /// The callers that found the program's connection out with another lease, woken once it is
     /// back.
-    missed: Vec<Waker>,
+    missed: Vec<Arc<Waker>>,
+    /// Notifications and displaced caller owners are retired only after the outer State guard.
+    wake_missed: Vec<Arc<Waker>>,
+    retired_wakers: Vec<Arc<Waker>>,
+    wake_fan: bool,
     /// Connections taken out of the member to be closed, each once the lock is let go
     /// ([`Locked`]).
     doomed: Vec<Connection>,
@@ -156,11 +162,27 @@ impl std::ops::DerefMut for Locked<'_> {
 
 impl Drop for Locked<'_> {
     fn drop(&mut self) {
-        let doomed = self
+        let (doomed, missed, retired, wake_fan) = self
             .0
             .take()
-            .map(|mut st| std::mem::take(&mut st.doomed))
+            .map(|mut st| {
+                (
+                    std::mem::take(&mut st.doomed),
+                    std::mem::take(&mut st.wake_missed),
+                    std::mem::take(&mut st.retired_wakers),
+                    std::mem::take(&mut st.wake_fan),
+                )
+            })
             .unwrap_or_default();
+        // State is unlocked before any arbitrary clone/drop/wake callback. Publish notifications
+        // before a carrier close, which may itself block or unwind.
+        drop(retired);
+        for waker in missed {
+            waker.wake_by_ref();
+        }
+        if wake_fan {
+            self.1.fan.wake_all();
+        }
         for conn in doomed {
             conn.close();
             // Account for each completed close even if a later carrier close unwinds.
@@ -182,7 +204,7 @@ impl Drop for Out<'_> {
     fn drop(&mut self) {
         if let Some(conn) = self.conn.take() {
             let mut st = self.member.lock();
-            st.ended(self.generation, Some(Failure::Closed), &self.member.fan);
+            st.ended(self.generation, Some(Failure::Closed));
             st.doomed.push(conn);
         }
     }
@@ -260,7 +282,7 @@ impl State {
     /// killed (its connection closed once the lock is let go, or by the lease that has it out as
     /// it brings it back) and every lease of its generation ends. The end is the carrier's to
     /// count (its supervisor saw the program's output close, or finds it ended at the `shut`).
-    fn ended(&mut self, generation: u64, failure: Option<Failure>, fan: &Fan) {
+    fn ended(&mut self, generation: u64, failure: Option<Failure>) {
         if self
             .live
             .as_ref()
@@ -273,7 +295,9 @@ impl State {
                 inbox.ended = Some(failure.clone());
             }
         }
-        fan.wake_all();
+        let missed = std::mem::take(&mut self.missed);
+        self.wake_missed.extend(missed);
+        self.wake_fan = true;
     }
 
     /// The running program is let go: its connection (when at home) is closed once the lock is
@@ -285,9 +309,9 @@ impl State {
     }
 
     /// `waker`'s caller found the program's connection out: it is woken once it is back.
-    fn miss(&mut self, waker: &Waker) {
+    fn miss(&mut self, waker: &Arc<Waker>) {
         if !self.missed.iter().any(|w| w.will_wake(waker)) {
-            self.missed.push(waker.clone());
+            self.missed.push(Arc::clone(waker));
         }
     }
 }
@@ -317,6 +341,9 @@ impl Member {
                 spawning: false,
                 programs_outstanding: 0,
                 missed: Vec::new(),
+                wake_missed: Vec::new(),
+                retired_wakers: Vec::new(),
+                wake_fan: false,
                 doomed: Vec::new(),
             }),
             spawned: Condvar::new(),
@@ -356,7 +383,7 @@ impl Member {
         &'m self,
         mut st: Locked<'m>,
         generation: u64,
-        missed: &Waker,
+        missed: &Arc<Waker>,
         drive: impl FnOnce(&mut Connection) -> R,
     ) -> (Locked<'m>, Option<R>) {
         let Some(live) = st.live.as_mut().filter(|l| l.generation == generation) else {
@@ -384,9 +411,8 @@ impl Member {
             Some(live) => live.conn = Some(conn),
             None => st.doomed.push(conn),
         }
-        for w in std::mem::take(&mut st.missed) {
-            w.wake();
-        }
+        let missed = std::mem::take(&mut st.missed);
+        st.wake_missed.extend(missed);
         (st, Some(r))
     }
 
@@ -397,6 +423,7 @@ impl Member {
         mut st: Locked<'m>,
         lease: u64,
         cx: &mut Context<'_>,
+        missed: &Arc<Waker>,
     ) -> (Locked<'m>, Result<bool, Failure>) {
         let Some(inbox) = st.leases.get_mut(&lease) else {
             return (st, Err(Failure::Closed));
@@ -408,10 +435,8 @@ impl Member {
         if !st.live.as_ref().is_some_and(|l| l.generation == generation) {
             return (st, Err(Failure::Closed));
         }
-        let missed = cx.waker().clone();
-        let (mut st, wrote) = self.crossing(st, generation, &missed, |conn| {
-            conn.write_whole(&unsent, cx)
-        });
+        let (mut st, wrote) =
+            self.crossing(st, generation, missed, |conn| conn.write_whole(&unsent, cx));
         match wrote {
             Some(Ok(true)) => (st, Ok(true)),
             Some(Err(f)) => (st, Err(f)),
@@ -433,6 +458,7 @@ impl Member {
     /// the spawn (its supervisor holding the program down is the carrier's verdict, not this
     /// host's). `first` (when not empty) is the lease's first message, written whole.
     pub(crate) fn lease(&self, first: &[u8]) -> Result<u64, ConnError> {
+        let waker = Arc::new(self.fan_waker());
         let mut st = self.lock();
         loop {
             if st.retired {
@@ -458,7 +484,7 @@ impl Member {
                 .then_some(l.generation)
         });
         if let Some(generation) = exited {
-            st.ended(generation, None, &self.fan);
+            st.ended(generation, None);
         }
         if st.live.is_none() {
             let dial = Dial {
@@ -534,10 +560,10 @@ impl Member {
                 mid_frame,
             },
         );
-        let waker = self.fan_waker();
-        let (mut st, flushed) = self.flush_unsent(st, lease, &mut Context::from_waker(&waker));
+        let (mut st, flushed) =
+            self.flush_unsent(st, lease, &mut Context::from_waker(&waker), &waker);
         if let Err(f) = flushed {
-            st.ended(generation, Some(f.clone()), &self.fan);
+            st.ended(generation, Some(f.clone()));
             st.leases.remove(&lease);
             return Err(map(&f));
         }
@@ -552,7 +578,8 @@ impl Member {
         waker: &Waker,
         buf: &mut [u8],
     ) -> Result<Piece, ConnError> {
-        let fan_waker = self.fan_waker();
+        let incoming = Arc::new(waker.clone());
+        let fan_waker = Arc::new(self.fan_waker());
         let mut cx = Context::from_waker(&fan_waker);
         let mut st = self.lock();
         loop {
@@ -572,16 +599,19 @@ impl Member {
                 buf[..n].copy_from_slice(&bytes[..n]);
                 let full = inbox.queued >= RECEIVE_BUFFER_BYTES;
                 inbox.queued = inbox.queued.saturating_sub(n);
-                if full && inbox.queued < RECEIVE_BUFFER_BYTES {
-                    // Under the cap again: the program is read again, for whoever waits on it.
-                    self.fan.wake_all();
-                }
-                if n < bytes.len() {
+                let unblocked = full && inbox.queued < RECEIVE_BUFFER_BYTES;
+                let piece = if n < bytes.len() {
                     bytes.drain(..n);
                     inbox.pieces.push_front((bytes, end));
-                    return Ok(piece(PieceKind::Body, n, false));
+                    piece(PieceKind::Body, n, false)
+                } else {
+                    piece(PieceKind::Body, n, end)
+                };
+                if unblocked {
+                    // Under the cap again: notify after State is released.
+                    st.wake_fan = true;
                 }
-                return Ok(piece(PieceKind::Body, n, end));
+                return Ok(piece);
             }
             if let Some(end) = inbox.ended.clone() {
                 if inbox.end_read {
@@ -594,25 +624,26 @@ impl Member {
                 };
             }
             let generation = inbox.generation;
-            let (back, flushed) = self.flush_unsent(st, lease, &mut cx);
+            let (back, flushed) = self.flush_unsent(st, lease, &mut cx, &fan_waker);
             st = back;
             match flushed {
                 Ok(_) => {}
                 Err(f) => {
-                    st.ended(generation, Some(f), &self.fan);
+                    st.ended(generation, Some(f));
                     continue;
                 }
             }
             if !st.live.as_ref().is_some_and(|l| l.generation == generation) {
-                st.ended(generation, None, &self.fan);
+                st.ended(generation, None);
                 continue;
             }
-            self.fan.register(lease, waker);
+            st.retired_wakers
+                .extend(self.fan.register(lease, &incoming));
             if st.backlogged(generation) {
                 return Err(ConnError::Pending);
             }
             let (back, polled) =
-                self.crossing(st, generation, waker, |conn| conn.poll_piece(&mut cx));
+                self.crossing(st, generation, &incoming, |conn| conn.poll_piece(&mut cx));
             st = back;
             // `None`: another lease has the program out, and this one is woken once it is back.
             let Some(polled) = polled else {
@@ -638,18 +669,19 @@ impl Member {
                             .push_back((got.bytes.clone(), got.end_of_frame));
                     }
                     st.mid_frame = !got.end_of_frame;
-                    self.fan.wake_all();
+                    st.wake_fan = true;
                 }
-                Poll::Ready(Ok(None)) => st.ended(generation, None, &self.fan),
-                Poll::Ready(Err(f)) => st.ended(generation, Some(f), &self.fan),
+                Poll::Ready(Ok(None)) => st.ended(generation, None),
+                Poll::Ready(Err(f)) => st.ended(generation, Some(f)),
             }
         }
     }
 
     /// Whether `lease` has a piece (or its end) ready, `waker` woken when one arrives.
     pub(crate) fn ready(&self, lease: u64, waker: &Waker) -> Result<bool, ConnError> {
-        let fan_waker = self.fan_waker();
-        let st = self.lock();
+        let incoming = Arc::new(waker.clone());
+        let fan_waker = Arc::new(self.fan_waker());
+        let mut st = self.lock();
         let inbox = st.leases.get(&lease).ok_or(ConnError::Closed)?;
         if inbox.head.is_some() || !inbox.pieces.is_empty() || inbox.ended.is_some() {
             return Ok(true);
@@ -657,14 +689,16 @@ impl Member {
         let generation = inbox.generation;
         if st.live.as_ref().is_some_and(|l| l.generation == generation) && st.backlogged(generation)
         {
-            self.fan.register(lease, waker);
+            st.retired_wakers
+                .extend(self.fan.register(lease, &incoming));
             return Ok(false);
         }
         if !st.live.as_ref().is_some_and(|l| l.generation == generation) {
             return Ok(true);
         }
-        self.fan.register(lease, waker);
-        let (_st, polled) = self.crossing(st, generation, waker, |conn| {
+        st.retired_wakers
+            .extend(self.fan.register(lease, &incoming));
+        let (_st, polled) = self.crossing(st, generation, &incoming, |conn| {
             conn.poll_ready(&mut Context::from_waker(&fan_waker))
         });
         // `None`: another lease has the program out, and this one is woken once it is back.
@@ -674,7 +708,7 @@ impl Member {
     /// Write `bytes` on `lease` as ONE WHOLE MESSAGE: all taken, or `Pending` while the program's
     /// queue has no room for it.
     pub(crate) fn write(&self, lease: u64, bytes: &[u8]) -> Result<usize, ConnError> {
-        let fan_waker = self.fan_waker();
+        let fan_waker = Arc::new(self.fan_waker());
         let mut cx = Context::from_waker(&fan_waker);
         let st = self.lock();
         let generation = st
@@ -683,12 +717,12 @@ impl Member {
             .filter(|i| i.ended.is_none())
             .map(|i| i.generation)
             .ok_or(ConnError::Closed)?;
-        let (mut st, flushed) = self.flush_unsent(st, lease, &mut cx);
+        let (mut st, flushed) = self.flush_unsent(st, lease, &mut cx, &fan_waker);
         match flushed {
             Ok(true) => {}
             Ok(false) => return Err(ConnError::Pending),
             Err(f) => {
-                st.ended(generation, Some(f.clone()), &self.fan);
+                st.ended(generation, Some(f.clone()));
                 return Err(map(&f));
             }
         }
@@ -706,7 +740,7 @@ impl Member {
             Ok(true) => Ok(bytes.len()),
             Ok(false) => Err(ConnError::Pending),
             Err(f) => {
-                st.ended(generation, Some(f.clone()), &self.fan);
+                st.ended(generation, Some(f.clone()));
                 Err(map(&f))
             }
         }
@@ -736,15 +770,16 @@ impl Member {
     /// Close `lease`; the program runs on, unless the member is retired and this was its last
     /// lease.
     pub(crate) fn close(&self, lease: u64) {
-        self.fan.forget(lease);
         let mut st = self.lock();
+        // Serialize removal with register under State, and defer the removed owner's destructor.
+        st.retired_wakers.extend(self.fan.forget(lease));
         // A lease that held the program back lets it go: whoever waits on it reads it again.
         if st
             .leases
             .remove(&lease)
             .is_some_and(|i| i.queued >= RECEIVE_BUFFER_BYTES)
         {
-            self.fan.wake_all();
+            st.wake_fan = true;
         }
         let ending = st.retired && st.leases.is_empty();
         drop(st);

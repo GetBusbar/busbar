@@ -343,7 +343,7 @@ pub(crate) async fn reload_plugins(
     // Serialize against config applies/reloads AND against plugin install/remove — they all touch
     // the same plugins directory and rebuild-and-swap the App snapshot (: one global mutation
     // domain). The whole rebuild is disk I/O, so it is queued onto `spawn_blocking`.
-    let out = config_transaction(&handle, |txn| {
+    let out = busbar_kernel::config::transaction::config_reload_transaction(&handle, |txn| {
         let snapshot = txn.app().clone();
         Ok(txn.read_store(move || {
             // EPHEMERAL mode (no disk config, e.g. tests/dev) has no disk truth to rebuild the
@@ -360,19 +360,14 @@ pub(crate) async fn reload_plugins(
             // Project the inventory of the snapshot about to go live (the reconciled, loaded set).
             // A projection hiccup is reported but never rolls the swap back, exactly as before.
             let projected = AdminService::new(installed.clone()).reload_store_plugins();
-            // LIVE-only (no-op persist): the swap itself is the commit. `commit_then` defers the
-            // rotation firing to AFTER `commit_and_swap` returns `Ok` — see
-            // `build_app_from_config`'s doc comment — even though today that's immediate (persist
-            // never fails here), routing every site through the SAME mechanism means a future
-            // persist step added to this handler can't silently reintroduce the bug.
-            Ok(Outcome::commit_then(
+            // Reload has no overlay write. Confirm its prices before publishing its App; rotate
+            // credentials only after that publication succeeds.
+            Ok(Outcome::commit_rates_then(
                 installed.clone(),
                 || Ok(()),
+                limits,
+                card_origin,
                 move || {
-                    // Past the swap: the process-wide limits this build installed are the LIVE
-                    // ones, so keep them. Dropped instead — on any path that never reaches here —
-                    // they roll back to the generation still serving.
-                    busbar_kernel::rate_apply::with_origin(&card_origin, || limits.keep());
                     if let Some(rotate) = gov_rotate {
                         rotate();
                     }
@@ -419,6 +414,24 @@ pub(crate) async fn reload_plugins(
 pub(crate) struct PluginRollbackReq {
     /// The plugin tarball FILENAME (in the plugins directory) carrying the prior version to pin to.
     file: String,
+}
+
+/// A plugin pin is durable before its semantic rebuild. Preserve that partial effect on unwind
+/// or abandoned plans; the AppHandle publication guard takes over when the commit starts.
+struct UnpublishedPluginPin(Option<Arc<busbar_kernel::config::overlay::OverlayStore>>);
+
+impl UnpublishedPluginPin {
+    fn release(mut self) {
+        drop(self.0.take());
+    }
+}
+
+impl Drop for UnpublishedPluginPin {
+    fn drop(&mut self) {
+        if let Some(overlay) = &self.0 {
+            overlay.require_reload();
+        }
+    }
 }
 
 /// `POST /api/v1/admin/plugins/rollback` — EXPLICIT, authenticated, audited rollback of a plugin to a
@@ -468,7 +481,7 @@ pub(crate) async fn rollback_plugin(
         let snapshot = current.clone();
         Ok(txn.store_write(move || {
             // The current persisted pins (empty if none) — the base we merge this rollback onto.
-            let prior_pins = match busbar_kernel::config::overlay::read(&overlay_path) {
+            let prior_pins = match overlay_path.read_required().map_err(AdminError::Validation)? {
                 Some(doc) => doc.plugin_versions,
                 None => std::collections::BTreeMap::new(),
             };
@@ -480,7 +493,7 @@ pub(crate) async fn rollback_plugin(
             // floor and loads the prior artifact. Durability precedes the swap: if the process died
             // between here and the swap, a restart would come up already rolled back (the safe
             // direction). This persist is the WHOLE point of the rollback — a swallowed failure
-            // would swap the LIVE engine to the prior plugin while disk still carries the
+            // would swap the LIVE engine to the prior plugin while the Store still carries the
             // rolled-FORWARD state, so a restart would silently re-upgrade (defeating the operator's
             // explicit, audited decision) AND the rebuild below re-reads this overlay to derive the
             // lowered floor, so a non-persisted pin would rebuild against the wrong floor. Use the
@@ -490,20 +503,21 @@ pub(crate) async fn rollback_plugin(
             {
                 diag_error!(PLUGIN_ROLLBACK_PIN_PERSIST_FAILED, plugin = %audit_resource, error = %e, "plugin rollback: persisting the version pin failed; nothing swapped");
                 return Err(AdminError::Validation(format!(
-                    "plugin rollback could not persist the version pin to the overlay: {e}; nothing \
-                     was changed (the running engine still serves the current plugin)"
+                    "plugin rollback could not confirm the version pin in the overlay: {e}; \
+                     the running engine still serves the current plugin"
                 )));
             }
+            let pin_publication = UnpublishedPluginPin(Some(overlay_path.clone()));
             let (next, gov_rotate, limits) = match rebuild_app_from_disk(&snapshot) {
                 Ok(triple) => triple,
                 Err(e) => {
                     // The rebuild failed AFTER persisting the pin — the live snapshot is unchanged
-                    // (old plugin still serving, fail-closed), but the pin is now on disk. Roll the
+                    // (old plugin still serving, fail-closed), but the pin is now in the Store. Roll the
                     // pin back so a restart doesn't come up in a state the running engine rejected.
                     // The compensation MUST be robust: if reverting the pin ALSO fails, a
-                    // silently-swallowed error would leave a stale rolled-forward pin on disk that a
+                    // silently-swallowed error would leave a stale rolled-forward pin in the Store that a
                     // restart would honor — contradicting the running engine. Surface that as a
-                    // distinct, louder error so the operator knows disk is out of sync and can fix
+                    // distinct, louder error so the operator knows the Store is out of sync and can fix
                     // the overlay before restarting.
                     if let Err(revert_err) = busbar_kernel::config::overlay::try_persist_plugin_versions(
                         Some(&overlay_path),
@@ -513,24 +527,23 @@ pub(crate) async fn rollback_plugin(
                             PLUGIN_ROLLBACK_REVERT_FAILED,
                             plugin = %audit_resource, rebuild_error = %e, revert_error = %revert_err,
                             "plugin rollback rebuild failed AND reverting the persisted version pin \
-                             failed; the running engine still serves the prior plugin, but disk now \
+                             failed; the running engine still serves the prior plugin, but the Store now \
                              carries the rolled-forward pin — fix the overlay before restarting"
                         );
                         return Err(AdminError::Internal);
                     }
+                    // The compensation itself was confirmed; there is no unpublished pin left.
+                    pin_publication.release();
                     return Err(AdminError::Validation(e));
                 }
             };
             let installed = Arc::new(next);
-            // The pin is already durable (persisted above, before the rebuild), so the commit step
-            // carries a no-op persist — the swap is the only thing left. `commit_then` still defers
-            // the rotation to AFTER `commit_and_swap` returns `Ok` (see
-            // `build_app_from_config`'s doc comment) — the SAME mechanism every rotation-possible
-            // site uses, not a hand-rolled "already persisted so it's fine" special case.
-            Ok(Outcome::commit_then(installed.clone(), || Ok(()), move || {
-                // Past the swap: keep the limits this build installed (dropped unkept everywhere
-                // else, including the pin-revert path above).
-                busbar_kernel::rate_apply::with_origin(&card_origin, || limits.keep());
+            // The pin is already confirmed. Price refusal keeps the old App serving and
+            // quarantines its overlay carrier until reload recovers the durable pin.
+            Ok(Outcome::commit_rates_then(installed.clone(), move || {
+                pin_publication.release();
+                Ok(())
+            }, limits, card_origin, move || {
                 if let Some(rotate) = gov_rotate {
                     rotate();
                 }
@@ -752,8 +765,8 @@ pub(crate) async fn register_hook(
                     )
                     .map_err(|e| {
                         format!(
-                            "hook could not be persisted to the overlay: {e}; nothing was changed \
-                             (the running engine is unaffected)"
+                            "hook persistence to the overlay was not confirmed: {e}; \
+                             the running engine is unaffected"
                         )
                     })
                 },
@@ -836,8 +849,8 @@ pub(crate) async fn put_hook(
                     )
                     .map_err(|e| {
                         format!(
-                            "hook could not be persisted to the overlay: {e}; nothing was changed \
-                             (the running engine is unaffected)"
+                            "hook persistence to the overlay was not confirmed: {e}; \
+                             the running engine is unaffected"
                         )
                     })
                 },
@@ -915,8 +928,8 @@ pub(crate) async fn delete_hook(
                     )
                     .map_err(|e| {
                         format!(
-                            "hook deletion could not be persisted to the overlay: {e}; nothing was \
-                             changed (the running engine is unaffected)"
+                            "hook deletion persistence to the overlay was not confirmed: {e}; \
+                             the running engine is unaffected"
                         )
                     })
                 },
@@ -1186,8 +1199,8 @@ pub(crate) async fn delete_group(
                     )
                     .map_err(|e| {
                         format!(
-                            "group deletion could not be persisted to the overlay: {e}; nothing was \
-                             changed (the running engine is unaffected)"
+                            "group deletion persistence to the overlay was not confirmed: {e}; \
+                             the running engine is unaffected"
                         )
                     })
                 },
@@ -1286,10 +1299,8 @@ pub(crate) async fn reset_overlay_section(
     };
     let resource = format!("overlay:{}", section.as_str());
     let expected = ok_or_respond!(if_match_version(&headers));
-    // ONE section: the If-Match re-validation, the idempotent-no-op probe, the disk rebuild, the
-    // overlay clear and the swap. The disk work (overlay read + `load_config_from_disk` + resolve +
-    // build) is a store/disk READ, so it is queued onto `spawn_blocking` — it used to run inline on
-    // a Tokio worker with the async mutation lock held, stalling the reactor for the whole rebuild.
+    // ONE section: If-Match re-validation, the no-op probe, the base/Store rebuild, persistence
+    // and the swap. Store recovery and operator-file reads run on `spawn_blocking`.
     let out = config_transaction(&handle, move |txn| {
         let current = txn.app();
         if let Some(e) = stale_if_match(expected, current.config_version) {
@@ -1300,7 +1311,7 @@ pub(crate) async fn reset_overlay_section(
             // IDEMPOTENT NO-OP: if this section carries no overlay state (no API-applied entries AND
             // no tombstones), the effective config already equals base for it — a reset changes
             // nothing, so short-circuit a 200 without bumping the version or re-running the boot
-            // pipeline. This reads the overlay FILE, which is why it lives on the blocking side.
+            // pipeline. This reads the Store overlay, so it lives on the blocking side.
             let overlay_empty = match snapshot.overlay_path.as_deref() {
                 None => true,
                 Some(p) => match busbar_kernel::config::overlay::read_state(p) {
@@ -1318,7 +1329,7 @@ pub(crate) async fn reset_overlay_section(
                             "the config overlay at '{}' is present but unreadable/corrupt; refusing \
                              to reset section `{}` (a reset probe over corrupt state cannot tell \
                              whether this section still carries live overrides). Fix or remove the \
-                             overlay file, or restore it from backup, before resetting",
+                             Store overlay, or restore it from backup, before resetting",
                             p.display(),
                             section.as_str()
                         )));
@@ -1350,12 +1361,13 @@ pub(crate) async fn reset_overlay_section(
                         .into(),
                 ));
             };
-            let loaded_base = busbar_kernel::load_config_from_disk_judged(
+            let loaded_base = busbar_kernel::load_config_from_disk_with_store(
                 &config_path,
                 Some(&providers_path),
                 false,
                 busbar_kernel::config::EnvSubst::Strict,
                 &*snapshot.root_rules,
+                snapshot.overlay_path.clone(),
             )
             .map_err(AdminError::Validation)?;
             // REFERENTIAL INTEGRITY, the bulk twin of the per-entry DELETE's dangling guard. A
@@ -1428,11 +1440,8 @@ pub(crate) async fn reset_overlay_section(
                 busbar_kernel::build_app_from_config(
                     cfg,
                     loaded.deploy.plugins.clone(),
-                    // Preserve the LIVE overlay path (not the env-derived one
-                    // `load_config_from_disk` returns) — the reset rewrites the same overlay file
-                    // the running App uses, exactly as `config/apply` preserves
-                    // `current.overlay_path`.
-                    snapshot.overlay_path.clone(),
+                    // Publish the loader's fresh carrier only if this candidate commits.
+                    loaded.overlay_path,
                     base_hook_names,
                     base_group_names,
                     (Some(config_path), Some(providers_path)),
@@ -1444,37 +1453,33 @@ pub(crate) async fn reset_overlay_section(
             let (built, gov_rotate, limits) = built;
             let installed = Arc::new(built);
             // PERSIST-THEN-SWAP (fail-closed), matching plugins/rollback's durability ordering:
-            // write the section-cleared overlay to disk BEFORE swapping the live App. A prior
+            // write the section-cleared overlay to the Store BEFORE swapping the live App. A prior
             // version swapped first and persisted after, so a crash in that window left the LIVE
-            // engine reverted while disk still carried the un-cleared overlay — a restart would
+            // engine reverted while the Store still carried the un-cleared overlay — a restart would
             // silently re-apply the section the operator just reset (e.g. re-pin the
             // plugin_versions they cleared). Persisting first means a crash before the swap comes
-            // up already reset (the safe direction). The installed App preserves
-            // `current.overlay_path`, so it names the same overlay file. (The sibling section is
-            // preserved verbatim by the read-modify-write inside `clear_section`.)
-            let p = installed.clone();
+            // up already reset (the safe direction). Persist through the CURRENT carrier, which
+            // retains custody if the write's receipt is unknown and no new App can be published.
+            // The candidate's fresh carrier reaches service only after a confirmed write.
+            let persist_overlay = snapshot.overlay_path.clone();
             let version = installed.config_version;
-            // `commit_then` (not `commit`): the credential rotation (if any) must fire only once
-            // `commit_and_swap` has returned `Ok` — persist AND swap both done — not merely once the
-            // persist closure below has returned `Ok`. See `build_app_from_config`'s doc
-            // comment. Same mechanism every rotation-possible site uses (`reload_config`,
-            // `reload_plugins`, `plugin/rollback`, here, and `put_config_settings`), so a future
-            // change to any one site's persist step cannot silently reintroduce the bug.
-            Ok(Outcome::commit_then(
+            // Confirm prices after persistence and before publication; rotate credentials only
+            // after the App and its prices are live.
+            Ok(Outcome::commit_rates_then(
                 installed.clone(),
                 move || {
-                    busbar_kernel::config::overlay::clear_section(p.overlay_path.as_deref(), section).map_err(
+                    busbar_kernel::config::overlay::clear_section(persist_overlay.as_deref(), section).map_err(
                         |e| {
                             format!(
-                                "overlay section reset could not be persisted: {e}; nothing was \
-                                 changed (the running engine is unaffected)"
+                                "overlay section reset persistence was not confirmed: {e}; \
+                                 the running engine is unaffected"
                             )
                         },
                     )
                 },
+                limits,
+                card_origin,
                 move || {
-                    // Past persist AND swap: keep the limits this build installed.
-                    busbar_kernel::rate_apply::with_origin(&card_origin, || limits.keep());
                     if let Some(rotate) = gov_rotate {
                         rotate();
                     }
@@ -1573,8 +1578,8 @@ fn persist_group(installed: &busbar_kernel::state::App, name: &str) -> Result<()
     )
     .map_err(|e| {
         format!(
-            "group could not be persisted to the overlay: {e}; nothing was changed (the \
-             running engine is unaffected)"
+            "group persistence to the overlay was not confirmed: {e}; \
+             the running engine is unaffected"
         )
     })
 }
@@ -1827,8 +1832,8 @@ pub(crate) async fn rollback_config(
                     )
                     .map_err(|e| {
                         format!(
-                            "config rollback could not be persisted to the overlay: {e}; nothing \
-                             was changed (the running engine is unaffected)"
+                            "config rollback persistence to the overlay was not confirmed: {e}; \
+                             the running engine is unaffected"
                         )
                     })
                 },
@@ -2075,12 +2080,40 @@ pub(crate) fn rebuild_app_from_disk(
                 .into(),
         );
     };
-    let mut loaded = busbar_kernel::load_config_from_disk_judged(
+    // A locked process may enable management by reloading operator inputs. With no previous
+    // overlay to redirect its Store, its already-open governance Store is the base-config anchor.
+    // Probe the new posture first so a still-locked reload never demands conditional records.
+    let overlay = match current.overlay_path.clone() {
+        Some(store) => Some(store),
+        None => {
+            let base = busbar_kernel::load_config_from_disk_judged(
+                &config_path,
+                Some(&providers_path),
+                false,
+                busbar_kernel::config::EnvSubst::Strict,
+                &*current.root_rules,
+            )?;
+            if base.config_locked {
+                None
+            } else {
+                let calls = current
+                    .governance
+                    .as_ref()
+                    .and_then(|gov| gov.store_calls())
+                    .ok_or_else(|| {
+                        "running config has no opened Store for config persistence".to_string()
+                    })?;
+                Some(busbar_kernel::config::overlay::OverlayStore::new(calls)?)
+            }
+        }
+    };
+    let mut loaded = busbar_kernel::load_config_from_disk_with_store(
         &config_path,
         Some(&providers_path),
         false,
         busbar_kernel::config::EnvSubst::Strict,
         &*current.root_rules,
+        overlay,
     )?;
     // 1.5.0 full-config coverage: apply the overlay's `root` section (single-value config) AND the
     // `plugin_versions` rollback pins onto the base `DeployCfg` BEFORE resolve, so the limits
@@ -2103,7 +2136,7 @@ pub(crate) fn rebuild_app_from_disk(
     // known to have SUCCEEDED — see its doc comment), and the process-wide LIMITS it installed still
     // UNKEPT, for exactly the same reason and with exactly the same rule. This wrapper does NOT fire
     // or keep either: it hands both straight through to ITS OWN caller, which is the ONE place —
-    // `config_transaction`'s `apply()` (`txn.rs`), via `Outcome::commit_then` — that knows the
+    // `config_transaction`'s `apply()`, via `Outcome::commit_rates_then` — that knows the
     // transaction actually committed (persist AND swap both done). A caller of
     // `rebuild_app_from_disk` must never fire/keep before that.
     busbar_kernel::build_app_from_config(
@@ -2124,26 +2157,25 @@ pub(crate) async fn reload_config(
 ) -> Response {
     let actor = principal.actor_id().to_string();
     let card_origin = format!("config/reload by {actor}");
-    // The whole rebuild is DISK I/O (config.yaml + providers.yaml + the overlay, then resolve +
-    // build). It is queued as a store read so it runs on `spawn_blocking`: before, this ran inline
+    // The whole rebuild reads operator files and the Store overlay, then resolves and
+    // builds. It is queued as a store read so it runs on `spawn_blocking`: before, this ran inline
     // on a Tokio worker with the async mutation lock held, so a slow/large config stalled the
     // reactor for every in-flight request, not just the other mutations.
-    let out = config_transaction(&handle, |txn| {
+    let out = busbar_kernel::config::transaction::config_reload_transaction(&handle, |txn| {
         let snapshot = txn.app().clone();
         Ok(txn.read_store(move || {
             let (next, gov_rotate, limits) =
                 rebuild_app_from_disk(&snapshot).map_err(AdminError::Validation)?;
             // LIVE-only, exactly as before: a reload IS disk truth, so there is nothing to persist.
             let installed = Arc::new(next);
-            // `commit_then` defers the rotation to AFTER `commit_and_swap` returns `Ok` — see
-            // `build_app_from_config`'s doc comment. Same mechanism as every other site with a
-            // possible rotation, not a hand-rolled "safe because persist is a no-op" special case.
-            Ok(Outcome::commit_then(
+            // Confirm the recovered generation's prices before publication. Credential
+            // rotation follows only once the App and prices are live.
+            Ok(Outcome::commit_rates_then(
                 installed.clone(),
                 || Ok(()),
+                limits,
+                card_origin,
                 move || {
-                    // Past the swap: keep the limits this build installed.
-                    busbar_kernel::rate_apply::with_origin(&card_origin, || limits.keep());
                     if let Some(rotate) = gov_rotate {
                         rotate();
                     }
@@ -2338,7 +2370,10 @@ pub(crate) async fn apply_config(
             let overlay_doc = snapshot
                 .overlay_path
                 .as_deref()
-                .and_then(busbar_kernel::config::overlay::read);
+                .map(busbar_kernel::config::overlay::OverlayStore::read_required)
+                .transpose()
+                .map_err(AdminError::Validation)?
+                .flatten();
             let (mut deploy, providers) = (req_deploy, req_providers);
             if let Some(doc) = overlay_doc.as_ref() {
                 busbar_kernel::config::overlay::apply_root_to_deploy(&mut deploy, doc);
@@ -2375,17 +2410,14 @@ pub(crate) async fn apply_config(
                 .map_err(AdminError::Validation)?;
             let (next, gov_rotate, limits) = next;
             let installed = Arc::new(next);
-            // LIVE-only (the response `note` says so): an applied config is not written to disk.
-            // `commit_then` still defers the rotation to AFTER `commit_and_swap` returns `Ok` —
-            // see `build_app_from_config`'s doc comment — the SAME mechanism every
-            // rotation-possible site uses, not a hand-rolled "safe because persist is a no-op"
-            // special case that a future added persist step could silently defeat.
-            Ok(Outcome::commit_then(
+            // LIVE-only (the response `note` says so): the config body is not written to disk.
+            // Its prices still require Store confirmation before the generation goes live.
+            Ok(Outcome::commit_rates_then(
                 installed.clone(),
                 || Ok(()),
+                limits,
+                card_origin,
                 move || {
-                    // Past the swap: keep the limits this build installed.
-                    busbar_kernel::rate_apply::with_origin(&card_origin, || limits.keep());
                     if let Some(rotate) = gov_rotate {
                         rotate();
                     }
@@ -2663,7 +2695,7 @@ fn reload_to_apply_fields(req: &busbar_kernel::config::overlay::RootSettings) ->
 
 /// Read the current overlay `root` section (the operator's API-set single-value overrides), or an
 /// empty `RootSettings` when persistence is disabled / the overlay is absent or carries no root
-/// section. Shared by the GET/PUT `/config/settings` handlers.
+/// section. The GET `/config/settings` view uses this; mutations use `read_required`.
 ///
 /// A corrupt or too-new overlay renders as an empty `RootSettings` — "the operator has set no
 /// overrides" — which is NOT wrong (nothing is mutated on this read), but a reader of the response
@@ -2671,7 +2703,7 @@ fn reload_to_apply_fields(req: &busbar_kernel::config::overlay::RootSettings) ->
 /// `overlay::read`'s own warn/error already logs the cause, but genericly — it does not say which
 /// endpoint's answer it is misreporting. `endpoint` attributes the misreport to THIS specific read.
 fn current_root_settings(
-    overlay_path: Option<&std::path::Path>,
+    overlay_path: Option<&busbar_kernel::config::overlay::OverlayStore>,
     endpoint: &str,
 ) -> busbar_kernel::config::overlay::RootSettings {
     let Some(p) = overlay_path else {
@@ -2690,7 +2722,7 @@ fn current_root_settings(
                 endpoint,
                 path = %p.display(),
                 "{endpoint} read the config overlay while it was unreadable/corrupt; reporting NO \
-                 root overrides, which may not reflect what is actually stored on disk"
+                 root overrides, which may not reflect what is actually stored in the Store"
             );
             busbar_kernel::config::overlay::RootSettings::default()
         }
@@ -2701,7 +2733,7 @@ fn current_root_settings(
                 path = %p.display(),
                 overlay_version = v,
                 "{endpoint} read the config overlay while it was from a NEWER busbar; reporting NO \
-                 root overrides, which may not reflect what is actually stored on disk"
+                 root overrides, which may not reflect what is actually stored in the Store"
             );
             busbar_kernel::config::overlay::RootSettings::default()
         }
@@ -2720,10 +2752,10 @@ fn current_root_settings(
 /// credential, and the values remain readable only where they are writable.
 pub(crate) async fn get_config_settings(State(handle): State<Arc<AppHandle>>) -> Response {
     let current = handle.load();
-    // `current_root_settings` does a SYNCHRONOUS overlay file open+read+JSON-parse. Under 1.5.3's
+    // `current_root_settings` does a SYNCHRONOUS Store read + JSON parse. Under 1.5.3's
     // durable-by-default posture `overlay_path` is `Some` on essentially every deployment, so this read
     // happens on EVERY call — move it off the async reactor onto `spawn_blocking` (the same discipline
-    // every mutation path in `txn.rs` follows) so a slow/contended config filesystem cannot stall a
+    // every mutation path in `txn.rs` follows) so a slow/contended Store cannot stall a
     // Tokio worker and starve data-plane traffic sharing it.
     let overlay_path = current.overlay_path.clone();
     // Carry the CURRENT tracing dispatcher onto the blocking thread so the endpoint-attributed
@@ -2846,7 +2878,7 @@ pub(crate) async fn put_config_settings(
                 busbar_kernel::config::overlay::NO_WRITABLE_OVERLAY_MSG.to_string(),
             ));
         }
-        // Everything below reads the overlay file and re-runs the disk-load pipeline, so it is
+        // Everything below reads the Store overlay and re-runs the operator-input pipeline, so it is
         // queued onto `spawn_blocking` — under the guard, off the reactor.
         let snapshot = current.clone();
         Ok(txn.read_store(move || {
@@ -2861,8 +2893,15 @@ pub(crate) async fn put_config_settings(
                 ));
             };
             // Merge the partial request onto the CURRENT overlay root (partial-update semantics).
+            let current_doc = snapshot
+                .overlay_path
+                .as_deref()
+                .map(busbar_kernel::config::overlay::OverlayStore::read_required)
+                .transpose()
+                .map_err(AdminError::Validation)?
+                .flatten();
             let merged = merge_root_settings(
-                current_root_settings(snapshot.overlay_path.as_deref(), "PUT /config/settings"),
+                current_doc.and_then(|doc| doc.root).unwrap_or_default(),
                 want,
             );
             let merged_for_build = merged.clone();
@@ -2870,13 +2909,14 @@ pub(crate) async fn put_config_settings(
             // BEFORE resolve (so the limits projection + admin-mTLS boot-guard re-derive over it),
             // then merge the CURRENT hooks/groups overlay sections POST-resolve — exactly the reload
             // mechanism, with the root section coming from the just-merged desired state rather than
-            // the on-disk overlay.
-            let next = busbar_kernel::load_config_from_disk_judged(
+            // the persisted Store overlay.
+            let next = busbar_kernel::load_config_from_disk_with_store(
                 &config_path,
                 Some(&providers_path),
                 false,
                 busbar_kernel::config::EnvSubst::Strict,
                 &*snapshot.root_rules,
+                snapshot.overlay_path.clone(),
             )
             .and_then(|mut loaded| {
                 merged_for_build.apply_to_deploy(&mut loaded.deploy);
@@ -2903,7 +2943,7 @@ pub(crate) async fn put_config_settings(
                 busbar_kernel::build_app_from_config(
                     cfg,
                     loaded.deploy.plugins.clone(),
-                    snapshot.overlay_path.clone(),
+                    loaded.overlay_path,
                     base_hook_names,
                     base_group_names,
                     (Some(config_path), Some(providers_path)),
@@ -2916,33 +2956,29 @@ pub(crate) async fn put_config_settings(
             let installed = Arc::new(next);
             // PERSIST-then-SWAP, fail-closed. Persist the merged root section (the sibling
             // hooks/groups sections are preserved verbatim by the read-modify-write).
-            let p = installed.clone();
+            // The published carrier owns any unknown receipt; a failed commit must not strand
+            // custody on the unpublished candidate's fresh carrier.
+            let persist_overlay = snapshot.overlay_path.clone();
             let to_persist = merged.clone();
-            // `commit_then`, not `commit`: the rotation must fire only once `commit_and_swap` has
-            // fully returned `Ok` (persist AND swap), keeping "nothing was changed" on a persist
-            // failure true for the shared, process-lifetime `GovState` too — see
-            // `build_app_from_config`'s doc comment. Same mechanism as every other rotation-possible
-            // site.
-            Ok(Outcome::commit_then(
+            // Confirm the candidate prices after overlay persistence, then publish limits,
+            // prices and the App before rotating credentials.
+            Ok(Outcome::commit_rates_then(
                 installed.clone(),
                 move || {
                     busbar_kernel::config::overlay::persist_root(
-                        p.overlay_path.as_deref(),
+                        persist_overlay.as_deref(),
                         &to_persist,
                     )
                     .map_err(|e| {
                         format!(
-                            "config settings could not be persisted to the overlay: {e}; \
-                                 nothing was changed (the running engine is unaffected)"
+                            "config settings persistence to the overlay was not confirmed: {e}; \
+                             the running engine is unaffected"
                         )
                     })
                 },
+                limits,
+                card_origin,
                 move || {
-                    // Past persist AND swap: keep the limits this build installed. `PUT
-                    // /config/settings` is the site where this matters most — the root section it
-                    // merges CARRIES `limits:`, so a rejected settings apply is precisely a
-                    // rejected set of process-wide caps.
-                    busbar_kernel::rate_apply::with_origin(&card_origin, || limits.keep());
                     if let Some(rotate) = gov_rotate {
                         rotate();
                     }
@@ -3112,8 +3148,8 @@ pub(crate) async fn patch_hook_settings(
                     )
                     .map_err(|e| {
                         format!(
-                            "hook settings could not be persisted to the overlay: {e}; nothing was \
-                             changed (the running engine is unaffected)"
+                            "hook settings persistence to the overlay was not confirmed: {e}; \
+                             the running engine is unaffected"
                         )
                     })
                 },

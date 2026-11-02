@@ -243,7 +243,10 @@ async fn abandoned_mint_finishes_replay_and_durable_settlement() {
     assert!(matches!(
         crate::idempotency::durable::claim(
             &*store,
-            &("custody:mint".into(), "mint".into()),
+            &(
+                "custody:mint".into(),
+                crate::idempotency::create_replay_key("mint")
+            ),
             busbar_kernel::store::now(),
         ),
         Err(crate::idempotency::durable::Refused::Applied(_))

@@ -20,6 +20,12 @@ use crate::compose::{Dial, Planned, Via, EXCHANGE_STREAM};
 use crate::framer::{Call, Crossed, DoorFacts, FramerDoor};
 use crate::support::{via, worker};
 
+#[path = "line_retirement_tests.rs"]
+mod retirement_tests;
+
+#[path = "line_cancelled_opening_tests.rs"]
+mod cancelled_opening_tests;
+
 /// One carrier crossing as the stub saw it: the op, the thread it ran on, and whether the line's
 /// lock was held while it ran.
 type Crossing = (&'static str, ThreadId, bool);
@@ -100,7 +106,7 @@ fn line_with_connection_held_out(closing: bool) -> Line {
             conn: None,
             closing,
             seen: super::Seen::default(),
-            opening: Vec::new(),
+            opening: Default::default(),
             refused: Default::default(),
             missed: Vec::new(),
             parked: Default::default(),

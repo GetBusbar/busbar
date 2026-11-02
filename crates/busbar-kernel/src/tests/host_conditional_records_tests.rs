@@ -363,8 +363,8 @@ fn malformed_life_and_drop_overflow_refuse_before_submission() {
 fn queued(request: Request, answers: Arc<Mutex<Vec<ConditionalResult>>>) -> ConditionalWrite {
     ConditionalWrite::new(
         Arc::from(INSTANCE),
-        request,
-        vec![operation(Some(b"event"))],
+        zeroize::Zeroizing::new(request),
+        zeroize::Zeroizing::new(vec![operation(Some(b"event"))]),
         ConditionalOwed::new(
             7,
             Box::new(move |answer| answers.lock().unwrap().push(answer)),

@@ -509,6 +509,14 @@ macro_rules! lend {
             unsafe { LentList::new(self.get().$p, self.get().$n) }
         }
     };
+    (@one $name:ident host($p:ident) -> $el:ty) => {
+        /// The host tables, copied from their advertised outer prefix with a sealed nested loan.
+        #[must_use]
+        pub fn $name(self) -> Option<HostLoan<'a>> {
+            // SAFETY: the lifecycle input proves the host's outer and nested advertised prefixes.
+            unsafe { HostLoan::from_ptr(self.get().$p) }
+        }
+    };
     (@one $name:ident one($p:ident) -> $el:ty) => {
         #[doc = concat!("The struct `", stringify!($p), "` points to, if any, lent for the call.")]
         #[must_use]
@@ -541,6 +549,89 @@ use crate::abi::hook::{
 };
 use crate::abi::mechanism::lifecycle::{OpenIn, ReadyIn, RefreshIn, ValidateIn};
 use crate::abi::mechanism::ticket::HostTables;
+
+mod host_source {
+    pub trait Sealed {}
+}
+
+/// A sealed source of host tables. Only lifecycle loans and the SDK's proven `Lent` implement
+/// this trait; a plain `HostTables` value cannot attest to the validity of its nested pointers.
+///
+/// ```compile_fail,E0277
+/// use busbar_contract::abi::{sdk::lent::HostSource, mechanism::ticket::HostTables};
+/// struct Forged(HostTables);
+/// impl HostSource for Forged {
+///     fn tables(&self) -> &HostTables { &self.0 }
+/// }
+/// ```
+#[allow(private_bounds)]
+pub trait HostSource: host_source::Sealed {
+    /// The carrier whose nested table prefixes this loan proves readable during construction.
+    #[doc(hidden)]
+    fn tables(&self) -> &HostTables;
+}
+
+impl host_source::Sealed for Lent<'_, HostTables> {}
+impl HostSource for Lent<'_, HostTables> {
+    fn tables(&self) -> &HostTables {
+        self.get()
+    }
+}
+
+/// A lifecycle's host-table loan, copied field by field from the advertised outer prefix.
+/// This holds no reference spanning an absent appended field in an older host allocation.
+#[derive(Debug, Clone, Copy)]
+pub struct HostLoan<'a> {
+    tables: HostTables,
+    _loan: PhantomData<&'a HostTables>,
+}
+
+impl host_source::Sealed for HostLoan<'_> {}
+impl HostSource for HostLoan<'_> {
+    fn tables(&self) -> &HostTables {
+        &self.tables
+    }
+}
+
+impl<'a> HostLoan<'a> {
+    /// # Safety
+    /// `raw` is NULL or a size word and its advertised host-table prefix, with nested pointers
+    /// and callback contracts valid as the host ABI states for `'a`.
+    unsafe fn from_ptr(raw: *const HostTables) -> Option<Self> {
+        if raw.is_null() {
+            return None;
+        }
+        // SAFETY: the caller proves the size word readable, without requiring full alignment.
+        let size = unsafe { raw.cast::<u32>().read_unaligned() };
+        let base_end = std::mem::offset_of!(HostTables, services)
+            + std::mem::size_of::<*const crate::abi::host::service::HostSlots>();
+        if (size as usize) < base_end {
+            return None;
+        }
+        // SAFETY: the original host table's mandatory prefix is completely advertised. No
+        // reference to the larger current HostTables is formed over that foreign allocation.
+        let tables = unsafe {
+            HostTables {
+                size,
+                _reserved: 0,
+                ctx: std::ptr::addr_of!((*raw).ctx).read_unaligned(),
+                wake: std::ptr::addr_of!((*raw).wake).read_unaligned(),
+                conns: std::ptr::addr_of!((*raw).conns).read_unaligned(),
+                services: std::ptr::addr_of!((*raw).services).read_unaligned(),
+                io: if size as usize >= std::mem::size_of::<HostTables>() {
+                    std::ptr::addr_of!((*raw).io).read_unaligned()
+                } else {
+                    std::ptr::null()
+                },
+            }
+        };
+        Some(Self {
+            tables,
+            _loan: PhantomData,
+        })
+    }
+}
+
 use crate::abi::plane::{
     ArriveIn, CatalogIn, OnPieceIn, OutField, PlaneCancelIn, PlaneDriveIn, PlaneOpenIn, ProjectIn,
     ProviderFacts, RecordWrite, RefusalIn, ServeIn, UnitCount,
@@ -561,11 +652,11 @@ macro_rules! lend_kinds_list {
             // THE LIFECYCLE (`abi::mechanism::lifecycle`).
             OpenIn {
                 list(secrets, secrets_len) -> Blob;
-                one(host) -> HostTables;
+                host(host) -> HostTables;
                 buf(err_buf, err_cap) -> u8;
             }
             RefreshIn { list(secrets, secrets_len) -> Blob; }
-            ReadyIn { one(host) -> HostTables; }
+            ReadyIn { host(host) -> HostTables; }
             // THE AUTH KIND (`abi::auth`): `verify`'s field lines and strip array, a login's requested
             // scopes and submitted form fields, and the host's identity buffer.
             VerifyIn {

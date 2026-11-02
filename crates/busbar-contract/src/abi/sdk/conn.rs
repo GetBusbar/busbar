@@ -18,6 +18,9 @@
 
 use std::task::Poll;
 
+use super::lent::HostSource;
+use crate::abi::host::io::IoSlots;
+
 use crate::abi::host::conn::connector::{
     service, ConnectorSlots, EstablishIn, FactsIn, IdentityIn, IoIn, ProcessIdentity, ReplyIn,
     ReplyPiece, RequestIn, RequestPiece, StreamFacts, StreamIn, UpgradeIn,
@@ -119,36 +122,185 @@ pub struct DiskFailure {
 /// A `disk.append`'s answer.
 pub type DiskAnswer = Poll<Result<DiskWritten, DiskFailure>>;
 
-/// `Host` as an instance holds it for its life (status row 194): the host's own tables, read at
-/// `open`. #1471 ties `Host` to the tables it was read from (`Host<'t>`) and states this alias as
-/// `Host<'static>`; a plugin names it where it keeps one (a struct field, a returned handle), and
-/// the same spelling compiles before and after.
+/// An owned snapshot of the host's callable tables, retained by an instance.
 pub type StaticHost = Host;
 
-/// THE INSTANCE'S HOST TABLES, as `open` handed them: the context every host call is made with,
-/// the wake, the connector table and the host services table.
+/// The host context and owned function tables read from a proven host loan.
+/// No pointer into the loan remains after construction. The context is an opaque handle;
+/// callbacks must reject retired handles before accessing host state.
 #[derive(Debug, Clone, Copy)]
 pub struct Host {
     ctx: HostCtx,
     wake: Option<WakeFn>,
-    conns: *const ConnectorSlots,
-    services: *const HostSlots,
-    io: *const crate::abi::host::io::IoSlots,
+    conns: Option<ConnectorSlots>,
+    services: Option<HostSlots>,
+    io: Option<IoSlots>,
 }
 
-// SAFETY: the context is an opaque handle and the table plain code addresses, both valid for the
-// instance's life (the mechanism's host-table rule); every call goes through the host's own
-// synchronisation.
-unsafe impl Send for Host {}
-// SAFETY: as `Send`.
-unsafe impl Sync for Host {}
+// Copy complete advertised fields only: a shorter foreign table need not allocate the current
+// Rust struct, and a partially advertised function pointer must never be materialized.
+macro_rules! snapshot_table {
+    ($name:ident, $ty:ident, $($field:ident),+ $(,)?) => {
+        pub(super) unsafe fn $name(raw: *const $ty) -> Option<$ty> {
+            if raw.is_null() { return None; }
+            // SAFETY: the caller proves the size word and its advertised prefix readable.
+            let size = unsafe { raw.cast::<u32>().read_unaligned() } as usize;
+            if size < 2 * std::mem::size_of::<u32>() { return None; }
+            // SAFETY: the complete slots word is inside that prefix.
+            let slots = unsafe { raw.cast::<u32>().add(1).read_unaligned() };
+            let mut copied = $ty {
+                size: std::mem::size_of::<$ty>() as u32,
+                slots,
+                $($field: None,)+
+            };
+            let mut index = 0u32;
+            $(
+                if index < slots && std::mem::offset_of!($ty, $field)
+                    .checked_add(std::mem::size_of::<Option<ServiceFn>>())
+                    .is_some_and(|end| end <= size)
+                {
+                    // SAFETY: this complete function-pointer field is in the proven prefix.
+                    copied.$field = unsafe { std::ptr::addr_of!((*raw).$field).read_unaligned() };
+                }
+                index += 1;
+            )+
+            copied.slots = slots.min(index);
+            Some(copied)
+        }
+    };
+}
+
+snapshot_table!(
+    snapshot_connector,
+    ConnectorSlots,
+    establish,
+    reject_endpoint,
+    side_stream,
+    read,
+    write,
+    upgrade_secure,
+    facts,
+    checkout,
+    checkin,
+    close,
+    random,
+    identity,
+    read_reply,
+    write_request
+);
+
+snapshot_table!(
+    snapshot_services,
+    HostSlots,
+    clock_now,
+    records_get,
+    records_list,
+    records_claim,
+    dest_judge,
+    sign,
+    unit_nest,
+    work_open,
+    work_find,
+    work_settle,
+    work_resume,
+    trust_sight,
+    trust_due,
+    verify_lookup,
+    verify_store,
+    entitlement_check,
+    content_scan,
+    hook_call,
+    random_fill,
+    need_admit,
+    trust_verify,
+    records_secret,
+    disk_append,
+    snapshot_read,
+    trust_sight_item,
+    trust_serves,
+    trust_decide,
+    trust_state,
+    session_emit,
+    auth_call,
+    unit_hand_in,
+    unit_refuse,
+    ticket_mint,
+    ticket_take
+);
+
+snapshot_table!(
+    snapshot_io,
+    IoSlots,
+    open,
+    listen,
+    accept,
+    read,
+    write,
+    ready,
+    shut,
+    close,
+    spawn,
+    ends
+);
 
 impl Host {
-    /// The tables `tables` names: what `open` was handed (`OpenIn::host`), for a kind whose SDK
-    /// wrapper is not yet in this crate (the auth kind's outbound mint reaches its need through it).
+    /// No wake, connector, services or I/O: the exact empty host, with no raw pointers to prove.
+    pub const NONE: Self = Self {
+        ctx: HostCtx::NONE,
+        wake: None,
+        conns: None,
+        services: None,
+        io: None,
+    };
+
+    /// A host that only wakes tickets through a safe callback and an opaque scalar context.
+    /// No connector, service or I/O table is offered. This needs no raw-pointer proof.
     #[must_use]
-    pub const fn of(tables: &HostTables) -> Self {
-        // The I/O table was appended: tables whose `size` ends before it hand none.
+    pub const fn wake_only(ctx: HostCtx, wake: WakeFn) -> Self {
+        Self {
+            ctx,
+            wake: Some(wake),
+            conns: None,
+            services: None,
+            io: None,
+        }
+    }
+
+    /// Copy the tables lent by the SDK's typed lifecycle input. This consumes only the proof;
+    /// the returned handle owns its function tables and may outlive their original allocation.
+    ///
+    /// A proven loan stays usable by a plugin that forbids unsafe code:
+    /// ```
+    /// #![forbid(unsafe_code)]
+    /// use busbar_contract::abi::{sdk::{Lent, conn::Host, services::{Services, Wake}},
+    ///     mechanism::ticket::HostTables};
+    /// fn proven(t: Lent<'_, HostTables>) {
+    ///     let _ = Host::of(t);
+    ///     let _ = Services::of(t);
+    ///     let _ = Wake::of(t);
+    /// }
+    /// ```
+    ///
+    /// A plain raw-pointer carrier supplies no proof, even when safe Rust can construct it.
+    /// ```compile_fail
+    /// use busbar_contract::abi::sdk::conn::Host;
+    /// use busbar_contract::abi::mechanism::ticket::HostTables;
+    /// fn forged(tables: &HostTables) { let _ = Host::of(tables); }
+    /// ```
+    #[must_use]
+    pub fn of(tables: impl HostSource) -> Self {
+        // SAFETY: the sealed loan proves every advertised nested table prefix readable.
+        unsafe { Self::from_raw(tables.tables()) }
+    }
+
+    /// Copy raw host tables for a host or harness.
+    ///
+    /// # Safety
+    /// Every non-NULL nested table points to a readable size word and its advertised prefix
+    /// during this call. Function slots obey their ABI, remain callable while the returned
+    /// handle is used, and validate opaque context handles before accessing host state.
+    #[must_use]
+    pub unsafe fn from_raw(tables: &HostTables) -> Self {
         let io = if tables.size as usize >= std::mem::size_of::<HostTables>() {
             tables.io
         } else {
@@ -157,31 +309,26 @@ impl Host {
         Self {
             ctx: tables.ctx,
             wake: tables.wake,
-            conns: tables.conns,
-            services: tables.services,
-            io,
+            // SAFETY: the caller proves each advertised prefix and callback contract.
+            conns: unsafe { snapshot_connector(tables.conns) },
+            // SAFETY: as above.
+            services: unsafe { snapshot_services(tables.services) },
+            // SAFETY: as above.
+            io: unsafe { snapshot_io(io) },
         }
-    }
-
-    /// The same as `of`, for a host or harness that holds the tables raw (status row 159): #1469
-    /// makes `of` take the tables as a `Lent` and keeps this `unsafe` door for raw tables, so a
-    /// caller that names it here compiles there too.
-    ///
-    /// # Safety
-    ///
-    /// `tables` are the tables a real host lent this instance's `open`: `ctx` the host's own for
-    /// that instance, `wake` the host's, and each table pointer NULL or the host's live table, all
-    /// valid for every use of the value.
-    #[must_use]
-    pub const unsafe fn from_raw(tables: &HostTables) -> Self {
-        Self::of(tables)
     }
 
     /// THE HOST'S I/O (`abi::host::io`, `io.*`) for ONE entry of the op running on `ticket`: what
     /// a carrier moves bytes with (`abi::sdk::io`).
     #[must_use]
     pub fn io(&self, ticket: Ticket) -> super::io::Io<'_> {
-        super::io::Io::new(self.ctx, self.io, ticket)
+        super::io::Io::new(
+            self.ctx,
+            self.io
+                .as_ref()
+                .map_or(std::ptr::null(), std::ptr::from_ref),
+            ticket,
+        )
     }
 
     /// WAKE `ticket` (the host's `wake`, `abi::mechanism::ticket`): from any thread, never blocks,
@@ -197,15 +344,8 @@ impl Host {
     /// wrappers; `None` when the host offers none.
     #[must_use]
     pub fn services(&self) -> Option<crate::abi::sdk::services::Services> {
-        crate::abi::sdk::services::Services::of(&HostTables {
-            size: std::mem::size_of::<HostTables>() as u32,
-            _reserved: 0,
-            ctx: self.ctx,
-            wake: self.wake,
-            conns: self.conns,
-            services: self.services,
-            io: self.io,
-        })
+        self.services
+            .map(|table| crate::abi::sdk::services::Services::from_snapshot(self.ctx, table))
     }
 
     /// The connector for ONE entry of the op running on `ticket`.
@@ -233,12 +373,11 @@ impl Host {
     /// (no connection table bound) dials nothing for it.
     #[must_use]
     pub fn lends_connector(&self) -> bool {
-        !self.conns.is_null()
+        self.conns.is_some()
     }
 
     fn slots(&self) -> Option<&ConnectorSlots> {
-        // SAFETY: NULL, or the host's connector table, valid for the instance's life.
-        unsafe { self.conns.as_ref() }
+        self.conns.as_ref()
     }
 }
 
@@ -421,7 +560,10 @@ impl Connector<'_> {
             error: absent(),
             ..ServiceOut::ZERO
         };
-        let answered = f(self.host.ctx, std::ptr::from_ref(&input).cast(), &mut out).outcome();
+        // SAFETY: this SDK-built input and its buffers remain live for the synchronous
+        // crossing; the host must copy retained work before returning Pending.
+        let answered =
+            unsafe { f(self.host.ctx, std::ptr::from_ref(&input).cast(), &mut out) }.outcome();
         (answered, out)
     }
 
@@ -616,33 +758,21 @@ impl Connector<'_> {
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Closer {
     ctx: HostCtx,
-    conns: *const ConnectorSlots,
+    conns: Option<ConnectorSlots>,
 }
-
-// SAFETY: as `Host`'s: the context is an opaque handle and the table plain code addresses, both
-// valid for the instance's life; every call goes through the host's own synchronisation.
-unsafe impl Send for Closer {}
-// SAFETY: as `Send`.
-unsafe impl Sync for Closer {}
 
 impl Closer {
     /// Close `stream` on no ticket: a close never pends, so it is made on none
     /// ([`Connector::close`]). What the host answers is not read: the stream is given up either
     /// way.
     pub(crate) fn close(&self, stream: u64) {
-        let tables = HostTables {
-            size: std::mem::size_of::<HostTables>() as u32,
-            _reserved: 0,
+        let host = Host {
             ctx: self.ctx,
             wake: None,
             conns: self.conns,
-            services: std::ptr::null(),
-            io: std::ptr::null(),
+            services: None,
+            io: None,
         };
-        // SAFETY: `ctx` and `conns` are the ones a host lent this instance's `open` (read off its
-        // `Host`, [`Connector::closer`]), valid for the instance's life, which outlives every
-        // continuation it parks; no wake, services or I/O table is named.
-        let host = unsafe { Host::from_raw(&tables) };
         let _ = host.connector(Ticket::NONE).close(stream);
     }
 }
@@ -702,7 +832,7 @@ impl Connector<'_> {
             }))
         };
         // SAFETY: NULL, or the host's services table, valid for the instance's life.
-        let Some(f) = unsafe { self.host.services.as_ref() }.and_then(|s| s.disk_append) else {
+        let Some(f) = self.host.services.as_ref().and_then(|s| s.disk_append) else {
             return fail(0, blank, ConnFailure::Unarmed);
         };
         if self.ticket.is_none() {
@@ -758,7 +888,7 @@ impl Connector<'_> {
         input: I,
     ) -> Answer<ServiceOut> {
         // SAFETY: NULL, or the host's services table, valid for the instance's life.
-        let Some(f) = unsafe { self.host.services.as_ref() }.and_then(pick) else {
+        let Some(f) = self.host.services.as_ref().and_then(pick) else {
             return Poll::Ready(Err(ConnFailure::Unarmed));
         };
         let none = CompletionHandle {

@@ -29,7 +29,7 @@
 //! ticket. So a recycled ticket never resumes a finished op's state.
 //!
 //! AN ANSWER'S OWN MEMORY, KEPT BY ITS INSTANCE. The box also holds the instance's [`Kept`]: the
-//! owned failure texts and reported envelopes its answers name, a bounded ring of each
+//! owned failure texts and reported envelopes its answers name, grouped by ticket
 //! (`abi::sdk::out`). Nothing is kept per thread or per process, so two instances of one plugin
 //! never see each other's answers. A call with no instance yet (`validate`, `open`) is handed the
 //! host's lent reason buffer instead.
@@ -52,7 +52,7 @@ use crate::abi::mechanism::ticket::Ticket;
 use crate::abi::sdk::door::{AbiIn, AbiOut, Entry};
 use crate::abi::sdk::generation::Gen;
 use crate::abi::sdk::lent::Lent;
-use crate::abi::sdk::out::{holders_live, Holders, Kept, Out, Reason, Reporting};
+use crate::abi::sdk::out::{holders_live, Holders, Kept, Out, Reason, ReplyKey, Reporting};
 
 /// One op's parked continuation, its type erased: an `Option<S>` kept boxed in its slot. When the
 /// op ends it is emptied, not freed, so the next `S` parked in the slot reuses the allocation
@@ -715,6 +715,8 @@ unsafe impl<S: SafeSlot> Entry for Safe<S> {
         let resuming = call.flags & FLAG_RESUME != 0;
         // SAFETY: a non-NULL instance is the SDK's box, alive for the call (the call contract).
         let parked = unsafe { head(instance) };
+        let reply_key = ReplyKey::of(call.ticket);
+        let prior_report = parked.and_then(|h| h.kept.begin(reply_key));
         if let (Some(h), false) = (parked, resuming) {
             // A fresh op on this ticket: nothing parked there is its continuation.
             h.forget(call.ticket);
@@ -728,7 +730,7 @@ unsafe impl<S: SafeSlot> Entry for Safe<S> {
             _call: PhantomData,
         };
         // What the body reports is built here and handed to the instance when it returns.
-        let reporting: Reporting = Cell::new(None);
+        let reporting: Reporting = Cell::new(prior_report);
         // What its answer leased or published from, checked when it returns.
         let holders: Holders = RefCell::new(Vec::new());
         // A failed OPEN frees its partial instance before returning, including on resume.
@@ -747,10 +749,9 @@ unsafe impl<S: SafeSlot> Entry for Safe<S> {
             answered = Outcome::Fault;
         }
         let reported = reporting.take();
-        let kept_report = reported.is_some();
-        if let (Some(h), Some(r)) = (parked, reported) {
-            h.kept.keep(r);
-        }
+        let kept_report = reported
+            .as_ref()
+            .is_some_and(|report| report.has_envelope());
         if let Some(h) = parked {
             if answered != Outcome::Pending {
                 // The op is over (READY or a failure): no RESUME will come for what it parked.
@@ -771,6 +772,12 @@ unsafe impl<S: SafeSlot> Entry for Safe<S> {
                     h.forget(ticket);
                 }
             }
+        }
+        // Continuation cleanup can call the host and re-enter an unticketed slot on this
+        // actual thread. Keep this answer local until those callbacks finish, then publish it;
+        // a nested crossing must never retire the reply that the outer crossing has not returned.
+        if let (Some(h), Some(r)) = (parked, reported) {
+            h.kept.keep(reply_key, r);
         }
         match index {
             slot::OPEN => {

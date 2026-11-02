@@ -273,6 +273,9 @@ fn listening_plane(target_from: &str) -> Candidate {
                 bytes: Vec::new(),
             },
             timeout_ms: 0,
+            keep_mode: busbar_contract::abi::host::conn::connector::KEEP_NAMED,
+            keep_response_headers: Vec::new(),
+            deny_response_headers: Vec::new(),
         }],
         stated: Vec::new(),
         origin: Origin::Dropped {

@@ -336,7 +336,7 @@ pub(crate) async fn decide_over(
             }
             continue;
         }
-        let req = project(subject, content, *send_prompt, *send_user);
+        let (req, content_delivered) = project(subject, content, *send_prompt, *send_user);
         if *send_prompt {
             (subject.reads)(
                 policy.name(),
@@ -392,8 +392,13 @@ pub(crate) async fn decide_over(
         ran.push(gate_ran(policy.name(), HookHead::Pass, false));
         // A clean pass (no reject returned above): record the pieces just screened as cleared for this
         // hook on this container, so the next turn in this session skips them. Rejects never reach
-        // here — a blocked piece is deliberately NOT cached and is re-screened on retry.
-        if let (Some(inc), Some(s)) = (subject.incremental.as_ref(), screened.as_ref()) {
+        // here — a blocked piece is deliberately NOT cached and is re-screened on retry. A prompt
+        // omitted by the content ceiling was not screened either, even when the hook passed.
+        if let (true, Some(inc), Some(s)) = (
+            content_delivered,
+            subject.incremental.as_ref(),
+            screened.as_ref(),
+        ) {
             inc.mark_cleared(&clearance, s);
         }
     }
@@ -511,7 +516,7 @@ impl Fallback<'_, '_> {
                 ran.push(gate_ran(fb.policy.name(), HookHead::Pass, true));
                 continue;
             }
-            let req = project(subject, self.content, send_prompt, send_user);
+            let (req, _) = project(subject, self.content, send_prompt, send_user);
             if send_prompt {
                 (subject.reads)(
                     fb.policy.name(),
@@ -590,14 +595,32 @@ fn fail_closed(on_error: &crate::config::PolicyOnError, hook: &str) -> Option<Ga
 /// Built per gate rather than once per request because the grants are per hook: a `prompt: no` gate
 /// must not merely have the content withheld from its wire, it must never have had it built, which
 /// is also what keeps the cost of a shape-only gate a shape-only cost.
+/// Returns whether the content survived the ceiling, including an originally empty projection.
 fn project<'a>(
     subject: &'a GateSubject<'_>,
     items: &'a ScreenedContent<'a>,
     send_prompt: bool,
     send_user: bool,
-) -> RoutingRequest<'a> {
+) -> (RoutingRequest<'a>, bool) {
     let shape = subject.facts.shape();
-    RoutingRequest {
+    let mut content_delivered = false;
+    let prompt = send_prompt.then(|| {
+        let prompt = crate::hooks::PromptProjection {
+            system: join_system(items),
+            messages: items
+                .iter()
+                .filter(|(i, _)| i.slot() != Slot::System)
+                .map(|(i, t)| (Cow::Borrowed(i.author()), Cow::Owned(t.to_string())))
+                .collect(),
+        };
+        let was_empty = prompt.system.is_none() && prompt.messages.is_empty();
+        let prompt = crate::hooks::content_capped(prompt);
+        // The ceiling omits the projection whole. Inspect that exact result rather than reading
+        // the mutable ceiling again; a config apply may change it while the hook is running.
+        content_delivered = was_empty || prompt.system.is_some() || !prompt.messages.is_empty();
+        prompt
+    });
+    let request = RoutingRequest {
         request_id: subject.request_id,
         pool: subject.container,
         ingress_protocol: subject.ingress_protocol,
@@ -616,16 +639,7 @@ fn project<'a>(
         stream: subject.facts.wants_stream(),
         // Under the hook content ceiling, the one rule every seat that hands a hook the prompt
         // applies (audit kernel-K4 #8).
-        prompt: send_prompt.then(|| {
-            crate::hooks::content_capped(crate::hooks::PromptProjection {
-                system: join_system(items),
-                messages: items
-                    .iter()
-                    .filter(|(i, _)| i.slot() != Slot::System)
-                    .map(|(i, t)| (Cow::Borrowed(i.author()), Cow::Owned(t.to_string())))
-                    .collect(),
-            })
-        }),
+        prompt,
         identity: send_user.then(|| crate::hooks::CallerIdentity {
             key_id: subject.key.map(|k| k.id.clone()),
             key_name: subject.key.map(|k| k.name.clone()),
@@ -638,7 +652,8 @@ fn project<'a>(
         // are what these protocols can answer today.
         signals: Default::default(),
         session: subject.session,
-    }
+    };
+    (request, content_delivered)
 }
 
 /// The session substrate the door path's incremental scan reads: the node's session store, the

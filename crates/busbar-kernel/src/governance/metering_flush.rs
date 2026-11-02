@@ -5,11 +5,26 @@ use busbar_contract::abi::store::OpId;
 /// One raw count operation. Its identity and body remain together until acknowledgement.
 #[derive(Clone)]
 pub(super) struct MeteringWrite {
-    op: Option<OpId>,
+    /// The receipt's retention starts at the first attempt, never at a later retry.
+    op: Option<MeteringAttempt>,
     delta: MeteringDelta,
 }
 
+#[derive(Clone, Copy)]
+struct MeteringAttempt {
+    id: OpId,
+    replay_before: std::time::Instant,
+}
+
 impl MeteringWrite {
+    #[cfg(test)]
+    pub(super) fn expire_attempt(&mut self) {
+        self.op
+            .as_mut()
+            .expect("the operation was attempted")
+            .replay_before = std::time::Instant::now();
+    }
+
     fn new((key, counts): (MeterKey, MeterCounts)) -> Option<Self> {
         if counts.is_zero() {
             return None;
@@ -123,7 +138,14 @@ impl GovState {
             let op = write.op.unwrap_or_else(|| {
                 // Mint only after raw custody is installed. Even an allocator initialization
                 // panic must leave the unsent counts available to a later caller.
-                let op = crate::door::op_id();
+                let replay_before = std::time::Instant::now()
+                    + std::time::Duration::from_secs(
+                        busbar_contract::abi::store::OP_ID_RETENTION_SECS,
+                    );
+                let op = MeteringAttempt {
+                    id: crate::door::op_id(),
+                    replay_before,
+                };
                 pending
                     .flight
                     .lock()
@@ -133,10 +155,18 @@ impl GovState {
                     .op = Some(op);
                 op
             });
-            match self
-                .store
-                .add_metering_batch_deduped(op, std::slice::from_ref(&write.delta))
-            {
+            // A Store may forget the receipt after this bound. Replaying after that could apply
+            // an already-committed body twice. Keep its identity and raw debt, but send nothing.
+            let result = if std::time::Instant::now() >= op.replay_before {
+                Err(RecordStoreError(
+                    "metering receipt retention expired; exact operation and counts retained"
+                        .into(),
+                ))
+            } else {
+                self.store
+                    .add_metering_batch_deduped(op.id, std::slice::from_ref(&write.delta))
+            };
+            match result {
                 Ok(()) => {
                     // Only this runner retires a front operation, only after its real acknowledgement.
                     let acknowledged = pending
@@ -176,8 +206,8 @@ impl GovState {
                             flushed,
                             key = %write.delta.key_id,
                             error = %error,
-                            "metering flush: {retained} cell(s) retained; retry will replay the \
-                             same operation id and body"
+                            "metering flush: {retained} cell(s) retained with their operation id \
+                             and body; replay is allowed only within receipt retention"
                         );
                     }
                     return flushed;

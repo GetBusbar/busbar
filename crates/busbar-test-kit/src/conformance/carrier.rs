@@ -460,6 +460,7 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
             host.wait_readable(h);
         }
         let answer = text(&x["read"], "exchange.read");
+        let answer = lossy(answer.as_bytes());
         let want = Want::Is(format!("Ready bytes={answer:?} end_of_frame=true"));
         sc.judged(&format!("read #{n}"), 1, want, || {
             read(&p, &rd, conn, false)
@@ -484,6 +485,7 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     // The pending read's RESUME on its ticket: the op's one first invocation was "read pending", so
     // this re-invocation is counted apart and reported, never pinned (Q-P4-5: one op, one crossing,
     // however often it pends).
+    let answer = lossy(answer.as_bytes());
     let want = Want::Is(format!("Ready bytes={answer:?} end_of_frame=true"));
     sc.judged("read resumed", 0, want, || read(&p, &rd, conn, true));
     sc.judged("shut", 1, is("Ready"), || shut(&p, &wr, conn));

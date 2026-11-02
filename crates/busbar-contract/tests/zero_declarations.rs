@@ -120,7 +120,10 @@ fn zero_plane_declarations_are_refused() {
 
 #[test]
 fn a_zero_need_states_no_direction_and_is_refused() {
-    let got = refused(check_needs(&[Need::ZERO]));
+    let got = refused({
+        // SAFETY: this fixture owns the named arrays and bytes; rejected shapes are not read.
+        unsafe { check_needs(&[Need::ZERO]) }
+    });
     assert!(got.contains("need.direction"), "{got}");
 }
 

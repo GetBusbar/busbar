@@ -8,9 +8,12 @@
 //! `busbar-api`; the DEFAULT backend is the in-memory `MemoryStore` (ephemeral, zero-setup), with
 //! `SqliteStore` (durable) and future backends as swappable plugin crates chosen by `store.module`.
 
+use busbar_kernel_ledger::cost::{EntryId, RawRateEra};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, RwLock};
+
+type RawFeeEras = busbar_kernel_ledger::usage::FeeEras<RawRateEra>;
 
 mod exact_debt;
 use exact_debt::{BudgetFlushFlight, BudgetFlushRunner, ExactUsageDelta};
@@ -126,9 +129,10 @@ pub(crate) fn generate_binding_generation() -> Result<String, getrandom::Error> 
 #[derive(Clone)]
 struct ModelCell {
     model: std::sync::Arc<str>,
-    /// The card era these counts were earned under (Q14, #79): the `effective_from` in force at
-    /// accrual, `0` undated. One cell per (model, era), so an edit mid-window opens a second one.
-    era: u64,
+    /// The card start and optional exact entry identity captured for these counts (Q14, #79).
+    /// Only legacy zero is undated; a known opening entry remains distinct. One cell per
+    /// (model, era), including distinct entries that share a start.
+    era: RawRateEra,
     /// (1.6.0 M1b) The name-keyed CURRENT unit counters — the reserved four
     /// (`input`/`output`/`cache_read`/`cache_write`) are ordinary keys beside any open unit, the
     /// sole representation now that `TierTokens` is dissolved. Sparse (a zero unit is absent).
@@ -180,9 +184,9 @@ struct BudgetCell {
     models: Vec<ModelCell>,
     /// The fee base split by the card era each billable request was admitted under, so each fee
     /// prices at the card in force when that request was admitted.
-    fee_eras: busbar_kernel_ledger::usage::FeeEras,
+    fee_eras: RawFeeEras,
     /// The fee eras' flush watermark (twin of `flushed_billable_requests`, per dated era).
-    flushed_fee_eras: busbar_kernel_ledger::usage::FeeEras,
+    flushed_fee_eras: RawFeeEras,
     /// THE ROLLED WINDOWS' UNACKNOWLEDGED DELTAS, each under the window it was earned in. A roll to
     /// a newer window moves what the old window held past its last acknowledged flush here
     /// ([`BudgetCell::roll`]) instead of discarding it; `flush_budgets` drains them to the store
@@ -292,7 +296,17 @@ impl BudgetCell {
 
     /// Accrue one response's keyed units under `model` in card era `era`, interning the pair on
     /// first sight and each unit key on first sight of that (model, era, unit).
+    #[cfg(test)]
     fn accrue(&mut self, model: &str, era: u64, units: &std::collections::BTreeMap<String, u64>) {
+        self.accrue_raw(model, RawRateEra::legacy(era), units);
+    }
+
+    fn accrue_raw(
+        &mut self,
+        model: &str,
+        era: RawRateEra,
+        units: &std::collections::BTreeMap<String, u64>,
+    ) {
         self.mutate(|cell| {
             let at = cell
                 .models
@@ -331,14 +345,14 @@ impl BudgetCell {
         cost: &crate::cost::CostModel,
         include_fee: bool,
     ) -> Result<busbar_kernel_ledger::cost::Money, busbar_kernel_ledger::cost::MoneyError> {
-        use busbar_kernel_ledger::usage::{price_dated, DatedHistory};
+        use busbar_kernel_ledger::usage::{price_dated_raw, DatedHistory};
         let history = crate::rate_apply::dated_history();
         let now_ms = crate::store::now_ms();
         let dated = history.as_deref().map(|h| DatedHistory::of(h, now_ms));
         let fees = (self.fee_eras.split(self.billable_requests)).filter(|_| include_fee);
         let rows = self.models.iter().map(|m| (&*m.model, m.era, &m.cur));
         let start_ms = self.window_start.saturating_mul(1_000);
-        price_dated(rows, fees, start_ms, cost.card(), dated)
+        price_dated_raw(rows, fees, start_ms, cost.card(), dated)
     }
 
     /// Drop DEAD `ModelCell`s so the `models` Vec cannot grow without bound in a long-lived,
@@ -429,21 +443,47 @@ const ERA_BUCKET_PREFIX: &str = "e:";
 /// Separator between the existing card-era number and its model lane.
 const ERA_MODEL_SEP: char = '\u{1f}';
 
-fn dated_delta(delta: &UsageDelta, era: u64) -> UsageDelta {
-    if era == 0 {
+/// Versioned raw provenance in the existing opaque pseudo-model identity.
+const RAW_ERA_PREFIX: &str = "busbar.raw-era.v1:";
+
+fn era_tag(era: RawRateEra) -> String {
+    match era.entry_id {
+        Some(id) => format!("{RAW_ERA_PREFIX}{}:{id}", era.effective_from),
+        None => era.effective_from.to_string(),
+    }
+}
+
+fn parse_era_tag(tag: &str) -> RecordStoreResult<Option<RawRateEra>> {
+    if let Some(body) = tag.strip_prefix(RAW_ERA_PREFIX) {
+        let parsed = body.split_once(':').and_then(|(at, id)| {
+            Some(RawRateEra::entry(at.parse().ok()?, EntryId::parse_hex(id)?))
+        });
+        return parsed
+            .map(Some)
+            .ok_or_else(|| RecordStoreError("malformed versioned raw rate provenance".into()));
+    }
+    Ok(tag.parse::<u64>().ok().map(RawRateEra::legacy))
+}
+
+fn era_model(era: RawRateEra, model: &str) -> String {
+    format!("{}{ERA_MODEL_SEP}{model}", era_tag(era))
+}
+
+fn dated_delta(delta: &UsageDelta, era: RawRateEra) -> UsageDelta {
+    if era == RawRateEra::legacy(0) {
         return UsageDelta::default();
     }
     let mut models: Vec<_> = delta
         .models
         .iter()
         .map(|model| busbar_contract::records::ModelTokensDelta {
-            model: format!("{era}{ERA_MODEL_SEP}{}", model.model),
+            model: era_model(era, &model.model),
             usage_units: model.usage_units.clone(),
         })
         .collect();
     if delta.billable_requests != 0 {
         models.push(busbar_contract::records::ModelTokensDelta {
-            model: era.to_string(),
+            model: era_tag(era),
             usage_units: std::collections::BTreeMap::from([(
                 ERA_FEE_UNIT.to_string(),
                 delta.billable_requests,
@@ -578,13 +618,20 @@ pub enum LimitBlocked {
 /// money section: a refund returns the bucket actually charged). Per bucket, the window of the cell
 /// the fee landed on — the request's own window, or the newer one a concurrent admission had
 /// already rolled the cell to — the fee lane it landed on (`None`: the flat fee base), and the card
-/// era it was charged under (`effective_from_at` of the admission instant). Read back only by
+/// era it was charged under (`era_at` of the admission instant). Read back only by
 /// [`GovState::refund_charge`]; a refund never re-derives any of it from a clock.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct FeeCharge {
     lane: Option<String>,
-    era: u64,
+    era: RawRateEra,
     cells: Vec<(String, u64)>,
+}
+
+impl FeeCharge {
+    /// The immutable raw price provenance captured by this admission.
+    pub fn raw_era(&self) -> RawRateEra {
+        self.era
+    }
 }
 
 /// The in-flight HOLD an admission acquires on every `concurrent`-capped group in the key's chain,
@@ -1691,7 +1738,7 @@ pub const METERING_OVERFLOW_LABEL: &str = "__aggregated__";
 /// The accumulation contract: an EXISTING cell (including the overflow sentinel) always accumulates,
 /// so retries and re-arriving keys never grow the map; a NEW cell is inserted only while there is
 /// room. When the map is full a new cell's counts are COALESCED into a per-bucket overflow sentinel —
-/// billable token/request totals are preserved (nothing is dropped), only per-key/model/provider/group/version
+/// billable token/request totals are preserved (nothing is dropped), only per-key/model/provider/group
 /// attribution collapses — and every coalesce is COUNTED (metric + throttled diagnostic) so the
 /// degradation is never silent. This is the single accrual primitive both `record_metering` (the hot
 /// path) and `flush_metering`'s failure re-queue call, so both bound the map identically. `cap` is
@@ -1715,7 +1762,7 @@ pub fn accrue_pending(
     // FULL, and this is a new cell. Coalesce into the per-bucket overflow sentinel rather than drop
     // billable usage or grow without bound. The sentinel itself, once present, is an existing cell and
     // takes the early-return above, so the map is bounded at MAX_PENDING_METERING + (distinct buckets).
-    // The sentinel keeps the cell's BUCKET and its PRICE INSTANT and collapses only the attribution
+    // The sentinel keeps the cell's BUCKET, PRICE INSTANT and exact ENTRY ID and collapses only the attribution
     // the map can no longer hold. Collapsing the instant too would coalesce two price eras into one
     // cell and the read would have to pick a card for a sum earned under two — which is the one
     // thing the fifth key member exists to prevent, and a degraded-mode row is not licence to
@@ -1727,7 +1774,7 @@ pub fn accrue_pending(
         METERING_OVERFLOW_LABEL.to_string(),
         key.4,
         String::new(),
-        String::new(),
+        key.6.clone(),
     );
     pending.entry(sentinel).or_default().merge(add);
     metrics::counter!(crate::snapshot::METERING_PENDING_COALESCED_TOTAL).increment(1);

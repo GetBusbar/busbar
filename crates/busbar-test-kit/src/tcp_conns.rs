@@ -132,8 +132,8 @@ pub struct TcpConns {
     wake: busbar_contract::conn::ConnWake,
     tls: Option<Arc<dyn SecureDial>>,
     timeouts: Mutex<Vec<u64>>,
-    /// Each declared need's egress class, by owner and need.
-    classes: Mutex<std::collections::HashMap<(InstanceId, NeedId), u32>>,
+    /// Each declared need's egress class and default dial timeout, by owner and need.
+    classes: Mutex<std::collections::HashMap<(InstanceId, NeedId), (u32, u64)>>,
     /// An open answers with its dial still to make ([`TcpConns::dialling_late`]).
     late: bool,
     /// The destination judge every dial meets first ([`TcpConns::judged`]).
@@ -312,7 +312,7 @@ impl Conns for TcpConns {
                     .lock()
                     .unwrap_or_else(PoisonError::into_inner)
                     .get(&(caller, need))
-                    .copied()
+                    .map(|(class, _)| *class)
                     .unwrap_or(0);
                 guard.judge(desc.target, class)?.to_string()
             }
@@ -450,6 +450,40 @@ impl Conns for TcpConns {
 }
 
 impl DeclaredConns for TcpConns {
+    fn open_request(
+        &self,
+        caller: InstanceId,
+        need: NeedId,
+        desc: &OpenDesc<'_>,
+        require_secure: bool,
+        dial_timeout_ms: u64,
+    ) -> Result<ConnId, ConnError> {
+        // This terminal fixture carries raw streams: its open timeout bounds the dial alone.
+        // Framed whole-request bounds are served by a framed table, never this one.
+        let dial_timeout_ms = if dial_timeout_ms == 0 {
+            self.classes
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .get(&(caller, need))
+                .map_or(0, |(_, timeout)| *timeout)
+        } else {
+            dial_timeout_ms
+        };
+        self.open_with_security(
+            caller,
+            need,
+            &OpenDesc {
+                timeout_ms: if dial_timeout_ms == 0 {
+                    desc.timeout_ms
+                } else {
+                    dial_timeout_ms
+                },
+                ..desc.clone()
+            },
+            require_secure,
+        )
+    }
+
     fn declare(
         &self,
         owner: InstanceId,
@@ -464,7 +498,7 @@ impl DeclaredConns for TcpConns {
         self.classes
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .insert((owner, need), spec.egress_class);
+            .insert((owner, need), (spec.egress_class, spec.timeout_ms));
         self.slab.declare(owner, need);
         Ok(())
     }
@@ -493,7 +527,7 @@ impl DeclaredConns for TcpConns {
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
                 .get(&(caller, need))
-                .copied();
+                .map(|(class, _)| *class);
             if class
                 != Some(busbar_contract::abi::host::conn::connector::EGRESS_OPERATOR_INFRASTRUCTURE)
             {

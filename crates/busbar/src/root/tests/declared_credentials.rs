@@ -453,6 +453,9 @@ fn the_linked_sigv4_style_signs_the_walked_requests_method_and_query() {
         query: Some(b"b=2&a=1".to_vec()),
         timestamp: 1_440_938_160, // 20150830T123600Z
         headers: vec![],
+        body: Default::default(),
+        caller_credential: Default::default(),
+        extensions: Default::default(),
         ..Default::default()
     };
     let fields = match serving.auth.fields_now(handle, &request) {

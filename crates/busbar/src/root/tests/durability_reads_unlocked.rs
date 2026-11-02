@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE ADMIN READS SCAN THE STORE WITHOUT THE BOOK'S LOCK (audit root B-5, row 159). A node with no
-//! data directory keeps its chain in the configured store, and a read of the whole chain scans it
+//! THE ADMIN READS SCAN THE STORE WITHOUT THE BOOK'S LOCK (audit root B-5, row 159). Every node
+//! keeps its chain in the configured Store, and a read of the whole chain scans it
 //! through the store plugin, one wait per block of 256 sequence numbers. The book's lock is the one
 //! every unit's open, settle and seal takes on the request path, so a read that held it across the
 //! scan stalled all serving for as long as the chain took to read, and longer as the chain grew
@@ -50,7 +50,7 @@ impl Scans {
     }
 }
 
-/// A book with NO DATA DIRECTORY over `slots`, as `root::boot::compose_book` builds it, made ready by
+/// A book with an unusable legacy directory over `slots`, made ready by
 /// `ready` and put behind the lock a settlement takes. From then on every scan of the store is
 /// counted, and counted again when that lock is held.
 fn node_over(
@@ -58,8 +58,15 @@ fn node_over(
     ready: impl FnOnce(&mut Durability),
 ) -> (Arc<Mutex<Durability>>, Arc<Scans>) {
     let lane = JournalLane::start(slots.calls(), "test-store").expect("the lane starts");
-    let mut durability = build_on_store(&DurabilityConfig { data_dir: None }, NODE, lane, None)
-        .expect("the store reads back");
+    let mut durability = build_on_store(
+        &DurabilityConfig {
+            data_dir: Some(std::path::PathBuf::from("/dev/null/legacy-journal")),
+        },
+        NODE,
+        lane,
+        None,
+    )
+    .expect("the store reads back");
     ready(&mut durability);
     let book = Arc::new(Mutex::new(durability));
     let scans = Arc::new(Scans::default());

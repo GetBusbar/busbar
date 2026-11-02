@@ -37,9 +37,10 @@ use std::task::{Context, Poll};
 use std::time::Duration;
 
 use busbar_contract::abi::auth::{
-    slot, IdentifyOut, IdentityBuf, IdentityOut, NamedValue, RequestFacts, StripName, VerifyIn,
-    DECISION_CONTINUE, FIELDS_HARD_MAX, FIELDS_MAX, IDENTITY_BUF_BYTES, IDENTITY_GROUPS,
-    IDENTITY_HAS_TTL, SPAN_ABSENT, STRIP_QUERY, VERDICT_IDENTITY, VERDICT_REJECT,
+    slot, AuthPoint, IdentifyOut, IdentityBuf, IdentityOut, NamedValue, RequestFacts, StripName,
+    VerifyIn, DECISION_CONTINUE, FACT_INBOUND_ALL_HEADERS, FIELDS_HARD_MAX, FIELDS_MAX,
+    IDENTITY_BUF_BYTES, IDENTITY_GROUPS, IDENTITY_HAS_TTL, SPAN_ABSENT, STRIP_QUERY,
+    VERDICT_IDENTITY, VERDICT_REJECT,
 };
 use busbar_contract::abi::mechanism::call::Span;
 use busbar_contract::abi::mechanism::call::{
@@ -53,7 +54,9 @@ use busbar_contract::auth_calls::{
 
 use crate::dispatch::call::{Answering, Pending, Ticketed};
 use crate::dispatch::kinds::auth::{Auth, AuthFacts};
-use crate::dispatch::lifecycle::{close, lend, lend_opt, open_frame, release, validate_call, why};
+use crate::dispatch::lifecycle::{
+    close, lend, lend_opt, open_frame, release, validate_call, why, AnswerLease,
+};
 use crate::dispatch::{
     in_head, now_ns, out_head, Diagnostic, Dispatcher, Done, Dropped, EnvelopeSink, Frame, InFrame,
     Metric, OutFrame, Plugin,
@@ -160,6 +163,23 @@ fn reveals(req: &VerifyRequest) -> bool {
     req.credential.is_some() || !req.lines.is_empty()
 }
 
+/// One call's header capability, retained across buffer negotiation and dispatcher resumes.
+enum Headers {
+    None,
+    All,
+    Carriers(Vec<String>),
+}
+
+impl Headers {
+    fn allows(&self, name: &str) -> bool {
+        match self {
+            Self::None => false,
+            Self::All => true,
+            Self::Carriers(names) => names.iter().any(|n| n.eq_ignore_ascii_case(name)),
+        }
+    }
+}
+
 impl Held {
     /// `seal` is the host's, lent to the dispatcher ([`Dispatcher::lend_seal`]): the credential and
     /// the lines are revealed under it to be lent to the plugin's `verify`. The caller refuses a
@@ -167,6 +187,7 @@ impl Held {
     fn new(
         req: &VerifyRequest,
         seal: Option<&(dyn busbar_contract::plugin::KernelSeal + Send + Sync)>,
+        headers: &Headers,
         buf_cap: usize,
         groups_cap: u32,
         strip_cap: u32,
@@ -195,6 +216,7 @@ impl Held {
             lines: req
                 .lines
                 .iter()
+                .filter(|(name, _)| headers.allows(name))
                 .filter_map(|(n, v)| Some((n.clone(), v.expose(seal?).clone())))
                 .collect(),
             named: Vec::new(),
@@ -748,6 +770,25 @@ fn instance_carriers(
 }
 
 impl AuthInstance {
+    /// Snapshot the configured capability before revealing or copying any field value. The lock
+    /// ends here, before plugin code runs; a refresh only changes subsequent calls' snapshots.
+    fn headers(&self, point: AuthPoint) -> Option<Headers> {
+        let carriers = self
+            .carriers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !self.metadata_valid.load(Ordering::Acquire) {
+            return None;
+        }
+        Some(if point == AuthPoint::Peer {
+            Headers::None
+        } else if self.facts.facts & FACT_INBOUND_ALL_HEADERS != 0 {
+            Headers::All
+        } else {
+            Headers::Carriers(carriers.clone())
+        })
+    }
+
     /// OPEN `plugin` (bound to `dispatcher` with `sink`) with `settings` (one JSON document) and the
     /// resolved `secrets`, after `validate`, as the host's instance `label`.
     ///
@@ -766,9 +807,11 @@ impl AuthInstance {
         let facts = plugin.context::<AuthFacts>().cloned().unwrap_or_default();
         *sink.0.family.lock().unwrap_or_else(|e| e.into_inner()) = facts.cache_family;
         let called = validate_call(&plugin, blob(settings, BLOB_JSON, 0));
+        let validated = AnswerLease::new(&plugin, called.lease);
         if called.outcome != Outcome::Ready {
             return Err(why(called.outcome, called.error));
         }
+        drop(validated);
         let blobs = secrets.blobs();
         let mut f = open_frame(blob(settings, BLOB_JSON, 0));
         if !blobs.is_empty() {
@@ -892,9 +935,9 @@ impl AuthCalls for AuthInstance {
     }
 
     fn verify_now(&self, request: &VerifyRequest) -> Option<VerifyAnswer> {
-        if !self.metadata_valid.load(Ordering::Acquire) {
+        let Some(headers) = self.headers(request.point) else {
             return Some(Verified::Failed.into());
-        }
+        };
         let presented = request.credential.is_some();
         let plugin = &self.shared.plugin;
         // No seal lent to the dispatcher: secret material is not revealed, and the verify fails.
@@ -905,12 +948,14 @@ impl AuthCalls for AuthInstance {
         let held = Held::new(
             request,
             seal,
+            &headers,
             IDENTITY_BUF_BYTES,
             IDENTITY_GROUPS,
             FIELDS_MAX,
         );
         let mut f = Frame::new(held.input(presented), identify_out());
         let called = plugin.call(slot::VERIFY, &mut f);
+        let _lease = AnswerLease::new(plugin, called.lease);
         match called.outcome {
             Outcome::Refused => None,
             Outcome::Failed if called.recall.is_some() => {
@@ -918,9 +963,10 @@ impl AuthCalls for AuthInstance {
                 let Some((cap, groups, strips)) = grown(&f.out, &held) else {
                     return Some(Verified::Failed.into());
                 };
-                let bigger = Held::new(request, seal, cap, groups, strips);
+                let bigger = Held::new(request, seal, &headers, cap, groups, strips);
                 let mut g = Frame::new(bigger.input(presented), identify_out());
                 let again = plugin.recall(token, slot::VERIFY, &mut g);
+                let _again = AnswerLease::new(plugin, again.lease);
                 Some(verdict(again.outcome, &g.out, &bigger, plugin))
             }
             o => Some(verdict(o, &f.out, &held, plugin)),
@@ -928,9 +974,9 @@ impl AuthCalls for AuthInstance {
     }
 
     fn verify(&self, request: VerifyRequest) -> Box<dyn Verifying> {
-        if !self.metadata_valid.load(Ordering::Acquire) {
+        let Some(headers) = self.headers(request.point) else {
             return Box::new(Settled(Some(Verified::Failed.into())));
-        }
+        };
         let sh = &self.shared;
         let p = &sh.plugin;
         if p.max_inflight() != 0 && p.inflight() >= p.max_inflight() {
@@ -948,6 +994,7 @@ impl AuthCalls for AuthInstance {
         let held = Held::new(
             &request,
             seal,
+            &headers,
             IDENTITY_BUF_BYTES,
             IDENTITY_GROUPS,
             FIELDS_MAX,
@@ -958,6 +1005,7 @@ impl AuthCalls for AuthInstance {
             Verify {
                 shared: sh.clone(),
                 request,
+                headers,
                 presented,
                 held,
                 recalled: false,
@@ -1074,6 +1122,7 @@ impl Verifying for Settled {
 struct Verify {
     shared: Arc<Shared>,
     request: VerifyRequest,
+    headers: Headers,
     presented: bool,
     held: Arc<Held>,
     recalled: bool,
@@ -1087,13 +1136,14 @@ impl Answering<VerifyIn, IdentifyOut> for Verify {
         done: Done<VerifyIn, IdentifyOut>,
         call: &mut Ticketed<VerifyIn, IdentifyOut>,
     ) -> Option<VerifyAnswer> {
+        let _lease = AnswerLease::new(&self.shared.plugin, done.lease);
         let out = done.frame.as_ref().map(|f| f.out);
         if done.short && !self.recalled {
             self.recalled = true;
             let grow = out.as_ref().and_then(|o| grown(o, &self.held));
             if let Some((cap, groups, strips)) = grow {
                 let seal = self.shared.dispatcher.seal();
-                self.held = Held::new(&self.request, seal, cap, groups, strips);
+                self.held = Held::new(&self.request, seal, &self.headers, cap, groups, strips);
                 self.shared.submit(call, &self.held, self.presented);
                 return None;
             }
@@ -1131,3 +1181,7 @@ mod carrier_tests;
 #[cfg(test)]
 #[path = "tests/auth_instance_carriers_old_api_tests.rs"]
 mod instance_carriers_old_api_tests;
+
+#[cfg(test)]
+#[path = "tests/auth_header_boundary_tests.rs"]
+mod header_boundary_tests;

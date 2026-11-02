@@ -87,6 +87,7 @@ fn raw_adjustment_view_preserves_the_full_difference_of_unsigned_rows() {
                 key_id: KEY.into(),
                 lane: LANE.into(),
                 era: ERA,
+                entry_id: None,
                 delta: BTreeMap::from([(UNIT_INPUT.into(), expected)]),
             }]
         );
@@ -126,6 +127,7 @@ fn an_empty_model_name_is_a_valid_adjustment_lane() {
             key_id: KEY.into(),
             lane: String::new(),
             era: ERA,
+            entry_id: None,
             delta: BTreeMap::from([(UNIT_INPUT.into(), i128::from(u64::MAX))]),
         }]
     );

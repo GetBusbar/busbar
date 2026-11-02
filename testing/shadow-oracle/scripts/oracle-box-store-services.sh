@@ -49,6 +49,10 @@
 # record time). It touches nothing under the busbar source tree.
 set -uo pipefail
 
+# Shared checks bind every reused fixture to its image content, endpoint and exact owner name.
+# shellcheck source=testing/fleet-fixtures/container.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/../../fleet-fixtures" && pwd)/container.sh"
+
 # --- knobs (override in the environment before sourcing/running) --------------------------------
 PG_PORT="${ORACLE_PG_PORT:-5432}"
 MY_PORT="${ORACLE_MY_PORT:-3306}"
@@ -123,30 +127,39 @@ if [ "${BASH_SOURCE[0]:-$0}" != "$0" ]; then _sourced=1; fi
 _log() { printf '[oracle-store] %s\n' "$*" >&2; }
 _die() { _log "ERROR: $*"; if [ "$_sourced" = 1 ]; then return 1; else exit 1; fi; }
 
-_need_docker() { command -v docker >/dev/null 2>&1 || _die "docker not found on PATH"; }
+_need_docker() {
+  command -v python3 >/dev/null 2>&1 || { _die "python3 is required to verify fixture identity"; return 1; }
+  command -v docker >/dev/null 2>&1 || _die "docker not found on PATH"
+}
+
+_up_one() { # <name> <image> <host port> <container port> [docker environment flags...]
+  local name="$1" image="$2" host_port="$3" port="$4"
+  shift 4
+  if ! docker inspect -f '{{.State.Running}}' "$name" 2>/dev/null | grep -q true; then
+    docker run -d --rm --name "$name" --label "dev.getbusbar.fixture.owner=$name" \
+      "$@" -p "127.0.0.1:${host_port}:${port}" "$image" >/dev/null || return 1
+  fi
+  fixture_container_port "$name" "$image" "$host_port" "$port" >/dev/null
+}
 
 _up_containers() {
   _need_docker || return 1
-  _log "starting postgres (${PG_IMAGE}) on :${PG_PORT}"
-  docker run -d --rm --name "$PG_NAME" \
-    -e POSTGRES_USER="$DB_USER" -e POSTGRES_PASSWORD="$DB_PASS" -e POSTGRES_DB="$DB_NAME" \
-    -p "127.0.0.1:${PG_PORT}:5432" "$PG_IMAGE" >/dev/null \
-    || _log "postgres container may already be running ($PG_NAME)"
-  _log "starting mysql (${MY_IMAGE}) on :${MY_PORT}"
-  # A dedicated non-root user/db is created from these env vars; the plugin connects as that user.
-  docker run -d --rm --name "$MY_NAME" \
-    -e MYSQL_RANDOM_ROOT_PASSWORD=yes \
-    -e MYSQL_USER="$DB_USER" -e MYSQL_PASSWORD="$DB_PASS" -e MYSQL_DATABASE="$DB_NAME" \
-    -p "127.0.0.1:${MY_PORT}:3306" "$MY_IMAGE" >/dev/null \
-    || _log "mysql container may already be running ($MY_NAME)"
-  _log "starting valkey (${VK_IMAGE}) on :${VK_PORT}"
-  docker run -d --rm --name "$VK_NAME" \
-    -p "127.0.0.1:${VK_PORT}:6379" "$VK_IMAGE" >/dev/null \
-    || _log "valkey container may already be running ($VK_NAME)"
+  _log "starting postgres on :${PG_PORT}"
+  _up_one "$PG_NAME" "$PG_IMAGE" "$PG_PORT" 5432 \
+    -e POSTGRES_USER="$DB_USER" -e POSTGRES_PASSWORD="$DB_PASS" -e POSTGRES_DB="$DB_NAME" || return 1
+  _log "starting mysql on :${MY_PORT}"
+  _up_one "$MY_NAME" "$MY_IMAGE" "$MY_PORT" 3306 \
+    -e MYSQL_RANDOM_ROOT_PASSWORD=yes -e MYSQL_USER="$DB_USER" -e MYSQL_PASSWORD="$DB_PASS" \
+    -e MYSQL_DATABASE="$DB_NAME" || return 1
+  _log "starting valkey on :${VK_PORT}"
+  _up_one "$VK_NAME" "$VK_IMAGE" "$VK_PORT" 6379 || return 1
 }
 
 _wait_ready() {
   _need_docker || return 1
+  fixture_container_port "$PG_NAME" "$PG_IMAGE" "$PG_PORT" 5432 >/dev/null || return 1
+  fixture_container_port "$MY_NAME" "$MY_IMAGE" "$MY_PORT" 3306 >/dev/null || return 1
+  fixture_container_port "$VK_NAME" "$VK_IMAGE" "$VK_PORT" 6379 >/dev/null || return 1
   local deadline=$(( $(date +%s) + READY_TIMEOUT ))
 
   _log "waiting for postgres ..."
@@ -188,14 +201,21 @@ _export_env() {
 _down_containers() {
   _need_docker || return 1
   # --rm containers vanish on stop; -v also clears the anonymous data volumes for a clean slate.
-  docker rm -f -v "$PG_NAME" "$MY_NAME" "$VK_NAME" >/dev/null 2>&1 || true
+  local name
+  for name in "$PG_NAME" "$MY_NAME" "$VK_NAME"; do
+    fixture_remove_container "$name" || return 1
+  done
   _log "stopped and removed store containers"
 }
 
 cmd="${1:-up}"
 case "$cmd" in
   up)
-    _up_containers && _wait_ready || _die "failed to bring store services up"
+    if ! _up_containers || ! _wait_ready; then
+      _die "failed to bring store services up"
+      # A sourced script must return to its caller before exporting any fixture URLs.
+      return 1
+    fi
     if [ "$_sourced" = 1 ]; then
       _export_env
       _log "exported BUSBAR_TEST_POSTGRES_URL / BUSBAR_TEST_MYSQL_URL / VALKEY_URL into this shell"

@@ -23,7 +23,8 @@
 //! }
 //! let host = FakeHost::new().serve(fake::host::CLOCK_NOW, Clock);
 //! let lent = host.lend_to(open_in); // borrows the host: it cannot outlive it
-//! let opened = reply::call_hosted(open, std::ptr::null_mut(), &lent, open_out);
+//! // SAFETY: these raw frames and this open slot have matching types and live borrowed inputs.
+//! let opened = unsafe { reply::call_hosted(open, std::ptr::null_mut(), &lent, open_out) };
 //! ```
 //!
 //! TRUST: a `ServiceFn` is called with the `in` of the slot it is installed in and a writable
@@ -881,28 +882,10 @@ impl FakeHost {
         }
     }
 
-    /// This host's tables, lent for as long as the host lives (status row 194): what a plugin's
-    /// own test reads its handles from (`Services::of(&tables)`, `Wake::of(&tables)`,
-    /// `Host::of(&tables)`). Each `of` takes the tables by reference, so the `Lent` reaches it
-    /// through its `Deref` here and by value once #1469 and #1471 make `of` take the `Lent`
-    /// itself; the same `X::of(&tables)` compiles on both.
+    /// This host's tables, lent for as long as the host lives: passed by value to
+    /// `Services::of(tables)`, `Wake::of(tables)` or `Host::of(tables)`. The SDK snapshots the
+    /// function tables; no raw table reference or function accessor escapes the proof.
     ///
-    /// SOUND here, where a `Lent` still has its `Deref` (#1471 removes it): through it safe code
-    /// reaches the tables, but every entry of them is a raw pointer (the services, connector and
-    /// I/O tables) or the wake the test itself installed, so calling into the host still needs
-    /// `unsafe`. The leak scan (`table_leaks`) admits this one return type at its exact path.
-    ///
-    /// ```
-    /// use busbar_contract::abi::mechanism::ticket::Ticket;
-    /// use busbar_contract::abi::sdk::conn::Host;
-    /// use busbar_test_kit::test_support::fake::FakeHost;
-    /// let fake = FakeHost::new();
-    /// let tables = fake.lent();
-    /// let host = Host::of(&tables);
-    /// host.wake(Ticket::NONE);
-    /// drop(fake);
-    /// ```
-    #[must_use]
     pub fn lent(&self) -> busbar_contract::abi::sdk::Lent<'_, HostTables> {
         // SAFETY: the tables are this host's own, every pointer in them one of its own boxed
         // tables, all alive and unmoved while `self` is borrowed (`link` points them only when

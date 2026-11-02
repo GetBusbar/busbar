@@ -930,35 +930,43 @@ fn signature_ok(manifest: &Manifest, bytes: &[u8], key: &VerifyingKey) -> Result
         .map_err(|_| "signature does not verify".to_string())
 }
 
-/// Parse a dotted version into its leading numeric components (`major.minor.patch`), ignoring any
-/// pre-release/build suffix (`-rc1`, `+meta`) for the floor comparison. Dependency-free on purpose;
-/// sufficient for an anti-downgrade floor, which only needs a monotonic numeric ordering. A
-/// component that isn't a number stops the parse, so a garbage version compares as `0.0.0` and can
-/// never slip past a non-zero floor.
-fn version_components(v: &str) -> [u64; 3] {
-    let mut out = [0u64; 3];
-    let core = v.trim().split(['-', '+']).next().unwrap_or("");
-    for (i, part) in core.split('.').take(3).enumerate() {
-        match part.parse::<u64>() {
-            Ok(n) => out[i] = n,
-            Err(_) => break,
-        }
+/// Read the validated numeric core, ignoring the same pre-release/build suffix as before.
+/// Components stay decimal strings: valid versions have no integer-width limit. Removing leading
+/// zeroes gives each numeric component one spelling without changing the accepted grammar.
+fn version_components(v: &str) -> Option<[&str; 3]> {
+    if !valid_semver(v) {
+        return None;
     }
-    out
+    let core = v.split(['-', '+']).next()?;
+    let mut parts = core.split('.');
+    let mut component = || {
+        let digits = parts.next()?.trim_start_matches('0');
+        Some(if digits.is_empty() { "0" } else { digits })
+    };
+    Some([component()?, component()?, component()?])
 }
 
-/// True when `have` is greater-than-or-equal-to `floor` under [`version_components`] ordering.
+/// True when `have` is greater-than-or-equal-to `floor` under exact numeric core ordering.
 ///
-/// A NON-EMPTY `floor` that is not [`valid_semver`] is UNSATISFIABLE — this returns `false` for every
-/// `have`. `version_components` truncates at the first non-numeric component, so an unparsable floor
-/// like `"v1.6.0"` would otherwise read as `0.0.0`, which every version satisfies: the anti-downgrade
-/// control would silently invert into a no-op exactly when the operator believed it was armed. An
-/// EMPTY floor is the documented "no floor" spelling and still admits everything.
+/// A malformed nonempty floor is unsatisfiable. Numeric components compare by decimal length and
+/// then lexically, so even a component above u64 cannot silently become a zero/partial floor.
+/// Leading-zero and pre-release/build-suffix treatment are unchanged. An EMPTY floor is the
+/// documented "no floor" spelling and still admits everything.
 pub fn version_at_least(have: &str, floor: &str) -> bool {
-    if !floor.is_empty() && !valid_semver(floor) {
-        return false;
+    if floor.is_empty() {
+        return true;
     }
-    version_components(have) >= version_components(floor)
+    let (Some(have), Some(floor)) = (version_components(have), version_components(floor)) else {
+        return false;
+    };
+    for (have, floor) in have.into_iter().zip(floor) {
+        match have.len().cmp(&floor.len()).then_with(|| have.cmp(floor)) {
+            std::cmp::Ordering::Less => return false,
+            std::cmp::Ordering::Greater => return true,
+            std::cmp::Ordering::Equal => {}
+        }
+    }
+    true
 }
 
 /// Explanatory suffix for a floor rejection: empty for a well-formed floor, and for a malformed one a
