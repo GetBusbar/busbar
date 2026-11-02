@@ -72,6 +72,11 @@ on:
         required: false
         type: string
         default: ""
+      source_role:
+        description: "plugin, or c_abi_test for the external header-only ABI witness"
+        required: false
+        type: string
+        default: "plugin"
       plugin_crate:
         description: "The cdylib's Cargo package (built with -p), e.g. busbar-store-sqlite-plugin. Used only to locate the built cdylib for the signing gate (kind store|auth|hook|secret)."
         required: true
@@ -332,6 +337,7 @@ jobs:
           cc -std=c11 -Wall -Wextra -Werror -pedantic -fPIC -shared \
             -I busbar/crates/busbar-contract/include -o "$lib" "$src"/*.c
           {
+            echo "BUSBAR_PLUGIN_CDYLIB=$lib"
             echo "BUSBAR_C_ABI_LIBRARY=$lib"
             echo "BUSBAR_C_ABI_SOURCES=$src"
           } >> "$GITHUB_ENV"
@@ -382,7 +388,7 @@ jobs:
           [ -z "$TEST_FEATURES" ] || features=(--features "$TEST_FEATURES")
           cargo test --workspace --locked "${features[@]}"
       - name: extra test command
-        if: inputs.extra_test != '' && steps.crates.outputs.present == 'true'
+        if: inputs.extra_test != '' && (steps.crates.outputs.present == 'true' || inputs.plugin_lang == 'c')
         working-directory: plugin
         env:
           EXTRA: ${{ inputs.extra_test }}
@@ -429,9 +435,14 @@ jobs:
           "$deny" --locked --format json check advisories 2> "$RUNNER_TEMP/advisories.jsonl" || true
           "$deny" --locked check
       - name: C ABI integration through the actual header-only library
-        if: ${{ !cancelled() && inputs.plugin_lang == 'c' }}
+        if: ${{ !cancelled() && inputs.plugin_lang == 'c' && inputs.source_role == 'c_abi_test' }}
         working-directory: busbar
         run: cargo test --locked -p busbar-plugin-loader --test c_abi
+      - name: external C plugins require their own ordinary tests
+        if: inputs.plugin_lang == 'c' && inputs.source_role != 'c_abi_test'
+        env:
+          EXTRA: ${{ inputs.extra_test }}
+        run: test -n "$EXTRA" || { echo "::error::configure extra_test with this C plugin's ordinary tests"; exit 1; }
 
   macos:
     name: build, test [macos]
@@ -582,6 +593,8 @@ jobs:
         env:
           CRATE: ${{ inputs.plugin_crate }}
           C_DIR: ${{ inputs.c_dir }}
+          SOURCE_ROLE: ${{ inputs.source_role }}
+          EXTRA: ${{ inputs.extra_test }}
         run: |
           set -euo pipefail
           src="$GITHUB_WORKSPACE/plugin/$C_DIR"
@@ -589,9 +602,17 @@ jobs:
           mkdir -p "$(dirname "$lib")"
           cc -std=c11 -Wall -Wextra -Werror -pedantic -fPIC -shared \
             -I busbar/crates/busbar-contract/include -o "$lib" "$src"/*.c
-          cd busbar
-          BUSBAR_C_ABI_LIBRARY="$lib" BUSBAR_C_ABI_SOURCES="$src" \
-            cargo test --locked -p busbar-plugin-loader --test c_abi
+          export BUSBAR_PLUGIN_CDYLIB="$lib"
+          if [ "$SOURCE_ROLE" = c_abi_test ]; then
+            cd busbar
+            BUSBAR_C_ABI_LIBRARY="$lib" BUSBAR_C_ABI_SOURCES="$src" \
+              cargo test --locked -p busbar-plugin-loader --test c_abi
+          else
+            [ -n "$EXTRA" ] || { echo "::error::configure this C plugin's ordinary extra_test"; exit 1; }
+            export BUSBAR_CHECKOUT="$GITHUB_WORKSPACE/busbar"
+            cd plugin
+            bash -c "$EXTRA"
+          fi
 
   coverage:
     name: coverage
