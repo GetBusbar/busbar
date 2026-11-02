@@ -134,23 +134,35 @@ fn test_scrape_gauges_key_spend_and_remaining() {
     let out = handle();
 
     assert!(
-        out.contains("vk_spend_test01"),
-        "key id must appear as label in scrape output; got:\n{out}"
+        out.iter()
+            .flat_map(|family| &family.samples)
+            .any(|sample| sample
+                .labels
+                .iter()
+                .any(|(label, value)| label == "key" && value == "vk_spend_test01")),
+        "key id must appear as label in scrape output; got:\n{out:?}"
     );
     assert!(
-        out.lines()
-            .any(|line| line == format!("{KEY_SPEND_CENTS}{{key=\"{}\"}} 200", key.id)),
-        "the seeded key's spend gauge must carry its actual value; got:\n{out}"
+        out.iter()
+            .flat_map(|family| &family.samples)
+            .any(|sample| sample.name == KEY_SPEND_CENTS
+                && sample.labels == [("key".to_string(), key.id.clone())]
+                && sample.value == "200"),
+        "the seeded key's spend gauge must carry its actual value; got:\n{out:?}"
     );
     assert!(
-        out.lines()
-            .any(|line| line == format!("{KEY_TOKENS_TOTAL}{{key=\"{}\"}} 5000", key.id)),
-        "the seeded key's tokens gauge must carry its actual value; got:\n{out}"
+        out.iter()
+            .flat_map(|family| &family.samples)
+            .any(|sample| sample.name == KEY_TOKENS_TOTAL
+                && sample.labels == [("key".to_string(), key.id.clone())]
+                && sample.value == "5000"),
+        "the seeded key's tokens gauge must carry its actual value; got:\n{out:?}"
     );
 
     assert!(
-        !out.contains("busbar_key_budget_remaining_cents"),
-        "the removed per-key remaining gauge must not resurface; got:\n{out}"
+        !out.iter()
+            .any(|family| family.name.contains("busbar_key_budget_remaining_cents")),
+        "the removed per-key remaining gauge must not resurface; got:\n{out:?}"
     );
 }
 
@@ -493,12 +505,15 @@ fn test_cardinality_invariant_no_raw_secret_in_labels() {
         );
 }
 
-fn local_source(idle: Duration) -> (&'static Source, impl Fn() -> String) {
+fn local_source(
+    idle: Duration,
+) -> (
+    &'static Source,
+    impl Fn() -> Vec<busbar_contract::export_calls::Family>,
+) {
     let width = Duration::from_secs(1);
     let source: &'static Source = Box::leak(Box::new(Source::new(width, SUMMARY_BUCKETS, idle)));
-    (source, move || {
-        crate::test_support::export_axis::lines(&source.snapshot())
-    })
+    (source, move || source.snapshot())
 }
 
 #[test]
@@ -511,8 +526,15 @@ fn a_gauge_that_stops_being_refreshed_is_expired() {
         metrics::gauge!("busbar_test_live_subject").set(1.0);
     });
     let before = handle();
-    assert!(before.contains("busbar_test_deleted_subject"), "{before}");
-    assert!(before.contains("busbar_test_live_subject"));
+    assert!(
+        before
+            .iter()
+            .any(|family| family.name == "busbar_test_deleted_subject"),
+        "{before:?}"
+    );
+    assert!(before
+        .iter()
+        .any(|family| family.name == "busbar_test_live_subject"));
 
     std::thread::sleep(idle * 3);
 
@@ -522,12 +544,16 @@ fn a_gauge_that_stops_being_refreshed_is_expired() {
 
     let after = handle();
     assert!(
-        !after.contains("busbar_test_deleted_subject"),
-        "a gauge nothing refreshes must stop being exported, got:\n{after}"
+        !after
+            .iter()
+            .any(|family| family.name == "busbar_test_deleted_subject"),
+        "a gauge nothing refreshes must stop being exported, got:\n{after:?}"
     );
     assert!(
-        after.contains("busbar_test_live_subject"),
-        "a refreshed gauge must survive, got:\n{after}"
+        after
+            .iter()
+            .any(|family| family.name == "busbar_test_live_subject"),
+        "a refreshed gauge must survive, got:\n{after:?}"
     );
 }
 
@@ -544,12 +570,14 @@ fn only_gauges_are_expired() {
 
     let after = handle();
     assert!(
-        after.contains("busbar_test_idle_counter"),
-        "an idle counter must survive — expiring it would reset it and break rate(), got:\n{after}"
+        after.iter().any(|family| family.name == "busbar_test_idle_counter"),
+        "an idle counter must survive — expiring it would reset it and break rate(), got:\n{after:?}"
     );
     assert!(
-        after.contains("busbar_test_idle_histogram"),
-        "an idle histogram must survive, got:\n{after}"
+        after
+            .iter()
+            .any(|family| family.name == "busbar_test_idle_histogram"),
+        "an idle histogram must survive, got:\n{after:?}"
     );
 }
 
@@ -572,13 +600,19 @@ fn money_gauge_bytes_are_the_1_5_5_bytes() {
     ];
     let counts: &[u64] = &[0, 1, 5000, (1u64 << 53) + 1, u64::MAX];
 
-    fn value_of(out: &str, family: &str, key: &str) -> String {
-        let needle = format!("key=\"{key}\"");
-        let line = out
-            .lines()
-            .find(|l| l.starts_with(family) && l.contains(&needle))
-            .unwrap_or_else(|| panic!("no `{family}` line for {key}; got:\n{out}"));
-        line.rsplit(' ').next().unwrap().to_string()
+    fn value_of(out: &[busbar_contract::export_calls::Family], family: &str, key: &str) -> String {
+        out.iter()
+            .flat_map(|family| &family.samples)
+            .find(|sample| {
+                sample.name == family
+                    && sample
+                        .labels
+                        .iter()
+                        .any(|(label, value)| label == "key" && value == key)
+            })
+            .unwrap_or_else(|| panic!("no `{family}` sample for {key}; got:\n{out:?}"))
+            .value
+            .clone()
     }
 
     let mut probes: Vec<(&str, String, String, i128)> = Vec::new();
@@ -605,7 +639,7 @@ fn money_gauge_bytes_are_the_1_5_5_bytes() {
         }
     }
 
-    let out = render();
+    let out = snapshot().expect("the actual recorder is installed");
     for (family, old, new, v) in &probes {
         let was = value_of(&out, family, old);
         let now = value_of(&out, family, new);
