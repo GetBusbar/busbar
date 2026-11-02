@@ -694,12 +694,111 @@ fn networked_rows() -> AuthRows {
     AuthRows::new(Arc::new(registry), dispatcher())
 }
 
-static SERVING_TABLE: std::sync::OnceLock<Arc<crate::tcp_conns::TcpConns>> =
-    std::sync::OnceLock::new();
-
+// Observe only the existing inert declaration boundary: this case never dials a socket.
+#[derive(Default)]
+struct DeclarationObserver {
+    declarations: AtomicU64,
+}
+impl busbar_contract::conn::Conns for DeclarationObserver {
+    fn open(
+        &self,
+        caller: busbar_contract::conn::InstanceId,
+        need: busbar_contract::conn::NeedId,
+        desc: &busbar_contract::conn::OpenDesc<'_>,
+    ) -> Result<busbar_contract::conn::ConnId, busbar_contract::conn::ConnError> {
+        busbar_contract::conn::Conns::open(&crate::needs_restated::Inert, caller, need, desc)
+    }
+    fn write(
+        &self,
+        caller: busbar_contract::conn::InstanceId,
+        conn: busbar_contract::conn::ConnId,
+        bytes: &[u8],
+        end: bool,
+        text: bool,
+    ) -> Result<usize, busbar_contract::conn::ConnError> {
+        busbar_contract::conn::Conns::write(
+            &crate::needs_restated::Inert,
+            caller,
+            conn,
+            bytes,
+            end,
+            text,
+        )
+    }
+    fn read(
+        &self,
+        caller: busbar_contract::conn::InstanceId,
+        conn: busbar_contract::conn::ConnId,
+        ticket: u64,
+        buf: &mut [u8],
+    ) -> Result<busbar_contract::conn::Piece, busbar_contract::conn::ConnError> {
+        busbar_contract::conn::Conns::read(&crate::needs_restated::Inert, caller, conn, ticket, buf)
+    }
+    fn wait(
+        &self,
+        caller: busbar_contract::conn::InstanceId,
+        set: &[busbar_contract::conn::ConnId],
+        ticket: u64,
+    ) -> Result<usize, busbar_contract::conn::ConnError> {
+        busbar_contract::conn::Conns::wait(&crate::needs_restated::Inert, caller, set, ticket)
+    }
+    fn facts(
+        &self,
+        caller: busbar_contract::conn::InstanceId,
+        conn: busbar_contract::conn::ConnId,
+    ) -> Result<busbar_contract::transport::ConnFacts, busbar_contract::conn::ConnError> {
+        busbar_contract::conn::Conns::facts(&crate::needs_restated::Inert, caller, conn)
+    }
+    fn close(
+        &self,
+        caller: busbar_contract::conn::InstanceId,
+        conn: busbar_contract::conn::ConnId,
+    ) -> Result<(), busbar_contract::conn::ConnError> {
+        busbar_contract::conn::Conns::close(&crate::needs_restated::Inert, caller, conn)
+    }
+}
+impl busbar_contract::conn::DeclaredConns for DeclarationObserver {
+    fn declare(
+        &self,
+        owner: busbar_contract::conn::InstanceId,
+        need: busbar_contract::conn::NeedId,
+        spec: &busbar_contract::abi::mechanism::rendering::ReadNeed,
+        target: Option<&str>,
+        trust: Option<&str>,
+    ) -> Result<(), busbar_contract::conn::ConnError> {
+        assert_eq!(
+            spec.transport, "tcp",
+            "the original network need is preserved"
+        );
+        let result = busbar_contract::conn::DeclaredConns::declare(
+            &crate::needs_restated::Inert,
+            owner,
+            need,
+            spec,
+            target,
+            trust,
+        );
+        self.declarations.fetch_add(1, Ordering::SeqCst);
+        result
+    }
+    fn declared(
+        &self,
+        owner: busbar_contract::conn::InstanceId,
+        need: busbar_contract::conn::NeedId,
+    ) -> Option<Result<(), busbar_contract::conn::ConnError>> {
+        busbar_contract::conn::DeclaredConns::declared(&crate::needs_restated::Inert, owner, need)
+    }
+    fn serves_scheme(&self, transport: &str) -> bool {
+        busbar_contract::conn::DeclaredConns::serves_scheme(
+            &crate::needs_restated::Inert,
+            transport,
+        )
+    }
+}
+static SERVING_TABLE: std::sync::OnceLock<Arc<DeclarationObserver>> = std::sync::OnceLock::new();
 fn serving_table() -> Arc<dyn busbar_contract::conn::DeclaredConns> {
     SERVING_TABLE
-        .get_or_init(|| Arc::new(crate::tcp_conns::TcpConns::new(Arc::new(|_, _| {}))))
+        .get_or_init(|| Arc::new(DeclarationObserver::default()))
         .clone()
 }
 
@@ -712,7 +811,8 @@ fn a_networked_auth_door_opened_to_serve_declares_its_need_on_the_hosts_table() 
         SERVING_TABLE
             .get()
             .expect("the table was read")
-            .declarations(),
+            .declarations
+            .load(Ordering::SeqCst),
         1,
         "its one tcp need is declared on the host's table"
     );
