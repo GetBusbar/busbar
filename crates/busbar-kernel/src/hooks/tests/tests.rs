@@ -325,20 +325,6 @@ fn plugin_strategy_open_failure_refuses_pool_construction() {
     assert!(error.contains("strategy constructor refused"));
 }
 
-fn test_env_needs(alias: &str, needs: crate::test_support::HookNeeds) -> HookEnv {
-    crate::test_support::test_hook_env(&[alias], needs)
-}
-
-fn test_env() -> HookEnv {
-    test_env_needs(
-        "test-hook",
-        crate::test_support::HookNeeds {
-            prompt: busbar_contract::plugin_rows::NeedLevel::Rw,
-            user: busbar_contract::plugin_rows::NeedLevel::Ro,
-        },
-    )
-}
-
 fn empty_env() -> HookEnv {
     HookEnv::new(
         std::sync::Arc::new(busbar_plugin_loader::PluginRegistry::empty()),
@@ -563,47 +549,17 @@ fn weighted_default_resolves_none() {
     assert!(resolve_policy(&pool_policy(PoolPolicy::Weighted)).is_none());
 }
 
+// resolution::Entry and resolution::Paths retain Weak references to their registry.
+// The Weak control block retains that allocation until the last Weak is dropped;
+// a live cache entry therefore cannot observe an allocator-recycled registry address.
+// Missing-row behavior remains asserted below; replacement identity is asserted by
+// resolution_tests::replacing_the_public_registry_cannot_reuse_a_stale_path_snapshot,
+// and actual transport reuse/change is asserted in distribution::hooks_runtime_replies.
 #[test]
 fn missing_plugin_gate_is_absent_not_stranded() {
     let hooks = registry("h", base_gate());
 
     assert!(resolve_pool_gates(&pool_with_hook("h"), &hooks, &empty_env(), 0).is_empty());
-}
-
-#[test]
-fn a_reused_registry_address_never_inherits_a_dead_registrys_resolution() {
-    let env = test_env();
-    let hooks = registry("h", base_gate());
-
-    assert_eq!(
-        resolve_pool_gates(&pool_with_hook("h"), &hooks, &env, 0).len(),
-        1,
-        "the plugin-backed gate resolves against the registry that carries it"
-    );
-    let freed = std::sync::Arc::as_ptr(&env.registry) as *const u8 as usize;
-    drop(env);
-
-    let mut keepalive: Vec<std::sync::Arc<dyn busbar_contract::plugin_rows::PluginRows>> =
-        Vec::new();
-    for _ in 0..4096 {
-        let reg: std::sync::Arc<dyn busbar_contract::plugin_rows::PluginRows> =
-            std::sync::Arc::new(busbar_plugin_loader::PluginRegistry::empty());
-        if std::sync::Arc::as_ptr(&reg) as *const u8 as usize == freed {
-            let reused = HookEnv::new(
-                reg,
-                std::sync::Arc::new(crate::config::secret::SecretResolver::builtins_only()),
-            )
-            .expect("the registry's hook axis");
-            assert!(
-                resolve_pool_gates(&pool_with_hook("h"), &hooks, &reused, 0).is_empty(),
-                "a registry that does not carry the plugin must resolve to gate-absent even when \
-                 it was allocated on a dead registry's address — a resolution is identified by \
-                 WHICH registry it came out of, and an address is not an identity"
-            );
-            return;
-        }
-        keepalive.push(reg);
-    }
 }
 
 #[test]
