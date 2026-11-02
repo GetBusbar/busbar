@@ -681,6 +681,13 @@ pub const FRAME_PIECE_SIZE: u32 = 48;
 /// frame. Absent means binary. The outbound twin of [`PIECE_TEXT`].
 pub const EMIT_TEXT: u32 = 1;
 
+/// [`EmitIn::flags`]: the bytes are the accepted answer's final field block, after its head and
+/// body, rendered by the transport as trailers. Requires `end_of_frame = 1`, no status or opening
+/// body length, and no [`EMIT_TEXT`]. Unsupported transports refuse it before consuming bytes.
+/// Only the fresh crossing carries it: a pending operation owns its fields and kind until its
+/// resume and every empty `YIELD_MORE` drain complete.
+pub const EMIT_TRAILERS: u32 = 2;
+
 /// [`WriteIn::flags`]: the bytes complete a FRAME of the carrier's own wire, for a carrier that
 /// delimits frames itself (a carrier carried as itself, with no framer above it). A carrier that
 /// carries an undelimited byte stream ignores it.
@@ -1607,7 +1614,7 @@ pub struct EmitIn {
     pub len: usize,
     /// `1` = they complete the frame.
     pub end_of_frame: u32,
-    /// `EMIT_*` bits: [`EMIT_TEXT`].
+    /// `EMIT_*` bits: [`EMIT_TEXT`] or [`EMIT_TRAILERS`], never both.
     pub flags: u32,
     /// The sink.
     pub sink: FramerSink,

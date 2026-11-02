@@ -585,6 +585,7 @@ extern "C" {
 #define BB_TRANSPORT_PIECE_CODE_HANDOFF UINT16_C(2048) /* [`FramePiece::flags`], with [`PIECE_HAS_CODE`]: `code` (and the `status_class` and `fault` read */
 #define BB_TRANSPORT_FRAME_PIECE_SIZE UINT32_C(48) /* The size of one [`FramePiece`], in bytes: the stride of [`FramerSink::pieces`]. */
 #define BB_TRANSPORT_EMIT_TEXT UINT32_C(1) /* [`EmitIn::flags`]: the bytes are a TEXT message, not a binary one, on a wire whose messages are */
+#define BB_TRANSPORT_EMIT_TRAILERS UINT32_C(2) /* [`EmitIn::flags`]: the bytes are the accepted answer's final field block, after its head and */
 #define BB_TRANSPORT_WRITE_END_OF_FRAME UINT32_C(1) /* [`WriteIn::flags`]: the bytes complete a FRAME of the carrier's own wire, for a carrier that */
 #define BB_TRANSPORT_READ_END_OF_FRAME UINT32_C(1) /* [`IoOut::flags`] on a `read`: the bytes complete a FRAME of the carrier's own wire. A carrier */
 #define BB_TRANSPORT_YIELD_ENDED UINT32_C(1) /* [`FramerYield::flags`]: no frame follows on this connection. */
