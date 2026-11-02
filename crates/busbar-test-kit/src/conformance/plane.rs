@@ -758,25 +758,38 @@ fn arrive(p: &Plugin<Plane>, a: &Arrival, body: &[u8]) -> String {
     f.input.body = octets(body);
     (f.input.units_buf, f.input.units_cap) = (units.as_mut_ptr(), units.len());
     let c = p.call(slot::ARRIVE, &mut f);
-    if c.outcome != busbar_contract::abi::mechanism::call::Outcome::Ready {
-        return format!("{} UNREAD", called(&c));
+    arrival_line(&c, &f.out, a.route)
+}
+
+fn arrival_line(c: &Called, out: &ArriveOut, route: bool) -> String {
+    use busbar_contract::abi::mechanism::call::Outcome;
+    if c.outcome == Outcome::Refused {
+        return format!(
+            "{} refusal={} status={}",
+            called(c),
+            out.refusal,
+            out.refusal_status
+        );
+    }
+    if c.outcome != Outcome::Ready {
+        return format!("{} UNREAD", called(c));
     }
     let line = format!(
         "{} op_class={} principal_required={} dialect={} units={} refusal={} status={}",
-        called(&c),
-        f.out.op_class,
-        f.out.principal_need == PRINCIPAL_REQUIRED,
-        f.out.dialect,
-        f.out.units_written,
-        f.out.refusal,
-        f.out.refusal_status
+        called(c),
+        out.op_class,
+        out.principal_need == PRINCIPAL_REQUIRED,
+        out.dialect,
+        out.units_written,
+        out.refusal,
+        out.refusal_status
     );
-    if a.route {
+    if route {
         format!(
             "{line} route_flags={:?} route={} entry={}",
-            route_flags(f.out.route_flags),
-            route_class(f.out.route),
-            read(f.out.pool)
+            route_flags(out.route_flags),
+            route_class(out.route),
+            read(out.pool)
         )
     } else {
         line
@@ -2190,6 +2203,10 @@ mod settings_tests;
 #[cfg(test)]
 #[path = "../tests/conformance_plane_release_tests.rs"]
 mod release_tests;
+
+#[cfg(test)]
+#[path = "../tests/conformance_plane_arrive_tests.rs"]
+mod arrive_tests;
 
 #[cfg(all(test, loader_self_tests))]
 #[path = "../tests/conformance_plane_lending_tests.rs"]
