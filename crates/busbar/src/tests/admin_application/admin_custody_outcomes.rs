@@ -816,7 +816,15 @@ async fn committed_mint_refresh_failure_is_truthful_and_same_idempotency_cannot_
     store
         .fail_refresh_after_write
         .store(false, Ordering::SeqCst);
-    let retry = mint(router.clone(), "custody:applied-refresh", "applied-refresh").await;
+    // A new response cache forces this retry to consult the actual Store's durable
+    // receipt. The previous process-local response must not mask a missing settlement.
+    let fresh_cache = Arc::new(busbar_core_admin::keys::KeyReplayCache::new());
+    let retry = mint(
+        router.clone().layer(axum::Extension(fresh_cache)),
+        "custody:applied-refresh",
+        "applied-refresh",
+    )
+    .await;
     assert_eq!(retry.status(), StatusCode::CONFLICT);
     assert!(body(retry).await.to_string().contains("already ran"));
     assert_eq!(store.inner.list_keys().unwrap().len(), 1);
