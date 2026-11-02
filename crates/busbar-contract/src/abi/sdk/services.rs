@@ -1775,7 +1775,7 @@ impl Services {
         service: u32,
         pick: fn(&HostSlots) -> Option<ServiceFn>,
         input: &I,
-        check: fn(&I, RawOutcome, &ServiceOut) -> Result<Filled, Fault>,
+        check: unsafe fn(&I, RawOutcome, &ServiceOut) -> Result<Filled, Fault>,
     ) -> Result<(Outcome, ServiceOut, Filled), ServiceError> {
         let slot = self.slot(service, pick)?;
         let mut out = blank_out();
@@ -1784,7 +1784,10 @@ impl Services {
             std::ptr::from_ref(input).cast::<c_void>(),
             &mut out,
         );
-        let filled = check(input, ret, &out).map_err(|_| ServiceError::Broken)?;
+        // SAFETY: every caller builds `input` from its own live initialized answer slots and
+        // borrowed output slices. The trusted host writes only those buffers during `slot`;
+        // they remain live and unwritten while the validator reads the reported answer.
+        let filled = unsafe { check(input, ret, &out) }.map_err(|_| ServiceError::Broken)?;
         Ok((ret.outcome(), out, filled))
     }
 

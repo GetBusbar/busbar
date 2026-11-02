@@ -426,6 +426,18 @@ pub const fn pointee_size<T>(_p: *const T) -> usize {
     core::mem::size_of::<T>()
 }
 
+/// The raw copy used by [`read_sized_field!`].
+///
+/// # Safety
+///
+/// `p` must be readable for a valid, initialized `T`, without concurrent writes. Any references
+/// in the copied value must remain valid for their stated lifetimes. Alignment is not required.
+#[doc(hidden)]
+pub unsafe fn read_sized_copy<T: Copy>(p: *const T) -> T {
+    // SAFETY: the caller guarantees a valid, initialized `T` at `p`.
+    unsafe { core::ptr::read_unaligned(p) }
+}
+
 /// Read a `Copy` field from a sized POD struct ONLY if its advertised `size` proves the sender wrote
 /// it, yielding `Option<FieldTy>`. This is the mechanical form of the append-only rule: a field
 /// appended in a later minor is `None` when read from an older sender's struct, never undefined.
@@ -439,10 +451,10 @@ pub const fn pointee_size<T>(_p: *const T) -> usize {
 /// the sender's own bytes is ever touched and no alignment the peer did not promise is assumed.
 ///
 /// # Safety
-/// The macro expands inline, so its obligation is documented rather than compiler-enforced: `ptr`
-/// must address at least `size` live, initialized bytes laid out as the leading prefix of `$struct`.
-/// It need not be aligned, and it need NOT be a whole `$struct` — that latitude is the entire reason
-/// the guard takes a pointer.
+/// The invocation requires an `unsafe` block. `ptr` must address the live prefix of `$struct`
+/// covered by `min(size, size_of::<$struct>())`. A field within that prefix must be a valid,
+/// initialized `Copy` value, with no concurrent writes; any references it contains must remain
+/// valid for their stated lifetimes. The pointer need not be aligned or name a whole `$struct`.
 ///
 /// ```
 /// use busbar_contract::abi::read_sized_field;
@@ -453,10 +465,30 @@ pub const fn pointee_size<T>(_p: *const T) -> usize {
 /// }
 /// let whole = Shape { size: core::mem::size_of::<Shape>() as u32, tokens: 10 };
 /// // `tokens` lies within a whole `Shape`, so it reads as `Some`.
-/// assert_eq!(read_sized_field!(&whole, whole.size, Shape, tokens), Some(10));
+/// assert_eq!(unsafe { read_sized_field!(&whole, whole.size, Shape, tokens) }, Some(10));
 /// // A sender whose `size` stops before `tokens` never wrote it: `None`.
 /// let short = Shape { size: 4, tokens: 10 };
-/// assert_eq!(read_sized_field!(&short, short.size, Shape, tokens), None);
+/// assert_eq!(unsafe { read_sized_field!(&short, short.size, Shape, tokens) }, None);
+/// ```
+///
+/// A caller cannot read an arbitrary raw pointer from safe Rust:
+///
+/// ```compile_fail,E0133
+/// use busbar_contract::abi::read_sized_field;
+/// #[repr(C)]
+/// struct Shape { size: u32, tokens: u64 }
+/// let p = core::ptr::dangling::<Shape>();
+/// let _ = read_sized_field!(p, core::mem::size_of::<Shape>() as u32, Shape, tokens);
+/// ```
+///
+/// Even in an unsafe block, the macro cannot duplicate ownership of a non-`Copy` field:
+///
+/// ```compile_fail,E0277
+/// use busbar_contract::abi::read_sized_field;
+/// #[repr(C)]
+/// struct Shape { size: u32, owned: String }
+/// let whole = Shape { size: core::mem::size_of::<Shape>() as u32, owned: String::new() };
+/// let _ = unsafe { read_sized_field!(&whole, whole.size, Shape, owned) };
 /// ```
 #[macro_export]
 macro_rules! read_sized_field {
@@ -477,12 +509,11 @@ macro_rules! read_sized_field {
                 unsafe { ::core::ptr::addr_of!((*probe.as_ptr()).$field) },
             );
         if $crate::abi::field_present(advertised, end) {
-            // SAFETY: `field_present` just proved the sender's advertised size reaches THROUGH this
-            // field, so the projection lands inside the caller-guaranteed live prefix, and
-            // `read_unaligned` copies it out without forming a reference or assuming alignment.
-            ::core::option::Option::Some(unsafe {
-                ::core::ptr::read_unaligned(::core::ptr::addr_of!((*p).$field))
-            })
+            // Deliberately no unsafe block here: the caller must establish the raw prefix's
+            // validity. The helper also enforces `Copy`, so owned fields cannot be duplicated.
+            ::core::option::Option::Some($crate::abi::read_sized_copy(
+                ::core::ptr::addr_of!((*p).$field),
+            ))
         } else {
             ::core::option::Option::None
         }
