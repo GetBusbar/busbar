@@ -119,33 +119,40 @@ skip = [
 # DB — block it so any such addition is an explicit, reviewed allow-list entry.
 unknown-registry = "deny"
 unknown-git = "deny"
+# All authorized Git dependencies must still name an immutable revision.
+required-git-spec = "rev"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
 # The default plugins busbar pulls from their own repos at a PINNED rev (owner ruling, 1.6.0: one
 # repo per plugin). Each is a reviewed entry, one URL per plugin repo.
 allow-git = [
-    "https://github.com/GetBusbar/busbar-plane-llm",
-    "https://github.com/GetBusbar/busbar-export-file",
-    "https://github.com/GetBusbar/busbar-export-otlp",
-    "https://github.com/GetBusbar/busbar-export-prometheus",
-    "https://github.com/GetBusbar/busbar-export-webhook",
-    "https://github.com/GetBusbar/busbar-auth-oidc",
-    "https://github.com/GetBusbar/busbar-auth-admin-tokens",
-    "https://github.com/GetBusbar/busbar-transport-ws",
-    "https://github.com/GetBusbar/busbar-secret-env",
-    "https://github.com/GetBusbar/busbar-secret-file",
-    "https://github.com/GetBusbar/busbar-transport-tcp",
-    "https://github.com/GetBusbar/busbar-transport-stdio",
-    "https://github.com/GetBusbar/busbar-transport-webrtc",
-    "https://github.com/GetBusbar/busbar-transport-http",
-    "https://github.com/GetBusbar/busbar-hook-ranking",
-    "https://github.com/GetBusbar/busbar-store-memory",
-    "https://github.com/GetBusbar/busbar-plane-mcp",
-    "https://github.com/GetBusbar/busbar-plane-decisions",
-    "https://github.com/GetBusbar/busbar-plane-a2a",
-    "https://github.com/GetBusbar/busbar-plane-streaming",
-    "https://github.com/GetBusbar/busbar-auth-header",
-    "https://github.com/GetBusbar/busbar-auth-oauth",
-    "https://github.com/GetBusbar/busbar-auth-sigv4",
-    "https://github.com/GetBusbar/busbar-auth-webhook-signature",
-    "https://github.com/GetBusbar/busbar-transport-grpc",
+    "https://git.getbusbar.dev/GetBusbar/busbar-plane-llm",
+    "https://git.getbusbar.dev/GetBusbar/busbar-export-file",
+    "https://git.getbusbar.dev/GetBusbar/busbar-export-otlp",
+    "https://git.getbusbar.dev/GetBusbar/busbar-export-prometheus",
+    "https://git.getbusbar.dev/GetBusbar/busbar-export-webhook",
+    "https://git.getbusbar.dev/GetBusbar/busbar-auth-oidc",
+    "https://git.getbusbar.dev/GetBusbar/busbar-auth-admin-tokens",
+    "https://git.getbusbar.dev/GetBusbar/busbar-transport-ws",
+    "https://git.getbusbar.dev/GetBusbar/busbar-secret-env",
+    "https://git.getbusbar.dev/GetBusbar/busbar-secret-file",
+    "https://git.getbusbar.dev/GetBusbar/busbar-transport-tcp",
+    "https://git.getbusbar.dev/GetBusbar/busbar-transport-stdio",
+    "https://git.getbusbar.dev/GetBusbar/busbar-transport-webrtc",
+    "https://git.getbusbar.dev/GetBusbar/busbar-transport-http",
+    "https://git.getbusbar.dev/GetBusbar/busbar-hook-ranking",
+    "https://git.getbusbar.dev/GetBusbar/busbar-store-memory",
+    "https://git.getbusbar.dev/GetBusbar/busbar-plane-mcp",
+    "https://git.getbusbar.dev/GetBusbar/busbar-plane-decisions",
+    "https://git.getbusbar.dev/GetBusbar/busbar-plane-a2a",
+    "https://git.getbusbar.dev/GetBusbar/busbar-plane-streaming",
+    "https://git.getbusbar.dev/GetBusbar/busbar-auth-header",
+    "https://git.getbusbar.dev/GetBusbar/busbar-auth-oauth",
+    "https://git.getbusbar.dev/GetBusbar/busbar-auth-sigv4",
+    "https://git.getbusbar.dev/GetBusbar/busbar-auth-webhook-signature",
+    "https://git.getbusbar.dev/GetBusbar/busbar-transport-grpc",
+    # Authorized release-line fixes; exact revisions remain in root/dist manifests and locks.
+    # h2 d6146a5c425e55653cdfebc5660e52d87430c588 (upstream hyperium/h2#996).
+    "https://github.com/MattJackson/h2",
+    # tungstenite 1c190f7dda55dc7df4781b7ecea9faa671fc76fd (snapview/tungstenite-rs#574).
+    "https://github.com/MattJackson/tungstenite-rs",
 ]
