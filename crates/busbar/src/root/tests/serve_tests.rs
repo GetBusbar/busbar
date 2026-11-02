@@ -362,16 +362,6 @@ async fn an_empty_plane_set_still_stages_the_core_listener_lines() {
     use busbar_contract::abi::mechanism::route::{RouteAuth, RouteMethod};
     let _publishing = crate::root::PUBLISHING.lock().await;
     crate::dist_root_install::install();
-    crate::root::inbound::stage(busbar_kernel::guest::GuestList::default(), Vec::new());
-    super::door_mounts(
-        super::Served::default(),
-        || None,
-        &[],
-        &[("/healthz".into(), RouteMethod::Get, RouteAuth::None)],
-        &[],
-        &[],
-    )
-    .unwrap();
     let library_path = std::path::PathBuf::from(
         std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
             .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual built store"),
@@ -434,6 +424,16 @@ async fn an_empty_plane_set_still_stages_the_core_listener_lines() {
         rotate();
     }
     let app = std::sync::Arc::new(app);
+    crate::root::inbound::stage(busbar_kernel::guest::GuestList::default(), Vec::new());
+    super::door_mounts(
+        super::Served::default(),
+        || None,
+        &[],
+        &[("/healthz".into(), RouteMethod::Get, RouteAuth::None)],
+        &[],
+        &[],
+    )
+    .unwrap();
     let generation =
         crate::root::inbound::publish(&app).expect("the no-plane listener is published");
     let specs = crate::root::inbound::host()
