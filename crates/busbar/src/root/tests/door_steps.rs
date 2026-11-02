@@ -2,7 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use busbar_contract::abi::plane::{ROUTE_DIRECT, ROUTE_POOL};
-use busbar_kernel_testkit::test_support::governance::GovStateFixtures;
 
 use busbar_contract::section::TOOL_CALL_SECTION_KEY;
 
