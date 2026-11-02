@@ -1042,10 +1042,9 @@ pub fn signed_by_dialect() -> SignedIngress {
     Arc::new(|app: &App, path: &str| {
         let ingress = app.planes.ingress_of(path);
         matches!(ingress, crate::plane_driver::dispatch::Ingress::Fallback(_))
-            && crate::ingress::protocols::decl_for(crate::ingress::native::envelope_dialect(
-                ingress,
-            ))
-            .is_some_and(|d| d.uses_sigv4_ingress_auth())
+            && crate::ingress::protocols::uses_signed_ingress_auth(
+                crate::ingress::native::envelope_dialect(ingress),
+            )
     })
 }
 

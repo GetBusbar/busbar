@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! Neutral ingress fallbacks. Test registry and codec implementations live in the external kit;
-//! a test build can install only the six responses its fixtures supply to these existing calls.
+//! a test build can install only the responses its fixtures supply to these existing calls.
 //! A shipping kernel has no registry, executable codec or installation entry point here.
 
 #[cfg(test)]
@@ -25,6 +25,7 @@ pub struct ProtocolTestHooks {
     pub vendor_auth_failure_message: fn(&str) -> &'static str,
     pub quota_exceeded_status: fn(&str) -> u16,
     pub auth_failure_status_and_kind: fn(&str) -> (u16, &'static str),
+    pub signed_ingress: fn(&str) -> bool,
     pub error_parts: fn(&str, u16, &str, &str) -> ProtocolErrorParts,
 }
 
@@ -106,4 +107,16 @@ pub fn error_parts(
         serde_json::json!({ "error": { "message": message, "type": kind } }),
         Vec::new(),
     )
+}
+
+/// Whether the fixture's dialect declares signed ingress. Shipping paths acquire that policy
+/// through the owning door, so an uninstalled fallback has no signed-ingress policy.
+#[cfg(not(test))]
+pub fn uses_signed_ingress_auth(proto: &str) -> bool {
+    #[cfg(feature = "test-support")]
+    if let Some(hooks) = TEST_HOOKS.get() {
+        return (hooks.signed_ingress)(proto);
+    }
+    let _ = proto;
+    false
 }

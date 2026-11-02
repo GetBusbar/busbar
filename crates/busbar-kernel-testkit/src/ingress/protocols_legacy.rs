@@ -18,6 +18,7 @@ fn install_kernel_hooks() {
             vendor_auth_failure_message,
             quota_exceeded_status,
             auth_failure_status_and_kind,
+            signed_ingress: uses_signed_ingress_auth,
             error_parts,
         },
     );
@@ -310,6 +311,11 @@ pub fn vendor_auth_failure_message(proto: &str) -> &'static str {
         .decl(proto)
         .map(|d| d.auth_failure_message)
         .unwrap_or("authentication failed")
+}
+
+/// Whether a fixture declaration requires signed ingress authentication.
+pub fn uses_signed_ingress_auth(proto: &str) -> bool {
+    decl_for(proto).is_some_and(|decl| decl.uses_sigv4_ingress_auth())
 }
 
 /// The fixture registry's declared quota status, or the shipped neutral default.

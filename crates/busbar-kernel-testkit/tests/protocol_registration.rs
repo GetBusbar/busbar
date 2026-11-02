@@ -3,7 +3,7 @@
 
 //! Registry ownership stays in the external kit while the kernel reads the installed responses.
 
-use busbar_contract::protocol::{ClaimStrength, ProtocolDecl};
+use busbar_contract::protocol::{ClaimStrength, IngressAuth, ProtocolDecl};
 use busbar_kernel::ingress::protocols as kernel;
 use busbar_kernel_testkit::test_support::protocols::register_test_protocols;
 
@@ -13,6 +13,7 @@ fn claim(path: &str) -> Option<ClaimStrength> {
 
 static FIRST: ProtocolDecl = ProtocolDecl {
     residual_default: true,
+    ingress_auth: IngressAuth::SigV4,
     residual_claims: Some(claim),
     auth_failure_message: "registered refusal",
     quota_exceeded_status: 418,
@@ -27,6 +28,7 @@ static SECOND: ProtocolDecl = ProtocolDecl {
 #[test]
 fn registration_installs_once_and_callbacks_read_later_registry_updates() {
     assert_eq!(kernel::residual_default_dialect(), None);
+    assert!(!kernel::uses_signed_ingress_auth(FIRST.name));
     register_test_protocols(&[&FIRST]);
     assert_eq!(kernel::residual_default_dialect(), Some(FIRST.name));
     assert_eq!(
@@ -42,7 +44,10 @@ fn registration_installs_once_and_callbacks_read_later_registry_updates() {
         kernel::auth_failure_status_and_kind(FIRST.name),
         (403, "registered-denied")
     );
+    assert!(kernel::uses_signed_ingress_auth(FIRST.name));
     register_test_protocols(&[&FIRST, &SECOND]);
+    assert!(!kernel::uses_signed_ingress_auth(SECOND.name));
+    assert!(!kernel::uses_signed_ingress_auth("unknown-protocol"));
     assert_eq!(kernel::quota_exceeded_status(SECOND.name), 409);
     assert_eq!(kernel::residual_default_dialect(), Some(FIRST.name));
     assert_eq!(kernel::residual_dialect_for_path("/unknown"), None);
