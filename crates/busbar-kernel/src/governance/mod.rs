@@ -9,6 +9,7 @@ use std::sync::{Arc, RwLock};
 type RawFeeEras = busbar_kernel_ledger::usage::FeeEras<RawRateEra>;
 
 mod exact_debt;
+pub mod recovery;
 use exact_debt::{BudgetFlushFlight, BudgetFlushRunner, ExactUsageDelta};
 mod metering_flush;
 
