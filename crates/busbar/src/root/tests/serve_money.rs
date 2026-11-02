@@ -636,13 +636,28 @@ async fn node_boot_hooks_arm() {
     for step in crate::ROOT_UNITS.iter().filter_map(|u| u.on_config) {
         step(&boot.limits);
     }
-    let app = busbar_kernel_testkit::app::build_once(boot, None).expect("the boot app builds");
+    // Follow main's boot order: stage the card, open its configured Store/book, then confirm
+    // activation. The generic app fixture performs an apply and requires an already-bound Store.
+    let rules: Arc<dyn busbar_kernel::appbuild::RootRules> =
+        Arc::new(busbar_kernel::appbuild::AcceptAll);
+    let (app, _rotate, limits) = busbar_kernel::build_app_from_config(
+        boot,
+        busbar_kernel::config::PluginsCfg::default(),
+        None,
+        std::collections::HashSet::new(),
+        std::collections::HashSet::new(),
+        (None, None),
+        None,
+        &rules,
+    )
+    .expect("the boot app builds");
+    limits.stage_boot();
+    let book = crate::root::boot::book(&app, "test-store").expect("the boot book opens");
+    limits.keep().expect("the boot card activates in its Store");
     assert!(
         crate::root::kernel::ROOT_CARD.pin().is_some(),
         "the boot build's rates never reached the card holder: its repricer is not installed"
     );
-
-    let book = crate::root::boot::book(&app, "test-store").expect("the boot book opens");
     let ctx = crate::root::linked::BookCtx {
         book: &book,
         app: &app,

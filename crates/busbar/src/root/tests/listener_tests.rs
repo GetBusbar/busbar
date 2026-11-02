@@ -652,9 +652,6 @@ async fn server_posture_matches_the_1_5_5_defaults() {
     use std::future::Future as _;
     use tokio::io::AsyncWriteExt as _;
     tokio::time::pause();
-    // Settle onto the timer wheel's millisecond grid before measuring the exact header deadline.
-    // Otherwise a sub-millisecond runtime-start offset rounds the 30-second wake to the next tick.
-    tokio::time::sleep(Duration::from_millis(1)).await;
     let (mut client, server) = tokio::io::duplex(1024);
     client.write_all(b"GET / HTTP/1.1\r\nhost:").await.unwrap();
     let service = hyper::service::service_fn(|_: hyper::Request<hyper::body::Incoming>| async {
@@ -662,7 +659,37 @@ async fn server_posture_matches_the_1_5_5_defaults() {
             http_body_util::Empty::<bytes::Bytes>::new(),
         ))
     });
-    let builder = super::hardened_conn_builder();
+    // Observe the exact deadline handed to the real Tokio adapter. Its millisecond timer wheel
+    // can wake one tick later; that does not change the configured header deadline.
+    struct DeadlineTimer(std::sync::Arc<std::sync::Mutex<Option<std::time::Instant>>>);
+    impl hyper::rt::Timer for DeadlineTimer {
+        fn sleep(&self, duration: Duration) -> std::pin::Pin<Box<dyn hyper::rt::Sleep>> {
+            hyper::rt::Timer::sleep(&hyper_util::rt::TokioTimer::new(), duration)
+        }
+        fn sleep_until(
+            &self,
+            deadline: std::time::Instant,
+        ) -> std::pin::Pin<Box<dyn hyper::rt::Sleep>> {
+            *self.0.lock().unwrap() = Some(deadline);
+            hyper::rt::Timer::sleep_until(&hyper_util::rt::TokioTimer::new(), deadline)
+        }
+        fn now(&self) -> std::time::Instant {
+            hyper::rt::Timer::now(&hyper_util::rt::TokioTimer::new())
+        }
+        fn reset(
+            &self,
+            sleep: &mut std::pin::Pin<Box<dyn hyper::rt::Sleep>>,
+            deadline: std::time::Instant,
+        ) {
+            *self.0.lock().unwrap() = Some(deadline);
+            hyper::rt::Timer::reset(&hyper_util::rt::TokioTimer::new(), sleep, deadline);
+        }
+    }
+    let deadline = std::sync::Arc::new(std::sync::Mutex::new(None));
+    let mut builder = super::hardened_conn_builder();
+    builder
+        .http1()
+        .timer(DeadlineTimer(std::sync::Arc::clone(&deadline)));
     let mut conn =
         Box::pin(builder.serve_connection(hyper_util::rt::TokioIo::new(server), service));
     let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
@@ -680,7 +707,12 @@ async fn server_posture_matches_the_1_5_5_defaults() {
         .expect("the armed header timer must end the incomplete request")
         .expect_err("an incomplete header ends with a timeout error");
     assert_eq!(
-        tokio::time::Instant::now(),
+        tokio::time::Instant::from_std(
+            deadline
+                .lock()
+                .unwrap()
+                .expect("the header timer was armed")
+        ),
         armed_at + Duration::from_secs(30),
         "the watchdog permits scheduling progress, not a later header deadline"
     );
