@@ -257,6 +257,29 @@ fn the_golden_pins_size_alignment_and_offsets_and_must_agree_with_the_struct() {
 }
 
 #[test]
+fn a_struct_field_missing_from_the_layout_pin_refuses_the_header() {
+    let src = [(
+        "store",
+        "#[repr(C)] pub struct Inner { pub k: u32, pub w: u64 }",
+    )];
+    let golden = "StoreInner.k=0\nStoreInner.__size=16\nStoreInner.__align=8\n";
+    let e = render(&src, golden).expect_err("every struct field needs an offset pin");
+    assert!(e.contains("Inner") && e.contains("field `w`"), "{e}");
+}
+
+#[test]
+fn a_union_may_deliberately_pin_only_size_and_alignment() {
+    let src = [(
+        "hook",
+        "#[repr(C)] pub union Value { pub word: u64, pub byte: u8 }",
+    )];
+    let golden = "HookValue.__size=8\nHookValue.__align=8\n";
+    let h = render(&src, golden).expect("union member offsets deliberately need no separate pins");
+    assert!(h.contains("sizeof(bb_hook_Value) == 8"));
+    assert!(!h.contains("offsetof(bb_hook_Value"));
+}
+
+#[test]
 fn the_store_ops_table_and_its_slots_come_from_the_slot_macro() {
     let h = render(
         &[
