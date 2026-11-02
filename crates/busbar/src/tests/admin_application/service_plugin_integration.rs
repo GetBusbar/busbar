@@ -295,12 +295,16 @@ async fn install_catalog_remove_roundtrip() {
         .build()
         .unwrap();
 
+    manifest.name = "acme-store-junk".into();
+    manifest.alias = "junkstore".into();
+    manifest.version = "1.0.0".into();
+    manifest.publisher = "acme".into();
     let tarball = plugins::seal(manifest, &library);
     let response = client.post(format!("http://{addr}/api/v1/admin/plugins")).header("x-admin-token", "admintok").json(&serde_json::json!({"file":"junk.tar.gz", "tarball_b64":base64::engine::general_purpose::STANDARD.encode(&tarball)})).send().await.unwrap();
     assert_eq!(response.status().as_u16(), 201);
     let view: serde_json::Value = response.json().await.unwrap();
     assert_eq!(view["trust"], "unverified");
-    assert_eq!(view["name"], module);
+    assert_eq!(view["name"], "acme-store-junk");
     assert!(directory.join("junk.tar.gz").exists(), "tarball published");
     let response = client
         .get(format!("http://{addr}/api/v1/admin/plugins?type=store"))
@@ -317,7 +321,7 @@ async fn install_catalog_remove_roundtrip() {
         .find(|p| p["loader"] == "dynamic-library")
         .expect("actual dynamic Store in catalog");
     assert_eq!(row["valid"], true);
-    assert_eq!(row["name"], module);
+    assert_eq!(row["name"], "acme-store-junk");
     assert_eq!(row["target"], "junk.tar.gz");
     assert_eq!(row["trust"], "unverified");
     let reloaded = client
@@ -2211,7 +2215,9 @@ async fn install_filesystem_failures_are_internal_errors() {
         .build()
         .unwrap();
 
-    let tarball = archive;
+    manifest.name = "acme-store-io".into();
+    manifest.alias = "io".into();
+    let tarball = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
     let malformed = client.post(format!("http://{addr}/api/v1/admin/plugins")).header("x-admin-token", "admintok").json(&serde_json::json!({"file":"plugin.tar.gz", "tarball_b64":base64::engine::general_purpose::STANDARD.encode(b"not a tarball")})).send().await.unwrap();
     assert_eq!(malformed.status().as_u16(), 400);
     let error: serde_json::Value = malformed.json().await.unwrap();
