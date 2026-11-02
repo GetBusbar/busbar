@@ -2585,9 +2585,6 @@ pub mod exchange;
 pub mod login;
 
 #[cfg(test)]
-pub(crate) use crate::test_support::auth_stand_in as stand_in;
-
-#[cfg(test)]
 #[path = "tests/tests.rs"]
 mod tests;
 
