@@ -95,7 +95,9 @@ impl RecordStore for Durable {
                 row.kind == kind
                     && match selector {
                         PlaneSelector::All => true,
-                        PlaneSelector::Parent(parent) => row.parent.as_deref() == Some(parent.as_ref()),
+                        PlaneSelector::Parent(parent) => {
+                            row.parent.as_deref() == Some(parent.as_ref())
+                        }
                     }
             })
             .cloned()
