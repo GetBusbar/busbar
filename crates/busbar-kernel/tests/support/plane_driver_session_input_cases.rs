@@ -604,3 +604,46 @@ async fn an_idle_session_deadline_cancels_the_logical_unit_once() {
     assert_eq!(r.plane.closes.lock().unwrap().get(&7), Some(&1));
     assert_eq!(r.book.bills().len(), 1);
 }
+
+#[tokio::test]
+async fn normal_session_completion_wins_over_its_pending_siblings_retirement() {
+    let r = rig(Way::Double, BufferCaps::default(), cases::Book::default());
+    r.plane.sessions.server_first.store(true, Ordering::SeqCst);
+    r.plane.sessions.far_pending.store(true, Ordering::SeqCst);
+    let (send, receive) = tokio::sync::mpsc::unbounded_channel();
+    let caller = OwnedCaller(tokio::sync::Mutex::new(receive));
+    let (steps, far) = (
+        common::TestUnits::passing(),
+        cases::Far::held(&["fixture-lane"]),
+    );
+    let units = r
+        .driver
+        .unit(&steps, &far, &caller, cases::arrival("/session", b""), 0);
+    let mut running = Box::pin(drive(&units));
+    for _ in 0..32 {
+        poll_pending(&mut running).await;
+        if !r.plane.held.lock().unwrap().is_empty() {
+            break;
+        }
+    }
+    assert_eq!(r.plane.held.lock().unwrap().len(), 1);
+    drop(send);
+    poll_pending(&mut running).await;
+    assert!(
+        r.plane.sessions.open.lock().unwrap().is_empty(),
+        "caller EOF completed the logical unit"
+    );
+    // The loader's real worker regression independently proves this sibling retirement.
+    // Deliver that same host outcome after the completing caller side has recorded its end.
+    let (ticket, (slot, out)) = {
+        let mut held = r.plane.held.lock().unwrap();
+        let ticket = *held.keys().next().unwrap();
+        (ticket, held.remove(&ticket).unwrap())
+    };
+    slot.put(ready(Outcome::Failed), out);
+    let lent = r.plane.held_lent.lock().unwrap().remove(&ticket);
+    drop(lent);
+    assert_eq!(running.await, busbar_contract::caps::Outcome::Completed);
+    assert_eq!(r.stats()[stat::CANCELS], 0);
+    assert!(r.book.bills().is_empty());
+}

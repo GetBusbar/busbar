@@ -474,11 +474,18 @@ impl<S: crate::plane_driver::DriverSteps + Sync, F: FarEnd, C: SessionCaller>
         end: End,
         ended: &EndCell,
     ) -> Result<(), ReasonCode> {
-        let why = cause(&end);
+        // The first side owns the session outcome. A worker retires a Pending sibling with
+        // a host timeout answer after normal unit completion; that induced failure must not
+        // replace the normal end already recorded by its completing sibling.
+        let why = match *ended.borrow() {
+            Some(Halt::Over) => None,
+            Some(Halt::Cause(reason)) => Some(reason),
+            None => cause(&end),
+        };
         // Stop the sibling before awaiting a worker control reply. Its next guarded wait must
         // observe this cause rather than submitting more work to a retiring logical unit.
         end_session(ended, why.map_or(Halt::Over, Halt::Cause));
-        if let End::Cancel(reason, done) = end {
+        if let (Some(reason), End::Cancel(_, done)) = (why, end) {
             let _bill = run.cancel(reason, done).await;
             if reason == ReasonCode::OverBudget {
                 self.cut_frame().await;
