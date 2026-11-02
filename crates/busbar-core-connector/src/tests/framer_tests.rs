@@ -455,9 +455,12 @@ fn a_framer_that_owes_more_forever_and_writes_nothing_faults() {
 use crate::support::{AuthHost, AuthTicket, PendingDoor};
 use busbar_contract::abi::mechanism::ticket::Ticket;
 
+/// Stream, byte length, flags, end-of-frame and resume observed at the actual emit crossing.
+type EmitObservation = (u64, usize, u32, u32, bool);
+
 struct TrailerDoor {
     inner: PendingDoor,
-    seen: std::sync::Mutex<Vec<(u64, usize, u32, u32, bool)>>,
+    seen: std::sync::Mutex<Vec<EmitObservation>>,
 }
 
 impl FramerDoor for TrailerDoor {

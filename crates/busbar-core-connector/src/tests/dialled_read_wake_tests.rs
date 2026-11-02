@@ -3,7 +3,6 @@
 
 //! A real upstream socket and checked raw-framer batch, with publication explicitly polled.
 
-use std::future::Future as _;
 use std::net::UdpSocket;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};

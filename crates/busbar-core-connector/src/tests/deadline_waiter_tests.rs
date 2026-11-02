@@ -181,6 +181,9 @@ struct DropProbe {
     dropped: Arc<std::sync::atomic::AtomicUsize>,
 }
 
+// Drop checks the connection and waiter locks and counts the retired owner. Waker::noop
+// would remove both the lock-safety witness and the deduplication lifetime observation.
+#[allow(clippy::manual_noop_waker)]
 impl Wake for DropProbe {
     fn wake(self: Arc<Self>) {}
 }

@@ -203,7 +203,7 @@ fn pending_auth_retained_input_stops_reads_but_resumes_siblings_timers_and_write
         assert!(conn.poll_piece(&mut cx).is_pending());
         let read = input.read.load(Ordering::SeqCst);
         assert!(
-            read >= RECEIVE_BUFFER_BYTES && read < RECEIVE_BUFFER_BYTES + READ_CHUNK,
+            (RECEIVE_BUFFER_BYTES..RECEIVE_BUFFER_BYTES + READ_CHUNK).contains(&read),
             "private input must stop socket reads at the existing bound: {read}"
         );
         assert!(conn.poll_piece(&mut cx).is_pending());
@@ -278,7 +278,7 @@ fn line_parked_pieces_and_framer_input_share_one_receive_allowance() {
         assert_eq!(piece.stream, 3);
         let read = input.read.load(Ordering::SeqCst);
         assert!(
-            read >= RECEIVE_BUFFER_BYTES && read < RECEIVE_BUFFER_BYTES + READ_CHUNK,
+            (RECEIVE_BUFFER_BYTES..RECEIVE_BUFFER_BYTES + READ_CHUNK).contains(&read),
             "parking pieces must not create a second receive allowance: {read}"
         );
         holding.auth.complete(1);

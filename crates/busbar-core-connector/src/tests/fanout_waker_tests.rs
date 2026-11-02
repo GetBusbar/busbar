@@ -40,6 +40,9 @@ struct ReenterOnDrop {
     observed: Arc<Observed>,
 }
 
+// The last Arc's Drop reenters the public wait API to prove retirement occurs outside its
+// guards. Waker::noop has no owner or destructor and would remove that proof.
+#[allow(clippy::manual_noop_waker)]
 impl Wake for ReenterOnDrop {
     fn wake(self: Arc<Self>) {}
 }

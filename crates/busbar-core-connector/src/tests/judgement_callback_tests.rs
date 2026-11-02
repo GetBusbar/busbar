@@ -109,6 +109,9 @@ impl FramerDoor for HeldProxyWrite {
 
 struct DropWait(Arc<Reentry>);
 
+// Drop runs the real reentry observation when the stored waker is retired. Waker::noop
+// would discard that callback and make the outside-guard retirement assertion untested.
+#[allow(clippy::manual_noop_waker)]
 impl Wake for DropWait {
     fn wake(self: Arc<Self>) {}
 }
