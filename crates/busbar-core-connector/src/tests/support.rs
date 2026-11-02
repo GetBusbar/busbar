@@ -228,6 +228,8 @@ pub struct Knobs {
     pub silence: Option<Duration>,
     /// `locate` answers this authority whatever the target.
     pub authority: Option<&'static str>,
+    /// Locate the authority of a URL-shaped target through the shared contract reader.
+    pub locate_authority: bool,
     /// `begin` yields one request head, `GET /v1` on stream `1`, as an accepted framing does.
     pub head: bool,
     /// Every frame the framing yields is a text message (`PIECE_TEXT`), as ws states one.
@@ -241,6 +243,8 @@ pub struct Knobs {
     /// byte a one-byte binary message; `i` an interim head (an empty field block stating code
     /// `103`, `PIECE_INTERIM`), `h` a final head (an empty field block stating `200`).
     pub messages: Option<u64>,
+    /// Script replies on the latest emitted exchange, for sequential pooled requests.
+    pub messages_follow_emit: bool,
     /// Every frame piece the framing yields holds at most this many bytes, so one frame arrives
     /// in several pieces (the last ends it), as a line framer cuts a line its sink cannot hold.
     pub piece: Option<usize>,
@@ -358,6 +362,7 @@ impl TestDoor {
             || knobs.fields
             || knobs.silence.is_some()
             || knobs.authority.is_some()
+            || knobs.locate_authority
             || knobs.authority_needed.is_some()
             || knobs.messages.is_some()
             || knobs.head_lines.is_some()
@@ -621,7 +626,19 @@ impl FramerDoor for TestDoor {
                     o.authority_needed = needed;
                     break 'locate ("locate", failed("short"));
                 }
-                let authority = self.knobs.authority.map_or(target, str::as_bytes);
+                let located = self.knobs.locate_authority.then(|| {
+                    busbar_contract::net::url_authority(
+                        std::str::from_utf8(target).expect("the test target is UTF-8"),
+                    )
+                    .host_port
+                    .as_bytes()
+                });
+                let authority = self
+                    .knobs
+                    .authority
+                    .map(str::as_bytes)
+                    .or(located)
+                    .unwrap_or(target);
                 // SAFETY: host buffer of `authority_cap` bytes; the test's authorities fit.
                 unsafe {
                     std::ptr::copy_nonoverlapping(
@@ -764,6 +781,9 @@ impl FramerDoor for TestDoor {
             Call::Emit(i, o) => match framings.get_mut(&i.framing) {
                 None => ("emit", failed("no such framing")),
                 Some(st) => {
+                    if self.knobs.messages_follow_emit && st.messages.is_some() {
+                        st.messages = Some(i.stream);
+                    }
                     self.handed
                         .lock()
                         .unwrap()

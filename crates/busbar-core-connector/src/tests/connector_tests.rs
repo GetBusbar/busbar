@@ -2006,6 +2006,33 @@ fn an_accept_beside_a_hung_carrier_accept_never_waits_and_is_woken_once_it_is_ba
     });
 }
 
+/// A URL-aware byte framer over a carrier: settings targets may include a URL path.
+fn userinfo_connector() -> Connector {
+    let view = Transports::new(vec![
+        Entry {
+            door: Arc::new(
+                TestDoor::new(
+                    "bytes",
+                    &["bytes"],
+                    &[],
+                    crate::support::Knobs {
+                        locate_authority: true,
+                        ..crate::support::Knobs::default()
+                    },
+                )
+                .with_role(busbar_contract::abi::transport::ROLE_FRAMER),
+            ),
+            alpn: Vec::new(),
+        },
+        Entry {
+            door: Arc::new(TestDoor::identity("carrier")),
+            alpn: Vec::new(),
+        },
+    ])
+    .unwrap();
+    Connector::serving(view, loopback_literals(), None, Arc::new(|_, _| {}))
+}
+
 /// The refusal of a userinfo in a need's target STAYS for every target the need's own
 /// settings did not give it — a need with no `target_from`, a member path, a path outside its
 /// settings. Such a target carrying a userinfo — a URL's `user:pass@` or a bare `user@host:port` —
@@ -2016,7 +2043,7 @@ fn an_accept_beside_a_hung_carrier_accept_never_waits_and_is_woken_once_it_is_ba
 fn a_target_not_from_its_own_settings_carrying_a_userinfo_is_still_refused() {
     worker().block_on(async {
         let (_listening, resolved) = far_end().await;
-        let c = literal_connector();
+        let c = userinfo_connector();
         let refused = |need: &ReadNeed, credentialed: &str| {
             assert_eq!(
                 DeclaredConns::declare(&c, OWNER, NeedId(0), need, Some(credentialed), None),
@@ -2087,7 +2114,7 @@ fn a_settings_derived_target_is_declared_without_its_userinfo() {
     tracing::subscriber::with_default(cap.clone(), || {
         worker().block_on(async {
             let (_listening, resolved) = far_end().await;
-            let c = literal_connector();
+            let c = userinfo_connector();
             let need = config_targeted_need("settings.url");
             let pinned = |need_id: NeedId| {
                 c.over
@@ -4398,6 +4425,7 @@ fn pooled_messages(idle: std::time::Duration) -> Connector {
                 &[],
                 crate::support::Knobs {
                     messages: Some(crate::compose::EXCHANGE_STREAM),
+                    messages_follow_emit: true,
                     ..crate::support::Knobs::default()
                 },
             )),
