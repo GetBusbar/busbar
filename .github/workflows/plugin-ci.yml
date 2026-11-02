@@ -338,6 +338,7 @@ jobs:
             -I busbar/crates/busbar-contract/include -o "$lib" "$src"/*.c
           {
             echo "BUSBAR_PLUGIN_CDYLIB=$lib"
+            echo "BUSBAR_CHECKOUT=$GITHUB_WORKSPACE/busbar"
             echo "BUSBAR_C_ABI_LIBRARY=$lib"
             echo "BUSBAR_C_ABI_SOURCES=$src"
           } >> "$GITHUB_ENV"
@@ -384,6 +385,7 @@ jobs:
         env:
           TEST_FEATURES: ${{ inputs.test_features }}
         run: |
+          set -euo pipefail
           features=()
           [ -z "$TEST_FEATURES" ] || features=(--features "$TEST_FEATURES")
           cargo test --workspace --locked "${features[@]}"
