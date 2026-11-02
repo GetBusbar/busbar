@@ -1170,7 +1170,7 @@ fn a_linked_and_another_plugin_claiming_one_name_are_refused() {
 
 #[allow(non_upper_case_globals)]
 const versioned_door: busbar_contract::abi::mechanism::door::DoorFn =
-    crate::both_ways::store_fixture::door;
+    crate::actual_store::door;
 
 fn door_version() -> String {
     let stated = crate::dispatch::rendering_of(versioned_door).expect("the door states itself");
@@ -1282,7 +1282,7 @@ fn an_untrusted_copy_is_skipped_before_its_version_is_compared() {
 
 #[test]
 fn the_one_version_rule_compares_statement_versions_only() {
-    let door = crate::both_ways::store_fixture::door;
+    let door = crate::actual_store::door;
     let linked = || {
         vec![LinkedPlugin::store_named(
             "busbar-store-mem",
@@ -1323,7 +1323,7 @@ fn the_one_version_rule_compares_statement_versions_only() {
 
 #[test]
 fn a_linked_built_in_answers_its_canonical_name_and_prints_its_key() {
-    let door = crate::both_ways::store_fixture::door;
+    let door = crate::actual_store::door;
     let reg = PluginRegistry::empty()
         .link(vec![
             LinkedPlugin::store_named("busbar-store-mem", "mem", door, true),
