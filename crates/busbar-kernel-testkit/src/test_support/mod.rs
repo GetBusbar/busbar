@@ -1882,6 +1882,7 @@ pub fn hook_axis_stand_in(
 pub mod audit;
 pub mod auth_helpers;
 pub mod governance;
+pub mod migration;
 pub use governance::GovStateFixtures;
 /// THE HOOK DOUBLE (OWNER 2026-10-03, no test plugins): the kernel's hook port answered in
 /// process. See [`hook_double`].
