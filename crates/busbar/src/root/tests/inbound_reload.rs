@@ -193,6 +193,8 @@ fn app(provider: &Arc<Provider>) -> Arc<busbar_kernel::state::App> {
     let mut entry = busbar_kernel::config::AuthChainEntry::bare(provider.name);
     entry.settings = common::credentials::settings(provider.name);
     auth.chain.push(entry);
+    // These cases exercise listener policy ownership on a supplied actual Store.
+    // They do not activate a cold root deployment or assert limit/rate activation.
     app.auth = Arc::new(
         busbar_kernel::auth::AuthMiddleware::new(
             &auth,
@@ -331,6 +333,11 @@ async fn a_live_listener_reloads_new_requests_and_pins_the_old_requests_app() {
     );
     settle(&mut framing).await;
     let before_reload = identities(&before);
+    assert_eq!(
+        units.lock().unwrap().len(),
+        1,
+        "one actual auth call for the first stream"
+    );
 
     let after = provider("after-reload", &units);
     let new_app = app(&after);
@@ -344,6 +351,11 @@ async fn a_live_listener_reloads_new_requests_and_pins_the_old_requests_app() {
     );
     settle(&mut framing).await;
     let after_reload = identities(&after);
+    assert_eq!(
+        units.lock().unwrap().len(),
+        2,
+        "one actual auth call for each stream"
+    );
     let retained_identity = identities(&before);
     let retained_app = old_app_weak.upgrade().is_some();
     framing.finish(CLOSE_NORMAL);
@@ -427,6 +439,11 @@ async fn a_need_listener_uses_its_selected_policy_across_reload_without_changing
         .unwrap();
     settle(&mut framing).await;
     let first = identities(&before);
+    assert_eq!(
+        units.lock().unwrap().len(),
+        1,
+        "one actual auth call for the selected stream"
+    );
     assert_eq!(first, vec![Some(before.name.into())]);
     let after = provider("need-after", &units);
     stage_at(&after, "/data-only/");
@@ -442,6 +459,11 @@ async fn a_need_listener_uses_its_selected_policy_across_reload_without_changing
         .unwrap();
     settle(&mut framing).await;
     assert_eq!(identities(&after), vec![Some(after.name.into())]);
+    assert_eq!(
+        units.lock().unwrap().len(),
+        2,
+        "one actual auth call for each selected stream"
+    );
     assert_eq!(identities(&before), first);
     assert!(old.upgrade().is_some());
     let (mut ordinary, _) = Framing::begin_lent(
@@ -455,12 +477,19 @@ async fn a_need_listener_uses_its_selected_policy_across_reload_without_changing
         data.guests(),
     )
     .unwrap();
+    let before_miss = units.lock().unwrap().len();
     let yielded = ordinary
         .ingest(
             &authenticated_request(1, "/tickets/data-miss", true, &after),
             false,
         )
         .unwrap();
+    settle(&mut ordinary).await;
+    assert_eq!(
+        units.lock().unwrap().len(),
+        before_miss,
+        "a route miss never calls actual auth"
+    );
     assert!(
         yielded.pieces.is_empty(),
         "the data listener does not acquire the other listener's route"
