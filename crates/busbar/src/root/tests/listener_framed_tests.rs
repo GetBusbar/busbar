@@ -256,7 +256,7 @@ fn custody_head(conn: &mut super::Conn<tokio::io::DuplexStream>, stream: u64, ta
 }
 
 #[tokio::test]
-async fn an_unread_body_is_refused_at_the_existing_limit_without_refusing_its_sibling() {
+async fn an_unread_body_continuation_queues_one_refusal_without_retiring_its_sibling() {
     let _publishing = anonymous_policy().await;
     let router = Router::new()
         .route(
@@ -316,6 +316,20 @@ async fn an_unread_body_is_refused_at_the_existing_limit_without_refusing_its_si
         !conn.failed,
         "one oversized stream does not fail the multiplexed connection"
     );
+    // This test exercises typed root continuations, so inspect the refusal command rather
+    // than asking the real decoder to render a stream it did not parse from wire input.
+    let (stream, refusal) = conn
+        .pending
+        .pop_front()
+        .expect("the size refusal is queued");
+    assert_eq!(stream, 3);
+    assert!(matches!(
+        refusal,
+        super::Op::Refuse {
+            status: super::BODY_LIMIT_REFUSAL,
+            head_sent: false
+        }
+    ));
     let (done, said) = tokio::sync::oneshot::channel();
     conn.pending.push_back((
         3,
@@ -336,7 +350,10 @@ async fn an_unread_body_is_refused_at_the_existing_limit_without_refusing_its_si
     ));
     conn.apply_front();
     conn.apply_front();
-    conn.apply_front();
+    assert!(
+        !conn.failed,
+        "suppressing late success does not fail the connection"
+    );
     assert!(
         !said.await.unwrap_or(false),
         "a late success cannot follow the size refusal"
@@ -403,9 +420,31 @@ async fn abort_before_first_poll_retires_the_inflow_while_its_sibling_stays_live
         assert_eq!(stream, 3);
         assert!(matches!(op, super::Op::Ended { .. }));
         conn.pending.push_back((stream, op));
+        let mut refusals = 0;
         while !conn.pending.is_empty() {
-            assert!(matches!(conn.apply_front(), super::Step::Done));
+            if matches!(conn.pending.front(), Some((3, super::Op::Refuse { .. }))) {
+                let (_, refusal) = conn.pending.pop_front().unwrap();
+                assert!(matches!(
+                    refusal,
+                    super::Op::Refuse {
+                        status: super::BODY_LIMIT_REFUSAL,
+                        head_sent: false,
+                    }
+                ));
+                refusals += 1;
+            } else {
+                assert!(matches!(conn.apply_front(), super::Step::Done));
+            }
         }
+        assert_eq!(
+            refusals,
+            usize::from(!reset),
+            "only a size failure queues a wire refusal command"
+        );
+        assert!(
+            !conn.failed,
+            "retiring the synthetic continuation preserves its actual connection"
+        );
         assert!(!conn.inflows.contains_key(&3));
         assert!(conn.inflows.contains_key(&5));
         assert!(conn.framing.is_some());
