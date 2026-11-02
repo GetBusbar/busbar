@@ -50,60 +50,93 @@ fn gov_with_key(name: &str) -> (Arc<GovState>, String, String) {
     (gov, id, secret)
 }
 
-fn app_with_governance(governance: Arc<GovState>) -> Arc<busbar_kernel::state::App> {
-    crate::dist_root_install::install();
-    let module = busbar_kernel::preflight::root_rows()
-        .stores
-        .first()
-        .expect("the distribution links its actual store")
-        .0;
-    let settings: serde_json::Value = serde_json::from_str(
-        &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
-    )
-    .unwrap();
-    let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
-        "providers": {}, "models": {}, "auth": {"chain": [], "admin_auth": []},
-        "store": {"module": module, "settings": settings},
-        "advanced": {"allow_destinations": ["127.0.0.1"]}
-    }))
-    .unwrap();
-    let config = busbar_kernel::config::resolve(&deploy, &Default::default()).unwrap();
-    let rules = Arc::new(crate::root::door_steps::Rules::default())
-        as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let (mut app, rotate, limits) = busbar_kernel::build_app_from_config(
-        config,
-        Default::default(),
-        None,
-        Default::default(),
-        Default::default(),
-        (None, None),
-        None,
-        &rules,
-    )
-    .expect("the production root builds the credential generation");
-    limits.keep().unwrap();
-    if let Some(rotate) = rotate {
-        rotate();
-    }
-    app.governance = Some(governance);
-    Arc::new(app)
-}
-
 #[test]
 fn the_credential_read_follows_the_app_swap() {
     let (first, old_id, old_secret) = gov_with_key("first");
     let (second, new_id, new_secret) = gov_with_key("second");
     let kind = signed_kind();
-    let handle = Arc::new(busbar_kernel::state::AppHandle::new(app_with_governance(
-        first,
-    )));
+    let handle = Arc::new(busbar_kernel::state::AppHandle::new({
+        crate::dist_root_install::install();
+        let module = busbar_kernel::preflight::root_rows()
+            .stores
+            .first()
+            .expect("the distribution links its actual store")
+            .0;
+        let settings: serde_json::Value = serde_json::from_str(
+            &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
+        )
+        .unwrap();
+        let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
+            "providers": {}, "models": {}, "auth": {"chain": [], "admin_auth": []},
+            "store": {"module": module, "settings": settings},
+            "advanced": {"allow_destinations": ["127.0.0.1"]}
+        }))
+        .unwrap();
+        let config = busbar_kernel::config::resolve(&deploy, &Default::default()).unwrap();
+        let rules = Arc::new(crate::root::door_steps::Rules::default())
+            as Arc<dyn busbar_kernel::appbuild::RootRules>;
+        let (mut app, rotate, limits) = busbar_kernel::build_app_from_config(
+            config,
+            Default::default(),
+            None,
+            Default::default(),
+            Default::default(),
+            (None, None),
+            None,
+            &rules,
+        )
+        .expect("the production root builds the credential generation");
+        limits.keep().unwrap();
+        if let Some(rotate) = rotate {
+            rotate();
+        }
+        app.governance = Some(first);
+        Arc::new(app)
+    }));
     let creds = AppCredentials::new(Arc::clone(&handle));
     let (s, live) = creds.read(&kind, &old_id);
     assert_eq!(
         (s.expose(&busbar_kernel::seal::lend()).as_str(), live),
         (old_secret.as_str(), true)
     );
-    handle.swap(app_with_governance(second));
+    handle.swap({
+        crate::dist_root_install::install();
+        let module = busbar_kernel::preflight::root_rows()
+            .stores
+            .first()
+            .expect("the distribution links its actual store")
+            .0;
+        let settings: serde_json::Value = serde_json::from_str(
+            &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
+        )
+        .unwrap();
+        let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
+            "providers": {}, "models": {}, "auth": {"chain": [], "admin_auth": []},
+            "store": {"module": module, "settings": settings},
+            "advanced": {"allow_destinations": ["127.0.0.1"]}
+        }))
+        .unwrap();
+        let config = busbar_kernel::config::resolve(&deploy, &Default::default()).unwrap();
+        let rules = Arc::new(crate::root::door_steps::Rules::default())
+            as Arc<dyn busbar_kernel::appbuild::RootRules>;
+        let (mut app, rotate, limits) = busbar_kernel::build_app_from_config(
+            config,
+            Default::default(),
+            None,
+            Default::default(),
+            Default::default(),
+            (None, None),
+            None,
+            &rules,
+        )
+        .expect("the production root builds the credential generation");
+        limits.keep().unwrap();
+        if let Some(rotate) = rotate {
+            rotate();
+        }
+        app.governance = Some(second);
+        Arc::new(app)
+    });
     let (s, live) = creds.read(&kind, &new_id);
     assert_eq!(
         (s.expose(&busbar_kernel::seal::lend()).as_str(), live),
@@ -161,9 +194,44 @@ fn a_late_source_refuses_until_its_handle_is_set() {
     };
     assert_eq!(before, Stored::refused(NOT_READABLE), "not installed yet");
     assert!(!late.is_set());
-    let handle = Arc::new(busbar_kernel::state::AppHandle::new(app_with_governance(
-        gov,
-    )));
+    let handle = Arc::new(busbar_kernel::state::AppHandle::new({
+        crate::dist_root_install::install();
+        let module = busbar_kernel::preflight::root_rows()
+            .stores
+            .first()
+            .expect("the distribution links its actual store")
+            .0;
+        let settings: serde_json::Value = serde_json::from_str(
+            &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
+        )
+        .unwrap();
+        let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
+            "providers": {}, "models": {}, "auth": {"chain": [], "admin_auth": []},
+            "store": {"module": module, "settings": settings},
+            "advanced": {"allow_destinations": ["127.0.0.1"]}
+        }))
+        .unwrap();
+        let config = busbar_kernel::config::resolve(&deploy, &Default::default()).unwrap();
+        let rules = Arc::new(crate::root::door_steps::Rules::default())
+            as Arc<dyn busbar_kernel::appbuild::RootRules>;
+        let (mut app, rotate, limits) = busbar_kernel::build_app_from_config(
+            config,
+            Default::default(),
+            None,
+            Default::default(),
+            Default::default(),
+            (None, None),
+            None,
+            &rules,
+        )
+        .expect("the production root builds the credential generation");
+        limits.keep().unwrap();
+        if let Some(rotate) = rotate {
+            rotate();
+        }
+        app.governance = Some(gov);
+        Arc::new(app)
+    }));
     late.set(Arc::clone(&handle));
     assert!(late.is_set());
     let Ran::Now(after) = s.records_secret(&kind, &id, Box::new(|_| {})) else {
