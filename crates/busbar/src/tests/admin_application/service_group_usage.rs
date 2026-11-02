@@ -13,6 +13,7 @@ mod plugins;
 #[derive(Debug, serde::Deserialize)]
 struct GroupUsageRead {
     group: String,
+    enabled: bool,
     buckets: Vec<GroupBucketRead>,
     as_of: u64,
 }
