@@ -3,6 +3,7 @@ use busbar_kernel::config::migrated_store_module;
 use busbar_kernel::governance::{GovState, MemoryStore, NewKeySpec};
 use busbar_kernel::test_support::warn_capture::WarnCapture;
 use busbar_kernel::test_support::TestOverlayStore;
+use busbar_kernel_testkit::test_support::governance::GovStateFixtures;
 use std::sync::Arc;
 
 #[path = "cache_flush_tests.rs"]
