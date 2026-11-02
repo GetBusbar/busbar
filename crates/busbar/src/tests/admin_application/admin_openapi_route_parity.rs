@@ -178,6 +178,18 @@ async fn test_admin_v1_openapi_paths_all_resolve() {
     const JSON_ROUTER: &str = include_str!("../../../../busbar-core-admin/src/v1/json/mod.rs");
     // Read the same literal route mounts used by the production JSON transport.
     let literal = literal_admin_routes(JSON_ROUTER);
+    let declared_get_source = include_str!("../../../../busbar-core-admin/src/v1/json/handlers.rs");
+    let declared_get_table = declared_get_source
+        .split_once("const V1_GET_PATHS:")
+        .unwrap()
+        .1
+        .split_once("= &[")
+        .unwrap()
+        .1
+        .split_once("];")
+        .unwrap()
+        .0;
+    let declared_get_count = declared_get_table.matches('(').count();
     let literal_get_paths: Vec<&str> = literal
         .iter()
         .filter(|(method, _)| method == "GET")
@@ -327,7 +339,7 @@ async fn test_admin_v1_openapi_paths_all_resolve() {
         handle.abort();
     }
     assert!(
-        probed > literal_get_paths.len() * 4,
+        probed > declared_get_count * 4,
         "only {probed} documented operations were probed on the router"
     );
 
