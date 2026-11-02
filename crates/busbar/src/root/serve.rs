@@ -505,6 +505,9 @@ impl DoorApply {
         secrets: Arc<dyn busbar_contract::secret::SecretResolve>,
         scope: &busbar_contract::config_time::ConfigScope,
     ) -> Result<DoorLive, String> {
+        let admission = self
+            .driver
+            .prepare_section((self.served_facts.section, section))?;
         let settings = if section.is_null() {
             Vec::new()
         } else {
@@ -522,6 +525,7 @@ impl DoorApply {
         );
         let pools = DoorPools::of(&table, self.served_facts.section)
             .map_err(|e| format!("{}: {e}", self.facts.plane.as_str()))?;
+        let mut fetches = None;
         let egress = match &self.reach {
             Some(r) => {
                 let reach = crate::root::door_steps::DoorReach {
@@ -552,11 +556,15 @@ impl DoorApply {
                     r.stream_ceiling_secs,
                 )?;
 
-                bind_fetches(&self.plugin, &self.served_facts, &routes, &self.units);
+                fetches = Some(routes);
                 Some(Arc::new(egress))
             }
             None => None,
         };
+        admission.commit()?;
+        if let Some(routes) = fetches {
+            bind_fetches(&self.plugin, &self.served_facts, &routes, &self.units);
+        }
         Ok(DoorLive {
             section: section.clone(),
             generation,

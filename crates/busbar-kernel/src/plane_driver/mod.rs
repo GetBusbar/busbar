@@ -38,7 +38,7 @@ use busbar_contract::caps::{
     Meter, OpClassId, Outcome, Pass, PrincipalId, ReasonCode, Refusal, Route, RoutePlan,
     SeatVerdict as StepAnswer, Usage, VerifiedDestination,
 };
-use busbar_contract::plane_calls::PlaneCalls;
+use busbar_contract::plane_calls::{InstanceDecl, PlaneCalls};
 use busbar_contract::services::Caller;
 use tokio::sync::{watch, Notify};
 
@@ -275,6 +275,67 @@ const fn earlier(a: u64, b: u64) -> u64 {
     }
 }
 
+/// A section's complete host admission, prepared without changing the live instance.
+#[must_use = "prepared host facts take effect only when committed"]
+pub struct PreparedSection<'a> {
+    services: &'a KernelServices,
+    label: Arc<str>,
+    facts: InstanceFacts,
+    work: crate::host_work::WorkBounds,
+}
+
+impl PreparedSection<'_> {
+    /// Commit after every other fallible step of a generation refresh has succeeded.
+    pub fn commit(self) -> Result<(), String> {
+        self.services
+            .admit(&self.label, self.facts)
+            .map_err(|e| e.to_string())?;
+        self.services.bound_work(&self.label, self.work);
+        Ok(())
+    }
+}
+
+fn prepare_admission<'a>(
+    d: &InstanceDecl,
+    services: &'a KernelServices,
+    section: (&str, &serde_yaml::Value),
+) -> Result<PreparedSection<'a>, String> {
+    if d.conditional_records && !services.supports_record_transactions() {
+        return Err("the configured store does not support conditional record transactions".into());
+    }
+    let trust = parse_section(section.0, section.1, &d.trust_keys)?;
+    let facts = InstanceFacts {
+        conditional_record_kinds: d.conditional_record_kinds.clone(),
+        record_kinds: d
+            .record_kinds
+            .iter()
+            .copied()
+            .map(RecordSchemaId::new)
+            .collect(),
+        signing: d.signing.map(|(domain, kid_prefix)| Signing {
+            domain: domain.into(),
+            kid_prefix: kid_prefix.into(),
+        }),
+        trust: trust.into_iter().collect(),
+        scope_kinds: d.scope_kinds.iter().map(|k| (*k).to_string()).collect(),
+        record_chains: d.record_chains.clone(),
+        record_retentions: d.record_retentions.clone(),
+        ticket_prefix: d.ticket_prefix.map(str::to_string),
+    };
+
+    let work = crate::host_work::WorkBounds::of_section(
+        section.0,
+        section.1,
+        services.default_work_bounds(),
+    )?;
+    Ok(PreparedSection {
+        services,
+        label: Arc::clone(&d.label),
+        facts,
+        work,
+    })
+}
+
 impl PlaneDriver {
     pub fn new(
         calls: Arc<dyn PlaneCalls>,
@@ -284,38 +345,7 @@ impl PlaneDriver {
         section: (&str, &serde_yaml::Value),
     ) -> Result<Self, String> {
         let d = calls.declared();
-        if d.conditional_records && !services.supports_record_transactions() {
-            return Err(
-                "the configured store does not support conditional record transactions".into(),
-            );
-        }
-        let trust = parse_section(section.0, section.1, &d.trust_keys)?;
-        let facts = InstanceFacts {
-            conditional_record_kinds: d.conditional_record_kinds.clone(),
-            record_kinds: d
-                .record_kinds
-                .iter()
-                .copied()
-                .map(RecordSchemaId::new)
-                .collect(),
-            signing: d.signing.map(|(domain, kid_prefix)| Signing {
-                domain: domain.into(),
-                kid_prefix: kid_prefix.into(),
-            }),
-            trust: trust.into_iter().collect(),
-            scope_kinds: d.scope_kinds.iter().map(|k| (*k).to_string()).collect(),
-            record_chains: d.record_chains.clone(),
-            record_retentions: d.record_retentions.clone(),
-            ticket_prefix: d.ticket_prefix.map(str::to_string),
-        };
-
-        let work = crate::host_work::WorkBounds::of_section(
-            section.0,
-            section.1,
-            services.default_work_bounds(),
-        )?;
-        services.admit(&d.label, facts).map_err(|e| e.to_string())?;
-        services.bound_work(&d.label, work);
+        prepare_admission(&d, &services, section)?.commit()?;
         let driver = calls.driver();
         Ok(PlaneDriver {
             calls,
@@ -335,6 +365,14 @@ impl PlaneDriver {
             audit: Arc::new(CoreAudit),
             refused_piece: false,
         })
+    }
+
+    /// Prepare the same host facts and work bounds as initial admission for a new section.
+    pub fn prepare_section(
+        &self,
+        section: (&str, &serde_yaml::Value),
+    ) -> Result<PreparedSection<'_>, String> {
+        prepare_admission(&self.calls.declared(), &self.services, section)
     }
 
     pub async fn ticks(&self) {
@@ -1571,5 +1609,171 @@ impl<S: DriverSteps + Sync, F: FarEnd, C: SessionCaller> RouteAwait for PlaneUni
                 }
             }
         })
+    }
+}
+
+#[cfg(test)]
+mod section_admission_tests {
+    use super::*;
+    use crate::trust::book::Ruling;
+    use busbar_contract::abi::mechanism::KindCode;
+    use busbar_contract::plane::{PinMechanismDecl, TrustKeyDecl, TrustRole};
+    use busbar_contract::services::{HostServices, Ran};
+
+    const INSTANCE: &str = "section-admission";
+    const MECHANISMS: &[PinMechanismDecl] = &[PinMechanismDecl {
+        token: "rooted",
+        root: true,
+        peer_key: false,
+    }];
+
+    fn declaration() -> InstanceDecl {
+        InstanceDecl {
+            label: Arc::from(INSTANCE),
+            record_kinds: vec!["sample"],
+            signing: Some(("section-admission-domain", "sample-")),
+            scope_kinds: vec!["peer"],
+            trust_keys: vec![TrustKeyDecl {
+                key: "pin",
+                role: TrustRole::Pin,
+                fingerprint: true,
+                default: None,
+                mechanisms: MECHANISMS,
+            }],
+            ..InstanceDecl::default()
+        }
+    }
+
+    fn section(key: &str, max_live: usize) -> serde_yaml::Value {
+        serde_yaml::from_str(&format!(
+            "peer:\n  pin: {{mechanism: rooted, key: '{key}'}}\nwork: {{max_live: {max_live}, retain_s: 7}}"
+        ))
+        .expect("the section parses")
+    }
+
+    fn judge(services: &KernelServices) -> Result<(), Distrust> {
+        services.trust_judge(
+            INSTANCE,
+            &TrustFacts {
+                counterparty: "peer",
+                item: None,
+                digest: None,
+            },
+        )
+    }
+
+    fn approve(services: &KernelServices) {
+        let caller = Caller {
+            instance: Arc::from(INSTANCE),
+            plugin: Arc::from("test-plane"),
+            kind: KindCode::Plane,
+        };
+        let Ran::Now(answer) = services.trust_sight(
+            &caller,
+            "peer",
+            "catalogue",
+            Box::new(|_| panic!("an in-memory sighting does not pend")),
+        ) else {
+            panic!("an in-memory sighting completes inline");
+        };
+        assert_eq!(answer.outcome, AbiOutcome::Ready);
+        services
+            .trust_rule(&format!("{INSTANCE}/peer"), Ruling::Approve)
+            .expect("the operator approves the sighted card");
+        assert_eq!(judge(services), Ok(()));
+    }
+
+    fn approved() -> KernelServices {
+        let services = KernelServices::new();
+        prepare_admission(&declaration(), &services, ("peers", &section("root-a", 32)))
+            .unwrap()
+            .commit()
+            .unwrap();
+        approve(&services);
+        services
+    }
+
+    #[test]
+    fn dropping_a_prepared_section_preserves_live_approval_and_work_bounds() {
+        let services = approved();
+        let before = services.trust_rows();
+        let work = services.work_bounds_of(INSTANCE);
+        let candidate =
+            prepare_admission(&declaration(), &services, ("peers", &section("root-b", 64)))
+                .unwrap();
+        assert_eq!(services.trust_rows(), before);
+        assert_eq!(services.work_bounds_of(INSTANCE), work);
+        drop(candidate);
+        assert_eq!(services.trust_rows(), before);
+        assert_eq!(services.work_bounds_of(INSTANCE), work);
+        assert_eq!(judge(&services), Ok(()));
+    }
+
+    #[test]
+    fn a_rejected_section_preserves_live_approval_and_work_bounds() {
+        let services = approved();
+        let before = services.trust_rows();
+        let work = services.work_bounds_of(INSTANCE);
+        let error = prepare_admission(&declaration(), &services, ("peers", &section("root-b", 0)))
+            .err()
+            .expect("a zero work bound is refused");
+        assert!(error.contains("whole number above zero"), "{error}");
+        assert_eq!(services.trust_rows(), before);
+        assert_eq!(services.work_bounds_of(INSTANCE), work);
+        assert_eq!(judge(&services), Ok(()));
+    }
+
+    #[test]
+    fn a_refused_admission_commit_preserves_live_approval_and_work_bounds() {
+        let services = approved();
+        services
+            .admit(
+                "other",
+                InstanceFacts {
+                    signing: Some(Signing {
+                        domain: "held-domain".into(),
+                        kid_prefix: "held-".into(),
+                    }),
+                    ..InstanceFacts::default()
+                },
+            )
+            .unwrap();
+        let before = services.trust_rows();
+        let work = services.work_bounds_of(INSTANCE);
+        let mut changed = declaration();
+        changed.signing = Some(("held-domain", "sample-"));
+        let candidate =
+            prepare_admission(&changed, &services, ("peers", &section("root-b", 64))).unwrap();
+        assert!(
+            candidate.commit().is_err(),
+            "the other instance owns its signing domain"
+        );
+        assert_eq!(services.trust_rows(), before);
+        assert_eq!(services.work_bounds_of(INSTANCE), work);
+        assert_eq!(judge(&services), Ok(()));
+    }
+
+    #[test]
+    fn a_committed_section_keeps_same_pin_approval_and_requires_approval_for_a_new_pin() {
+        let services = approved();
+        let before = services.trust_rows();
+        prepare_admission(&declaration(), &services, ("peers", &section("root-a", 48)))
+            .unwrap()
+            .commit()
+            .unwrap();
+        assert_eq!(services.trust_rows(), before);
+        assert_eq!(services.work_bounds_of(INSTANCE).max_live, 48);
+        assert_eq!(judge(&services), Ok(()));
+        prepare_admission(&declaration(), &services, ("peers", &section("root-b", 64)))
+            .unwrap()
+            .commit()
+            .unwrap();
+        assert_eq!(services.work_bounds_of(INSTANCE).max_live, 64);
+        assert_eq!(judge(&services), Err(Distrust::Unsighted));
+        let rows = services.trust_rows();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].approved, None);
+        assert_eq!(rows[0].seen, None);
+        approve(&services);
     }
 }
