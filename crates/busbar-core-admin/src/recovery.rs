@@ -220,6 +220,8 @@ pub(crate) async fn resolve(
         },
         actor: principal.actor_id().to_string(),
         reason: request.reason,
+        sender_quiesced: request.sender_quiesced,
+        backend_quiesced: request.backend_quiesced,
     };
     // Once scheduled, the owned Store operation survives cancellation of the HTTP waiter.
     // The facade confirms its durable, attributed verdict before returning a safe observation.
@@ -263,6 +265,10 @@ pub(crate) struct ResolveRequest {
     verdict: Verdict,
     /// The evidence behind the explicit verdict; retained in the durable audit record.
     reason: String,
+    /// Explicitly attest that every sender for this operation is retired or disarmed.
+    sender_quiesced: bool,
+    /// Explicitly attest that every outstanding backend mutation for this operation settled.
+    backend_quiesced: bool,
 }
 
 fn lower_hex<const N: usize>(value: &str) -> Option<[u8; N]> {
@@ -285,6 +291,9 @@ fn lower_hex<const N: usize>(value: &str) -> Option<[u8; N]> {
 
 impl ResolveRequest {
     fn validate(&self) -> Result<([u8; 16], [u8; 32]), &'static str> {
+        if !self.sender_quiesced || !self.backend_quiesced {
+            return Err("the operator must confirm sender and backend quiescence before a verdict");
+        }
         let id = lower_hex(&self.operation_id)
             .ok_or("operation_id must contain 32 lower-case hex characters")?;
         let fingerprint = lower_hex(&self.body_fingerprint)
@@ -307,7 +316,9 @@ mod tests {
             "body_fingerprint": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
             "recovery_version": 7,
             "verdict": "not_landed",
-            "reason": "The store operator verified that the original operation did not land."
+            "reason": "The store operator verified that the original operation did not land.",
+            "sender_quiesced": true,
+            "backend_quiesced": true
         })
     }
 
@@ -378,6 +389,8 @@ mod tests {
             "recovery_version",
             "verdict",
             "reason",
+            "sender_quiesced",
+            "backend_quiesced",
         ] {
             let mut body = request();
             body.as_object_mut().unwrap().remove(field);
@@ -393,6 +406,26 @@ mod tests {
                 .unwrap()
                 .validate()
                 .is_err());
+        }
+    }
+
+    #[test]
+    fn verdict_rejects_missing_false_or_non_boolean_quiescence() {
+        for (sender, backend) in [(false, false), (false, true), (true, false)] {
+            let mut body = request();
+            body["sender_quiesced"] = json!(sender);
+            body["backend_quiesced"] = json!(backend);
+            assert!(serde_json::from_value::<ResolveRequest>(body)
+                .unwrap()
+                .validate()
+                .is_err());
+        }
+        for field in ["sender_quiesced", "backend_quiesced"] {
+            for value in [json!("true"), json!(1), json!(null)] {
+                let mut body = request();
+                body[field] = value;
+                assert!(serde_json::from_value::<ResolveRequest>(body).is_err());
+            }
         }
     }
 
