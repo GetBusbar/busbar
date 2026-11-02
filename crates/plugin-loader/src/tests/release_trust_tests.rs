@@ -338,6 +338,54 @@ fn a_keys_document_signed_by_a_key_that_is_not_a_root_is_refused() {
 }
 
 #[test]
+fn a_forged_retired_root_keyid_is_not_authenticated_as_a_retired_signature() {
+    let w = World::new();
+    let retired = FirstPartyKey {
+        id: "retired-root".into(),
+        key: ReleaseKey::Ed25519(
+            crate::sign::public_key_from_hex(crate::sign::RETIRED_RELEASE_KEYS[0].0).unwrap(),
+        ),
+    };
+    assert!(retired.retired_reason().is_some());
+    let (keys, targets) = w.release(&w.kms);
+    let mut envelope: serde_json::Value = serde_json::from_slice(&keys).unwrap();
+    envelope["signatures"][0]["keyid"] = serde_json::json!(wire::key_id(&retired.key));
+    let forged = serde_json::to_vec(&envelope).unwrap();
+    assert!(matches!(
+        verify_release(
+            &[retired.clone()],
+            Seal {
+                keys: &forged,
+                targets: &targets
+            },
+            subject(&artefact()),
+            checks(),
+        ),
+        Err(SealRefusal::KeysSignature { .. })
+    ));
+
+    // The unauthenticated retired-key label also cannot poison a valid current root signature.
+    let mut valid: serde_json::Value = serde_json::from_slice(&keys).unwrap();
+    valid["signatures"]
+        .as_array_mut()
+        .unwrap()
+        .push(envelope["signatures"][0].clone());
+    let valid = serde_json::to_vec(&valid).unwrap();
+    let mut roots = w.roots();
+    roots.push(retired);
+    verify_release(
+        &roots,
+        Seal {
+            keys: &valid,
+            targets: &targets,
+        },
+        subject(&artefact()),
+        checks(),
+    )
+    .expect("a forged retired-root key id does not override a valid current root");
+}
+
+#[test]
 fn a_keys_document_altered_after_the_root_signed_it_is_refused() {
     let w = World::new();
     let stranger = TestSigner::p256();
@@ -493,6 +541,35 @@ fn a_revoked_digest_is_refused_though_the_release_lists_it() {
 }
 
 #[test]
+fn a_revoked_library_digest_is_refused_even_when_the_manifest_digest_is_current() {
+    let w = World::new();
+    let library_digest = sha256_hex(b"revoked library bytes");
+    let mut doc = keys_doc(&[&w.signer]);
+    doc.revoked_digests
+        .insert(library_digest.clone(), "library pulled".into());
+    let keys = seal_keys(&doc, &[&w.kms]);
+    let (_, targets) = w.release(&w.kms);
+    let manifest_digest = artefact();
+    let mut plugin = subject(&manifest_digest);
+    plugin.lib_sha256 = &library_digest;
+    assert_eq!(
+        verify_release(
+            &w.roots(),
+            Seal {
+                keys: &keys,
+                targets: &targets
+            },
+            plugin,
+            checks()
+        ),
+        Err(SealRefusal::DigestRevoked {
+            digest: library_digest,
+            why: "library pulled".into(),
+        })
+    );
+}
+
+#[test]
 fn a_role_with_a_zero_threshold_or_no_signers_trusts_nothing() {
     let w = World::new();
     let (_, targets) = w.release(&w.kms);
@@ -521,6 +598,10 @@ fn every_refusal_is_explained_and_coded() {
         },
         SealRefusal::KeysSignature {
             roots: vec!["r".into()],
+        },
+        SealRefusal::RetiredRoot {
+            id: "retired-root".into(),
+            why: "compromised release key".into(),
         },
         SealRefusal::KeysExpired {
             version: 1,
@@ -738,6 +819,52 @@ fn repeating_a_signature_does_not_satisfy_a_two_signer_threshold() {
             ..
         })
     ));
+}
+
+#[test]
+fn distinct_signers_of_different_algorithms_satisfy_the_role_threshold() {
+    let root = TestSigner::ed25519(7);
+    let first = TestSigner::p256();
+    let second = TestSigner::ed25519(9);
+    let mut doc = keys_doc(&[&first, &second]);
+    doc.roles.get_mut(PLUGINS_ROLE).unwrap().threshold = 2;
+    let keys = seal_keys(&doc, &[&root]);
+    let targets = seal_targets(
+        &targets_doc(vec![entry(NAME, VERSION, PLUGIN_TARGET, &artefact())]),
+        &[&first, &second],
+    );
+    let verified = verify_release(
+        &[root.root("test-root")],
+        Seal {
+            keys: &keys,
+            targets: &targets,
+        },
+        subject(&artefact()),
+        checks(),
+    )
+    .expect("two distinct authorized signers satisfy a threshold of two");
+    assert_eq!(verified.signers, vec![first.id(), second.id()]);
+}
+
+#[test]
+fn a_seal_round_trip_preserves_the_verified_chain_and_expiry_boundary() {
+    let w = World::new();
+    let (keys, targets) = w.release(&w.kms);
+    let signature = wire::write_seal(&keys, &targets).unwrap();
+    let (keys, targets) = wire::read_seal(&signature).unwrap().unwrap();
+    let seal = Seal {
+        keys: &keys,
+        targets: &targets,
+    };
+    w.verify(&keys, &targets, &artefact(), checks()).unwrap();
+    assert_eq!(wire::sealed_keys_version(&signature), Some(1));
+    assert_eq!(check_fresh(seal, NOW + 90 * DAY - 1), Ok(()));
+    assert!(matches!(
+        check_fresh(seal, NOW + 90 * DAY),
+        Err(SealRefusal::KeysExpired { .. })
+    ));
+    assert!(wire::read_seal(&"00".repeat(64)).is_none());
+    assert!(wire::read_seal("seal:{}").unwrap().is_err());
 }
 
 // ── the root key list ───────────────────────────────────────────────────────────────────────────

@@ -215,6 +215,8 @@ pub enum SealRefusal {
     Malformed { doc: &'static str, why: String },
     /// No compiled-in root key's signature on the keys document verifies.
     KeysSignature { roots: Vec<String> },
+    /// A retired root signed the keys document, and current roots did not meet the threshold.
+    RetiredRoot { id: String, why: String },
     /// The keys document has expired.
     KeysExpired {
         version: u64,
@@ -267,6 +269,7 @@ impl SealRefusal {
         match self {
             SealRefusal::Malformed { .. } => "release-seal-malformed",
             SealRefusal::KeysSignature { .. } => "keys-signature",
+            SealRefusal::RetiredRoot { .. } => "retired-root",
             SealRefusal::KeysExpired { .. } => "keys-expired",
             SealRefusal::KeysRollback { .. } => "keys-rollback",
             SealRefusal::NoRole { .. } => "keys-no-role",
@@ -295,6 +298,11 @@ impl std::fmt::Display for SealRefusal {
                 "the keys document is not signed by any root key this build trusts [{}]; the \
                  plugin was not released by busbar, or this binary predates its root",
                 roots.join(", ")
+            ),
+            SealRefusal::RetiredRoot { id, why } => write!(
+                f,
+                "the keys document is signed by retired root '{id}': {why}; install a release \
+                 sealed under a current busbar root"
             ),
             SealRefusal::KeysExpired {
                 version,
@@ -432,19 +440,25 @@ pub fn verify_release(
     // ROOT -> KEYS DOCUMENT.
     let keys = wire::read_keys(seal.keys).map_err(malformed("keys document"))?;
     let mut vouching: Vec<&str> = Vec::new();
+    let mut retired = None;
     for (keyid, sig) in &keys.signatures {
         if let Some(root) = roots.iter().find(|r| wire::key_id(&r.key) == *keyid) {
-            if !vouching.contains(&root.id.as_str())
-                && wire::verify(&root.key, &keys.signed_bytes, sig)
-            {
-                vouching.push(&root.id);
+            if wire::verify(&root.key, &keys.signed_bytes, sig) {
+                if let Some(why) = root.retired_reason() {
+                    retired.get_or_insert_with(|| SealRefusal::RetiredRoot {
+                        id: root.id.clone(),
+                        why: why.to_string(),
+                    });
+                } else if !vouching.contains(&root.id.as_str()) {
+                    vouching.push(&root.id);
+                }
             }
         }
     }
     if vouching.len() < ROOT_THRESHOLD {
-        return Err(SealRefusal::KeysSignature {
+        return Err(retired.unwrap_or_else(|| SealRefusal::KeysSignature {
             roots: roots.iter().map(|r| r.id.clone()).collect(),
-        });
+        }));
     }
     let kd = &keys.doc;
     if checks.enforce_expiry && kd.expires <= checks.now {
