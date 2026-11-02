@@ -31,7 +31,7 @@ pub fn new_registration() -> busbar_kernel::Registration {
 #[derive(Clone, Debug)]
 pub struct PinnedHistory {
     history: Arc<busbar_kernel_ledger::cost::History>,
-    at: busbar_kernel_ledger::cost::HistorySeq,
+    at: busbar_kernel_ledger::cost::EntryKey,
 }
 
 impl PinnedHistory {
@@ -43,13 +43,13 @@ impl PinnedHistory {
     #[must_use]
     pub fn view_at(
         &self,
-        at: busbar_kernel_ledger::cost::HistorySeq,
+        at: busbar_kernel_ledger::cost::EntryKey,
     ) -> busbar_kernel_ledger::cost::HistoryView<'_> {
         self.history.snapshot(at.min(self.at))
     }
 
     #[must_use]
-    pub fn seq(&self) -> busbar_kernel_ledger::cost::HistorySeq {
+    pub fn seq(&self) -> busbar_kernel_ledger::cost::EntryKey {
         self.at
     }
 
@@ -59,6 +59,12 @@ impl PinnedHistory {
         history: Arc<busbar_kernel_ledger::cost::History>,
         at: busbar_kernel_ledger::cost::HistorySeq,
     ) -> Self {
+        let at = history
+            .entries()
+            .iter()
+            .find(|entry| entry.seq() == at)
+            .expect("the fixture ordinal names an actual history entry")
+            .key();
         PinnedHistory { history, at }
     }
 
@@ -67,7 +73,13 @@ impl PinnedHistory {
     pub fn for_test_at(other: &PinnedHistory, at: busbar_kernel_ledger::cost::HistorySeq) -> Self {
         PinnedHistory {
             history: Arc::clone(&other.history),
-            at,
+            at: other
+                .history
+                .entries()
+                .iter()
+                .find(|entry| entry.seq() == at)
+                .expect("the fixture ordinal names an actual history entry")
+                .key(),
         }
     }
 }
@@ -211,7 +223,7 @@ impl RootHistory {
             Some(store) => store.node_history()?,
             None => self.history()?,
         };
-        let at = history.head()?;
+        let at = history.head_key()?;
         Some(PinnedHistory { history, at })
     }
 
@@ -474,8 +486,10 @@ impl RootHistory {
             write.push(applied);
         }
         let mut history = History::new();
+        let mut original_keys = Vec::new();
         if let Some(opening) = opening {
             history.append(opening);
+            original_keys.push(history.head_key());
         }
         for card in rest {
             let draft = match card {
@@ -483,8 +497,12 @@ impl RootHistory {
                 JournalledCard::Amended(draft) => draft,
 
                 JournalledCard::Corrected(correction, sealed_over) => {
-                    match correction.rebuild_over(history.current(), sealed_over) {
-                        Ok(draft) => draft,
+                    match correction.rebuild_from_original_chain(
+                        &history,
+                        sealed_over,
+                        &original_keys,
+                    ) {
+                        Ok((_, draft)) => draft,
                         Err(cause) => {
                             let finding = CorrectionRefused {
                                 effective_from: correction.effective_from,
@@ -495,12 +513,14 @@ impl RootHistory {
                             };
                             tracing::error!("{finding}");
                             refused.push(finding);
+                            original_keys.push(None);
                             continue;
                         }
                     }
                 }
             };
             history.append(draft);
+            original_keys.push(history.head_key());
         }
         RestoredHistory {
             history,
@@ -1231,8 +1251,8 @@ impl Correction {
             .card()
             .corrected(self.cells.iter().cloned(), self.fee)?;
         Some((
-            CorrectionBase {
-                seq: base.seq(),
+            CorrectionBase::Key {
+                key: base.key(),
                 card_digest: base.card().digest(),
             },
             busbar_kernel_ledger::cost::CardEntryDraft {
@@ -1247,37 +1267,101 @@ impl Correction {
 
     pub fn rebuild_over(
         &self,
-        view: busbar_kernel_ledger::cost::HistoryView<'_>,
+        history: &busbar_kernel_ledger::cost::History,
         sealed_over: CorrectionBase,
     ) -> Result<busbar_kernel_ledger::cost::CardEntryDraft, BaseMismatch> {
-        let held = u64::try_from(view.entries().len()).unwrap_or(u64::MAX);
-        if held <= sealed_over.seq.get() {
-            return Err(BaseMismatch::MissingBase);
+        match sealed_over {
+            CorrectionBase::Key { key, card_digest } => {
+                self.rebuild_over_key(history, key, card_digest)
+            }
+            CorrectionBase::LegacyOrdinal { .. } => Err(BaseMismatch::MissingBase),
         }
+    }
+
+    fn rebuild_over_key(
+        &self,
+        history: &busbar_kernel_ledger::cost::History,
+        key: busbar_kernel_ledger::cost::EntryKey,
+        card_digest: [u8; 32],
+    ) -> Result<busbar_kernel_ledger::cost::CardEntryDraft, BaseMismatch> {
+        let entry = history.entry(&key).ok_or(BaseMismatch::MissingBase)?;
+        if entry.card().digest() != card_digest {
+            return Err(BaseMismatch::BaseDigest);
+        }
+        let view = history.snapshot(key);
         let base = view
             .sole_entry_over(self.effective_from, self.effective_until)
             .ok_or(BaseMismatch::OtherBase(None))?;
-        if base.seq() != sealed_over.seq {
-            return Err(BaseMismatch::OtherBase(Some(base.seq())));
+        if base.key() != key {
+            return Err(BaseMismatch::OtherBase(Some(base.key())));
         }
-        if base.card().digest() != sealed_over.card_digest {
-            return Err(BaseMismatch::BaseDigest);
-        }
-        let (_, draft) = self.draft_over(view).ok_or(BaseMismatch::NoCardForCells)?;
-        Ok(draft)
+        self.draft_over(view)
+            .map(|(_, draft)| draft)
+            .ok_or(BaseMismatch::NoCardForCells)
+    }
+
+    pub(crate) fn rebuild_from_original_chain(
+        &self,
+        history: &busbar_kernel_ledger::cost::History,
+        sealed_over: CorrectionBase,
+        original_keys: &[Option<busbar_kernel_ledger::cost::EntryKey>],
+    ) -> Result<
+        (
+            busbar_kernel_ledger::cost::EntryKey,
+            busbar_kernel_ledger::cost::CardEntryDraft,
+        ),
+        BaseMismatch,
+    > {
+        let (key, digest) = match sealed_over {
+            CorrectionBase::Key { key, card_digest } => (key, card_digest),
+            CorrectionBase::LegacyOrdinal { seq, card_digest } => {
+                let key = usize::try_from(seq.get())
+                    .ok()
+                    .and_then(|at| original_keys.get(at))
+                    .copied()
+                    .flatten()
+                    .ok_or(BaseMismatch::MissingBase)?;
+                let view = history.current();
+                let sole = view
+                    .sole_entry_over(self.effective_from, self.effective_until)
+                    .ok_or(BaseMismatch::OtherBase(None))?;
+                if sole.key() != key {
+                    return Err(BaseMismatch::OtherBase(Some(sole.key())));
+                }
+                (key, card_digest)
+            }
+        };
+        self.rebuild_over_key(history, key, digest)
+            .map(|draft| (key, draft))
     }
 }
 
-/// **THE ENTRY A SIGNED CORRECTION WAS SEALED OVER** (#79): the entry's number on the history and
-/// the digest of its card ([`busbar_kernel_ledger::cost::RateCard::digest`]), as the live append
-/// resolved them. Every `v3` record carries it, written at amend time, and a restart rebuilds the
-/// correction only over the entry at that number holding that card.
+/// The exact identity a correction was sealed over, or an explicitly legacy journal ordinal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct CorrectionBase {
-    /// The base entry's number.
-    pub seq: busbar_kernel_ledger::cost::HistorySeq,
-    /// The digest of the base entry's card.
-    pub card_digest: [u8; 32],
+pub enum CorrectionBase {
+    /// A fleet entry identity and the exact card sealed by the live correction.
+    Key {
+        /// The actual known history entry key.
+        key: busbar_kernel_ledger::cost::EntryKey,
+        /// The digest of its card.
+        card_digest: [u8; 32],
+    },
+    /// An old v3 record, resolved only through its original journal chain.
+    LegacyOrdinal {
+        /// The original chain-local position, never a current fleet position.
+        seq: busbar_kernel_ledger::cost::HistorySeq,
+        /// The digest sealed by that old record.
+        card_digest: [u8; 32],
+    },
+}
+
+impl std::fmt::Display for CorrectionBase {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Key { key, .. } => write!(f, "{key}"),
+            Self::LegacyOrdinal { seq, .. } => write!(f, "legacy ordinal {seq}"),
+        }
+    }
 }
 
 /// **A JOURNALLED SIGNED CORRECTION THE REBUILD REFUSED** (#79): the history a restart rebuilt
@@ -1307,7 +1391,7 @@ pub enum BaseMismatch {
     /// entry the live node priced under never reached the chain ahead of the correction.
     MissingBase,
     /// The window resolves to another entry, or to no single one (`None`).
-    OtherBase(Option<busbar_kernel_ledger::cost::HistorySeq>),
+    OtherBase(Option<busbar_kernel_ledger::cost::EntryKey>),
     /// The base entry is there, and holds a card other than the one the correction was sealed over.
     BaseDigest,
     /// The base matches, and a named cell still has no present card to land on.
@@ -1320,7 +1404,7 @@ impl std::fmt::Display for CorrectionRefused {
             Some(until) => format!("[{}, {until})", self.effective_from),
             None => format!("[{}, open)", self.effective_from),
         };
-        let base = self.sealed_over.seq;
+        let base = self.sealed_over;
         write!(
             f,
             "the signed rate correction over {window}, admitted at {}, is REFUSED and not rebuilt: ",

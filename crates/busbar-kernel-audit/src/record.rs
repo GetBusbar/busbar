@@ -108,8 +108,9 @@ pub struct Usage {
     pub tier_bp: u32,
     /// How many request fees were charged.
     pub fee_count: u32,
-    /// Which rate card version was in force — the card a read-time price is taken at.
-    pub rate_card_version: u64,
+    /// The actual fleet entry key on new records, absent when no key was attached.
+    /// Legacy recipes encode no actual key; their original ordinal stays in the recipe metadata.
+    pub rate_card_version: Option<[u8; 20]>,
     /// Which chain of buckets it was drawn against.
     pub bucket_chain_ref: String,
 }
@@ -222,7 +223,7 @@ pub struct AuditRecord {
     /// The preceding record's digest.
     pub prev_hash: String,
     /// WHICH RECIPE this record was sealed under, and so the rules its digest is recomputed by
-    /// Every record this build seals is [`crate::recipe::Recipe::V4`]; a record sealed
+    /// Every record this build seals is [`crate::recipe::Recipe::V5`]; a record sealed
     /// under `v2` keeps verifying by `v2`'s rules.
     pub recipe: crate::recipe::Recipe,
     /// This record's own digest.
@@ -565,7 +566,7 @@ impl Audit for AuditChain {
                 .map(|label| crate::digest::sha256_hex(label.as_bytes())),
             seq: self.next_seq,
             prev_hash: self.tail_hash.clone(),
-            recipe: crate::recipe::Recipe::V4,
+            recipe: crate::recipe::Recipe::V5,
             hash: String::new(),
             signature: None,
             key_id: None,

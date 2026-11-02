@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! A sealed record, as the node's journal keeps it: `audit.v4`.
+//! Sealed keyed records use `audit.v5`; legacy `audit.v4` records keep their original bytes.
 
 use busbar_contract::caps::{Abort, MeterClassId, Outcome, ReasonCode, StepName, UnitKey};
 
@@ -11,8 +11,11 @@ use crate::record::{
     UsageLine, What,
 };
 
-/// The tag every journalled audit record opens with.
-pub const JOURNAL_TAG: &str = "audit.v4";
+/// The tag every new keyed audit record opens with.
+pub const JOURNAL_TAG: &str = "audit.v5";
+
+/// The original journal format retained for legacy digest recipes.
+pub const JOURNAL_TAG_V4: &str = "audit.v4";
 
 /// A text field longer than the body's length prefix can say (more than `u32::MAX` bytes).
 ///
@@ -33,9 +36,13 @@ impl std::error::Error for FieldTooLong {}
 /// The journal body of one sealed record.
 pub fn journal_body(record: &AuditRecord) -> Result<Vec<u8>, FieldTooLong> {
     let mut w = Writer::new();
-    w.text(JOURNAL_TAG);
+    w.text(if matches!(record.recipe, crate::recipe::Recipe::V5) {
+        JOURNAL_TAG
+    } else {
+        JOURNAL_TAG_V4
+    });
     w.text(record.recipe.name());
-    if let crate::recipe::Recipe::V2 { currency } = &record.recipe {
+    if let crate::recipe::Recipe::V2 { currency, .. } = &record.recipe {
         w.text(currency);
     }
     w.num(record.seq);
@@ -71,7 +78,21 @@ pub fn journal_body(record: &AuditRecord) -> Result<Vec<u8>, FieldTooLong> {
     }
     w.num(u64::from(record.usage.tier_bp));
     w.num(u64::from(record.usage.fee_count));
-    w.num(record.usage.rate_card_version);
+    match record.recipe {
+        crate::recipe::Recipe::V2 {
+            legacy_rate_card_version,
+            ..
+        }
+        | crate::recipe::Recipe::V4 {
+            legacy_rate_card_version,
+        } => w.num(legacy_rate_card_version),
+        crate::recipe::Recipe::V5 => {
+            w.num(u64::from(record.usage.rate_card_version.is_some()));
+            if let Some(key) = &record.usage.rate_card_version {
+                w.bytes(key);
+            }
+        }
+    }
     w.text(&record.usage.bucket_chain_ref);
     let c = &record.controls;
     w.opt_text(c.hold_ref.as_deref());
@@ -101,10 +122,10 @@ pub fn from_journal_body(
     class: &dyn Fn(&str) -> Option<MeterClassId>,
 ) -> Result<Option<AuditRecord>, String> {
     let mut r = Reader { bytes, at: 0 };
-    if r.text().as_deref() != Some(JOURNAL_TAG) {
+    let Some(keyed) = journal_kind(&mut r) else {
         return Ok(None);
-    }
-    decode(&mut r, class).map(Some)
+    };
+    decode(&mut r, class, keyed).map(Some)
 }
 
 /// The independently retained head fields of one journalled audit record.
@@ -120,13 +141,14 @@ pub struct JournalHead {
 /// Read audit head metadata without resolving the historical plane's meter vocabulary.
 pub fn head_from_journal_body(bytes: &[u8]) -> Result<Option<JournalHead>, String> {
     let mut r = Reader { bytes, at: 0 };
-    if r.text().as_deref() != Some(JOURNAL_TAG) {
+    let Some(keyed) = journal_kind(&mut r) else {
         return Ok(None);
-    }
+    };
     let bad = || "an audit head prefix does not decode".to_string();
     match r.text().as_deref().ok_or_else(bad)? {
-        crate::recipe::DIGEST_RECIPE => {}
-        crate::recipe::DIGEST_RECIPE_V2 => {
+        crate::recipe::DIGEST_RECIPE if keyed => {}
+        crate::recipe::DIGEST_RECIPE_V4 if !keyed => {}
+        crate::recipe::DIGEST_RECIPE_V2 if !keyed => {
             r.skip_text().ok_or_else(bad)?;
         }
         _ => return Err("an audit head names an unknown recipe".into()),
@@ -161,15 +183,28 @@ pub fn head_from_journal_body(bytes: &[u8]) -> Result<Option<JournalHead>, Strin
     }))
 }
 
+fn journal_kind(r: &mut Reader<'_>) -> Option<bool> {
+    match r.text().as_deref()? {
+        JOURNAL_TAG => Some(true),
+        JOURNAL_TAG_V4 => Some(false),
+        _ => None,
+    }
+}
+
 fn decode(
     r: &mut Reader<'_>,
     class: &dyn Fn(&str) -> Option<MeterClassId>,
+    keyed: bool,
 ) -> Result<AuditRecord, String> {
     let bad = |what: &str| format!("an audit record whose {what} does not decode");
-    let recipe = match r.text().ok_or_else(|| bad("recipe"))?.as_str() {
-        crate::recipe::DIGEST_RECIPE => crate::recipe::Recipe::V4,
-        crate::recipe::DIGEST_RECIPE_V2 => crate::recipe::Recipe::V2 {
+    let mut recipe = match r.text().ok_or_else(|| bad("recipe"))?.as_str() {
+        crate::recipe::DIGEST_RECIPE if keyed => crate::recipe::Recipe::V5,
+        crate::recipe::DIGEST_RECIPE_V4 if !keyed => crate::recipe::Recipe::V4 {
+            legacy_rate_card_version: 0,
+        },
+        crate::recipe::DIGEST_RECIPE_V2 if !keyed => crate::recipe::Recipe::V2 {
             currency: r.text().ok_or_else(|| bad("currency"))?,
+            legacy_rate_card_version: 0,
         },
         other => {
             return Err(format!(
@@ -233,13 +268,38 @@ fn decode(
             estimated: r.flag().ok_or_else(|| bad("line estimate"))?,
         });
     }
+    let tier_bp =
+        u32::try_from(r.num().ok_or_else(|| bad("tier_bp"))?).map_err(|_| bad("tier_bp"))?;
+    let fee_count =
+        u32::try_from(r.num().ok_or_else(|| bad("fee_count"))?).map_err(|_| bad("fee_count"))?;
+    let rate_card_version = match &mut recipe {
+        crate::recipe::Recipe::V5 => {
+            if r.flag().ok_or_else(|| bad("rate_card_key_present"))? {
+                Some(
+                    r.bytes()
+                        .and_then(|key| key.try_into().ok())
+                        .ok_or_else(|| bad("rate_card_version key"))?,
+                )
+            } else {
+                None
+            }
+        }
+        crate::recipe::Recipe::V2 {
+            legacy_rate_card_version,
+            ..
+        }
+        | crate::recipe::Recipe::V4 {
+            legacy_rate_card_version,
+        } => {
+            *legacy_rate_card_version = r.num().ok_or_else(|| bad("legacy_rate_card_version"))?;
+            None
+        }
+    };
     let usage = Usage {
         lines,
-        tier_bp: u32::try_from(r.num().ok_or_else(|| bad("tier_bp"))?)
-            .map_err(|_| bad("tier_bp"))?,
-        fee_count: u32::try_from(r.num().ok_or_else(|| bad("fee_count"))?)
-            .map_err(|_| bad("fee_count"))?,
-        rate_card_version: r.num().ok_or_else(|| bad("rate_card_version"))?,
+        tier_bp,
+        fee_count,
+        rate_card_version,
         bucket_chain_ref: r.text().ok_or_else(|| bad("bucket_chain_ref"))?,
     };
     let mut controls = Controls {
@@ -461,13 +521,17 @@ impl Writer {
     }
 
     pub(crate) fn text(&mut self, s: &str) {
-        match u32::try_from(s.len())
+        self.bytes(s.as_bytes());
+    }
+
+    fn bytes(&mut self, bytes: &[u8]) {
+        match u32::try_from(bytes.len())
             .ok()
-            .filter(|_| s.len() <= self.limit)
+            .filter(|_| bytes.len() <= self.limit)
         {
             Some(len) => {
                 self.out.extend_from_slice(&len.to_be_bytes());
-                self.out.extend_from_slice(s.as_bytes());
+                self.out.extend_from_slice(bytes);
             }
             None => self.too_long = true,
         }
@@ -531,9 +595,13 @@ impl Reader<'_> {
         }
     }
 
-    fn text(&mut self) -> Option<String> {
+    fn bytes(&mut self) -> Option<&[u8]> {
         let len = u32::from_be_bytes(self.take(4)?.try_into().ok()?) as usize;
-        String::from_utf8(self.take(len)?.to_vec()).ok()
+        self.take(len)
+    }
+
+    fn text(&mut self) -> Option<String> {
+        String::from_utf8(self.bytes()?.to_vec()).ok()
     }
 
     fn skip_text(&mut self) -> Option<()> {

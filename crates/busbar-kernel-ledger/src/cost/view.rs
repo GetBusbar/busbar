@@ -68,7 +68,7 @@ use std::collections::BTreeMap;
 
 use busbar_contract::count::Count;
 
-use crate::cost::history::{History, HistorySeq, HistoryView};
+use crate::cost::history::{EntryKey, History, HistoryView};
 use crate::cost::posting::{checked_apply_tier, STANDARD_TIER_BP};
 use crate::cost::rate::ClassPrice;
 use crate::cost::{NANOS_PER_CENT, NANOS_PER_MICRO};
@@ -230,7 +230,7 @@ pub enum MoneyError {
     /// a refusal, never for free.
     LaneUnpriced {
         /// The entry that was in force.
-        card_seq: HistorySeq,
+        card_seq: Option<EntryKey>,
         /// The lane the card is silent about.
         lane: String,
     },
@@ -240,7 +240,7 @@ pub enum MoneyError {
     /// the reserved four — bills as nothing on those paths.
     ClassUnpriced {
         /// The entry that was in force.
-        card_seq: HistorySeq,
+        card_seq: Option<EntryKey>,
         /// The lane the class was reported on.
         lane: String,
         /// The class the card is silent about.
@@ -260,7 +260,7 @@ impl std::fmt::Display for MoneyError {
             MoneyError::LaneUnpriced { card_seq, lane } => write!(
                 f,
                 "rate-card entry {} names no price for lane `{lane}`",
-                card_seq.get()
+                card_seq.map_or_else(|| "unbound".to_owned(), |key| key.to_string())
             ),
             MoneyError::ClassUnpriced {
                 card_seq,
@@ -269,7 +269,7 @@ impl std::fmt::Display for MoneyError {
             } => write!(
                 f,
                 "rate-card entry {} names no price for class `{class}` on lane `{lane}`",
-                card_seq.get()
+                card_seq.map_or_else(|| "unbound".to_owned(), |key| key.to_string())
             ),
             MoneyError::Overflow => {
                 f.write_str("the money arithmetic left the representable range")
@@ -348,7 +348,7 @@ enum Source<'a> {
     /// A dated history snapshot: each row resolves `card_at(row.arrived_ms)` (#79).
     View(HistoryView<'a>),
     /// One card pinned by the caller, answering for every instant.
-    Card(HistorySeq, &'a crate::cost::rate::RateCard),
+    Card(Option<EntryKey>, &'a crate::cost::rate::RateCard),
 }
 
 /// **THE ONE FUNCTION, AS AN ACCUMULATOR.** `money = f(ledger counts, dated ratecard)`.
@@ -396,22 +396,31 @@ impl<'a> Tally<'a> {
 
     /// A tally pricing every row against ONE card — the reads that hold a current card rather than
     pub fn at_card(card: &'a crate::cost::rate::RateCard) -> Tally<'a> {
-        Tally::at_card_seq(HistorySeq::OPENING, card)
+        Tally {
+            source: Source::Card(None, card),
+            pre_tier: Vec::new(),
+        }
     }
 
     /// [`Self::at_card`] naming which history entry the pinned card is, for refusals that report it.
-    pub fn at_card_seq(card_seq: HistorySeq, card: &'a crate::cost::rate::RateCard) -> Tally<'a> {
+    pub fn at_card_seq(card_seq: EntryKey, card: &'a crate::cost::rate::RateCard) -> Tally<'a> {
         Tally {
-            source: Source::Card(card_seq, card),
+            source: Source::Card(Some(card_seq), card),
             pre_tier: Vec::new(),
         }
     }
 
     /// Resolve the card for an instant.
-    fn resolve(&self, at: u64) -> Result<(HistorySeq, &crate::cost::rate::RateCard), MoneyError> {
+    fn resolve(
+        &self,
+        at: u64,
+    ) -> Result<(Option<EntryKey>, &crate::cost::rate::RateCard), MoneyError> {
         match &self.source {
             Source::Card(seq, card) => Ok((*seq, *card)),
-            Source::View(view) => view.card_at(at).ok_or(MoneyError::NoCardInForce { at }),
+            Source::View(view) => view
+                .card_at(at)
+                .map(|(key, card)| (Some(key), card))
+                .ok_or(MoneyError::NoCardInForce { at }),
         }
     }
 
