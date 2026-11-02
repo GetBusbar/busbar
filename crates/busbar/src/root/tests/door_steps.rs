@@ -2539,55 +2539,195 @@ pub(crate) mod tool_door {
         let port = listener.local_addr().expect("its address").port();
         let (sent, heard) = tokio::sync::mpsc::unbounded_channel();
         tokio::spawn(async move {
-            while let Ok((mut socket, _)) = listener.accept().await {
-                let sent = sent.clone();
-                let answer = Arc::clone(&answer);
-                tokio::spawn(async move {
-                    let mut buf = vec![0u8; 16 * 1024];
-                    let mut got = Vec::new();
-                    // The head, then the body its content-length states.
-                    loop {
-                        let Ok(n) = socket.read(&mut buf).await else {
-                            return;
-                        };
-                        if n == 0 {
-                            return;
-                        }
-                        got.extend_from_slice(&buf[..n]);
-                        let text = String::from_utf8_lossy(&got).to_string();
-                        if let Some(at) = text.find("\r\n\r\n") {
-                            let length = text[..at]
-                                .lines()
-                                .find_map(|l| {
-                                    let (name, value) = l.split_once(':')?;
-                                    name.eq_ignore_ascii_case("content-length")
-                                        .then(|| value.trim().parse::<usize>().ok())
-                                        .flatten()
-                                })
-                                .unwrap_or(0);
-                            if got.len() >= at + 4 + length {
-                                let _ = sent.send(text);
-                                break;
-                            }
-                        }
-                    }
-                    let (status, answer) = answer(&String::from_utf8_lossy(&got));
-                    if status == STALL {
-                        tokio::time::sleep(std::time::Duration::from_secs(120)).await;
-                        drop(socket);
-                        return;
-                    }
-                    let reply = format!(
-                        "HTTP/1.1 {status} X\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\
-                         connection: close\r\n\r\n{answer}",
-                        answer.len()
-                    );
-                    let _ = socket.write_all(reply.as_bytes()).await;
-                    let _ = socket.shutdown().await;
-                });
+            while let Ok((socket, _)) = listener.accept().await {
+                tokio::spawn(tool_connection(socket, sent.clone(), Arc::clone(&answer)));
             }
         });
         (port, heard)
+    }
+
+    async fn tool_connection<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
+        mut socket: S,
+        sent: tokio::sync::mpsc::UnboundedSender<String>,
+        answer: Replies,
+    ) {
+        let mut buf = vec![0u8; 16 * 1024];
+        let mut got = Vec::new();
+        // The head, then the body its content-length states.
+        loop {
+            let Ok(n) = socket.read(&mut buf).await else {
+                return;
+            };
+            if n == 0 {
+                return;
+            }
+            got.extend_from_slice(&buf[..n]);
+            let text = String::from_utf8_lossy(&got).to_string();
+            if let Some(at) = text.find("\r\n\r\n") {
+                let length = text[..at]
+                    .lines()
+                    .find_map(|l| {
+                        let (name, value) = l.split_once(':')?;
+                        name.eq_ignore_ascii_case("content-length")
+                            .then(|| value.trim().parse::<usize>().ok())
+                            .flatten()
+                    })
+                    .unwrap_or(0);
+                if got.len() >= at + 4 + length {
+                    let _ = sent.send(text);
+                    break;
+                }
+            }
+        }
+        let (status, answer) = answer(&String::from_utf8_lossy(&got));
+        if status == STALL {
+            tokio::time::sleep(std::time::Duration::from_secs(120)).await;
+            drop(socket);
+            return;
+        }
+        let reply = format!(
+            "HTTP/1.1 {status} X\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\
+             connection: close\r\n\r\n{answer}",
+            answer.len()
+        );
+        let _ = socket.write_all(reply.as_bytes()).await;
+        let _ = socket.shutdown().await;
+    }
+
+    /// A real HTTPS tool server, authenticated by its generated CA and actual leaf SPKI pin.
+    /// The listener owns its connection tasks; `close` (or drop on a failing test) ends them all.
+    pub(crate) struct TlsToolServer {
+        pub(crate) port: u16,
+        pub(crate) heard: tokio::sync::mpsc::UnboundedReceiver<String>,
+        pub(crate) pin: String,
+        tls: Arc<rustls::ClientConfig>,
+        task: Option<tokio::task::JoinHandle<()>>,
+    }
+
+    impl TlsToolServer {
+        pub(crate) async fn new() -> Self {
+            use rcgen::PublicKeyData as _;
+            busbar_core_connector::tls::install_crypto_provider();
+            let ca_key = rcgen::KeyPair::generate().expect("a CA key");
+            let mut ca_params = rcgen::CertificateParams::new(Vec::new()).expect("CA params");
+            ca_params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+            let ca = ca_params.self_signed(&ca_key).expect("the CA");
+            let issuer = rcgen::Issuer::new(ca_params, ca_key);
+            let leaf_key = rcgen::KeyPair::generate().expect("a leaf key");
+            let leaf = rcgen::CertificateParams::new(vec!["127.0.0.1".into()])
+                .expect("IP SAN")
+                .signed_by(&leaf_key, &issuer)
+                .expect("the leaf");
+            let pin =
+                busbar_contract::transport::trust::key_pin(&leaf_key.subject_public_key_info());
+            let server = rustls::ServerConfig::builder()
+                .with_no_client_auth()
+                .with_single_cert(
+                    vec![leaf.der().clone()],
+                    rustls_pki_types::PrivateKeyDer::try_from(leaf_key.serialize_der())
+                        .expect("leaf key"),
+                )
+                .expect("the TLS server");
+            let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(server));
+            let tls = busbar_core_connector::tls::client::build_client_config(
+                &busbar_contract::transport::trust::EgressTrust {
+                    extra_anchors: vec![ca.der().to_vec()],
+                    ..Default::default()
+                },
+            )
+            .expect("normal certificate verification with the fixture CA added");
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("a TLS port");
+            let port = listener.local_addr().unwrap().port();
+            let (sent, heard) = tokio::sync::mpsc::unbounded_channel();
+            let answer: Replies = Arc::new(|request| {
+                (
+                    200,
+                    if request.contains("\"tools/list\"") {
+                        serde_json::json!({"jsonrpc":"2.0","id":1,"result":{"tools":tool_listing()}}).to_string()
+                    } else {
+                        ANSWER.to_string()
+                    },
+                )
+            });
+            let task = tokio::spawn(async move {
+                let mut connections = tokio::task::JoinSet::new();
+                while let Ok((socket, _)) = listener.accept().await {
+                    let acceptor = acceptor.clone();
+                    let sent = sent.clone();
+                    let answer = Arc::clone(&answer);
+                    connections.spawn(async move {
+                        if let Ok(tls) = acceptor.accept(socket).await {
+                            tool_connection(tls, sent, answer).await;
+                        }
+                    });
+                }
+            });
+            Self {
+                port,
+                heard,
+                pin,
+                tls: Arc::new(tls),
+                task: Some(task),
+            }
+        }
+
+        pub(crate) fn section(&self) -> serde_yaml::Value {
+            let mut value = section(self.port);
+            value["fs"]["url"] =
+                serde_yaml::Value::String(format!("https://127.0.0.1:{}/rpc", self.port));
+            value["fs"]["pin"] = serde_yaml::to_value(serde_json::json!({
+                "mechanism":"cert_spki", "key":self.pin
+            }))
+            .unwrap();
+            value
+        }
+
+        pub(crate) fn footing(&self) -> Footing<'static> {
+            Footing {
+                tls: Some(Arc::clone(&self.tls)),
+                ..Footing::own()
+            }
+        }
+
+        /// Compose both the served door and the App's same claims/admission map, as boot does.
+        pub(crate) fn rig(
+            &self,
+            instance: &'static str,
+            tools: serde_yaml::Value,
+            configure: &dyn Fn(
+                busbar_kernel::test_support::TestApp,
+            ) -> busbar_kernel::test_support::TestApp,
+        ) -> Rig {
+            let row = super::door_boundary::row();
+            super::door_boundary::registry(row);
+            let slot = super::door_boundary::slot_over(row, tools.clone());
+            Rig::with(
+                instance,
+                self.port,
+                None,
+                None,
+                Some(tools),
+                self.footing(),
+                &|app| super::door_boundary::dispatched(configure(app), row, &slot),
+            )
+        }
+
+        pub(crate) async fn close(mut self) {
+            if let Some(task) = self.task.take() {
+                task.abort();
+                let _ = task.await;
+            }
+        }
+    }
+
+    impl Drop for TlsToolServer {
+        fn drop(&mut self) {
+            if let Some(task) = &self.task {
+                task.abort();
+            }
+        }
     }
 
     /// A loopback port nothing listens on (bound, then released): a server that is down.
@@ -2612,6 +2752,8 @@ pub(crate) mod tool_door {
         post: Arc<NodeEndPost>,
         pub(crate) book: crate::root::durability::NodeBook,
         pub(crate) plane_key: String,
+        /// The actual door snapshot's protected-resource audience.
+        pub(crate) audience: Option<String>,
         /// The record store the kernel's services persist the plane's records in.
         pub(crate) store: Arc<busbar_kernel_testkit::test_support::store_double::MemoryStore>,
         /// The token endpoint the auth plugins' own needs reach: each RFC 8693 exchange is answered
@@ -2761,21 +2903,44 @@ pub(crate) mod tool_door {
             // The host lends the dispatcher its seal (Part 2 #54), as the root does at boot.
             let _ = dispatcher.lend_seal(busbar_kernel::seal::lend());
             // Its connection reads through a ticket (the door's `exchange`) wake on the dispatcher.
-            let connector = busbar_core_connector::process::build_with_secrets(
-                || {
-                    crate::root::connector::entries_on(
-                        &dispatcher,
-                        crate::LINKED_TRANSPORT_DOORS,
-                        &busbar_contract::transport::TransportSettings::default(),
+            let connector = if let Some(tls) = &footing.tls {
+                let entries = crate::root::connector::entries_on(
+                    &dispatcher,
+                    crate::LINKED_TRANSPORT_DOORS,
+                    &busbar_contract::transport::TransportSettings::default(),
+                )
+                .expect("the linked transport doors open");
+                Arc::new(
+                    busbar_core_connector::Connector::serving(
+                        busbar_core_connector::registry::Transports::new(entries)
+                            .expect("the transport view"),
+                        busbar_core_connector::process::judge(judge, &[]),
+                        Some(Arc::clone(tls)),
+                        dispatcher.conn_waker(),
                     )
-                },
-                judge,
-                &[],
-                dispatcher.conn_waker(),
-                busbar_core_connector::pool::PoolPosture::NONE,
-                busbar_core_connector::spawn_env::linked_spawn_secret,
-            )
-            .expect("the connector builds");
+                    .pooling(busbar_core_connector::pool::PoolPosture::NONE)
+                    .proxying(
+                        busbar_core_connector::proxy::from_env().expect("the proxy environment"),
+                    )
+                    .resolving_spawn_secrets(busbar_core_connector::spawn_env::linked_spawn_secret),
+                )
+            } else {
+                busbar_core_connector::process::build_with_secrets(
+                    || {
+                        crate::root::connector::entries_on(
+                            &dispatcher,
+                            crate::LINKED_TRANSPORT_DOORS,
+                            &busbar_contract::transport::TransportSettings::default(),
+                        )
+                    },
+                    judge,
+                    &[],
+                    dispatcher.conn_waker(),
+                    busbar_core_connector::pool::PoolPosture::NONE,
+                    busbar_core_connector::spawn_env::linked_spawn_secret,
+                )
+                .expect("the connector builds")
+            };
             let plane = bound(
                 instance,
                 &dispatcher,
@@ -2898,6 +3063,7 @@ pub(crate) mod tool_door {
             let money_steps = Arc::clone(&composed.money);
             let live = Arc::clone(&composed.live);
             let plane_key = composed.facts.plane.clone();
+            let audience = composed.snapshot.audience.clone();
             served.post = Some(Arc::clone(&post));
             let app = configure(
                 busbar_kernel_testkit::test_support::TestApp::new()
@@ -2941,6 +3107,7 @@ pub(crate) mod tool_door {
                 post,
                 book,
                 plane_key,
+                audience,
                 store,
                 tokens,
                 door_table,
@@ -2949,6 +3116,24 @@ pub(crate) mod tool_door {
                 wall,
                 live,
             })
+        }
+
+        pub(crate) fn bound_token(&self) -> String {
+            use busbar_kernel::governance::signing::TokenVerifier;
+            let signer = TokenSigner::from_secret_bytes(&[7u8; 32], DEFAULT_KID);
+            let verifier = TokenVerifier::single(signer.kid(), signer.verifying_key());
+            let generation = verifier
+                .verify(&self.token, 1_700_000_000, None)
+                .expect("plain claims")
+                .generation;
+            let audience = self.audience.as_deref().expect("the real door's audience");
+            signer.mint_for_audience(
+                &self.key.id,
+                4_000_000_000,
+                generation.as_deref(),
+                audience,
+                Some("client-1"),
+            )
         }
 
         /// The key's admitted requests on the governance ledger.
@@ -3366,6 +3551,8 @@ pub(crate) mod tool_door {
         /// `destinations.block_private_addresses`); `false` admits loopback, where the test servers
         /// listen.
         pub(crate) guarded: bool,
+        /// An additional fixture trust root, with normal certificate and peer-pin checks intact.
+        pub(crate) tls: Option<Arc<rustls::ClientConfig>>,
     }
 
     impl Footing<'_> {
@@ -3375,6 +3562,7 @@ pub(crate) mod tool_door {
                 ledger: Ledger::Memory,
                 book: None,
                 guarded: false,
+                tls: None,
             }
         }
     }
@@ -3610,6 +3798,53 @@ pub(crate) mod tool_door {
         )
     }
 
+    /// The current door refuses the old unauthenticated manifest-pin spelling at validation.
+    #[test]
+    fn an_obsolete_manifest_pin_is_still_refused_before_a_door_opens() {
+        let row = super::door_boundary::row();
+        let error = (row
+            .parse_section
+            .expect("the door parses its owned section"))(row, &section(9))
+        .err()
+        .expect("pinned_pubkey does not authenticate a server in this build");
+        assert!(
+            error.contains("pinned_pubkey") && error.contains("authenticates nothing"),
+            "{error}"
+        );
+    }
+
+    /// Same CA, URL, approvals and body as the successful served-call case; only the pin differs.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn another_peer_key_is_refused_before_the_tls_tool_server_receives_http() {
+        use rcgen::PublicKeyData as _;
+        let _one = PUBLISHING.lock().await;
+        let mut server = TlsToolServer::new().await;
+        let mut tools = server.section();
+        let another = rcgen::KeyPair::generate().expect("another real key");
+        tools["fs"]["pin"]["key"] = serde_yaml::Value::String(
+            busbar_contract::transport::trust::key_pin(&another.subject_public_key_info()),
+        );
+        let rig = server.rig("serve-door-tools-wrong-peer", tools, &|app| app);
+        let (status, bytes) = send(&rig.router, Some(&rig.bound_token()), CALL).await;
+        let body: serde_json::Value = serde_json::from_slice(&bytes).expect("a shaped failure");
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "the unreachable peer is a tool error: {body}"
+        );
+        assert_eq!(body["id"], 30, "the caller's own id: {body}");
+        assert_eq!(
+            body["result"]["isError"], true,
+            "the peer was never served: {body}"
+        );
+        assert!(
+            server.heard.try_recv().is_err(),
+            "a wrong peer pin must fail before HTTP reaches the server"
+        );
+        assert!(rig.all_ended(), "the refused unit is closed");
+        server.close().await;
+    }
+
     /// THE EXIT TEST (steps arrival, route, meter, exit): a keyed caller's `tools/call` arrives as one
     /// unit, is SERVED through the mcp door, 200, the server's tool result relayed to the caller under
     /// the caller's own id, exactly one request metered and the unit's money posted on both books, every
@@ -3618,10 +3853,12 @@ pub(crate) mod tool_door {
     async fn a_tools_call_is_served_through_the_tool_door_and_its_money_posted() {
         let _one = PUBLISHING.lock().await;
         let instance = "serve-door-tools-served";
-        let (port, mut heard) = tool_server().await;
-        let rig = Rig::new(instance, port, None);
+        let mut server = TlsToolServer::new().await;
+        let rig = server.rig(instance, server.section(), &|app| app);
+        let token = rig.bound_token();
+        let heard = &mut server.heard;
 
-        let (status, body) = send(&rig.router, Some(&rig.token), CALL).await;
+        let (status, body) = send(&rig.router, Some(&token), CALL).await;
         assert_eq!(
             status,
             StatusCode::OK,
@@ -3705,6 +3942,7 @@ pub(crate) mod tool_door {
             vec![ANSWER.len() as u64],
             "the bytes of the server's answer the plane reported: {records:?}"
         );
+        server.close().await;
     }
 
     /// THE AUTHENTICATE STEP: an unkeyed caller on the door's endpoint (it takes a credential) is
@@ -4766,7 +5004,7 @@ pub(crate) mod door_boundary {
     use busbar_kernel_testkit::test_support::{LaneSpec, MockServer, MockServerState, TestApp};
 
     use super::tool_door::{
-        rig_tools, rig_with, section, tool_server, tool_server_listing, ADMIN_TOKEN, PUBLIC_URL,
+        rig_tools, section, tool_server_listing, TlsToolServer, ADMIN_TOKEN, PUBLIC_URL,
     };
     use crate::root::serve::planes_tests::PUBLISHING;
 
@@ -4843,11 +5081,20 @@ pub(crate) mod door_boundary {
     async fn plane_slot_holds_the_one_built_object_of_each_configured_plane() {
         let _one = PUBLISHING.lock().await;
         let instance = "door-boundary-slot";
-        let (port, _heard) = tool_server().await;
+        let server = TlsToolServer::new().await;
+        let port = server.port;
         let row = row();
         registry(row);
-        let slot = slot(row, port);
-        let rig = rig_with(instance, port, None, &|app| dispatched(app, row, &slot));
+        let slot = slot_over(row, server.section());
+        let rig = super::tool_door::Rig::with(
+            instance,
+            port,
+            None,
+            None,
+            Some(server.section()),
+            server.footing(),
+            &|app| dispatched(app, row, &slot),
+        );
         let held = rig
             .app
             .plane_slot(row.key)
@@ -4867,6 +5114,7 @@ pub(crate) mod door_boundary {
                 rig.door_table
             );
         }
+        server.close().await;
     }
 
     /// THE MODEL PLANE'S HALF OF THE BOUNDARY: the door that serves the `pools` map, composed as
@@ -5011,30 +5259,39 @@ pub(crate) mod door_boundary {
     async fn an_audience_bound_token_is_confined_to_its_door_plane_through_the_composition() {
         let _one = PUBLISHING.lock().await;
         let instance = "door-boundary-confined";
-        let (port, _heard) = tool_server().await;
+        let server = TlsToolServer::new().await;
+        let port = server.port;
         let upstream = MockServer::new(Arc::new(MockServerState::new())).await;
         let row = row();
         registry(row);
-        let slot = slot(row, port);
+        let slot = slot_over(row, server.section());
         let (audience, metadata) = (row.admission)(&*slot)
             .map(|a| (a.audience, a.resource_metadata))
             .expect("the door binds an audience under the public base URL");
         let base_url = upstream.base_url();
-        let rig = rig_with(instance, port, None, &|app| {
-            dispatched(
-                app.lane(
-                    LaneSpec::new(
-                        "test-model",
-                        busbar_kernel_testkit::test_support::protocols::PROTO_ANTHROPIC,
-                        &base_url,
+        let rig = super::tool_door::Rig::with(
+            instance,
+            port,
+            None,
+            None,
+            Some(server.section()),
+            server.footing(),
+            &|app| {
+                dispatched(
+                    app.lane(
+                        LaneSpec::new(
+                            "test-model",
+                            busbar_kernel_testkit::test_support::protocols::PROTO_ANTHROPIC,
+                            &base_url,
+                        )
+                        .api_key("busbar-upstream-key"),
                     )
-                    .api_key("busbar-upstream-key"),
+                    .pool("pa", &[(0, 1)]),
+                    row,
+                    &slot,
                 )
-                .pool("pa", &[(0, 1)]),
-                row,
-                &slot,
-            )
-        });
+            },
+        );
 
         // The two tokens of one unrestricted key: the plain data-plane one, and its sibling minted for
         // the door's resource.
@@ -5253,6 +5510,7 @@ pub(crate) mod door_boundary {
         }
         handle.abort();
         upstream.shutdown().await;
+        server.close().await;
     }
 
     /// One admin request on `rig`'s admin router: its status and JSON body.
@@ -5709,6 +5967,7 @@ mod spent_ledger {
                 ledger,
                 book,
                 guarded: false,
+                tls: None,
             },
         )
     }
@@ -6675,6 +6934,7 @@ mod task_continuation {
                 ledger: Ledger::Rows(std::sync::Arc::clone(rows), max_live),
                 book,
                 guarded: false,
+                tls: None,
             },
         )
     }

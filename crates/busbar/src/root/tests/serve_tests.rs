@@ -4178,6 +4178,7 @@ mod tools_door {
                 ledger: Ledger::Memory,
                 book: None,
                 guarded: true,
+                tls: None,
             },
             &|app| app,
         );
