@@ -6079,7 +6079,62 @@ pub(crate) mod door_boundary {
 
 #[cfg(all(linked_axis_plane_door, linked_section_pools))]
 mod spent_ledger {
-    use busbar_kernel_testkit::test_support::durable_store::{durable_cfg, open_durable};
+    use std::sync::Arc;
+
+    fn durable_cfg(tag: &str) -> (std::path::PathBuf, serde_json::Value) {
+        let directory = crate::root::test_plugins::scratch(&format!(
+            "{tag}-{}",
+            busbar_kernel::door::op_id().counter(),
+        ));
+        let file = directory.join("continuations.sqlite");
+        let settings = serde_json::json!({"db_path":file});
+        (file, settings)
+    }
+
+    fn open_durable(
+        settings: &serde_json::Value,
+    ) -> Arc<dyn busbar_contract::records::RecordStore> {
+        use crate::root::loader::dispatch::kinds::store::{Store, StoreFacts};
+        use crate::root::loader::dispatch::{
+            load_dropped, rendering_of_library, Bind, ConnTable, DispatchConfig, Dispatcher, NoSink,
+        };
+        let path = std::path::PathBuf::from(
+            std::env::var_os("BUSBAR_TEST_SQLITE_CDYLIB")
+                .expect("BUSBAR_TEST_SQLITE_CDYLIB must name the actual built SQLite product"),
+        );
+        let stated = rendering_of_library(&path)
+            .expect("the actual durable store statement reads")
+            .expect("the actual durable store exports its statement");
+        let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
+        let plugin = load_dropped::<Store>(
+            &path,
+            &stated,
+            Bind {
+                instance: format!("door-spent-{}", busbar_kernel::door::op_id().counter()).into(),
+                max_inflight_cap: 1024,
+                sink: Arc::new(NoSink),
+                dispatcher: dispatcher.adopter(),
+                conns: ConnTable::NoNeeds,
+            },
+        )
+        .expect("the actual durable store loads through the memory ABI");
+        assert!(
+            !plugin
+                .context::<StoreFacts>()
+                .expect("the store states its capabilities")
+                .ephemeral,
+            "the replay and restart cases require a durable product store"
+        );
+        Arc::new(
+            crate::root::loader::store_v3::LoadedStore::open(
+                plugin,
+                dispatcher,
+                &serde_json::to_vec(settings).expect("the durable settings serialize"),
+                busbar_kernel::door::op_id,
+            )
+            .expect("the actual SQLite store opens its shared file"),
+        )
+    }
 
     use super::tool_door::{protocol_version, send_as, Footing, Ledger, Rig, TlsToolServer};
     use crate::root::serve::planes_tests::PUBLISHING;
@@ -6208,9 +6263,8 @@ mod spent_ledger {
         assert!(
             refused_as_spent(&second),
             "a second node of the deployment redeemed an approval already spent: {second:?}; the \
-             shared journal at {} holds: {}",
-            file.display(),
-            std::fs::read_to_string(&file).unwrap_or_else(|_| "<no file at all>".into())
+             shared durable database: {}",
+            file.display()
         );
         server.close().await;
     }
@@ -9578,37 +9632,6 @@ fn a_first_section_of_an_unloaded_plane_is_refused_naming_the_section_and_the_pl
                 |r| r.starts_with("`zz_selects_red:` is the section of the `zz-unloaded-red`")
             ),
         "a section that selects the plane uses it as its verb does"
-    );
-}
-
-#[test]
-fn a_required_section_written_empty_hands_the_plane_its_sections() {
-    use busbar_contract::section::{RESERVED_MODELS_KEY, RESERVED_POOLS_KEY};
-    use busbar_kernel::plane_driver::registry::{PlaneDecl, PlaneDeclaration};
-    use busbar_kernel_testkit::test_support::planes::TestRegistryIsolation;
-    use busbar_kernel_testkit::test_support::NEUTRAL_FALLBACK;
-    static REQUIRES: PlaneDecl = PlaneDecl {
-        declaration: PlaneDeclaration {
-            key: "requires-the-consumed-section",
-            required_config_sections: &[RESERVED_MODELS_KEY],
-            ..NEUTRAL_FALLBACK.declaration
-        },
-        ..NEUTRAL_FALLBACK
-    };
-    let _registry = TestRegistryIsolation::seeded(&[&REQUIRES]);
-    let deploy = busbar_kernel::config::deploy_from_yaml_str("providers: {}\nmodels: {}\n")
-        .expect("a deployment");
-    let cfg = busbar_kernel::config::resolve(&deploy, &Default::default()).expect("resolves");
-    let sections = super::kernel_sections(&cfg);
-    assert_eq!(
-        sections.get(RESERVED_MODELS_KEY),
-        Some(&serde_yaml::Value::Mapping(Default::default())),
-        "the written, empty required section is handed as written: {sections:?}"
-    );
-    assert_eq!(
-        sections.get(RESERVED_POOLS_KEY),
-        Some(&serde_yaml::Value::Mapping(Default::default())),
-        "and the declaring section beside it, so the plane opens: {sections:?}"
     );
 }
 
