@@ -105,6 +105,7 @@ async fn actual_operator_and_signing_file_reload_preserves_governance_and_fails_
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let build = |prior: Option<&busbar_kernel::state::App>| {
+        let config = busbar_kernel::config::resolve(&deploy, &Default::default())?;
         let anchor = busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)?;
         let overlay = busbar_kernel::config::overlay::OverlayStore::new(
             anchor
@@ -114,7 +115,7 @@ async fn actual_operator_and_signing_file_reload_preserves_governance_and_fails_
                 .expect("actual conditional Store calls"),
         )?;
         busbar_kernel::appbuild::build_app_from_config_with_store(
-            config.clone(),
+            config,
             plugin_config.clone(),
             Some(overlay),
             Default::default(),
