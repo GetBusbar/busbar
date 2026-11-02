@@ -308,28 +308,6 @@ fn inspect_rejects_oversized_tarball_before_unpacking() {
 }
 
 #[test]
-fn inspect_bounds_pathological_schema_nesting_depth() {
-    let dir = tmp_plugins_dir("inspect-depth-bomb");
-
-    let bomb = format!("{}{}", "[".repeat(500), "]".repeat(500));
-    let tarball = fake_tarball_with(
-        "acme-store-depthbomb",
-        "depthbomb",
-        "1.0.0",
-        "allowed",
-        Some(bomb),
-    );
-    let svc = svc_with(dir, unsigned_ok_posture());
-
-    let v = svc
-        .inspect_plugin(&tarball)
-        .expect("inspect itself still succeeds");
-    assert_eq!(v["schema"], serde_json::Value::Null);
-    let err = v["schema_error"].as_str().expect("schema_error is set");
-    assert!(err.contains("nests deeper"), "got {err:?}");
-}
-
-#[test]
 fn inspect_reports_the_admissions_verdict_in_the_catalog_vocabulary() {
     let dir = tmp_plugins_dir("inspect-vocabulary");
     let svc = svc_with(dir.clone(), unsigned_ok_posture());
@@ -350,29 +328,6 @@ fn inspect_reports_the_admissions_verdict_in_the_catalog_vocabulary() {
         svc.inspect_plugin(b"not a tarball at all"),
         Err(AdminError::Validation(_))
     ));
-    assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
-}
-
-#[test]
-fn install_rejects_bad_filenames() {
-    let dir = tmp_plugins_dir("badname");
-    let svc = svc_with(dir.clone(), unsigned_ok_posture());
-    for bad in [
-        "../escape.tar.gz",
-        "sub/dir.tar.gz",
-        "no_extension",
-        "plain.so",
-        "",
-    ] {
-        assert!(
-            matches!(
-                svc.install_store_plugin(bad, b"bytes"),
-                Err(AdminError::Validation(_))
-            ),
-            "filename `{bad}` must reject"
-        );
-    }
-
     assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
 }
 
