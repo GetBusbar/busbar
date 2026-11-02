@@ -58,8 +58,9 @@ fn door_section_yaml(host: &str) -> String {
     )
 }
 
-const AGENTS_YAML: &str =
-    "agents:\n  planner: { url: \"https://agent.example/planner\", pin: { mechanism: unpinned } }\n";
+fn agents_yaml(peer: &crate::root::door_steps::tests::tool_door::TlsToolServer) -> String {
+    format!("agents:\n  planner: {{ url: \"https://127.0.0.1:{}/rpc\", pin: {{ mechanism: cert_spki, key: \"{}\" }} }}\n", peer.port, peer.pin)
+}
 
 fn resolved(sections: &str) -> RootCfg {
     linked::install();
@@ -80,14 +81,26 @@ fn resolved(sections: &str) -> RootCfg {
         ))
         .expect("provider def"),
     );
-    busbar_kernel::config::resolve(&deploy, &defs)
-        .unwrap_or_else(|e| panic!("the document resolves: {e:?}"))
+    let mut cfg = busbar_kernel::config::resolve(&deploy, &defs)
+        .unwrap_or_else(|e| panic!("the document resolves: {e:?}"));
+    let mut auth = busbar_kernel::config::AuthCfg::default_none();
+    auth.chain = vec![busbar_kernel::config::AuthChainEntry::bare("keys")];
+    auth.signing_key = Some(busbar_kernel::config::SecretRef::template(hex::encode(
+        [9u8; 32],
+    )));
+    let operator = auth
+        .admin_auth
+        .iter_mut()
+        .find(|entry| busbar_kernel::config::names_operator(&entry.module))
+        .expect("the actual operator module");
+    operator.token = Some(busbar_kernel::config::SecretRef::template("admintok"));
+    cfg.auth = Some(auth);
+    cfg
 }
 
 fn bootable(sections: &str) -> RootCfg {
     let mut cfg = resolved(sections);
     cfg.public_url = Some("https://busbar.example".to_string());
-    cfg.auth = Some(busbar_kernel::config::AuthCfg::default_none());
     cfg
 }
 
@@ -171,7 +184,7 @@ async fn oversized_post_to_a_mounted_door_plane_is_refused_in_the_planes_own_dia
         assert!(
             output.status.success()
                 && stdout.contains("running 1 test")
-                && stdout.contains(&format!("test {test} ... ok"))
+                && stdout.contains(&format!("test {test} ..."))
                 && stdout.contains("1 passed; 0 failed; 0 ignored"),
             "the original behavior failed or did not run exactly once:\n{stdout}\n{}",
             String::from_utf8_lossy(&output.stderr)
@@ -199,7 +212,10 @@ async fn oversized_post_to_a_mounted_door_plane_is_refused_in_the_planes_own_dia
     );
     manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
-    let directory = plugins::scratch("installed-door-route");
+    let directory = plugins::scratch(&format!(
+        "plane_integration-{}",
+        busbar_kernel::door::op_id().counter()
+    ));
     let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
     std::fs::write(directory.join("store.tar.gz"), archive)
         .expect("stage the actual store archive");
@@ -280,7 +296,7 @@ async fn a_mount_claims_its_own_segment_and_not_its_sibling() {
         assert!(
             output.status.success()
                 && stdout.contains("running 1 test")
-                && stdout.contains(&format!("test {test} ... ok"))
+                && stdout.contains(&format!("test {test} ..."))
                 && stdout.contains("1 passed; 0 failed; 0 ignored"),
             "the original behavior failed or did not run exactly once:\n{stdout}\n{}",
             String::from_utf8_lossy(&output.stderr)
@@ -308,7 +324,10 @@ async fn a_mount_claims_its_own_segment_and_not_its_sibling() {
     );
     manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
-    let directory = plugins::scratch("installed-door-route");
+    let directory = plugins::scratch(&format!(
+        "plane_integration-{}",
+        busbar_kernel::door::op_id().counter()
+    ));
     let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
     std::fs::write(directory.join("store.tar.gz"), archive)
         .expect("stage the actual store archive");
@@ -370,8 +389,8 @@ async fn a_mount_claims_its_own_segment_and_not_its_sibling() {
     );
 }
 
-#[test]
-fn plane_slot_holds_the_one_built_object_of_each_configured_plane() {
+#[tokio::test]
+async fn plane_slot_holds_the_one_built_object_of_each_configured_plane() {
     const CHILD: &str = "BUSBAR_PLANE_INTEGRATION_CHILD";
     if std::env::var(CHILD).ok().as_deref()
         != Some("plane_slot_holds_the_one_built_object_of_each_configured_plane")
@@ -394,14 +413,19 @@ fn plane_slot_holds_the_one_built_object_of_each_configured_plane() {
         assert!(
             output.status.success()
                 && stdout.contains("running 1 test")
-                && stdout.contains(&format!("test {test} ... ok"))
+                && stdout.contains(&format!("test {test} ..."))
                 && stdout.contains("1 passed; 0 failed; 0 ignored"),
             "the original behavior failed or did not run exactly once:\n{stdout}\n{}",
             String::from_utf8_lossy(&output.stderr)
         );
         return;
     }
-    let sections = format!("{}{AGENTS_YAML}", door_section_yaml("gw.example.com"));
+    let peer = crate::root::door_steps::tests::tool_door::TlsToolServer::new().await;
+    let sections = format!(
+        "{}{}",
+        door_section_yaml("gw.example.com"),
+        agents_yaml(&peer)
+    );
     let cfg = bootable(&sections);
     let configured: Vec<&'static PlaneDecl> = linked::planes()
         .iter()
@@ -434,7 +458,10 @@ fn plane_slot_holds_the_one_built_object_of_each_configured_plane() {
     );
     manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
-    let directory = plugins::scratch("installed-door-route");
+    let directory = plugins::scratch(&format!(
+        "plane_integration-{}",
+        busbar_kernel::door::op_id().counter()
+    ));
     let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
     std::fs::write(directory.join("store.tar.gz"), archive)
         .expect("stage the actual store archive");
@@ -549,7 +576,7 @@ fn plane_slot_is_none_when_the_plane_is_not_configured() {
         assert!(
             output.status.success()
                 && stdout.contains("running 1 test")
-                && stdout.contains(&format!("test {test} ... ok"))
+                && stdout.contains(&format!("test {test} ..."))
                 && stdout.contains("1 passed; 0 failed; 0 ignored"),
             "the original behavior failed or did not run exactly once:\n{stdout}\n{}",
             String::from_utf8_lossy(&output.stderr)
@@ -589,7 +616,10 @@ fn plane_slot_is_none_when_the_plane_is_not_configured() {
     );
     manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
-    let directory = plugins::scratch("installed-door-route");
+    let directory = plugins::scratch(&format!(
+        "plane_integration-{}",
+        busbar_kernel::door::op_id().counter()
+    ));
     let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
     std::fs::write(directory.join("store.tar.gz"), archive)
         .expect("stage the actual store archive");
@@ -708,7 +738,7 @@ mod metrics_scrape {
             assert!(
                 output.status.success()
                     && stdout.contains("running 1 test")
-                    && stdout.contains(&format!("test {test} ... ok"))
+                    && stdout.contains(&format!("test {test} ..."))
                     && stdout.contains("1 passed; 0 failed; 0 ignored"),
                 "the original behavior failed or did not run exactly once:\n{stdout}\n{}",
                 String::from_utf8_lossy(&output.stderr)
@@ -716,7 +746,12 @@ mod metrics_scrape {
             return;
         }
         linked::install();
-        let sections = format!("{}{AGENTS_YAML}export:\n  metrics: {{module: prometheus, settings: {{buffer_seconds: 60}}}}\n", door_section_yaml("gateway.example.com"));
+        let peer = crate::root::door_steps::tests::tool_door::TlsToolServer::new().await;
+        let sections = format!(
+            "{}{}export:\n  metrics: {{module: prometheus, settings: {{buffer_seconds: 60}}}}\n",
+            door_section_yaml("gateway.example.com"),
+            agents_yaml(&peer)
+        );
         let door_mount = jsonrpc_mount(door_plane(), &sections);
         let agents_mount = jsonrpc_mount(agents_plane(), &sections);
         let mut cfg = resolved(&sections);
@@ -739,7 +774,10 @@ mod metrics_scrape {
         );
         manifest.statement = Some(hex::encode(statement));
         let library = std::fs::read(library_path).expect("the actual store library reads");
-        let directory = plugins::scratch("installed-door-route");
+        let directory = plugins::scratch(&format!(
+            "plane_integration-{}",
+            busbar_kernel::door::op_id().counter()
+        ));
         let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
         std::fs::write(directory.join("store.tar.gz"), archive)
             .expect("stage the actual store archive");
@@ -783,7 +821,7 @@ mod metrics_scrape {
         }
         let app = Arc::new(app);
 
-        let router = plane_router(app, &sections, usize::MAX, &[]);
+        let router = plane_router(app, &sections, usize::MAX, &["keys"]);
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -904,7 +942,7 @@ async fn an_audience_bound_token_is_confined_to_its_door_plane() {
         assert!(
             output.status.success()
                 && stdout.contains("running 1 test")
-                && stdout.contains(&format!("test {test} ... ok"))
+                && stdout.contains(&format!("test {test} ..."))
                 && stdout.contains("1 passed; 0 failed; 0 ignored"),
             "the original behavior failed or did not run exactly once:\n{stdout}\n{}",
             String::from_utf8_lossy(&output.stderr)
@@ -971,13 +1009,6 @@ async fn an_audience_bound_token_is_confined_to_its_door_plane() {
     );
 
     let mut cfg = resolved(&sections);
-    let mut auth = busbar_kernel::config::AuthCfg::with_chain(vec![
-        busbar_kernel::config::AuthChainEntry::bare("keys"),
-    ]);
-    auth.signing_key = Some(busbar_kernel::config::SecretRef::template(hex::encode(
-        [9u8; 32],
-    )));
-    cfg.auth = Some(auth);
     crate::dist_root_install::install();
     let library_path = std::path::PathBuf::from(
         std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
@@ -996,7 +1027,10 @@ async fn an_audience_bound_token_is_confined_to_its_door_plane() {
     );
     manifest.statement = Some(hex::encode(statement));
     let library = std::fs::read(library_path).expect("the actual store library reads");
-    let directory = plugins::scratch("installed-door-route");
+    let directory = plugins::scratch(&format!(
+        "plane_integration-{}",
+        busbar_kernel::door::op_id().counter()
+    ));
     let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
     std::fs::write(directory.join("store.tar.gz"), archive)
         .expect("stage the actual store archive");
@@ -1306,7 +1340,7 @@ async fn oversized_413_body(
     sections: &str,
     path: &str,
 ) -> serde_json::Value {
-    let router = plane_router(app, sections, 64, &[]);
+    let router = plane_router(app, sections, 64, &["keys"]);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind");

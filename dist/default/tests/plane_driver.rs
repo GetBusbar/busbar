@@ -1117,7 +1117,37 @@ fn a_declared_admin_route_reaches_serve_and_an_undeclared_one_is_refused() {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
 
-    let _ = busbar_kernel_testkit::test_support::TestApp::new().build();
+    crate::dist_root_install::install();
+    let deploy = busbar_kernel::config::deploy_from_yaml_str(
+        "store: {module: memory}\nauth: {chain: [], admin_auth: []}\nproviders: {}\nmodels: {}\n",
+    )
+    .expect("the admin-route deployment parses");
+    let config = busbar_kernel::config::resolve(&deploy, &Default::default())
+        .expect("the admin-route deployment resolves");
+    let store = crate::root::real_store::store();
+    let rules: Arc<dyn busbar_kernel::appbuild::RootRules> =
+        Arc::new(crate::root::door_steps::Rules::default());
+    let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
+        config,
+        Default::default(),
+        None,
+        Default::default(),
+        Default::default(),
+        (None, None),
+        None,
+        &rules,
+        Some(busbar_contract::store_calls::OpenedStore {
+            records: store.clone(),
+            calls: Some(store),
+        }),
+    )
+    .expect("the product builds the admin-route deployment");
+    limits.keep().expect("the admin-route limits commit");
+    if let Some(rotate) = rotate {
+        rotate();
+    }
+    let app = Arc::new(app);
+    busbar_kernel::audit::auditlog::register_test_audit_stream(&app);
     for way in ways() {
         let item = format!("{way:?}").to_lowercase();
         let act = format!("/items/{item}/act");

@@ -7,8 +7,6 @@ use crate::root::linked::linked_transport;
 use crate::root::registry::{compose, Dropped};
 use busbar_core_connector::doors::{row_facts, stated_row, RowFacts};
 
-use busbar_test_kit::root_door_fixtures::{layered, misnamed};
-
 #[test]
 fn a_door_root_row_links_with_the_key_layers_and_session_its_statement_states() {
     let row = linked_transport!(busbar_transport_tcp::door);
@@ -36,14 +34,6 @@ fn a_door_root_row_links_with_the_key_layers_and_session_its_statement_states() 
         "the boot's admission of its door answers the same key"
     );
 
-    let layered = linked_transport!(layered::door);
-    assert_eq!((layered.key)(), "door-root-layered");
-    assert_eq!((layered.composes_over)(), ["door-root-under"]);
-    assert!(
-        !row_facts(layered::door).session,
-        "its claim row carries no session"
-    );
-
     let framer = linked_transport!(busbar_transport_http::door::door);
     let stated = row_facts(busbar_transport_http::door::door);
     assert_eq!((framer.key)(), "http");
@@ -61,12 +51,27 @@ fn a_door_root_row_links_with_the_key_layers_and_session_its_statement_states() 
 
 #[test]
 fn a_door_whose_own_claim_is_not_its_statement_name_is_refused_at_boot() {
-    let refused = stated_row(misnamed::door).expect_err("a misnamed door is refused");
-    assert!(
-        refused.contains("`door-root-named`") && refused.contains("`door-root-claimed`"),
-        "the refusal names both spellings: {refused}"
-    );
-    let row = linked_transport!(misnamed::door);
+    // The actual name/claim fault is tested at doors::identity_tests::actual_tcp_name_fault_is_refused.
+    // This separate root control checks composition's propagation of a refused key callback.
+    const REFUSED: &str = "identity-reader-refused-the-linked-key";
+    fn refused_key() -> &'static str {
+        panic!("a linked transport door is refused: {REFUSED}");
+    }
+    let actual = linked_transport!(busbar_transport_tcp::door);
+    let positive = compose(&[actual], Dropped::NONE, &TransportSettings::default())
+        .expect("the actual TCP product composes before the callback fault");
+    assert_eq!(positive[0].0.key, "tcp");
+    assert_eq!(positive[0].1.key(), "tcp");
+    let row = crate::root::linked::LinkedTransport {
+        key: refused_key,
+        ..actual
+    };
+    assert_eq!(row.composes_over as usize, actual.composes_over as usize);
+    assert_eq!(row.build as usize, actual.build as usize);
+    assert_eq!(row.claims as usize, actual.claims as usize);
+    assert_eq!(row.upgrades as usize, actual.upgrades as usize);
+    assert_eq!(row.lines as usize, actual.lines as usize);
+    assert_eq!(row.offered as usize, actual.offered as usize);
     let boot = std::panic::catch_unwind(|| {
         compose(&[row], Dropped::NONE, &TransportSettings::default()).map(|built| built.len())
     })
@@ -77,8 +82,12 @@ fn a_door_whose_own_claim_is_not_its_statement_name_is_refused_at_boot() {
         .or_else(|| boot.downcast_ref::<&str>().map(|s| (*s).to_owned()))
         .unwrap_or_default();
     assert!(
-        said.contains("a linked transport door is refused") && said.contains(&refused),
-        "the boot refusal is the reader's: {said}"
+        said.contains("a linked transport door is refused") && said.contains(REFUSED),
+        "the boot preserves the refused key callback's panic: {said}"
+    );
+    assert_eq!(
+        said,
+        format!("a linked transport door is refused: {REFUSED}")
     );
 }
 

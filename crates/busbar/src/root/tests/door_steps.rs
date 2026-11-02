@@ -48,6 +48,8 @@ async fn routing_recipe_preserves_configured_float_prices_before_ranking() {
         },
     )]);
     let mut app = {
+        #[cfg(distribution_root)]
+        crate::dist_root_install::install();
         let library_path = std::path::PathBuf::from(
             std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
                 .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual built store"),
@@ -176,6 +178,8 @@ async fn routing_recipe_uses_the_admitted_planes_card_and_keeps_unknown_prices_u
         };
         let card = BTreeMap::from([(super::plane_lane("p", "a"), entry)]);
         let mut generation = {
+            #[cfg(distribution_root)]
+            crate::dist_root_install::install();
             let library_path = std::path::PathBuf::from(
                 std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
                     .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual built store"),
@@ -303,6 +307,8 @@ async fn routing_recipe_uses_the_admitted_planes_card_and_keeps_unknown_prices_u
         }
     }
     let no_card = steps(Arc::new({
+        #[cfg(distribution_root)]
+        crate::dist_root_install::install();
         let library_path = std::path::PathBuf::from(
             std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
                 .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual built store"),
@@ -862,6 +868,8 @@ fn a_units_principal_is_recorded_from_authenticate_until_its_steps_drop() {
             &pools,
             std::sync::Arc::new(|_: &str| None),
             std::sync::Arc::new({
+                #[cfg(distribution_root)]
+                crate::dist_root_install::install();
                 let library_path = std::path::PathBuf::from(
                     std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
                         .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual built store"),
@@ -988,13 +996,14 @@ fn downgrade_book(
     std::sync::Arc<busbar_kernel::state::App>,
     std::sync::Arc<busbar_contract::records::VirtualKey>,
 ) {
+    let governance_store = crate::root::real_store::store();
     let gov = std::sync::Arc::new(
-        busbar_kernel::governance::GovState::new_with_signer(
-            crate::root::real_store::records(),
-            None,
-            None,
-        )
-        .expect("the real store opens governance"),
+        busbar_kernel::governance::GovState::new_with_signer(governance_store.clone(), None, None)
+            .expect("the real store opens governance"),
+    );
+    assert!(
+        gov.attach_store_calls(governance_store),
+        "attach the actual store calls"
     );
     let groups = std::collections::BTreeMap::from([(
         "team".to_string(),
@@ -1018,6 +1027,8 @@ fn downgrade_book(
         )
         .expect("a key");
     let mut app = {
+        #[cfg(distribution_root)]
+        crate::dist_root_install::install();
         let library_path = std::path::PathBuf::from(
             std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
                 .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual built store"),
@@ -2506,6 +2517,8 @@ pub(crate) mod tool_door {
     pub(crate) fn line_door() -> DoorFn {
         static DOOR: std::sync::OnceLock<DoorFn> = std::sync::OnceLock::new();
         *DOOR.get_or_init(|| {
+            #[cfg(distribution_root)]
+            crate::dist_root_install::install();
             let section = endpoint_section();
             let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
             crate::root::connector::install_io(&dispatcher);
@@ -3284,6 +3297,8 @@ pub(crate) mod tool_door {
 
             let tables = busbar_kernel::plane_driver::serve::ServeTables::default();
             let mut app = {
+                #[cfg(distribution_root)]
+                crate::dist_root_install::install();
                 let library_path = std::path::PathBuf::from(
                     std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
                         .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual built store"),
@@ -3931,6 +3946,20 @@ pub(crate) mod tool_door {
     struct ClaimsIn(Arc<Rows>, Arc<dyn busbar_contract::records::RecordStore>);
 
     impl busbar_kernel::host_records::RecordRows for ClaimsIn {
+        fn supports_record_transaction(&self) -> bool {
+            busbar_kernel::host_records::RecordRows::supports_record_transaction(&*self.0)
+        }
+
+        fn record_transaction(
+            &self,
+            request: &busbar_contract::abi::sdk::store::conditional::Request,
+        ) -> Result<
+            busbar_contract::abi::sdk::store::conditional::Decision,
+            busbar_contract::store_calls::StoreFailure,
+        > {
+            busbar_kernel::host_records::RecordRows::record_transaction(&*self.0, request)
+        }
+
         fn claim(
             &self,
             kind: &str,
@@ -3979,28 +4008,55 @@ pub(crate) mod tool_door {
         }
     }
 
-    /// Typed record rows in memory: the store kind's record slots, for the records services; and
-    /// how many writes of a settled work handle the store refuses next.
-    #[derive(Default)]
+    /// The actual product store, with a bounded refusal of the next work-settlement writes.
     pub(crate) struct Rows(
-        pub(crate)  std::sync::Mutex<
-            BTreeMap<
-                (busbar_contract::ids::RecordSchemaId, Vec<u8>),
-                busbar_contract::kinds::RecordBytes,
-            >,
-        >,
+        Arc<crate::root::loader::store_v3::LoadedStore>,
         pub(crate) std::sync::atomic::AtomicU32,
     );
 
+    impl Default for Rows {
+        fn default() -> Self {
+            Self(
+                crate::root::real_store::store(),
+                std::sync::atomic::AtomicU32::new(0),
+            )
+        }
+    }
+
     impl busbar_kernel::host_records::RecordRows for Rows {
+        fn supports_record_transaction(&self) -> bool {
+            busbar_kernel::host_records::RecordRows::supports_record_transaction(&StoreRows(
+                self.0.clone(),
+            ))
+        }
+
+        fn record_transaction(
+            &self,
+            request: &busbar_contract::abi::sdk::store::conditional::Request,
+        ) -> Result<
+            busbar_contract::abi::sdk::store::conditional::Decision,
+            busbar_contract::store_calls::StoreFailure,
+        > {
+            busbar_kernel::host_records::RecordRows::record_transaction(
+                &StoreRows(self.0.clone()),
+                request,
+            )
+        }
+
         fn claim(
             &self,
-            _kind: &str,
-            _token: &str,
-            _expires_at: u64,
-            _now: u64,
+            kind: &str,
+            token: &str,
+            expires_at: u64,
+            now: u64,
         ) -> Result<bool, busbar_contract::kinds::StoreError> {
-            Ok(true)
+            busbar_kernel::host_records::RecordRows::claim(
+                &StoreRows(self.0.clone()),
+                kind,
+                token,
+                expires_at,
+                now,
+            )
         }
         fn record_put(
             &self,
@@ -4023,11 +4079,12 @@ pub(crate) mod tool_door {
             if refused {
                 return Err(busbar_contract::kinds::StoreError::Unavailable);
             }
-            self.0
-                .lock()
-                .expect("unpoisoned")
-                .insert((schema, key.to_vec()), value.clone());
-            Ok(())
+            busbar_kernel::host_records::RecordRows::record_put(
+                &StoreRows(self.0.clone()),
+                schema,
+                key,
+                value,
+            )
         }
 
         fn record_get(
@@ -4036,12 +4093,11 @@ pub(crate) mod tool_door {
             key: &[u8],
         ) -> Result<Option<busbar_contract::kinds::RecordBytes>, busbar_contract::kinds::StoreError>
         {
-            Ok(self
-                .0
-                .lock()
-                .expect("unpoisoned")
-                .get(&(schema, key.to_vec()))
-                .cloned())
+            busbar_kernel::host_records::RecordRows::record_get(
+                &StoreRows(self.0.clone()),
+                schema,
+                key,
+            )
         }
 
         fn record_scan(
@@ -4053,16 +4109,12 @@ pub(crate) mod tool_door {
             Vec<(Vec<u8>, busbar_contract::kinds::RecordBytes)>,
             busbar_contract::kinds::StoreError,
         > {
-            let rows = self.0.lock().expect("unpoisoned");
-            let found = rows
-                .iter()
-                .filter(|((s, k), _)| *s == schema && k.starts_with(prefix))
-                .map(|((_, k), v)| (k.clone(), v.clone()));
-            Ok(if limit == 0 {
-                found.collect()
-            } else {
-                found.take(limit as usize).collect()
-            })
+            busbar_kernel::host_records::RecordRows::record_scan(
+                &StoreRows(self.0.clone()),
+                schema,
+                prefix,
+                limit,
+            )
         }
     }
 
@@ -6079,7 +6131,62 @@ pub(crate) mod door_boundary {
 
 #[cfg(all(linked_axis_plane_door, linked_section_pools))]
 mod spent_ledger {
-    use busbar_kernel_testkit::test_support::durable_store::{durable_cfg, open_durable};
+    use std::sync::Arc;
+
+    fn durable_cfg(tag: &str) -> (std::path::PathBuf, serde_json::Value) {
+        let directory = crate::root::test_plugins::scratch(&format!(
+            "{tag}-{}",
+            busbar_kernel::door::op_id().counter(),
+        ));
+        let file = directory.join("continuations.sqlite");
+        let settings = serde_json::json!({"db_path":file});
+        (file, settings)
+    }
+
+    fn open_durable(
+        settings: &serde_json::Value,
+    ) -> Arc<dyn busbar_contract::records::RecordStore> {
+        use crate::root::loader::dispatch::kinds::store::{Store, StoreFacts};
+        use crate::root::loader::dispatch::{
+            load_dropped, rendering_of_library, Bind, ConnTable, DispatchConfig, Dispatcher, NoSink,
+        };
+        let path = std::path::PathBuf::from(
+            std::env::var_os("BUSBAR_TEST_SQLITE_CDYLIB")
+                .expect("BUSBAR_TEST_SQLITE_CDYLIB must name the actual built SQLite product"),
+        );
+        let stated = rendering_of_library(&path)
+            .expect("the actual durable store statement reads")
+            .expect("the actual durable store exports its statement");
+        let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
+        let plugin = load_dropped::<Store>(
+            &path,
+            &stated,
+            Bind {
+                instance: format!("door-spent-{}", busbar_kernel::door::op_id().counter()).into(),
+                max_inflight_cap: 1024,
+                sink: Arc::new(NoSink),
+                dispatcher: dispatcher.adopter(),
+                conns: ConnTable::NoNeeds,
+            },
+        )
+        .expect("the actual durable store loads through the memory ABI");
+        assert!(
+            !plugin
+                .context::<StoreFacts>()
+                .expect("the store states its capabilities")
+                .ephemeral,
+            "the replay and restart cases require a durable product store"
+        );
+        Arc::new(
+            crate::root::loader::store_v3::LoadedStore::open(
+                plugin,
+                dispatcher,
+                &serde_json::to_vec(settings).expect("the durable settings serialize"),
+                busbar_kernel::door::op_id,
+            )
+            .expect("the actual SQLite store opens its shared file"),
+        )
+    }
 
     use super::tool_door::{protocol_version, send_as, Footing, Ledger, Rig, TlsToolServer};
     use crate::root::serve::planes_tests::PUBLISHING;
@@ -6208,9 +6315,8 @@ mod spent_ledger {
         assert!(
             refused_as_spent(&second),
             "a second node of the deployment redeemed an approval already spent: {second:?}; the \
-             shared journal at {} holds: {}",
-            file.display(),
-            std::fs::read_to_string(&file).unwrap_or_else(|_| "<no file at all>".into())
+             shared durable database: {}",
+            file.display()
         );
         server.close().await;
     }
@@ -7212,10 +7318,8 @@ mod task_continuation {
             busbar_kernel::host_work::work_key(instance, &reference),
         );
         let state = || {
-            rows.0
-                .lock()
-                .expect("unpoisoned")
-                .get(&key)
+            busbar_kernel::host_records::RecordRows::record_get(&*rows, key.0, &key.1)
+                .expect("the actual store reads the task")
                 .and_then(|row| row.as_slice().get(1).copied())
         };
         assert_eq!(
@@ -7249,15 +7353,67 @@ pub(crate) mod hook_parity {
         prompt: &str,
         settings: serde_json::Value,
     ) -> busbar_kernel::config::HookCfg {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0")
+            .expect("the hook sidecar binds a real listener");
+        listener.set_nonblocking(true).unwrap();
+        let endpoint = format!("http://{}/hook", listener.local_addr().unwrap());
+        let listener = tokio::net::TcpListener::from_std(listener).unwrap();
+        let router = axum::Router::new().route(
+            "/hook",
+            axum::routing::post(move |axum::Json(body): axum::Json<serde_json::Value>| {
+                let settings = settings.clone();
+                async move {
+                    let rejected = settings
+                        .get("reject_if_contains")
+                        .and_then(serde_json::Value::as_str)
+                        .is_some_and(|needle| {
+                            body["request"]["messages"].to_string().contains(needle)
+                        });
+                    let reply = if rejected {
+                        serde_json::json!({"reject":{
+                            "status":settings.get("reject_status")
+                                .and_then(serde_json::Value::as_u64).unwrap_or(403),
+                            "message":"blocked by test gate"
+                        }})
+                    } else if body["op"] == "transform" {
+                        settings
+                            .get("raw_transform_reply")
+                            .cloned()
+                            .unwrap_or_else(|| serde_json::json!({}))
+                    } else {
+                        settings
+                            .get("raw_decide_reply")
+                            .cloned()
+                            .unwrap_or_else(|| serde_json::json!({}))
+                    };
+                    axum::Json(reply)
+                }
+            }),
+        );
+        tokio::spawn(async move {
+            axum::serve(listener, router)
+                .await
+                .expect("the actual hook sidecar serves");
+        });
+        let path = std::path::PathBuf::from(
+            std::env::var_os("BUSBAR_TEST_WEBREQUEST_CDYLIB")
+                .expect("BUSBAR_TEST_WEBREQUEST_CDYLIB names the actual built webrequest product"),
+        );
+        let statement = crate::root::loader::dispatch::rendering_of_library(&path)
+            .expect("the actual hook statement reads")
+            .expect("the actual hook states itself");
+        let module = busbar_contract::abi::mechanism::rendering::read(&statement)
+            .expect("the actual hook statement is valid")
+            .name;
         serde_json::from_value(serde_json::json!({
             "kind": "gate",
-            "module": "test-hook",
+            "module": module,
             "timeout_ms": 10_000,
             "on_error": "weighted",
             "prompt": prompt,
             "user": "ro",
             "priority": 0,
-            "settings": settings,
+            "settings": {"url":endpoint},
             "global": false,
             "default": false,
             "signals": [],
@@ -7268,13 +7424,45 @@ pub(crate) mod hook_parity {
     }
 
     pub(crate) fn hook_env() -> busbar_kernel::hooks::HookEnv {
-        busbar_kernel_testkit::test_support::test_hook_env(
-            &["test-hook"],
-            busbar_kernel_testkit::test_support::HookNeeds {
-                prompt: busbar_contract::plugin_rows::NeedLevel::Rw,
-                user: busbar_contract::plugin_rows::NeedLevel::Ro,
-            },
+        let _ = super::tool_door::line_door();
+        let path = std::path::PathBuf::from(
+            std::env::var_os("BUSBAR_TEST_WEBREQUEST_CDYLIB")
+                .expect("BUSBAR_TEST_WEBREQUEST_CDYLIB names the actual built webrequest product"),
+        );
+        let statement = crate::root::loader::dispatch::rendering_of_library(&path)
+            .expect("the actual hook statement reads")
+            .expect("the actual hook states itself");
+        let module = busbar_contract::abi::mechanism::rendering::read(&statement)
+            .expect("the actual hook statement is valid")
+            .name;
+        let mut manifest = crate::root::test_plugins::manifest(
+            "hook",
+            &module,
+            crate::root::loader::sign::FIRST_PARTY_PUBLISHER,
+        );
+        manifest.statement = Some(hex::encode(statement));
+        manifest.needs.prompt = busbar_contract::plugin_rows::NeedLevel::Rw;
+        manifest.needs.user = busbar_contract::plugin_rows::NeedLevel::Ro;
+        let release = crate::root::test_plugins::key(0x5a);
+        let directory = crate::root::test_plugins::scratch(&format!(
+            "door-hooks-{}",
+            busbar_kernel::door::op_id().counter(),
+        ));
+        let library = std::fs::read(path).expect("the actual hook library reads");
+        let archive = crate::root::test_plugins::signed(&release, manifest, &library);
+        std::fs::write(directory.join("hook.tar.gz"), archive)
+            .expect("stage the actual hook archive");
+        let registry = crate::root::loader::scan_and_validate(
+            &directory,
+            &crate::root::test_plugins::release_policy(&release),
         )
+        .expect("the actual root loader admits the signed hook");
+        crate::root::linked::register_stores(&crate::LINKED);
+        busbar_kernel::hooks::HookEnv::new(
+            std::sync::Arc::new(registry),
+            std::sync::Arc::new(busbar_kernel::config::secret::SecretResolver::builtins_only()),
+        )
+        .expect("the actual root constructs the hook environment")
     }
 
     pub(crate) fn rig(
@@ -7287,15 +7475,24 @@ pub(crate) mod hook_parity {
             if hooks.is_empty() {
                 return app;
             }
-            app.set_container_hooks(
-                surface("plane_key"),
-                vec![("fs".to_string(), Vec::new())],
-                hooks.iter().map(|(n, _)| (*n).to_string()).collect(),
-            );
-            let mut app = app.hook_env(env.clone());
+            app.hook_env = env.clone();
             for (name, cfg) in &hooks {
-                app = app.hook(name, cfg.clone());
+                app.hook_registry.insert((*name).to_string(), cfg.clone());
             }
+            app.requested_signals = busbar_kernel::hooks::requested_signals(&app.hook_registry);
+            app.any_content_hook = busbar_kernel::hooks::any_content_hook(&app.hook_registry);
+            let attached = hooks
+                .iter()
+                .map(|(name, _)| (*name).to_string())
+                .collect::<Vec<_>>();
+            app.plane_gates.insert(
+                surface("plane_key"),
+                app.resolve_container_gates(std::iter::once(("fs", &[][..])), &attached),
+            );
+            app.plane_rewrites.insert(
+                surface("plane_key"),
+                app.resolve_container_rewrites(std::iter::once(("fs", &[][..])), &attached),
+            );
             app
         })
     }
@@ -9025,6 +9222,8 @@ fn the_configured_error_body_cap_reaches_both_egress_constructors() {
         pools: ModelPools::default(),
         lanes: Default::default(),
         app: LiveApp::fixed(std::sync::Arc::new({
+            #[cfg(distribution_root)]
+            crate::dist_root_install::install();
             let library_path = std::path::PathBuf::from(
                 std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
                     .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual built store"),
@@ -9255,6 +9454,8 @@ fn a_scope_local_unit_resolves_the_one_entry_the_grant_reaches_and_routes_nowher
             &p,
             std::sync::Arc::new(|_: &str| None),
             std::sync::Arc::new({
+                #[cfg(distribution_root)]
+                crate::dist_root_install::install();
                 let library_path = std::path::PathBuf::from(
                     std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
                         .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual built store"),
@@ -9582,47 +9783,17 @@ fn a_first_section_of_an_unloaded_plane_is_refused_naming_the_section_and_the_pl
 }
 
 #[test]
-fn a_required_section_written_empty_hands_the_plane_its_sections() {
-    use busbar_contract::section::{RESERVED_MODELS_KEY, RESERVED_POOLS_KEY};
-    use busbar_kernel::plane_driver::registry::{PlaneDecl, PlaneDeclaration};
-    use busbar_kernel_testkit::test_support::planes::TestRegistryIsolation;
-    use busbar_kernel_testkit::test_support::NEUTRAL_FALLBACK;
-    static REQUIRES: PlaneDecl = PlaneDecl {
-        declaration: PlaneDeclaration {
-            key: "requires-the-consumed-section",
-            required_config_sections: &[RESERVED_MODELS_KEY],
-            ..NEUTRAL_FALLBACK.declaration
-        },
-        ..NEUTRAL_FALLBACK
-    };
-    let _registry = TestRegistryIsolation::seeded(&[&REQUIRES]);
-    let deploy = busbar_kernel::config::deploy_from_yaml_str("providers: {}\nmodels: {}\n")
-        .expect("a deployment");
-    let cfg = busbar_kernel::config::resolve(&deploy, &Default::default()).expect("resolves");
-    let sections = super::kernel_sections(&cfg);
-    assert_eq!(
-        sections.get(RESERVED_MODELS_KEY),
-        Some(&serde_yaml::Value::Mapping(Default::default())),
-        "the written, empty required section is handed as written: {sections:?}"
-    );
-    assert_eq!(
-        sections.get(RESERVED_POOLS_KEY),
-        Some(&serde_yaml::Value::Mapping(Default::default())),
-        "and the declaring section beside it, so the plane opens: {sections:?}"
-    );
-}
-
-#[test]
 fn the_doors_admission_check_reads_the_arrival_window_and_not_the_clock() {
     use busbar_kernel::config::groups::{LimitCfg, LimitMetric, LimitWindow};
     use busbar_kernel::governance::SECS_PER_DAY;
+    let governance_store = crate::root::real_store::store();
     let gov = std::sync::Arc::new(
-        busbar_kernel::governance::GovState::new_with_signer(
-            crate::root::real_store::records(),
-            None,
-            None,
-        )
-        .expect("the real store opens governance"),
+        busbar_kernel::governance::GovState::new_with_signer(governance_store.clone(), None, None)
+            .expect("the real store opens governance"),
+    );
+    assert!(
+        gov.attach_store_calls(governance_store),
+        "attach the actual store calls"
     );
     let groups = std::collections::BTreeMap::from([(
         "team".to_string(),
@@ -9654,6 +9825,8 @@ fn the_doors_admission_check_reads_the_arrival_window_and_not_the_clock() {
         )
         .expect("a key");
     let mut app = {
+        #[cfg(distribution_root)]
+        crate::dist_root_install::install();
         let library_path = std::path::PathBuf::from(
             std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
                 .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual built store"),
@@ -9798,6 +9971,8 @@ fn asking_whether_a_name_is_configured_allocates_nothing() {
     }
     let p = pools(&yaml);
     let app = std::sync::Arc::new({
+        #[cfg(distribution_root)]
+        crate::dist_root_install::install();
         let library_path = std::path::PathBuf::from(
             std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
                 .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual built store"),
