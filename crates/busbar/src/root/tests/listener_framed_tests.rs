@@ -12,93 +12,163 @@ use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
 use super::{data_framer, DataFramer, DATA_SCHEME};
 
-fn h1_fixture_ingest_chunks(
-    chunks: &[&[u8]],
-) -> Vec<(busbar_contract::abi::mechanism::call::Outcome, u32)> {
-    h1_fixture_ingest_chunks_with_cap(chunks, 1024)
-}
-
-fn h1_fixture_ingest_chunks_with_cap(
-    chunks: &[&[u8]],
-    frame_cap: usize,
-) -> Vec<(busbar_contract::abi::mechanism::call::Outcome, u32)> {
-    use busbar_contract::abi::mechanism::call::Outcome;
-    use busbar_contract::abi::transport::{
-        BeginIn, FramePiece, FramerOut, FramerSink, HeadSlots, IngestIn,
+fn actual_http_framing() -> busbar_core_connector::framer::Framing {
+    use busbar_core_connector::framer::{Established, Framing};
+    let framer = actual_http_framer();
+    let established = Established {
+        scheme: Established::scheme_of(false),
+        ..Established::default()
     };
-    use busbar_core_connector::framer::Call;
-    use busbar_test_kit::test_support::zeroed;
+    Framing::begin_lent(
+        Arc::clone(framer.door()),
+        busbar_contract::abi::transport::SIDE_ACCEPT,
+        "",
+        &established,
+        framer.guests(),
+    )
+    .expect("the actual HTTP framing opens on its root-owned policy")
+    .0
+}
 
-    let door = H1Accept::new(true);
-    let mut begin: BeginIn = zeroed();
-    let mut opened: FramerOut = zeroed();
-    assert_eq!(
-        door.cross(Call::Begin(&mut begin, &mut opened)).outcome,
-        Outcome::Ready
-    );
-    let mut frame = [0_u8; 1024];
-    let mut pieces: [FramePiece; 4] = [zeroed(); 4];
-    let mut heads = [HeadSlots::default(); 2];
-    chunks
+#[tokio::test]
+async fn actual_http_streams_a_request_larger_than_its_lent_frame_capacity() {
+    let _publishing = anonymous_policy().await;
+    let mut framing = actual_http_framing();
+    let body = vec![b'x'; busbar_core_connector::framer::FRAME_CAP + 1];
+    let mut request = format!(
+        "POST /capture HTTP/1.1\r\nHost: t\r\ncontent-length: {}\r\n\r\n",
+        body.len()
+    )
+    .into_bytes();
+    request.extend_from_slice(&body);
+    // Every actual yield crosses Framing's production sink-bound checks before this aggregate
+    // is returned. A valid request larger than one loan streams through successive bounded yields.
+    let yielded = framing
+        .ingest(&request, false)
+        .expect("every real HTTP yield fits its lent buffers");
+    let received: Vec<_> = yielded
+        .pieces
         .iter()
-        .map(|bytes| {
-            let mut input: IngestIn = zeroed();
-            input.framing = opened.framing;
-            input.bytes = bytes.as_ptr();
-            input.len = bytes.len();
-            input.sink = FramerSink {
-                frame: frame.as_mut_ptr(),
-                frame_cap,
-                pieces: pieces.as_mut_ptr(),
-                pieces_cap: pieces.len(),
-                heads: heads.as_mut_ptr(),
-                heads_cap: heads.len(),
-                ..zeroed()
-            };
-            let mut out: FramerOut = zeroed();
-            let answer = door.cross(Call::Ingest(&mut input, &mut out));
-            (answer.outcome, out.yielded.pieces_len)
-        })
-        .collect()
+        .filter(|piece| !piece.fields)
+        .flat_map(|piece| piece.bytes.iter().copied())
+        .collect();
+    assert_eq!(
+        received, body,
+        "the capacity boundary loses or duplicates no payload"
+    );
+    assert!(yielded
+        .pieces
+        .iter()
+        .any(|piece| !piece.fields && piece.end));
+    assert!(yielded
+        .heads
+        .iter()
+        .any(|head| head.target.as_deref() == Some(b"/capture".as_slice())));
+    assert!(
+        !framing.parked(),
+        "anonymous admission completes without a fabricated pending ticket"
+    );
 }
 
-#[test]
-fn h1_fixture_refuses_a_request_larger_than_the_lent_frame_capacity() {
-    use busbar_contract::abi::mechanism::call::Outcome;
-
-    let got = h1_fixture_ingest_chunks_with_cap(&[b"GET / HTTP/1.1\r\n\r\n"], 1);
-    assert_eq!(got[0].0, Outcome::Failed);
-}
-
-#[test]
-fn h1_fixture_refuses_complete_malformed_heads_without_waiting_for_more_bytes() {
-    use busbar_contract::abi::mechanism::call::Outcome;
+#[tokio::test]
+async fn actual_http_refuses_complete_malformed_heads_without_waiting_for_more_bytes() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let _publishing = anonymous_policy().await;
+    let effects = Arc::new(AtomicUsize::new(0));
     for request in [
-        b"POST / HTTP/1.1\r\nbroken-field\r\n\r\n".as_slice(),
-        b"POST / HTTP/1.1\r\ncontent-length: nope\r\n\r\n".as_slice(),
+        b"POST / HTTP/1.1\r\nHost: t\r\nbroken-field\r\n\r\n".as_slice(),
+        b"POST / HTTP/1.1\r\nHost: t\r\ncontent-length: nope\r\n\r\n".as_slice(),
+        b"POST / HTTP/1.1\r\nHost: t\r\ncontent-length: 18446744073709551616\r\n\r\n".as_slice(),
     ] {
-        assert_eq!(h1_fixture_ingest_chunks(&[request])[0].0, Outcome::Failed);
+        let routed = effects.clone();
+        let router = Router::new().route(
+            "/",
+            axum::routing::post(move || {
+                routed.fetch_add(1, Ordering::SeqCst);
+                async { "a malformed request must not reach the application" }
+            }),
+        );
+        let (mut client, server) = tokio::io::duplex(4096);
+        let (_stop, stopped) = tokio::sync::watch::channel(false);
+        let served = tokio::spawn(super::serve(
+            server,
+            actual_http_framer(),
+            router,
+            false,
+            Duration::from_secs(30),
+            stopped,
+        ));
+        client.write_all(request).await.unwrap();
+        let mut wire = Vec::new();
+        tokio::time::timeout(
+            Duration::from_secs(10),
+            (&mut client).take(16 * 1024 + 1).read_to_end(&mut wire),
+        )
+        .await
+        .expect("a complete malformed head closes without any further client byte")
+        .unwrap();
+        assert!(wire.len() <= 16 * 1024, "bounded protocol refusal");
+        assert!(
+            wire.is_empty() || wire.starts_with(b"HTTP/1.1 400"),
+            "{wire:?}"
+        );
+        assert_eq!(
+            effects.load(Ordering::SeqCst),
+            0,
+            "malformed heads publish no application request"
+        );
+        tokio::time::timeout(Duration::from_secs(10), served)
+            .await
+            .expect("the real HTTP actor terminates after its refusal")
+            .unwrap();
     }
-    let overflow = format!("POST / HTTP/1.1\r\ncontent-length: {}\r\n\r\n", usize::MAX);
-    assert_eq!(
-        h1_fixture_ingest_chunks(&[overflow.as_bytes()])[0].0,
-        Outcome::Failed
-    );
 }
 
-#[test]
-fn h1_fixture_keeps_incomplete_headers_and_bodies_until_they_complete() {
-    use busbar_contract::abi::mechanism::call::Outcome;
-    let answers =
-        h1_fixture_ingest_chunks(&[b"POST / HTTP/1.1\r\ncontent-length: 3\r\n", b"\r\na", b"bc"]);
-    assert_eq!(
-        answers,
-        [
-            (Outcome::Ready, 0),
-            (Outcome::Ready, 0),
-            (Outcome::Ready, 2)
-        ]
+#[tokio::test]
+async fn actual_http_keeps_fragmented_headers_and_body_until_their_complete_end() {
+    let _publishing = anonymous_policy().await;
+    let mut framing = actual_http_framing();
+    let first = framing
+        .ingest(
+            b"POST /capture HTTP/1.1\r\nHost: t\r\ncontent-length: 3\r\n",
+            false,
+        )
+        .unwrap();
+    assert!(
+        first.heads.is_empty() && first.pieces.is_empty(),
+        "an incomplete header is not published"
     );
+    let middle = framing.ingest(b"\r\na", false).unwrap();
+    assert!(
+        !middle.pieces.iter().any(|piece| !piece.fields && piece.end),
+        "an incomplete body has no complete end"
+    );
+    let last = framing.ingest(b"bc", false).unwrap();
+    let batches = [first, middle, last];
+    let body: Vec<_> = batches
+        .iter()
+        .flat_map(|batch| &batch.pieces)
+        .filter(|piece| !piece.fields)
+        .flat_map(|piece| piece.bytes.iter().copied())
+        .collect();
+    assert_eq!(
+        body, b"abc",
+        "fragmentation neither loses nor duplicates body bytes"
+    );
+    let heads: Vec<_> = batches.iter().flat_map(|batch| &batch.heads).collect();
+    assert_eq!(
+        heads.len(),
+        1,
+        "only one complete request head is published"
+    );
+    assert_eq!(heads[0].method.as_deref(), Some(b"POST".as_slice()));
+    assert_eq!(heads[0].target.as_deref(), Some(b"/capture".as_slice()));
+    assert!(batches
+        .last()
+        .unwrap()
+        .pieces
+        .iter()
+        .any(|piece| !piece.fields && piece.end));
 }
 
 // Ordinary root continuation tests below seed typed pieces after real host admission.
