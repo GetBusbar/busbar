@@ -109,11 +109,12 @@ fn boot(tag: &str, env: &[(&str, &str)]) -> (usize, String) {
     for (k, v) in env {
         cmd.env(k, v);
     }
-    let mut child = cmd
-        .stdout(log)
-        .stderr(log_err)
-        .spawn()
-        .expect("spawn busbar");
+    let mut child = common::boot::Reap(
+        cmd.stdout(log)
+            .stderr(log_err)
+            .spawn()
+            .expect("spawn busbar"),
+    );
     let log_text = || std::fs::read_to_string(&log_path).unwrap_or_default();
     let ready = wait_for(Duration::from_secs(30), || {
         if let Some(status) = child.try_wait().expect("try_wait") {
