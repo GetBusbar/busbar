@@ -474,10 +474,8 @@ impl super::GovState {
                 }
             }
         }
-        for event in self.selected_recovery_events() {
-            self.drive_recovery_children(&event)?;
-        }
-        self.resume_raw_recovery()?;
+        // Fresh Store hydration remains authoritative. Registration never sends
+        // a historical body or makes startup depend on an age-quarantine write.
         for event in self.selected_recovery_events() {
             self.forget_confirmed_recovery(event.operation_id);
         }

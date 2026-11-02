@@ -2039,7 +2039,7 @@ async fn test_write_behind_flush_serializes_and_counts_exactly_once() {
         assert!(gov.try_admit(&cost, &key, "", at).is_ok());
     }
     let (shutdown_tx, shutdown_rx) = tokio::sync::broadcast::channel::<()>(1);
-    let flusher = crate::governance::spawn_budget_flusher(gov.clone(), shutdown_rx);
+    let flusher = crate::governance::spawn_budget_flusher(gov.clone(), shutdown_rx, None);
 
     tokio::task::spawn_blocking(move || entered_rx.recv().unwrap())
         .await
@@ -6113,7 +6113,7 @@ async fn a_usage_window_past_the_horizon_is_purged_from_the_durable_store() {
         records.put_usage("vk_horizon", w, &one).expect("put");
     }
     let (shutdown_tx, shutdown_rx) = tokio::sync::broadcast::channel::<()>(1);
-    let flusher = crate::governance::spawn_budget_flusher(Arc::new(gov), shutdown_rx);
+    let flusher = crate::governance::spawn_budget_flusher(Arc::new(gov), shutdown_rx, None);
     shutdown_tx.send(()).expect("the flusher listens");
     flusher.await.expect("the flusher ends");
     let requests = |w| records.get_usage("vk_horizon", w).expect("get").requests;

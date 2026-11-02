@@ -1397,6 +1397,7 @@ pub use crate::test_support::store_double::MemoryStore;
 pub fn spawn_budget_flusher(
     gov: std::sync::Arc<GovState>,
     mut shutdown: tokio::sync::broadcast::Receiver<()>,
+    app: Option<Arc<crate::state::AppHandle>>,
 ) -> tokio::task::JoinHandle<()> {
     let interval = std::time::Duration::from_millis(crate::limits::usage_flush_interval_ms());
 
@@ -1427,7 +1428,9 @@ pub fn spawn_budget_flusher(
                         continue;
                     };
                     let gov = gov.clone();
+                    let app = app.clone();
                     tokio::task::spawn_blocking(move || {
+                        resume_current_correction_verdicts(&gov, app.as_ref());
                         gov.flush_budgets();
                         gov.flush_metering();
                         drop(guard);
@@ -1444,7 +1447,9 @@ pub fn spawn_budget_flusher(
                     // on the worker), and a join error falls back to nothing flushed - best-effort.
                     let guard = flush_gate.clone().lock_owned().await;
                     let gov = gov.clone();
+                    let app = app.clone();
                     let _ = tokio::task::spawn_blocking(move || {
+                        resume_current_correction_verdicts(&gov, app.as_ref());
                         gov.flush_budgets_final();
                         gov.flush_metering_final();
                         drop(guard);
@@ -1455,6 +1460,26 @@ pub fn spawn_budget_flusher(
             }
         }
     })
+}
+
+fn resume_current_correction_verdicts(
+    gov: &Arc<GovState>,
+    app: Option<&Arc<crate::state::AppHandle>>,
+) {
+    let cost = app.and_then(|app| {
+        let snapshot = app.load();
+        snapshot
+            .governance
+            .as_ref()
+            .filter(|current| Arc::ptr_eq(current, gov))
+            .map(|_| snapshot.cost.clone())
+    });
+    if let Some(cost) = cost {
+        if let Err(error) = gov.resume_correction_verdicts(&cost) {
+            diag_warn!(crate::diagnostics::BUDGET_FLUSH_PARTIAL_FAILURE,
+                error = %error, "audited correction verdict remains retained for a later flush");
+        }
+    }
 }
 
 pub const USAGE_WINDOW_HORIZON_SECS: u64 = 31 * SECS_PER_DAY;
