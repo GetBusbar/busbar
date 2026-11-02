@@ -200,6 +200,10 @@ fn ordinary_product_flush_quarantines_old_unknown_and_continues_fresh_positive_u
     };
     let settled = gov.recovery().resolve(&cost, resolution.clone()).unwrap();
     assert_eq!(settled.state, RecoveryState::Settled);
+    let audit: serde_json::Value =
+        serde_json::from_slice(&gov.recovery_event(intent.operation_id).unwrap().payload).unwrap();
+    assert_eq!(audit["verdict"]["sender_quiesced"], true);
+    assert_eq!(audit["verdict"]["backend_quiesced"], true);
     gov.recovery().resolve(&cost, resolution).unwrap();
     assert_eq!(
         store.get_usage(&key.id, 0).unwrap().tokens_for(MODEL),

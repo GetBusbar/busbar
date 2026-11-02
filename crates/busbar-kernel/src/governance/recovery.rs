@@ -979,4 +979,78 @@ mod tests {
             "only the old sent chunk is unknown; never-sent remainder keeps progressing"
         );
     }
+    #[test]
+    fn verdict_without_both_quiescence_attestations_persists_nothing() {
+        use super::super::{GovState, MemoryStore, RecordStore};
+        let store = Arc::new(MemoryStore::new());
+        let sink = Arc::new(Journal::default());
+        let original = GovState::new(store.clone(), None).unwrap();
+        original.attach_recovery_sink(sink.clone()).unwrap();
+        let intent = raw_intent(&original, 7);
+        drop(original);
+        let gov = GovState::new(store.clone(), None).unwrap();
+        gov.attach_recovery_sink(sink.clone()).unwrap();
+        let selected = gov.recovery_event(intent.operation_id).unwrap();
+        let count = sink.selected.lock().unwrap().len();
+        let cost = crate::cost::CostModel::flat(0);
+        for (sender_quiesced, backend_quiesced) in [(false, false), (false, true), (true, false)] {
+            let resolution = RecoveryResolution {
+                operation_id: intent.operation_id,
+                body_fingerprint: intent.body_fingerprint,
+                expected_revision: selected.revision,
+                verdict: RecoveryVerdict::NotLanded,
+                sender_quiesced,
+                backend_quiesced,
+                actor: "operator".into(),
+                reason: "quiescence is not confirmed".into(),
+            };
+            assert!(matches!(
+                gov.recovery().resolve(&cost, resolution.clone()),
+                Err(RecoveryError::Invalid(_))
+            ));
+            assert!(matches!(
+                gov.resolve_raw_recovery(&resolution),
+                Err(RecoveryError::Invalid(_))
+            ));
+            assert_eq!(
+                gov.recovery_event(intent.operation_id),
+                Some(selected.clone())
+            );
+            assert_eq!(sink.selected.lock().unwrap().len(), count);
+            assert_eq!(store.get_usage("recovery-bucket", 0).unwrap().requests, 0);
+        }
+    }
+
+    #[test]
+    fn attested_verdict_still_requires_same_process_driver_quiescence() {
+        use super::super::{GovState, MemoryStore};
+        let sink = Arc::new(Journal::default());
+        let original = GovState::new(Arc::new(MemoryStore::new()), None).unwrap();
+        original.attach_recovery_sink(sink.clone()).unwrap();
+        let intent = raw_intent(&original, 7);
+        drop(original);
+        let gov = GovState::new(Arc::new(MemoryStore::new()), None).unwrap();
+        gov.attach_recovery_sink(sink.clone()).unwrap();
+        let selected = gov.recovery_event(intent.operation_id).unwrap();
+        let count = sink.selected.lock().unwrap().len();
+        let driver = gov.recovery_driver(intent.operation_id).unwrap();
+        let _running = driver.enter(false).unwrap();
+        let resolution = RecoveryResolution {
+            operation_id: intent.operation_id,
+            body_fingerprint: intent.body_fingerprint,
+            expected_revision: selected.revision,
+            verdict: RecoveryVerdict::NotLanded,
+            sender_quiesced: true,
+            backend_quiesced: true,
+            actor: "operator".into(),
+            reason: "attestation alone cannot override a running driver".into(),
+        };
+        assert!(matches!(
+            gov.recovery()
+                .resolve(&crate::cost::CostModel::flat(0), resolution),
+            Err(RecoveryError::Conflict(_))
+        ));
+        assert_eq!(gov.recovery_event(intent.operation_id), Some(selected));
+        assert_eq!(sink.selected.lock().unwrap().len(), count);
+    }
 }
