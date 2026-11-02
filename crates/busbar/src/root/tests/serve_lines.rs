@@ -176,7 +176,8 @@ async fn a_unit_in_flight_when_the_serve_stops_finishes_and_answers() {
         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
         flag.store(true, std::sync::atomic::Ordering::SeqCst);
     });
-    let ended = drain_units(&mut units, std::time::Duration::from_secs(5)).await;
+    let deadline = tokio::time::Instant::now() + busbar_kernel::detached::DETACHED_DRAIN_GRACE;
+    let ended = drain_units(&mut units, deadline).await;
     assert_eq!(ended, 0, "no unit is ended inside the grace");
     assert!(answered.load(std::sync::atomic::Ordering::SeqCst));
 }
@@ -188,7 +189,347 @@ async fn a_unit_still_running_past_the_drain_grace_is_ended() {
     units.spawn(async move {
         tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
     });
-    let ended = drain_units(&mut units, std::time::Duration::from_secs(5)).await;
+    let deadline = tokio::time::Instant::now() + busbar_kernel::detached::DETACHED_DRAIN_GRACE;
+    let ended = drain_units(&mut units, deadline).await;
     assert_eq!(ended, 1, "the unit past the grace is ended");
     assert!(units.is_empty());
+}
+
+const TEST_CARRIER: &str = "test-line-carrier";
+const QUEUED_LINE: &[u8] = b"queued";
+const OUTPUT_ERROR: &str = "test output failure";
+
+/// A watchdog derived from the production grace makes the pre-fix unbounded wait fail the test.
+async fn shutdown_result(serve: impl std::future::Future<Output = i32>) -> i32 {
+    tokio::time::timeout(busbar_kernel::detached::DETACHED_DRAIN_GRACE * 2, serve)
+        .await
+        .expect("the line serve must return after its shutdown grace")
+}
+
+#[derive(Clone, Copy)]
+enum IoOutcome {
+    Ready,
+    Pending,
+    Error,
+    Panic,
+}
+
+#[derive(Default)]
+struct OutputProbe {
+    bytes: std::sync::Mutex<Vec<u8>>,
+    write_polled: std::sync::atomic::AtomicBool,
+    dropped: std::sync::atomic::AtomicBool,
+}
+
+struct ProbeWriter {
+    probe: Arc<OutputProbe>,
+    write: IoOutcome,
+    flush: IoOutcome,
+    delay: Option<std::pin::Pin<Box<tokio::time::Sleep>>>,
+}
+
+impl ProbeWriter {
+    fn new(probe: &Arc<OutputProbe>, write: IoOutcome, flush: IoOutcome) -> Self {
+        Self {
+            probe: Arc::clone(probe),
+            write,
+            flush,
+            delay: None,
+        }
+    }
+}
+
+impl Drop for ProbeWriter {
+    fn drop(&mut self) {
+        self.probe
+            .dropped
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+impl AsyncWrite for ProbeWriter {
+    fn poll_write(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        bytes: &[u8],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        use std::future::Future as _;
+        use std::task::Poll;
+        self.probe
+            .write_polled
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        if let Some(delay) = self.delay.as_mut() {
+            if delay.as_mut().poll(cx).is_pending() {
+                return Poll::Pending;
+            }
+        }
+        match self.write {
+            IoOutcome::Ready => {
+                // Force write_all to resume across partial writes, preserving whole-line order.
+                let count = bytes.len().min(1);
+                self.probe
+                    .bytes
+                    .lock()
+                    .unwrap()
+                    .extend_from_slice(&bytes[..count]);
+                Poll::Ready(Ok(count))
+            }
+            IoOutcome::Pending => Poll::Pending,
+            IoOutcome::Error => Poll::Ready(Err(std::io::Error::new(
+                std::io::ErrorKind::BrokenPipe,
+                OUTPUT_ERROR,
+            ))),
+            IoOutcome::Panic => panic!("{OUTPUT_ERROR}"),
+        }
+    }
+
+    fn poll_flush(
+        self: std::pin::Pin<&mut Self>,
+        _cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        use std::task::Poll;
+        match self.flush {
+            IoOutcome::Ready => Poll::Ready(Ok(())),
+            IoOutcome::Pending => Poll::Pending,
+            IoOutcome::Error => Poll::Ready(Err(std::io::Error::new(
+                std::io::ErrorKind::BrokenPipe,
+                OUTPUT_ERROR,
+            ))),
+            IoOutcome::Panic => panic!("{OUTPUT_ERROR}"),
+        }
+    }
+
+    fn poll_shutdown(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        self.poll_flush(cx)
+    }
+}
+
+/// EOF and the shutdown signal both give accepted output the existing grace, then retire the
+/// writer even when AsyncWrite never wakes. The output error also lets the root exit nonzero.
+#[tokio::test(start_paused = true)]
+async fn eof_and_stop_retire_a_writer_stuck_in_write_or_flush() {
+    for at_eof in [true, false] {
+        for (write, flush) in [
+            (IoOutcome::Pending, IoOutcome::Ready),
+            (IoOutcome::Ready, IoOutcome::Pending),
+        ] {
+            let probe = Arc::new(OutputProbe::default());
+            let writer = ProbeWriter::new(&probe, write, flush);
+            let (held, reader) = tokio::io::duplex(1);
+            let mut held = Some(held);
+            if at_eof {
+                drop(held.take());
+            }
+            let stop = async move {
+                if at_eof {
+                    std::future::pending::<()>().await;
+                }
+            };
+            let mut closed = false;
+            let close_flag = &mut closed;
+            let mut failure = None;
+            let observed_failure = &mut failure;
+            let started = tokio::time::Instant::now();
+            let code = shutdown_result(run_io(TEST_CARRIER, reader, writer, stop, move |caller| {
+                *observed_failure = Some(Arc::clone(&caller.failure));
+                caller.out.send(terminated(QUEUED_LINE)).unwrap();
+                (
+                    |_| std::future::ready(()),
+                    move || {
+                        *close_flag = true;
+                    },
+                )
+            }))
+            .await;
+            assert_ne!(code, 0);
+            assert_eq!(
+                started.elapsed(),
+                busbar_kernel::detached::DETACHED_DRAIN_GRACE
+            );
+            assert!(closed, "the carrier is closed before returning to the root");
+            assert!(probe.write_polled.load(std::sync::atomic::Ordering::SeqCst));
+            assert!(probe.dropped.load(std::sync::atomic::Ordering::SeqCst));
+            let failure = failure.unwrap();
+            let recorded = failure.0.lock().unwrap();
+            let (direction, error) = recorded.as_ref().unwrap();
+            assert_eq!(*direction, "output");
+            assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
+        }
+    }
+}
+
+/// Queued unsolicited lines and a unit's answer are drained in handoff order, including partial
+/// writes, without discarding accepted output at EOF. A successful drain stays successful.
+#[tokio::test(start_paused = true)]
+async fn queued_lines_and_a_units_answer_drain_whole_and_in_order() {
+    let probe = Arc::new(OutputProbe::default());
+    let mut writer = ProbeWriter::new(&probe, IoOutcome::Ready, IoOutcome::Ready);
+    let delay = busbar_kernel::detached::DETACHED_DRAIN_GRACE / 2;
+    writer.delay = Some(Box::pin(tokio::time::sleep(delay)));
+    let started = tokio::time::Instant::now();
+    let code = shutdown_result(run_io(
+        TEST_CARRIER,
+        &b"answer\n"[..],
+        writer,
+        std::future::pending::<()>(),
+        |caller| {
+            caller.out.send(terminated(b"first")).unwrap();
+            caller.out.send(terminated(b"second\n")).unwrap();
+            (
+                move |line: Vec<u8>| {
+                    let caller = Arc::clone(&caller);
+                    async move {
+                        assert!(caller.write(&line).await);
+                    }
+                },
+                || {},
+            )
+        },
+    ))
+    .await;
+    assert_eq!(code, 0);
+    assert_eq!(started.elapsed(), delay);
+    assert_eq!(*probe.bytes.lock().unwrap(), b"first\nsecond\nanswer\n");
+    assert!(probe.dropped.load(std::sync::atomic::Ordering::SeqCst));
+}
+
+/// A unit may spend part of the grace settling and queue its answer. Output gets only the
+/// remainder, so a blocked writer cannot add a second grace after the units finish.
+#[tokio::test(start_paused = true)]
+async fn units_and_output_share_one_shutdown_deadline() {
+    let probe = Arc::new(OutputProbe::default());
+    let writer = ProbeWriter::new(&probe, IoOutcome::Pending, IoOutcome::Ready);
+    let answered = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let flag = Arc::clone(&answered);
+    let started = tokio::time::Instant::now();
+    let code = shutdown_result(run_io(
+        TEST_CARRIER,
+        &b"answer\n"[..],
+        writer,
+        std::future::pending::<()>(),
+        |caller| {
+            (
+                move |line: Vec<u8>| {
+                    let caller = Arc::clone(&caller);
+                    let flag = Arc::clone(&flag);
+                    async move {
+                        tokio::time::sleep(busbar_kernel::detached::DETACHED_DRAIN_GRACE / 2).await;
+                        assert!(caller.write(&line).await);
+                        flag.store(true, std::sync::atomic::Ordering::SeqCst);
+                    }
+                },
+                || {},
+            )
+        },
+    ))
+    .await;
+    assert_ne!(code, 0);
+    assert_eq!(
+        started.elapsed(),
+        busbar_kernel::detached::DETACHED_DRAIN_GRACE
+    );
+    assert!(answered.load(std::sync::atomic::Ordering::SeqCst));
+    assert!(probe.write_polled.load(std::sync::atomic::Ordering::SeqCst));
+    assert!(probe.dropped.load(std::sync::atomic::Ordering::SeqCst));
+}
+
+/// Both join sites handle writer failure: while waiting for more input and after EOF. A panic
+/// becomes an output failure, and a JoinHandle consumed by the read loop is never polled again.
+#[tokio::test(start_paused = true)]
+async fn writer_errors_and_panics_end_the_serve_without_repolling_a_finished_join() {
+    for at_eof in [true, false] {
+        for (write, flush, expected) in [
+            (
+                IoOutcome::Error,
+                IoOutcome::Ready,
+                std::io::ErrorKind::BrokenPipe,
+            ),
+            (
+                IoOutcome::Panic,
+                IoOutcome::Ready,
+                std::io::ErrorKind::Other,
+            ),
+            (
+                IoOutcome::Ready,
+                IoOutcome::Error,
+                std::io::ErrorKind::BrokenPipe,
+            ),
+            (
+                IoOutcome::Ready,
+                IoOutcome::Panic,
+                std::io::ErrorKind::Other,
+            ),
+        ] {
+            let probe = Arc::new(OutputProbe::default());
+            let writer = ProbeWriter::new(&probe, write, flush);
+            let (held, reader) = tokio::io::duplex(1);
+            let mut held = Some(held);
+            if at_eof {
+                drop(held.take());
+            }
+            let mut failure = None;
+            let started = tokio::time::Instant::now();
+            let code = shutdown_result(run_io(
+                TEST_CARRIER,
+                reader,
+                writer,
+                std::future::pending::<()>(),
+                |caller| {
+                    failure = Some(Arc::clone(&caller.failure));
+                    caller.out.send(terminated(QUEUED_LINE)).unwrap();
+                    (|_| std::future::ready(()), || {})
+                },
+            ))
+            .await;
+            assert_ne!(code, 0);
+            assert_eq!(started.elapsed(), std::time::Duration::ZERO);
+            let failure = failure.unwrap();
+            let recorded = failure.0.lock().unwrap();
+            let (direction, error) = recorded.as_ref().unwrap();
+            assert_eq!(*direction, "output");
+            assert_eq!(error.kind(), expected);
+            assert!(probe.dropped.load(std::sync::atomic::Ordering::SeqCst));
+        }
+    }
+}
+
+struct FailedReader;
+
+impl AsyncRead for FailedReader {
+    fn poll_read(
+        self: std::pin::Pin<&mut Self>,
+        _cx: &mut std::task::Context<'_>,
+        _buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::task::Poll::Ready(Err(std::io::ErrorKind::PermissionDenied.into()))
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_existing_input_error_survives_the_output_drain_timeout() {
+    let probe = Arc::new(OutputProbe::default());
+    let writer = ProbeWriter::new(&probe, IoOutcome::Pending, IoOutcome::Ready);
+    let mut failure = None;
+    let code = shutdown_result(run_io(
+        TEST_CARRIER,
+        FailedReader,
+        writer,
+        std::future::pending::<()>(),
+        |caller| {
+            failure = Some(Arc::clone(&caller.failure));
+            caller.out.send(terminated(QUEUED_LINE)).unwrap();
+            (|_| std::future::ready(()), || {})
+        },
+    ))
+    .await;
+    assert_ne!(code, 0);
+    let failure = failure.unwrap();
+    let recorded = failure.0.lock().unwrap();
+    let (direction, error) = recorded.as_ref().unwrap();
+    assert_eq!(*direction, "input");
+    assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+    assert!(probe.dropped.load(std::sync::atomic::Ordering::SeqCst));
 }
