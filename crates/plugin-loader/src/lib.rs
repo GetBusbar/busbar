@@ -206,8 +206,7 @@ mod dispatch_test_plugin;
 mod dispatch_tests;
 
 #[cfg(test)]
-#[path = "../tests/fixtures/plane_door_plugin.rs"]
-mod plane_door_plugin;
+use actual_mcp as plane_door_plugin;
 
 #[cfg(test)]
 #[allow(unsafe_code)]

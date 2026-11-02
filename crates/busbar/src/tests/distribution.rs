@@ -445,3 +445,12 @@ mod admin_application_admin_custody_outcomes;
 
 #[path = "kernel_application/external_plane_driver_actual.rs"]
 mod kernel_application_external_plane_driver_actual;
+
+#[path = "admin_application/admin_hook_timeout.rs"]
+mod admin_application_admin_hook_timeout;
+
+#[path = "kernel_application/external_accepted_events.rs"]
+mod kernel_application_external_accepted_events;
+
+#[path = "kernel_application/recovery_flusher_actual.rs"]
+mod kernel_application_recovery_flusher_actual;
