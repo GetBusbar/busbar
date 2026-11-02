@@ -586,16 +586,6 @@ fn test_admin_scope_cap_ceilings_external_module() {
     );
 }
 
-async fn dp_serve(
-    app: std::sync::Arc<crate::state::App>,
-) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
-    let router = crate::build_router(app);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    (addr, handle)
-}
-
 #[test]
 fn an_unanswered_operator_does_not_open_a_verifier() {
     use crate::auth::{Operator, OperatorCredential};
@@ -2316,103 +2306,6 @@ async fn test_1_5_2_keys_chain_valid_vkey_admits() {
         "chain:[keys] + valid enabled vkey must admit: {body}"
     );
     assert_eq!(body, admitted("attached", &key_id, &key_id));
-
-    handle.abort();
-}
-
-#[tokio::test]
-async fn test_unauthorized_body_carries_no_busbar_vocabulary_on_the_live_stack() {
-    const FORBIDDEN: &[&str] = &[
-        "virtual key",
-        "client token",
-        "client_token",
-        "allowlist",
-        "disabled",
-        "passthrough",
-        "busbar",
-        "unauthorized",
-        "admin",
-    ];
-    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
-    let app = door_app()
-        .auth(std::sync::Arc::new(AuthMiddleware::new_builtin(
-            &chain_cfg(&["test-groups-module"]),
-        )))
-        .build();
-    let (addr, handle) = dp_serve(app).await;
-    let paths = [
-        "/v1beta/models/x:verb",
-        "/pa/v1/messages",
-        "/v1/kind/action",
-        "/v1/responses",
-        "/v2/chat",
-        "/model/vendor.model/converse",
-        "/totally/unknown/path",
-    ];
-    for path in paths {
-        let (status, ct, raw) = door_post(addr, path, Some(("x-api-key", "wrong-token"))).await;
-        assert!(
-            status == 401 || status == 403,
-            "'{path}' must be refused by the auth gate (got {status}): {raw}"
-        );
-        assert_eq!(ct.as_deref(), Some("application/json"), "'{path}': {raw}");
-        let body: serde_json::Value = serde_json::from_str(&raw)
-            .unwrap_or_else(|e| panic!("auth-failure body for '{path}' must be JSON ({e}): {raw}"));
-        let mut strings = Vec::new();
-        collect_strings(&body, &mut strings);
-        assert!(
-            !strings.is_empty(),
-            "'{path}' body carries a message: {body}"
-        );
-        for s in &strings {
-            let lc = s.to_ascii_lowercase();
-            for bad in FORBIDDEN {
-                assert!(
-                    !lc.contains(bad),
-                    "auth-failure body for '{path}' leaked busbar vocabulary '{bad}': {body}"
-                );
-            }
-        }
-    }
-    handle.abort();
-}
-
-#[tokio::test]
-async fn test_admin_prefix_is_boundary_safe() {
-    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
-    let app = crate::test_support::TestApp::new()
-        .lane(
-            crate::test_support::LaneSpec::new("test-model", LANE_PROTOCOL, "http://127.0.0.1:1")
-                .api_key("busbar-upstream-key"),
-        )
-        .pool("apix", &[(0, 1)])
-        .auth(std::sync::Arc::new(AuthMiddleware::new_builtin(
-            &chain_cfg(&["test-groups-module"]),
-        )))
-        .build();
-    let (addr, handle) = dp_serve(app).await;
-
-    let (status, ct, raw) = door_post(
-        addr,
-        "/apix/v1/messages",
-        Some(("x-api-key", "wrong-token")),
-    )
-    .await;
-    assert_eq!(
-        status, 401,
-        "an /apix path with a wrong token must be a normal 401, not 500/admin: {raw}"
-    );
-    assert_eq!(ct.as_deref(), Some("application/json"));
-    let env: serde_json::Value = serde_json::from_str(&raw).expect("401 body is JSON");
-    assert_eq!(
-        env["error"]["type"],
-        busbar_contract::protocol::KIND_AUTHENTICATION,
-        "expected the data plane's native authentication_error: {env}"
-    );
-    assert!(
-        env["error"].get("code").is_none(),
-        "the admin branch's frozen {{error:{{code}}}} envelope must not answer a non-admin path: {env}"
-    );
 
     handle.abort();
 }

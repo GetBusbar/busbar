@@ -568,3 +568,312 @@ async fn test_1_5_2_keys_chain_disabled_vkey_rejected() {
         "a disabled vkey is never re-admitted via synth"
     );
 }
+
+#[tokio::test]
+async fn test_admin_prefix_is_boundary_safe() {
+    crate::dist_root_install::install();
+    let library_path = std::path::PathBuf::from(
+        std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
+            .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual built store"),
+    );
+    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
+        .expect("the actual store statement reads")
+        .expect("the actual store exports its statement");
+    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
+        .expect("the actual store statement is valid")
+        .name;
+    let mut manifest = plugins::manifest(
+        "store",
+        &module,
+        busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
+    );
+    manifest.statement = Some(hex::encode(statement));
+    let library = std::fs::read(library_path).expect("the actual store library reads");
+    let directory = plugins::scratch("auth-admin-prefix");
+    let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
+    std::fs::write(directory.join("store.tar.gz"), archive)
+        .expect("stage the actual store archive");
+    let settings: serde_json::Value = serde_json::from_str(
+        &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
+    )
+    .expect("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS is JSON");
+    assert!(
+        settings.is_object(),
+        "the actual store settings are an object"
+    );
+    let operator = busbar_kernel::config::operator_provider();
+    let operator_secret = directory.join("operator-token");
+    std::fs::write(&operator_secret, "admintok").expect("normal configured operator secret");
+    let signing = directory.join("signing-key");
+    std::fs::write(&signing, hex::encode([7u8; 32]))
+        .expect("write the actual configured signing key");
+    let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
+        "providers": {},
+        "models": {},
+        "identity-providers": {
+            (operator): { "module": operator, "token": { "file": operator_secret } }
+        },
+        "auth": {
+            "chain": ["keys"], "admin_auth": [operator], "signing_key": { "file": signing },
+            "key_ttl": "1h",
+            "role_bindings": {}
+        },
+        "groups": { "team": { "child_default": { "limits": [{ "budget": 500, "per": "month" }] } } },
+        "store": { "module": module, "settings": settings },
+        "advanced": { "allow_destinations": ["127.0.0.1"] },
+    }))
+    .expect("the product deployment parses");
+    let config = busbar_kernel::config::resolve(&deploy, &Default::default())
+        .expect("the product deployment resolves");
+    let plugin_config = busbar_kernel::config::PluginsCfg {
+        enabled: true,
+        dir: directory.to_string_lossy().into_owned(),
+        ..Default::default()
+    };
+    let anchor = busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
+        .expect("the actual Store bootstraps its config authority");
+    let overlay = busbar_kernel::config::overlay::OverlayStore::new(
+        anchor
+            .calls
+            .as_ref()
+            .cloned()
+            .expect("the actual Store exposes typed calls"),
+    )
+    .expect("the actual Store supports conditional config records");
+    let rules = Arc::new(crate::root::door_steps::Rules::default())
+        as Arc<dyn busbar_kernel::appbuild::RootRules>;
+    let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
+        config,
+        plugin_config,
+        Some(overlay.clone()),
+        Default::default(),
+        Default::default(),
+        (None, None),
+        None,
+        &rules,
+        Some(anchor),
+    )
+    .expect("the actual product builds the session deployment");
+    limits.keep().expect("the product limits commit");
+    if let Some(rotate) = rotate {
+        rotate();
+    }
+    let app = Arc::new(app);
+    let router = busbar_kernel::build_router(app);
+    let path = "/apix/v1/messages";
+    let response = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        tower::ServiceExt::oneshot(
+            router.clone(),
+            axum::http::Request::builder()
+                .method("POST")
+                .uri(path)
+                .header("x-api-key", "wrong-token")
+                .body(axum::body::Body::from(
+                    r#"{"model":"pa","messages":[{"role":"user","content":"hi"}],"max_tokens":16}"#,
+                ))
+                .unwrap(),
+        ),
+    )
+    .await
+    .expect("the actual native auth refusal is bounded")
+    .unwrap();
+    let status = response.status().as_u16();
+    let content_type = response
+        .headers()
+        .get("content-type")
+        .map(|v| v.to_str().unwrap().to_string());
+    let bytes = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        axum::body::to_bytes(response.into_body(), 64 * 1024),
+    )
+    .await
+    .expect("the actual refusal body is bounded")
+    .unwrap();
+    let body: serde_json::Value =
+        serde_json::from_slice(&bytes).expect("actual refusal body is JSON");
+    assert_eq!(
+        status, 401,
+        "an /apix path must be a normal data auth refusal: {body}"
+    );
+    assert_eq!(content_type.as_deref(), Some("application/json"));
+    assert_eq!(
+        body["error"]["type"],
+        busbar_contract::protocol::KIND_AUTHENTICATION,
+        "the data plane native authentication envelope answers: {body}"
+    );
+    assert!(
+        body["error"].get("code").is_none(),
+        "admin code envelope must not answer /apix: {body}"
+    );
+}
+
+#[tokio::test]
+async fn test_unauthorized_body_carries_no_busbar_vocabulary_on_the_live_stack() {
+    crate::dist_root_install::install();
+    let library_path = std::path::PathBuf::from(
+        std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
+            .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual built store"),
+    );
+    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
+        .expect("the actual store statement reads")
+        .expect("the actual store exports its statement");
+    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
+        .expect("the actual store statement is valid")
+        .name;
+    let mut manifest = plugins::manifest(
+        "store",
+        &module,
+        busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
+    );
+    manifest.statement = Some(hex::encode(statement));
+    let library = std::fs::read(library_path).expect("the actual store library reads");
+    let directory = plugins::scratch("auth-native-envelope");
+    let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
+    std::fs::write(directory.join("store.tar.gz"), archive)
+        .expect("stage the actual store archive");
+    let settings: serde_json::Value = serde_json::from_str(
+        &std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into()),
+    )
+    .expect("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS is JSON");
+    assert!(
+        settings.is_object(),
+        "the actual store settings are an object"
+    );
+    let operator = busbar_kernel::config::operator_provider();
+    let operator_secret = directory.join("operator-token");
+    std::fs::write(&operator_secret, "admintok").expect("normal configured operator secret");
+    let signing = directory.join("signing-key");
+    std::fs::write(&signing, hex::encode([7u8; 32]))
+        .expect("write the actual configured signing key");
+    let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
+        "providers": {},
+        "models": {},
+        "identity-providers": {
+            (operator): { "module": operator, "token": { "file": operator_secret } }
+        },
+        "auth": {
+            "chain": ["keys"], "admin_auth": [operator], "signing_key": { "file": signing },
+            "key_ttl": "1h",
+            "role_bindings": {}
+        },
+        "groups": { "team": { "child_default": { "limits": [{ "budget": 500, "per": "month" }] } } },
+        "store": { "module": module, "settings": settings },
+        "advanced": { "allow_destinations": ["127.0.0.1"] },
+    }))
+    .expect("the product deployment parses");
+    let config = busbar_kernel::config::resolve(&deploy, &Default::default())
+        .expect("the product deployment resolves");
+    let plugin_config = busbar_kernel::config::PluginsCfg {
+        enabled: true,
+        dir: directory.to_string_lossy().into_owned(),
+        ..Default::default()
+    };
+    let anchor = busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
+        .expect("the actual Store bootstraps its config authority");
+    let overlay = busbar_kernel::config::overlay::OverlayStore::new(
+        anchor
+            .calls
+            .as_ref()
+            .cloned()
+            .expect("the actual Store exposes typed calls"),
+    )
+    .expect("the actual Store supports conditional config records");
+    let rules = Arc::new(crate::root::door_steps::Rules::default())
+        as Arc<dyn busbar_kernel::appbuild::RootRules>;
+    let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
+        config,
+        plugin_config,
+        Some(overlay.clone()),
+        Default::default(),
+        Default::default(),
+        (None, None),
+        None,
+        &rules,
+        Some(anchor),
+    )
+    .expect("the actual product builds the session deployment");
+    limits.keep().expect("the product limits commit");
+    if let Some(rotate) = rotate {
+        rotate();
+    }
+    let app = Arc::new(app);
+    fn collect_strings<'a>(value: &'a serde_json::Value, out: &mut Vec<&'a str>) {
+        match value {
+            serde_json::Value::String(s) => out.push(s),
+            serde_json::Value::Array(items) => {
+                for item in items {
+                    collect_strings(item, out);
+                }
+            }
+            serde_json::Value::Object(fields) => {
+                for item in fields.values() {
+                    collect_strings(item, out);
+                }
+            }
+            _ => {}
+        }
+    }
+    const FORBIDDEN: &[&str] = &[
+        "virtual key",
+        "client token",
+        "client_token",
+        "allowlist",
+        "disabled",
+        "passthrough",
+        "busbar",
+        "unauthorized",
+        "admin",
+    ];
+    let router = busbar_kernel::build_router(app);
+    for path in [
+        "/v1beta/models/x:verb",
+        "/pa/v1/messages",
+        "/v1/kind/action",
+        "/v1/responses",
+        "/v2/chat",
+        "/model/vendor.model/converse",
+        "/totally/unknown/path",
+    ] {
+        let response = tokio::time::timeout(std::time::Duration::from_secs(10),
+            tower::ServiceExt::oneshot(router.clone(), axum::http::Request::builder()
+                .method("POST").uri(path).header("x-api-key", "wrong-token")
+                .body(axum::body::Body::from(r#"{"model":"pa","messages":[{"role":"user","content":"hi"}],"max_tokens":16}"#)).unwrap()))
+            .await.expect("the actual native auth refusal is bounded").unwrap();
+        let status = response.status().as_u16();
+        let content_type = response
+            .headers()
+            .get("content-type")
+            .map(|v| v.to_str().unwrap().to_string());
+        let bytes = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            axum::body::to_bytes(response.into_body(), 64 * 1024),
+        )
+        .await
+        .expect("the actual refusal body is bounded")
+        .unwrap();
+        let body: serde_json::Value =
+            serde_json::from_slice(&bytes).expect("actual refusal body is JSON");
+        assert!(
+            status == 401 || status == 403,
+            "{path} must be refused by the actual auth gate: {body}"
+        );
+        assert_eq!(
+            content_type.as_deref(),
+            Some("application/json"),
+            "{path}: {body}"
+        );
+        let mut strings = Vec::new();
+        collect_strings(&body, &mut strings);
+        assert!(!strings.is_empty(), "{path} body carries a message: {body}");
+        for text in strings {
+            let lower = text.to_ascii_lowercase();
+            for forbidden in FORBIDDEN {
+                assert!(
+                    !lower.contains(forbidden),
+                    "{path} auth body leaked {forbidden}: {body}"
+                );
+            }
+        }
+    }
+}
