@@ -581,7 +581,16 @@ jobs:
         working-directory: plugin
         env:
           MACOS_TEST: ${{ inputs.macos_test }}
-        run: bash -c "$MACOS_TEST"
+          TEST_FEATURES: ${{ inputs.test_features }}
+        run: |
+          set -euo pipefail
+          if [ "$MACOS_TEST" = 'cargo test --workspace --locked' ]; then
+            features=()
+            [ -z "$TEST_FEATURES" ] || features=(--features "$TEST_FEATURES")
+            cargo test --workspace --locked "${features[@]}"
+          else
+            bash -c "$MACOS_TEST"
+          fi
       - name: "C ABI: build against the public header and run ordinary loader tests"
         if: inputs.plugin_lang == 'c'
         env:
